@@ -833,3 +833,120 @@ class TestProjectionLock:
             f"happened before the lock, not inside it.\nstderr={result.stderr!r}\n{text}"
         )
         assert "pr: 4673" in text, f"the hook waited, then did not link:\n{result.stderr}\n{text}"
+
+
+class TestHeadBranchComesFromThePrNotTheCwd:
+    """M86: the hook stamped the *cwd's* branch (the vault reads `master`; a lane
+    worktree reads its own branch) instead of the PR's head ref. Five measured rows."""
+
+    @staticmethod
+    def _cwd_repo(tmp_path: Path, branch: str = "cwd-branch-must-not-leak") -> Path:
+        repo = tmp_path / "cwd-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", branch, str(repo)], check=True)
+        return repo
+
+    @staticmethod
+    def _gh_stub(tmp_path: Path, *, head: str | None) -> Path:
+        """A `gh` whose `pr view … --json headRefName` answers `head`, or fails."""
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        answer = f"printf '%s\\n' '{head}'; exit 0" if head is not None else "exit 1"
+        stub = bin_dir / "gh"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >> "{tmp_path}/gh-calls.log"\n'
+            'if [[ "$1 $2" == "pr view" ]]; then\n'
+            f"  {answer}\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        stub.chmod(0o755)
+        return bin_dir
+
+    def _link(
+        self,
+        tmp_path: Path,
+        *,
+        bash_cmd: str,
+        gh_head: str | None,
+        tool_input: dict | None = None,
+    ) -> str:
+        _vault, note = _make_vault(tmp_path, task_id="m86-task", pr=None, branch=None)
+        _write_claim(tmp_path, "beta", "m86-task")
+        cwd = self._cwd_repo(tmp_path)
+        bin_dir = self._gh_stub(tmp_path, head=gh_head)
+        payload: dict = {
+            "tool_name": "Bash" if tool_input is None else "mcp__github__create_pull_request",
+            "tool_input": {"command": bash_cmd} if tool_input is None else tool_input,
+            "tool_response": {
+                "output": "https://github.com/hapax-systems/hapax-council/pull/4741\n"
+            },
+            "session_id": "test-session",
+        }
+        env = os.environ.copy()
+        env.update(
+            {"HOME": str(tmp_path), "CLAUDE_ROLE": "beta", "PATH": f"{bin_dir}:{env['PATH']}"}
+        )
+        result = subprocess.run(
+            [str(HOOK)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=cwd,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert "pr: 4741" in text, result.stderr
+        assert "cwd-branch-must-not-leak" not in text
+        (branch_line,) = [line for line in text.splitlines() if line.startswith("branch:")]
+        return branch_line.removeprefix("branch:").strip()
+
+    def test_unresolvable_head_is_unknown_never_the_cwd_branch(self, tmp_path: Path) -> None:
+        assert self._link(tmp_path, bash_cmd="gh pr create --fill", gh_head=None) == "unknown"
+
+    @pytest.mark.parametrize(
+        "hostile",
+        ["x\nstatus: done", "x: y", "../../etc", "a b", "$(touch pwned)"],
+    )
+    def test_a_head_that_is_not_a_branch_name_is_refused_as_unknown(
+        self, tmp_path: Path, hostile: str
+    ) -> None:
+        assert self._link(tmp_path, bash_cmd="gh pr create --fill", gh_head=hostile) == "unknown"
+        assert not (tmp_path / "pwned").exists()
+
+    @pytest.mark.parametrize(
+        ("flag", "expected"),
+        [
+            ("--head fix/from-flag", "fix/from-flag"),
+            ("-H fix/short-flag", "fix/short-flag"),
+            ("--head=fix/equals-form", "fix/equals-form"),
+            ("--head hapax-systems:fix/owner-form", "fix/owner-form"),
+        ],
+    )
+    def test_create_head_flag_wins_without_asking_github(
+        self, tmp_path: Path, flag: str, expected: str
+    ) -> None:
+        branch = self._link(
+            tmp_path, bash_cmd=f'gh pr create --base main {flag} --title "t"', gh_head="wrong"
+        )
+        assert branch == expected
+        assert not (tmp_path / "gh-calls.log").exists()
+
+    def test_without_head_flag_the_pr_object_is_read(self, tmp_path: Path) -> None:
+        branch = self._link(tmp_path, bash_cmd="gh pr create --fill", gh_head="fix/from-pr-object")
+        assert branch == "fix/from-pr-object"
+        calls = (tmp_path / "gh-calls.log").read_text()
+        assert "pr view 4741 --repo hapax-systems/hapax-council" in calls
+
+    def test_mcp_create_uses_its_head_input(self, tmp_path: Path) -> None:
+        branch = self._link(
+            tmp_path,
+            bash_cmd="",
+            gh_head="wrong",
+            tool_input={"owner": "hapax-systems", "repo": "hapax-council", "head": "fix/mcp-head"},
+        )
+        assert branch == "fix/mcp-head"
