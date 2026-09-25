@@ -135,7 +135,7 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   3090 grounding instance (TabbyAPI `:5000`) is independent. Confirm with `nvidia-smi`.
 - **Host-memory ceiling:** both systemd and manual launches use `--memory 4G
   --memory-swap 6G`: a 4 GiB RAM cap and a 6 GiB combined memory-plus-swap cap,
-  permitting at most 2 GiB of swap. Before runtime closure after a
+  permitting at most 2 GiB of swap while leaving the OOM killer enabled. Before runtime closure after a
   limit change, deploy `hapax-local-judge.service` only through the manifest-owned
   P0 OOM package; ordinary post-merge deployment stages it without copying or
   restarting the user unit. Then run this 8-worker, 24-request canary and require
@@ -157,6 +157,8 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   [[ "$exec_start" == *" --memory 4G "* ]]
   [[ "$exec_start" == *" --memory-swap 6G "* ]]
   container=hapax-local-judge
+  oom_kill_disable="$(docker inspect --format '{{json .HostConfig.OomKillDisable}}' "$container")"
+  [[ "$oom_kill_disable" == null || "$oom_kill_disable" == false ]]
   pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
   test "$pid" -gt 1
   cgroup="$(awk -F: '$1 == "0" {print $3; exit}' "/proc/$pid/cgroup")"
