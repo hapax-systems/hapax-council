@@ -105,7 +105,204 @@ def test_promotes_dependency_satisfied_ready_task_to_offered(tmp_path: Path) -> 
     assert "claimed_at: null" in text
     assert "authority_level: authoritative" in text
     assert "mutation_surface: vault_docs" in text
+    assert "claimable: true" in text
     assert "promoted ready -> offered by cc-task-offer-ready" in text
+
+
+# M77: rows minted straight to `offered` carried no `claimable: true`, which
+# cc-claim requires, and no tool wrote the field. Frontmatter as minted 09-22:
+_MINTED_OFFERED_ROW_0922 = """\
+---
+type: cc-task
+task_id: minted-offered-row
+title: 'Fix: connector classifier fails closed'
+status: offered
+blocked_reason: null
+assigned_to: unassigned
+priority: p2
+wsjf: 1.5
+effort_class: standard
+quality_floor: verification_receipt
+mutation_surface: source
+authority_level: authoritative
+route_metadata_schema: 1
+kind: implementation
+risk_tier: T1
+depends_on: []
+blocks: []
+branch: null
+pr: null
+pr_repo: null
+created_at: 2026-09-22T16:53:47Z
+updated_at: 2026-09-22T16:53:47Z
+claimed_at: null
+completed_at: null
+parent_request: null
+parent_spec: spec.md
+authority_case: CASE-CAPACITY-ROUTING-001
+tags:
+- cc-task
+stage: S6_IMPLEMENTATION
+implementation_authorized: true
+---
+
+# Objective
+
+## Session log
+"""
+
+
+def _write_offered(vault: Path, *, replace: tuple[str, str] | None = None) -> Path:
+    text = _MINTED_OFFERED_ROW_0922
+    if replace is not None:
+        assert text.count(replace[0]) == 1
+        text = text.replace(*replace)
+    return _write(vault / "active" / "minted-offered-row.md", text)
+
+
+def test_offered_row_with_explicit_claimable_false_is_never_flipped(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_offered(
+        vault, replace=("status: offered\n", "status: offered\nclaimable: false\n")
+    )
+    before = task.read_bytes()
+
+    result = _run(vault, "minted-offered-row")
+
+    assert result.returncode == 4
+    assert "claimable is explicitly False" in result.stderr
+    assert task.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("replace", "returncode", "message"),
+    [
+        (("assigned_to: unassigned", "assigned_to: cx-other"), 4, "assigned to 'cx-other'"),
+        (("authority_case: CASE-CAPACITY-ROUTING-001", "authority_case: null"), 6, "authority"),
+        (("depends_on: []", "depends_on:\n  - dep"), 5, "unmet dependencies"),
+    ],
+)
+def test_offered_row_lacking_claimable_is_refused_on_the_promotion_checks(
+    tmp_path: Path, replace: tuple[str, str], returncode: int, message: str
+) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_offered(vault, replace=replace)
+    _write_dep(vault, status="in_progress")
+    before = task.read_bytes()
+
+    result = _run(vault, "minted-offered-row")
+
+    assert result.returncode == returncode
+    assert message in result.stderr
+    assert task.read_bytes() == before
+
+
+def test_already_claimable_offered_row_is_left_byte_identical(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_offered(
+        vault, replace=("status: offered\n", "status: offered\nclaimable: true\n")
+    )
+    before = task.read_bytes()
+
+    result = _run(vault, "minted-offered-row")
+
+    assert result.returncode == 0, result.stderr
+    assert task.read_bytes() == before
+
+
+def test_minted_offered_row_shape_is_made_claimable_in_place(tmp_path: Path) -> None:
+    from shared.frontmatter import parse_frontmatter_with_diagnostics
+
+    vault = tmp_path / "tasks"
+    task = _write_offered(vault)
+
+    result = _run(vault, "minted-offered-row")
+
+    assert result.returncode == 0, result.stderr
+    text = task.read_text(encoding="utf-8")
+    frontmatter = parse_frontmatter_with_diagnostics(task).frontmatter
+    assert frontmatter is not None
+    assert frontmatter["claimable"] is True
+    assert frontmatter["status"] == "offered"
+    assert frontmatter["stage"] == "S6_IMPLEMENTATION"
+    assert frontmatter["quality_floor"] == "verification_receipt"
+    assert "marked claimable by cc-task-offer-ready" in text
+
+
+# gemini-1 on #4741 @ 97d506740 (major): the shared write path inserted `claimable: true`
+# unconditionally, so promoting a ready row overwrote an explicit `claimable: false` hold.
+
+
+def test_ready_row_with_explicit_claimable_false_keeps_its_hold_on_promotion(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "tasks"
+    text = _task_frontmatter().replace("status: ready\n", "status: ready\nclaimable: false\n")
+    task = _write(vault / "active" / "ready-task.md", text)
+    _write_dep(vault)
+
+    result = _run(vault)
+
+    assert result.returncode == 0, result.stderr
+    after = task.read_text(encoding="utf-8")
+    assert "status: offered" in after
+    assert "claimable: false" in after
+    assert "claimable: true" not in after
+
+
+def _load_offer_ready() -> Any:
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("cc_task_offer_ready_m77", str(SCRIPT))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def test_a_hold_that_appears_before_the_lock_is_never_overwritten(tmp_path: Path) -> None:
+    """claude-1 on #4741: the explicit-hold check ran only before the projection lock. A hold
+    written in that window must stop the offered -> claimable write under the lock."""
+    module = _load_offer_ready()
+    vault = tmp_path / "tasks"
+    # the note as it reads under the lock: a hold landed after the pre-lock check passed
+    task = _write_offered(
+        vault, replace=("status: offered\n", "status: offered\nclaimable: false\n")
+    )
+    before = task.read_bytes()
+
+    rc = module._promote_under_lock(
+        path=task,
+        status="offered",
+        route_changes={},
+        timestamp="2026-09-25T09:40:00Z",
+        task_id="minted-offered-row",
+        dry_run=False,
+        vault_root=vault,
+        log_event="marked claimable by cc-task-offer-ready (test)",
+        require_unset_claimable=True,
+    )
+
+    assert rc == 4
+    assert task.read_bytes() == before
+
+
+def test_offered_row_dry_run_marks_nothing(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_offered(vault)
+    before = task.read_bytes()
+
+    result = subprocess.run(
+        [str(SCRIPT), "minted-offered-row", "--vault-root", str(vault), "--dry-run"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "dry-run would mark" in result.stdout
+    assert task.read_bytes() == before
 
 
 def test_blocks_ready_task_with_nonterminal_dependency(tmp_path: Path) -> None:
