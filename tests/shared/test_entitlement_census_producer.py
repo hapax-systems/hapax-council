@@ -1377,6 +1377,12 @@ def test_dispatched_demand_carries_its_own_staleness(tmp_path: Path) -> None:
     assert later["total"] == 0 and later["stale"] is True
     assert later["last_record_at"] == "2026-09-25T00:40:00Z"
     assert read_dispatched_demand(tmp_path / "absent.jsonl", now=NOW)["stale"] is True
+    # Measured live 2026-09-25T05:23Z: the last decision was 15 h old, inside the 24 h counting
+    # window, while every lane was being dispatched by hand. A recorder that ran at ~27 decisions/h
+    # and has been silent for over an hour is not recording: stale, whatever the window holds.
+    quiet = read_dispatched_demand(path, now=datetime(2026, 9, 25, 2, 0, tzinfo=UTC))
+    assert quiet["stale"] is True and quiet["total"] == 2
+    assert quiet["last_record_age_hours"] == pytest.approx(1.33, abs=0.01)
 
 
 def test_wall_witness_projects_timestamps_and_cause_only(tmp_path: Path) -> None:

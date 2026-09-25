@@ -2219,6 +2219,9 @@ HISTORY_FILE = "history.jsonl"
 HISTORY_ROTATE_BYTES = 32_000_000  # rotated to a dated file past this size, never deleted
 TREND_WINDOW = timedelta(days=7)
 DEMAND_WINDOW = timedelta(hours=24)
+#: The route recorder ran at ~27 decisions/h (648 in the 24 h to 2026-09-24T14:07Z). Silent for
+#: longer than this, it is not recording dispatch, whatever the counting window still holds.
+DISPATCH_STALE_AFTER = timedelta(hours=1)
 MIN_TREND_SPAN = timedelta(hours=1)
 _ROUTE_TAIL_BYTES = 8_000_000
 _QUEUED_STATUSES = frozenset({"offered", "ready"})
@@ -2296,7 +2299,8 @@ def read_dispatched_demand(
         "by_platform": dict(sorted(counts.items())),
         "total": sum(counts.values()),
         "last_record_at": _iso(last),
-        "stale": last is None or now - last > window,
+        "last_record_age_hours": round((now - last).total_seconds() / 3600, 2) if last else None,
+        "stale": last is None or now - last > DISPATCH_STALE_AFTER,
     }
 
 
