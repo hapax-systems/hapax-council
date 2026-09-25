@@ -122,19 +122,21 @@ vault_snapshot_reap_decision() {
 # Rename lock into evidence when decision is reap. Any other decision leaves
 # the lock where it is. mv -n refuses to overwrite an evidence file.
 vault_snapshot_apply_reap() {
-  local lock="$1" evidence="$2" decision="$3"
+  local lock="$1" evidence="$2" decision="$3" dest="${4:-}"
   if [[ "$decision" != "reap" ]]; then
     return 0
   fi
-  mkdir -p "$evidence"
-  local dest="$evidence/index.lock-$(date -u +%Y%m%dT%H%M%S%NZ)"
+  if [[ -z "$dest" ]]; then
+    dest="$evidence/index.lock-$(date -u +%Y%m%dT%H%M%S%NZ)"
+  fi
+  mkdir -p -- "$(dirname -- "$dest")"
   if [[ -e "$dest" ]]; then
-    printf 'evidence destination already exists: %s\n' "$dest" >&2
+    printf 'evidence destination already exists: %s\nNext action: leave that evidence file in place and rerun; the next stamp is a new name. Do not overwrite it.\n' "$dest" >&2
     return 1
   fi
-  mv -n -- "$lock" "$dest"
+  mv -n -- "$lock" "$dest" || true
   if [[ -e "$lock" || ! -f "$dest" ]]; then
-    printf 'lock rename failed: %s\n' "$lock" >&2
+    printf 'lock rename failed: %s\nNext action: leave the lock in place, confirm no git process holds it, and rerun the snapshot. Do not delete the lock.\n' "$lock" >&2
     return 1
   fi
   printf '%s\n' "$dest"
@@ -166,7 +168,7 @@ main() {
   fi
 
   if [[ ! -d "$BARE" ]]; then
-    log "FATAL: bare mirror missing at $BARE"
+    log "FATAL: bare mirror missing at $BARE. Next action: create that bare repo, or set VAULT_SNAPSHOT_BARE, then rerun the unit."
     exit 1
   fi
 
