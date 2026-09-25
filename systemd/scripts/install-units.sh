@@ -16,6 +16,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 NSS_HOME=""
 DEST_DIR=""
 ROOT_REQUIRED_LOCK_FILE=""
+ROOT_REQUIRED_LOCK_ANCHOR=""
 
 configure_root_required_lock_domain() {
     if ! NSS_HOME="$(/usr/bin/python3 -I -S - <<'PY'
@@ -50,6 +51,7 @@ PY
         fi
         DEST_DIR="$NSS_HOME/.config/systemd/user"
         ROOT_REQUIRED_LOCK_FILE="$NSS_HOME/.local/state/hapax/root-required/.lock"
+        ROOT_REQUIRED_LOCK_ANCHOR="$NSS_HOME"
         return
     fi
 
@@ -117,15 +119,21 @@ for label, path in (("home", home), ("destination", destination), ("lock", lock)
         print(f"ERROR: isolated test {label} escapes {resolved_root}", file=sys.stderr)
         raise SystemExit(1)
 PY
+    ROOT_REQUIRED_LOCK_ANCHOR="$HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT"
 }
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
-    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
-        echo "ERROR: safe shared install lock descriptor is absent" >&2
+    local anchor_fd="${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}"
+    local isolated=0
+    [ "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT+x}" != "x" ] || isolated=1
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$anchor_fd" =~ ^[0-9]+$ ]] || [ "$anchor_fd" -lt 3 ]; then
+        echo "ERROR: safe shared install lock descriptors are absent" >&2
         return 1
     fi
-    /usr/bin/python3 -I -S - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+    /usr/bin/python3 -I -S - "$lock_fd" "$anchor_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_REQUIRED_LOCK_ANCHOR" "$isolated" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -134,7 +142,10 @@ import stat
 import sys
 
 fd = int(sys.argv[1])
-lock_path = sys.argv[2]
+anchor_fd = int(sys.argv[2])
+lock_path = os.path.abspath(sys.argv[3])
+anchor_path = os.path.abspath(sys.argv[4])
+isolated = sys.argv[5] == "1"
 
 
 def valid(inode: os.stat_result) -> bool:
@@ -144,6 +155,40 @@ def valid(inode: os.stat_result) -> bool:
         and inode.st_nlink == 1
         and not inode.st_mode & 0o022
     )
+
+
+def validate_anchor() -> None:
+    inode = os.fstat(anchor_fd)
+    path_inode = os.lstat(anchor_path)
+    parent_path = os.path.dirname(anchor_path)
+    parent_inode = os.lstat(parent_path)
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or path_inode.st_uid != os.geteuid()
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
+try:
+    validate_anchor()
+    fcntl.flock(anchor_fd, fcntl.LOCK_EX)
+    validate_anchor()
+except OSError as exc:
+    print(f"ERROR: refused unstable shared install lock anchor: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
 
 
 try:
@@ -196,12 +241,16 @@ PY
 }
 
 reexec_with_safe_root_required_lock() {
-    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] \
+        || [ -n "${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}" ]; then
         acquire_inherited_root_required_lock
         return
     fi
+    local isolated=0
+    [ "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT+x}" != "x" ] || isolated=1
     exec /usr/bin/python3 -I -S - \
-        "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+        "$ROOT_REQUIRED_LOCK_ANCHOR" "$ROOT_REQUIRED_LOCK_FILE" "$isolated" \
+        "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -210,13 +259,49 @@ import stat
 import subprocess
 import sys
 
-requested_path, script, *args = sys.argv[1:]
+anchor_path, requested_path, isolated_raw, script, *args = sys.argv[1:]
+anchor_path = os.path.abspath(anchor_path)
+isolated = isolated_raw == "1"
 if not requested_path or "\n" in requested_path or len(requested_path) > 4096:
     print("ERROR: refused malformed shared install lock path", file=sys.stderr)
     raise SystemExit(1)
 lock_path = os.path.abspath(requested_path)
 parent = os.path.dirname(lock_path)
+
+
+def validate_anchor(anchor_fd: int) -> None:
+    inode = os.fstat(anchor_fd)
+    path_inode = os.lstat(anchor_path)
+    parent_path = os.path.dirname(anchor_path)
+    parent_inode = os.lstat(parent_path)
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != os.geteuid()
+        or path_inode.st_uid != os.geteuid()
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
 try:
+    anchor_fd = os.open(
+        anchor_path,
+        os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY,
+    )
+    validate_anchor(anchor_fd)
+    fcntl.flock(anchor_fd, fcntl.LOCK_EX)
+    validate_anchor(anchor_fd)
     os.makedirs(parent, mode=0o700, exist_ok=True)
     fd = os.open(
         lock_path,
@@ -276,16 +361,18 @@ try:
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_MODE", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
     env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
     result = subprocess.run(
         [os.path.abspath(script), *args],
         env=env,
-        pass_fds=(fd,),
+        pass_fds=(anchor_fd, fd),
         check=False,
     )
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
+    os.close(anchor_fd)
 PY
 }
 
