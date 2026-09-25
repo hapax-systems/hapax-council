@@ -128,7 +128,9 @@ class ProcessedSegmentInfo(BaseModel):
     processed_at: float = 0.0
     category: str = "empty_room"
     value_score: float = 0.0
-    people_count: int = 0
+    # None when guest presence was withheld (see _guest_presence_decision).
+    people_count: int | None = 0
+    guest_presence: str = ""  # "withheld" when guest-derived fields were not persisted
     motion_score: float = 0.0
     scene_change: bool = False
     disposition: str = ""  # "uploaded", "local_keep", "discard"
@@ -734,21 +736,65 @@ def _classify_segment(segment_path: Path) -> SegmentClassification:
 # ── Sidecar Files ────────────────────────────────────────────────────────────
 
 
-def _guest_consent_check() -> bool:
-    """Check if guest presence metadata may be persisted.
+GUEST_PRESENCE_WITHHELD = "withheld"
+# "conversation" is only reachable with more than one person present, so it
+# is guest-derived and withheld together with the counts.
+_GUEST_DERIVED_CATEGORIES = frozenset({"conversation"})
+_GUEST_WITHHELD_REMEDY = (
+    "record the guest's opt-in contract covering video, or repair the contract registry"
+)
 
-    Returns True if guest metadata is safe to persist (consent granted
-    or registry unavailable — degrade open since operator is always present).
-    Returns False if registry is loaded and no guest consent contract exists.
+
+def _guest_presence_decision(classification: SegmentClassification) -> tuple[bool, str]:
+    """Decide once per segment whether guest-derived metadata may persist.
+
+    Returns ``(persist, cause)``. More than one person in either the average
+    or the maximum count makes the segment guest-bearing; guest-derived
+    fields then persist only on an affirmative ``True`` from a loaded
+    registry. A load or check failure (including an identity-custody
+    failure raised by the check), a fail-closed registry, or a non-boolean
+    answer withholds — it never grants. ``cause`` is a sanitized token.
     """
+    if max(classification.people_count, classification.max_people) <= 1:
+        return True, "single_or_no_person"
     try:
         from shared.governance.consent import ConsentRegistry
 
         registry = ConsentRegistry()
         registry.load()
-        return registry.contract_check("guest", "video")
+        if registry.fail_closed:
+            return False, "consent_registry_unavailable"
+        answer = registry.contract_check("guest", "video")
+    except Exception as exc:
+        return False, f"consent_check_failed:{type(exc).__name__}"
+    if answer is True:
+        return True, "guest_video_consent"
+    if answer is False:
+        return False, "no_guest_video_consent"
+    return False, "malformed_consent_answer"
+
+
+def _audit_guest_withheld(segment_name: str, cause: str) -> None:
+    """Log and record a withholding with a sanitized cause and a remedy."""
+    log.info(
+        "Consent: withheld guest presence metadata for %s (cause=%s; remedy: %s)",
+        segment_name,
+        cause,
+        _GUEST_WITHHELD_REMEDY,
+    )
+    try:
+        from agents.refusal_brief import RefusalEvent, append
+
+        append(
+            RefusalEvent(
+                timestamp=datetime.now(UTC),
+                axiom="interpersonal_transparency",
+                surface="video_processor:guest_presence",
+                reason=f"guest presence withheld ({cause}); remedy: {_GUEST_WITHHELD_REMEDY}"[:160],
+            )
+        )
     except Exception:
-        return True  # Registry unavailable — degrade gracefully
+        log.debug("refusal-brief append failed", exc_info=True)
 
 
 def _write_sidecar(
@@ -756,12 +802,17 @@ def _write_sidecar(
     classification: SegmentClassification,
     disposition: str,
     suffix: str = ".classified",
+    guest_decision: tuple[bool, str] | None = None,
 ) -> Path:
     """Write a JSON sidecar file alongside the video segment.
 
     Sidecar contains classification metadata for the retention script
-    and for any future reprocessing.
+    and for any future reprocessing. When guest presence is withheld the
+    counts are omitted (not rewritten to an operator-only claim), a
+    guest-derived category is replaced, and ``guest_presence: withheld``
+    plus its sanitized cause mark the redaction.
     """
+    persist, cause = guest_decision or _guest_presence_decision(classification)
     sidecar_path = segment_path.with_suffix(segment_path.suffix + suffix)
     data = {
         "filename": segment_path.name,
@@ -775,11 +826,13 @@ def _write_sidecar(
         "ssim": classification.ssim,
         "disposition": disposition,
     }
-    # Consent gate: redact guest presence metadata if unconsented
-    if data["people_count"] > 1 and not _guest_consent_check():
-        log.info("Consent: redacting guest count in sidecar for %s", segment_path.name)
-        data["people_count"] = 1  # Only operator
-        data["max_people"] = 1
+    if not persist:
+        del data["people_count"]
+        del data["max_people"]
+        if data["category"] in _GUEST_DERIVED_CATEGORIES:
+            data["category"] = GUEST_PRESENCE_WITHHELD
+        data["guest_presence"] = GUEST_PRESENCE_WITHHELD
+        data["guest_presence_cause"] = cause
     sidecar_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return sidecar_path
 
@@ -866,6 +919,21 @@ def _process_segment(
     score = classification.value_score
     category = classification.category
 
+    # One guest-presence decision per segment governs every persisted
+    # record below: sidecar, state record, change log and log line. It
+    # does not change disposition or upload (retention policy, out of scope).
+    guest_decision = _guest_presence_decision(classification)
+    guest_persist, guest_cause = guest_decision
+    recorded_people: int | None = classification.people_count
+    recorded_category = category
+    guest_presence = ""
+    if not guest_persist:
+        _audit_guest_withheld(filename, guest_cause)
+        recorded_people = None
+        guest_presence = GUEST_PRESENCE_WITHHELD
+        if category in _GUEST_DERIVED_CATEGORIES:
+            recorded_category = GUEST_PRESENCE_WITHHELD
+
     # Decide disposition
     disposition = "discard"
     uploaded = False
@@ -878,28 +946,29 @@ def _process_segment(
             uploaded = True
             upload_path = f"gdrive:video-archive/{role}/{date}/{filename}"
             # Mark as processed so retention script can delete local copy
-            _write_sidecar(segment_path, classification, disposition, suffix=".processed")
+            _write_sidecar(segment_path, classification, disposition, ".processed", guest_decision)
         else:
             # Upload failed — keep locally, mark classified for retry
             disposition = "local_keep"
-            _write_sidecar(segment_path, classification, disposition, suffix=".classified")
+            _write_sidecar(segment_path, classification, disposition, ".classified", guest_decision)
             log.warning("Upload failed for %s — keeping locally", filename)
     elif score >= LOCAL_KEEP_THRESHOLD:
         # Keep locally for 48h review window
         disposition = "local_keep"
-        _write_sidecar(segment_path, classification, disposition, suffix=".classified")
+        _write_sidecar(segment_path, classification, disposition, ".classified", guest_decision)
     else:
         # Discard — mark processed so retention script deletes it
         disposition = "discard"
-        _write_sidecar(segment_path, classification, disposition, suffix=".processed")
+        _write_sidecar(segment_path, classification, disposition, ".processed", guest_decision)
 
     info = ProcessedSegmentInfo(
         filename=filename,
         role=role,
         processed_at=time.time(),
-        category=category,
+        category=recorded_category,
         value_score=score,
-        people_count=classification.people_count,
+        people_count=recorded_people,
+        guest_presence=guest_presence,
         motion_score=classification.motion_score,
         scene_change=classification.scene_change,
         disposition=disposition,
@@ -908,28 +977,28 @@ def _process_segment(
     )
 
     log.info(
-        "Classified %s: %s (score=%.2f, people=%d, motion=%.4f, disp=%s)",
+        "Classified %s: %s (score=%.2f, people=%s, motion=%.4f, disp=%s)",
         filename,
-        category,
+        recorded_category,
         score,
-        classification.people_count,
+        GUEST_PRESENCE_WITHHELD if recorded_people is None else recorded_people,
         classification.motion_score,
         disposition,
     )
 
-    _log_change(
-        "segment_classified",
-        f"{role}/{filename}",
-        {
-            "category": category,
-            "value_score": score,
-            "people_count": classification.people_count,
-            "motion_score": round(classification.motion_score, 4),
-            "scene_change": classification.scene_change,
-            "disposition": disposition,
-            "uploaded": uploaded,
-        },
-    )
+    change: dict = {
+        "category": recorded_category,
+        "value_score": score,
+        "people_count": recorded_people,
+        "motion_score": round(classification.motion_score, 4),
+        "scene_change": classification.scene_change,
+        "disposition": disposition,
+        "uploaded": uploaded,
+    }
+    if guest_presence:
+        del change["people_count"]
+        change["guest_presence"] = guest_presence
+    _log_change("segment_classified", f"{role}/{filename}", change)
 
     return info
 

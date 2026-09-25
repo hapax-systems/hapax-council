@@ -630,10 +630,12 @@ class TestConsentGate:
         ):
             assert p._consent_allows(cand) is False
 
-    def test_consent_decision_is_cached(self):
-        # The cache is the reason this gate can run per-frame in the
-        # reverie mixer. Two consecutive consent-required checks within
-        # the TTL window must trigger only one contract load.
+    def test_consent_registry_is_cached_but_decision_is_revalidated(self):
+        # The registry cache is the reason this gate can run per-frame in
+        # the reverie mixer: two consecutive checks within the TTL window
+        # trigger only one contract load. The decision itself is not
+        # cached — every use re-runs the registry check, so a positive
+        # grant never outlives the validation that produced it.
         from unittest.mock import MagicMock, patch
 
         p = self._pipeline()
@@ -644,7 +646,7 @@ class TestConsentGate:
             assert p._consent_allows(cand) is True
             assert p._consent_allows(cand) is True
             assert mock_load.call_count == 1
-            assert registry.contract_check.call_count == 1
+            assert registry.contract_check.call_count == 2
 
     def test_consent_cache_is_keyed_by_scope_signature(self):
         from unittest.mock import MagicMock, patch
@@ -950,3 +952,288 @@ def test_interrupt_path_runs_monetization_gate():
     with patch.object(GATE, "candidate_filter", return_value=[]):
         results = p.select(imp)
         assert results == [], "Interrupt candidates must be blocked when monetization gate denies"
+
+
+class TestConsentFailureNeverBecomesPermission:
+    """A warm positive grant never outlives the validation that produced it.
+
+    Every case here starts from a real, granted decision and then breaks
+    the consent state underneath it inside the cache TTL: revocation,
+    removal, malformed or unreadable contract bytes, a failed current
+    check (the custody-failure shape once identity custody is required),
+    or a non-boolean answer. Each must refuse on the very next decision.
+    """
+
+    SUBJECT = "synthetic-subject-a"
+
+    def _candidate(self, data_category: str = "video"):
+        from shared.affordance import SelectionCandidate
+
+        return SelectionCandidate(
+            capability_name="studio.toggle_livestream",
+            similarity=0.9,
+            payload={
+                "consent_required": True,
+                "consent_person_id": self.SUBJECT,
+                "consent_data_category": data_category,
+            },
+        )
+
+    def _write_contract(self, directory, *, revoked: bool = False) -> None:
+        import yaml
+
+        data = {
+            "id": "contract-synthetic-a",
+            "parties": ["operator", self.SUBJECT],
+            "scope": ["video"],
+            "direction": "one_way",
+            "visibility_mechanism": "on_request",
+            "created_at": "2026-09-25T00:00:00Z",
+        }
+        if revoked:
+            data["revoked_at"] = "2026-09-25T00:00:01Z"
+        (directory / "contract-synthetic-a.yaml").write_text(yaml.safe_dump(data))
+
+    def _contracts_dir(self, tmp_path, monkeypatch):
+        import shared.governance.consent as consent_mod
+
+        directory = tmp_path / "contracts"
+        directory.mkdir()
+        self._write_contract(directory)
+        monkeypatch.setattr(consent_mod, "_CONTRACTS_DIR", directory)
+        # Keep the live consent-engine health file out of the test.
+        monkeypatch.setattr(consent_mod, "publish_health", lambda *_a, **_k: None)
+        return directory
+
+    def _capture_refusals(self, monkeypatch) -> list:
+        import agents.refusal_brief as _pkg
+
+        captured: list = []
+        monkeypatch.setattr(_pkg, "append", lambda ev, **_: captured.append(ev) or True)
+        return captured
+
+    def test_positive_control_grant_is_allowed_and_registry_reused(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        import shared.governance.consent as consent_mod
+        from shared.affordance_pipeline import AffordancePipeline
+
+        self._contracts_dir(tmp_path, monkeypatch)
+        p = AffordancePipeline()
+        with patch.object(
+            consent_mod, "load_contracts", wraps=consent_mod.load_contracts
+        ) as mock_load:
+            for _ in range(3):
+                assert p._consent_allows(self._candidate()) is True
+        assert mock_load.call_count == 1
+
+    def test_negative_control_other_category_is_refused(self, tmp_path, monkeypatch):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        self._contracts_dir(tmp_path, monkeypatch)
+        assert AffordancePipeline()._consent_allows(self._candidate("audio")) is False
+
+    def test_warm_grant_does_not_survive_revocation_within_ttl(self, tmp_path, monkeypatch):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        p = AffordancePipeline()
+        assert p._consent_allows(self._candidate()) is True
+        self._write_contract(directory, revoked=True)
+        assert p._consent_allows(self._candidate()) is False
+
+    def test_warm_grant_does_not_survive_contract_removal(self, tmp_path, monkeypatch):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        p = AffordancePipeline()
+        assert p._consent_allows(self._candidate()) is True
+        (directory / "contract-synthetic-a.yaml").unlink()
+        assert p._consent_allows(self._candidate()) is False
+
+    def test_warm_grant_does_not_survive_missing_contracts_dir(self, tmp_path, monkeypatch):
+        import shutil
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        p = AffordancePipeline()
+        assert p._consent_allows(self._candidate()) is True
+        shutil.rmtree(directory)
+        assert p._consent_allows(self._candidate()) is False
+
+    def test_warm_grant_does_not_survive_malformed_contract(self, tmp_path, monkeypatch):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        p = AffordancePipeline()
+        assert p._consent_allows(self._candidate()) is True
+        (directory / "contract-synthetic-a.yaml").write_text("{")
+        assert p._consent_allows(self._candidate()) is False
+
+    def test_warm_grant_does_not_survive_unreadable_contract(self, tmp_path, monkeypatch):
+        import os
+
+        import pytest
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        if os.geteuid() == 0:
+            pytest.skip("root reads mode-000 files")
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        p = AffordancePipeline()
+        assert p._consent_allows(self._candidate()) is True
+        target = directory / "contract-synthetic-a.yaml"
+        target.chmod(0)
+        try:
+            assert p._consent_allows(self._candidate()) is False
+        finally:
+            target.chmod(0o600)
+
+    def test_warm_grant_does_not_survive_failed_current_validation(self):
+        # The custody-failure shape: the same held registry that granted a
+        # moment ago now raises when asked (identity custody unreadable,
+        # missing or conflicting). The failure must refuse, not fall back
+        # to the earlier grant.
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        registry = MagicMock()
+        registry.contract_check.side_effect = [True, RuntimeError("custody unavailable")]
+        p = AffordancePipeline()
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
+            assert p._consent_allows(self._candidate()) is True
+            assert p._consent_allows(self._candidate()) is False
+
+    def test_non_boolean_answer_is_not_permission(self):
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        registry = MagicMock()
+        registry.contract_check.return_value = "yes"
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False
+
+    def test_registry_changed_during_load_is_refused(self, tmp_path, monkeypatch):
+        # One coherent snapshot per decision: if the contracts change while
+        # they are being loaded, the loaded registry is not the state the
+        # decision would claim to rest on.
+        import os
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        registry = MagicMock()
+        registry.contract_check.return_value = True
+
+        def _load_while_revoking(*_a, **_k):
+            target = directory / "contract-synthetic-a.yaml"
+            self._write_contract(directory, revoked=True)
+            st = target.stat()
+            os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            return registry
+
+        with patch("shared.governance.consent.load_contracts", side_effect=_load_while_revoking):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False
+
+    def test_registry_ttl_does_not_slide_on_new_requirements(self, monkeypatch):
+        # A registry is at most _CONSENT_CACHE_TTL_S old, measured from its
+        # load — checking a new requirement must not re-stamp it.
+        from unittest.mock import MagicMock, patch
+
+        from shared import affordance_pipeline as ap_mod
+
+        clock = {"now": 1_000_000.0}
+        monkeypatch.setattr(ap_mod.time, "time", lambda: clock["now"])
+        registry = MagicMock()
+        registry.contract_check.return_value = True
+        p = ap_mod.AffordancePipeline()
+        ttl = ap_mod._CONSENT_CACHE_TTL_S
+        with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
+            assert p._consent_allows(self._candidate("video")) is True
+            clock["now"] += ttl * 0.8
+            assert p._consent_allows(self._candidate("audio")) is True
+            clock["now"] += ttl * 0.4
+            assert p._consent_allows(self._candidate("video")) is True
+        assert mock_load.call_count == 2
+
+    def test_select_caller_drops_warm_grant_after_revocation(self, tmp_path, monkeypatch):
+        # The actual caller: select() -> _apply_hard_gates -> _consent_allows.
+        import json
+        from unittest.mock import patch
+
+        from shared.affordance import SelectionCandidate
+        from shared.affordance_pipeline import AffordancePipeline
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        trace = tmp_path / "dispatch-trace.jsonl"
+        monkeypatch.setattr("shared.affordance_pipeline.DISPATCH_TRACE_FILE", trace)
+        monkeypatch.delenv("HAPAX_DISPATCH_TRACE", raising=False)
+        candidate_payload = {
+            "consent_required": True,
+            "consent_person_id": self.SUBJECT,
+            "consent_data_category": "video",
+            "public_capable": False,
+            "monetization_risk": "none",
+            "content_risk": "tier_0_owned",
+        }
+
+        def _fallback(*_a, **_k):
+            return [
+                SelectionCandidate(
+                    capability_name="fallback.capability",
+                    similarity=0.9,
+                    payload=dict(candidate_payload),
+                )
+            ]
+
+        imp = Impingement(
+            timestamp=time.time(),
+            source="dmn",
+            type=ImpingementType.STATISTICAL_DEVIATION,
+            strength=0.5,
+            content={"metric": "x"},
+        )
+        p = AffordancePipeline()
+        with (
+            patch.object(p, "_get_embedding", return_value=None),
+            patch.object(p, "_fallback_keyword_match", side_effect=_fallback),
+        ):
+            p.select(imp)
+            self._write_contract(directory, revoked=True)
+            p.select(imp)
+        rows = [json.loads(line) for line in trace.read_text().splitlines() if line.strip()]
+        assert rows[-2]["stages"]["after_consent"] == 1
+        assert rows[-1]["stages"]["after_consent"] == 0
+        assert rows[-1]["dropout_at"] == "consent_filter_empty"
+
+    def test_refusal_audit_is_sanitized_and_names_a_remedy(self, tmp_path, monkeypatch):
+        from shared.affordance_pipeline import AffordancePipeline
+
+        self._contracts_dir(tmp_path, monkeypatch)
+        captured = self._capture_refusals(monkeypatch)
+        assert AffordancePipeline()._consent_allows(self._candidate("audio")) is False
+        assert len(captured) == 1
+        reason = captured[0].reason
+        assert self.SUBJECT not in reason
+        assert "no matching active consent contract" in reason
+        assert "remedy" in reason
+
+    def test_check_failure_audit_is_sanitized_and_names_a_remedy(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        captured = self._capture_refusals(monkeypatch)
+        registry = MagicMock()
+        registry.contract_check.side_effect = RuntimeError(f"custody for {self.SUBJECT}")
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False
+        assert len(captured) == 1
+        reason = captured[0].reason
+        assert self.SUBJECT not in reason
+        assert "RuntimeError" in reason
+        assert "remedy" in reason
