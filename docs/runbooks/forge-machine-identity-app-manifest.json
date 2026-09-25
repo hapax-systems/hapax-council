@@ -1,0 +1,14 @@
+{
+  "name": "hapax-forge",
+  "url": "https://github.com/hapax-systems",
+  "description": "GitHub App of the hapax-systems organization, used to commit and open pull requests for changes written by AI agents. hapax-systems is responsible for its activity.",
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "metadata": "read"
+  },
+  "default_events": [],
+  "redirect_url": "https://github.com/hapax-systems",
+  "request_oauth_on_install": false
+}

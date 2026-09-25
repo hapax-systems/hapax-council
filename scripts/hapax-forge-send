@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""hapax-forge-send: forge sends as the hapax-forge App's bot (operator act O2).
+
+This is the only process that loads the App's private key. systemd delivers the key as
+an encrypted credential (``LoadCredentialEncrypted=forge-app-key``) into
+``$CREDENTIALS_DIRECTORY``. Run anywhere else, it refuses before any network call.
+
+    hapax-forge-send smoke --repository hapax-systems/hapax-council \
+        --client-id <client id> --bot-login hapax-forge[bot] [--branch forge/o2-runtime-leg]
+
+``smoke`` is the O2 runtime leg. It opens one draft PR on a test branch as the bot, then
+checks that GitHub attributes both the commit and the PR to the bot. The operator runs it
+inside the credential sandbox:
+
+    sudo systemd-run --wait --pipe --property=DynamicUser=yes \
+        --property=LoadCredentialEncrypted=forge-app-key \
+        /usr/local/libexec/hapax/hapax-forge-send smoke …
+
+The client id and bot login are non-secret; they come from the FileStore's
+``forge-app/identity`` record. Request intake for lanes (a read-once, create-only spool
+and the R7 record check) lands in O2 part 2.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from shared.forge_app_identity import (  # noqa: E402
+    ForgeIdentityRefused,
+    InstallationToken,
+    app_jwt,
+    create_commit_request,
+    installation_token_request,
+    load_app_key,
+    require_bot_authored,
+    require_usable,
+)
+
+ORG = "hapax-systems"
+API = "https://api.github.com"
+SMOKE_PATH = "docs/runbooks/forge-machine-identity-runtime-leg.md"
+
+#: ``(method, url, authorization header, json body) -> json response``
+Http = Callable[[str, str, str, Any], Mapping[str, Any]]
+
+
+def smoke(
+    *,
+    repository: str,
+    client_id: str,
+    bot_login: str,
+    branch: str,
+    env: Mapping[str, str],
+    now: datetime,
+    http: Http,
+    sign: Callable[[str, str, datetime], str] = app_jwt,
+) -> dict[str, Any]:
+    """Open one draft PR as the bot, and verify GitHub attributes it to the bot."""
+
+    owner, _, name = repository.partition("/")
+    if owner != ORG or not name:
+        raise ForgeIdentityRefused(f"repository_outside_org: {repository!r}; want {ORG}/<name>")
+    key = load_app_key(env)  # refuses outside the unit, before any network call
+    app_auth = f"Bearer {sign(client_id, key, now)}"
+    del key
+
+    installation = http("GET", f"{API}/repos/{repository}/installation", app_auth, None)
+    minted = http(
+        "POST",
+        f"{API}/app/installations/{installation['id']}/access_tokens",
+        app_auth,
+        installation_token_request(name),
+    )
+    token = InstallationToken.from_response(minted)
+    require_usable(token, now=now)
+    auth = f"token {token.token}"
+
+    base = http("GET", f"{API}/repos/{repository}/git/ref/heads/main", auth, None)
+    base_sha = base["object"]["sha"]
+    http(
+        "POST",
+        f"{API}/repos/{repository}/git/refs",
+        auth,
+        {"ref": f"refs/heads/{branch}", "sha": base_sha},
+    )
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = http(
+        "POST",
+        f"{API}/graphql",
+        auth,
+        create_commit_request(
+            repository=repository,
+            branch=branch,
+            expected_head_oid=base_sha,
+            headline="chore(forge): O2 runtime leg, one commit by the forge App",
+            additions={
+                SMOKE_PATH: (
+                    f"# O2 runtime leg\n\nWritten by hapax-forge-send smoke at {stamp}.\n"
+                ).encode()
+            },
+        ),
+    )
+    commit = created["data"]["createCommitOnBranch"]["commit"]
+    require_bot_authored(commit, _Bot(bot_login))
+
+    pr = http(
+        "POST",
+        f"{API}/repos/{repository}/pulls",
+        auth,
+        {
+            "title": "O2 runtime leg: one PR opened by the forge App",
+            "head": branch,
+            "base": "main",
+            "draft": True,
+            "body": "Opened by hapax-forge-send smoke to show bot authorship. Close without merging.",
+        },
+    )
+    pr_author = (pr.get("user") or {}).get("login")
+    if pr_author != bot_login:
+        raise ForgeIdentityRefused(f"pr_not_bot_authored:{pr_author or 'unknown'}")
+    return {
+        "pr": pr.get("number"),
+        "url": pr.get("html_url"),
+        "commit": commit.get("oid"),
+        "commit_author": bot_login,
+        "pr_author": pr_author,
+    }
+
+
+class _Bot:
+    """The identity ``require_bot_authored`` checks: only its login is compared."""
+
+    def __init__(self, login: str) -> None:
+        self.login = login
+
+
+def _http(method: str, url: str, auth: str, body: Any) -> Mapping[str, Any]:
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": auth,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - fixed https host
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise ForgeIdentityRefused(f"github_http_{exc.code}: {method} {url}") from None
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise ForgeIdentityRefused(f"github_unreachable: {type(exc).__name__}") from None
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-forge-send")
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("smoke", help="the O2 runtime leg: one draft PR as the bot")
+    run.add_argument("--repository", required=True)
+    run.add_argument("--client-id", required=True)
+    run.add_argument("--bot-login", required=True)
+    run.add_argument("--branch", default="forge/o2-runtime-leg")
+    args = parser.parse_args(argv)
+    try:
+        result = smoke(
+            repository=args.repository,
+            client_id=args.client_id,
+            bot_login=args.bot_login,
+            branch=args.branch,
+            env=os.environ,
+            now=datetime.now(UTC),
+            http=_http,
+        )
+    except ForgeIdentityRefused as exc:
+        print(f"hapax-forge-send: refused: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Set up the forge GitHub App (operator act O2): the manifest form, then the key conversion.
+
+    hapax-forge-app-setup form <out.html>
+        Writes a one-button page that POSTs the committed manifest to
+        github.com/organizations/hapax-systems/settings/apps/new, and a random state
+        beside it (<out.html>.state). The operator opens the page and clicks Create.
+
+    hapax-forge-app-setup convert <code> <state> --state-file <out.html.state> [--replace]
+        Within an hour of the click: exchanges the code (POST /app-manifests/{code}/conversions)
+        and pipes the App's private key straight into
+        `sudo systemd-creds encrypt --name=forge-app-key - /etc/credstore.encrypted/forge-app-key`.
+        The key is held in this process's memory and on that one stdin, and nowhere else: not
+        argv, not the FileStore, not stdout or stderr, not a file. Only non-secret identity
+        (app id, client id, slug, owner, bot user id) goes to the FileStore, per the seat's
+        ruling (lanebus/dev27/20260925T0748Z-dev1-o2-rulings.md). The client and webhook
+        secrets in the response are discarded.
+
+Refusals, each with nothing written: state mismatch (before any network call); the App is
+not owned by the org; the response has no key; a credential already exists and --replace
+was not given; encrypt failed. Run it as the operator, not root: sudo is used only for the
+credstore write, and the FileStore must stay operator-owned.
+
+Procedure: docs/runbooks/forge-machine-identity.md.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import os
+import secrets
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+ORG = "hapax-systems"
+MANIFEST_PATH = _REPO_ROOT / "docs" / "runbooks" / "forge-machine-identity-app-manifest.json"
+CREDENTIAL_NAME = "forge-app-key"
+CREDSTORE_TARGET = f"/etc/credstore.encrypted/{CREDENTIAL_NAME}"
+METADATA_SECRET_NAME = "forge-app/identity"
+API = "https://api.github.com"
+
+
+class SetupRefused(RuntimeError):
+    """A typed refusal. The first token of the message is the machine-readable reason."""
+
+
+def render_form(manifest: Mapping[str, Any], state: str) -> str:
+    action = f"https://github.com/organizations/{ORG}/settings/apps/new?state={state}"
+    value = html.escape(json.dumps(manifest), quote=True)
+    return (
+        "<!doctype html>\n<meta charset=utf-8>\n<title>Create the hapax-forge GitHub App</title>\n"
+        f'<form action="{html.escape(action, quote=True)}" method="post">\n'
+        f'  <input type="hidden" name="manifest" value="{value}">\n'
+        f"  <p>Creates the App on the <b>{ORG}</b> organization from the reviewed manifest.</p>\n"
+        '  <button type="submit">Create GitHub App</button>\n'
+        "</form>\n"
+    )
+
+
+def convert(
+    code: str,
+    state: str,
+    *,
+    expected_state: str,
+    http_post: Callable[[str], Mapping[str, Any]],
+    http_get: Callable[[str], Mapping[str, Any]],
+    run: Callable[..., int],
+    put_metadata: Callable[[dict[str, Any]], None],
+    replace: bool = False,
+) -> dict[str, Any]:
+    """Exchange the manifest code and move the key into the credstore. Returns identity only."""
+
+    if not expected_state or not secrets.compare_digest(state, expected_state):
+        raise SetupRefused("state_mismatch: the redirect's state is not the one this form issued")
+
+    conversion = http_post(f"{API}/app-manifests/{code}/conversions")
+    owner = conversion.get("owner") or {}
+    login = owner.get("login") if isinstance(owner, Mapping) else None
+    if login != ORG or owner.get("type") != "Organization":
+        raise SetupRefused(
+            f"app_not_org_owned:{login or 'unknown'}: the App must be created on the {ORG}"
+            " organization. Delete the App just created in its settings, then re-run the form."
+        )
+    pem = conversion.get("pem")
+    slug = conversion.get("slug")
+    if not isinstance(pem, str) or not pem.strip() or not isinstance(slug, str) or not slug:
+        raise SetupRefused("conversion_malformed: the response lacks the key or the slug")
+
+    if not replace and run(["sudo", "test", "-e", CREDSTORE_TARGET]) == 0:
+        raise SetupRefused(
+            f"credential_exists: {CREDSTORE_TARGET}. Rotation is deliberate: re-run with"
+            " --replace, then delete the old key in the App's settings."
+        )
+    argv = ["sudo", "systemd-creds", "encrypt", f"--name={CREDENTIAL_NAME}", "-", CREDSTORE_TARGET]
+    if run(argv, stdin=pem) != 0:
+        raise SetupRefused(f"credential_encrypt_failed: {CREDSTORE_TARGET} was not written")
+    del pem
+
+    bot = http_get(f"{API}/users/{slug}%5Bbot%5D")
+    metadata = {
+        "app_id": conversion.get("id"),
+        "client_id": conversion.get("client_id"),
+        "slug": slug,
+        "owner": login,
+        "bot_user_id": bot.get("id"),
+    }
+    put_metadata(metadata)
+    return metadata
+
+
+def _request(url: str, method: str) -> Mapping[str, Any]:
+    request = urllib.request.Request(
+        url,
+        method=method,
+        headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 - fixed https host
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # The body is not echoed: on the conversion endpoint it could carry key material.
+        raise SetupRefused(f"github_http_{exc.code}: {method} {url.split('?')[0]}") from None
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise SetupRefused(f"github_unreachable: {type(exc).__name__}") from None
+
+
+def _run(argv: list[str], stdin: str | None = None) -> int:
+    return subprocess.run(argv, input=stdin, text=True, check=False).returncode
+
+
+def _put_metadata(metadata: dict[str, Any]) -> None:
+    from shared.secrets import put_secret
+
+    put_secret(METADATA_SECRET_NAME, json.dumps(metadata, sort_keys=True).encode("utf-8"))
+
+
+def main(argv: list[str]) -> int:
+    args = list(argv)
+    if not args or args[0] not in ("form", "convert"):
+        print(__doc__, file=sys.stderr)
+        return 64
+    command = args.pop(0)
+
+    if command == "form":
+        if len(args) != 1:
+            print("usage: hapax-forge-app-setup form <out.html>", file=sys.stderr)
+            return 64
+        out = Path(args[0])
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        state = secrets.token_urlsafe(32)
+        out.write_text(render_form(manifest, state), encoding="utf-8")
+        out.with_name(out.name + ".state").write_text(state + "\n", encoding="utf-8")
+        print(f"Open {out} in a browser signed in as an owner of {ORG}, and click Create.")
+        return 0
+
+    if os.geteuid() == 0:
+        print(
+            "hapax-forge-app-setup: refused: run as the operator, not root. sudo is used only"
+            " for the credstore write, and the FileStore must stay operator-owned.",
+            file=sys.stderr,
+        )
+        return 2
+    replace = "--replace" in args
+    args = [a for a in args if a != "--replace"]
+    if len(args) != 4 or args[2] != "--state-file":
+        print(
+            "usage: hapax-forge-app-setup convert <code> <state> --state-file <file> [--replace]",
+            file=sys.stderr,
+        )
+        return 64
+    code, state, _, state_file = args
+    try:
+        expected = Path(state_file).read_text(encoding="utf-8").strip()
+        metadata = convert(
+            code,
+            state,
+            expected_state=expected,
+            http_post=lambda url: _request(url, "POST"),
+            http_get=lambda url: _request(url, "GET"),
+            run=_run,
+            put_metadata=_put_metadata,
+            replace=replace,
+        )
+    except (SetupRefused, OSError) as exc:
+        print(f"hapax-forge-app-setup: refused: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(metadata, sort_keys=True))
+    print("Next: install the App on the named repositories (Only select repositories).")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
