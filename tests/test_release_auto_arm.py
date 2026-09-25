@@ -393,6 +393,9 @@ def test_consent_containment_lane_admits_consent_fail_closed_live_perception_sha
     # entries, its compositor suite under the tests/studio_compositor tree,
     # and its writer suite under tests/hapax_daimonion. With the full
     # mitigation set, nothing is left outside the coverage bound.
+    # The writer suite is covered by the pre-existing tests/hapax_daimonion
+    # directory entry, which this extension does not change; pin that premise.
+    assert "tests/hapax_daimonion" in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES
     assessment = assess_release_auto_arm_estate(
         _egress_frontmatter(),
         verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
@@ -431,11 +434,24 @@ def test_consent_containment_lane_production_entries_are_exact_files() -> None:
     # ratified (e.g. agents/studio_compositor for its three consent-bearing
     # modules) would silently admit compositor.py and every future sibling.
     # Only the ratified directory entries may be directories on the tree.
+    # Every ratified directory is itself a lane entry (six pre-exist; this
+    # extension adds tests/studio_compositor), checked apart from the tree so
+    # a missing entry and a missing directory fail with distinct messages.
+    lane = set(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES)
+    assert not _LANE_DIRECTORY_ENTRIES_ADMITTED - lane, (
+        f"ratified directory entries missing from the lane: "
+        f"{sorted(_LANE_DIRECTORY_ENTRIES_ADMITTED - lane)}"
+    )
     repo_root = Path(__file__).resolve().parents[1]
-    directories = {
-        entry for entry in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES if (repo_root / entry).is_dir()
-    }
-    assert directories == _LANE_DIRECTORY_ENTRIES_ADMITTED
+    directories = {entry for entry in lane if (repo_root / entry).is_dir()}
+    assert not directories - _LANE_DIRECTORY_ENTRIES_ADMITTED, (
+        f"production entries admitted as directories: "
+        f"{sorted(directories - _LANE_DIRECTORY_ENTRIES_ADMITTED)}"
+    )
+    assert not _LANE_DIRECTORY_ENTRIES_ADMITTED - directories, (
+        f"ratified directory entries not directories on the tree: "
+        f"{sorted(_LANE_DIRECTORY_ENTRIES_ADMITTED - directories)}"
+    )
 
 
 def test_consent_containment_lane_entries_exist_with_evidence_substrate() -> None:
