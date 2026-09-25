@@ -144,6 +144,8 @@ ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
 HOST_PROFILE=""
 LOCAL_JUDGE_DOCKER_MEMORY="4G"
 LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
+LOCAL_JUDGE_DOCKER_HOST_ARG="--host=unix:///var/run/docker.sock"
+LOCAL_JUDGE_DOCKER_CONFIG_SUFFIX="/hapax-local-judge/docker-config"
 GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
 validate_isolated_test_sudo() {
@@ -262,7 +264,7 @@ validate_root_required_git_repo() {
 }
 
 oom_install_next_action() {
-    echo "  next action: run scripts/install-p0-oom-containment --install --verify-live from the receipt-bound source" >&2
+    echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK from the receipt-bound source" >&2
 }
 
 oom_unit_path_next_action() {
@@ -464,7 +466,7 @@ except OSError as exc:
         file=sys.stderr,
     )
     print(
-        "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live",
+        "  next action: run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK",
         file=sys.stderr,
     )
     raise SystemExit(1) from exc
@@ -489,7 +491,7 @@ if not stat.S_ISDIR(parent_inode.st_mode) or (
     )
     print(
         "  next action: repair the audit-log directory and run "
-        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        "the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -498,7 +500,7 @@ try:
 except OSError as exc:
     print(f"root-required install drift: UPS audit log missing: {path}: {exc}", file=sys.stderr)
     print(
-        "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live",
+        "  next action: run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK",
         file=sys.stderr,
     )
     raise SystemExit(1) from exc
@@ -517,7 +519,7 @@ if (
     )
     print(
         "  next action: preserve valid content and run "
-        "scripts/install-apcupsd-power-alerts --install --verify-live",
+        "the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK",
         file=sys.stderr,
     )
     raise SystemExit(1)
@@ -749,7 +751,7 @@ collect_pending_runbooks() {
     [ -d "$ROOT_DEFER_DIR" ] || return 0
     if [ -L "$ROOT_DEFER_DIR" ]; then
         echo "unsafe root-required pending directory: $ROOT_DEFER_DIR; expected a non-symlink directory" >&2
-        echo "  next action: restore the caller-owned pending root as a real directory, then rerun hapax-post-merge-deploy for the desired receipt SHA" >&2
+        echo "  next action: restore the caller-owned pending root as a real directory, then rerun hapax-post-merge-deploy for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
 
@@ -776,7 +778,7 @@ collect_pending_runbooks() {
             fi
             if [ -L "$marker" ] || [ ! -f "$marker" ]; then
                 echo "unsafe root-required pending marker: $marker; expected a non-symlink regular RUNBOOK.txt" >&2
-                echo "  next action: restore the caller-owned regular pending marker, then rerun hapax-post-merge-deploy for the desired receipt SHA" >&2
+                echo "  next action: restore the caller-owned regular pending marker, then rerun hapax-post-merge-deploy for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 unsafe=1
                 continue
             fi
@@ -1223,10 +1225,10 @@ compare_root_file() {
         echo "root-required install missing or not a regular stable copy: $dest" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 ;;
             *)
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 ;;
         esac
         return 1
@@ -1237,10 +1239,10 @@ compare_root_file() {
         echo "root-required install mode drift: $dest mode=${actual_mode:-unavailable} expected=$expected_mode" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 ;;
             *)
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 ;;
         esac
         return 1
@@ -1253,10 +1255,10 @@ compare_root_file() {
         echo "root-required install drift: $dest differs from $source" >&2
         case "$rel" in
             config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 ;;
             *)
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 ;;
         esac
         return 1
@@ -1305,13 +1307,13 @@ audit_sudoers_trust() {
     local path="$1" expected_mode="$2" label="$3" actual failed=0
     if [ ! -f "$path" ] || [ -L "$path" ]; then
         echo "root-required $label missing or not a regular stable copy: $path" >&2
-        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
     actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" ]; then
         echo "root-required $label ownership/mode drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" >&2
-        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     if [ "$path" = "$OOM_SUDOERS_REFERENCE_DEST" ] \
@@ -1320,7 +1322,7 @@ audit_sudoers_trust() {
             actual="$(stat -c '%u:%g:%a:%F' "$path" 2>/dev/null || true)"
             if [ -L "$path" ] || [ "$actual" != "0:0:755:directory" ]; then
                 echo "root-required sudoers reference directory trust drift: $path owner/mode/type=${actual:-unavailable} expected=0:0:755:directory" >&2
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 failed=1
             fi
         done
@@ -1348,10 +1350,10 @@ verify_executable() {
         echo "root-required executable mode drift: $dest is not executable" >&2
         case "$rel" in
             config/apcupsd/*)
-                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 ;;
             *)
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 ;;
         esac
         return 1
@@ -1477,20 +1479,20 @@ audit_effective_service_unit() {
     if [ -z "$expected_exec" ] || [ "$actual_fragment" != "$expected_fragment" ] \
         || [ -n "$actual_dropins" ]; then
         echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
-        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: remove unauthorized overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
     case "$actual_exec" in
         *"argv[]=$expected_exec ;"*) ;;
         *)
             echo "root-required effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec" >&2
-            echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: remove unauthorized overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
             return 1
             ;;
     esac
     if [ "$actual_failure" != "$expected_failure" ] || [ "$actual_user" != "$expected_user" ]; then
         echo "root-required effective $unit failure/identity drift: OnFailure=${actual_failure:-none} User=${actual_user:-default} expected OnFailure=${expected_failure:-none} User=${expected_user:-default}" >&2
-        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: remove unauthorized overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
 }
@@ -1505,20 +1507,22 @@ audit_effective_local_judge_unit() {
     actual_exec="$(loaded_unit_property user "$unit" ExecStart)" || actual_exec=""
     if [ "$need_reload" != "no" ]; then
         echo "root-required effective $unit manager state is stale: NeedDaemonReload=${need_reload:-unavailable}" >&2
-        echo "  next action: reload the user manager and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: reload the user manager and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
     if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
         echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
-        echo "  next action: remove unauthorized overrides, reload the user manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: remove unauthorized overrides, reload the user manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
-    if [[ "$actual_exec" != *"argv[]=/usr/bin/docker run "* \
+    if [[ "$actual_exec" != *"argv[]=/usr/bin/env -i "* \
+        || "$actual_exec" != *" /usr/bin/docker $LOCAL_JUDGE_DOCKER_HOST_ARG --config="* \
+        || "$actual_exec" != *"$LOCAL_JUDGE_DOCKER_CONFIG_SUFFIX run "* \
         || "$actual_exec" != *" --name hapax-local-judge "* \
         || "$actual_exec" != *" --memory $LOCAL_JUDGE_DOCKER_MEMORY "* \
         || "$actual_exec" != *" --memory-swap $LOCAL_JUDGE_DOCKER_MEMORY_SWAP "* ]]; then
-        echo "root-required effective $unit ExecStart drift: durable launch does not contain the governed $LOCAL_JUDGE_DOCKER_MEMORY/$LOCAL_JUDGE_DOCKER_MEMORY_SWAP Docker limits" >&2
-        echo "  next action: remove unauthorized overrides, reload the user manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "root-required effective $unit ExecStart drift: durable launch does not contain the governed clean-environment local-Docker selector and $LOCAL_JUDGE_DOCKER_MEMORY/$LOCAL_JUDGE_DOCKER_MEMORY_SWAP limits" >&2
+        echo "  next action: remove unauthorized overrides, reload the user manager, and rerun the runtime-authorized hapax-post-merge-deploy reconciliation" >&2
         return 1
     fi
 }
@@ -1548,21 +1552,21 @@ audit_effective_failure_intake_unit() {
         || [ -z "$expected_interval" ] || [ -z "$expected_burst" ] \
         || [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
         echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
-        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
     case "$actual_exec" in
         *"argv[]=$expected_exec ;"*) ;;
         *)
             echo "root-required effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec" >&2
-            echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
             return 1
             ;;
     esac
     if [ "$actual_user" != "$expected_user" ] || [ "$actual_environment" != "$expected_environment" ] \
         || [ "$actual_interval" != "$expected_interval" ] || [ "$actual_burst" != "$expected_burst" ]; then
         echo "root-required effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst" >&2
-        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
 }
@@ -1581,19 +1585,19 @@ audit_effective_timer_unit() {
     if [ -z "$expected_target" ] || [ -z "$expected_boot" ] || [ -z "$expected_active" ] \
         || [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
         echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
-        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: remove unauthorized overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
     if [ "$actual_target" != "$expected_target" ]; then
         echo "root-required effective $unit target drift: actual=${actual_target:-unavailable} expected=$expected_target" >&2
-        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: remove unauthorized overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     fi
     case "$actual_timers" in
         *"OnBootUSec=$expected_boot"*"OnUnitActiveUSec=$expected_active"*|*"OnUnitActiveUSec=$expected_active"*"OnBootUSec=$expected_boot"*) ;;
         *)
             echo "root-required effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active" >&2
-            echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: remove unauthorized overrides, reload the manager, and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
             return 1
             ;;
     esac
@@ -1644,7 +1648,7 @@ audit_systemd_state() {
     fi
     if [ -z "$expected_enforcer_timeout" ] || [ "$loaded_enforcer_timeout" != "$expected_enforcer_timeout" ]; then
         echo "root-required activation drift: hapax-oom-score-enforce.service loaded TimeoutStartUSec=${loaded_enforcer_timeout:-unavailable}, expected ${expected_enforcer_timeout:-source value missing}" >&2
-        echo "  next action: run sudo systemctl daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: run sudo systemctl daemon-reload, then run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-active --quiet apcupsd.service; then
@@ -1696,7 +1700,7 @@ audit_systemd_state() {
         fi
         if [ -z "$expected_audit_timeout" ] || [ "$loaded_audit_timeout" != "$expected_audit_timeout" ]; then
             echo "root-required activation drift: $unit loaded TimeoutStartUSec=${loaded_audit_timeout:-unavailable}, expected ${expected_audit_timeout:-source value missing}" >&2
-            echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: run systemctl --user daemon-reload, then run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
             failed=1
         fi
         expected_audit_environment="$(awk '$0 ~ /^Environment=/ {sub(/^[^=]*=/, ""); print; exit}' "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true)"
@@ -1707,13 +1711,13 @@ audit_systemd_state() {
             *" $expected_audit_environment "*)
                 [ -n "$expected_audit_environment" ] || {
                     echo "root-required activation drift: $unit source Environment is missing" >&2
-                    echo "  next action: restore the receipt-bound unit and run scripts/install-p0-oom-containment --install --verify-live" >&2
+                    echo "  next action: restore the receipt-bound unit and run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                     failed=1
                 }
                 ;;
             *)
                 echo "root-required activation drift: $unit loaded Environment=${loaded_audit_environment:-unavailable}, expected to contain ${expected_audit_environment:-source value missing}" >&2
-                echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: run systemctl --user daemon-reload, then run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
                 failed=1
                 ;;
         esac
@@ -1727,7 +1731,7 @@ audit_apcupsd_loaded_policy() {
     source_config="$INSTALLED_SOURCE_ROOT/config/apcupsd/apcupsd.conf"
     status="$("$APCACCESS" status 2>/dev/null)" || {
         echo "root-required activation drift: unable to query apcupsd loaded shutdown policy" >&2
-        echo "  next action: inspect systemctl status apcupsd.service and run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+        echo "  next action: inspect systemctl status apcupsd.service and run the runtime-authorized hapax-post-merge-deploy APC reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         return 1
     }
     for spec in BATTERYLEVEL:MBATTCHG MINUTES:MINTIMEL TIMEOUT:MAXTIME; do
@@ -1881,7 +1885,7 @@ audit_root_installs() {
         dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             echo "root-required install drift: stale user-scope copy of system unit remains: $dest" >&2
-            echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
             failed=1
         fi
     done
@@ -1892,7 +1896,7 @@ audit_root_installs() {
         "$OOM_SUDOERS_REFERENCE_DEST" 444 || failed=1
     if ! "$SUDO" -n "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null; then
         echo "root-required install drift: sudoers policy does not parse: $OOM_SUDOERS_DEST" >&2
-        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: run the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK" >&2
         failed=1
     fi
     audit_systemd_state || failed=1
@@ -1926,6 +1930,6 @@ echo "root-required post-merge deploy deferrals pending (${#runbooks[@]}):" >&2
 for runbook in "${runbooks[@]}"; do
     dir="$(dirname "$runbook")"
     echo "  $dir" >&2
-    echo "    next action: rerun hapax-post-merge-deploy for the desired receipt SHA and use only its live 'next action: run:' command; RUNBOOK.txt is metadata, not code" >&2
+    echo "    next action: rerun hapax-post-merge-deploy for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK and use only its live 'next action: run:' command; RUNBOOK.txt is metadata, not code" >&2
 done
 exit 1
