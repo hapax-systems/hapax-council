@@ -476,6 +476,25 @@ def _fake_docker(
             "volumes": None,
             "network_ports": {"8082/tcp": None},
             "host_config_overrides": {},
+            "config_healthcheck": None,
+            "config_shell": None,
+            "config_on_build": None,
+            "config_args_escaped": False,
+            "config_mac_address": "",
+            "config_env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+                "GITHUB_PERSONAL_ACCESS_TOKEN=audit-test-token",
+            ],
+            "config_overrides": {},
+            "config_omissions": [],
+            "endpoint_ipam_config": None,
+            "endpoint_links": None,
+            "endpoint_aliases": None,
+            "endpoint_driver_opts": None,
+            "endpoint_gw_priority": 0,
+            "endpoint_overrides": {},
+            "network_overrides": {},
         }
         record.update(mcp_signature_overrides)
         containers.append(record)
@@ -524,6 +543,51 @@ def _fake_docker(
             memory_swap=mcp_memory_swap,
             oom_kill_disable=mcp_oom_kill_disable,
         )
+        config: dict[str, object] = {
+            "Hostname": record["hostname"],
+            "Domainname": record["domainname"],
+            "User": record["user"],
+            "AttachStdin": record["attach_stdin"],
+            "AttachStdout": record["attach_stdout"],
+            "AttachStderr": record["attach_stderr"],
+            "ExposedPorts": record["exposed_ports"],
+            "Tty": record["tty"],
+            "OpenStdin": record["open_stdin"],
+            "StdinOnce": record["stdin_once"],
+            "Env": record["config_env"],
+            "Cmd": record["config_cmd"],
+            "Image": GITHUB_MCP_IMAGE,
+            "Volumes": record["volumes"],
+            "WorkingDir": record["working_dir"],
+            "Entrypoint": record["entrypoint"],
+            "NetworkDisabled": record["network_disabled"],
+            "Labels": labels,
+            "StopSignal": record["stop_signal"],
+            "StopTimeout": record["stop_timeout"],
+        }
+        config.update(record["config_overrides"])
+        for key in record["config_omissions"]:
+            config.pop(str(key), None)
+        endpoint: dict[str, object] = {
+            "IPAMConfig": record["endpoint_ipam_config"],
+            "Links": record["endpoint_links"],
+            "Aliases": record["endpoint_aliases"],
+            "DriverOpts": record["endpoint_driver_opts"],
+            "GwPriority": record["endpoint_gw_priority"],
+            "NetworkID": f"{index + 101:064x}",
+            "EndpointID": f"{index + 201:064x}",
+            "Gateway": "172.17.0.1",
+            "IPAddress": f"172.17.0.{index + 2}",
+            "MacAddress": f"02:42:ac:11:00:{index + 2:02x}",
+            "IPPrefixLen": 16,
+            "IPv6Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "DNSNames": None,
+        }
+        endpoint.update(record["endpoint_overrides"])
+        networks: dict[str, object] = {"bridge": endpoint}
+        networks.update(record["network_overrides"])
         inspect_payload = "\t".join(
             json.dumps(value)
             for value in (
@@ -600,7 +664,14 @@ def _fake_docker(
                 record["config_cmd"],
                 record["volumes"],
                 record["network_ports"],
+                record["config_healthcheck"],
+                record["config_shell"],
+                record["config_on_build"],
+                record["config_args_escaped"],
+                record["config_mac_address"],
                 host_config,
+                config,
+                networks,
             )
         )
         if inspect_override is None and failure_phase != "inspect":
@@ -1612,8 +1683,54 @@ def test_audit_discovers_app_labeled_mcp_name_lookalike_without_emitting_its_nam
         {"domainname": "private.invalid"},
         {"entrypoint": ["/bin/sh"]},
         {"config_cmd": ["-c", "id"]},
+        {"config_healthcheck": {"Test": ["CMD", "/bin/false"]}},
+        {"config_shell": ["/bin/sh", "-c"]},
+        {"config_on_build": ["RUN /bin/false"]},
+        {"config_args_escaped": True},
+        {"config_mac_address": "02:42:ac:11:00:99"},
+        {
+            "config_env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+                "GITHUB_PERSONAL_ACCESS_TOKEN=",
+            ]
+        },
+        {
+            "config_env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+                "GITHUB_TOKEN=audit-test-token",
+            ]
+        },
+        {"config_overrides": {"FutureExecutableSurface": ["/bin/false"]}},
+        pytest.param({"config_omissions": ["Volumes"]}, id="missing-expected-config-key"),
         {"volumes": {"/host": {}}},
         {"network_ports": {"8082/tcp": [{"HostPort": "8082"}]}},
+        {"endpoint_aliases": ["trusted-looking-alias"]},
+        {"endpoint_ipam_config": {"IPv4Address": "172.17.0.99"}},
+        {"endpoint_links": ["other:other"]},
+        {"endpoint_driver_opts": {"com.docker.network.endpoint.sysctls": "unsafe"}},
+        {"endpoint_gw_priority": 1},
+        {"endpoint_overrides": {"NetworkID": "short"}},
+        {"endpoint_overrides": {"EndpointID": "0" * 64}},
+        {"endpoint_overrides": {"Gateway": "192.0.2.1"}},
+        {"endpoint_overrides": {"IPAddress": "127.0.0.2"}},
+        {"endpoint_overrides": {"MacAddress": "01:42:ac:11:00:02"}},
+        pytest.param(
+            {"endpoint_overrides": {"MacAddress": "02:42:ac:11:00:03"}},
+            id="endpoint-mac-ip-mismatch",
+        ),
+        {"endpoint_overrides": {"IPPrefixLen": 31}},
+        {"endpoint_overrides": {"IPv6Gateway": "2001:db8::1"}},
+        {"endpoint_overrides": {"GlobalIPv6Address": "2001:db8::2"}},
+        {"endpoint_overrides": {"GlobalIPv6PrefixLen": 64}},
+        {"endpoint_overrides": {"DNSNames": ["private-name"]}},
+        pytest.param(
+            {"endpoint_overrides": {"FutureEmptyEndpoint": None}},
+            id="unknown-empty-endpoint-key",
+        ),
+        {"endpoint_overrides": {"FutureRouteSurface": {"Enabled": True}}},
+        {"network_overrides": {"host": {"Aliases": None}}},
         {"extra_labels": {"org.opencontainers.image.revision": "unreviewed-image-revision"}},
         {"host_config_overrides": {"BlkioWeight": 500}},
         {"host_config_overrides": {"Cgroup": "host-cgroup"}},
@@ -1660,6 +1777,18 @@ def test_audit_accepts_semantically_identical_tmpfs_option_order(tmp_path: Path)
     assert result.returncode == 0, result.stdout
 
 
+def test_audit_ignores_unknown_empty_config_fields(tmp_path: Path) -> None:
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_mcp_signature_overrides={
+            "config_overrides": {"FutureEmptyConfig": None},
+        },
+    )
+
+    assert result.returncode == 0, result.stdout
+
+
 def test_audit_does_not_emit_unrelated_container_labels(tmp_path: Path) -> None:
     secret = "unrelated-label-value-must-not-be-emitted"
     result = _run(
@@ -1677,6 +1806,9 @@ def test_audit_does_not_emit_untrusted_container_metadata(tmp_path: Path) -> Non
     argument_secret = "argument-secret-must-not-be-emitted"
     network_secret = "network-secret-must-not-be-emitted"
     mount_secret = "mount-source-secret-must-not-be-emitted"
+    config_secret = "config-secret-must-not-be-emitted"
+    endpoint_secret = "endpoint-secret-must-not-be-emitted"
+    token_secret = "token-secret-must-not-be-emitted"
     result = _run(
         tmp_path,
         docker_mcp_count=1,
@@ -1690,6 +1822,13 @@ def test_audit_does_not_emit_untrusted_container_metadata(tmp_path: Path) -> Non
             ],
             "network_mode": network_secret,
             "mounts": [{"Type": "bind", "Source": mount_secret, "Destination": "/host"}],
+            "config_env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+                f"GITHUB_PERSONAL_ACCESS_TOKEN={token_secret}",
+            ],
+            "config_overrides": {"FutureExecutableSurface": config_secret},
+            "endpoint_aliases": [endpoint_secret],
         },
     )
 
@@ -1698,6 +1837,12 @@ def test_audit_does_not_emit_untrusted_container_metadata(tmp_path: Path) -> Non
     assert argument_secret not in result.stdout
     assert network_secret not in result.stdout
     assert mount_secret not in result.stdout
+    assert config_secret not in result.stdout
+    assert endpoint_secret not in result.stdout
+    assert token_secret not in result.stdout
+    assert config_secret not in result.stderr
+    assert endpoint_secret not in result.stderr
+    assert token_secret not in result.stderr
 
 
 @pytest.mark.parametrize("phase", ("inventory", "label", "image", "inspect"))
@@ -1904,14 +2049,34 @@ def test_command_deadline_survives_a_child_that_closes_both_pipes() -> None:
     assert elapsed < 2
 
 
+def _full_docker_inventory(row_count: int) -> str:
+    alphabet = "abcdefghijklmnopqrstuvwxyz"
+    assert row_count <= len(alphabet) ** 2
+    return "".join(
+        f"{index + 1:064x}\t{alphabet[index // len(alphabet)]}{alphabet[index % len(alphabet)]}\n"
+        for index in range(row_count)
+    )
+
+
+def test_audit_accepts_advertised_docker_inventory_maximum_through_runner(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, docker_inventory_override=_full_docker_inventory(239))
+
+    assert result.returncode == 0, result.stdout
+    payload = json.loads(result.stdout)
+    check = next(item for item in payload["checks"] if item["name"] == "docker_github_mcp_count")
+    assert check["actual"] == "0"
+
+
 def test_audit_bounds_docker_inventory_rows(tmp_path: Path) -> None:
-    result = _run(tmp_path, docker_inventory_override="x\n" * 513)
+    result = _run(tmp_path, docker_inventory_override=_full_docker_inventory(240))
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     check = next(item for item in payload["checks"] if item["name"] == "docker_oom_targets")
     assert check["status"] == "error"
-    assert check["target"] == "at most 512 inventory rows"
+    assert check["target"] == "at most 239 inventory rows"
 
 
 def test_audit_rejects_malformed_formatted_docker_inspect(tmp_path: Path) -> None:
@@ -1927,7 +2092,7 @@ def test_audit_rejects_malformed_formatted_docker_inspect(tmp_path: Path) -> Non
         item for item in payload["checks"] if item["name"].startswith("docker_github_mcp_target_")
     )
     assert check["status"] == "error"
-    assert "seventy-four formatted Docker inspect fields" in check["detail"]
+    assert "eighty-one formatted Docker inspect fields" in check["detail"]
 
 
 def test_audit_is_behaviorally_observational(tmp_path: Path) -> None:
