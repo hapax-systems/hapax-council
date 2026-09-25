@@ -268,6 +268,19 @@ class TestManifest:
         assert manifest.get("default_events", []) == []
         assert manifest.get("request_oauth_on_install", False) is False
 
+    def test_public_text_is_exactly_the_panel_passed_wording(self) -> None:
+        # Tier A (O1): the App's description is standing public identity. This is the text
+        # the hostile-reader panel passed (dev20 verdict, lanebus/dev27/
+        # 20260925T082842Z-dev20-forge-manifest-panel-verdict.md). Changing it needs a new
+        # panel pass, so a change must fail here first.
+        manifest = self._manifest()
+
+        assert manifest["name"] == "hapax-forge"
+        assert manifest["description"] == (
+            "GitHub App of the hapax-systems organization, used to commit and open pull requests"
+            " for changes written by AI agents. hapax-systems is responsible for its activity."
+        )
+
     def test_urls_point_at_the_org_not_a_personal_account(self) -> None:
         manifest = self._manifest()
 

@@ -1,7 +1,7 @@
 {
   "name": "hapax-forge",
   "url": "https://github.com/hapax-systems",
-  "description": "Automation account for the hapax-systems repositories. Commits and pull requests from this account are made by software acting for the estate's operator, not typed by a person at the time.",
+  "description": "GitHub App of the hapax-systems organization, used to commit and open pull requests for changes written by AI agents. hapax-systems is responsible for its activity.",
   "public": false,
   "default_permissions": {
     "contents": "write",

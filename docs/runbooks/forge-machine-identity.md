@@ -32,7 +32,12 @@ would be readable by every lane.
 
 Step 1 needs the operator's browser identity. It waits for the hostile-reader panel to pass the
 App's public text (tier A, O1): the name, description and homepage in
-`forge-machine-identity-app-manifest.json`.
+`forge-machine-identity-app-manifest.json`. The panel (dev20, 2026-09-25T08:28:42Z) passed its own
+replacement description, which the manifest carries verbatim; a test pins it, because any change
+needs a new panel pass. The seat confirms that the verdict meets tier A's "nothing new" rule.
+
+The redirect goes to the org page by design. The operator copies `code` from the address bar, so
+the key is fetched only by step 2's process and never passes through a web server.
 
 1. **Create the App (browser, one click).**
    ```
@@ -77,3 +82,6 @@ App's public text (tier A, O1): the name, description and homepage in
   read-once, a create-only spool, and the R7 record check composed before any network call.
 - The runtime leg: one PR opened by `hapax-forge[bot]` on a test branch, observed in the GitHub
   UI and API.
+- A provenance trailer on every commit forge-send sends, naming the model and harness that wrote
+  the change (panel finding F6). The App is private, so only installers see its description;
+  readers meet the bot's commits, so the provenance must travel with them.
