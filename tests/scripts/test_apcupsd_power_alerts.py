@@ -2137,8 +2137,13 @@ def test_installed_apcupsd_repair_cannot_erase_newer_desired_receipt(tmp_path: P
     assert (drain_dir / "DRAINED.txt").is_file()
 
 
+@pytest.mark.parametrize(
+    "installed_kind",
+    ("malformed", "fifo", "dangling-symlink", "directory"),
+)
 def test_apcupsd_package_order_does_not_mask_invalid_installed_receipt(
     tmp_path: Path,
+    installed_kind: str,
 ) -> None:
     stage = tmp_path / "stage"
     for relative in APCUPSD_PACKAGE_FILES:
@@ -2167,9 +2172,16 @@ def test_apcupsd_package_order_does_not_mask_invalid_installed_receipt(
     desired_root.mkdir(parents=True)
     installed = installed_root / "apcupsd-power-alerts.sha"
     desired = desired_root / "apcupsd-power-alerts.sha"
-    installed.write_text(f"{'f' * 40}\n", encoding="utf-8")
+    if installed_kind == "malformed":
+        installed.write_text(f"{'f' * 40}\n", encoding="utf-8")
+        installed.chmod(0o600)
+    elif installed_kind == "fifo":
+        os.mkfifo(installed, mode=0o600)
+    elif installed_kind == "dangling-symlink":
+        installed.symlink_to(tmp_path / "missing-installed-receipt")
+    else:
+        installed.mkdir(mode=0o700)
     desired.write_text(f"{REPO_HEAD}\n", encoding="utf-8")
-    installed.chmod(0o600)
     desired.chmod(0o600)
     fake_systemctl = tmp_path / "systemctl-order"
     fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -2195,7 +2207,10 @@ def test_apcupsd_package_order_does_not_mask_invalid_installed_receipt(
     )
 
     assert result.returncode == 1
-    assert "cannot validate apcupsd package order for installed=" in result.stderr
+    if installed_kind == "malformed":
+        assert "cannot validate apcupsd package order for installed=" in result.stderr
+    else:
+        assert "unsafe installed root-required receipt" in result.stderr
     assert not (live_dest / "apcupsd.conf").exists()
     assert (stage / "RUNBOOK.txt").is_file()
 
