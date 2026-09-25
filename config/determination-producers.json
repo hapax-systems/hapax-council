@@ -41,6 +41,20 @@
       "declined_exit_codes": [],
       "notes": "Runs a REAL scripts/hapax-agy-reviewer smoke and requires schema-conformant fenced-YAML stdout, so the receipt cannot be minted without a completed provider round trip. Measured 2026-08-19: honest, fully mechanical on hapax-appendix, and on no timer — its receipts had been expired since 2026-08-17, which is why the gemini review family was unseatable. Its TTL is 900s, so cadence must stay well under that. NOTE its rc=2 is INDETERMINATE and is deliberately NOT listed as declined: agy collapses smoke-timeout, quota wall, auth failure, and model non-compliance into one exit code, so classifying it as a healthy decline would launder a broken producer as good news. Observed both within one minute on 2026-08-19 — a clean produce in 24s and a self-timeout at 240s, both indistinguishable at the exit code. Until agy discriminates, rc=2 surfaces as a failure. The fix belongs in agy, not in a generous mapping here.",
       "timeout_seconds": 300
+    },
+    {
+      "id": "entitlement-census",
+      "property": "entitlement_view",
+      "subjects": ["entitlement-census"],
+      "command": ["scripts/hapax-entitlement-census", "--json"],
+      "cadence_seconds": 1800,
+      "evidence_ttl_seconds": 3600,
+      "provenance": "mechanical",
+      "host_scope": "filestore_host_with_declared_remote_bindings",
+      "success_exit_codes": [0],
+      "declined_exit_codes": [3],
+      "notes": "The single entitlement view (row entitlement-census-producer-20260924): held x holds-now x declared on every declared host, spend-free allow-listed readbacks only (never a completion, never a Claude probe), deltas through the existing capability-surface intake, quantities in the quota ledger's measurement shape, projection to ~/.cache/hapax/entitlement-census/view.json and the vault. 3 = a declared host was unreachable: its rows read unobserved, which is healthy bad news. 2 = the declaration is invalid or a rendered artifact carried secret material (nothing written): a failure that must page. Worst-case runtime is bounded by 10 s per readback, 5 s per serving endpoint and 60 s per host read.",
+      "timeout_seconds": 420
     }
   ]
 }

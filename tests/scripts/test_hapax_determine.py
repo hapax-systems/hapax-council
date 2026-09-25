@@ -512,9 +512,19 @@ def test_group_sweep_premise_pinned_to_the_real_producer_registry() -> None:
     the real registry runs under the harness's start_new_session process
     group, so killpg(proc.pid) reaches whatever it spawned. A producer
     joining the registry must re-verify that premise; this pin forces the
-    re-verification instead of letting the sweep premise go stale silently."""
+    re-verification instead of letting the sweep premise go stale silently.
+
+    entitlement-census, re-verified 2026-09-25 (row entitlement-census-producer-20260924): it
+    spawns bash (local holdings), ssh without -f (remote holdings, the scout report and
+    estate_host_inventory.probe_host), hapax-secret and the delta intake, all with plain
+    subprocess.run. A search of every one of those sources for start_new_session, setsid,
+    setpgrp, preexec_fn, nohup and disown found none, so killpg still reaches all of them."""
     producers = det.load_registry(det.DEFAULT_REGISTRY)
-    assert sorted(p["id"] for p in producers) == ["agy-review-quota", "claude-account-live"]
+    assert sorted(p["id"] for p in producers) == [
+        "agy-review-quota",
+        "claude-account-live",
+        "entitlement-census",
+    ]
 
 
 class TestLivenessReconciler:
