@@ -550,6 +550,47 @@ jobs:
           tests/hapax_daimonion/test_conversational_policy.py
           packages/agentgov/tests/test_carrier.py -q --tb=short
 
+  capability-envelope-containment:
+    # The declared capability envelope (shared/capability_envelope; DESIGN v1.3 §3.2a, canary
+    # C10) is a containment guarantee, so its containment and canary tests must execute, not
+    # skip. They need bubblewrap with unprivileged user namespaces, which ubuntu-latest restricts
+    # through AppArmor: this job installs bubblewrap, lifts that restriction on the ephemeral
+    # runner, and runs the suite with HAPAX_ENVELOPE_REQUIRE_BWRAP=1, under which a sandbox that
+    # cannot be built FAILS the tests. Pinned by tests/ci/test_capability_envelope_ci.py.
+    # Required transitively through all-green.
+    needs: [post_merge_duplicate_filter]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; capability-envelope-containment reports success."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Install bubblewrap and allow unprivileged user namespaces
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --version
+      - name: Run the envelope containment and canary tests (skips forbidden)
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          HAPAX_ENVELOPE_REQUIRE_BWRAP: "1"
+        run: >
+          uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
+          pytest --confcutdir=tests tests/capability_envelope -q --tb=short -rs
+
 
   typecheck:
     needs: [docs_only_filter, post_merge_duplicate_filter]
@@ -1520,7 +1561,7 @@ jobs:
     # preserves the fast/slow split: `test-full-shard` is merge_group-only, so it
     # is `skipped` on pull_request events and all-green still passes there.
     name: all-green
-    needs: [lint, capability-surface-delta, egress-boundary-pin, typecheck, test, test-full-shard, web-build, vscode-build, public_surface_freshness]
+    needs: [lint, capability-surface-delta, egress-boundary-pin, capability-envelope-containment, typecheck, test, test-full-shard, web-build, vscode-build, public_surface_freshness]
     if: always()
     runs-on: ubuntu-latest
     steps:

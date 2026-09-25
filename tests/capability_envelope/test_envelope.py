@@ -16,15 +16,19 @@ sentinel when no envelope is applied, so a pass is not vacuous.
 from __future__ import annotations
 
 import json
-import shutil
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from shared.capability_envelope import (
     MASKED_NAMES,
+    CredentialBind,
+    DeclaredFile,
     DeclaredHook,
     DeclaredMcpServer,
     EnvelopeCarrierError,
@@ -39,40 +43,39 @@ PROBE = Path(__file__).resolve().parent / "probe_harness.py"
 PYTHON = "/usr/bin/python3"
 
 
-def _bwrap_usable() -> bool:
-    if shutil.which("bwrap") is None or not Path(PYTHON).exists():
-        return False
-    probe = [
-        "bwrap",
-        "--ro-bind",
-        "/usr",
-        "/usr",
-        "--symlink",
-        "usr/bin",
-        "/bin",
-        "--symlink",
-        "usr/lib",
-        "/lib",
-        "--symlink",
-        "usr/lib",
-        "/lib64",
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--unshare-pid",
-        "--",
-        "/usr/bin/true",
-    ]
-    try:
-        return subprocess.run(probe, capture_output=True, timeout=20).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+#: Set by the CI job capability-envelope-containment: there, a sandbox that cannot be built is a
+#: failure, never a skip, so a green check means the containment tests executed.
+REQUIRE_BWRAP = os.environ.get("HAPAX_ENVELOPE_REQUIRE_BWRAP") == "1"
 
+
+def _bwrap_usable() -> bool:
+    """Whether the envelope's own carrier can run a trivial job on this host."""
+    if not Path(PYTHON).exists():
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            decl = EnvelopeDeclaration(harness="claude", argv=("/usr/bin/true",))
+            rendered = render(decl, run_root=Path(tmp) / "run")
+            return execute(rendered, timeout=30).returncode == 0
+        except (EnvelopeCarrierError, OSError, subprocess.TimeoutExpired):
+            return False
+
+
+BWRAP_USABLE = _bwrap_usable()
 
 needs_bwrap = pytest.mark.skipif(
-    not _bwrap_usable(), reason="bubblewrap with unprivileged user namespaces is unavailable"
+    not BWRAP_USABLE and not REQUIRE_BWRAP,
+    reason="bubblewrap with unprivileged user namespaces is unavailable",
 )
+
+
+def test_bubblewrap_is_usable_where_the_containment_tests_are_required():
+    if not REQUIRE_BWRAP:
+        pytest.skip("HAPAX_ENVELOPE_REQUIRE_BWRAP is not set")
+    assert BWRAP_USABLE, (
+        "the containment job requires bubblewrap with unprivileged user namespaces; next action: "
+        "install bubblewrap and lift the runner's AppArmor user-namespace restriction"
+    )
 
 
 def _write(path: Path, text: str, *, executable: bool = False) -> Path:
@@ -333,6 +336,202 @@ def test_declared_checkout_instruction_file_is_readable_and_the_rest_stay_masked
     assert world.tokens[world.checkout / "CLAUDE.md"] not in json.dumps(report["read"])
 
 
+# ---------------------------------------------------------------- credentials and declared files
+
+
+def _sh(script: str, **fields) -> EnvelopeDeclaration:
+    return EnvelopeDeclaration(harness="claude", argv=("/usr/bin/sh", "-c", script), **fields)
+
+
+@needs_bwrap
+def test_a_read_only_credential_is_readable_and_never_writable(tmp_path: Path):
+    token = sentinel_token("credential")
+    cred = _write(tmp_path / "host" / "auth.json", f"{token}\n")
+    decl = _sh(
+        'cat "$HOME/.tool/auth.json"; '
+        '(echo x >> "$HOME/.tool/auth.json") 2>/dev/null && echo WROTE || echo READONLY',
+        credentials=(CredentialBind(source=cred, target=".tool/auth.json"),),
+    )
+    rendered = render(decl, run_root=tmp_path / "run")
+    result = execute(rendered, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert token in result.stdout
+    assert "READONLY" in result.stdout and "WROTE" not in result.stdout
+    assert cred.read_text() == f"{token}\n"
+    # The credential travels as a bind, never as a value in the carrier argv or the run facts.
+    assert token not in "\0".join(rendered.argv)
+    assert token not in json.dumps(rendered.facts)
+
+
+@needs_bwrap
+def test_a_writable_credential_directory_takes_a_refresh_by_rename(tmp_path: Path):
+    creds = tmp_path / "host" / "creds"
+    _write(creds / "token", "OLD\n")
+    decl = _sh(
+        'echo NEW > "$HOME/.tool/creds/token.tmp" && '
+        'mv "$HOME/.tool/creds/token.tmp" "$HOME/.tool/creds/token" && echo RENAMED',
+        credentials=(CredentialBind(source=creds, target=".tool/creds", writable=True),),
+    )
+    result = execute(render(decl, run_root=tmp_path / "run"), timeout=60)
+    assert "RENAMED" in result.stdout, result.stderr
+    assert (creds / "token").read_text() == "NEW\n"
+
+
+@needs_bwrap
+def test_a_declared_home_file_is_readable_and_read_only(tmp_path: Path):
+    note = _write(tmp_path / "host" / "note.md", "declared content\n")
+    decl = _sh(
+        'cat "$HOME/notes/note.md"; '
+        '(echo x >> "$HOME/notes/note.md") 2>/dev/null && echo WROTE || echo READONLY',
+        home_files=(DeclaredFile(source=note, target="notes/note.md"),),
+    )
+    result = execute(render(decl, run_root=tmp_path / "run"), timeout=60)
+    assert "declared content" in result.stdout, result.stderr
+    assert "READONLY" in result.stdout
+    assert note.read_text() == "declared content\n"
+
+
+# ---------------------------------------------------------------- symlinks in the checkout
+
+
+def _checkout_with_links(tmp_path: Path) -> Path:
+    checkout = tmp_path / "outer" / "repo"
+    _write(checkout / "AGENTS.md", "agents body\n")
+    (checkout / "CLAUDE.md").symlink_to("AGENTS.md")
+    _write(checkout / "docs" / "instructions.txt", "instructions body\n")
+    (checkout / "GEMINI.md").symlink_to("docs/instructions.txt")
+    return checkout
+
+
+def test_masking_follows_symlinks_to_what_they_expose(tmp_path: Path):
+    checkout = _checkout_with_links(tmp_path)
+    rendered = render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
+    masked = set(rendered.masked)
+    # CLAUDE.md -> AGENTS.md: the target is masked on its own.
+    assert "AGENTS.md" in masked and "CLAUDE.md" not in masked
+    # GEMINI.md -> docs/instructions.txt: the ordinary-named target is what gets covered.
+    assert "docs/instructions.txt" in masked
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["../outside.md", "/etc/hosts", "/home/job/.claude/.credentials.json"],
+    ids=["relative-outside", "absolute-bound-system-file", "absolute-job-credential"],
+)
+def test_an_instruction_symlink_leaving_the_checkout_is_refused(tmp_path: Path, target: str):
+    """Review of #4784 (claude-1): inside the job such a link resolves to whatever the job can
+    see at that path, for example a bound credential, and a harness imports it as instructions."""
+    checkout = tmp_path / "outer" / "repo"
+    checkout.mkdir(parents=True)
+    _write(tmp_path / "outer" / "outside.md", "outside body\n")
+    (checkout / "AGENTS.md").symlink_to(target)
+    with pytest.raises(EnvelopeRefusal, match="points outside the checkout"):
+        render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
+
+
+def test_an_instruction_directory_symlink_leaving_the_checkout_is_refused(tmp_path: Path):
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    (checkout / ".claude").symlink_to("/home/job/.claude")
+    with pytest.raises(EnvelopeRefusal, match="points outside the checkout"):
+        render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
+
+
+@needs_bwrap
+def test_no_symlinked_instruction_file_leaks_into_the_job(tmp_path: Path):
+    checkout = _checkout_with_links(tmp_path)
+    script = "for f in AGENTS.md CLAUDE.md GEMINI.md; do cat /work/$f; done 2>/dev/null"
+    result = execute(render(_sh(script, workdir=checkout), run_root=tmp_path / "run"), timeout=60)
+    for body in ("agents body", "instructions body"):
+        assert body not in result.stdout
+
+
+# ---------------------------------------------------------------- workdir mode, env, hook matcher
+
+
+@needs_bwrap
+@pytest.mark.parametrize("writable", [False, True])
+def test_the_workdir_is_writable_only_when_declared(tmp_path: Path, writable: bool):
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    decl = _sh(
+        "(echo x > /work/out.txt) 2>/dev/null && echo WROTE || echo READONLY",
+        workdir=checkout,
+        workdir_writable=writable,
+    )
+    result = execute(render(decl, run_root=tmp_path / "run"), timeout=60)
+    assert ("WROTE" if writable else "READONLY") in result.stdout, result.stderr
+    assert (checkout / "out.txt").exists() is writable
+
+
+@needs_bwrap
+def test_declared_env_reaches_the_job_and_nothing_else_does(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("HAPAX_UNDECLARED_VAR", "host-value")
+    decl = _sh("env", env={"HAPAX_DECLARED_VAR": "declared-value"})
+    result = execute(render(decl, run_root=tmp_path / "run"), timeout=60)
+    assert "HAPAX_DECLARED_VAR=declared-value" in result.stdout
+    assert "HAPAX_UNDECLARED_VAR" not in result.stdout
+
+
+def test_a_declared_hook_matcher_is_rendered_into_the_claude_settings(world: World, tmp_path: Path):
+    hooks = (
+        DeclaredHook(name="gate", event="PreToolUse", script=world.declared_hook, matcher="Bash"),
+        DeclaredHook(name="start", event="SessionStart", script=world.declared_hook),
+    )
+    rendered = render(world.declaration(hooks=hooks), run_root=tmp_path / "run")
+    settings = json.loads((rendered.run_root / "home" / ".claude" / "settings.json").read_text())
+    assert settings["hooks"]["PreToolUse"] == [
+        {"hooks": [{"type": "command", "command": "/envelope/hooks/gate"}], "matcher": "Bash"}
+    ]
+    assert "matcher" not in settings["hooks"]["SessionStart"][0]
+
+
+@needs_bwrap
+def test_a_declared_file_stays_readable_through_its_symlink(tmp_path: Path):
+    checkout = _checkout_with_links(tmp_path)
+    decl = _sh("cat /work/CLAUDE.md", workdir=checkout, declared_work_files=("AGENTS.md",))
+    result = execute(render(decl, run_root=tmp_path / "run"), timeout=60)
+    assert "agents body" in result.stdout, result.stderr
+
+
+# ---------------------------------------------------------------- declaration validation
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda p: DeclaredHook(name="Bad Name", event="PreToolUse", script=p),
+        lambda p: DeclaredMcpServer(name="-x", command=("x",)),
+        lambda p: CredentialBind(source=p, target="/etc/passwd"),
+        lambda p: DeclaredFile(source=p, target="../escape.md"),
+        lambda p: EnvelopeDeclaration(harness="claude", argv=("x",), declared_work_files=("",)),
+    ],
+    ids=["hook-name", "mcp-name", "absolute-target", "dotdot-target", "empty-work-file"],
+)
+def test_invalid_declarations_are_refused_with_a_next_action(tmp_path: Path, build):
+    with pytest.raises(ValidationError, match="next action"):
+        build(tmp_path / "x")
+
+
+# ---------------------------------------------------------------- the sentinel audit itself
+
+
+def test_sentinel_tokens_are_unique_and_found_only_where_present():
+    first, second = sentinel_token("a"), sentinel_token("a")
+    assert first != second and first.startswith("HAPAX-SENTINEL-a-")
+    assert find_tokens(f"x {first} y", [first, second]) == {first}
+
+
+def test_the_open_watch_sees_an_open_and_refuses_a_missing_sentinel(tmp_path: Path):
+    seen = _write(tmp_path / "seen.md", "x\n")
+    unseen = _write(tmp_path / "unseen.md", "y\n")
+    with OpenWatch([seen, unseen]) as watch:
+        seen.read_text()
+    assert watch.opened() == {seen}
+    with pytest.raises(OSError, match="next action"), OpenWatch([tmp_path / "missing.md"]):
+        pass
+
+
 # ---------------------------------------------------------------- carrier failures
 
 
@@ -376,10 +575,16 @@ def test_secret_shaped_env_is_refused(tmp_path: Path, key: str):
 
 def test_hooks_or_mcp_for_a_harness_without_a_renderer_are_refused(world: World, tmp_path: Path):
     hook = DeclaredHook(name="gate", event="PreToolUse", script=world.declared_hook)
-    with pytest.raises(EnvelopeRefusal, match="codex"):
+    with pytest.raises(EnvelopeRefusal, match="no hook renderer for harness codex"):
         render(
             EnvelopeDeclaration(harness="codex", argv=("codex",), hooks=(hook,)),
             run_root=tmp_path / "run",
+        )
+    server = DeclaredMcpServer(name="declared", command=(str(world.declared_server),))
+    with pytest.raises(EnvelopeRefusal, match="no MCP renderer for harness codex"):
+        render(
+            EnvelopeDeclaration(harness="codex", argv=("codex",), mcp_servers=(server,)),
+            run_root=tmp_path / "run-mcp",
         )
 
 

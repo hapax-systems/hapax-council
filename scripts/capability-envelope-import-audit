@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""Recheck what a harness imports by default, and that the declared envelope removes it.
+
+Canary C10 on a real harness (DESIGN v1.3 section 3.2a), as a rerunnable witness rather than a
+one-off transcript. A sentinel world is built under --root:
+
+- a mirror of the home with a unique HAPAX-SENTINEL token at each of the harness's import paths;
+- an ancestor directory and a checkout seeded with instruction-file sentinels;
+- for Claude, user and project hooks and MCP servers that touch a marker file when they run.
+
+Two runs follow, each inside an inotify watch on every sentinel:
+
+1. **baseline**: the harness launched the way its reviewer wrapper launches it on origin/main,
+   against the mirror (bwrap shows the whole host with HOME replaced by the mirror, so the
+   operator's own files are neither read nor changed; only the credential is bound, read-only);
+2. **enveloped**: the same harness inside shared.capability_envelope.
+
+The wrappers' own command() functions build the argv, so the audit tracks the real seats. Vibe
+runs only when its key is on the Team allowance (the wrapper's check), never on the API meter.
+
+Exit status: 0 clean (the enveloped run imported nothing), 1 leak, 2 inconclusive (the enveloped
+run did not complete), 64 refused (for example the billing guard).
+
+usage: python scripts/capability-envelope-import-audit --harness {claude,vibe,muse} --out FILE
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.capability_envelope import (  # noqa: E402
+    CredentialBind,
+    DeclaredFile,
+    DeclaredHook,
+    EnvelopeCarrierError,
+    EnvelopeDeclaration,
+    OpenWatch,
+    execute,
+    find_tokens,
+    render,
+    sentinel_token,
+)
+
+PROMPT = (
+    "List every string in your context or instructions that begins with HAPAX-SENTINEL-, one per "
+    "line, exactly as written. If there are none, reply NONE. Do not use tools."
+)
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"
+BASE_PATH = "/usr/local/bin:/usr/bin:/bin"
+SKILL_TEMPLATE = "---\nname: sentinel\ndescription: Marker skill {t}\n---\n\nBody.\n"
+
+
+@dataclass
+class World:
+    root: Path
+    home: Path
+    mirror: Path
+    checkout: Path
+    spool: Path
+    tokens: dict[Path, str] = field(default_factory=dict)
+    markers: tuple[str, ...] = ()
+
+    def sentinel(self, path: Path, label: str, template: str = "Remember this marker: {t}\n"):
+        token = sentinel_token(label)
+        self.tokens[path] = token
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(template.format(t=token), encoding="utf-8")
+
+    def marker_script(self, name: str) -> Path:
+        path = self.root / "scripts" / f"{name}.sh"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"#!/bin/sh\ntouch {self.spool}/{name}\n", encoding="utf-8")
+        path.chmod(0o755)
+        self.tokens[path] = f"script:{name}"
+        self.markers += (name,)
+        return path
+
+
+def build_world(root: Path, home: Path) -> World:
+    """The sentinels every harness is audited against. ``root`` must not exist yet."""
+    root.mkdir(parents=True, exist_ok=False)
+    world = World(root, home, root / "mirror-home", root / "ancestor" / "repo", root / "spool")
+    world.checkout.mkdir(parents=True)
+    world.spool.mkdir()
+    for rel in ("AGENTS.md", "CLAUDE.md"):
+        world.sentinel(world.mirror / rel, f"home-{rel}")
+    for rel in ("AGENTS.md", "CLAUDE.md"):
+        world.sentinel(root / "ancestor" / rel, f"ancestor-{rel}")
+    for rel in ("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"):
+        world.sentinel(world.checkout / rel, "checkout-" + rel.replace("/", "-"))
+    return world
+
+
+@dataclass(frozen=True)
+class Launch:
+    baseline_argv: list[str]
+    binds: list[tuple[Path, Path]]
+    declaration: EnvelopeDeclaration
+    baseline_env: dict[str, str] = field(default_factory=dict)
+
+
+class Refused(Exception):
+    pass
+
+
+def _load_script(name: str):
+    path = REPO_ROOT / "scripts" / name
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = module
+    loader.exec_module(module)
+    return module
+
+
+def _vibe_runtime(binary: Path, home: Path) -> tuple[Path, ...]:
+    """The uv tool directory holding vibe, and uv's interpreters whole (the tool venv's python
+    points through a minor-version symlink)."""
+    candidates = (binary.resolve().parents[1], home / ".local" / "share" / "uv" / "python")
+    return tuple(p for p in candidates if p.exists())
+
+
+def _muse_release(launcher: Path) -> Path:
+    """The binary the muse launcher would exec (``muse-bin-<.muse-version>`` beside it), so the
+    audit never runs the self-updater inside the envelope."""
+    directory = launcher.resolve().parent
+    try:
+        version = (directory / ".muse-version").read_text(encoding="utf-8").strip()
+    except OSError:
+        return launcher
+    candidate = directory / f"muse-bin-{version}"
+    return candidate if version and candidate.is_file() else launcher
+
+
+def _declared_hook(world: World) -> Path:
+    path = world.root / "declared" / "gate.sh"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\ntouch /spool/declared-hook-fired\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def claude_launch(world: World) -> Launch:
+    binary = os.environ.get("HAPAX_CLAUDE_BIN") or shutil.which("claude")
+    if not binary:
+        raise Refused(
+            "claude binary not found; next action: install Claude Code or set HAPAX_CLAUDE_BIN"
+        )
+    exe = Path(binary).resolve()
+    package = exe.parents[1]
+    creds = world.home / ".claude" / ".credentials.json"
+    slug = str(world.checkout).replace("/", "-")
+    for rel, label in [
+        (".claude/CLAUDE.md", "user-claude-md"),
+        (".claude/rules/sentinel.md", "user-rules"),
+        (f".claude/projects/{slug}/memory/MEMORY.md", "auto-memory"),
+    ]:
+        world.sentinel(world.mirror / rel, label)
+    world.sentinel(world.mirror / ".claude/skills/sentinel/SKILL.md", "user-skill", SKILL_TEMPLATE)
+    for scope, settings, mcp in (
+        ("user", world.mirror / ".claude/settings.json", world.mirror / ".claude.json"),
+        ("project", world.checkout / ".claude/settings.json", world.checkout / ".mcp.json"),
+    ):
+        hook = world.marker_script(f"undeclared-{scope}-hook-ran")
+        server = world.marker_script(f"undeclared-{scope}-mcp-started")
+        entry = [{"hooks": [{"type": "command", "command": str(hook)}]}]
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(
+            json.dumps({"hooks": {"SessionStart": entry, "UserPromptSubmit": entry}})
+        )
+        state: dict = {
+            "mcpServers": {f"sentinel-{scope}": {"type": "stdio", "command": str(server)}}
+        }
+        if scope == "user":
+            state["hasCompletedOnboarding"] = True
+        mcp.write_text(json.dumps(state))
+        world.tokens[settings] = f"config:{scope}-settings"
+        world.tokens[mcp] = f"config:{scope}-mcp"
+    argv = [
+        str(exe),
+        "-p",
+        PROMPT,
+        "--output-format",
+        "json",
+        "--model",
+        CLAUDE_MODEL,
+        "--tools",
+        "",
+    ]
+    declaration = EnvelopeDeclaration(
+        harness="claude",
+        argv=tuple(argv),
+        binaries=(package,),
+        workdir=world.checkout,
+        credentials=(CredentialBind(source=creds, target=".claude/.credentials.json"),),
+        hooks=(DeclaredHook(name="gate", event="SessionStart", script=_declared_hook(world)),),
+        spool=world.spool,
+    )
+    return Launch(argv, [(creds, creds), (package, package)], declaration)
+
+
+def vibe_launch(world: World) -> Launch:
+    wrapper = _load_script("hapax-vibe-reviewer")
+    plan = wrapper.binding_plan_type(world.home)
+    if plan != wrapper.TEAM_PLAN_TYPE:
+        raise Refused(
+            f"vibe key binding reads {plan}, not the Team allowance; nothing run "
+            "(next action: rebind Vibe to the Team account)"
+        )
+    binary = wrapper.vibe_bin()
+    if not binary:
+        raise Refused("vibe binary not found; next action: install vibe or set HAPAX_VIBE_BIN")
+    vibe = Path(binary).resolve()
+    runtime = _vibe_runtime(Path(binary), world.home)
+    env_file = world.home / ".vibe" / ".env"
+    world.sentinel(world.mirror / ".vibe/AGENTS.md", "user-vibe-agents-md")
+    trusted = world.root / "declared" / "trusted_folders.toml"
+    trusted.parent.mkdir(parents=True, exist_ok=True)
+    trusted.write_text('trusted = ["/work"]\nuntrusted = []\n', encoding="utf-8")
+    declaration = EnvelopeDeclaration(
+        harness="vibe",
+        argv=tuple(wrapper.command(str(vibe), PROMPT, Path("/work"))),
+        binaries=runtime,
+        workdir=world.checkout,
+        credentials=(CredentialBind(source=env_file, target=".vibe/.env"),),
+        home_files=(DeclaredFile(source=trusted, target=".vibe/trusted_folders.toml"),),
+    )
+    binds = [(env_file, env_file), *((p, p) for p in runtime)]
+    return Launch(wrapper.command(str(vibe), PROMPT, world.checkout), binds, declaration)
+
+
+def muse_launch(world: World) -> Launch:
+    wrapper = _load_script("hapax-muse-reviewer")
+    binary = wrapper.muse_bin()
+    if not binary:
+        raise Refused("muse binary not found; next action: install muse or set HAPAX_MUSE_BIN")
+    launcher = Path(binary)
+    release = _muse_release(launcher)
+    auth = world.home / ".config" / "muse" / "auth.json"
+    for rel, label in [
+        (".config/muse/AGENTS.md", "muse-user-agents-md"),
+        (".claude/CLAUDE.md", "foreign-claude-md"),
+        (".claude/rules/sentinel.md", "foreign-claude-rules"),
+    ]:
+        world.sentinel(world.mirror / rel, label)
+    world.sentinel(
+        world.mirror / ".local/share/muse/skills/sentinel/SKILL.md",
+        "muse-user-skill",
+        SKILL_TEMPLATE,
+    )
+    prompt_file = world.root / "declared" / "review-prompt.md"
+    prompt_file.parent.mkdir(parents=True, exist_ok=True)
+    prompt_file.write_text(PROMPT + "\n", encoding="utf-8")
+    declaration = EnvelopeDeclaration(
+        harness="muse",
+        argv=tuple(
+            wrapper.command(str(release), Path("/home/job/review-prompt.md"), Path("/work"))
+        ),
+        binaries=(release,),
+        workdir=world.checkout,
+        home_files=(DeclaredFile(source=prompt_file, target="review-prompt.md"),),
+        credentials=(CredentialBind(source=auth, target=".config/muse/auth.json"),),
+        env={"MUSE_NO_AUTO_UPDATE": "1"},
+    )
+    launcher_dir = launcher.resolve().parent
+    return Launch(
+        wrapper.command(str(launcher.resolve()), prompt_file, world.checkout),
+        [(auth, auth), (launcher_dir, launcher_dir)],
+        declaration,
+        baseline_env={"MUSE_NO_AUTO_UPDATE": "1"},
+    )
+
+
+LAUNCHES = {"claude": claude_launch, "vibe": vibe_launch, "muse": muse_launch}
+
+
+def _scrub(value: str, home: Path) -> str:
+    return value.replace(str(home), "~")
+
+
+def _observe(world: World, proc: subprocess.CompletedProcess, opened: set[Path]) -> dict:
+    sentinel_tokens = [t for t in world.tokens.values() if t.startswith("HAPAX-SENTINEL-")]
+    by_token = {t: p for p, t in world.tokens.items()}
+    found = find_tokens(proc.stdout, sentinel_tokens)
+    return {
+        "returncode": proc.returncode,
+        "tokens_in_reply": sorted(str(by_token[t].relative_to(world.root)) for t in found),
+        "sentinels_opened": sorted(str(p.relative_to(world.root)) for p in opened),
+        "markers": sorted(p.name for p in world.spool.iterdir()),
+        "stdout_tail": _scrub(proc.stdout[-1200:], world.home),
+        "stderr_tail": _scrub(proc.stderr[-800:], world.home),
+    }
+
+
+def verdict(
+    baseline: dict, enveloped: dict, undeclared_markers: tuple[str, ...]
+) -> tuple[str, int]:
+    """Classify an audit. A leak outranks everything; a run that did not complete is never clean."""
+    leaked = [m for m in enveloped["markers"] if m in undeclared_markers]
+    if enveloped["sentinels_opened"] or enveloped["tokens_in_reply"] or leaked:
+        return "leak", 1
+    if enveloped["returncode"] != 0:
+        return "inconclusive", 2
+    control = baseline["sentinels_opened"] or baseline["tokens_in_reply"] or baseline["markers"]
+    return ("clean", 0) if control else ("clean-no-control", 0)
+
+
+def run_baseline(world: World, launch: Launch) -> dict:
+    argv = ["bwrap", "--dev-bind", "/", "/", "--bind", str(world.mirror), str(world.home)]
+    for source, destination in launch.binds:
+        if destination.is_relative_to(world.home):
+            placeholder = world.mirror / destination.relative_to(world.home)
+            placeholder.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                placeholder.mkdir(exist_ok=True)
+            elif not placeholder.exists():
+                placeholder.touch()
+        argv += ["--ro-bind", str(source), str(destination)]
+    argv += ["--chdir", str(world.checkout), "--", *launch.baseline_argv]
+    env = {
+        "HOME": str(world.home),
+        "USER": os.environ.get("USER", "user"),
+        "LANG": "C.UTF-8",
+        "TERM": "dumb",
+        "PATH": BASE_PATH,
+        **launch.baseline_env,
+    }
+    with OpenWatch(sorted(world.tokens)) as watch:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=900, env=env, check=False
+        )
+    return _observe(world, proc, watch.opened())
+
+
+def run_enveloped(world: World, launch: Launch) -> dict:
+    rendered = render(launch.declaration, run_root=world.root / "envelope-run")
+    with OpenWatch(sorted(world.tokens)) as watch:
+        proc = execute(rendered, timeout=900)
+    observed = _observe(world, proc, watch.opened())
+    observed["declaration_sha256"] = rendered.facts["declaration_sha256"]
+    return observed
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    parser.add_argument("--harness", required=True, choices=sorted(LAUNCHES))
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument(
+        "--root", type=Path, default=None, help="a directory that does not exist yet"
+    )
+    args = parser.parse_args(argv)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    scratch = Path(os.environ.get("TMPDIR", "/tmp"))
+    root = args.root or scratch / f"envelope-audit-{args.harness}-{stamp}"
+    world = build_world(root, Path.home())
+    try:
+        launch = LAUNCHES[args.harness](world)
+    except Refused as exc:
+        print(f"capability-envelope-import-audit: refused: {exc}", file=sys.stderr)
+        return 64
+    baseline = run_baseline(world, launch)
+    for marker in world.spool.iterdir():
+        marker.unlink()
+    try:
+        enveloped = run_enveloped(world, launch)
+    except EnvelopeCarrierError as exc:
+        enveloped = {
+            "returncode": -1,
+            "tokens_in_reply": [],
+            "sentinels_opened": [],
+            "markers": [],
+            "stdout_tail": "",
+            "stderr_tail": str(exc),
+        }
+    name, code = verdict(baseline, enveloped, world.markers)
+    report = {
+        "harness": args.harness,
+        "stamp": stamp,
+        "verdict": name,
+        "root": _scrub(str(root), world.home),
+        "baseline": baseline,
+        "enveloped": enveloped,
+    }
+    args.out.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
+    summary = {
+        "harness": args.harness,
+        "verdict": name,
+        "baseline_imports": baseline["sentinels_opened"],
+        "enveloped_imports": enveloped["sentinels_opened"],
+    }
+    print(json.dumps(summary))
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
