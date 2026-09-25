@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +39,7 @@ def _run(
     sha: str,
     *,
     cwd: Path,
+    since: str | None = None,
     extra_env: dict[str, str] | None = None,
     stubs: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -58,8 +60,13 @@ def _run(
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
     if extra_env:
         env.update(extra_env)
+    command = ["bash", str(SMOKE)]
+    if since is not None:
+        command.extend(("--since", since, sha))
+    else:
+        command.append(sha)
     return subprocess.run(
-        ["bash", str(SMOKE), sha],
+        command,
         env=env,
         capture_output=True,
         text=True,
@@ -68,16 +75,21 @@ def _run(
     )
 
 
-def _make_repo(tmp_path: Path) -> Path:
-    """Init a git repo with two commits so SHA^1 resolves."""
+def _init_repo(tmp_path: Path) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "GIT_TERMINAL_PROMPT": "0"}
     subprocess.run(
         ["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True, capture_output=True
     )
     subprocess.run(["git", "config", "user.email", "t@x"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "T"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def _make_repo(tmp_path: Path) -> Path:
+    """Init a git repo with a baseline commit so SHA^1 resolves after a change."""
+    _init_repo(tmp_path)
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "GIT_TERMINAL_PROMPT": "0"}
     install_units = tmp_path / INSTALL_UNITS_PATH
     install_units.parent.mkdir(parents=True, exist_ok=True)
     install_units.write_text(_install_units_source())
@@ -117,10 +129,95 @@ class TestKillSwitch:
         assert result.returncode == 0
         assert result.stderr == ""
 
-    def test_invalid_sha_exits_silent(self, tmp_path: Path) -> None:
+    def test_invalid_sha_is_operator_visible_and_notified(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
-        result = _run("not-a-sha-deadbeef", cwd=repo)
+        marker = repo / "ntfy-called"
+        result = _run(
+            "not-a-sha-deadbeef",
+            cwd=repo,
+            extra_env={"NTFY_TOPIC": "test-topic", "HAPAX_SMOKE_NTFY_MARKER": str(marker)},
+            stubs={"curl": 'printf called > "$HAPAX_SMOKE_NTFY_MARKER"'},
+        )
+
         assert result.returncode == 0
+        assert "smoke FAIL: change-discovery:" in result.stderr
+        assert "cannot resolve target commit" in result.stderr
+        assert "next action:" in result.stderr
+        assert marker.read_text() == "called"
+
+    def test_foreign_repo_root_is_operator_visible_and_notified(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path / "expected")
+        sha = _commit_files(repo, {"README.md": "target\n"})
+        foreign = _make_repo(tmp_path / "foreign")
+        marker = repo / "ntfy-called"
+
+        result = _run(
+            sha,
+            cwd=repo,
+            extra_env={
+                "REPO_ROOT": str(foreign),
+                "NTFY_TOPIC": "test-topic",
+                "HAPAX_SMOKE_NTFY_MARKER": str(marker),
+            },
+            stubs={"curl": 'printf called > "$HAPAX_SMOKE_NTFY_MARKER"'},
+        )
+
+        assert result.returncode == 0
+        assert "smoke FAIL: change-discovery:" in result.stderr
+        assert "cannot resolve target commit" in result.stderr
+        assert "next action:" in result.stderr
+        assert marker.read_text() == "called"
+
+    def test_missing_since_object_is_operator_visible_and_notified(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(repo, {"README.md": "target\n"})
+        marker = repo / "ntfy-called"
+
+        result = _run(
+            sha,
+            since="missing-base-deadbeef",
+            cwd=repo,
+            extra_env={"NTFY_TOPIC": "test-topic", "HAPAX_SMOKE_NTFY_MARKER": str(marker)},
+            stubs={"curl": 'printf called > "$HAPAX_SMOKE_NTFY_MARKER"'},
+        )
+
+        assert result.returncode == 0
+        assert "smoke FAIL: change-discovery:" in result.stderr
+        assert "cannot resolve --since commit" in result.stderr
+        assert "next action:" in result.stderr
+        assert marker.read_text() == "called"
+
+    def test_root_commit_smokes_added_service(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {
+                INSTALL_UNITS_PATH: _install_units_source(),
+                "systemd/units/root.service": "[Unit]\n",
+            },
+        )
+
+        result = _run(sha, cwd=repo, stubs={"systemctl": "exit 3"})
+
+        assert result.returncode == 0
+        assert "root.service not active after deploy" in result.stderr
+
+    def test_cumulative_range_smokes_intermediate_service(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        _commit_files(repo, {"systemd/units/intermediate.service": "[Unit]\n"})
+        tip = _commit_files(repo, {"README.md": "tip only\n"})
+
+        result = _run(tip, since=base, cwd=repo, stubs={"systemctl": "exit 3"})
+
+        assert result.returncode == 0
+        assert "intermediate.service not active after deploy" in result.stderr
 
     def test_moving_ref_is_pinned_before_parent_and_diff_reads(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
@@ -181,6 +278,22 @@ exec /usr/bin/git "$@"
         assert "cannot enumerate changed files" in result.stderr
         assert "next action:" in result.stderr
         assert marker.read_text() == "called"
+
+    def test_failure_notification_has_a_hard_deadline(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(repo, {"systemd/units/slow-notice.service": "[Unit]\n"})
+        started = time.monotonic()
+
+        result = _run(
+            sha,
+            cwd=repo,
+            extra_env={"NTFY_TOPIC": "test-topic", "HAPAX_SMOKE_NTFY_TIMEOUT_S": "1"},
+            stubs={"systemctl": "exit 3", "curl": "sleep 3"},
+        )
+
+        assert result.returncode == 0
+        assert time.monotonic() - started < 2.5
+        assert "slow-notice.service not active after deploy" in result.stderr
 
 
 # ── Gate: services-restarted ───────────────────────────────────────

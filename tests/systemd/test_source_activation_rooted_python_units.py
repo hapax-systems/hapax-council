@@ -34,7 +34,6 @@ PY_MODULE = re.compile(r"python3?\s+-m\s+(agents[\w.]*|shared[\w.]*)")
 
 # ── units migrated to source-activation by this task (positive pins) ──
 MIGRATED_UNITS = (
-    "hapax-feedback-loop-detector.service",
     "hapax-segment-prep.service",
     "vault-context-writer.service",
     "health-connect-parse.service",
@@ -66,6 +65,22 @@ MIGRATED_UNITS = (
     "hapax-publish-orchestrator.service",
     "hapax-live-cuepoints.service",
 )
+
+
+def test_retired_l12_feedback_detector_is_a_nonexecuting_parked_sentinel() -> None:
+    text = (UNITS_DIR / "hapax-feedback-loop-detector.service").read_text(encoding="utf-8")
+
+    assert "# Hapax-Parked: true" in text
+    assert "RefuseManualStart=yes" in text
+    assert "ConditionPathExists=!/" in text
+    assert _section_values(text, "Service", "Type") == ["oneshot"]
+    assert _section_values(text, "Service", "ExecStart") == ["/usr/bin/true"]
+    assert "feedback_loop_daemon" not in text
+    assert "Restart=" not in text
+    assert "[Install]" not in text
+    assert not any(f"{directive}=" in text for directive in ("PartOf", "Requires", "Wants"))
+    assert not any(form in text for form in (*CANON_FORMS, ACTIVATION))
+
 
 # ── canonical-rooted python -m units intentionally NOT yet migrated. Each is
 # justified in docs/research/2026-06-07-canonical-rooted-unit-audit.md. This is
