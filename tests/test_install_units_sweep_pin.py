@@ -25,6 +25,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
 LOCAL_JUDGE_UNIT = REPO_ROOT / "systemd" / "units" / "hapax-local-judge.service"
@@ -747,6 +749,16 @@ class TestLocalJudgeRetirement:
                 #!/usr/bin/env bash
                 printf 'systemctl %s\n' "$*" >> "{events}"
                 case "$*" in
+                  "--user show hapax-local-judge.service -p LoadState --value")
+                    if [ -L "{installed}" ] && [ "$(readlink "{installed}")" = /dev/null ]; then
+                      printf 'masked\n'
+                    else
+                      printf 'loaded\n'
+                    fi
+                    ;;
+                  "--user show hapax-local-judge.service -p ActiveState --value")
+                    cat "{active_state}"
+                    ;;
                   "--user kill --kill-who=main --signal=SIGTERM hapax-local-judge.service")
                     printf 'inactive\n' > "{active_state}"
                     ;;
@@ -827,6 +839,130 @@ class TestLocalJudgeRetirement:
         assert not any(" rm -f hapax-local-judge" in line for line in event_lines)
         assert "retired and masked historical local judge" in result.stdout
 
+    @pytest.mark.parametrize(
+        ("initial_load_state", "initial_active_state", "container_id"),
+        [
+            ("not-found", "inactive", "a" * 64),
+            ("loaded", "active", ""),
+            ("not-found", "inactive", ""),
+        ],
+        ids=("container-only", "crash-before-mask", "pristine-tombstone"),
+    )
+    def test_retirement_converges_without_filesystem_history(
+        self,
+        tmp_path: Path,
+        initial_load_state: str,
+        initial_active_state: str,
+        container_id: str,
+    ) -> None:
+        home = tmp_path / "home"
+        unit_dir = home / ".config/systemd/user"
+        unit_dir.mkdir(parents=True)
+        installed = unit_dir / "hapax-local-judge.service"
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        events = tmp_path / "events"
+        load_state = tmp_path / "load-state"
+        load_state.write_text(f"{initial_load_state}\n", encoding="utf-8")
+        active_state = tmp_path / "active-state"
+        active_state.write_text(f"{initial_active_state}\n", encoding="utf-8")
+        container_state = tmp_path / "container-state"
+        container_state.write_text(f"{container_id}\n" if container_id else "", encoding="utf-8")
+
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf 'systemctl %s\n' "$*" >> "{events}"
+                case "$*" in
+                  "--user show hapax-local-judge.service -p LoadState --value")
+                    cat "{load_state}"
+                    ;;
+                  "--user show hapax-local-judge.service -p ActiveState --value")
+                    cat "{active_state}"
+                    ;;
+                  "--user daemon-reload")
+                    printf 'masked\n' > "{load_state}"
+                    ;;
+                  "--user kill --kill-who=main --signal=SIGTERM hapax-local-judge.service")
+                    printf 'inactive\n' > "{active_state}"
+                    ;;
+                  "--user is-active --quiet hapax-local-judge.service")
+                    grep -qx active "{active_state}"
+                    exit $?
+                    ;;
+                esac
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+
+        docker = bin_dir / "docker"
+        docker.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf 'docker %s\n' "$*" >> "{events}"
+                case "$*" in
+                  *" ps -aq --no-trunc --filter name=^/hapax-local-judge$")
+                    cat "{container_state}"
+                    ;;
+                  *" rm -f "*)
+                    : > "{container_state}"
+                    ;;
+                  *)
+                    exit 97
+                    ;;
+                esac
+                """
+            ),
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+
+        uv = bin_dir / "uv"
+        uv.write_text(
+            f'#!/usr/bin/env bash\nprintf \'uv %s\\n\' "$*" >> "{events}"\n',
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "ALLOW_NONSTANDARD_REPO": "1",
+                "HOME": str(home),
+                "PATH": f"{bin_dir}:{env['PATH']}",
+                "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(systemctl),
+                "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(docker),
+                "SKIP_TIMER_ENABLE": "1",
+            }
+        )
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert installed.is_symlink()
+        assert os.readlink(installed) == "/dev/null"
+        assert container_state.read_text(encoding="utf-8") == ""
+        event_lines = events.read_text(encoding="utf-8").splitlines()
+        assert any("-p LoadState --value" in line for line in event_lines)
+        assert any("-p ActiveState --value" in line for line in event_lines)
+        if container_id:
+            assert any(f" rm -f {container_id}" in line for line in event_lines)
+        assert "retired and masked historical local judge" in result.stdout
+
     def test_replacement_container_identity_race_fails_before_dependency_sync(
         self, tmp_path: Path
     ) -> None:
@@ -853,6 +989,16 @@ class TestLocalJudgeRetirement:
                 #!/usr/bin/env bash
                 printf 'systemctl %s\n' "$*" >> "{events}"
                 case "$*" in
+                  "--user show hapax-local-judge.service -p LoadState --value")
+                    if [ -L "{installed}" ] && [ "$(readlink "{installed}")" = /dev/null ]; then
+                      printf 'masked\n'
+                    else
+                      printf 'loaded\n'
+                    fi
+                    ;;
+                  "--user show hapax-local-judge.service -p ActiveState --value")
+                    cat "{active_state}"
+                    ;;
                   "--user kill --kill-who=main --signal=SIGTERM hapax-local-judge.service")
                     printf 'inactive\n' > "{active_state}"
                     ;;
@@ -955,3 +1101,135 @@ class TestLocalJudgeRetirement:
         )
         assert replacement_remove < uv_index
         assert "retired and masked historical local judge" in retry.stdout
+
+    def test_container_removal_failure_still_stops_unit_and_converges_on_retry(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        unit_dir = home / ".config/systemd/user"
+        unit_dir.mkdir(parents=True)
+        installed = unit_dir / "hapax-local-judge.service"
+        installed.write_text(F53FED723_LOCAL_JUDGE_UNIT, encoding="utf-8")
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        events = tmp_path / "events"
+        active_state = tmp_path / "active-state"
+        active_state.write_text("active\n", encoding="utf-8")
+        container_state = tmp_path / "container-state"
+        container_id = "a" * 64
+        container_state.write_text(f"{container_id}\n", encoding="utf-8")
+        removal_attempts = tmp_path / "removal-attempts"
+
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf 'systemctl %s\n' "$*" >> "{events}"
+                case "$*" in
+                  "--user show hapax-local-judge.service -p LoadState --value")
+                    if [ -L "{installed}" ] && [ "$(readlink "{installed}")" = /dev/null ]; then
+                      printf 'masked\n'
+                    else
+                      printf 'loaded\n'
+                    fi
+                    ;;
+                  "--user show hapax-local-judge.service -p ActiveState --value")
+                    cat "{active_state}"
+                    ;;
+                  "--user kill --kill-who=main --signal=SIGTERM hapax-local-judge.service")
+                    printf 'inactive\n' > "{active_state}"
+                    ;;
+                  "--user is-active --quiet hapax-local-judge.service")
+                    grep -qx active "{active_state}"
+                    exit $?
+                    ;;
+                esac
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+
+        docker = bin_dir / "docker"
+        docker.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf 'docker %s\n' "$*" >> "{events}"
+                case "$*" in
+                  *" ps -aq --no-trunc --filter name=^/hapax-local-judge$")
+                    cat "{container_state}"
+                    ;;
+                  *" rm -f {container_id}")
+                    if [ ! -e "{removal_attempts}" ]; then
+                      : > "{removal_attempts}"
+                      exit 55
+                    fi
+                    : > "{container_state}"
+                    ;;
+                  *)
+                    exit 97
+                    ;;
+                esac
+                """
+            ),
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+
+        uv = bin_dir / "uv"
+        uv.write_text(
+            f'#!/usr/bin/env bash\nprintf \'uv %s\\n\' "$*" >> "{events}"\n',
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "ALLOW_NONSTANDARD_REPO": "1",
+                "HOME": str(home),
+                "PATH": f"{bin_dir}:{env['PATH']}",
+                "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(systemctl),
+                "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(docker),
+                "SKIP_TIMER_ENABLE": "1",
+            }
+        )
+
+        first = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+        assert first.returncode == 2
+        assert "could not remove the captured" in first.stderr
+        assert installed.is_symlink()
+        assert os.readlink(installed) == "/dev/null"
+        assert active_state.read_text(encoding="utf-8").strip() == "inactive"
+        assert container_state.read_text(encoding="utf-8").strip() == container_id
+        assert not any(
+            line.startswith("uv ") for line in events.read_text(encoding="utf-8").splitlines()
+        )
+
+        retry = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+
+        assert retry.returncode == 0, retry.stderr
+        assert container_state.read_text(encoding="utf-8") == ""
+        event_lines = events.read_text(encoding="utf-8").splitlines()
+        second_remove = [line for line in event_lines if f" rm -f {container_id}" in line]
+        assert len(second_remove) == 2
+        assert any(line.startswith("uv ") for line in event_lines)

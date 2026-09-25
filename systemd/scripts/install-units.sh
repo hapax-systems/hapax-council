@@ -137,12 +137,18 @@ query_local_judge_container_id() {
     if ! output="$(
         /usr/bin/env -i \
             HOME="$HOME" LANG=C LC_ALL=C PATH=/usr/bin:/bin \
-            "$docker_bin" \
-            --host=unix:///var/run/docker.sock \
-            --config=/nonexistent/hapax-local-judge-retirement \
-            ps -aq --no-trunc --filter 'name=^/hapax-local-judge$'
+            /usr/bin/timeout --signal=KILL 5s \
+                "$docker_bin" \
+                --host=unix:///var/run/docker.sock \
+                --config=/nonexistent/hapax-local-judge-retirement \
+                ps -aq --no-trunc --filter 'name=^/hapax-local-judge$' \
+            | /usr/bin/head -c 1025
     )"; then
         echo "ERROR: cannot enumerate the historical local-judge container from the pinned local Docker daemon" >&2
+        return 1
+    fi
+    if [ "${#output}" -gt 1024 ]; then
+        echo "ERROR: local-judge retirement Docker inventory exceeded 1024 bytes" >&2
         return 1
     fi
 
@@ -164,33 +170,76 @@ query_local_judge_container_id() {
     fi
 }
 
+query_local_judge_manager_property() {
+    local systemctl_bin="$1" property="$2" output
+    if ! output="$(
+        /usr/bin/timeout --signal=KILL 5s \
+            "$systemctl_bin" --user show hapax-local-judge.service \
+            -p "$property" --value \
+            | /usr/bin/head -c 129
+    )"; then
+        echo "ERROR: cannot query historical local-judge $property from the user manager" >&2
+        return 1
+    fi
+    if [ -z "$output" ] || [ "${#output}" -gt 128 ] || [[ "$output" == *$'\n'* ]]; then
+        echo "ERROR: historical local-judge $property was empty or malformed" >&2
+        return 1
+    fi
+    printf '%s\n' "$output"
+}
+
+install_local_judge_mask() {
+    local dest="$1"
+    /usr/bin/python3 - "$dest" <<'PY'
+from __future__ import annotations
+
+import os
+import secrets
+import sys
+
+dest = os.path.abspath(sys.argv[1])
+parent, name = os.path.split(dest)
+dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+tmp = f".{name}.mask.{os.getpid()}.{secrets.token_hex(8)}"
+try:
+    os.symlink("/dev/null", tmp, dir_fd=dir_fd)
+    os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.fsync(dir_fd)
+finally:
+    try:
+        os.unlink(tmp, dir_fd=dir_fd)
+    except FileNotFoundError:
+        pass
+    os.close(dir_fd)
+PY
+}
+
 retire_historical_local_judge() {
     local name="hapax-local-judge.service"
     local dest="$DEST_DIR/$name"
-    local historical=0
     local already_masked=0
+    local artifacts_clean=1
     if [ -e "$dest" ] || [ -L "$dest" ]; then
         if [ -L "$dest" ] && [ "$(readlink "$dest")" = "/dev/null" ]; then
             # A mask can be the residue of a failed first retirement after the
             # unit was disabled but before immutable-ID Docker cleanup. Keep
             # reconciling until both the unit and container absence converge.
             already_masked=1
-            historical=1
         else
-            historical=1
+            artifacts_clean=0
         fi
+    else
+        artifacts_clean=0
     fi
     local wants_link
     for wants_link in "$DEST_DIR"/*.wants/"$name"; do
         [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
-        historical=1
+        artifacts_clean=0
     done
     local dropin_dir="$DEST_DIR/${name}.d"
     if [ -e "$dropin_dir" ] || [ -L "$dropin_dir" ]; then
-        historical=1
+        artifacts_clean=0
     fi
-    [ "$historical" -eq 1 ] || return 1
-
     local systemctl_bin="${HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL:-/usr/bin/systemctl}"
     local docker_bin="${HAPAX_INSTALL_UNITS_RETIRE_DOCKER:-/usr/bin/docker}"
     if { [ -n "${HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL:-}" ] \
@@ -208,10 +257,26 @@ retire_historical_local_judge() {
         return 2
     fi
     local before_id="$LOCAL_JUDGE_CONTAINER_ID"
-
-    if ! "$systemctl_bin" --user disable "$name" >/dev/null; then
-        echo "ERROR: could not disable the historical local-judge unit" >&2
+    local manager_load_state manager_active_state
+    if ! manager_load_state="$(
+        query_local_judge_manager_property "$systemctl_bin" LoadState
+    )" || ! manager_active_state="$(
+        query_local_judge_manager_property "$systemctl_bin" ActiveState
+    )"; then
         return 2
+    fi
+    if [ "$already_masked" -eq 1 ] && [ "$artifacts_clean" -eq 1 ] \
+        && [ -z "$before_id" ] \
+        && [ "$manager_load_state" = "masked" ] \
+        && [ "$manager_active_state" = "inactive" ]; then
+        return 1
+    fi
+
+    if [ "$manager_load_state" != "not-found" ]; then
+        if ! "$systemctl_bin" --user disable "$name" >/dev/null; then
+            echo "ERROR: could not disable the historical local-judge unit" >&2
+            return 2
+        fi
     fi
     if [ "$already_masked" -eq 0 ]; then
         if ! rm -f "$dest"; then
@@ -233,7 +298,7 @@ retire_historical_local_judge() {
         fi
     fi
     if [ "$already_masked" -eq 0 ]; then
-        if ! ln -s /dev/null "$dest"; then
+        if ! install_local_judge_mask "$dest"; then
             echo "ERROR: could not mask the historical local-judge unit" >&2
             return 2
         fi
@@ -243,15 +308,17 @@ retire_historical_local_judge() {
         return 2
     fi
 
+    local container_remove_failed=0
     if [ -n "$before_id" ]; then
         if ! /usr/bin/env -i \
                 HOME="$HOME" LANG=C LC_ALL=C PATH=/usr/bin:/bin \
-                "$docker_bin" \
-                --host=unix:///var/run/docker.sock \
-                --config=/nonexistent/hapax-local-judge-retirement \
-                rm -f "$before_id" >/dev/null; then
+                /usr/bin/timeout --signal=KILL 5s \
+                    "$docker_bin" \
+                    --host=unix:///var/run/docker.sock \
+                    --config=/nonexistent/hapax-local-judge-retirement \
+                    rm -f "$before_id" >/dev/null; then
             echo "ERROR: could not remove the captured historical local-judge container ID" >&2
-            return 2
+            container_remove_failed=1
         fi
     fi
     "$systemctl_bin" --user kill --kill-who=main --signal=SIGTERM "$name" >/dev/null 2>&1 || true
@@ -263,6 +330,9 @@ retire_historical_local_judge() {
     done
     if "$systemctl_bin" --user is-active --quiet "$name"; then
         echo "ERROR: historical local-judge unit remained active after immutable-ID retirement" >&2
+        return 2
+    fi
+    if [ "$container_remove_failed" -ne 0 ]; then
         return 2
     fi
 

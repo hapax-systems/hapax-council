@@ -10,10 +10,11 @@ host-root-held trust anchor. Same-UID files, processes, environment variables,
 memfds, Git objects, receipts, logs, and loopback services are inputs, not
 authority.
 
-The source-only cutoff does not itself stop or replace previously installed
-root mutators. The retained `hapax-oom-score-enforce` service, timer, trigger,
-and sudoers policy therefore remain part of this register. Source conformance
-for those files is not evidence that their installed bytes have been cut over.
+The source package retires the `hapax-oom-score-enforce` mutation path, but a
+source-only cutoff does not stop or replace previously installed root mutators.
+The historical service, timer, trigger, and sudoers grant therefore remain part
+of this register until a separately authorized cutover attests their removal or
+replacement. Source conformance is not evidence that cutover occurred.
 
 | Hazard | Counterexample | Required boundary |
 |---|---|---|
@@ -32,7 +33,7 @@ for those files is not evidence that their installed bytes have been cut over.
 | Mutable Docker name | Name-based stop, remove, or inspect can target a replacement container after a rename race. | Capture and validate one immutable full container ID, act only on that ID, and re-enumerate names after the operation. |
 | Mutable image or model | A tag or writable model path can change between canary and durable launch. | Bind immutable image digest and content-addressed model digest, size, protected ancestors, and mount identity into the signed request. |
 | Docker endpoint substitution | Ambient Docker context or host variables can make preflight and durable launch inspect different daemons. | Pin the local daemon endpoint and private config in an empty environment for every Docker operation. |
-| False-green service state | Matching unit bytes and current process values can pass while the recurring enforcement timer is disabled, inactive, or failing. | Require enabled and active timer state plus a recent successful result in the signed current-generation attestation. |
+| False-green retirement state | Matching source sentinels can pass while the historical recurring enforcer timer or NOPASSWD grant remains live. Blocking login sessions alone is insufficient because linger or on-demand activation can restart `user@1000.service`. | Runtime cutover stops/disables the timer first, replaces helper/trigger/sudoers bytes, temporarily applies a root-owned mask to `user@1000.service`, and stops that complete delegated subtree to a root-observed empty-cgroup boundary before unmasking it. A score scan remains observational only. |
 | False-green container responder | A port or health response may come from a foreign process or container with the expected name. | Bind health evidence to the immutable container ID, image digest, model digest, cgroup limits, and launch generation. |
 | Partial durable publication | A crash or hostile umask can publish permissive or truncated receipt state after mutation and before deferral drain. | Create mode-0600 same-directory temporaries with `O_EXCL|O_NOFOLLOW`, complete write and fsync, atomic replace, directory fsync, and readback. |
 | Lock-path replacement | Participants can hold different inodes under the same lock pathname, defeating serialization. | Every participant binds the same physical parent and basename inode before and after acquisition and across child execution. |
@@ -43,10 +44,12 @@ for those files is not evidence that their installed bytes have been cut over.
 | False recovery promise | Timers or incident writers can persist a next action that the current source revision has disabled. | Treat recovery-string scans as an exit criterion and point only to an actually reachable, separately authorized successor. |
 | Unbounded diagnostic input | Git, journal, command, or receipt diagnostics can stream attacker-controlled output into logs or memory. | Bound every diagnostic read and preserve a stable actionable cause without interpreting payload content. |
 | Stale installed mutator | Source removes production installation while an older root-owned auditor, enforcer, trigger, timer, or sudoers grant remains active. | Staging must say that it does not reconcile installed bytes; a separately authorized cutover must identify, stop, replace, reload, and attest every retained runtime surface. |
-| Privilege-drop session amplification | A recurring root timer invokes `runuser` or another PAM path for each user-unit query, registering thousands of logind sessions and wedging login I/O. | Read package-owned user cgroups directly from the canonical cgroup v2 tree; never enter the user manager or invoke PAM from the recurring root enforcer. |
-| Cgroup basename ambiguity | A recursive basename search can select `attacker.scope/pipewire.service` or the right unit name under the wrong slice and mutate unrelated same-UID processes. | Resolve only the policy-owned `session.slice` or `app.slice` path plus the explicit direct-child fallback, then recheck each PID's exact `/proc` cgroup before writing. |
-| MainPID-only startup protection | A multi-process protected unit starts children before the trigger and only its reported main process receives the live score. | Enumerate every PID in the exact unit subtree for both recurring and startup paths; startup fails if no matching live PID exists. |
-| Privileged test-selector admission | `HAPAX_*_TEST_MODE`, fake procfs/cgroup roots, or substituted tools survive `sudo` and redirect a root write. | Use a privileged Bash entrypoint, clear shell startup selectors, reject test mode under root/sudo, and reject every declared selector in production even when its value is `0`. |
+| Privilege-drop session amplification | A recurring root timer invokes `runuser` or another PAM path for each user-unit query, registering thousands of logind sessions and wedging login I/O. | Do not retain a recurring root-to-user score bridge. Any future broker must avoid PAM/session creation and operate only within its root-owned authority boundary. |
+| UID-owned manager as authority | `systemctl --user` reports values from a manager and bus controlled by the same UID receiving the root-only attribute; cached loaded unit bytes may differ from restored on-disk bytes. | Treat user-manager output as observation only. It cannot authorize a root grant. Workloads requiring negative scores must run in root-owned, non-delegated system units. |
+| Cgroup basename or membership ambiguity | UID 1000 controls `cgroup.procs` below delegated `user@1000.service` and can create nested same-name paths or move same-UID processes around point-in-time checks. | Never grant a root-only process attribute on the basis of membership anywhere in the delegated subtree. Exact names, ancestry, and pre/post checks do not create durable confinement. |
+| Fork/exec inheritance escape | A legitimately scored process forks after the final check; its child inherits the negative `oom_score_adj`, moves to a writable sibling cgroup, and execs arbitrary code. | Disable all root negative writes in delegated user cgroups. If required, let PID 1 configure the score in a root-owned, non-delegated system unit with `User=hapax`. |
+| Rollback after point-in-time validation | Restoring one pinned process after a detected move cannot recover a child forked before rollback, a move after the last check, or a previously escaped descendant. A post-cutover child can inherit from an old parent and outlive it, so start-time checks alone are insufficient. | Do not treat rollback or repeated scanning as confinement. Runtime retirement must block reactivation and terminate the complete delegated `user@1000.service` subtree to an empty-cgroup boundary after the grant path is gone. Root-owned non-delegated system units with `User=hapax` are outside that boundary. |
+| Privileged test-selector admission | `HAPAX_*_TEST_MODE`, fake procfs/cgroup roots, or substituted tools survive `sudo` and redirect a root write. | Retired sentinels perform no writes or tool lookup. Any future privileged broker uses an empty environment, rejects caller selectors, and pins every executable and endpoint before parsing input. |
 
 The counterexamples above remain mandatory review input even though the code
 that exposed them was reverted. Reintroducing production root mutation or
