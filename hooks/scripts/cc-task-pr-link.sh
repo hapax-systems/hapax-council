@@ -265,12 +265,42 @@ if [[ -z "$note_path" ]]; then
   exit 0
 fi
 
-# --- 9. Determine branch name (best effort; fall back to "unknown") ---
+# --- 9. Determine the PR's head branch — from the PR, never from this shell's cwd (M86).
+#       The cwd is routinely another repository or worktree (a vault cwd reads `master`),
+#       so it is not evidence about the PR. Order: the create call's own head, then the PR
+#       object; anything else, or anything that is not a branch name, records "unknown". ---
+head_from_create_cmd() {
+  python3 - "$1" <<'PYEOF' 2>/dev/null
+import shlex
+import sys
+
+try:
+    tokens = shlex.split(sys.argv[1])
+except ValueError:
+    sys.exit(0)
+for index, token in enumerate(tokens):
+    if token in {"--head", "-H"} and index + 1 < len(tokens):
+        print(tokens[index + 1])
+        break
+    if token.startswith("--head="):
+        print(token.removeprefix("--head="))
+        break
+PYEOF
+}
 branch_name=""
-if command -v git &>/dev/null; then
-  branch_name="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+case "$tool_name" in
+  Bash) branch_name="$(head_from_create_cmd "$bash_cmd" || true)" ;;
+  mcp__github__create_pull_request)
+    branch_name="$(printf '%s' "$input" | jq -r '.tool_input.head // empty' 2>/dev/null || true)"
+    ;;
+esac
+# `--head owner:branch` names a fork's branch; the ref is the part after the owner.
+branch_name="${branch_name##*:}"
+if [[ -z "$branch_name" ]] && command -v gh &>/dev/null; then
+  branch_name="$(timeout 15 gh pr view "$pr_number" --repo "$pr_repo" \
+    --json headRefName --jq .headRefName 2>/dev/null || true)"
 fi
-if [[ -z "$branch_name" ]] || [[ "$branch_name" == "HEAD" ]]; then
+if [[ ! "$branch_name" =~ ^[A-Za-z0-9][A-Za-z0-9._/+-]*$ ]] || [[ "$branch_name" == *..* ]]; then
   branch_name="unknown"
 fi
 
