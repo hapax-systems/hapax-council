@@ -191,7 +191,10 @@ async def search_web(
             TavilyRequestError,
         ) as exc:
             log.warning("Web search failed: %s", exc)
-            return f"Web search unavailable: {exc}"
+            return (
+                f"Web search unavailable: {exc}; "
+                "next_action=retry later or proceed without external web evidence"
+            )
 
 
 @agent.tool
@@ -243,7 +246,10 @@ async def deep_research(
             TavilyRequestError,
         ) as exc:
             log.warning("Deep research failed: %s", exc)
-            return f"Deep research unavailable: {exc}"
+            return (
+                f"Deep research unavailable: {exc}; "
+                "next_action=retry later or proceed without external web evidence"
+            )
 
 
 # ── Entry points ─────────────────────────────────────────────────────────────

@@ -120,13 +120,9 @@ _SERVED_FAMILY_SUBSTRINGS: tuple[tuple[str, str], ...] = (
     ("command-r", "cohere"),
     ("compassverifier", "cohere"),
     ("mistral", "mistral"),
-    ("sonar", "perplexity"),
-    # The live perplexity routes serve as web-research/web-reason/web-scout (NOT "sonar"),
-    # so the served-family counter was blind to them (returned "unknown"). Map them so a
-    # perplexity->anthropic fail-over is correctly seen as a real cross-family swap.
-    ("web-research", "perplexity"),
-    ("web-reason", "perplexity"),
-    ("web-scout", "perplexity"),
+    # Sonar Chat Completions names (sonar*, web-scout, web-research, web-reason)
+    # are not live routes. Podium LiteLLM does not serve them. A leftover served
+    # name of that shape is unknown, not a perplexity family.
     ("perplexity", "perplexity"),
     ("deepseek", "deepseek"),
     ("glm", "zhipu"),

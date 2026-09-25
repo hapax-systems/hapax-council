@@ -73,6 +73,20 @@ def _resolved_council_routes() -> dict[str, str]:
 
 
 class TestCouncilMemberRoutes:
+    def test_retired_sonar_seat_is_off_the_default_panel(self) -> None:
+        from agents.deliberative_council.members import model_family
+
+        config = CouncilConfig()
+        aliases = config.model_aliases
+        assert "web-research" not in aliases
+        assert "web-scout" not in aliases
+        assert len(aliases) == 6
+        families = {model_family(alias) for alias in aliases}
+        assert len(families) == 5
+        assert "perplexity" not in families
+        assert config.min_valid_members == 4
+        assert config.min_valid_families == 4
+
     def test_every_council_alias_resolves_to_valid_route(self) -> None:
         offenders = {
             alias: route

@@ -235,7 +235,12 @@ async def web_verify(ctx: Any, query: str) -> str:
         TavilyRequestError,
     ) as exc:
         log.warning("web_verify failed: %s", exc)
-        return _memo_put_governed(key, prefix + f"Web search unavailable: {exc}", admission)
+        return _memo_put_governed(
+            key,
+            prefix + f"Web search unavailable: {exc}; "
+            "next_action=retry later or proceed without external web evidence",
+            admission,
+        )
     return _memo_put_governed(key, prefix + text[:MAX_READ_CHARS], admission)
 
 

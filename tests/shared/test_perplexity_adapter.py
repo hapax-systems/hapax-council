@@ -137,6 +137,7 @@ def test_pricing_table_has_no_sonar_models():
     assert PRICING_TABLE_PATH.name == "perplexity-pricing.json"
     assert PRICING_TABLE_PATH.parent.name == "config"
     assert payload["models"] == {}
+    assert "perplexity-api-integration-design" not in str(payload["source_doc"])
     table = load_pricing_table()
     assert table == {}
     for model_id in _RETIRED_SONAR_MODELS:

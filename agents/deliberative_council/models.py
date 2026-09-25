@@ -214,8 +214,9 @@ class CouncilConfig(BaseModel):
         # appendix is down (HTTP 000): a dead canonical seat fails over to
         # gemini-flash (a cross-family substitution) and falsely trips the
         # served_substitutions>0 quarantine. RESTORE this line when appendix
-        # TabbyAPI is back up. Panel stays above the 4-family/4-member floor
-        # (7 members / 6 families remain). 2026-06-21.
+        # TabbyAPI is back up. Floor stays 4 members / 4 families.
+        # 2026-06-21 local-fast drop left 7 members / 6 families; the 2026-09-25
+        # Sonar seat removal leaves 6 members / 5 families.
         # web-research (Perplexity Sonar Chat Completions) removed 2026-09-25.
         # Panel is 6 members / 5 families. Floor stays 4 members / 4 families.
         "mistral-large",

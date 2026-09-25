@@ -3,7 +3,7 @@
   "provider": "perplexity",
   "currency": "usd",
   "pricing_as_of": "2026-09-25",
-  "source_doc": "docs/superpowers/specs/2026-05-15-perplexity-api-integration-design.md",
+  "source_doc": "Sonar Chat Completions prices removed 2026-09-25; models is empty on purpose",
   "source_url": "https://docs.perplexity.ai/guides/pricing",
   "models": {}
 }

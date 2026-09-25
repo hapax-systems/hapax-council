@@ -148,6 +148,24 @@ class TestWebVerify:
             result = await web_verify(None, "slow claim")
         assert "timed out" in result.lower()
 
+    @pytest.mark.asyncio
+    async def test_tavily_error_names_next_action(self) -> None:
+        from shared.tavily_client import TavilyRequestError
+
+        with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("web_verify"),
+            ),
+            patch(
+                "shared.tavily_client.search_snippets",
+                side_effect=TavilyRequestError("upstream refused"),
+            ),
+        ):
+            result = await web_verify(None, "broken claim")
+        assert "Web search unavailable" in result
+        assert "next_action=" in result
+
 
 class TestQdrantLookup:
     @pytest.mark.asyncio
