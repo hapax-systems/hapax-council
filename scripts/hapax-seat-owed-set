@@ -155,6 +155,16 @@ def parse_ts(raw: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+BACKLOG_OLDEST = 15
+REPLY_RESIDUAL = (
+    "Reply residual: a seat drop in the sender inbox disposes an ask when re: "
+    "contains the filename, the stem, or a shared #NNNN, or when a later created_at "
+    "shares thread. A reply that does none of those stays owed. A later drop on the "
+    "same thread clears every earlier ask on that thread. A shared #NNNN clears every "
+    "ask that carries that token. Prose in section 5 does not dispose an ask."
+)
+
+
 def normalize_off(raw: str) -> set[str]:
     off = {part.strip() for part in raw.split(",") if part.strip()}
     if "S1" in off:
@@ -166,6 +176,79 @@ def normalize_off(raw: str) -> set[str]:
     return off
 
 
+def _stamp_from_name(name: str) -> datetime | None:
+    match = re.match(r"(\d{8})T(\d{4})(\d{2})?Z", name)
+    if not match:
+        return None
+    day, hm, sec = match.group(1), match.group(2), match.group(3) or "00"
+    return parse_ts(f"{day[:4]}-{day[4:6]}-{day[6:]}T{hm[:2]}:{hm[2:]}:{sec}+00:00")
+
+
+def _message_time(fm: dict[str, str], name: str) -> datetime | None:
+    return parse_ts(fm.get("created_at")) or _stamp_from_name(name)
+
+
+def _sender_token(from_field: str) -> str:
+    raw = from_field.split("(", 1)[0].strip()
+    raw = raw.split()[0] if raw else ""
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1]
+    return raw.strip(",;")
+
+
+def _is_seat_from(from_field: str, process_role: str, inbox: str) -> bool:
+    tokens = set(re.findall(r"[A-Za-z0-9][A-Za-z0-9-]*", from_field))
+    if process_role and process_role in tokens:
+        return True
+    return bool(inbox and inbox in tokens)
+
+
+def _re_names(re_value: str, inbound_name: str, inbound_text: str) -> bool:
+    if not re_value:
+        return False
+    stem = Path(inbound_name).stem
+    if inbound_name in re_value or (stem and stem in re_value):
+        return True
+    title = ""
+    for line in inbound_text.splitlines():
+        if line.startswith("# "):
+            title = line
+            break
+    haystack = f"{inbound_name}\n{title}"
+    return any(number in haystack for number in re.findall(r"#(\d+)", re_value))
+
+
+def _reply_disposes(
+    inbound_name: str,
+    inbound_text: str,
+    inbound_fm: dict[str, str],
+    inbound_time: datetime | None,
+    replies: list[tuple[str, dict[str, str]]],
+    *,
+    process_role: str,
+    inbox: str,
+    at: datetime,
+) -> bool:
+    for reply_name, reply_fm in replies:
+        if not _is_seat_from(reply_fm.get("from", ""), process_role, inbox):
+            continue
+        reply_time = _message_time(reply_fm, reply_name)
+        if reply_time is not None and reply_time > at:
+            continue
+        if _re_names(reply_fm.get("re", ""), inbound_name, inbound_text):
+            return True
+        thread = inbound_fm.get("thread", "")
+        if (
+            thread
+            and reply_fm.get("thread", "") == thread
+            and inbound_time is not None
+            and reply_time is not None
+            and inbound_time < reply_time
+        ):
+            return True
+    return False
+
+
 def project(
     vault: Path,
     commit: str,
@@ -175,6 +258,7 @@ def project(
     bus_until: str,
     activation: datetime,
     off: set[str],
+    process_role: str = "",
 ) -> dict:
     members: dict[str, set[str]] = {}
     cohort: dict[str, str] = {}
@@ -244,17 +328,51 @@ def project(
                 continue
             candidates.append((rel, name, stamp))
         bodies = read_many(vault, commit, [item[0] for item in candidates])
+        asks: list[tuple[str, str, str, str, dict[str, str]]] = []
         for rel, name, stamp in candidates:
-            msg_fm = front(bodies.get(rel, ""))
+            text = bodies.get(rel, "")
+            msg_fm = front(text)
             if msg_fm.get("ack", "").lower() == "true":
                 flag = "ack:true"
-            elif ASK_MARKER.search(bodies.get(rel, "")):
+            elif ASK_MARKER.search(text):
                 flag = "ask-marker"
             else:
                 flag = ""
             if not flag:
                 continue
-            when = parse_ts(stamp + "+00:00")
+            asks.append((rel, name, stamp, flag, msg_fm))
+        replies_by_sender: dict[str, list[tuple[str, dict[str, str]]]] = {}
+        senders = {
+            _sender_token(item[4].get("from", ""))
+            for item in asks
+            if _sender_token(item[4].get("from", ""))
+        }
+        for sender in senders:
+            reply_rels = [
+                rel
+                for rel in list_md(vault, commit, f"{BUS}/{sender}")
+                if "/read/" not in rel and rel.endswith(".md")
+            ]
+            reply_bodies = read_many(vault, commit, reply_rels)
+            replies_by_sender[sender] = [
+                (Path(rel).name, front(reply_bodies.get(rel, ""))) for rel in reply_rels
+            ]
+        seat_from = process_role or seat
+        for _rel, name, stamp, flag, msg_fm in asks:
+            text = bodies.get(_rel, "")
+            sender = _sender_token(msg_fm.get("from", ""))
+            when = parse_ts(stamp + "+00:00") or _message_time(msg_fm, name)
+            if _reply_disposes(
+                name,
+                text,
+                msg_fm,
+                when,
+                replies_by_sender.get(sender, []),
+                process_role=seat_from,
+                inbox=seat,
+                at=at,
+            ):
+                continue
             age = (at - when).total_seconds() / 3600 if when else -1.0
             bus_members.append((name, flag, age))
 
@@ -310,16 +428,78 @@ def _age_cell(age: float | None) -> str:
     return f"{age:7.1f}h"
 
 
+def _row_line(row: dict) -> str:
+    classes = ",".join(row["classes"])
+    return f"{classes}\t{row['cohort']}\t{_age_cell(row['age_h'])}\t{row['task_id']}"
+
+
 def owed_block(result: dict) -> str:
     count = result["totals"]["rows"] + result["totals"]["S4"]
     lines = [f"OWED BY THE SEAT ({count})"]
     for row in result["rows"]:
-        classes = ",".join(row["classes"])
-        lines.append(f"{classes}\t{row['cohort']}\t{_age_cell(row['age_h'])}\t{row['task_id']}")
+        lines.append(_row_line(row))
     for item in result["bus"]:
         lines.append(f"S4\tbus\t{item['age_h']:7.1f}h\t{item['name']}\t{item['flag']}")
     lines.append("S6\tstub\t0")
+    lines.append(REPLY_RESIDUAL)
     return "\n".join(lines)
+
+
+def summary_block(result: dict) -> str:
+    new_rows = [row for row in result["rows"] if row["cohort"] == "new"]
+    backlog = [row for row in result["rows"] if row["cohort"] != "new"]
+
+    def oldest_key(row: dict) -> tuple:
+        age = row["age_h"]
+        return (age is not None, -(age or 0), row["task_id"])
+
+    oldest = sorted(backlog, key=oldest_key)[:BACKLOG_OLDEST]
+    counts = {name: 0 for name in ("S1", "S2", "S3", "S5")}
+    for row in backlog:
+        for name in row["classes"]:
+            if name in counts:
+                counts[name] += 1
+    lines = [
+        (
+            f"OWED BY THE SEAT (new {len(new_rows)}, "
+            f"bus {len(result['bus'])}, backlog {len(backlog)})"
+        ),
+        "NEW",
+    ]
+    lines.extend(_row_line(row) for row in new_rows)
+    lines.append("BUS")
+    for item in result["bus"]:
+        lines.append(f"S4\tbus\t{item['age_h']:7.1f}h\t{item['name']}\t{item['flag']}")
+    lines.append(
+        f"BACKLOG counts S1={counts['S1']} S2={counts['S2']} S3={counts['S3']} S5={counts['S5']}"
+    )
+    lines.append(f"OLDEST backlog ({len(oldest)} of {len(backlog)})")
+    lines.extend(_row_line(row) for row in oldest)
+    lines.append("S6\tstub\t0")
+    lines.append(REPLY_RESIDUAL)
+    if result.get("full_list_path"):
+        lines.append(f"full list: {result['full_list_path']}")
+    return "\n".join(lines)
+
+
+def _display_path(path: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(Path.home().resolve())
+    except ValueError:
+        return path.as_posix()
+    return "~/" + relative.as_posix()
+
+
+def write_full_list(vault: Path, result: dict) -> str:
+    if vault.resolve() == DEFAULT_VAULT.resolve():
+        path = Path.home() / ".cache" / "hapax" / "seat-owed-set.txt"
+    else:
+        path = vault / ".cache" / "seat-owed-set.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(owed_block(result) + "\n", encoding="utf-8")
+    shown = _display_path(path)
+    result["full_list_path"] = shown
+    return shown
 
 
 def render_text(result: dict, targets: list[str]) -> str:
@@ -346,23 +526,29 @@ def render_text(result: dict, targets: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def incumbent_role(vault: Path) -> str:
+def incumbent_identity(vault: Path) -> tuple[str, str]:
+    """Process role and bus inbox, both read from the §0 incumbent row."""
     try:
         text = (vault / SEAT_FILE).read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return ""
-    match = re.search(r"^\| incumbent \| [a-z]*/([a-z0-9-]*)", text, re.M)
-    return match.group(1) if match else ""
+        return "", ""
+    named = re.search(r"process role is `([^`]+)`", text)
+    process = named.group(1).strip() if named else ""
+    inbox_match = re.search(r"^\| incumbent \| [a-z]*/([a-z0-9-]*)", text, re.M)
+    inbox = inbox_match.group(1) if inbox_match else ""
+    if not process:
+        process = inbox
+    return process, inbox
 
 
 def session_start_payload(vault: Path) -> str:
-    role = incumbent_role(vault)
-    if not role or os.environ.get("HAPAX_AGENT_ROLE", "") != role:
+    process, inbox = incumbent_identity(vault)
+    if not process or os.environ.get("HAPAX_AGENT_ROLE", "") != process:
         return ""
     intro = (
         "Take the coordinator seat: read ~/Documents/Personal/30-areas/hapax/frame/"
         "COORDINATOR-SEAT.md. "
-        f"This is a same-role routine restart (startup, resume, or clear) of the seat (role {role}). "
+        f"This is a same-role routine restart (startup, resume, or clear) of the seat (role {process}). "
         "Do not mint a row or run the stale-lease runbook. "
         "The owed set is the control point; §5 is narrative. "
         "New items are owed a disposition within 30 minutes. "
@@ -374,13 +560,15 @@ def session_start_payload(vault: Path) -> str:
         result = project(
             vault,
             "WORKTREE",
-            seat=role,
+            seat=inbox or process,
             at=now,
             bus_until="",
             activation=now - timedelta(hours=48),
             off=set(),
+            process_role=process,
         )
-        block = owed_block(result)
+        write_full_list(vault, result)
+        block = summary_block(result)
     except Exception as exc:  # the seat's session start must still receive the control sentence
         block = f"OWED BY THE SEAT (unavailable: {exc.__class__.__name__})"
     body = intro + "\n\n" + block
@@ -450,7 +638,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         return 0
     if args.text_block:
-        sys.stdout.write(owed_block(result) + "\n")
+        write_full_list(vault, result)
+        sys.stdout.write(summary_block(result) + "\n")
         return 0
     if args.quiet:
         totals = result["totals"]

@@ -298,8 +298,8 @@ def test_v3_oracle_at_2217() -> None:
     assert totals["new"] == 35
     assert totals["backlog"] == 499
     assert totals["unknown_age"] == 152
-    assert totals["S4"] == 16
-    assert totals["ack_true"] == 3
+    assert totals["S4"] == 11
+    assert totals["ack_true"] == 2
     missing = [task_id for task_id in TARGETS if payload["targets"][task_id] == "ABSENT"]
     assert missing == []
 
@@ -418,6 +418,244 @@ def test_fields_only_misses_only_verboo() -> None:
     absent = [task_id for task_id, verdict in payload["targets"].items() if verdict == "ABSENT"]
     assert absent == [VERBOO]
     assert len(TARGETS) - len(absent) == 15
+
+
+def _seat(vault: Path, line: str) -> None:
+    path = vault / "30-areas" / "hapax" / "frame" / "COORDINATOR-SEAT.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(line + "\n", encoding="utf-8")
+
+
+def _bus(vault: Path, seat: str, name: str, text: str) -> None:
+    path = vault / "30-areas" / "hapax" / "lanebus" / seat / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_process_role_dev1_seat_injects_and_keeps_dev1_inbox(tmp_path: Path) -> None:
+    created = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _write_row(
+        tmp_path,
+        "lane-row",
+        _offered("lane-row", created=created),
+        "## Session log\n- 2026-09-25T01:00:00Z dev3: drafted at the seat's request\n",
+    )
+    _bus(
+        tmp_path,
+        "dev1",
+        "20260925T023937Z-dev17-dossier-4744-quorum-accept.md",
+        "\n".join(
+            [
+                "---",
+                "from: dev17",
+                "to: dev1",
+                "ack: true",
+                "created_at: 2026-09-25T02:39:37Z",
+                "---",
+                "# Dossier #4744",
+                "",
+            ]
+        ),
+    )
+    _seat(
+        tmp_path,
+        "| incumbent | claude/dev1 — session `test`. The process role is `dev1-seat`. |",
+    )
+    env = os.environ.copy()
+    env["HAPAX_AGENT_ROLE"] = "dev1-seat"
+    proc = subprocess.run(
+        ["python3", str(SCRIPT), "--vault", str(tmp_path), "--session-start"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "role dev1-seat" in text
+    assert "lane-row" in text
+    assert "4744" in text
+    env["HAPAX_AGENT_ROLE"] = "dev1"
+    silent = subprocess.run(
+        ["python3", str(SCRIPT), "--vault", str(tmp_path), "--session-start"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert silent.stdout.strip() == ""
+
+
+def test_re_token_disposes_the_answered_ask(tmp_path: Path) -> None:
+    _bus(
+        tmp_path,
+        "dev1",
+        "20260925T023937Z-dev17-dossier-4744-quorum-accept.md",
+        "\n".join(
+            [
+                "---",
+                "from: dev17",
+                "ack: true",
+                "created_at: 2026-09-25T02:39:37Z",
+                "thread: mechanics-bundle-20260924",
+                "---",
+                "# Dossier #4744",
+                "",
+            ]
+        ),
+    )
+    _bus(
+        tmp_path,
+        "dev1",
+        "20260925T010000Z-dev18-open-question.md",
+        "\n".join(
+            [
+                "---",
+                "from: dev18",
+                "ack: true",
+                "created_at: 2026-09-25T01:00:00Z",
+                "thread: other-thread",
+                "---",
+                "# Still open",
+                "",
+            ]
+        ),
+    )
+    _bus(
+        tmp_path,
+        "dev17",
+        "20260925T024057Z-dev1-follow-ups-after-merge.md",
+        "\n".join(
+            [
+                "---",
+                "from: claude/dev1 (seat, role dev1-seat)",
+                "to: dev17",
+                "created_at: 2026-09-25T02:40:57Z",
+                "re: dossiers #4739, #4744, #4745",
+                "---",
+                "",
+            ]
+        ),
+    )
+    payload = _payload(
+        _run(
+            tmp_path,
+            "--commit",
+            "WORKTREE",
+            "--at",
+            "2026-09-25T03:00:00+00:00",
+            "--json",
+        )
+    )
+    names = [item["name"] for item in payload["bus"]]
+    assert "20260925T023937Z-dev17-dossier-4744-quorum-accept.md" not in names
+    assert "20260925T010000Z-dev18-open-question.md" in names
+
+
+def test_later_message_on_the_same_thread_disposes(tmp_path: Path) -> None:
+    _bus(
+        tmp_path,
+        "dev1",
+        "20260925T010000Z-dev18-ask.md",
+        "\n".join(
+            [
+                "---",
+                "from: dev18",
+                "ack: true",
+                "created_at: 2026-09-25T01:00:00Z",
+                "thread: same-thread",
+                "---",
+                "",
+            ]
+        ),
+    )
+    _bus(
+        tmp_path,
+        "dev18",
+        "20260925T020000Z-dev1-reply.md",
+        "\n".join(
+            [
+                "---",
+                "from: claude/dev1",
+                "created_at: 2026-09-25T02:00:00Z",
+                "thread: same-thread",
+                "---",
+                "",
+            ]
+        ),
+    )
+    payload = _payload(
+        _run(tmp_path, "--commit", "WORKTREE", "--at", "2026-09-25T03:00:00+00:00", "--json")
+    )
+    assert payload["bus"] == []
+
+
+def test_reply_without_re_or_thread_stays_owed(tmp_path: Path) -> None:
+    _bus(
+        tmp_path,
+        "dev1",
+        "20260925T010000Z-dev18-ask.md",
+        "\n".join(
+            [
+                "---",
+                "from: dev18",
+                "ack: true",
+                "created_at: 2026-09-25T01:00:00Z",
+                "thread: ask-thread",
+                "---",
+                "",
+            ]
+        ),
+    )
+    _bus(
+        tmp_path,
+        "dev18",
+        "20260925T020000Z-dev1-unrelated.md",
+        "\n".join(
+            [
+                "---",
+                "from: claude/dev1",
+                "created_at: 2026-09-25T02:00:00Z",
+                "re: something else",
+                "thread: other-thread",
+                "---",
+                "",
+            ]
+        ),
+    )
+    payload = _payload(
+        _run(tmp_path, "--commit", "WORKTREE", "--at", "2026-09-25T03:00:00+00:00", "--json")
+    )
+    assert [item["name"] for item in payload["bus"]] == ["20260925T010000Z-dev18-ask.md"]
+
+
+def test_summary_lists_new_and_bus_and_oldest_backlog(tmp_path: Path) -> None:
+    _write_row(
+        tmp_path,
+        "fresh-row",
+        _offered("fresh-row", created="2026-09-24T21:00:00Z"),
+        "coordinator copy\n",
+    )
+    for index in range(20):
+        _write_row(
+            tmp_path,
+            f"old-{index:02d}",
+            _offered(f"old-{index:02d}", created="2026-01-01T00:00:00Z"),
+            "coordinator copy\n",
+        )
+    proc = _run(tmp_path, "--commit", "WORKTREE", "--at", AT_2217, "--text-block")
+    assert proc.returncode == 0, proc.stderr
+    text = proc.stdout
+    assert "fresh-row" in text
+    assert "BACKLOG counts" in text
+    assert "OLDEST backlog (15 of 20)" in text
+    assert "old-19" not in text
+    assert "Reply residual:" in text
+    full = tmp_path / ".cache" / "seat-owed-set.txt"
+    assert full.is_file()
+    saved = full.read_text(encoding="utf-8")
+    assert "old-19" in saved
+    assert "full list:" in text
 
 
 def test_everything_disabled_is_empty() -> None:
