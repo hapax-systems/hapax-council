@@ -7,12 +7,20 @@ LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
 LOG_FILE="$LOG_DIR/github-mcp.log"
 
 canonical_refusal() {
-  local message="$1"
+  local message="$1" account_home="" account_home_resolved="" home_resolved=""
   if mkdir -p "$LOG_DIR" 2>/dev/null \
     && printf '%s %s\n' "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >>"$LOG_FILE" 2>/dev/null; then
     echo "$message (diagnostic recorded in $LOG_FILE)" >&2
+  elif account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)" \
+    && [ -n "$account_home" ] \
+    && home_resolved="$(/usr/bin/realpath -m -- "$HOME")" \
+    && account_home_resolved="$(/usr/bin/realpath -m -- "$account_home")" \
+    && [ "$home_resolved" = "$account_home_resolved" ] \
+    && [ -x /usr/bin/logger ] \
+    && /usr/bin/logger --tag hapax-github-mcp -- "$message" 2>/dev/null; then
+    echo "$message (file diagnostic failed for $LOG_FILE; recorded in the system journal)" >&2
   else
-    echo "$message (diagnostic logging failed for $LOG_FILE)" >&2
+    echo "$message (diagnostic logging failed for $LOG_FILE; system journal fallback unavailable)" >&2
   fi
   exit 2
 }
