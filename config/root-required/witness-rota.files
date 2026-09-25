@@ -10,7 +10,7 @@ shared/public_gate_receipts.py
 shared/signing_holder.py
 shared/witness_receipt.py
 shared/witness_rota.py
-systemd/units/hapax-signing-holder.socket
-systemd/units/hapax-signing-holder@.service
-systemd/units/hapax-witness-rota@.service
-systemd/units/hapax-witness-rota.timer
+systemd/system/hapax-signing-holder.socket
+systemd/system/hapax-signing-holder@.service
+systemd/system/hapax-witness-rota@.service
+systemd/system/hapax-witness-rota.timer

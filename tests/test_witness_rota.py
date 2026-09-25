@@ -401,8 +401,8 @@ def test_a_processed_record_is_not_witnessed_again(tree) -> None:
 
 
 def test_the_rota_unit_is_the_one_the_holder_admits() -> None:
-    service = (REPO_ROOT / "systemd/units/hapax-witness-rota@.service").read_text()
-    timer = (REPO_ROOT / "systemd/units/hapax-witness-rota.timer").read_text()
+    service = (REPO_ROOT / "systemd/system/hapax-witness-rota@.service").read_text()
+    timer = (REPO_ROOT / "systemd/system/hapax-witness-rota.timer").read_text()
     assert "# Hapax-Install-Scope: system" in service and "# Hapax-Install-Scope: system" in timer
     assert "Unit=hapax-witness-rota@scan.service" in timer
     assert cgroup_admitted(

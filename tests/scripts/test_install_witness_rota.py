@@ -33,10 +33,10 @@ PACKAGE = (
     "scripts/hapax-signing-holder",
     "scripts/hapax-witness-rota",
     INSTALLER_REL,
-    "systemd/units/hapax-signing-holder.socket",
-    "systemd/units/hapax-signing-holder@.service",
-    "systemd/units/hapax-witness-rota@.service",
-    "systemd/units/hapax-witness-rota.timer",
+    "systemd/system/hapax-signing-holder.socket",
+    "systemd/system/hapax-signing-holder@.service",
+    "systemd/system/hapax-witness-rota@.service",
+    "systemd/system/hapax-witness-rota.timer",
 )
 AGY = b"#!/bin/sh\necho 1.2.11\n"
 
@@ -166,19 +166,19 @@ def test_installs_the_holder_and_rota_as_root_owned_copies(box: Box) -> None:
         "usr/local/sbin/hapax-signing-holder": ("scripts/hapax-signing-holder", 0o755),
         "usr/local/sbin/hapax-witness-rota": ("scripts/hapax-witness-rota", 0o755),
         "etc/systemd/system/hapax-signing-holder.socket": (
-            "systemd/units/hapax-signing-holder.socket",
+            "systemd/system/hapax-signing-holder.socket",
             0o644,
         ),
         "etc/systemd/system/hapax-signing-holder@.service": (
-            "systemd/units/hapax-signing-holder@.service",
+            "systemd/system/hapax-signing-holder@.service",
             0o644,
         ),
         "etc/systemd/system/hapax-witness-rota@.service": (
-            "systemd/units/hapax-witness-rota@.service",
+            "systemd/system/hapax-witness-rota@.service",
             0o644,
         ),
         "etc/systemd/system/hapax-witness-rota.timer": (
-            "systemd/units/hapax-witness-rota.timer",
+            "systemd/system/hapax-witness-rota.timer",
             0o644,
         ),
     }

@@ -82,10 +82,10 @@ RELS=(
     scripts/hapax-agy-reviewer
     scripts/hapax-signing-holder
     scripts/hapax-witness-rota
-    systemd/units/hapax-signing-holder.socket
-    systemd/units/hapax-signing-holder@.service
-    systemd/units/hapax-witness-rota@.service
-    systemd/units/hapax-witness-rota.timer
+    systemd/system/hapax-signing-holder.socket
+    systemd/system/hapax-signing-holder@.service
+    systemd/system/hapax-witness-rota@.service
+    systemd/system/hapax-witness-rota.timer
 )
 DESTS=(
     "$HOLDER_LIB/public_gate_receipts.py"
