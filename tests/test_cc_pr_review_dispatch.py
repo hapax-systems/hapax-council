@@ -1413,7 +1413,9 @@ checklist: {}
         assert excerpt.endswith("appears in the transcript")
         assert "context truncated" not in excerpt
         assert codex["raw_reply_chars"] == len(self._TRANSCRIPT_REPLY)
-        assert codex["raw_reply_sha256"] == sha256(excerpt.encode("utf-8")).hexdigest()
+        # named for what it hashes: the stored excerpt, not the (secret-bearing) raw reply
+        assert codex["raw_reply_excerpt_sha256"] == sha256(excerpt.encode("utf-8")).hexdigest()
+        assert "raw_reply_sha256" not in codex
 
     def test_oversized_invalid_output_capture_is_capped_and_says_so(self, tmp_path: Path) -> None:
         reply = "x " * (dispatch.MAX_INVALID_REPLY_CAPTURE_CHARS)

@@ -2778,7 +2778,8 @@ def dispatch_reviews(
                 reply or process_output or "", limit=excerpt_limit
             )
             if capture:
-                capture["raw_reply_sha256"] = hashlib.sha256(
+                # the hash is of the stored (sanitized, bounded) excerpt, never the raw reply
+                capture["raw_reply_excerpt_sha256"] = hashlib.sha256(
                     reply_excerpt.encode("utf-8")
                 ).hexdigest()
             outcome = {
