@@ -299,8 +299,10 @@ def test_the_client_raises_when_refused(listener) -> None:
 
 # --- packaging: system-scoped, socket-activated, credential-only ---
 
-SOCKET_UNIT = REPO_ROOT / "systemd/units/hapax-signing-holder.socket"
-SERVICE_UNIT = REPO_ROOT / "systemd/units/hapax-signing-holder@.service"
+# Installer-owned system units live in systemd/system/, which post-merge deploy leaves to the
+# installer ("system-scoped configs; require sudo install").
+SOCKET_UNIT = REPO_ROOT / "systemd/system/hapax-signing-holder.socket"
+SERVICE_UNIT = REPO_ROOT / "systemd/system/hapax-signing-holder@.service"
 ENTRY = REPO_ROOT / "scripts/hapax-signing-holder"
 
 
