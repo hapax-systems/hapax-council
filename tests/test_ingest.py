@@ -903,10 +903,16 @@ class TestIngestConsentFailureNeverBecomesPermission:
         monkeypatch.setattr(consent_mod, "ConsentRegistry", _Registry)
         return calls
 
-    def _ingest(self, tmp_path, monkeypatch, people_yaml: str | None):
+    def _ingest(
+        self,
+        tmp_path,
+        monkeypatch,
+        people_yaml: str | None,
+        source_service_yaml: str = "document",
+    ):
         import agents.refusal_brief as refusal_pkg
 
-        front = "---\nsource_service: document\n"
+        front = f"---\nsource_service: {source_service_yaml}\n"
         if people_yaml is not None:
             front += f"people: {people_yaml}\n"
         doc = tmp_path / "note.md"
@@ -956,6 +962,30 @@ class TestIngestConsentFailureNeverBecomesPermission:
         result, upserted, _ = self._ingest(tmp_path, monkeypatch, "[5]")
         assert upserted is False
         assert result == (True, "consent_skipped")
+
+    @pytest.mark.parametrize("source_service_yaml", ["5", "[document, gmail]", "{a: b}", "' '"])
+    def test_malformed_source_service_is_refused_even_when_registry_would_grant(
+        self, tmp_path, monkeypatch, source_service_yaml
+    ):
+        calls = self._patch_registry(monkeypatch, check=True)
+        result, upserted, refusals = self._ingest(
+            tmp_path, monkeypatch, f"[{self.SUBJECT}]", source_service_yaml
+        )
+        assert calls["check"] == 0
+        assert upserted is False
+        assert result == (True, "consent_skipped")
+        assert len(refusals) == 1
+        assert "malformed_source_service" in refusals[0].reason
+        assert self.SUBJECT not in refusals[0].reason
+
+    def test_positive_control_other_source_service_is_checked_and_ingested(
+        self, tmp_path, monkeypatch
+    ):
+        calls = self._patch_registry(monkeypatch, check=True)
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]", "gmail")
+        assert calls["check"] == 1
+        assert upserted is True
+        assert result == (True, "")
 
     def test_non_boolean_answer_is_not_permission(self, tmp_path, monkeypatch):
         self._patch_registry(monkeypatch, check="yes")

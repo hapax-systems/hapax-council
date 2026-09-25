@@ -210,10 +210,11 @@ def _contracts_fingerprint(directory: Path | None) -> tuple:
 
 def _consent_failure_cause(exc: BaseException) -> str:
     """Sanitized cause for a failed consent check: the exception class, plus
-    its ``reason`` token when it carries a bare snake_case one. Never the
-    message, which may name a subject or a path."""
+    its class-level ``reason`` token when that is a bare snake_case one.
+    Never the message, which may name a subject or a path, and never an
+    instance ``reason``, which is runtime data that could carry one too."""
     name = type(exc).__name__
-    reason = getattr(exc, "reason", None)
+    reason = getattr(type(exc), "reason", None)
     if isinstance(reason, str) and reason.isidentifier() and reason.islower() and len(reason) <= 48:
         return f"{name}:{reason}"
     return name

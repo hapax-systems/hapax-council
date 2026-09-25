@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from shared.affordance import (
     ActivationState,
     CapabilityRecord,
@@ -1172,6 +1174,133 @@ class TestConsentFailureNeverBecomesPermission:
             return registry
 
         with patch("shared.governance.consent.load_contracts", side_effect=_load_while_revoking):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False
+
+    def test_changed_during_load_audit_carries_the_reason_token(self, tmp_path, monkeypatch):
+        import os
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        captured = self._capture_refusals(monkeypatch)
+        registry = MagicMock()
+        registry.contract_check.return_value = True
+
+        def _load_while_touching(*_a, **_k):
+            target = directory / "contract-synthetic-a.yaml"
+            st = target.stat()
+            os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+            return registry
+
+        with patch("shared.governance.consent.load_contracts", side_effect=_load_while_touching):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False
+        assert len(captured) == 1
+        assert "ConsentSnapshotChanged:contracts_changed_during_load" in captured[0].reason
+
+    def test_custom_failure_reason_token_reaches_the_audit(self, monkeypatch):
+        # A check failure class that declares a snake_case reason token (the
+        # shape an identity-custody failure takes) is audited as
+        # Class:token; its message, which names the subject, is not.
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        class CustodyUnavailable(RuntimeError):
+            reason = "identity_custody_missing"
+
+        captured = self._capture_refusals(monkeypatch)
+        registry = MagicMock()
+        registry.contract_check.side_effect = CustodyUnavailable(f"custody for {self.SUBJECT}")
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
+            assert AffordancePipeline()._consent_allows(self._candidate()) is False
+        assert len(captured) == 1
+        assert "CustodyUnavailable:identity_custody_missing" in captured[0].reason
+        assert self.SUBJECT not in captured[0].reason
+
+    @pytest.mark.parametrize(
+        ("token", "kept"),
+        [
+            ("identity_custody_missing", True),
+            ("a" * 48, True),
+            ("a" * 49, False),
+            ("Custody_Missing", False),
+            ("custody missing", False),
+            ("synthetic-subject-a", False),
+            ("custody/path", False),
+            ("", False),
+            (5, False),
+            (None, False),
+        ],
+    )
+    def test_failure_cause_keeps_only_a_bare_snake_case_class_token(self, token, kept):
+        from shared.affordance_pipeline import _consent_failure_cause
+
+        exc_type = type("CheckFailed", (RuntimeError,), {"reason": token})
+        cause = _consent_failure_cause(exc_type("message naming synthetic-subject-a"))
+        assert cause == (f"CheckFailed:{token}" if kept else "CheckFailed")
+
+    def test_failure_cause_ignores_an_instance_reason(self):
+        # An instance attribute is runtime data, not a code-authored token:
+        # a subject identifier that happens to be a bare lowercase word must
+        # not reach the audit through it.
+        from shared.affordance_pipeline import _consent_failure_cause
+
+        exc = RuntimeError("custody failure")
+        exc.reason = "alice"
+        assert _consent_failure_cause(exc) == "RuntimeError"
+
+    def test_fingerprint_sentinels_for_unconfigured_and_missing_directory(self, tmp_path):
+        from shared.affordance_pipeline import _contracts_fingerprint
+
+        assert _contracts_fingerprint(None) == ("unconfigured",)
+        assert _contracts_fingerprint(tmp_path / "absent") == ("missing",)
+
+    def test_unconfigured_contracts_dir_is_ttl_bounded_and_rechecked(self, monkeypatch):
+        # With no contracts directory to fingerprint, a held registry is
+        # bounded by the TTL alone, and every decision still re-runs the check.
+        from unittest.mock import MagicMock, patch
+
+        import shared.governance.consent as consent_mod
+        from shared import affordance_pipeline as ap_mod
+
+        monkeypatch.setattr(consent_mod, "_CONTRACTS_DIR", None)
+        clock = {"now": 1_000_000.0}
+        monkeypatch.setattr(ap_mod.time, "time", lambda: clock["now"])
+        registry = MagicMock()
+        registry.contract_check.return_value = True
+        p = ap_mod.AffordancePipeline()
+        with patch("shared.governance.consent.load_contracts", return_value=registry) as mock_load:
+            assert p._consent_allows(self._candidate()) is True
+            assert p._consent_allows(self._candidate()) is True
+            assert mock_load.call_count == 1
+            clock["now"] += ap_mod._CONSENT_CACHE_TTL_S + 1
+            assert p._consent_allows(self._candidate()) is True
+            assert mock_load.call_count == 2
+            registry.contract_check.return_value = False
+            assert p._consent_allows(self._candidate()) is False
+        assert registry.contract_check.call_count == 4
+
+    def test_contracts_dir_stat_failure_is_refused(self, tmp_path, monkeypatch):
+        # A stat failure other than a missing directory is not "missing": it
+        # raises and the gate refuses, even when the loader would grant.
+        import pathlib
+        from unittest.mock import MagicMock, patch
+
+        from shared.affordance_pipeline import AffordancePipeline
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        real_stat = pathlib.Path.stat
+
+        def _stat(path, *a, **k):
+            if path == directory:
+                raise PermissionError("denied")
+            return real_stat(path, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "stat", _stat)
+        registry = MagicMock()
+        registry.contract_check.return_value = True
+        with patch("shared.governance.consent.load_contracts", return_value=registry):
             assert AffordancePipeline()._consent_allows(self._candidate()) is False
 
     def test_registry_ttl_does_not_slide_on_new_requirements(self, monkeypatch):
