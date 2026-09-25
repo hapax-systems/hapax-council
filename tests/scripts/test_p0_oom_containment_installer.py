@@ -113,15 +113,63 @@ def test_production_modes_refuse_before_source_or_tool_lookup(mode: str, tmp_pat
     assert not marker.exists()
 
 
-def test_production_refusal_precedes_every_external_lookup_in_source() -> None:
-    body = INSTALLER.read_text(encoding="utf-8")
-    refusal = body.index('if [ "$_production_requested" -eq 1 ]')
-    refusal_exit = body.index("exit 77", refusal)
-    first_external = min(body.index("/usr/bin/dirname"), body.index("/usr/bin/python3"))
-    selector_lookup = body.index("HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE", refusal_exit)
+def test_production_refusal_prefix_is_exact_builtin_only_contract() -> None:
+    lines = INSTALLER.read_text(encoding="utf-8").splitlines()
+    end = lines.index("unset _argument _production_requested") + 1
 
-    assert refusal < refusal_exit < first_external
-    assert refusal_exit < selector_lookup
+    assert lines[:end] == [
+        "#!/usr/bin/bash -p",
+        "# Validate the source-only OOM policy package. Production application is broker-only.",
+        "",
+        "# This exact prefix intentionally uses Bash builtins only. Production modes must",
+        "# refuse before source resolution, sourcing checks, NSS, locks, command lookup,",
+        "# or filesystem access.",
+        "_production_requested=0",
+        'for _argument in "$@"; do',
+        '    case "$_argument" in',
+        "        --install|--verify-live|--authenticated-sealed-source)",
+        "            _production_requested=1",
+        "            ;;",
+        "    esac",
+        "done",
+        'if [ "$_production_requested" -eq 1 ]; then',
+        "    printf '%s\\n' \"production OOM installation and authoritative live verification are unavailable in this source revision; no source, account, lock, tool, or live-state lookup was attempted; next action: preserve the desired exact-SHA package and dispatch separately runtime-authorized root-broker work against docs/security/root-authority-hazard-register.md\" >&2",
+        '    if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then',
+        "        return 77 2>/dev/null || exit 77",
+        "    fi",
+        "    exit 77",
+        "fi",
+        "unset _argument _production_requested",
+    ]
+
+
+def test_sourced_production_mode_refuses_before_the_nonproduction_source_guard(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "bash-env-ran"
+    bash_env = tmp_path / "bash-env"
+    bash_env.write_text(f"printf ran > {marker!s}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "/usr/bin/bash",
+            "-p",
+            "-c",
+            'source "$1" --install; rc=$?; exit "$rc"',
+            "bash",
+            str(INSTALLER),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "BASH_ENV": str(bash_env), "PATH": "/nonexistent"},
+        timeout=15,
+    )
+
+    assert result.returncode == 77
+    assert "no source, account, lock, tool, or live-state lookup was attempted" in result.stderr
+    assert "must be executed, not sourced" not in result.stderr
+    assert not marker.exists()
 
 
 def test_production_token_cannot_be_hidden_as_source_value() -> None:
@@ -186,6 +234,16 @@ def test_profile_table_requires_exact_host_set(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "host profile set must be exactly" in result.stderr
+
+
+def test_profile_table_rejects_overlapping_host_intervals(tmp_path: Path) -> None:
+    source = staged_source(tmp_path)
+    rewrite(source / PROFILE_TABLE, "hapax-appendix\t59\t61", "hapax-appendix\t59\t124")
+
+    result = run_installer("--source", str(source), "--check")
+
+    assert result.returncode == 1
+    assert "host profile intervals overlap" in result.stderr
 
 
 def test_profile_config_must_match_table(tmp_path: Path) -> None:
