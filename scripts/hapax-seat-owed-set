@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""Read-only owed set for the coordinator seat.
+
+Promoted from frame/coordination-lossiness-20260924/scripts/derived_obligations.py (v3).
+A checkpoint is not an input. Nothing leaves the set because of its age.
+
+  hapax-seat-owed-set --commit <vault-sha> [--at ISO] [--bus-until ISO] [--activation ISO]
+  hapax-seat-owed-set --commit WORKTREE --text-block
+  hapax-seat-owed-set --session-start
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+DEFAULT_VAULT = Path.home() / "Documents" / "Personal"
+TASKS = "20-projects/hapax-cc-tasks/active"
+BUS = "30-areas/hapax/lanebus"
+SEAT_FILE = "30-areas/hapax/frame/COORDINATOR-SEAT.md"
+
+S1_MARKER = re.compile(
+    r"(authority (fields )?(are |is )?(intentionally )?(left|unset)"
+    r"( for (you|the coordinator|the seat))?"
+    r"|authority left to the (coordinator|seat)|build authority unset"
+    r"|for the coordinator[;,.]? authority"
+    r"|the seat grants|seat grants it|a drafter does not grant)",
+    re.I,
+)
+S1_BLOCKED = re.compile(
+    r"(awaiting_(coordinator|seat)|\bawait(s|ing)? (on )?(the )?(coordinator|seat)\b)",
+    re.I,
+)
+S3_MARKER = re.compile(
+    r"(closure is for the seat|acceptance (receipt )?(is )?for the seat"
+    r"|for the seat or the independent acceptor"
+    r"|awaiting (the )?(seat|coordinator)('s)? (acceptance|close|closure|signed review)"
+    r"|closure requested|route is the seat's call|is the seat's call)",
+    re.I,
+)
+ASK_MARKER = re.compile(
+    r"(authority (fields )?(are |is )?(left|unset)|left for you|your call|decide whether"
+    r"|has not yet decided|awaiting (your|the seat)|^\*\*Ask|^Ask:)",
+    re.I | re.M,
+)
+ACTOR = re.compile(
+    r"^- \S+?Z\s*[—–-]?\s*(?:\*\*)?"
+    r"(?:(?:MINTED|minted|filed|created|drafted)(?: offered)? by\s+)?"
+    r"([A-Za-z0-9/._-]+)(.{0,40})"
+)
+# v3 leaves this set hardcoded. Reading §0 here would change who counts as the seat.
+SEAT_ROLES = {"dev1", "claude/dev1", "glmcp/dev1"}
+NULLS = ("", "null", "none", "~")
+OPEN_STATUS = {"offered", "blocked", "claimed", "in_progress", "pr_open"}
+
+
+def actor_is_seat(log_line: str) -> bool:
+    """Author is the token after the stamp, not a search for the word seat.
+
+    v1 treated "dev3: … at the seat's request" as seat-authored.
+    """
+    match = ACTOR.match(log_line)
+    if not match:
+        return False
+    actor, rest = match.group(1).rstrip(":"), match.group(2)
+    return actor in SEAT_ROLES or bool(re.match(r"\s*\((coordinator|the coordinator)", rest))
+
+
+def git(vault: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    proc = subprocess.run(
+        ["git", "-C", str(vault), *args],
+        input=stdin,
+        capture_output=True,
+        check=False,
+    )
+    return proc.stdout
+
+
+def list_md(vault: Path, commit: str, rel_dir: str) -> list[str]:
+    if commit == "WORKTREE":
+        base = vault / rel_dir
+        if not base.is_dir():
+            return []
+        return [str(path.relative_to(vault)) for path in base.rglob("*.md")]
+    out = git(vault, "ls-tree", "-r", "--name-only", commit, "--", rel_dir).decode()
+    return [path for path in out.splitlines() if path.endswith(".md")]
+
+
+def read_many(vault: Path, commit: str, rels: list[str]) -> dict[str, str]:
+    if not rels:
+        return {}
+    if commit == "WORKTREE":
+        found: dict[str, str] = {}
+        for rel in rels:
+            try:
+                found[rel] = (vault / rel).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                found[rel] = ""
+        return found
+    raw = git(
+        vault,
+        "cat-file",
+        "--batch",
+        stdin="".join(f"{commit}:{rel}\n" for rel in rels).encode(),
+    )
+    found = {}
+    pos = 0
+    for rel in rels:
+        newline = raw.index(b"\n", pos)
+        header = raw[pos:newline].split()
+        if len(header) < 3 or header[1] == b"missing":
+            found[rel] = ""
+            pos = newline + 1
+            continue
+        size = int(header[2])
+        start = newline + 1
+        found[rel] = raw[start : start + size].decode("utf-8", errors="replace")
+        pos = start + size + 1
+    return found
+
+
+def front(text: str) -> dict[str, str]:
+    match = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    out: dict[str, str] = {}
+    if not match:
+        return out
+    for line in match.group(1).splitlines():
+        if ":" in line and not line.startswith((" ", "-")):
+            key, value = line.split(":", 1)
+            out[key.strip()] = value.strip().strip("'\"")
+    return out
+
+
+def session_log(text: str) -> list[str]:
+    if "## Session log" not in text:
+        return []
+    body = text.split("## Session log", 1)[1]
+    return [line for line in body.splitlines() if line.startswith("- 20")]
+
+
+def parse_ts(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def normalize_off(raw: str) -> set[str]:
+    off = {part.strip() for part in raw.split(",") if part.strip()}
+    if "S1" in off:
+        off |= {"S1.marker", "S1.blocked"}
+    if "S1-field" in off or "S1.field" in off:
+        off.add("S1.blocked")
+    if "S1-marker" in off:
+        off.add("S1.marker")
+    return off
+
+
+def project(
+    vault: Path,
+    commit: str,
+    *,
+    seat: str,
+    at: datetime,
+    bus_until: str,
+    activation: datetime,
+    off: set[str],
+) -> dict:
+    members: dict[str, set[str]] = {}
+    cohort: dict[str, str] = {}
+    ages: dict[str, float | None] = {}
+    rels = [rel for rel in list_md(vault, commit, TASKS) if "/" not in rel[len(TASKS) + 1 :]]
+    texts = read_many(vault, commit, rels)
+    for rel in rels:
+        text = texts.get(rel, "")
+        fm = front(text)
+        if fm.get("type") not in (None, "cc-task") and "task_id" not in fm:
+            continue
+        task_id = fm.get("task_id") or Path(rel).stem
+        status = fm.get("status", "")
+        if status not in OPEN_STATUS:
+            continue
+        created = parse_ts(fm.get("created_at") or fm.get("created"))
+        if created and created > at:
+            continue
+        body = text.split("\n---\n", 1)[1] if "\n---\n" in text else text
+        body = re.sub(r"\s+", " ", body)
+        impl = fm.get("implementation_authorized", "false").lower() == "true"
+        blocked = fm.get("blocked_reason", "") or ""
+        if blocked.lower() in NULLS:
+            blocked = ""
+        assignee = (fm.get("assigned_to", "") or "").lower()
+        unassigned = assignee in NULLS or assignee == "unassigned"
+        log = session_log(text)
+        first = min(log) if log else ""
+        classes: set[str] = set()
+        if status in ("offered", "blocked") and not impl:
+            field_hit = "S1.blocked" not in off and bool(S1_BLOCKED.search(blocked))
+            marker_hit = "S1.marker" not in off and bool(S1_MARKER.search(body))
+            if field_hit or marker_hit:
+                classes.add("S1")
+        # A blocked_reason that names the seat is owed at any open status.
+        if "S1.blocked" not in off and S1_BLOCKED.search(blocked):
+            classes.add("S1")
+        if "S2" not in off and status == "offered" and impl and unassigned:
+            classes.add("S2")
+        if "S3" not in off and S3_MARKER.search(body + " " + blocked):
+            classes.add("S3")
+        if "S5" not in off and status == "offered" and not impl and not blocked and unassigned:
+            # No session log means the author is unknown, so the row stays in.
+            if not (first and actor_is_seat(first)):
+                classes.add("S5")
+        if classes:
+            members[task_id] = classes
+            cohort[task_id] = "new" if created and created >= activation else "backlog"
+            ages[task_id] = (at - created).total_seconds() / 3600 if created else None
+
+    bus_members: list[tuple[str, str, float]] = []
+    if "S4" not in off:
+        inbox = f"{BUS}/{seat}"
+        paths = list_md(vault, commit, inbox)
+        receipts = {Path(path).name for path in paths if "/read/" in path}
+        candidates: list[tuple[str, str, str]] = []
+        for rel in paths:
+            if "/read/" in rel:
+                continue
+            name = Path(rel).name
+            stamp_m = re.match(r"(\d{8})T(\d{4})(\d{2})?Z", name)
+            if not stamp_m or name in receipts:
+                continue
+            day, hm, sec = stamp_m.group(1), stamp_m.group(2), stamp_m.group(3) or "00"
+            stamp = f"{day[:4]}-{day[4:6]}-{day[6:]}T{hm[:2]}:{hm[2:]}:{sec}"
+            if bus_until and stamp > bus_until:
+                continue
+            candidates.append((rel, name, stamp))
+        bodies = read_many(vault, commit, [item[0] for item in candidates])
+        for rel, name, stamp in candidates:
+            msg_fm = front(bodies.get(rel, ""))
+            if msg_fm.get("ack", "").lower() == "true":
+                flag = "ack:true"
+            elif ASK_MARKER.search(bodies.get(rel, "")):
+                flag = "ask-marker"
+            else:
+                flag = ""
+            if not flag:
+                continue
+            when = parse_ts(stamp + "+00:00")
+            age = (at - when).total_seconds() / 3600 if when else -1.0
+            bus_members.append((name, flag, age))
+
+    def sort_age(task_id: str) -> float:
+        age = ages.get(task_id)
+        return -(age if age is not None else 1e9)
+
+    rows = [
+        {
+            "task_id": task_id,
+            "classes": sorted(members[task_id]),
+            "cohort": cohort[task_id],
+            "age_h": None if ages.get(task_id) is None else round(ages[task_id], 4),
+        }
+        for task_id in sorted(members, key=lambda key: (sort_age(key), key))
+    ]
+    bus = [
+        {"name": name, "flag": flag, "age_h": round(age, 4)}
+        for name, flag, age in sorted(bus_members, key=lambda item: (-item[2], item[0]))
+    ]
+    unknown_age = sum(1 for task_id in members if ages.get(task_id) is None)
+    new_count = sum(1 for task_id in members if cohort[task_id] == "new")
+    return {
+        "seat": seat,
+        "commit": commit,
+        "at": at.isoformat(),
+        "activation": activation.isoformat(),
+        "rows": rows,
+        "bus": bus,
+        "members": {key: sorted(value) for key, value in members.items()},
+        "cohort": cohort,
+        "totals": {
+            "rows": len(members),
+            "S1": sum("S1" in value for value in members.values()),
+            "S2": sum("S2" in value for value in members.values()),
+            "S3": sum("S3" in value for value in members.values()),
+            "S5": sum("S5" in value for value in members.values()),
+            "S4": len(bus_members),
+            "ack_true": sum(item[1] == "ack:true" for item in bus_members),
+            "S6": 0,
+            "new": new_count,
+            "backlog": len(members) - new_count,
+            "unknown_age": unknown_age,
+        },
+        "rows_evaluated": len(rels),
+        "s6": "stub",
+    }
+
+
+def _age_cell(age: float | None) -> str:
+    if age is None:
+        return "      ?"
+    return f"{age:7.1f}h"
+
+
+def owed_block(result: dict) -> str:
+    count = result["totals"]["rows"] + result["totals"]["S4"]
+    lines = [f"OWED BY THE SEAT ({count})"]
+    for row in result["rows"]:
+        classes = ",".join(row["classes"])
+        lines.append(f"{classes}\t{row['cohort']}\t{_age_cell(row['age_h'])}\t{row['task_id']}")
+    for item in result["bus"]:
+        lines.append(f"S4\tbus\t{item['age_h']:7.1f}h\t{item['name']}\t{item['flag']}")
+    lines.append("S6\tstub\t0")
+    return "\n".join(lines)
+
+
+def render_text(result: dict, targets: list[str]) -> str:
+    totals = result["totals"]
+    lines = [
+        owed_block(result),
+        (
+            f"TOTAL rows={totals['rows']} S1={totals['S1']} S2={totals['S2']} "
+            f"S3={totals['S3']} S5={totals['S5']} S4={totals['S4']} "
+            f"(ack:true={totals['ack_true']}) S6=stub"
+        ),
+        (
+            f"cohort: new={totals['new']} backlog={totals['backlog']} "
+            f"(activation {result['activation']}); "
+            f"unknown_age={totals['unknown_age']}; rows_evaluated={result['rows_evaluated']}"
+        ),
+    ]
+    for target in targets:
+        if target in result["members"]:
+            classes = ",".join(result["members"][target])
+            lines.append(f"target {target}: IN {classes} {result['cohort'][target]}")
+        else:
+            lines.append(f"target {target}: ABSENT")
+    return "\n".join(lines) + "\n"
+
+
+def incumbent_role(vault: Path) -> str:
+    try:
+        text = (vault / SEAT_FILE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    match = re.search(r"^\| incumbent \| [a-z]*/([a-z0-9-]*)", text, re.M)
+    return match.group(1) if match else ""
+
+
+def session_start_payload(vault: Path) -> str:
+    role = incumbent_role(vault)
+    if not role or os.environ.get("HAPAX_AGENT_ROLE", "") != role:
+        return ""
+    intro = (
+        "Take the coordinator seat: read ~/Documents/Personal/30-areas/hapax/frame/"
+        "COORDINATOR-SEAT.md. "
+        f"This is a same-role routine restart (startup, resume, or clear) of the seat (role {role}). "
+        "Do not mint a row or run the stale-lease runbook. "
+        "The owed set is the control point; §5 is narrative. "
+        "New items are owed a disposition within 30 minutes. "
+        "Backlog items are owed one disposition within 24 hours of this activation. "
+        "Update the section 0 heartbeat row with your new transcript path."
+    )
+    try:
+        now = datetime.now(UTC)
+        result = project(
+            vault,
+            "WORKTREE",
+            seat=role,
+            at=now,
+            bus_until="",
+            activation=now - timedelta(hours=48),
+            off=set(),
+        )
+        block = owed_block(result)
+    except Exception as exc:  # the seat's session start must still receive the control sentence
+        block = f"OWED BY THE SEAT (unavailable: {exc.__class__.__name__})"
+    body = intro + "\n\n" + block
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": body,
+            }
+        },
+        ensure_ascii=True,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--commit", default="")
+    parser.add_argument("--seat", default="dev1")
+    parser.add_argument("--bus-until", default="")
+    parser.add_argument("--at", default="")
+    parser.add_argument("--activation", default="")
+    parser.add_argument("--disable", default="")
+    parser.add_argument("--targets", default="")
+    parser.add_argument("--vault", default="")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--text-block", action="store_true")
+    parser.add_argument("--session-start", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args(argv)
+    vault = Path(args.vault) if args.vault else DEFAULT_VAULT
+
+    if args.session_start:
+        if not sys.stdin.isatty():
+            try:
+                sys.stdin.read()
+            except OSError:
+                pass
+        payload = session_start_payload(vault)
+        sys.stdout.write(payload)
+        if not sys.stdout.isatty():
+            sys.stdout.write("\n")
+        return 0
+
+    if not args.commit:
+        parser.error("--commit is required unless --session-start")
+    at = parse_ts(args.at) or datetime.now(UTC)
+    activation = parse_ts(args.activation) or (at - timedelta(hours=48))
+    result = project(
+        vault,
+        args.commit,
+        seat=args.seat,
+        at=at,
+        bus_until=args.bus_until,
+        activation=activation,
+        off=normalize_off(args.disable),
+    )
+    targets = [item for item in args.targets.split(",") if item]
+    if args.json:
+        payload = {key: value for key, value in result.items() if key not in {"members", "cohort"}}
+        payload["targets"] = {
+            target: (
+                f"IN {','.join(result['members'][target])} {result['cohort'][target]}"
+                if target in result["members"]
+                else "ABSENT"
+            )
+            for target in targets
+        }
+        sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        return 0
+    if args.text_block:
+        sys.stdout.write(owed_block(result) + "\n")
+        return 0
+    if args.quiet:
+        totals = result["totals"]
+        sys.stdout.write(
+            f"TOTAL rows={totals['rows']} S1={totals['S1']} S2={totals['S2']} "
+            f"S3={totals['S3']} S5={totals['S5']} S4={totals['S4']} "
+            f"(ack:true={totals['ack_true']}) S6=stub\n"
+        )
+        return 0
+    sys.stdout.write(render_text(result, targets))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
