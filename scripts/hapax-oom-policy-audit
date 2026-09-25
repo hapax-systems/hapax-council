@@ -1385,6 +1385,7 @@ def _docker_mcp_lease_is_live(
     uid_fields = uid_line.split()
     try:
         stat_tail = stat_line.rsplit(") ", 1)[1].split()
+        process_state = stat_tail[0]
         live_start = stat_tail[19]
     except (IndexError, ValueError):
         return False, "lease process identity is malformed"
@@ -1392,6 +1393,8 @@ def _docker_mcp_lease_is_live(
         return False, "lease process UID identity is malformed"
     if live_boot != lease_boot:
         return False, "lease boot identity is stale"
+    if process_state == "Z":
+        return False, "lease process is a zombie"
     if uid_fields[1] != str(uid):
         return False, "lease process UID does not match the audited operator"
     if live_start != lease_start:
@@ -1606,6 +1609,11 @@ def audit_docker_limits(uid: int) -> list[Check]:
                     "{{json .HostConfig.ReadonlyRootfs}}\t{{json .HostConfig.CapDrop}}\t"
                     "{{json .HostConfig.SecurityOpt}}\t{{json .HostConfig.AutoRemove}}\t"
                     "{{json .HostConfig.LogConfig.Type}}\t{{json .HostConfig.Tmpfs}}\t"
+                    "{{json .HostConfig.Binds}}\t{{json .Mounts}}\t"
+                    "{{json .HostConfig.Privileged}}\t{{json .HostConfig.CapAdd}}\t"
+                    "{{json .HostConfig.NetworkMode}}\t{{json .HostConfig.PidMode}}\t"
+                    "{{json .HostConfig.IpcMode}}\t{{json .HostConfig.Devices}}\t"
+                    "{{json .HostConfig.DeviceRequests}}\t{{json .HostConfig.PortBindings}}\t"
                     "{{json .State.Status}}\t{{json .Config.StopTimeout}}"
                 ),
                 container_id,
@@ -1628,8 +1636,8 @@ def audit_docker_limits(uid: int) -> list[Check]:
             if len(inspect_lines) != 1 or len(inspect_lines[0]) > DOCKER_INSPECT_LINE_MAX:
                 raise ValueError("expected one bounded Docker inspect line")
             fields = inspect_lines[0].split("\t")
-            if len(fields) != 18:
-                raise ValueError("expected eighteen formatted Docker inspect fields")
+            if len(fields) != 28:
+                raise ValueError("expected twenty-eight formatted Docker inspect fields")
             (
                 actual_id,
                 actual_name,
@@ -1647,6 +1655,16 @@ def audit_docker_limits(uid: int) -> list[Check]:
                 auto_remove,
                 log_driver,
                 tmpfs,
+                binds,
+                mounts,
+                privileged,
+                cap_add,
+                network_mode,
+                pid_mode,
+                ipc_mode,
+                devices,
+                device_requests,
+                port_bindings,
                 container_state,
                 stop_timeout,
             ) = (json.loads(field) for field in fields)
@@ -1681,7 +1699,22 @@ def audit_docker_limits(uid: int) -> list[Check]:
                 isinstance(key, str) and isinstance(value, str) for key, value in tmpfs.items()
             ):
                 raise TypeError("Docker Tmpfs must be a string map")
-            if not all(isinstance(value, str) for value in (log_driver, container_state)):
+            if binds is not None and not isinstance(binds, list):
+                raise TypeError("Docker Binds must be null or a list")
+            if not isinstance(mounts, list) or not isinstance(devices, list):
+                raise TypeError("Docker mounts and devices must be lists")
+            if type(privileged) is not bool:
+                raise TypeError("Docker Privileged must be boolean")
+            if cap_add is not None and not isinstance(cap_add, list):
+                raise TypeError("Docker CapAdd must be null or a list")
+            if device_requests is not None and not isinstance(device_requests, list):
+                raise TypeError("Docker DeviceRequests must be null or a list")
+            if not isinstance(port_bindings, dict):
+                raise TypeError("Docker PortBindings must be a map")
+            if not all(
+                isinstance(value, str)
+                for value in (log_driver, network_mode, pid_mode, ipc_mode, container_state)
+            ):
                 raise TypeError("Docker runtime state fields must be strings")
             if type(stop_timeout) is not int:
                 raise TypeError("Docker StopTimeout must be an integer")
@@ -1701,12 +1734,15 @@ def audit_docker_limits(uid: int) -> list[Check]:
         lease_start = labels.get(GITHUB_MCP_LEASE_START_LABEL, "")
         lease_boot = labels.get(GITHUB_MCP_LEASE_BOOT_LABEL, "")
         expected_name = f"/hapax-github-mcp-{launch_id}"
+        labels_ok = (
+            labels.get(GITHUB_MCP_APP_LABEL) == GITHUB_MCP_APP_ID
+            and labels.get(GITHUB_MCP_UID_LABEL) == str(uid)
+            and re.fullmatch(rf"{uid}-[A-Za-z0-9]{{10}}", launch_id) is not None
+        )
         identity_ok = (
             actual_id == container_id
             and actual_name == f"/{name}"
-            and labels.get(GITHUB_MCP_APP_LABEL) == GITHUB_MCP_APP_ID
-            and labels.get(GITHUB_MCP_UID_LABEL) == str(uid)
-            and re.fullmatch(rf"{uid}-[A-Za-z0-9]{{10}}", launch_id) is not None
+            and labels_ok
             and actual_name == expected_name
         )
         command_ok = (
@@ -1731,35 +1767,44 @@ def audit_docker_limits(uid: int) -> list[Check]:
             and set(tmpfs) == {"/tmp"}
             and len(tmpfs["/tmp"].split(",")) == 4
             and set(tmpfs["/tmp"].split(",")) == {"rw", "noexec", "nosuid", "size=16m"}
-            and container_state in {"created", "running", "restarting", "exited", "dead"}
+            and binds is None
+            and mounts == []
+            and privileged is False
+            and cap_add is None
+            and network_mode == "bridge"
+            and pid_mode == ""
+            and ipc_mode == "private"
+            and devices == []
+            and device_requests is None
+            and port_bindings == {}
+            and container_state
+            in {"created", "running", "restarting", "paused", "removing", "exited", "dead"}
             and stop_timeout == 1
         )
         lease_live, lease_detail = _docker_mcp_lease_is_live(
             lease_pid, lease_start, lease_boot, uid
         )
+        converging = container_state == "removing"
         status = (
             "pass"
-            if identity_ok and limits_ok and command_ok and security_ok and lease_live
+            if identity_ok
+            and limits_ok
+            and command_ok
+            and security_ok
+            and (lease_live or converging)
             else "gap"
         )
-        identity_labels = {
-            key: labels.get(key)
-            for key in (
-                GITHUB_MCP_APP_LABEL,
-                GITHUB_MCP_UID_LABEL,
-                GITHUB_MCP_LAUNCH_LABEL,
-                GITHUB_MCP_LEASE_PID_LABEL,
-                GITHUB_MCP_LEASE_START_LABEL,
-                GITHUB_MCP_LEASE_BOOT_LABEL,
-            )
-        }
+        safe_state = (
+            container_state
+            if container_state
+            in {"created", "running", "restarting", "paused", "removing", "exited", "dead"}
+            else "redacted"
+        )
         actual = (
-            f"id={actual_id},name={actual_name},labels={identity_labels},Memory={memory},"
-            f"MemorySwap={memory_swap},OomKillDisable={oom_kill_disable},"
-            f"Image={image_id},ConfigImage={config_image},Path={process_path},Args={process_args},"
-            f"ReadonlyRootfs={readonly_rootfs},CapDrop={cap_drop},SecurityOpt={security_opt},"
-            f"AutoRemove={auto_remove},LogDriver={log_driver},Tmpfs={tmpfs},"
-            f"State={container_state},StopTimeout={stop_timeout},LeaseLive={lease_live}"
+            f"IdMatch={actual_id == container_id},NameMatch={actual_name == expected_name},"
+            f"LabelsMatch={labels_ok},"
+            f"LimitsMatch={limits_ok},CommandMatch={command_ok},SecurityMatch={security_ok},"
+            f"State={safe_state},LeaseLive={lease_live},Converging={converging}"
         )
         checks.append(
             Check(
