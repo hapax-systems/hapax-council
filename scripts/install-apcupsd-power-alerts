@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Install Hapax apcupsd config/hooks and verify power-event provenance paths.
 set -euo pipefail
+# Repository selectors are never package-authority inputs. The staged source,
+# explicit repository root, and immutable commit are the complete Git surface.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
+export GIT_NO_REPLACE_OBJECTS=1
 ORIGINAL_ARGS=("$@")
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
