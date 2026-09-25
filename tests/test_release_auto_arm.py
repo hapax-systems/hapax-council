@@ -440,17 +440,23 @@ def test_consent_containment_lane_production_entries_are_exact_files() -> None:
     lane = set(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES)
     assert not _LANE_DIRECTORY_ENTRIES_ADMITTED - lane, (
         f"ratified directory entries missing from the lane: "
-        f"{sorted(_LANE_DIRECTORY_ENTRIES_ADMITTED - lane)}"
+        f"{sorted(_LANE_DIRECTORY_ENTRIES_ADMITTED - lane)}. Next action: restore "
+        f"the entry in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES, or, if the lane "
+        f"narrowing is ratified, remove it from _LANE_DIRECTORY_ENTRIES_ADMITTED."
     )
     repo_root = Path(__file__).resolve().parents[1]
     directories = {entry for entry in lane if (repo_root / entry).is_dir()}
     assert not directories - _LANE_DIRECTORY_ENTRIES_ADMITTED, (
         f"production entries admitted as directories: "
-        f"{sorted(directories - _LANE_DIRECTORY_ENTRIES_ADMITTED)}"
+        f"{sorted(directories - _LANE_DIRECTORY_ENTRIES_ADMITTED)}. Next action: "
+        f"replace each with the exact consent-bearing files beneath it; add a "
+        f"test tree to _LANE_DIRECTORY_ENTRIES_ADMITTED only by ratification."
     )
     assert not _LANE_DIRECTORY_ENTRIES_ADMITTED - directories, (
         f"ratified directory entries not directories on the tree: "
-        f"{sorted(_LANE_DIRECTORY_ENTRIES_ADMITTED - directories)}"
+        f"{sorted(_LANE_DIRECTORY_ENTRIES_ADMITTED - directories)}. Next action: "
+        f"run from a full checkout (sparse checkouts omit trees); if the tree was "
+        f"removed, drop it from the lane and _LANE_DIRECTORY_ENTRIES_ADMITTED together."
     )
 
 
