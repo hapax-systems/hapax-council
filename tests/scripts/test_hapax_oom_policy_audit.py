@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import pwd
@@ -60,10 +61,13 @@ DOCKER_INVENTORY_FORMAT = (
     '"org.hapax.github-mcp.app="}}P{{end}}{{end}}'
 )
 DOCKER_IMAGE_INSPECT_FORMAT = '{{.Id}}{{range .RepoDigests}}{{printf "\\n%s" .}}{{end}}'
+DOCKER_CONTAINER_INSPECT_FORMAT_SHA256 = (
+    "8f8db7e1805fdd3c4bf12b56acc938c5352a26d59cddddd10c7ce03d42693d57"
+)
 
 
-def _load_docker_container_inspect_format() -> str:
-    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+def _load_docker_container_inspect_format(source: str) -> str:
+    tree = ast.parse(source)
     candidates: list[str] = []
     for node in ast.walk(tree):
         if (
@@ -90,10 +94,19 @@ def _load_docker_container_inspect_format() -> str:
             candidates.append(format_argument)
     if len(candidates) != 1:
         raise AssertionError("expected one literal immutable-ID Docker inspect call")
-    return candidates[0]
+    format_argument = candidates[0]
+    actual_digest = hashlib.sha256(format_argument.encode()).hexdigest()
+    if actual_digest != DOCKER_CONTAINER_INSPECT_FORMAT_SHA256:
+        raise AssertionError(
+            "immutable-ID Docker inspect format digest changed: "
+            f"expected {DOCKER_CONTAINER_INSPECT_FORMAT_SHA256}, got {actual_digest}"
+        )
+    return format_argument
 
 
-DOCKER_CONTAINER_INSPECT_FORMAT = _load_docker_container_inspect_format()
+DOCKER_CONTAINER_INSPECT_FORMAT = _load_docker_container_inspect_format(
+    SCRIPT.read_text(encoding="utf-8")
+)
 GITHUB_MCP_IMAGE_LABELS = {
     "io.modelcontextprotocol.server.name": "io.github.github/github-mcp-server",
     "org.opencontainers.image.created": "2026-05-29T12:26:39.099Z",
@@ -2348,6 +2361,19 @@ def test_fake_docker_requires_exact_container_inspect_template(tmp_path: Path) -
 
     assert result.returncode == 9
     assert "unexpected docker args" in result.stderr
+
+
+def test_container_inspect_format_oracle_rejects_production_template_drift() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    mutated = source.replace(
+        "{{json .HostConfig.Memory}}",
+        "{{json .HostConfig.MemoryReservation}}",
+        1,
+    )
+    assert mutated != source
+
+    with pytest.raises(AssertionError, match="digest"):
+        _load_docker_container_inspect_format(mutated)
 
 
 def test_docker_inventory_binds_identity_and_label_in_one_daemon_snapshot() -> None:
