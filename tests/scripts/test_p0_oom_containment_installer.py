@@ -81,6 +81,16 @@ RECOVERY_SYSTEM_UNIT_PIDS = {
     unit: 200 + index for index, unit in enumerate(RECOVERY_SYSTEM_UNIT_SCORES)
 }
 SAFE_AUDIT_ENVIRONMENT = "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
+JUDGE_CONTAINER_ID = "a" * 64
+MCP_CONTAINER_ID = "b" * 64
+
+
+def _systemctl_property_file(section: str, key: str, value: str) -> str:
+    return (
+        '# This is a drop-in unit file extension, created via "systemctl set-property"\n'
+        "# or an equivalent operation. Do not edit.\n"
+        f"[{section}]\n{key}={value}\n"
+    )
 
 
 def _copy_oom_package(dest_root: Path) -> None:
@@ -134,8 +144,38 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     fake_visudo.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_visudo.chmod(0o755)
     monkeypatch.setenv("HAPAX_OOM_VISUDO", str(fake_visudo))
-    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_DIR", str(tmp_path / "systemd-user-default"))
-    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_SYSTEM_DIR", str(tmp_path / "systemd-system-default"))
+    user_dir = tmp_path / "systemd-user-default"
+    system_dir = tmp_path / "systemd-system-default"
+    user_control_dir = tmp_path / "systemd-user-control-default"
+    user_runtime_control_dir = tmp_path / "systemd-user-runtime-control-default"
+    user_transient_dir = tmp_path / "systemd-user-transient-default"
+    system_control_dir = tmp_path / "systemd-system-control-default"
+    system_runtime_control_dir = tmp_path / "systemd-system-runtime-control-default"
+    system_transient_dir = tmp_path / "systemd-system-transient-default"
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_DIR", str(user_dir))
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_SYSTEM_DIR", str(system_dir))
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR", str(user_control_dir))
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR", str(user_runtime_control_dir))
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR", str(user_transient_dir))
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR", str(system_control_dir))
+    monkeypatch.setenv(
+        "HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR", str(system_runtime_control_dir)
+    )
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR", str(system_transient_dir))
+    monkeypatch.setenv(
+        "HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS",
+        ":".join(
+            str(path)
+            for path in (system_control_dir, system_runtime_control_dir, system_transient_dir, system_dir)
+        ),
+    )
+    monkeypatch.setenv(
+        "HAPAX_OOM_GOVERNED_USER_UNIT_PATHS",
+        ":".join(
+            str(path)
+            for path in (user_control_dir, user_runtime_control_dir, user_transient_dir, user_dir)
+        ),
+    )
     monkeypatch.setenv(
         "HAPAX_OOM_ZRAM_POLICY_DEST",
         str(tmp_path / "zram-generator.conf"),
@@ -147,6 +187,9 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     zram_dropins = tmp_path / "zram-generator.conf.d"
     zram_dropins.mkdir()
     monkeypatch.setenv("HAPAX_OOM_ZRAM_DROPIN_DIRS", str(zram_dropins))
+    monkeypatch.setenv(
+        "HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS", str(tmp_path / "run" / "zram-generator.conf")
+    )
     monkeypatch.setenv(
         "HAPAX_OOM_PROFILE_TABLE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
     )
@@ -162,16 +205,19 @@ set -euo pipefail
 printf '%s\n' "$*" >> {docker_calls}
 case "$1" in
   ps)
-    printf '%s\n' hapax-local-judge hapax-github-mcp-hapax-123 unrelated-container
+    printf '%s\n' \
+      '{JUDGE_CONTAINER_ID}|hapax-local-judge' \
+      '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123' \
+      '{"c" * 64}|unrelated-container'
     ;;
   update)
     exit 0
     ;;
   inspect)
-    name="${{@: -1}}"
-    case "$name" in
-      hapax-local-judge) printf '/%s|%s|%s\n' "$name" {4 * 1024**3} {6 * 1024**3} ;;
-      hapax-github-mcp-hapax-123) printf '/%s|%s|%s\n' "$name" {512 * 1024**2} {768 * 1024**2} ;;
+    id="${{@: -1}}"
+    case "$id" in
+      {JUDGE_CONTAINER_ID}) printf '%s|/%s|%s|%s\n' "$id" hapax-local-judge {4 * 1024**3} {6 * 1024**3} ;;
+      {MCP_CONTAINER_ID}) printf '%s|/%s|%s|%s\n' "$id" hapax-github-mcp-hapax-123 {512 * 1024**2} {768 * 1024**2} ;;
       *) exit 1 ;;
     esac
     ;;
@@ -469,7 +515,10 @@ def test_source_check_rejects_production_sudoers_identity_override(
     assert "next action:" in result.stderr
 
 
-def test_production_destinations_reject_host_policy_test_overrides(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", ["--install", "--verify-live"])
+def test_production_destinations_reject_host_policy_test_overrides(
+    tmp_path: Path, mode: str
+) -> None:
     calls = tmp_path / "systemctl-calls"
     fake_systemctl = tmp_path / "systemctl"
     fake_systemctl.write_text(
@@ -484,7 +533,7 @@ def test_production_destinations_reject_host_policy_test_overrides(tmp_path: Pat
         "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
     }
     result = subprocess.run(
-        [str(INSTALLER), "--install"],
+        [str(INSTALLER), mode],
         text=True,
         capture_output=True,
         check=False,
@@ -598,8 +647,12 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("success", "appendix", "none"),
         ("success", "podium", "legacy"),
         ("success", "podium", "unowned-later"),
+        ("success", "podium", "unowned-earlier-control"),
+        ("success", "podium", "unowned-transient"),
+        ("success", "podium", "zram-main"),
         ("disappear", "podium", "none"),
         ("update-failure", "podium", "none"),
+        ("inspect-failure-present", "podium", "none"),
         ("post-update-mismatch", "podium", "none"),
     ],
 )
@@ -611,6 +664,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     root_home = tmp_path / "root-home"
     user_dir = target_home / ".config" / "systemd" / "user"
     user_control_dir = target_home / ".config" / "systemd" / "user.control"
+    user_runtime_control_dir = tmp_path / "run" / "user" / "1000" / "systemd" / "user.control"
+    user_transient_dir = tmp_path / "run" / "user" / "1000" / "systemd" / "transient"
+    system_control_dir = tmp_path / "systemd-system-control"
+    system_runtime_control_dir = tmp_path / "systemd-system-runtime-control"
+    system_transient_dir = tmp_path / "systemd-system-transient"
     stale_user_system_units = (
         "hapax-root-failure-intake@.service",
         "hapax-oom-score-enforce.service",
@@ -622,11 +680,27 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         path.write_text("[Unit]\nDescription=stale user copy\n", encoding="utf-8")
     stale_control = user_control_dir / "app.slice.d" / "50-MemoryHigh.conf"
     stale_control.parent.mkdir(parents=True)
-    stale_control.write_text("[Slice]\nMemoryHigh=1G\n", encoding="utf-8")
+    stale_control.write_text(
+        _systemctl_property_file("Slice", "MemoryHigh", "1073741824"), encoding="utf-8"
+    )
     stale_low = user_control_dir / "app.slice.d" / "50-MemoryLow.conf"
     stale_min = user_control_dir / "app.slice.d" / "50-MemoryMin.conf"
-    stale_low.write_text("[Slice]\nMemoryLow=64G\n", encoding="utf-8")
-    stale_min.write_text("[Slice]\nMemoryMin=32G\n", encoding="utf-8")
+    stale_low.write_text(
+        _systemctl_property_file("Slice", "MemoryLow", "68719476736"), encoding="utf-8"
+    )
+    stale_min.write_text(
+        _systemctl_property_file("Slice", "MemoryMin", "34359738368"), encoding="utf-8"
+    )
+    stale_system_control = system_control_dir / "user-1000.slice.d" / "50-MemoryMax.conf"
+    stale_system_control.parent.mkdir(parents=True)
+    stale_system_control.write_text(
+        _systemctl_property_file("Slice", "MemoryMax", "60129542144"), encoding="utf-8"
+    )
+    stale_manager_control = system_control_dir / "user@1000.service.d" / "50-MemoryHigh.conf"
+    stale_manager_control.parent.mkdir(parents=True)
+    stale_manager_control.write_text(
+        _systemctl_property_file("Service", "MemoryHigh", "51539607552"), encoding="utf-8"
+    )
     if override_mode == "legacy":
         for path in (
             system_dir / "user-1000.slice.d" / "zz-hapax-host-memory.conf",
@@ -642,6 +716,18 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         later = system_dir / "user-1000.slice.d" / "zz-unowned-memory.conf"
         later.parent.mkdir(parents=True, exist_ok=True)
         later.write_text("[Slice]\nMemoryMax=96G\n", encoding="utf-8")
+    elif override_mode == "unowned-earlier-control":
+        earlier = system_control_dir / "user-1000.slice.d" / "40-unowned-memory.conf"
+        earlier.parent.mkdir(parents=True, exist_ok=True)
+        earlier.write_text("[Slice]\nMemoryHigh=72G\n", encoding="utf-8")
+    elif override_mode == "unowned-transient":
+        transient = system_transient_dir / "user@.service.d" / "10-unowned-memory.conf"
+        transient.parent.mkdir(parents=True, exist_ok=True)
+        transient.write_text("[Service]\nMemoryLow=20G\n", encoding="utf-8")
+    elif override_mode == "zram-main":
+        zram_main = Path(os.environ["HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS"])
+        zram_main.parent.mkdir(parents=True, exist_ok=True)
+        zram_main.write_text("[zram0]\nzram-size = 1G\n", encoding="utf-8")
     legacy_audio_overrides = {
         "pipewire.service.d/override.conf": "[Service]\nOOMScoreAdjust=-900\nLimitNOFILE=8192\n",
         "pipewire-pulse.service.d/override.conf": "[Service]\nOOMScoreAdjust=-900\n",
@@ -708,28 +794,38 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         fake_docker = Path(os.environ["HAPAX_OOM_DOCKER"])
         docker_calls = Path(os.environ["HAPAX_TEST_DOCKER_CALLS"])
         mcp_memory = 0 if docker_mode == "post-update-mismatch" else 512 * 1024**2
-        update_action = (
-            'if [ "${@: -1}" = "hapax-github-mcp-hapax-123" ]; then exit 1; fi\n'
-            if docker_mode in {"disappear", "update-failure"}
-            else "exit 0\n"
-        )
+        gone = tmp_path / "mcp-gone"
+        if docker_mode == "disappear":
+            update_action = (
+                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then touch {gone!s}; exit 1; fi\n'
+                "exit 0\n"
+            )
+        elif docker_mode == "update-failure":
+            update_action = (
+                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then exit 1; fi\nexit 0\n'
+            )
+        else:
+            update_action = "exit 0\n"
         mcp_inspect = (
             "exit 1"
-            if docker_mode == "disappear"
-            else f"printf '/%s|%s|%s\\n' \"$name\" {mcp_memory} {768 * 1024**2}"
+            if docker_mode == "inspect-failure-present"
+            else f"printf '%s|/%s|%s|%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {768 * 1024**2}"
         )
         fake_docker.write_text(
             f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> {docker_calls}
 case "$1" in
-  ps) printf '%s\n' hapax-local-judge hapax-github-mcp-hapax-123 ;;
+  ps)
+    printf '%s\n' '{JUDGE_CONTAINER_ID}|hapax-local-judge'
+    [ -e {gone!s} ] || printf '%s\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'
+    ;;
   update) {update_action} ;;
   inspect)
-    name="${{@: -1}}"
-    case "$name" in
-      hapax-local-judge) printf '/%s|%s|%s\n' "$name" {4 * 1024**3} {6 * 1024**3} ;;
-      hapax-github-mcp-hapax-123) {mcp_inspect} ;;
+    id="${{@: -1}}"
+    case "$id" in
+      {JUDGE_CONTAINER_ID}) printf '%s|/%s|%s|%s\n' "$id" hapax-local-judge {4 * 1024**3} {6 * 1024**3} ;;
+      {MCP_CONTAINER_ID}) {mcp_inspect} ;;
       *) exit 1 ;;
     esac
     ;;
@@ -751,6 +847,29 @@ esac
             "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
             "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
             "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR": str(user_control_dir),
+            "HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR": str(user_runtime_control_dir),
+            "HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR": str(user_transient_dir),
+            "HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR": str(system_control_dir),
+            "HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR": str(system_runtime_control_dir),
+            "HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR": str(system_transient_dir),
+            "HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS": ":".join(
+                str(path)
+                for path in (
+                    system_control_dir,
+                    system_runtime_control_dir,
+                    system_transient_dir,
+                    system_dir,
+                )
+            ),
+            "HAPAX_OOM_GOVERNED_USER_UNIT_PATHS": ":".join(
+                str(path)
+                for path in (
+                    user_control_dir,
+                    user_runtime_control_dir,
+                    user_transient_dir,
+                    user_dir,
+                )
+            ),
             "HAPAX_OOM_TARGET_UID": "1000",
             "HAPAX_OOM_TARGET_HOME": str(target_home),
             "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
@@ -774,13 +893,21 @@ esac
         },
     )
 
-    if docker_mode in {"update-failure", "post-update-mismatch"} or override_mode == "unowned-later":
+    override_failure = override_mode in {
+        "unowned-later",
+        "unowned-earlier-control",
+        "unowned-transient",
+        "zram-main",
+    }
+    if docker_mode in {"update-failure", "inspect-failure-present", "post-update-mismatch"} or override_failure:
         assert result.returncode == 1
         assert not (
             tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha"
         ).exists()
-        if override_mode == "unowned-later":
-            assert "unowned later OOM memory drop-in" in result.stderr
+        if override_mode == "zram-main":
+            assert "higher-priority zram-generator" in result.stderr
+        elif override_failure:
+            assert "unowned OOM memory assignment" in result.stderr
         else:
             assert "Docker" in result.stderr
         return
@@ -816,6 +943,11 @@ esac
     assert f"MemoryMax={'56G' if host_profile == 'appendix' else '96G'}" in (
         system_dir / "user-1000.slice.d" / "oom-containment.conf"
     ).read_text(encoding="utf-8")
+    assert not stale_control.exists()
+    assert not stale_low.exists()
+    assert not stale_min.exists()
+    assert not stale_system_control.exists()
+    assert not stale_manager_control.exists()
     assert "MemoryMin=10G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
@@ -899,9 +1031,9 @@ esac
     for unit in stale_user_system_units:
         assert f"--user disable --now {unit}" in user_calls
     docker_calls = Path(os.environ["HAPAX_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8")
-    assert "update --memory 4G --memory-swap 6G hapax-local-judge" in docker_calls
+    assert f"update --memory 4G --memory-swap 6G {JUDGE_CONTAINER_ID}" in docker_calls
     assert (
-        "update --memory 512M --memory-swap 768M hapax-github-mcp-hapax-123"
+        f"update --memory 512M --memory-swap 768M {MCP_CONTAINER_ID}"
         in docker_calls
     )
     assert "update --memory" in docker_calls
