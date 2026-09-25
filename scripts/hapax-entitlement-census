@@ -49,6 +49,7 @@ from shared.entitlement_census import (  # noqa: E402
     DEFAULT_OUTPUT_ROOT,
     ENTITLEMENT_CENSUS_CONFIG,
     HISTORY_STREAM,
+    PRE_SINK_HISTORY_FILE,
     PROVIDER_CALLS_STREAM,
     CensusConfig,
     CensusConfigError,
@@ -352,10 +353,13 @@ def main(argv: list[str] | None = None) -> int:
     intake: dict[str, Any] | None = None
     if not args.dry_run:
         # Clause (8): one line of the append-only series per real run, and the trend it implies.
+        prior = load_history(args.output_root / PRE_SINK_HISTORY_FILE, now=now)
+        if stream_path:
+            prior += load_history(stream_path(HISTORY_STREAM), now=now)
         attach_history(
             run,
             now=now,
-            prior=load_history(stream_path(HISTORY_STREAM), now=now) if stream_path else [],
+            prior=prior,
             demand=_demand(config, now),
             witness=_witness(config),
         )

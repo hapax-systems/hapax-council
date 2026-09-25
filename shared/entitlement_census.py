@@ -2239,6 +2239,9 @@ def run_census(
 # per-stream SHA-256 chain, append rolled back on failure), not a bespoke file.
 
 HISTORY_STREAM = "entitlement-census.history"
+#: The two runs of 2026-09-25 before the sink wrote this plain file beside the view. It is frozen:
+#: read into the trend, never written, and past TREND_WINDOW after 2026-10-02 it contributes nothing.
+PRE_SINK_HISTORY_FILE = "history.jsonl"
 #: dev22's direct-API channel writes one write-ahead pair per call here (attempted, then final);
 #: E1 only reads it (contract lanebus/dev16/20260925T102149Z-dev22-provider-calls-contract-accepted).
 PROVIDER_CALLS_STREAM = "provider-calls"

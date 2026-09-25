@@ -228,6 +228,23 @@ def test_real_runs_append_the_series_and_dry_runs_never_do(
     assert view["trend"]["points"] == 2
 
 
+def test_the_pre_sink_series_still_counts_and_is_never_rewritten(cli, tmp_path: Path) -> None:
+    """The two runs before the durable sink wrote a plain history.jsonl beside the view. The move to
+    the sink must not drop them from the trend, and the frozen file is evidence: read, never written."""
+    paths = _files(tmp_path, remote=False)
+    paths["out"].mkdir()
+    legacy = paths["out"] / "history.jsonl"
+    legacy.write_text(
+        json.dumps({"ts": "2026-09-25T00:30:00Z", "states": {"featherless": "held"}}) + "\n",
+        encoding="utf-8",
+    )
+    frozen = legacy.read_bytes()
+    assert cli.main(_argv(paths, "--no-intake", "--now", "2026-09-25T01:00:00Z")) == 0
+    view = json.loads((paths["out"] / "view.json").read_text(encoding="utf-8"))
+    assert view["trend"]["points"] == 2
+    assert legacy.read_bytes() == frozen
+
+
 def test_host_reads_are_capped_by_the_budget(cli, tmp_path: Path) -> None:
     paths = _files(tmp_path)
     cli.main(_argv(paths, "--no-intake"))
