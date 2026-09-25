@@ -1,0 +1,23 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Sign one witness receipt for the system witness-rota unit
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/shared/signing_holder.py
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hapax-signing-holder
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+SyslogIdentifier=hapax-signing-holder
+DynamicUser=yes
+LoadCredentialEncrypted=hapax-public-gate-authority-hmac-key
+TimeoutStartSec=30s
+MemoryMax=128M
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=

@@ -1,0 +1,14 @@
+#!/usr/bin/python3 -I
+"""Sign one witness receipt for the system witness-rota unit (socket-activated, Accept=yes).
+
+Installed to /usr/local/sbin by operator act O3. Isolated mode (-I) ignores PYTHON* variables,
+the user site and the script's directory, so only the root-owned library copy below is imported.
+"""
+
+import sys
+
+sys.path.insert(0, "/usr/local/lib/hapax/signing-holder")
+
+from shared.signing_holder import main  # noqa: E402
+
+sys.exit(main())
