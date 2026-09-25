@@ -11,7 +11,7 @@ and an unclaimed row escalates after 24 h. Its §Enforcement names this auditor 
 (small)". Nobody minted it, and the coordinator seat stopped hand-maintaining the index for
 M75–M115. A representation with no enforcement degrades into a record.
 
-This module is pure. It parses two authored documents and evaluates T1–T7 over them, and it
+This module is pure. It parses two authored documents and evaluates T1–T9 over them, and it
 performs no I/O. ``scripts/hapax-encountered-machinery-audit`` owns reading, minting, posting and
 writing, and ``hapax-determine`` owns the cadence and witnesses each run.
 
@@ -447,11 +447,18 @@ def parse_ledger(text: str) -> list[LedgerClass]:
             continue
         col = {name: n for n, name in enumerate(header)}
         if len(cells) != len(header):
-            raise LedgerError(f"ledger row {i + 1} has {len(cells)} cells, expected {len(header)}")
+            raise LedgerError(
+                f"ledger row {i + 1} has {len(cells)} cells, expected {len(header)}; next action: "
+                "give the row one cell per header column (class | members | disposition | row), "
+                "escaping any literal '|' inside a cell"
+            )
         klass = cells[col["class"]]
         km = re.search(r"`([^`]+)`", klass)
         if not km:
-            raise LedgerError(f"ledger row {i + 1}: class cell has no backticked key")
+            raise LedgerError(
+                f"ledger row {i + 1}: class cell has no backticked key; next action: start the "
+                "class cell with the class key in backticks, e.g. `gate-predicate-reads-proxy`: …"
+            )
         members: list[tuple[str, int]] = []
         bad: list[str] = []
         for tok in (t.strip() for t in cells[col["members"]].split(",")):

@@ -13,6 +13,8 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -510,6 +512,92 @@ def test_an_unreadable_catalogue_fails_loudly(tmp_path: Path) -> None:
     rc, report = _run(paths)
     assert rc == 2
     assert "next action" in report["errors"][0]
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("| `nfs`: mount | M53, M999 | TBD | — |", "| `nfs`: mount | M53, M999 | TBD |"),
+        ("| `nfs`: mount |", "| nfs mount |"),
+    ],
+)
+def test_every_ledger_error_names_a_next_action(old: str, new: str) -> None:
+    """executive_function: errors must include next actions (review finding on #4754)."""
+    with pytest.raises(ema.LedgerError, match="next action"):
+        ema.parse_ledger(LEDGER.replace(old, new))
+
+
+# ---------------------------------------------------------------------------------------------
+# T5 input: the catalogue's own git history, through the real path (review finding on #4754).
+
+FOLD = (
+    "# E\n\n## Change Record — 2026-09-24 fold\n\n"
+    "| # | encountered defect | witness | cost | owner / disposition | status |\n"
+    "|---|---|---|---|---|---|\n"
+)
+ROW75 = "| M75 | env leak | seat 22:27Z | a launch refused | #4729 | FIX-IN-FLIGHT |\n"
+ROW76 = "| M76 | dispatch broken | seat 22:2xZ | lanes by hand | bundle | OPEN |\n"
+ROW83 = "| M83 | hand-armed release | dev2 23:00Z | 1 h | seat practice | LIVE (practice) |\n"
+
+
+def _git_repo_with_history(tmp_path: Path) -> Path:
+    repo = tmp_path / "vault"
+    catalogue = repo / "frame" / "ENCOUNTERED-MACHINERY.md"
+    catalogue.parent.mkdir(parents=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "fixture",
+        "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+        "GIT_COMMITTER_NAME": "fixture",
+        "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    for text, when in (
+        (FOLD + ROW75, "2026-09-10T00:00:00Z"),  # before -14 d
+        (FOLD + ROW75 + ROW76, "2026-09-17T00:00:00Z"),  # before -7 d
+    ):
+        catalogue.write_text(text, encoding="utf-8")
+        dated = {**env, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=dated)
+        subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", when], check=True, env=dated)
+    catalogue.write_text(FOLD + ROW75 + ROW76 + ROW83, encoding="utf-8")  # now, uncommitted
+    return catalogue
+
+
+def test_load_trend_reconstructs_past_windows_from_real_git_history(tmp_path: Path) -> None:
+    catalogue = _git_repo_with_history(tmp_path)
+    ledger = ema.parse_ledger(LEDGER)
+    current = ema.evaluate(
+        ema.parse_catalogue(catalogue.read_text(encoding="utf-8")),
+        ledger,
+        now=NOW,
+        owner_rows={},
+        trend=ema.Trend.unobserved("pending"),
+    )
+    trend = cli.load_trend(catalogue, ledger, NOW, current)
+    assert [(p.label, p.pile, p.entries) for p in trend.points] == [
+        ("-14d", 1, 1),
+        ("-7d", 2, 2),
+        ("now", 4, 3),
+    ], trend.note
+    assert "frame/ENCOUNTERED-MACHINERY.md" in trend.note
+
+
+def test_load_trend_outside_git_is_unobserved_not_an_error(tmp_path: Path) -> None:
+    catalogue = tmp_path / "ENCOUNTERED-MACHINERY.md"
+    catalogue.write_text(FOLD + ROW75, encoding="utf-8")
+    current = ema.evaluate(
+        ema.parse_catalogue(FOLD + ROW75),
+        ema.parse_ledger(LEDGER),
+        now=NOW,
+        owner_rows={},
+        trend=ema.Trend.unobserved("pending"),
+    )
+    trend = cli.load_trend(catalogue, ema.parse_ledger(LEDGER), NOW, current)
+    assert trend.points == ()
+    assert trend.note.startswith("trend unobserved")
 
 
 @pytest.mark.parametrize("bad", ["M01 x2 y", "Mfoo"])
