@@ -2989,6 +2989,62 @@ public_gate_authority:
         )
         assert dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV not in caplog.text
 
+    @pytest.mark.parametrize("unset_value", [None, "", "  \n"])
+    def test_unset_public_gate_secret_records_unsigned_and_never_forges(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        unset_value: str | None,
+    ) -> None:
+        env_name = dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV
+        if unset_value is None:
+            monkeypatch.delenv(env_name, raising=False)
+        else:
+            monkeypatch.setenv(env_name, unset_value)
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+
+        assert result["status"] == "dispatched"
+        assert "public-gate authority evidence left unsigned" in caplog.text
+        dossier = yaml.safe_load((note.parent / "task-a.review-dossier.yaml").read_text())
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        for payload in (dossier, receipt):
+            assert "authority_signature" not in payload
+            assert "authority_issuer" not in payload
+
+    def test_public_gate_secret_value_never_reaches_evidence_logs_argv_or_prompts(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        secret = "synthetic-public-gate-value-must-not-leak"  # pragma: allowlist secret
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+        caplog.set_level(logging.DEBUG)
+
+        result, gh, reviewers, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+
+        assert result["status"] == "dispatched"
+        dossier_text = (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        receipt_text = (note.parent / "task-a.acceptance.yaml").read_text(encoding="utf-8")
+        assert "authority_signature" in yaml.safe_load(dossier_text)
+        observed = [
+            dossier_text,
+            receipt_text,
+            caplog.text,
+            json.dumps(result, default=str),
+            *gh.comments,
+            *(" ".join(call) for call in gh.calls),
+            *(prompt for _, _, prompt in reviewers.invocations),
+        ]
+        assert all(secret not in text for text in observed)
+
     def test_review_evidence_authorizes_declared_public_gate_receipt(
         self,
         tmp_path: Path,
