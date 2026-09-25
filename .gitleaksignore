@@ -237,4 +237,4 @@ a73583852d7e8b2c0d986904bd819651d8b8d78e:docs/ci/claude-review-opus-route-smoke-
 e0e920b220bca15992cbb0105d67d7565dd13218:docs/ci/claude-review-opus-route-smoke-20260709.md:home-directory-path:29
 
 # Historical absolute-path test command, corrected in the successor runbook.
-d95866616d1fb5d557dc04046cf225697136fba1:docs/runbooks/gate0b-claim-publication-fallback.md:home-directory-path:274
+844d909aef4c13814fd423fd22a2cf18eb04cb17:docs/runbooks/gate0b-claim-publication-fallback.md:home-directory-path:274
