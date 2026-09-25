@@ -1,0 +1,15 @@
+id: contract-principal-c2
+parties:
+- operator
+- principal-c2
+scope:
+- audio
+- presence
+- transcription
+- video
+direction: one_way
+visibility_mechanism: guardian_mediated
+created_at: '2026-03-16T00:00:00'
+principal_class: child
+guardian: operator
+schema_version: 2

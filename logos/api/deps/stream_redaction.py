@@ -56,6 +56,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
+from shared.governance.consent import estate_identity_operation
 from shared.stream_mode import is_publicly_visible as _is_publicly_visible
 
 
@@ -217,31 +218,13 @@ def pii_redact(text: str, placeholder: str = "[redacted]") -> str:
 
 
 def references_non_broadcast_person_id(text: str, registry: Any) -> bool:
-    """True iff ``text`` mentions a registered person_id lacking an active
-    broadcast-scope contract.
-
-    Scans for every non-operator party name in the passed registry. A
-    match is case-insensitive substring. If any matched person lacks a
-    contract scoped to ``"broadcast"``, the text is considered non-safe
-    for a public stream.
-
-    Caller provides the registry (typically a ``ConsentRegistry`` from
-    ``logos._governance``) so this module stays agnostic of the specific
-    registry implementation — anything iterable over contracts-with-
-    ``parties`` and with a ``contract_check(pid, "broadcast")`` method
-    works.
-    """
-    if not text:
-        return False
-    lower = text.lower()
-    seen: set[str] = set()
-    for contract in registry:
-        for party in getattr(contract, "parties", ()):
-            if not party or party == "operator":
-                continue
-            if party in seen:
-                continue
-            seen.add(party)
-            if party.lower() in lower and not registry.contract_check(party, "broadcast"):
-                return True
-    return False
+    """Recognize custody identities and check canonical broadcast consent together."""
+    with estate_identity_operation() as snapshot:
+        mentioned = set(snapshot.mentioned_principal_ids(text))
+        for contract in registry:
+            for party in getattr(contract, "parties", ()):
+                if party and re.search(r"\b" + re.escape(party) + r"\b", text, re.IGNORECASE):
+                    mentioned.add(snapshot.resolve_principal_id(party))
+        return any(
+            not registry.contract_check(pid, "broadcast") for pid in mentioned if pid != "operator"
+        )
