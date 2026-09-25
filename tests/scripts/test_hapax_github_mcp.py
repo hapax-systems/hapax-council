@@ -475,11 +475,45 @@ def test_github_mcp_declared_inventory_bound_fits_bounded_output() -> None:
     assert "readonly MAX_DOCKER_OUTPUT_BYTES=16384" in source
 
 
+# Secrets resolve through the shared FileStore helper, which the launcher finds beside its own
+# resolved path; the staged copy therefore carries scripts/lib/secret.sh and takes its PATH from
+# a staged bin directory, so a fake `hapax-secret` is what actually answers the lookup.
+def _stage_secret_lib(tmp_path: Path) -> Path:
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir(exist_ok=True)
+    (lib_dir / "secret.sh").write_text(
+        (REPO_ROOT / "scripts" / "lib" / "secret.sh").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    secret_bin = tmp_path / "secret-bin"
+    secret_bin.mkdir(exist_ok=True)
+    return secret_bin
+
+
+def _fake_hapax_secret(directory: Path, marker: Path | None = None) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    secret = directory / "hapax-secret"
+    body = (
+        f"#!/usr/bin/env bash\nprintf ran > {marker}\nexit 0\n"
+        if marker is not None
+        else (
+            "#!/usr/bin/env bash\n"
+            'if [ "$1" = "github/codex-personal-access-token" ]; then\n'
+            "  printf '%s\\n' 'test-token'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+    )
+    secret.write_text(body, encoding="utf-8")
+    secret.chmod(0o755)
+    return secret
+
+
 def _stage_wrapper_with_docker(
     tmp_path: Path,
     docker: Path,
     *,
-    pass_bin: Path | None = None,
     gh_bin: Path | None = None,
     timeout_bin: Path | None = None,
     head_bin: Path | None = None,
@@ -488,8 +522,12 @@ def _stage_wrapper_with_docker(
     source = WRAPPER.read_text(encoding="utf-8")
     assert source.count("/usr/bin/docker") == 2
     source = source.replace("/usr/bin/docker", str(docker))
-    if pass_bin is not None:
-        source = source.replace("/usr/bin/pass", str(pass_bin))
+    secret_bin = _stage_secret_lib(tmp_path)
+    assert source.count("PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin") == 1
+    source = source.replace(
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
+        f"PATH={secret_bin}:/usr/local/sbin:/usr/local/bin:/usr/bin:/bin",
+    )
     if gh_bin is not None:
         source = source.replace("/usr/bin/gh", str(gh_bin))
     if timeout_bin is not None:
@@ -602,18 +640,7 @@ def test_github_mcp_pins_docker_and_cleans_up_by_full_id(tmp_path: Path) -> None
     label_dir.mkdir()
     container_id = "a" * 64
 
-    fake_pass = bin_dir / "pass"
-    fake_pass.write_text(
-        """#!/usr/bin/env bash
-if [ "$1" = "show" ] && [ "$2" = "github/codex-personal-access-token" ]; then
-  echo test-token
-  exit 0
-fi
-exit 1
-""",
-        encoding="utf-8",
-    )
-    fake_pass.chmod(0o755)
+    _fake_hapax_secret(tmp_path / "secret-bin")
     fake_gh = bin_dir / "gh"
     fake_gh.write_text(
         """#!/usr/bin/env bash
@@ -675,7 +702,7 @@ esac
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
-    staged = _stage_wrapper_with_docker(tmp_path, fake_docker, pass_bin=fake_pass, gh_bin=fake_gh)
+    staged = _stage_wrapper_with_docker(tmp_path, fake_docker, gh_bin=fake_gh)
 
     env = _base_env(tmp_path, bin_dir)
     env.update(
@@ -1924,13 +1951,13 @@ esac
 def test_github_mcp_refuses_mismatched_ambient_home_before_credentials(
     tmp_path: Path,
 ) -> None:
-    marker = tmp_path / "ambient-pass-ran"
-    fake_pass = tmp_path / "pass"
-    fake_pass.write_text(
+    marker = tmp_path / "ambient-secret-ran"
+    fake_secret = tmp_path / "hapax-secret"
+    fake_secret.write_text(
         f"#!/usr/bin/env bash\nprintf ran > {marker}\nexit 0\n",
         encoding="utf-8",
     )
-    fake_pass.chmod(0o755)
+    fake_secret.chmod(0o755)
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "hostile-home")
     env["PATH"] = f"{tmp_path}:{env['PATH']}"
