@@ -2504,13 +2504,27 @@ def audit_docker_limits(uid: int) -> list[Check]:
         return checks
     assert final_inventory is not None
 
+    final_labeled_ids, final_labeled_error = _read_docker_labeled_inventory(
+        final_inventory, closing=True
+    )
+    if final_labeled_error is not None:
+        checks.append(final_labeled_error)
+        return checks
+    assert final_labeled_ids is not None
+
     closing_target_count = max(
-        sum(
-            1
-            for container_id, name in bounded_inventory.items()
-            if container_id in closing_labeled_ids or name.startswith("hapax-github-mcp-")
+        (
+            sum(
+                1
+                for container_id, name in bounded_inventory.items()
+                if container_id in bounded_labeled_ids
+                or name.startswith("hapax-github-mcp-")
+            )
+            for bounded_inventory, bounded_labeled_ids in (
+                (closing_inventory, closing_labeled_ids),
+                (final_inventory, final_labeled_ids),
+            )
         )
-        for bounded_inventory in (closing_inventory, final_inventory)
     )
     if closing_target_count > DOCKER_TARGET_MAX:
         checks.append(
@@ -2526,7 +2540,7 @@ def audit_docker_limits(uid: int) -> list[Check]:
 
     inventory_stable = (
         _docker_target_generation(closing_inventory, closing_labeled_ids) == target_generation
-        and _docker_target_generation(final_inventory, closing_labeled_ids) == target_generation
+        and _docker_target_generation(final_inventory, final_labeled_ids) == target_generation
     )
     checks.append(
         Check(
