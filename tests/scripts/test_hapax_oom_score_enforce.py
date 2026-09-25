@@ -23,6 +23,22 @@ PROTECTED_UNITS = (
 )
 
 
+def _section_values(text: str, section: str, key: str) -> list[str]:
+    in_section = False
+    values: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped == f"[{section}]"
+            continue
+        if not in_section or not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+            continue
+        directive, _, value = stripped.partition("=")
+        if directive.strip() == key:
+            values.append(value.strip())
+    return values
+
+
 def _run(
     script: Path, *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
@@ -94,22 +110,21 @@ def test_retired_trigger_usage_errors_include_next_action(args: tuple[str, ...])
 
 
 def test_retired_root_units_refuse_every_activation_path() -> None:
-    service = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.service").read_text()
-    timer = (REPO_ROOT / "systemd/units/hapax-oom-score-enforce.timer").read_text()
+    for name in ("hapax-oom-score-enforce.service", "hapax-oom-score-enforce.timer"):
+        body = (REPO_ROOT / "systemd/units" / name).read_text(encoding="utf-8")
+        assert _section_values(body, "Unit", "RefuseManualStart") == ["yes"]
+        conditions = _section_values(body, "Unit", "ConditionPathExists")
+        assert conditions == ["!/"]
 
-    for body in (service, timer):
-        assert "RefuseManualStart=yes" in body
-        assert "ConditionPathExists=!/" in body
-
-    condition = subprocess.run(
-        ["systemd-analyze", "condition", "ConditionPathExists=!/"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
-    )
-    assert condition.returncode == 1
-    assert "Conditions failed" in condition.stdout + condition.stderr
+        condition = subprocess.run(
+            ["systemd-analyze", "condition", f"ConditionPathExists={conditions[0]}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert condition.returncode == 1
+        assert "Conditions failed" in condition.stdout + condition.stderr
 
 
 @pytest.mark.parametrize(
