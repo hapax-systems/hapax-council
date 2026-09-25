@@ -1,42 +1,24 @@
 #!/usr/bin/bash -p
-# Fail-bounded user-side bridge to the allowlisted root OOM score enforcer.
+# Compatibility sentinel for stale user-unit drop-ins during governed cutover.
 set -euo pipefail
-unset CDPATH ENV BASH_ENV
+IFS=$' \t\n'
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
+unset ENV BASH_ENV CDPATH
 
-unit="${1:-}"
-case "$unit" in
-    pipewire.service | pipewire-pulse.service | wireplumber.service | hapax-daimonion.service | studio-compositor.service | hapax-imagination.service) ;;
+[ "$#" -eq 1 ] || {
+    printf 'usage: hapax-oom-score-trigger UNIT\n' >&2
+    exit 2
+}
+
+case "$1" in
+    pipewire.service|pipewire-pulse.service|wireplumber.service|\
+    hapax-daimonion.service|studio-compositor.service|hapax-imagination.service)
+        ;;
     *)
-        echo "refusing non-allowlisted protected user unit: $unit; next action: update this trigger allowlist and config/root-required/hapax-oom-score-enforce.sudoers together, then reinstall the OOM package" >&2
+        printf 'refusing non-retired OOM trigger unit: %s\n' "$1" >&2
         exit 2
         ;;
 esac
 
-TEST_MODE="${HAPAX_OOM_TRIGGER_TEST_MODE:-0}"
-if [ "$TEST_MODE" = "1" ]; then
-    if [ "$(/usr/bin/id -u)" = "0" ] || [ -n "${SUDO_USER:-}" ]; then
-        echo "refusing OOM trigger test overrides under root/sudo execution; next action: run the installed trigger without HAPAX_OOM_TRIGGER_TEST_MODE" >&2
-        exit 2
-    fi
-    TIMEOUT="${HAPAX_OOM_TRIGGER_TIMEOUT:-/usr/bin/timeout}"
-    SUDO="${HAPAX_OOM_TRIGGER_SUDO:-/usr/bin/sudo}"
-    ENFORCER="${HAPAX_OOM_TRIGGER_ENFORCER:-/usr/local/sbin/hapax-oom-score-enforce}"
-    DEADLINE="${HAPAX_OOM_TRIGGER_DEADLINE:-5s}"
-else
-    for override in \
-        HAPAX_OOM_TRIGGER_TEST_MODE HAPAX_OOM_TRIGGER_TIMEOUT \
-        HAPAX_OOM_TRIGGER_SUDO HAPAX_OOM_TRIGGER_ENFORCER \
-        HAPAX_OOM_TRIGGER_DEADLINE; do
-        if declare -p "$override" >/dev/null 2>&1; then
-            echo "refusing production OOM trigger override $override; next action: remove HAPAX_OOM_TRIGGER_* overrides and rerun the package-owned command" >&2
-            exit 2
-        fi
-    done
-    TIMEOUT="/usr/bin/timeout"
-    SUDO="/usr/bin/sudo"
-    ENFORCER="/usr/local/sbin/hapax-oom-score-enforce"
-    DEADLINE="5s"
-fi
-
-exec "$TIMEOUT" --signal=KILL "$DEADLINE" \
-    "$SUDO" -n "$ENFORCER" --apply-unit "$unit"
+printf 'info: root negative OOM trigger is retired; no process state was changed\n'

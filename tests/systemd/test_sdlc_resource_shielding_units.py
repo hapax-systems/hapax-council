@@ -8,7 +8,6 @@ load-bearing directives from silently regressing.
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -174,58 +173,30 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
         "studio-compositor.service.d/oom-protect.conf",
         "hapax-imagination.service.d/oom-protect.conf",
     }
-    audio_units = {
-        "pipewire.service.d/oom-protect.conf",
-        "pipewire-pulse.service.d/oom-protect.conf",
-        "wireplumber.service.d/oom-protect.conf",
-    }
     for rel in expected:
         text = (UNITS_DIR / rel).read_text()
         assert _directive(text, "OOMScoreAdjust") == "100"
-        if rel in audio_units:
-            assert _directive(text, "ExecStartPost") is None
-            assert _directive(text, "NoNewPrivileges") is None
-        else:
-            assert _directive(text, "ExecStartPost") == "-/usr/local/bin/hapax-oom-score-trigger %n"
+        assert _directive(text, "ExecStartPost") is None
+        assert _directive(text, "NoNewPrivileges") is None
         assert _directive(text, "MemoryLow") is not None
         assert _directive(text, "MemoryMin") is not None
 
 
-def test_protected_user_unit_allowlist_and_scores_match_across_runtime_surfaces() -> None:
-    expected = {
-        "pipewire.service": -900,
-        "pipewire-pulse.service": -900,
-        "wireplumber.service": -900,
-        "hapax-daimonion.service": -500,
-        "studio-compositor.service": -800,
-        "hapax-imagination.service": -800,
+def test_protected_user_units_have_no_root_negative_score_bridge() -> None:
+    expected_units = {
+        "pipewire.service",
+        "pipewire-pulse.service",
+        "wireplumber.service",
+        "hapax-daimonion.service",
+        "studio-compositor.service",
+        "hapax-imagination.service",
     }
+    expected_scores = {unit: 100 for unit in expected_units}
     oom_installer = (REPO_ROOT / "scripts/install-p0-oom-containment").read_text()
     assert "protected_user_unit_scores=(" not in oom_installer
     assert "--apply-unit" not in oom_installer
 
     enforcer = (REPO_ROOT / "scripts/hapax-oom-score-enforce").read_text()
-    enforcer_scores = {
-        unit: int(score)
-        for unit, score in re.findall(
-            r"^apply_unit_score ([a-z0-9@_.-]+) (-?\d+)$", enforcer, flags=re.MULTILINE
-        )
-    }
-    enforcer_allowlist = {}
-    enforcer_function = re.search(
-        r"protected_user_unit_score\(\) \{(?P<body>.*?)^\}",
-        enforcer,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert enforcer_function is not None
-    for units, score in re.findall(
-        r"^\s+([a-z0-9@_. |/-]+)\)\n\s+printf '%s\\n' (-?\d+)$",
-        enforcer_function.group("body"),
-        flags=re.MULTILINE,
-    ):
-        for unit in units.split("|"):
-            enforcer_allowlist[unit.strip()] = int(score)
-
     audit_tree = ast.parse((REPO_ROOT / "scripts/hapax-oom-policy-audit").read_text())
     audit_scores = None
     for node in audit_tree.body:
@@ -238,19 +209,18 @@ def test_protected_user_unit_allowlist_and_scores_match_across_runtime_surfaces(
     assert audit_scores is not None
 
     trigger = (REPO_ROOT / "scripts/hapax-oom-score-trigger").read_text()
-    trigger_match = re.search(r'case "\$unit" in\n\s+(?P<units>[^\n]+)\) ;;', trigger)
-    assert trigger_match is not None
-    trigger_units = {unit.strip() for unit in trigger_match.group("units").split("|")}
-
     sudoers = (REPO_ROOT / "config/root-required/hapax-oom-score-enforce.sudoers").read_text()
-    sudoers_units = set(re.findall(r"--apply-unit ([a-z0-9@_.-]+)", sudoers))
     dropin_units = {
         path.parent.name.removesuffix(".d")
         for path in UNITS_DIR.glob("*.service.d/oom-protect.conf")
     }
 
-    assert enforcer_scores == enforcer_allowlist == audit_scores == expected
-    assert trigger_units == sudoers_units == dropin_units == set(expected)
+    assert audit_scores == expected_scores
+    assert dropin_units == expected_units
+    assert all(unit in enforcer and unit in trigger for unit in expected_units)
+    assert "--apply-unit" not in sudoers
+    assert "HAPAX_OOM_SCORE_ENFORCE" not in sudoers
+    assert "oom_score_adj" not in enforcer + trigger
 
 
 def test_oom_policy_audit_timer_is_source_controlled() -> None:
@@ -283,7 +253,11 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "Hapax-Installer-Owner" not in service + timer
     assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=10min" in timer
-    assert "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit" in service
+    assert (
+        "ExecStart=/usr/bin/env -i HOME=%h XDG_RUNTIME_DIR=%t "
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin LANG=C LC_ALL=C "
+        "/usr/local/sbin/hapax-root-required-deploy-audit"
+    ) in service
     assert "TimeoutStartSec=2min" in service
     assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in service
     audit = (REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit").read_text()
@@ -297,19 +271,23 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "ConditionPathExists" not in service
 
 
-def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
+def test_root_oom_enforcer_is_a_disabled_retirement_sentinel() -> None:
     enforcer = (UNITS_DIR / "hapax-oom-score-enforce.service").read_text()
     timer = (UNITS_DIR / "hapax-oom-score-enforce.timer").read_text()
     intake = (UNITS_DIR / "hapax-root-failure-intake@.service").read_text()
     assert "# Hapax-Install-Scope: system" in enforcer
-    assert "OnFailure=hapax-root-failure-intake@%n.service" in enforcer
+    assert "Retired Hapax root-to-user OOM score bridge sentinel" in enforcer
+    assert "OnFailure=" not in enforcer
     assert "Wants=user@1000.service" not in enforcer
-    assert "After=user@1000.service" in enforcer
+    assert "After=user@1000.service" not in enforcer
     assert "StartLimitIntervalSec=0" in enforcer
     assert "StartLimitBurst" not in enforcer
+    assert "TimeoutStartSec=5s" in enforcer
+    assert "must remain disabled" in timer
     assert "OnBootSec=120s" in timer
     assert "OnUnitActiveSec=120s" in timer
     assert "AccuracySec=1s" in timer
+    assert "WantedBy=timers.target" not in timer
     assert "# Hapax-Install-Scope: system" in intake
     assert "User=hapax" in intake
     assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in intake
@@ -326,7 +304,8 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "ConditionPathExists" not in intake
     enforcer_script = (REPO_ROOT / "scripts/hapax-oom-score-enforce").read_text()
     assert "/usr/bin/runuser" not in enforcer_script
-    assert '"$SYSTEMCTL" --user' not in enforcer_script
+    assert "systemctl" not in enforcer_script
+    assert "/proc/" not in enforcer_script
 
 
 # ── L2: the audio-core cpuset fence ──────────────────────────────────────────
