@@ -154,24 +154,168 @@ def _vibe_home(
 TODAY = {STALE_KEY: "api", CURRENT_KEY: "chat"}
 
 
+def _bwrap_usable() -> bool:
+    probe = [
+        "bwrap",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib",
+        "/lib64",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--unshare-pid",
+        "--",
+        "/usr/bin/true",
+    ]
+    try:
+        return subprocess.run(probe, capture_output=True, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+needs_bwrap = pytest.mark.skipif(
+    not _bwrap_usable(), reason="bubblewrap with unprivileged user namespaces is unavailable"
+)
+
+
+def _fake_vibe(tmp_path: Path) -> Path:
+    """A fake vibe that reports, on stderr, its argv and what it can see of its home.
+
+    The reviewer runs vibe inside the declared envelope, where no host path of the test is visible,
+    so the record travels on the stream the wrapper forwards.
+    """
+
+    script = tmp_path / "fakebin" / "vibe"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!" + sys.executable + "\n"
+        "import json, os, sys\n"
+        "home = os.environ.get('HOME', '')\n"
+        "seen = {n: os.path.exists(os.path.join(home, n))\n"
+        "        for n in ('.vibe/AGENTS.md', '.vibe/.env', '.vibe/whoami_cache.json')}\n"
+        "record = {'argv': sys.argv[1:], 'cwd': os.getcwd(), 'home': home, 'seen': seen,\n"
+        "          'env': sorted(os.environ)}\n"
+        "sys.stderr.write('RECORD ' + json.dumps(record) + '\\n')\n"
+        f"sys.stdout.write({FENCE!r})\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script
+
+
+def _runtime_dirs(fake: Path) -> str:
+    """The host directories the fake needs inside the envelope: its own and the interpreter's."""
+
+    dirs = {
+        fake.parent,
+        Path(sys.prefix),
+        Path(sys.base_prefix),
+        Path(sys.base_prefix).parent,
+        Path(os.path.realpath(sys.executable)).parents[1],
+    }
+    return ":".join(sorted(str(d) for d in dirs))
+
+
+def _record(result: subprocess.CompletedProcess) -> dict | None:
+    for line in result.stderr.splitlines():
+        if line.startswith("RECORD "):
+            return json.loads(line[len("RECORD ") :])
+    return None
+
+
 class TestVibeReviewer:
     def _run_vibe(self, tmp_path: Path, home: Path, prompt: str = "REVIEW", **env: str):
-        fake, record = _fake_cli(tmp_path, "vibe")
-        result = _run(
+        fake = _fake_vibe(tmp_path)
+        return _run(
             "hapax-vibe-reviewer",
             prompt,
-            {"HAPAX_VIBE_BIN": str(fake), "HOME": str(home), "MISTRAL_API_KEY": "", **env},
+            {
+                "HAPAX_VIBE_BIN": str(fake),
+                "HAPAX_VIBE_RUNTIME_DIRS": _runtime_dirs(fake),
+                "HOME": str(home),
+                "MISTRAL_API_KEY": "",
+                **env,
+            },
         )
-        return result, record
 
+    @needs_bwrap
     def test_current_team_entry_wins_over_a_stale_api_entry(self, tmp_path: Path) -> None:
-        result, record = self._run_vibe(tmp_path, _vibe_home(tmp_path, TODAY))
+        result = self._run_vibe(tmp_path, _vibe_home(tmp_path, TODAY))
         assert result.returncode == 0, result.stderr
         assert result.stdout == FENCE
-        argv = json.loads(record.read_text())["argv"]
+        record = _record(result)
+        assert record is not None, result.stderr
+        argv = record["argv"]
         assert argv[argv.index("--enabled-tools") + 1] == "re:^$"
         assert argv[argv.index("--max-turns") + 1] == "1"
         assert "REVIEW" in argv[argv.index("-p") + 1]
+        assert argv[argv.index("--workdir") + 1] == "/work" == record["cwd"]
+
+    @needs_bwrap
+    def test_the_estate_agents_md_in_the_real_home_never_reaches_vibe(self, tmp_path: Path) -> None:
+        """Measured 2026-09-25 (vault frame/harness-import-scrub-20260925/HARNESS-IMPORTS.md): on
+        origin/main, ~/.vibe/AGENTS.md reached the model on this wrapper's exact argv."""
+        home = _vibe_home(tmp_path, TODAY)
+        sentinel = home / ".vibe" / "AGENTS.md"
+        sentinel.write_text("HAPAX-SENTINEL-vibe-agents-md\n", encoding="utf-8")
+        from shared.capability_envelope import OpenWatch
+
+        with OpenWatch([sentinel]) as watch:
+            result = self._run_vibe(tmp_path, home)
+        assert result.returncode == 0, result.stderr
+        record = _record(result)
+        assert record is not None, result.stderr
+        assert record["seen"] == {
+            ".vibe/AGENTS.md": False,
+            ".vibe/.env": True,
+            ".vibe/whoami_cache.json": False,
+        }
+        assert record["home"] != str(home)
+        assert "MISTRAL_API_KEY" not in record["env"]
+        assert watch.opened() == set()
+        assert "HAPAX-SENTINEL" not in result.stdout
+
+    def test_missing_bubblewrap_is_a_route_outage_not_an_unenveloped_run(
+        self, tmp_path: Path
+    ) -> None:
+        empty = tmp_path / "empty-path"
+        empty.mkdir()
+        result = self._run_vibe(tmp_path, _vibe_home(tmp_path, TODAY), PATH=str(empty))
+        _assert_route_outage(result)
+        assert "bubblewrap" in result.stderr
+        assert _record(result) is None
+
+    def test_key_only_in_the_process_environment_is_a_route_outage(self, tmp_path: Path) -> None:
+        """The envelope carries the key only as the ~/.vibe/.env file bind, never in env."""
+        home = _vibe_home(tmp_path, TODAY, configured=None)
+        result = self._run_vibe(tmp_path, home, MISTRAL_API_KEY=CURRENT_KEY)
+        _assert_route_outage(result)
+        assert "~/.vibe/.env" in result.stderr
+        assert _record(result) is None
+        assert CURRENT_KEY not in result.stderr
+
+    @needs_bwrap
+    def test_a_carrier_failure_is_a_route_outage(self, tmp_path: Path) -> None:
+        """The binary's directory is not declared, so bwrap cannot exec it inside the job."""
+        fake = _fake_vibe(tmp_path)
+        interpreter_only = ":".join(
+            d for d in _runtime_dirs(fake).split(":") if d != str(fake.parent)
+        )
+        result = self._run_vibe(
+            tmp_path, _vibe_home(tmp_path, TODAY), HAPAX_VIBE_RUNTIME_DIRS=interpreter_only
+        )
+        _assert_route_outage(result)
+        assert "envelope carrier failed" in result.stderr
 
     @pytest.mark.parametrize(
         "case",
@@ -187,40 +331,35 @@ class TestVibeReviewer:
             "no_cache": lambda: _vibe_home(tmp_path, None),
             "malformed_cache": lambda: _vibe_home(tmp_path, None, raw_cache="[not a mapping"),
         }[case]()
-        result, record = self._run_vibe(tmp_path, home)
+        result = self._run_vibe(tmp_path, home)
         _assert_route_outage(result)
         # A mechanical next action for the coordinator, never a question parked on the operator.
         assert "Next action (coordinator): rebind Vibe to the Team account" in result.stderr
         assert "operator" not in result.stderr
-        assert not record.exists()
+        assert _record(result) is None
 
     def test_conflicting_process_key_is_refused(self, tmp_path: Path) -> None:
         # Both keys are Team-bound, so only the conflict itself (which key bills is not
         # established) can refuse the seat.
         both_team = {STALE_KEY: "chat", CURRENT_KEY: "chat"}
-        result, record = self._run_vibe(
+        result = self._run_vibe(
             tmp_path, _vibe_home(tmp_path, both_team), MISTRAL_API_KEY=STALE_KEY
         )
         _assert_route_outage(result)
-        assert not record.exists()
+        assert _record(result) is None
 
     def test_the_key_never_reaches_output(self, tmp_path: Path) -> None:
         for home_dir, entries in (("ok", TODAY), ("refused", {STALE_KEY: "api"})):
-            result, _ = self._run_vibe(
-                tmp_path / home_dir, _vibe_home(tmp_path / home_dir, entries)
-            )
+            result = self._run_vibe(tmp_path / home_dir, _vibe_home(tmp_path / home_dir, entries))
             for key in (CURRENT_KEY, STALE_KEY):
                 assert key not in result.stdout and key not in result.stderr
 
     def test_prompt_above_the_measured_ceiling_is_a_route_outage(self, tmp_path: Path) -> None:
-        fake, record = _fake_cli(tmp_path, "vibe")
         home = _vibe_home(tmp_path, TODAY)
-        result = _run(
-            "hapax-vibe-reviewer", "x" * 22_001, {"HAPAX_VIBE_BIN": str(fake), "HOME": str(home)}
-        )
+        result = self._run_vibe(tmp_path, home, prompt="x" * 22_001)
         _assert_route_outage(result)
         assert "0 B at 45-87 KB" in result.stderr
-        assert not record.exists()
+        assert _record(result) is None
 
 
 class _Completions(http.server.BaseHTTPRequestHandler):
