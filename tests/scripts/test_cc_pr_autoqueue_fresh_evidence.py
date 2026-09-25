@@ -425,6 +425,17 @@ def test_a_note_edit_that_is_not_a_current_head_stamp_keeps_the_rotation(
     assert report["must_include"]["fresh_evidence"] == []
 
 
+def test_an_unreadable_stamped_note_is_not_evidence(tmp_path: Path) -> None:
+    # The stamp probe's fallback narrows: a note that cannot be stat'ed is not fresh.
+    vault = _make_vault(tmp_path)
+    path = _stamp(vault, 13, head="sha-13", mtime=datetime.now(UTC) - timedelta(minutes=1))
+    task = autoqueue.load_task_notes(vault)[0]
+    since = datetime.now(UTC) - timedelta(hours=1)
+    assert autoqueue._release_stamp_newer_than(task, "sha-13", since, now=datetime.now(UTC))
+    path.unlink()
+    assert not autoqueue._release_stamp_newer_than(task, "sha-13", since, now=datetime.now(UTC))
+
+
 def test_a_future_dated_stamp_never_jumps_the_rotation(tmp_path: Path) -> None:
     runner, vault, _ = _examined_estate(tmp_path)
     _stamp(vault, 13, head="sha-13", mtime=datetime.now(UTC) + timedelta(days=365))

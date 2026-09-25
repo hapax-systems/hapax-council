@@ -1142,6 +1142,33 @@ class TestSeatT2FamilyFloorRelease:
         blockers = self._blockers(rt, dossier, self._frontmatter())
         assert "review_dossier_unresolved_critical:1" in blockers
 
+    def test_an_unresolvable_writer_or_quorum_refuses_the_rule(self) -> None:
+        # The rule's fallback narrows: a retired writer lane, or a registry without the t2
+        # quorum, returns no release rather than raising or guessing.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = self._writer_seat_dead(rt)
+        accepts = [r for r in dossier["reviewers"] if r["verdict"] == "accept"]
+        assert rt.t2_family_floor_release(
+            dossier, frontmatter=self._frontmatter(), registry=reg, accepts=accepts
+        )
+        assert (
+            rt.t2_family_floor_release(
+                dossier,
+                frontmatter=self._frontmatter(assigned_to="agy-1"),
+                registry=reg,
+                accepts=accepts,
+            )
+            is None
+        )
+        no_quorum = {**reg, "sizing": {**reg["sizing"], "t2_standard": {}}}
+        assert (
+            rt.t2_family_floor_release(
+                dossier, frontmatter=self._frontmatter(), registry=no_quorum, accepts=accepts
+            )
+            is None
+        )
+
     # -- the floor-met path is unchanged ---------------------------------------------------
 
     def test_a_dossier_that_met_the_floor_never_consults_the_rule(self) -> None:
