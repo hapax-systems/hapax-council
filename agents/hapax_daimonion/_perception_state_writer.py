@@ -48,6 +48,49 @@ PERCEPTION_STATE_FILE = PERCEPTION_STATE_DIR / "perception-state.json"
 CONSENT_STATE_FILE = Path("/dev/shm/hapax-daimonion/consent-state.json")
 _perception_write_failures: int = 0
 
+# Logged with a persistence block caused by an unavailable consent tracker.
+_CONSENT_TRACKER_REMEDY = (
+    "restore the daimonion consent tracker; persistence_allowed stays false until it answers True"
+)
+_last_persistence_block_cause: str = ""
+
+
+def _tracker_persistence_allowed(consent_tracker: ConsentStateTracker | None) -> tuple[bool, str]:
+    """Return ``(allowed, cause)`` from the consent tracker.
+
+    Only a present tracker answering exactly True allows. No tracker, a
+    tracker that raises, or a non-boolean answer is unavailable: not allowed,
+    with a sanitized cause. A tracker refusal is not allowed with no cause.
+    """
+    if consent_tracker is None:
+        return False, "consent_tracker_absent"
+    try:
+        answer = consent_tracker.persistence_allowed
+    except Exception as exc:
+        return False, f"consent_tracker_error:{type(exc).__name__}"
+    if answer is True:
+        return True, ""
+    if answer is False:
+        return False, ""
+    return False, "consent_tracker_non_bool"
+
+
+def _log_persistence_block_cause(cause: str) -> None:
+    """Log an unavailable-tracker block once per change of cause."""
+    global _last_persistence_block_cause
+    if cause == _last_persistence_block_cause:
+        return
+    if cause:
+        log.warning(
+            "Perception state: persistence blocked (cause=%s; remedy: %s)",
+            cause,
+            _CONSENT_TRACKER_REMEDY,
+        )
+    else:
+        log.info("Perception state: consent tracker available again")
+    _last_persistence_block_cause = cause
+
+
 # ── Supplementary content ring buffer ─────────────────────────────────────
 
 _CONTENT_TTL_S = 60.0
@@ -245,6 +288,8 @@ def write_perception_state(
     Called once per perception tick (~2.5s). Tolerant of missing behaviors.
     """
     behaviors = perception.behaviors
+    persistence_allowed, persistence_block_cause = _tracker_persistence_allowed(consent_tracker)
+    _log_persistence_block_cause(persistence_block_cause)
 
     def _bval(name: str, default: object = "") -> object:
         b = behaviors.get(name)
@@ -368,7 +413,7 @@ def write_perception_state(
             "usb_devices": str(_bval("usb_devices", "")),
             "network_devices": str(_bval("network_devices", "")),
             "active_contracts": active_contracts,
-            "persistence_allowed": consent_tracker.persistence_allowed if consent_tracker else True,
+            "persistence_allowed": persistence_allowed,
             "guest_present": consent_tracker.phase.value != "no_guest"
             if consent_tracker
             else False,
@@ -464,12 +509,17 @@ def write_perception_state(
         }
     except Exception:
         log.warning("Perception state construction failed", exc_info=True)
-        state = {"timestamp": time.time(), "error": True, "operator_present": False}
+        state = {
+            "timestamp": time.time(),
+            "error": True,
+            "operator_present": False,
+            "persistence_allowed": False,
+        }
 
     # Consent curtailment: when guest is present without consent,
     # redact person-adjacent fields from the persisted snapshot.
     # The compositor still gets non-person data (flow state, activity, etc).
-    if not (consent_tracker.persistence_allowed if consent_tracker else True):
+    if not persistence_allowed:
         _PERSON_ADJACENT_KEYS = {
             "voice_session",  # contains last_utterance, last_response
             "top_emotion",
@@ -515,7 +565,7 @@ def write_perception_state(
     _consent_phase = state.get("consent_phase", "no_guest")
     _consent_state_data = {
         "phase": _consent_phase,
-        "persistence_allowed": state.get("persistence_allowed", True),
+        "persistence_allowed": state.get("persistence_allowed") is True,
         "timestamp": state.get("timestamp", 0.0),
     }
     try:
