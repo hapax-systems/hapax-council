@@ -342,10 +342,11 @@ def _fake_systemctl(
     path = tmp_path / "systemctl"
     calls = tmp_path / "systemctl.calls"
     if host_profile == "appendix":
-        app_high = 46 * 1024**3
-        app_max = 54 * 1024**3
-        uid_high = 48 * 1024**3
-        uid_max = 56 * 1024**3
+        # Mirrors the shipped appendix row, re-derived from 60.38 GiB MemTotal (2026-09-25).
+        app_high = 36 * 1024**3
+        app_max = 44 * 1024**3
+        uid_high = 38 * 1024**3
+        uid_max = 46 * 1024**3
     else:
         app_high = 72 * 1024**3
         app_max = 88 * 1024**3

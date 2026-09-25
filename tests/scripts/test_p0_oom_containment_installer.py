@@ -211,13 +211,13 @@ def test_unknown_argument_refuses() -> None:
     (
         ("hapax-appendix\t59\t61", "hapax-appendix\t62\t61", "invalid inclusive MemTotal interval"),
         (
-            "appendix\t46G\t54G",
+            "appendix\t36G\t44G",
             "appendix\t58G\t59G",
             "app ceilings must be ordered below interval floor",
         ),
-        ("48G\t56G\t16384", "58G\t59G\t16384", "UID ceilings must be ordered below interval floor"),
-        ("56G\t16384", "56G\t4096", "zram must be 8192 MiB or larger"),
-        ("56G\t16384", "56G\t30720", "zram must be 8192 MiB or larger"),
+        ("38G\t46G\t16384", "58G\t59G\t16384", "UID ceilings must be ordered below interval floor"),
+        ("46G\t16384", "46G\t4096", "zram must be 8192 MiB or larger"),
+        ("46G\t16384", "46G\t30720", "zram must be 8192 MiB or larger"),
     ),
 )
 def test_profile_table_rejects_unsafe_bounds(
@@ -239,8 +239,8 @@ def test_profile_table_rejects_app_high_above_uid_high_before_mutation(
     table = source / PROFILE_TABLE
     rewrite(
         table,
-        "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t16384",
-        "hapax-appendix\t59\t61\tappendix\t49G\t54G\t48G\t56G\t16384",
+        "hapax-appendix\t59\t61\tappendix\t36G\t44G\t38G\t46G\t16384",
+        "hapax-appendix\t59\t61\tappendix\t39G\t44G\t38G\t46G\t16384",
     )
     before = source_file_bytes(source)
 
@@ -259,8 +259,8 @@ def test_profile_table_rejects_app_max_above_uid_max_before_mutation(
     table = source / PROFILE_TABLE
     rewrite(
         table,
-        "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t16384",
-        "hapax-appendix\t59\t61\tappendix\t46G\t57G\t48G\t56G\t16384",
+        "hapax-appendix\t59\t61\tappendix\t36G\t44G\t38G\t46G\t16384",
+        "hapax-appendix\t59\t61\tappendix\t36G\t47G\t38G\t46G\t16384",
     )
     before = source_file_bytes(source)
 
@@ -295,12 +295,12 @@ def test_profile_table_rejects_overlapping_host_intervals(tmp_path: Path) -> Non
 def test_profile_config_must_match_table(tmp_path: Path) -> None:
     source = staged_source(tmp_path)
     config = source / "config/root-required/oom-host-policy/appendix/app.slice.conf"
-    rewrite(config, "MemoryMax=54G", "MemoryMax=53G")
+    rewrite(config, "MemoryMax=44G", "MemoryMax=43G")
 
     result = run_installer("--source", str(source), "--check")
 
     assert result.returncode == 1
-    assert "expected Slice.MemoryMax=54G" in result.stderr
+    assert "expected Slice.MemoryMax=44G" in result.stderr
 
 
 @pytest.mark.parametrize(
