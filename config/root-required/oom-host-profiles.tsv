@@ -1,0 +1,9 @@
+# hostname	min_memtotal_gib	max_memtotal_gib	profile	app_high	app_max	uid_high	uid_max	zram_mib
+# exact zram contract: appendix=16384 MiB, podium=32768 MiB; the shipped generator file is the deployed artifact, the exact row value remains the deployed value by required equality with that artifact, and drift in either direction fails live verification
+# admission-only safety invariant: 8192 <= zram_mib and zram_mib * 2 <= min_memtotal_gib * 1024; both independent parsers reject a violating row before selection, while the equality contract above rejects a safe-but-different row; recheck: scripts/install-p0-oom-containment --check --no-runtime
+# systemd source map: config/root-required/oom-host-policy/{appendix,podium}/{app.slice,user-1000.slice,user@1000.service}.conf
+# row-independent recheck: uv run pytest -q tests/scripts/test_hapax_oom_policy_audit.py -k shipped_host_profile_rows_satisfy_the_declared_zram_invariant
+# adversarial zram-bound recheck: uv run pytest -q tests/scripts/test_hapax_oom_policy_audit.py -k host_profile_parsers_share_zram_admission_corpus
+# exact zram/source recheck: uv run pytest -q tests/systemd/test_memory_policy_source_reconciliation.py -k profile_zram_rows_match_shipped_generator_policy
+hapax-appendix	59	61	appendix	46G	54G	48G	56G	16384
+hapax-podium	123	125	podium	72G	88G	80G	96G	32768
