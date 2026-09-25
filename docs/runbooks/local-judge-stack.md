@@ -1000,7 +1000,9 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   }
   test "$(release_git rev-parse --verify 'HEAD^{commit}')" = "$sha"
   verifier_oid="$(release_git rev-parse --verify "$sha:scripts/hapax-post-merge-deploy")"
+  lifecycle_oid="$(release_git rev-parse --verify "$sha:scripts/hapax-local-judge-container-id")"
   [[ "$verifier_oid" =~ ^[0-9a-f]{40}$ ]]
+  [[ "$lifecycle_oid" =~ ^[0-9a-f]{40}$ ]]
   release_verify() {
     release_git cat-file blob "$verifier_oid" | \
       /usr/bin/env -i \
@@ -1016,6 +1018,18 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
         REPO="$repo" \
         /usr/bin/bash --noprofile --norc -p -s -- "$@"
   }
+  release_lifecycle() {
+    release_git cat-file blob "$lifecycle_oid" | \
+      /usr/bin/env -i \
+        HOME="$HOME" \
+        USER="$USER" \
+        LOGNAME="$LOGNAME" \
+        PATH=/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+        /usr/bin/python3 -I - "$@"
+  }
   managed_recheck_scopes=(
     runtime:state:write-remove-managed-recheck:/store-fast/tmp
     runtime:workload:run-local-judge-managed-recheck:requests-24:workers-8
@@ -1024,6 +1038,7 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
     "$sha" "$runtime_task" "${managed_recheck_scopes[@]}"
   release_verify --verify-local-judge-cap-receipt "$sha" installed
   unit=hapax-local-judge.service
+  test "$(/usr/bin/systemctl --user show "$unit" -p ActiveState --value)" = active
   test "$(/usr/bin/systemctl --user show "$unit" -p NeedDaemonReload --value)" = no
   test "$(/usr/bin/systemctl --user show "$unit" -p FragmentPath --value)" = \
     "$HOME/.config/systemd/user/$unit"
@@ -1035,10 +1050,11 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   [[ "$exec_start" == *" --name hapax-local-judge "* ]]
   [[ "$exec_start" == *" --memory 4G "* ]]
   [[ "$exec_start" == *" --memory-swap 6G "* ]]
-  container=hapax-local-judge
-  oom_kill_disable="$(/usr/bin/docker inspect --format '{{json .HostConfig.OomKillDisable}}' "$container")"
+  cidfile="$XDG_RUNTIME_DIR/hapax-local-judge/container.cid"
+  container_id="$(release_lifecycle managed-id --cidfile "$cidfile")"
+  oom_kill_disable="$(/usr/bin/docker inspect --format '{{json .HostConfig.OomKillDisable}}' "$container_id")"
   [[ "$oom_kill_disable" == null || "$oom_kill_disable" == false ]]
-  pid="$(/usr/bin/docker inspect --format '{{.State.Pid}}' "$container")"
+  pid="$(/usr/bin/docker inspect --format '{{.State.Pid}}' "$container_id")"
   test "$pid" -gt 1
   cgroup="$(/usr/bin/awk -F: '$1 == "0" {print $3; exit}' "/proc/$pid/cgroup")"
   events="/sys/fs/cgroup${cgroup}/memory.events"
@@ -1047,7 +1063,7 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   test -r "$events"
   test -r "$memory_peak_path"
   test -r "$swap_peak_path"
-  before_state="$(/usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
+  before_state="$(/usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container_id")"
   before_oom="$(/usr/bin/awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
   results="/store-fast/tmp/local-judge-managed-recheck-$$.jsonl"
   test -d /store-fast/tmp
@@ -1056,7 +1072,10 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   release_verify --run-local-judge-cap-workload http://127.0.0.1:5001 "$results"
   /usr/bin/jq -e -s 'length == 24 and all(.[]; type == "object" and has("error") and has("pred") and .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
     "$results" >/dev/null
-  after_state="$(/usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
+  after_container_id="$(release_lifecycle managed-id --cidfile "$cidfile")"
+  test "$after_container_id" = "$container_id"
+  test "$(/usr/bin/systemctl --user show "$unit" -p ActiveState --value)" = active
+  after_state="$(/usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container_id")"
   after_oom="$(/usr/bin/awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
   memory_peak="$(/usr/bin/cat "$memory_peak_path")"
   swap_peak="$(/usr/bin/cat "$swap_peak_path")"
