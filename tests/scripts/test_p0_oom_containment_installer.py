@@ -820,6 +820,7 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("success", "podium", "zram-main"),
         ("disappear", "podium", "none"),
         ("malformed-record", "podium", "none"),
+        ("truncated-record", "podium", "none"),
         ("rename", "podium", "none"),
         ("replace", "podium", "none"),
         ("update-failure", "podium", "none"),
@@ -1163,6 +1164,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             )
         elif docker_mode == "malformed-record":
             mcp_record = f"printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123|junk'"
+        elif docker_mode == "truncated-record":
+            mcp_record = f"printf '%s\\n' '{MCP_CONTAINER_ID[:12]}|hapax-github-mcp-hapax-123'"
         else:
             mcp_record = (
                 f"[ -e {gone!s} ] || printf '%s\\n' '{MCP_CONTAINER_ID}|hapax-github-mcp-hapax-123'"
@@ -1293,6 +1296,7 @@ esac
             "enumeration-failure",
             "reenumeration-failure",
             "malformed-record",
+            "truncated-record",
             "post-update-mismatch",
             "oom-kill-disabled",
             "oom-kill-invalid",
@@ -1328,8 +1332,9 @@ esac
         elif docker_mode == "rename":
             assert "original identity" in result.stderr
             assert "simulated same-ID rename during update" in result.stderr
-        elif docker_mode == "malformed-record":
+        elif docker_mode in {"malformed-record", "truncated-record"}:
             assert "unparseable Docker identity record" in result.stderr
+            assert "next action:" in result.stderr
         elif docker_mode == "update-failure":
             assert "simulated Docker update denial" in result.stderr
         elif docker_mode == "inspect-failure-present":
@@ -3713,6 +3718,7 @@ def _run_install_verify_live(
     local_judge_exec_start: str = LOCAL_JUDGE_EXEC_START,
     local_judge_need_reload: str = "no",
     through_deferred_helper: bool = False,
+    omit_nested_sudo: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
 
@@ -3828,9 +3834,14 @@ def _run_install_verify_live(
     }
     command = [str(INSTALLER), "--install", "--verify-live"]
     if through_deferred_helper:
+        if omit_nested_sudo:
+            env.pop("HAPAX_OOM_INSTALL_SUDO")
         activation = tmp_path / "activation-release"
         activation.mkdir()
         _copy_oom_package(activation)
+        authority = activation / "scripts/hapax-post-merge-deploy"
+        authority.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
+        authority.chmod(0o755)
         subprocess.run(["git", "init", "-q"], cwd=activation, check=True)
         subprocess.run(
             ["git", "config", "user.email", "tests@hapax.local"], cwd=activation, check=True
@@ -3872,14 +3883,17 @@ def _run_install_verify_live(
             encoding="utf-8",
         )
         fake_root_sudo.chmod(0o755)
+        runtime_task = tmp_path / "runtime-authority-task.md"
+        runtime_task.write_text("test runtime authority input\n", encoding="utf-8")
         env.update(
             {
                 "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
+                "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME": "hapax-podium",
                 "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
                 "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
                 "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO": str(fake_sudo),
                 "HAPAX_OOM_EFFECTIVE_UID": "1000",
-                "HAPAX_OOM_INSTALL_SUDO": str(fake_root_sudo),
+                **({} if omit_nested_sudo else {"HAPAX_OOM_INSTALL_SUDO": str(fake_root_sudo)}),
             }
         )
         command = [
@@ -3890,6 +3904,8 @@ def _run_install_verify_live(
             package_sha,
             "--activation-release",
             str(activation),
+            "--runtime-authority-task",
+            str(runtime_task),
         ]
     return subprocess.run(
         command,
@@ -3923,6 +3939,20 @@ def test_authenticated_deferred_helper_runs_real_installer_through_lock_reexec(
         installed_helper.read_bytes()
         == (REPO_ROOT / "scripts/hapax-root-required-deferred-install").read_bytes()
     )
+
+
+def test_authenticated_deferred_helper_neutralizes_omitted_nested_sudo(
+    tmp_path: Path,
+) -> None:
+    result = _run_install_verify_live(
+        tmp_path,
+        through_deferred_helper=True,
+        omit_nested_sudo=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "completed authenticated package=oom-containment" in result.stdout
+    assert not (tmp_path / "root-sudo-calls").exists()
 
 
 def test_verify_live_rejects_effective_local_judge_execstart_without_limits(
