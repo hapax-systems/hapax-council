@@ -36,6 +36,24 @@ def _ids(producers: list[dict]) -> list[str]:
     return [p.get("id") or p.get("producer_id") or "<unnamed>" for p in producers]
 
 
+def test_every_receipt_bounded_review_route_has_a_registered_producer() -> None:
+    """A receipt-bounded review family must not be shipped without its scheduled writer."""
+    from shared.quota_spend_ledger import RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+
+    producers = _producers()
+    registered_subjects = {
+        subject
+        for producer in producers
+        for subject in producer.get("subjects", [])
+        if isinstance(subject, str)
+    }
+    missing = sorted(RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES - registered_subjects)
+    assert not missing, (
+        "receipt-bounded review routes have no registered route-receipt producer: "
+        + ", ".join(missing)
+    )
+
+
 def _repo_relative_target(producer: dict) -> Path | None:
     """The repo artifact argv[0] names, or None if it is not this tree's business.
 
