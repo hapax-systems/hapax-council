@@ -3127,3 +3127,33 @@ def test_round_twelve_unbounded_helper_keeps_uncertainty_without_snapshots(
     assert _orphaned(report) == {"artifacts/inside.json", "artifacts/outside.json"}
     assert report.unresolvable > 0
     assert snapshots[0] == 0
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "1.0 + " + "9" * 400,  # the reviewer's reproducer: int -> float conversion overflows
+        "-(1.0 + " + "9" * 400 + ")",
+        "'artifacts/' + str(1.0 + " + "9" * 400 + ")",
+    ],
+    ids=["float-plus-huge-int", "negated", "inside-a-path"],
+)
+def test_numeric_folding_overflow_is_uncertainty_not_a_crash(
+    gate, tmp_path, monkeypatch, capsys, expression
+):
+    """Review finding at 8417e866f (major, `:7535`): `x = 1.0 + 999…9` raised OverflowError inside
+    constant folding, escaped `main()`, and wrote no report and no REPORT-ERROR. A fold that cannot
+    be computed is an UNKNOWN value; the analysis continues and the gate stays report-only."""
+    _write(
+        tmp_path,
+        f"from pathlib import Path\nx = {expression}\nPath('artifacts/orphan.json').read_text()\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    report_path = tmp_path / "report.json"
+    assert gate.main(["--consumer-side", "--report-json", str(report_path)]) == 0
+    output = capsys.readouterr().out
+    assert "REPORT-ONLY" in output
+    assert "artifacts/orphan.json" in output, "the analysis must continue past the unfoldable value"
+    report = json.loads(report_path.read_text())
+    assert report["summary"]["report_only"] is True
+    assert "artifacts/orphan.json" in {finding["read_pattern"] for finding in report["findings"]}

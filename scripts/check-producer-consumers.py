@@ -1743,7 +1743,14 @@ def _constant_value(
                 and isinstance(right, (int, float))
             )
         ):
-            return True, left + right
+            # A sum Python itself cannot compute (`1.0 + 999…9` overflows converting the int to a
+            # float) is an UNKNOWN value, not a crash. The exception used to escape `main()` with
+            # no report and no REPORT-ERROR (review finding, at `8417e866f`, `:7535`). Unknown
+            # certifies nothing, so the report-only contract holds and the analysis continues.
+            try:
+                return True, left + right
+            except (OverflowError, MemoryError):
+                return False, None
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         known, value = _constant_value(node.operand, values, path, path_functions)
         if known and isinstance(value, (int, float)):
