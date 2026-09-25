@@ -70,7 +70,14 @@ FIVE_HOUR_CAPACITY: Final = "claude.subscription.five_hour"
 
 #: The 7-day window the pace is measured over, and the operator's accepted line.
 WEEKLY_WINDOW_HOURS: Final = 168.0
-WEEKLY_LINE_PERCENT_PER_HOUR: Final = 100.0 / WEEKLY_WINDOW_HOURS  # ~0.595 %/h ~ 14.29 %/day
+#: The line starts at 2 %, not 0 % (seat ruling 2026-09-25T23:39Z). Why 2 %: the provider
+#: reports utilization in 1 % steps, so a line starting at 0 refuses every launch as soon as
+#: the first reading arrives; 2 % is two reading steps and covers the measured reset-hour
+#: burst (the seat plus the review seats reached 2 % within 45 minutes of the 22:00Z reset).
+WEEKLY_LINE_START_PERCENT: Final = 2.0
+#: 0.6 %/h is the operator's own accepted pace (~14 %/day, memory
+#: claude-weekly-pool-pacing-and-smoothing-20260925). Line = START + RATE x elapsed.
+WEEKLY_LINE_PERCENT_PER_HOUR: Final = 0.6
 #: Secondary ceiling on the 5-hour window, in percent used. This row's declared value; the
 #: seat tunes it, and a reading at or over it refuses even when the weekly line permits.
 FIVE_HOUR_CEILING_PERCENT: Final = 90.0
@@ -126,10 +133,12 @@ def newest_reading(rows: list[Any], capacity_id: str, *, now: datetime) -> Any |
 
 
 def weekly_line_percent(weekly: Any) -> float:
-    """The linear line: 0.6 %/h from the start of the open 7-day window."""
+    """The line: 2 % + 0.6 %/h from the start of the open 7-day window, capped at 100 %."""
     window_start = weekly.resets_at - timedelta(hours=WEEKLY_WINDOW_HOURS)
     elapsed_hours = max(0.0, (weekly.observed_at - window_start).total_seconds() / 3600.0)
-    return min(100.0, WEEKLY_LINE_PERCENT_PER_HOUR * elapsed_hours)
+    return min(
+        100.0, WEEKLY_LINE_START_PERCENT + WEEKLY_LINE_PERCENT_PER_HOUR * elapsed_hours
+    )
 
 
 def ledgered_readings() -> list[dict[str, Any]]:

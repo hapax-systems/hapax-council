@@ -26,7 +26,7 @@ HEADLESS_GLOB = str(Path.home() / ".cache" / "hapax" / "claude-headless" / "*" /
 NOW = datetime(2026, 9, 25, 23, 0, 0, tzinfo=UTC)
 WINDOW_START = NOW - timedelta(hours=24)          # 24 h into the 7-day window
 WEEKLY_RESET = WINDOW_START + timedelta(hours=168)
-LINE_AT_NOW = 100.0 / 168.0 * 24.0                # = 14.2857 %
+LINE_AT_NOW = 2.0 + 0.6 * 24.0                    # = 16.4 % (2 % start + 0.6 %/h)
 
 
 def _load(name: str, path: Path) -> ModuleType:
@@ -273,3 +273,40 @@ def test_the_admission_receipt_is_pace_gated(
     assert rc != 0
     assert "pace" in (out.out + out.err).lower()
     assert not list(receipt_dir.glob("*.yaml"))
+
+
+def test_startup_tolerance_is_two_percent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """The seat's ruling: 1.9 % at 0 h passes, 2.1 % at 0 h refuses, 2.5 % at 1 h passes."""
+    _sink_root(tmp_path, monkeypatch)
+
+    at_reset = tmp_path / "at-reset"
+    receipts = _window_receipts(at_reset, weekly_used=1.9, weekly_reset=NOW + timedelta(hours=168))
+    args = [*_base_args(at_reset, receipts), "--json"]
+    assert _run(["record", *args]) == 0
+    capsys.readouterr()
+    assert _run(["check", *args]) == 0
+    assert json.loads(capsys.readouterr().out)["line_percent"] == pytest.approx(2.0)
+
+    over_at_reset = tmp_path / "over-at-reset"
+    receipts = _window_receipts(over_at_reset, weekly_used=2.1,
+                                weekly_reset=NOW + timedelta(hours=168))
+    args = [*_base_args(over_at_reset, receipts), "--json"]
+    assert _run(["record", *args]) == 0
+    capsys.readouterr()
+    rc = _run(["check", *args])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == _pace().EXIT_REFUSE_OVER_PACE
+    assert payload["reason"] == "pace_line_exceeded"
+
+    one_hour_in = tmp_path / "one-hour-in"
+    receipts = _window_receipts(one_hour_in, weekly_used=2.5,
+                                weekly_reset=NOW + timedelta(hours=167))
+    args = [*_base_args(one_hour_in, receipts), "--json"]
+    assert _run(["record", *args]) == 0
+    capsys.readouterr()
+    rc = _run(["check", *args])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["line_percent"] == pytest.approx(2.6)
