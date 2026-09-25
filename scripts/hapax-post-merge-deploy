@@ -93,9 +93,11 @@
 #       units) is live, not merely installed. Needs no commit SHA.
 #   hapax-post-merge-deploy --run-local-judge-cap-workload <endpoint> <results>
 #   hapax-post-merge-deploy --measure-local-judge-model <model>
+#   hapax-post-merge-deploy --measure-protected-local-judge-model-root <sha-directory>
 #   hapax-post-merge-deploy --measure-protected-local-judge-model <model>
-#       candidate-bound cap-canary helpers; the protected form additionally
-#       requires the SHA-addressed, root-owned /store-fast model surface.
+#       candidate-bound cap-canary helpers; the protected forms additionally
+#       require the SHA-addressed, root-owned /store-fast model surface. The
+#       root form allows absent descendants but binds every existing ancestor.
 #
 # Exits 0 if nothing needed deploying or all deploys succeeded.
 # Exits non-zero if any deploy step failed (or, in --report-coverage
@@ -127,8 +129,10 @@ RUN_LOCAL_JUDGE_CAP_WORKLOAD=0
 LOCAL_JUDGE_CAP_ENDPOINT=""
 LOCAL_JUDGE_CAP_RESULTS=""
 MEASURE_LOCAL_JUDGE_MODEL=0
+MEASURE_PROTECTED_LOCAL_JUDGE_MODEL_ROOT=0
 MEASURE_PROTECTED_LOCAL_JUDGE_MODEL=0
 LOCAL_JUDGE_MODEL_PATH=""
+LOCAL_JUDGE_MODEL_ROOT=""
 SINCE=""
 TRACE_READY=0
 TRACE_WRITTEN=0
@@ -187,6 +191,13 @@ elif [ "${1:-}" = "--measure-local-judge-model" ]; then
     fi
     MEASURE_LOCAL_JUDGE_MODEL=1
     LOCAL_JUDGE_MODEL_PATH="$2"
+elif [ "${1:-}" = "--measure-protected-local-judge-model-root" ]; then
+    if [ "$#" -ne 2 ]; then
+        echo "usage: hapax-post-merge-deploy --measure-protected-local-judge-model-root <sha-directory>" >&2
+        exit 2
+    fi
+    MEASURE_PROTECTED_LOCAL_JUDGE_MODEL_ROOT=1
+    LOCAL_JUDGE_MODEL_ROOT="$2"
 elif [ "${1:-}" = "--measure-protected-local-judge-model" ]; then
     if [ "$#" -ne 2 ]; then
         echo "usage: hapax-post-merge-deploy --measure-protected-local-judge-model <model.gguf>" >&2
@@ -1630,6 +1641,156 @@ if any(row["error"] is not None or row["pred"] not in {"A", "B", "C"} for row in
 LOCAL_JUDGE_CAP_WORKLOAD_PY
 }
 
+measure_protected_local_judge_model_root() {
+    local model_root="$1"
+    if [[ "$model_root" != /* ]]; then
+        echo "hapax-post-merge-deploy: protected local-judge model root is not absolute; next action: pass the canonical SHA-addressed directory" >&2
+        return 2
+    fi
+    /usr/bin/python3 -I - "$model_root" <<'LOCAL_JUDGE_MODEL_ROOT_MEASURE_PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+model_root = Path(sys.argv[1])
+store_fast = Path("/store-fast")
+models_root = store_fast / "hapax-models"
+sha_root = models_root / "sha256"
+mountinfo_path = Path("/proc/self/mountinfo")
+expected_volume = Path(
+    "/dev/disk/by-uuid/5934e619-0f38-4285-8556-5fed21ef7b9a"
+)
+if model_root.parent != sha_root or re.fullmatch(r"[0-9a-f]{64}", model_root.name) is None:
+    print(
+        "protected local-judge model root is not the canonical SHA-addressed directory; "
+        "next action: derive JUDGE_MODEL_HOST_DIR from the exact candidate unit",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+chain = (
+    ("store_fast", store_fast),
+    ("models", models_root),
+    ("sha256", sha_root),
+    ("digest", model_root),
+)
+missing_seen = False
+for key, path in chain:
+    try:
+        inode = path.lstat()
+    except FileNotFoundError:
+        if key == "store_fast":
+            print(
+                "protected local-judge model root anchor /store-fast is absent; "
+                "next action: restore and verify the canonical /store-fast mount before staging",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        missing_seen = True
+        print(f"{key}_identity=missing")
+        continue
+    except OSError as exc:
+        print(
+            f"cannot inspect protected local-judge model root ancestor {path}: {exc}; "
+            "next action: restore read-only path inspection before staging",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+    if missing_seen:
+        print(
+            f"protected local-judge model root has a present descendant after a missing ancestor: {path}; "
+            "next action: stop staging and inspect the mount/path topology",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or inode.st_uid != 0
+        or inode.st_mode & 0o022
+        or path.is_symlink()
+        or os.path.realpath(path) != str(path)
+    ):
+        print(
+            f"protected local-judge model root ancestor is not a physical root-owned non-writable directory: {path}; "
+            "next action: stop staging and repair the exact ancestor without following links",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if key == "store_fast":
+        try:
+            mount_lines = mountinfo_path.read_text(encoding="utf-8").splitlines()
+            volume_inode = expected_volume.stat()
+        except OSError as exc:
+            print(
+                f"cannot authenticate the protected /store-fast volume: {exc}; "
+                "next action: restore its UUID mount and readable mount evidence before staging",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
+        mount_rows = []
+        for line in mount_lines:
+            left, separator, right = line.partition(" - ")
+            left_fields = left.split()
+            right_fields = right.split()
+            if (
+                separator
+                and len(left_fields) >= 6
+                and len(right_fields) >= 3
+                and left_fields[4] == str(store_fast)
+            ):
+                mount_rows.append((left_fields, right_fields))
+        if len(mount_rows) != 1:
+            print(
+                "protected /store-fast has no unique direct mount entry; "
+                "next action: mount the governed XFS UUID directly at /store-fast before staging",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        left_fields, right_fields = mount_rows[0]
+        mount_id, device_text, mount_root, mount_options = (
+            left_fields[0],
+            left_fields[2],
+            left_fields[3],
+            left_fields[5],
+        )
+        try:
+            device_major_text, device_minor_text = device_text.split(":", 1)
+            mounted_device = (int(device_major_text), int(device_minor_text))
+            source_matches = os.path.samefile(right_fields[1], expected_volume)
+        except (OSError, ValueError) as exc:
+            print(
+                f"cannot bind the protected /store-fast mount identity: {exc}; "
+                "next action: restore the governed XFS UUID mount before staging",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
+        volume_device = (os.major(volume_inode.st_rdev), os.minor(volume_inode.st_rdev))
+        directory_device = (os.major(inode.st_dev), os.minor(inode.st_dev))
+        if (
+            re.fullmatch(r"[1-9][0-9]*", mount_id) is None
+            or mount_root != "/"
+            or "rw" not in mount_options.split(",")
+            or right_fields[0] != "xfs"
+            or not stat.S_ISBLK(volume_inode.st_mode)
+            or not source_matches
+            or mounted_device != volume_device
+            or mounted_device != directory_device
+        ):
+            print(
+                "protected /store-fast is not the governed read-write XFS UUID mount; "
+                "next action: stop staging and restore UUID 5934e619-0f38-4285-8556-5fed21ef7b9a at /store-fast",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        print(f"mount_identity={mount_id}:{inode.st_dev}")
+    print(f"{key}_identity={inode.st_dev}:{inode.st_ino}")
+LOCAL_JUDGE_MODEL_ROOT_MEASURE_PY
+}
+
 measure_local_judge_model() {
     local model_path="$1" owner_profile="${2:-account}"
     if [[ "$model_path" != /* ]]; then
@@ -1722,6 +1883,10 @@ LOCAL_JUDGE_MODEL_MEASURE_PY
 
 if [ "$RUN_LOCAL_JUDGE_CAP_WORKLOAD" -eq 1 ]; then
     run_local_judge_cap_workload "$LOCAL_JUDGE_CAP_ENDPOINT" "$LOCAL_JUDGE_CAP_RESULTS"
+    exit $?
+fi
+if [ "$MEASURE_PROTECTED_LOCAL_JUDGE_MODEL_ROOT" -eq 1 ]; then
+    measure_protected_local_judge_model_root "$LOCAL_JUDGE_MODEL_ROOT"
     exit $?
 fi
 if [ "$MEASURE_LOCAL_JUDGE_MODEL" -eq 1 ]; then
