@@ -37,6 +37,7 @@ if str(REPO_ROOT) not in sys.path:
 from shared.capability_envelope import (  # noqa: E402
     CredentialBind,
     DeclaredFile,
+    EnvelopeCarrierError,
     EnvelopeDeclaration,
     EnvelopeRefusal,
     execute,
@@ -181,13 +182,6 @@ def main() -> int:
     binary = vibe_bin()
     if not binary:
         return refuse(WRAPPER, "vibe binary not found; install vibe or set HAPAX_VIBE_BIN")
-    if not shutil.which("bwrap"):
-        return refuse(
-            WRAPPER,
-            "bubblewrap not found: the vibe seat runs only inside the declared envelope; next "
-            "action (coordinator): install bubblewrap on this host, or the constitution "
-            "substitutes another family",
-        )
     home = Path.home()
     if not (home / ".vibe" / ".env").is_file():
         return refuse(
@@ -200,16 +194,12 @@ def main() -> int:
             result = run_enveloped(binary, text, home, Path(tmp))
         except EnvelopeRefusal as exc:
             return refuse(WRAPPER, f"envelope refused: {exc}")
+        except EnvelopeCarrierError as exc:
+            # The seat runs only inside the declared envelope; the constitution substitutes
+            # another family rather than running vibe unenveloped.
+            return refuse(WRAPPER, f"{exc} (coordinator)")
         except (OSError, subprocess.TimeoutExpired) as exc:
             return refuse(WRAPPER, f"failed to launch vibe ({type(exc).__name__})")
-    if result.returncode != 0 and result.stderr.startswith("bwrap:"):
-        first = result.stderr.splitlines()[0]
-        return refuse(
-            WRAPPER,
-            f"the envelope carrier failed ({first}); next action (coordinator): enable "
-            "unprivileged user namespaces for bubblewrap on this host, or the constitution "
-            "substitutes another family",
-        )
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     return result.returncode
