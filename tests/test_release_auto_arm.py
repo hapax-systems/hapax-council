@@ -810,3 +810,87 @@ def test_nonsensitive_task_stays_eligible_with_verified_checks() -> None:
         _eligible_frontmatter(), verified_checks={"secrets-scan", "test"}
     )
     assert assessment.eligible
+
+
+# ── M129: a declared false takes precedence over the keyword deriver ───
+#
+# The title and tags are an upstream free variable. The keyword deriver may add
+# a sensitive class the route omits, but never override the route's authored
+# ``false``. Omitted, non-boolean and unvalidated declarations keep today's
+# derivation: failure narrows.
+
+# "live" is a verb here, as in cc-claim-governed-rebinding-20260914's title.
+_LIVE_VERB_TITLE = "The exclusivity primitive belongs where the lease lock and transaction live"
+_EGRESS = "audio_or_live_egress_sensitive"
+_NON_EGRESS_CHANGED_FILES = ["scripts/cc-claim", "shared/sdlc_claim.py", "tests/test_x.py"]
+
+
+def _live_verb_frontmatter(**overrides: object) -> dict[str, object]:
+    return _eligible_frontmatter(title=_LIVE_VERB_TITLE, **overrides)
+
+
+@pytest.mark.parametrize(
+    "placement",
+    [
+        pytest.param(lambda flags: {"risk_flags": flags}, id="top-level"),
+        pytest.param(lambda flags: {"route_metadata": {"risk_flags": flags}}, id="nested"),
+    ],
+)
+def test_declared_false_vetoes_the_keyword_derived_egress_class(placement) -> None:
+    fm = _live_verb_frontmatter(**placement({_EGRESS: False}))
+
+    assessment = assess_release_auto_arm_estate(
+        fm, verified_checks=set(), changed_files=_NON_EGRESS_CHANGED_FILES
+    )
+
+    assert assessment.eligible is True
+    assert assessment.blockers == ()
+
+
+def test_undeclared_flag_keeps_the_keyword_derivation() -> None:
+    assessment = assess_release_auto_arm(_live_verb_frontmatter())
+
+    assert assessment.eligible is False
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+def test_a_declared_false_on_one_flag_does_not_veto_another_omitted_flag() -> None:
+    # The parsed RiskFlags model defaults an omitted flag to False; only the raw
+    # declaration may veto, so a sibling's false must leave the egress class held.
+    fm = _live_verb_frontmatter(risk_flags={"governance_sensitive": False})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+@pytest.mark.parametrize("title", [_LIVE_VERB_TITLE, "Reform improve dispatch resilience"])
+def test_declared_true_is_kept(title: str) -> None:
+    fm = _eligible_frontmatter(title=title, risk_flags={_EGRESS: True})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert assessment.eligible is False
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+@pytest.mark.parametrize("declared", ["false", "False", "no", 0, None], ids=repr)
+def test_non_boolean_declaration_keeps_the_keyword_derivation(declared: object) -> None:
+    fm = _live_verb_frontmatter(risk_flags={_EGRESS: declared})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+def test_unvalidated_route_metadata_keeps_the_keyword_derivation() -> None:
+    from shared.route_metadata_schema import RouteMetadataStatus, assess_route_metadata
+
+    fm = _live_verb_frontmatter(
+        risk_flags={_EGRESS: False}, mutation_surface="not-a-mutation-surface"
+    )
+    assert assess_route_metadata(fm).status is RouteMetadataStatus.MALFORMED
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers

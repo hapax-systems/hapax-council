@@ -1360,6 +1360,23 @@ def _explicit_risk_flag_true(frontmatter: Mapping[str, Any], name: str) -> bool:
     return _auto_arm_truthy(risk_flags.get(name))
 
 
+def _explicit_risk_flag_false(frontmatter: Mapping[str, Any], name: str) -> bool:
+    """Whether a route-metadata risk flag was explicitly declared false.
+
+    The parsed ``RiskFlags`` model defaults an omitted flag to False, so this reads
+    the raw route payload the model validates (a top-level ``risk_flags`` wins over
+    ``route_metadata.risk_flags``). Only a boolean ``false`` is a declaration; null,
+    strings and every other value are not.
+    """
+
+    from shared.route_metadata_schema import route_metadata_payload_from_frontmatter
+
+    risk_flags = route_metadata_payload_from_frontmatter(frontmatter).get("risk_flags")
+    if not isinstance(risk_flags, Mapping):
+        return False
+    return risk_flags.get(name) is False
+
+
 def _pass_backed_runtime_secret_auto_arm_ok(frontmatter: Mapping[str, Any]) -> bool:
     """True for narrow pass-backed runtime-only secret tooling.
 
@@ -1409,12 +1426,18 @@ def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
     The derived (keyword) pass matters because an explicit-route-metadata task
     can omit ``risk_flags`` entirely yet still be governance/audio/public by its
     title or tags — those must not be auto-armed.
+
+    The title and tags are an upstream free variable, so the deriver may only add
+    a flag the route omits: a validated route's explicit ``false`` is the authored
+    statement and takes precedence (M129). Unvalidated metadata keeps the
+    derivation.
     """
 
     from shared.route_metadata_schema import _derive_risk_flags, assess_route_metadata
 
     flags: set[str] = set()
     derived = _derive_risk_flags(frontmatter)
+    metadata = assess_route_metadata(frontmatter).metadata
     for name in SENSITIVE_RISK_FLAGS:
         if (
             name == "privacy_or_secret_sensitive"
@@ -1423,9 +1446,10 @@ def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
             and not _explicit_risk_flag_true(frontmatter, name)
         ):
             continue
+        if metadata is not None and _explicit_risk_flag_false(frontmatter, name):
+            continue
         if derived.get(name):
             flags.add(name)
-    metadata = assess_route_metadata(frontmatter).metadata
     if metadata is not None:
         for name in SENSITIVE_RISK_FLAGS:
             if getattr(metadata.risk_flags, name, False):
