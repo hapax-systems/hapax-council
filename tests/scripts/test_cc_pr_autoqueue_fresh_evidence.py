@@ -248,12 +248,14 @@ def test_evidence_older_than_examination_does_not_jump_the_rotation(tmp_path: Pa
     assert report["must_include"]["fresh_evidence"] == []
 
 
-def test_branch_linked_task_evidence_counts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("transport", ["rest", "graphql"])
+def test_branch_linked_task_evidence_counts(tmp_path: Path, transport: str) -> None:
     # A task linked by branch (no pr field yet) is matched the way
-    # classify_pr matches it.
+    # classify_pr matches it, from either listing shape (REST head.ref,
+    # GraphQL headRefName).
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="task-by-branch", branch="feat/13")
-    runner = RotationRunner(25)
+    runner = RotationRunner(25, transport)
     for _ in range(3):
         tick(tmp_path, runner, vault)
     _age_rotation_state(tmp_path, 120)
