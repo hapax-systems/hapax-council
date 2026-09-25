@@ -879,7 +879,14 @@ def test_a_nonzero_exit_is_never_reasked(monkeypatch, capsys, returncode) -> Non
 
     assert module.main([]) == returncode
     assert len(calls) == 1
-    assert capsys.readouterr().out == ""
+    out = capsys.readouterr()
+    assert out.out == ""
+    # stderr carries the wrapper's nonzero diagnostic and nothing from the re-ask path
+    assert "claude exited nonzero" in out.err
+    assert module.REASK_DIAGNOSTIC not in out.err
+    assert module.REASK_SKIPPED_DIAGNOSTIC not in out.err
+    # the model's (untrusted) stdout is never laundered into stderr either
+    assert "Let me inspect" not in out.err
 
 
 def test_a_second_reply_with_no_verdict_is_returned_without_a_third_attempt(
