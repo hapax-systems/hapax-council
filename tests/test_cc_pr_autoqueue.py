@@ -88,28 +88,18 @@ def _write_review_dossier(
     folder: str = "active",
 ) -> Path:
     if reviewers is None:
+        # Three distinct families, every seat voting: the distinct-family floor
+        # (review-constitution-walled-family-substitution-20260924) refuses a reseated family
+        # or a dead seat, which this default used to carry (claude-2, invalid-output).
         reviewers = [
             {
-                "id": "codex-1",
-                "family": "codex",
+                "id": f"{family}-1",
+                "family": family,
                 "verdict": "accept",
                 "findings": [],
                 "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
-            },
-            {
-                "id": "claude-1",
-                "family": "claude",
-                "verdict": "accept",
-                "findings": [],
-                "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
-            },
-            {
-                "id": "claude-2",
-                "family": "claude",
-                "verdict": "invalid-output",
-                "findings": [],
-                "checklist": {},
-            },
+            }
+            for family in ("codex", "claude", "gemini")
         ]
     accepts = sum(1 for r in reviewers if r["verdict"] in ("accept", "accept-with-findings"))
     dossier = {

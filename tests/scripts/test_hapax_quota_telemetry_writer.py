@@ -22,6 +22,11 @@ NOW = "2026-06-10T00:00:00Z"
 PAYG_NOW = "2026-07-06T14:05:00Z"
 
 
+@pytest.fixture(autouse=True)
+def isolate_measurement_traces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_QUOTA_TRACE_HOME", str(tmp_path / "trace-home"))
+
+
 def _fake_nvidia_smi(tmp_path: Path, body: str) -> Path:
     stub = tmp_path / "fake-nvidia-smi"
     stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
@@ -534,9 +539,9 @@ def test_refreshed_codex_receipts_rebuild_the_published_ledger(
     writes: list[str] = []
     real_write = main_globals["write_ledger_atomic"]
 
-    def counting_write(ledger, path):
+    def counting_write(ledger, path, **kwargs):
         writes.append(ledger.captured_at.isoformat())
-        real_write(ledger, path)
+        real_write(ledger, path, **kwargs)
 
     def healing_refresh(*, timeout, receipt_dir):
         _codex_platform_receipt(platform_receipts)
@@ -603,9 +608,9 @@ def test_unchanged_codex_receipts_write_the_ledger_once(
     writes: list[str] = []
     real_write = main_globals["write_ledger_atomic"]
 
-    def counting_write(ledger, path):
+    def counting_write(ledger, path, **kwargs):
         writes.append(ledger.captured_at.isoformat())
-        real_write(ledger, path)
+        real_write(ledger, path, **kwargs)
 
     monkeypatch.setitem(
         main_globals,
@@ -5330,7 +5335,7 @@ def test_retired_gemini_quota_wall_receipts_warn_and_do_not_seed_routes(tmp_path
     assert "WARNING ignoring retired Gemini quota-wall receipt" in result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
     route_ids = {snapshot["route_id"] for snapshot in payload["quota_snapshots"]}
-    assert all(not route_id.startswith("gemini.") for route_id in route_ids)
+    assert all(not route_id.startswith("gemini.") for route_id in route_ids if route_id is not None)
     summary = json.loads(result.stdout)
     assert "retired-gemini" not in summary["quota_walls"]
 
@@ -6539,6 +6544,123 @@ def test_claude_admission_writer_output_marks_claude_fresh(tmp_path: Path) -> No
         for ref in snapshot["evidence_refs"]
     )
     assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
+def test_claude_probe_windows_keep_the_admission_receipt_admitted(tmp_path: Path) -> None:
+    """The strict receipt parser rejects unknown keys, so the window keys must be admitted."""
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    admission_result = subprocess.run(
+        [
+            sys.executable,
+            str(CLAUDE_ADMISSION_SCRIPT),
+            "--receipt-dir",
+            str(relay),
+            "--now",
+            "2026-06-09T23:55:00Z",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260609t2355z",
+            "--probe-environment-scrubbed",
+            "--five-hour-used-percent",
+            "8",
+            "--five-hour-resets-at",
+            "2026-06-10T03:00:00Z",
+            "--seven-day-used-percent",
+            "9",
+            "--seven-day-resets-at",
+            "2026-06-12T22:00:00Z",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert admission_result.returncode == 0, admission_result.stderr
+    assert "seven_day_used_percent" in next(relay.glob("*.yaml")).read_text(encoding="utf-8")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
+V1_SNAPSHOT_FIELDS = {
+    "quota_snapshot_schema",
+    "snapshot_id",
+    "captured_at",
+    "fresh_until",
+    "route_id",
+    "provider",
+    "capacity_pool",
+    "subscription_quota_state",
+    "evidence_refs",
+    "operator_visible_reason",
+}
+
+
+def test_live_ledger_stays_schema_1_until_its_readers_take_2(tmp_path: Path) -> None:
+    """reins reads the live file through hapax-spine 0.1.3: Literal[1], extra=forbid."""
+    result, out = _run_writer(tmp_path)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert "freeze" not in payload and "operator_reports" not in payload
+    assert all(set(row) == V1_SNAPSHOT_FIELDS for row in payload["quota_snapshots"])
+
+    result, out = _run_writer(tmp_path, extra_env={"HAPAX_QUOTA_LEDGER_LIVE_SCHEMA": "2"})
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2 and "freeze" in payload
+
+
+def test_a_damaged_previous_live_ledger_never_blocks_the_tick(tmp_path: Path) -> None:
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    out.parent.mkdir(parents=True)
+    out.write_text('{"truncated": ', encoding="utf-8")
+    result, out = _run_writer(tmp_path, extra_env={"HAPAX_QUOTA_LEDGER_LIVE_SCHEMA": "2"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(out.read_text(encoding="utf-8"))["schema_version"] == 2
+
+
+def test_unreadable_measurements_still_write_the_admission_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shared.quota_headroom as quota_headroom
+
+    def unreadable(*args, **kwargs):
+        raise quota_headroom.TraceReadError("corrupt_or_unreadable_source:local-trace:x:0")
+
+    monkeypatch.setattr(quota_headroom, "collect_measurements", unreadable)
+    platform_receipts = tmp_path / "platform-receipts"
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(platform_receipts))
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "")
+    monkeypatch.setenv("HAPAX_DEFAULT_DISPATCH_HOST", "")
+    (tmp_path / "relay").mkdir()
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    namespace = runpy.run_path(str(SCRIPT))
+    rc = namespace["main"](
+        [
+            "--skip-receipts",
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(tmp_path / "relay"),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(_fake_nvidia_smi(tmp_path, "echo '1000, 32000'")),
+            "--trace-home",
+            str(tmp_path / "trace-home"),
+        ]
+    )
+    assert rc == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["quota_snapshots"]
 
 
 def test_claude_admission_writer_can_target_review_route(tmp_path: Path) -> None:

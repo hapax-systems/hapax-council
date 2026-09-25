@@ -514,6 +514,10 @@ def test_group_sweep_premise_pinned_to_the_real_producer_registry() -> None:
     joining the registry must re-verify that premise; this pin forces the
     re-verification instead of letting the sweep premise go stale silently.
 
+    encountered-machinery-audit (2026-09-25) re-verified: its only children are synchronous
+    `git -C <vault> log/show/rev-parse` calls via subprocess.run with a timeout, with no
+    start_new_session and no daemonizing, so they stay in the harness's process group.
+
     entitlement-census, re-verified 2026-09-25 (row entitlement-census-producer-20260924): it
     spawns bash (local holdings), ssh without -f (remote holdings, the scout report and
     estate_host_inventory.probe_host), hapax-secret and the delta intake, all with plain
@@ -523,6 +527,7 @@ def test_group_sweep_premise_pinned_to_the_real_producer_registry() -> None:
     assert sorted(p["id"] for p in producers) == [
         "agy-review-quota",
         "claude-account-live",
+        "encountered-machinery-audit",
         "entitlement-census",
     ]
 

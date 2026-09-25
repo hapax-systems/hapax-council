@@ -732,12 +732,64 @@ class RenewalRecord(StrictModel):
         return self
 
 
-class QuotaSnapshot(StrictModel):
-    quota_snapshot_schema: Literal[1] = 1
+class QuotaMeasurement(StrictModel):
+    """A measurement is evidence, never an admission or a spend authorization."""
+
+    capacity_id: str = Field(min_length=1)
+    quantity: float | None = Field(default=None, allow_inf_nan=False)
+    unit: str | None = None
+    window: str | None = None
+    resets_at: datetime | None = None
+    label: Literal["observed", "derived", "wall-signal", "operator-reported", "unobserved"] = (
+        "unobserved"
+    )
+    source: str = "none"
+    observed_at: datetime | None = None
+    measurement_fresh_until: datetime | None = None
+    reason_code: str | None = None
+    details: dict[str, int | float | str | None] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _measurement_contract(self) -> Self:
+        for key in ("resets_at", "observed_at", "measurement_fresh_until"):
+            value = getattr(self, key)
+            if value is not None:
+                _require_aware(value, key)
+        if self.label in {"observed", "derived"} and self.quantity is None:
+            raise ValueError("observed/derived measurements require a quantity")
+        if self.label in {"wall-signal", "unobserved"} and self.quantity is not None:
+            raise ValueError("walls and missing evidence cannot become a fraction")
+        if self.label != "unobserved" and self.observed_at is None:
+            raise ValueError("evidence requires its source time")
+        if self.label == "unobserved" and not self.reason_code:
+            raise ValueError("unobserved measurements require a reason_code")
+        return self
+
+    def measurement_is_fresh(self, now: datetime) -> bool:
+        return (
+            self.observed_at is not None
+            and self.measurement_fresh_until is not None
+            and self.observed_at <= now < self.measurement_fresh_until
+        )
+
+
+class QuotaSnapshot(QuotaMeasurement):
+    quota_snapshot_schema: Literal[1, 2] = 1
+    capacity_id: str = "legacy.unmeasured"
+    reason_code: str | None = "legacy_binary_snapshot"
+    family: str = "unknown"
+    stage: Literal[
+        "unusable", "usable-undeclared", "declared-unmeasured", "declared-measured", "routable"
+    ] = "declared-unmeasured"
+    next_act: str = "Collect a local quantity with source and observation time"
+    owner: Literal["operator", "source", "runtime"] = "source"
+    measurements: tuple[QuotaMeasurement, ...] = ()
+    # Measurement-only rows must never participate in legacy admission decisions.
+    admission_compatible: bool = True
     snapshot_id: str = Field(pattern=r"^quota-[a-z0-9_.:-]+$")
     captured_at: datetime
     fresh_until: datetime | None = None
-    route_id: str = Field(min_length=1)
+    route_id: str | None = Field(default=None, min_length=1)
     provider: str = Field(min_length=1)
     capacity_pool: CapacityPool
     subscription_quota_state: SubscriptionQuotaState
@@ -747,6 +799,8 @@ class QuotaSnapshot(StrictModel):
     @model_validator(mode="after")
     def _quota_snapshot_contract(self) -> Self:
         _require_aware(self.captured_at, "captured_at")
+        if self.route_id is None and self.admission_compatible:
+            raise ValueError("an undeclared capacity cannot carry route admission")
         if self.fresh_until is not None:
             _require_aware(self.fresh_until, "fresh_until")
             if self.fresh_until <= self.captured_at:
@@ -754,7 +808,7 @@ class QuotaSnapshot(StrictModel):
         _reject_private_or_identity_refs(
             [
                 self.snapshot_id,
-                self.route_id,
+                self.route_id or "undeclared",
                 self.provider,
                 *self.evidence_refs,
                 self.operator_visible_reason,
@@ -895,7 +949,7 @@ class QuotaSpendDashboard(StrictModel):
 class QuotaSpendLedger(StrictModel):
     """Complete local ledger fixture. Loading this grants no spend authority."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     ledger_id: str = Field(min_length=1)
     captured_at: datetime
     authority_source: Literal["isap:quota-spend-ledger-20260509"]
@@ -914,6 +968,32 @@ class QuotaSpendLedger(StrictModel):
     artifact_provenance: tuple[ArtifactProvenanceRecord, ...] = Field(default=())
     renewal_records: tuple[RenewalRecord, ...] = Field(default=())
     evidence_refs: tuple[str, ...] = Field(min_length=1)
+    freeze: dict[str, Any] = Field(default_factory=dict)
+    operator_reports: tuple[QuotaMeasurement, ...] = ()
+
+    def schema_v1_payload(self) -> dict[str, Any]:
+        """Explicit downgrade for strict pre-v2 readers; no second ledger is written."""
+        payload = self.model_dump(mode="json")
+        payload["schema_version"] = 1
+        payload.pop("freeze")
+        payload.pop("operator_reports")
+        fields = {
+            "snapshot_id",
+            "captured_at",
+            "fresh_until",
+            "route_id",
+            "provider",
+            "capacity_pool",
+            "subscription_quota_state",
+            "evidence_refs",
+            "operator_visible_reason",
+        }
+        payload["quota_snapshots"] = [
+            {"quota_snapshot_schema": 1, **{key: row[key] for key in fields}}
+            for row in payload["quota_snapshots"]
+            if row["admission_compatible"] and row["route_id"] is not None
+        ]
+        return payload
 
     @model_validator(mode="after")
     def _ledger_contract(self) -> Self:
@@ -1324,7 +1404,8 @@ def _subscription_quota_state(
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
-        if snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+        if snapshot.admission_compatible
+        and snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
     )
     if not snapshots:
         return SubscriptionQuotaState.UNKNOWN
@@ -1367,7 +1448,8 @@ def subscription_quota_state_for_route(
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
-        if snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+        if snapshot.admission_compatible
+        and snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
         and _normalize_route_id(snapshot.route_id) == normalized_route_id
     )
     if not snapshots:
@@ -1997,6 +2079,7 @@ def _refs(*values: str | None) -> list[str]:
 
 
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
+    QuotaMeasurement._measurement_contract,
     TransitionBudget._budget_contract,
     SpendReceipt._receipt_contract,
     ProviderDependencyRecord._dependency_contract,

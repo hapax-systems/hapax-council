@@ -55,6 +55,9 @@ def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     receipts = tmp_path / "relay-receipts"
     receipts.mkdir(exist_ok=True)
     monkeypatch.setenv("HAPAX_RELAY_RECEIPTS", str(receipts))
+    # Wall evidence reads the operator's local traces; tests read an empty home unless they
+    # write one, so no test depends on (or spends 45 s scanning) this host's live quota walls.
+    monkeypatch.setattr(dispatch, "WALL_TRACE_HOME", tmp_path / "wall-home", raising=False)
 
 
 def _make_vault(tmp_path: Path) -> Path:
@@ -625,6 +628,8 @@ class TestDryRun:
                 "glm": (
                     "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
                 ),
+                # substitute families unavailable too, so only one family remains
+                **{f: ("route_state_blocked",) for f in ("muse", "vibe", "local")},
             },
         )
 
@@ -1074,8 +1079,11 @@ class TestApply:
         )
         by_family = {r["family"]: r for r in dossier["reviewers"]}
         assert by_family["codex"]["verdict"] == "invalid-output"
-        # 2 valid accepts remain -> still quorum for t2
-        assert dossier["review_team_verdict"] == "quorum-accept"
+        # Superseded: "2 valid accepts remain -> still quorum for t2". The unparseable seat is an
+        # outage, so two families voted where three were seated: below the distinct-family
+        # floor (review-constitution-walled-family-substitution-20260924), no quorum.
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"]["met"] is False
 
     def test_reviewer_runner_exception_records_internal_error(self, tmp_path: Path) -> None:
         reviewers = RaisingReviewers(failing_family="codex")
@@ -3833,7 +3841,10 @@ class TestFamilyOutageDegradation:
         assert gemini_seats
         assert gemini_seats[0]["verdict"] == "invalid-output"
         recorded = json.loads(state.read_text(encoding="utf-8"))
-        assert "gemini" not in recorded
+        # Model stdout still cannot forge a provider-evidenced outage. Since
+        # review-constitution-walled-family-substitution-20260924 unparseable output is an
+        # outage, not a vote; its latch is marked seat_output and can never degrade t1.
+        assert recorded["gemini"]["cause"] == "seat_output"
 
     def test_provider_outage_round_records_the_family_outage(
         self, monkeypatch: Any, tmp_path: Path
@@ -3876,9 +3887,12 @@ class TestFamilyOutageDegradation:
         assert recorded["outage_started_at"] == "2026-06-12T21:00:00+00:00"  # STABLE
         assert recorded["observed_at"] == "2026-06-12T21:10:00+00:00"  # ADVANCED
 
-    def test_invalid_output_clears_stale_family_outage(
+    def test_invalid_output_restamps_stale_family_outage(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
+        # Superseded rule: invalid-output used to clear the latch. It is an outage, not a vote
+        # (review-constitution-walled-family-substitution-20260924), so it restamps instead.
+        # A legacy latch is not seat output, so the restamp does not mark it seat_output.
         state, _ = self._isolate_state(monkeypatch, tmp_path)
         state.write_text(json.dumps({"glm": "2026-06-12T20:00:00+00:00"}), encoding="utf-8")
 
@@ -3888,7 +3902,12 @@ class TestFamilyOutageDegradation:
             state,
         )
 
-        assert json.loads(state.read_text(encoding="utf-8")) == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {
+            "glm": {
+                "observed_at": "2026-06-12T21:00:00+00:00",
+                "outage_started_at": "2026-06-12T20:00:00+00:00",
+            }
+        }
 
     def test_family_outage_update_takes_exclusive_lock(
         self, monkeypatch: Any, tmp_path: Path
@@ -5003,14 +5022,17 @@ payg_fallback: false
             state,
         )
         recorded = json.loads(state.read_text(encoding="utf-8"))
-        assert recorded["claude"] == entry
+        # invalid-output is an outage (review-constitution-walled-family-substitution-20260924):
+        # it restamps observed_at and keeps the stable start and the operator until/note.
+        assert recorded["claude"] == {**entry, "observed_at": now}
         assert out == frozenset({"claude"})
         assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
 
-    def test_invalid_output_with_past_until_clears_family_outage(
+    def test_invalid_output_with_past_until_restamps_but_until_rules(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
-        """Expired until yields to clear-on-verdict."""
+        """invalid-output restamps (it is an outage, not a vote); the expired operator until
+        still decides, so the family is IN (review-constitution-walled-family-substitution)."""
         state, _ = self._isolate_state(monkeypatch, tmp_path)
         state.write_text(
             json.dumps(
@@ -5025,12 +5047,21 @@ payg_fallback: false
             ),
             encoding="utf-8",
         )
+        now = "2026-06-12T21:00:00+00:00"
         dispatch.update_family_outage(
             [{"family": "claude", "verdict": "invalid-output"}],
-            "2026-06-12T21:00:00+00:00",
+            now,
             state,
         )
-        assert json.loads(state.read_text(encoding="utf-8")) == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {
+            "claude": {
+                "observed_at": now,
+                "outage_started_at": "2026-06-12T12:00:00+00:00",
+                "until": "2026-06-12T20:00:00Z",
+                "note": "weekly reset",
+            }
+        }
+        assert dispatch.load_family_outage(now, state) == frozenset()
 
     def test_valid_verdict_without_until_clears_family_outage(
         self, monkeypatch: Any, tmp_path: Path
@@ -5804,3 +5835,653 @@ def test_a_raised_gh_failure_is_normalised_so_the_fallback_handlers_see_it(tmp_p
 
     with pytest.raises(RuntimeError):
         dispatch._run_gh(["gh", "pr", "view"], repo_root=tmp_path, runner=gh_times_out)
+
+
+# --- Walled-family substitution (review-constitution-walled-family-substitution-20260924) ----
+#
+# A family with live wall evidence from the quota readers (shared/quota_headroom.py) is never
+# seated. The constitution substitutes from the other admitted review families without lowering
+# the diversity floor, and records the substitution. A walled, empty, or invalid seat is an
+# outage, never a vote.
+
+_WALL_NOW = "2026-06-11T21:00:00+00:00"
+
+
+def _write_codex_weekly_wall(
+    home: Path,
+    *,
+    at: str = "2026-06-11T20:00:00Z",
+    resets_at: str = "2026-06-15T00:00:00+00:00",
+    used_percent: float = 100.0,
+) -> Path:
+    from datetime import datetime as _dt
+
+    path = home / ".codex" / "sessions" / "2026" / "06" / "11" / "rollout-wall.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "timestamp": at,
+        "payload": {
+            "type": "token_count",
+            "info": {"total_token_usage": {"total_tokens": 10}},
+            "rate_limits": {
+                "limit_id": "codex",
+                "primary": {
+                    "used_percent": used_percent,
+                    "window_minutes": 10080,
+                    "resets_at": _dt.fromisoformat(resets_at).timestamp(),
+                },
+            },
+        },
+    }
+    path.write_text(json.dumps(event) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_agy_wall_receipt(tmp_path: Path, *, resets_at: str = "2026-06-12T20:00:00Z") -> Path:
+    path = tmp_path / "relay-receipts" / "agy-review-quota-wall.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "status": "quota_blocked",
+                "observed_at": "2026-06-11T20:30:00Z",
+                "resets_at": resets_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _seat_families(plan: dict[str, Any]) -> set[str]:
+    return {seat["family"] for seat in plan["seats"]}
+
+
+def _seed_seat_output_latch(family: str = "glm") -> None:
+    dispatch.FAMILY_OUTAGE_STATE.write_text(
+        json.dumps(
+            {
+                family: {
+                    "observed_at": _WALL_NOW,
+                    "outage_started_at": _WALL_NOW,
+                    "cause": "seat_output",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestWalledFamilySubstitution:
+    def test_tests_never_read_the_hosts_live_wall_traces(self, tmp_path: Path) -> None:
+        assert tmp_path / "wall-home" == dispatch.WALL_TRACE_HOME
+
+    def test_family_with_live_wall_evidence_is_not_seated(self, tmp_path: Path) -> None:
+        _write_codex_weekly_wall(tmp_path / "wall-home")
+        result, _, reviewers, _ = _review(tmp_path, apply=False)
+        assert result["status"] == "planned"
+        plan = result["plan"]
+        assert "codex" not in _seat_families(plan)
+        assert "degraded_family_outage:codex" in plan["constitution_notes"]
+        excluded = plan["family_substitution"]["excluded_for_wall"]
+        assert set(excluded) == {"codex"}
+        assert excluded["codex"]["capacity_id"] == "codex.subscription.weekly"
+        assert excluded["codex"]["resets_at"].startswith("2026-06-15T00:00:00")
+        assert plan["family_substitution"]["seated_families"] == sorted(_seat_families(plan))
+        assert reviewers.invocations == []
+
+    def test_route_backed_family_is_walled_through_its_route_platform(self, tmp_path: Path) -> None:
+        # gemini's review route is agy.review.direct, so the agy wall is gemini's wall.
+        _write_agy_wall_receipt(tmp_path)
+        result, _, _, _ = _review(tmp_path, apply=False)
+        plan = result["plan"]
+        assert "gemini" not in _seat_families(plan)
+        assert set(plan["family_substitution"]["excluded_for_wall"]) == {"gemini"}
+
+    def test_wall_past_its_reset_does_not_exclude(self, tmp_path: Path) -> None:
+        _write_codex_weekly_wall(tmp_path / "wall-home", resets_at="2026-06-11T20:30:00+00:00")
+        result, _, _, _ = _review(tmp_path, apply=False)
+        plan = result["plan"]
+        assert plan["family_substitution"]["excluded_for_wall"] == {}
+        assert not any(n.startswith("degraded_family_outage:") for n in plan["constitution_notes"])
+
+    def test_below_limit_reading_is_not_a_wall(self, tmp_path: Path) -> None:
+        _write_codex_weekly_wall(tmp_path / "wall-home", used_percent=42.0)
+        result, _, _, _ = _review(tmp_path, apply=False)
+        assert result["plan"]["family_substitution"]["excluded_for_wall"] == {}
+
+    def test_wall_reader_failure_is_recorded_and_does_not_invent_a_wall(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(*_args: Any, **_kwargs: Any) -> Any:
+            raise OSError("trace root unreadable")
+
+        monkeypatch.setattr(dispatch.quota_headroom, "collect_measurements", broken)
+        result, _, _, _ = _review(tmp_path, apply=False)
+        plan = result["plan"]
+        assert result["status"] == "planned"
+        assert plan["family_substitution"]["excluded_for_wall"] == {}
+        assert plan["family_substitution"]["wall_evidence_error"] == "OSError"
+
+    def test_walled_family_is_never_dispatched_and_receipt_names_only_voters(
+        self, tmp_path: Path
+    ) -> None:
+        _write_codex_weekly_wall(tmp_path / "wall-home")
+        result, _, reviewers, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        assert "codex" not in {family for _, family, _ in reviewers.invocations}
+        dossier = result["dossier"]
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["degraded_family_outage"] == ["codex"]
+        assert set(dossier["family_substitution"]["excluded_for_wall"]) == {"codex"}
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        assert "codex" not in receipt["acceptor"]
+        # The admission gate's external-witness read must also admit the wall-degraded dossier.
+        assert (
+            dispatch.review_team.review_dossier_validity_blockers(
+                yaml.safe_load(note.read_text().split("---", 2)[1]),
+                note,
+                pr_head_sha="c" * 40,
+                pr_number=42,
+                outage_state_path=dispatch.FAMILY_OUTAGE_STATE,
+                admission_time=_WALL_NOW,
+                route_blocked_families={},
+            )
+            == ()
+        )
+
+    def test_walled_seat_is_never_counted_and_leaves_the_team_below_floor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # t2, writer claude, four live families: PR 42 rotation seats gemini, glm and codex.
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+
+        class GlmWalled(RecordingReviewers):
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                self.invocations.append((seat.id, seat.family, prompt))
+                if seat.family == "glm":
+                    raise dispatch.ReviewerProcessError(
+                        TestFamilyOutageDegradation.WALL, returncode=1
+                    )
+                return GOOD_REPLY
+
+        result, _, _, note = _review(
+            tmp_path,
+            reviewers=GlmWalled(),
+            task_kwargs={"quality_floor": "frontier_review_required"},
+        )
+        dossier = result["dossier"]
+        assert {r["family"]: r["verdict"] for r in dossier["reviewers"]}["glm"] == "quota-wall"
+        # Two families voted where three were seated: below the floor, so no accept and no receipt.
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"] == {
+            "seated_families": ["codex", "gemini", "glm"],
+            "voting_families": ["codex", "gemini"],
+            "met": False,
+        }
+        assert dossier["authority_issuer"] == "review-team:codex,gemini"
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+
+    def test_walled_seat_is_never_counted_in_the_authority_issuer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+        reviewers = RecordingReviewers(replies={"glm": "not yaml at all"})
+        result, _, _, _ = _review(
+            tmp_path, reviewers=reviewers, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["dossier"]["authority_issuer"] == "review-team:codex,gemini"
+
+    # agy auto-denied a tool headlessly and printed this (frame/briefs/agy-flash-measure-
+    # 20260905T1941Z/*.stderr); with stderr merged it lands in stdout, otherwise stdout is empty.
+    JETSKI = (
+        'jetski: no output produced — a tool required the "command" permission that headless '
+        "mode cannot prompt for, so it was auto-denied. Add an allow-rule under "
+        "permissions.allow in settings.json (e.g. command(<target>)). Alternatively, re-run "
+        "with --dangerously-skip-permissions to auto-approve all tools."
+    )
+
+    @pytest.mark.parametrize("reply", ["", "JETSKI"])
+    def test_gemini_no_output_is_an_outage_and_no_receipt(self, tmp_path: Path, reply: str) -> None:
+        reviewers = RecordingReviewers(replies={"gemini": self.JETSKI if reply == "JETSKI" else ""})
+        result, _, _, note = _review(
+            tmp_path, reviewers=reviewers, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        dossier = result["dossier"]
+        gemini = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini and all(r["verdict"] == "reviewer-route-unavailable" for r in gemini)
+        assert all(r["outage_cause"] == "empty_output" for r in gemini)
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"]["met"] is False
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
+        assert state["gemini"]["cause"] == "seat_output"
+
+    def test_wall_and_route_block_substitute_a_distinct_family(self, tmp_path: Path) -> None:
+        # Today's #4729 shape: codex walled, glm route-blocked, claude writes. Three distinct
+        # families are seated; a declared substitute fills the third seat, never a reseat.
+        _write_codex_weekly_wall(tmp_path / "wall-home")
+        result, _, _, _ = _review(
+            tmp_path,
+            apply=False,
+            route_blocked_families={"glm": ("glmcp.review.direct:route_state_blocked",)},
+        )
+        plan = result["plan"]
+        families = [seat["family"] for seat in plan["seats"]]
+        assert len(families) == len(set(families)) == 3
+        assert {"gemini", "claude"} <= set(families)
+        substituted = plan["family_substitution"]["substitute_families_seated"]
+        assert len(substituted) == 1 and substituted[0] in {"muse", "vibe", "local"}
+
+    def test_empty_output_is_an_outage_not_a_vote(self, tmp_path: Path) -> None:
+        reviewers = RecordingReviewers(replies={"glm": "   \n"})
+        result, _, _, _ = _review(tmp_path, reviewers=reviewers)
+        glm = [r for r in result["dossier"]["reviewers"] if r["family"] == "glm"]
+        assert glm and all(r["verdict"] == "reviewer-route-unavailable" for r in glm)
+        assert all(r["outage_cause"] == "empty_output" for r in glm)
+        state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
+        assert state["glm"]["cause"] == "seat_output"
+
+    def test_invalid_output_latches_its_family_out(self, tmp_path: Path) -> None:
+        dispatch.update_family_outage([{"family": "glm", "verdict": "invalid-output"}], _WALL_NOW)
+        state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
+        assert state["glm"]["cause"] == "seat_output"
+        assert state["glm"]["observed_at"] == _WALL_NOW
+
+    def test_invalid_output_never_clears_an_outage_latch(self, tmp_path: Path) -> None:
+        dispatch.FAMILY_OUTAGE_STATE.write_text(
+            json.dumps({"glm": {"observed_at": _WALL_NOW, "outage_started_at": _WALL_NOW}}),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [{"family": "glm", "verdict": "invalid-output"}], "2026-06-11T21:05:00+00:00"
+        )
+        state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
+        assert "glm" in state
+
+    def test_a_parseable_vote_still_clears_the_latch(self, tmp_path: Path) -> None:
+        dispatch.FAMILY_OUTAGE_STATE.write_text(
+            json.dumps({"glm": {"observed_at": _WALL_NOW, "outage_started_at": _WALL_NOW}}),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [
+                {"family": "glm", "verdict": "invalid-output"},
+                {"family": "glm", "verdict": "accept"},
+            ],
+            "2026-06-11T21:05:00+00:00",
+        )
+        state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
+        assert "glm" not in state
+
+    def test_seat_output_outage_never_degrades_t1(self, tmp_path: Path) -> None:
+        # Model-controlled output (empty or garbage) must not buy a t1 -> t2 downgrade.
+        _seed_seat_output_latch("glm")
+        result, _, _, _ = _review(tmp_path, apply=False, task_kwargs={"risk_tier": "T1"})
+        plan = result["plan"]
+        assert plan["team_class"] == "t1_critical"
+        assert "degraded_to:t2_standard" not in plan["constitution_notes"]
+        assert "glm" in _seat_families(plan)
+
+    def test_seat_output_outage_substitutes_at_t2(self, tmp_path: Path) -> None:
+        _seed_seat_output_latch("glm")
+        result, _, _, _ = _review(tmp_path, apply=False)
+        assert "glm" not in _seat_families(result["plan"])
+
+    def test_substitution_never_lowers_the_diversity_floor(self, tmp_path: Path) -> None:
+        # codex walled; every other family (substitutes too) unavailable: only the writer's
+        # own family is left.
+        _write_codex_weekly_wall(tmp_path / "wall-home")
+        result, _, reviewers, note = _review(
+            tmp_path,
+            task_kwargs={"quality_floor": "frontier_review_required"},
+            route_blocked_families={
+                "gemini": ("agy.review.direct:route_state_blocked",),
+                "glm": ("glmcp.review.direct:route_state_blocked",),
+                **{f: ("route_state_blocked",) for f in ("muse", "vibe", "local")},
+            },
+        )
+        assert result["status"] == "constitution_blocked"
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        plan = result["plan"]
+        assert set(plan["family_substitution"]["excluded_for_wall"]) == {"codex"}
+        assert "requires >=2 model families" in plan["constitution_error"]
+
+    def test_glm_wall_does_not_exclude_glm_when_payg_review_route_is_eligible(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "relay-receipts" / "glm-coding-plan-weekly-limit-quota-wall.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "status": "quota_blocked",
+                    "observed_at": "2026-06-11T20:30:00Z",
+                    "resets_at": "2026-06-15T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(dispatch, "_glmcp_payg_review_route_eligible", lambda _now: True)
+        eligible, _, _, _ = _review(tmp_path, apply=False)
+        assert "glm" not in eligible["plan"]["family_substitution"]["excluded_for_wall"]
+        monkeypatch.setattr(dispatch, "_glmcp_payg_review_route_eligible", lambda _now: False)
+        walled, _, _, _ = _review(tmp_path / "second", apply=False)
+        assert "glm" in walled["plan"]["family_substitution"]["excluded_for_wall"]
+
+
+# --- Vault-only acceptance path ----------------------------------------------------------------
+#
+# A row with no PR is reviewed as an artifact (file set + lineage) by the same dispatcher and
+# earns the same signed .acceptance.yaml. Nothing is ever accepted without a quorum review.
+
+
+def _write_vault_only_task(vault: Path, task_id: str = "vault-row", **kwargs: Any) -> Path:
+    note = _write_task(vault, task_id, quality_floor="frontier_review_required", **kwargs)
+    text = note.read_text(encoding="utf-8").replace("pr: 42\n", "pr: null\n")
+    note.write_text(text.replace("status: pr_open", "status: claimed"), encoding="utf-8")
+    return note
+
+
+def _artifact_setup(tmp_path: Path) -> tuple[Path, Path, Path, list[Path]]:
+    root = tmp_path / "Personal"
+    vault = root / "20-projects" / "hapax-cc-tasks"
+    (vault / "active").mkdir(parents=True)
+    (vault / "closed").mkdir(parents=True)
+    note = _write_vault_only_task(vault)
+    frame = root / "30-areas" / "hapax" / "frame"
+    frame.mkdir(parents=True)
+    census = frame / "CENSUS.md"
+    census.write_text("# Census\n\n14 + 4 = 18\n", encoding="utf-8")
+    appendix = frame / "CENSUS-APPENDIX.md"
+    appendix.write_text("# Appendix\n\nbounds carried\n", encoding="utf-8")
+    return root, vault, note, [census, appendix]
+
+
+def _artifact_kwargs(tmp_path: Path, vault: Path, root: Path, **overrides: Any) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "vault_root": vault,
+        "artifact_root": root,
+        "apply": True,
+        "reviewer_runner": RecordingReviewers(),
+        "wake_dir": tmp_path / "wake",
+        "send_runner": lambda cmd: None,
+        "now_iso": _WALL_NOW,
+        "route_blocked_families": {},
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _review_artifact(
+    tmp_path: Path, **overrides: Any
+) -> tuple[dict[str, Any], RecordingReviewers, Path, list[Path]]:
+    root, vault, note, files = _artifact_setup(tmp_path)
+    paths = overrides.pop("artifact_paths", files)
+    kwargs = _artifact_kwargs(tmp_path, vault, root, **overrides)
+    result = dispatch.review_artifact("vault-row", paths, **kwargs)
+    return result, kwargs["reviewer_runner"], note, files
+
+
+class TestVaultArtifactAcceptance:
+    ROOT_FILES = [
+        "30-areas/hapax/frame/CENSUS-APPENDIX.md",
+        "30-areas/hapax/frame/CENSUS.md",
+    ]
+
+    def test_dry_run_plans_an_artifact_constitution_and_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        result, reviewers, note, _ = _review_artifact(tmp_path, apply=False)
+        assert result["status"] == "planned"
+        plan = result["plan"]
+        assert plan["pr"] is None
+        assert plan["head_sha"].startswith("artifact-sha256:")
+        assert plan["changed_files"] == self.ROOT_FILES
+        assert len(plan["seats"]) == 3
+        assert reviewers.invocations == []
+        assert not (note.parent / "vault-row.review-dossier.yaml").exists()
+        assert not (note.parent / "vault-row.acceptance.yaml").exists()
+
+    def test_quorum_accept_issues_the_same_signed_receipt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+        result, reviewers, note, files = _review_artifact(tmp_path)
+        assert result["status"] == "dispatched"
+        prompts = [prompt for _, _, prompt in reviewers.invocations]
+        assert prompts and all("14 + 4 = 18" in prompt for prompt in prompts)
+        assert all("vault artifact" in prompt for prompt in prompts)
+        dossier = yaml.safe_load((note.parent / "vault-row.review-dossier.yaml").read_text())
+        assert dossier["pr"] is None
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        manifest = dossier["artifact_review"]["manifest"]
+        assert [entry["path"] for entry in manifest] == self.ROOT_FILES
+        assert manifest[1]["sha256"] == sha256(files[0].read_bytes()).hexdigest()
+        receipt = yaml.safe_load((note.parent / "vault-row.acceptance.yaml").read_text())
+        assert receipt["verdict"] == "accepted"
+        assert receipt["acceptor"].startswith("review-team:")
+        assert receipt["pr"] is None
+        assert receipt["head_sha"] == dossier["head_sha"]
+        assert dossier["head_sha"] in receipt["artifact"]
+        assert receipt["artifact_review"]["manifest"] == manifest
+        assert receipt["authority_signature"] == (
+            dispatch.public_gate_receipts.public_gate_authority_signature(receipt, secret)
+        )
+        from shared.sdlc_lifecycle import acceptance_receipt_blockers
+
+        frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_no_receipt_without_a_quorum_of_votes(self, tmp_path: Path) -> None:
+        reviewers = RecordingReviewers(
+            replies={f: "" for f in ("claude", "codex", "gemini", "glm")}
+        )
+        result, _, note, _ = _review_artifact(tmp_path, reviewer_runner=reviewers)
+        assert result["status"] == "dispatched"
+        assert result["dossier"]["review_team_verdict"] == "no-quorum"
+        assert not (note.parent / "vault-row.acceptance.yaml").exists()
+
+    def test_edited_artifact_is_not_covered_by_an_earlier_accept(self, tmp_path: Path) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        first = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root)
+        )
+        first_head = first["dossier"]["head_sha"]
+        assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root) == ()
+        files[0].write_text("# Census\n\n14 + 4 = 19\n", encoding="utf-8")
+        assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root)
+        blocking = RecordingReviewers(
+            replies={f: BLOCK_REPLY for f in ("claude", "codex", "gemini", "glm")}
+        )
+        again = dispatch.review_artifact(
+            "vault-row",
+            files,
+            **_artifact_kwargs(
+                tmp_path,
+                vault,
+                root,
+                reviewer_runner=blocking,
+                now_iso="2026-06-11T21:10:00+00:00",
+            ),
+        )
+        assert again["status"] == "dispatched"
+        assert blocking.invocations, "an edited artifact must be re-reviewed"
+        assert again["dossier"]["head_sha"] != first_head
+        # The old receipt covered only the old bytes: it is archived, never left to close the row.
+        from shared.sdlc_lifecycle import acceptance_receipt_blockers
+
+        frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
+        assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+        archived = note.parent / f"vault-row.acceptance.{first_head.split(':', 1)[1][:8]}.yaml"
+        assert yaml.safe_load(archived.read_text())["head_sha"] == first_head
+        assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root)
+
+    def test_close_gate_refuses_a_receipt_once_the_bytes_change(self, tmp_path: Path) -> None:
+        # Panel r1 critical (Muse): between an edit and a re-review, cc-close's receipt gate must
+        # see that the accepted bytes are gone. A vault row has no merged-head backstop.
+        from shared.sdlc_lifecycle import acceptance_receipt_blockers
+
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+        files[0].write_text("# Census\n\n14 + 4 = 19\n", encoding="utf-8")
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_artifact_changed:30-areas/hapax/frame/CENSUS.md",
+        )
+        files[0].write_text("# Census\n\n14 + 4 = 18\n", encoding="utf-8")
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+        files[1].unlink()
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_artifact_changed:30-areas/hapax/frame/CENSUS-APPENDIX.md",
+        )
+
+    def test_close_gate_refuses_a_receipt_whose_manifest_does_not_match_its_head(
+        self, tmp_path: Path
+    ) -> None:
+        from shared.sdlc_lifecycle import acceptance_receipt_blockers
+
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        receipt_path = note.parent / "vault-row.acceptance.yaml"
+        receipt = yaml.safe_load(receipt_path.read_text())
+        frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
+        forged = dict(receipt, head_sha="artifact-sha256:" + "0" * 64)
+        receipt_path.write_text(yaml.safe_dump(forged), encoding="utf-8")
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_artifact_head_mismatch",
+        )
+        rootless = dict(receipt)
+        rootless["artifact_review"] = {"manifest": receipt["artifact_review"]["manifest"]}
+        receipt_path.write_text(yaml.safe_dump(rootless), encoding="utf-8")
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_artifact_root_missing",
+        )
+
+    def test_fresh_dossier_for_the_same_bytes_is_not_re_reviewed(self, tmp_path: Path) -> None:
+        root, vault, _, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        again_reviewers = RecordingReviewers()
+        again = dispatch.review_artifact(
+            "vault-row",
+            files,
+            **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=again_reviewers),
+        )
+        assert again["status"] == "skipped_fresh"
+        assert again_reviewers.invocations == []
+
+    def test_pr_bound_task_is_refused(self, tmp_path: Path) -> None:
+        root, vault, _, files = _artifact_setup(tmp_path)
+        _write_task(vault, "pr-row", quality_floor="frontier_review_required")
+        reviewers = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "pr-row", files, **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=reviewers)
+        )
+        assert result["status"] == "pr_bound_task"
+        assert reviewers.invocations == []
+        assert not (vault / "active" / "pr-row.acceptance.yaml").exists()
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["outside_root", "symlink_out", "missing", "directory", "empty_set", "binary", "too_large"],
+    )
+    def test_unreviewable_artifact_sets_are_refused(self, tmp_path: Path, kind: str) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        if kind == "outside_root":
+            outside = tmp_path / "outside.md"
+            outside.write_text("x", encoding="utf-8")
+            paths = [*files, outside]
+        elif kind == "symlink_out":
+            (tmp_path / "outside-target.md").write_text("x", encoding="utf-8")
+            link = files[0].parent / "LINK.md"
+            link.symlink_to(tmp_path / "outside-target.md")
+            paths = [*files, link]
+        elif kind == "missing":
+            paths = [*files, files[0].parent / "NOPE.md"]
+        elif kind == "directory":
+            paths = [*files, files[0].parent]
+        elif kind == "binary":
+            blob = files[0].parent / "blob.bin"
+            blob.write_bytes(b"\xff\xfe\x00binary")
+            paths = [*files, blob]
+        elif kind == "too_large":
+            # Reviewers must see every byte they accept; a set over the cap is refused whole.
+            big = files[0].parent / "BIG.md"
+            big.write_text("x" * dispatch.MAX_ARTIFACT_CHARS, encoding="utf-8")
+            paths = [*files, big]
+        else:
+            paths = []
+        reviewers = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "vault-row", paths, **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=reviewers)
+        )
+        assert result["status"] == "artifact_invalid"
+        assert reviewers.invocations == []
+        assert not (note.parent / "vault-row.acceptance.yaml").exists()
+
+    def test_lineage_names_each_files_last_vault_commit_and_uncommitted_edits(
+        self, tmp_path: Path
+    ) -> None:
+        root, vault, _, files = _artifact_setup(tmp_path)
+        git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "snapshot"], check=True)
+        head = subprocess.run(
+            [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        files[1].write_text("# Appendix\n\nedited after the snapshot\n", encoding="utf-8")
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root, apply=False)
+        )
+        lineage = {f["path"]: f for f in result["plan"]["artifact_lineage"]["files"]}
+        census = lineage["30-areas/hapax/frame/CENSUS.md"]
+        appendix = lineage["30-areas/hapax/frame/CENSUS-APPENDIX.md"]
+        assert census["last_commit"] == head and census["uncommitted_changes"] is False
+        assert appendix["last_commit"] == head and appendix["uncommitted_changes"] is True
+        assert result["plan"]["artifact_lineage"]["task_parent_spec"] == "docs/spec.md"
+
+    def test_walled_family_is_not_seated_for_an_artifact(self, tmp_path: Path) -> None:
+        _write_codex_weekly_wall(tmp_path / "wall-home")
+        result, reviewers, _, _ = _review_artifact(tmp_path)
+        assert "codex" not in {family for _, family, _ in reviewers.invocations}
+        assert result["dossier"]["degraded_family_outage"] == ["codex"]
+
+    def test_cli_check_receipt_exits_nonzero_once_the_bytes_change(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        root, vault, _, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        capsys.readouterr()
+        argv = ["--task", "vault-row", "--check-receipt", "--vault-root", str(vault)]
+        argv += ["--artifact-root", str(root)]
+        for path in files:
+            argv += ["--artifact", str(path.relative_to(root))]
+        assert dispatch.main(argv) == 0
+        assert json.loads(capsys.readouterr().out)["blockers"] == []
+        files[0].write_text("# Census\n\nchanged\n", encoding="utf-8")
+        assert dispatch.main(argv) == 1
+        assert json.loads(capsys.readouterr().out)["blockers"][0].startswith(
+            "artifact_receipt_stale:"
+        )
+
+    def test_cli_routes_task_and_artifacts(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def fake_review_artifact(task_id: str, paths: list[Path], **kwargs: Any) -> dict:
+            seen.update(task_id=task_id, paths=paths, **kwargs)
+            return {"status": "planned"}
+
+        monkeypatch.setattr(dispatch, "review_artifact", fake_review_artifact)
+        rc = dispatch.main(["--task", "vault-row", "--artifact", "a.md", "--artifact", "b.md"])
+        assert rc == 0
+        assert seen["task_id"] == "vault-row"
+        assert seen["paths"] == [Path("a.md"), Path("b.md")]
+        assert seen["apply"] is False
+        assert json.loads(capsys.readouterr().out) == {"status": "planned"}

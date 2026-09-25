@@ -540,6 +540,12 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
         "account_live_quota_observed",
         "lane_presence_used_as_quota_evidence",
         "positive_admission",
+        # Probe-reported subscription windows; shared/quota_headroom.py reads them.
+        "five_hour_used_percent",
+        "five_hour_resets_at",
+        "seven_day_used_percent",
+        "seven_day_resets_at",
+        "subscription_served",
     }
 )
 
@@ -2644,9 +2650,12 @@ def build_live_ledger(
     return QuotaSpendLedger.model_validate(payload)
 
 
-def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path) -> None:
+def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path, *, schema_version: int = 1) -> None:
+    """Replace ``path`` atomically. The default is the strict-v1 projection every live reader
+    accepts; schema 2 is written only when a caller asks for it."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(ledger.model_dump(mode="json"), indent=1, sort_keys=True) + "\n"
+    data = ledger.schema_v1_payload() if schema_version == 1 else ledger.model_dump(mode="json")
+    payload = json.dumps(data, indent=1, sort_keys=True) + "\n"
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -3602,7 +3611,71 @@ def quota_receipt_surface_expiries(
     }
 
 
+#: The live file stays at schema 1 until every reader takes schema 2. Measured 2026-09-24:
+#: reins reads it through the separately released `hapax-spine` 0.1.3, whose ledger model is
+#: `schema_version: Literal[1]` with `extra="forbid"`. Set 2 only after that reader accepts it.
+LIVE_SCHEMA_ENV = "HAPAX_QUOTA_LEDGER_LIVE_SCHEMA"
+
+
+def live_schema_version() -> int:
+    return 2 if os.environ.get(LIVE_SCHEMA_ENV, "1").strip() == "2" else 1
+
+
+def append_operator_report(argv: list[str]) -> int:
+    """Append to the same locked ledger; no receipt or separate report store."""
+    from shared.quota_headroom import operator_report
+
+    if live_schema_version() != 2:
+        print(
+            "operator report refused: the live ledger is schema 1 and reports need schema 2. "
+            f"Next action: set {LIVE_SCHEMA_ENV}=2 once every live-ledger reader accepts schema 2",
+            file=sys.stderr,
+        )
+        return 1
+
+    parser = argparse.ArgumentParser(prog="hapax-quota-telemetry-writer operator-report")
+    parser.add_argument("--family", required=True)
+    parser.add_argument(
+        "--reset", required=True, help="Preserve ambiguous local time without inventing a timezone"
+    )
+    parser.add_argument("--quote", required=True)
+    parser.add_argument("--at", help="Original operator report time (ISO-8601 with timezone)")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=Path(
+            os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV, str(DEFAULT_QUOTA_SPEND_LEDGER_LIVE))
+        ),
+    )
+    args = parser.parse_args(argv)
+    from shared.quota_headroom import instant
+
+    at = instant(args.at) if args.at else datetime.now(UTC)
+    if at is None:
+        parser.error("--at requires a timezone")
+    try:
+        report = operator_report(family=args.family, reset=args.reset, quote=args.quote, at=at)
+        with quota_spend_live_lock(args.out):
+            ledger = load_quota_spend_ledger(args.out)
+            payload = ledger.model_dump(mode="json")
+            payload["schema_version"] = 2
+            payload["operator_reports"].append(report.model_dump(mode="json"))
+            write_ledger_atomic(
+                QuotaSpendLedger.model_validate(payload), args.out, schema_version=2
+            )
+    except (ValueError, OSError, QuotaSpendLedgerError, LiveLedgerLockTimeout):
+        print(
+            "operator report rejected; check family, timestamp and quote; ledger preserved",
+            file=sys.stderr,
+        )
+        return 1
+    print("Operator report appended; no admission issued")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    if (argv or sys.argv[1:])[:1] == ["operator-report"]:
+        return append_operator_report((argv or sys.argv[1:])[1:])
     parser = argparse.ArgumentParser(
         prog="hapax-quota-telemetry-writer",
         description="Write live per-provider quota/resource telemetry for the dispatcher.",
@@ -3649,9 +3722,36 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--receipt-timeout", type=float, default=120.0)
     parser.add_argument("--json", action="store_true", help="Print a JSON summary to stdout")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Print the enriched ledger; read local files only and write nothing",
+    )
+    parser.add_argument(
+        "--schema-version",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        help="Output schema; v1 is an explicit compatibility projection",
+    )
+    parser.add_argument(
+        "--trace-home",
+        type=Path,
+        default=Path(os.environ.get("HAPAX_QUOTA_TRACE_HOME", str(Path.home()))),
+        help="Root of local CLI traces",
+    )
+    parser.add_argument(
+        "--live-schema-version",
+        type=int,
+        choices=(1, 2),
+        default=live_schema_version(),
+        help=f"Schema of the live file; defaults to ${LIVE_SCHEMA_ENV} or 1 (see its comment)",
+    )
     args = parser.parse_args(argv)
 
     now = _parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
+    if args.schema_version == 1 and not args.check:
+        parser.error("--schema-version 1 is a read-only --check projection")
     if now is None:
         parser.error(f"invalid --now value: {args.now!r}")
 
@@ -3687,10 +3787,64 @@ def main(argv: list[str] | None = None) -> int:
     # evidence's eligibility — masking exactly the mid-pass holes the tick
     # must charge (codex-1 critical C1, #4665 round 17).
     tick_start_receipt_scan = None
-    if not args.skip_receipts:
+    if not args.skip_receipts and not args.check:
         tick_start_receipt_scan = _scan_receipt_surface_detailed(
             args.platform_capability_receipt_dir, now=now
         )
+
+    from shared.quota_headroom import TraceReadError, collect_measurements, enrich_ledger
+
+    # Measurements only add evidence. When they cannot be read, the admission ledger is still
+    # written, unenriched: a measurement failure narrows evidence, it never stalls admission.
+    measurements = None
+    try:
+        measurements = collect_measurements(args.trace_home, args.relay_receipt_dir, now=now)
+    except (TraceReadError, ValueError, OSError):
+        print(
+            "hapax-quota-telemetry-writer: local measurements unavailable; admission ledger "
+            "written without them. Next action: run with --check to see the failing source",
+            file=sys.stderr,
+        )
+    # Declarations only: which routes exist, their pools and paid profiles. Route freshness for
+    # the stage comes from this tick's own admission snapshots (enrich_ledger), never from a
+    # second strict receipt-applied read, which the agentic-trust boundary confines to reporting.
+    registry = None
+    try:
+        registry = PlatformCapabilityRegistry.model_validate(
+            json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
+        )
+    except (OSError, ValueError):
+        print(
+            "hapax-quota-telemetry-writer: static capability registry unavailable; admission "
+            "ledger written without measurements. Next action: validate "
+            "config/platform-capability-registry.json",
+            file=sys.stderr,
+        )
+    if args.check and (measurements is None or registry is None):
+        return 1
+    if args.check:
+        configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
+        live_path = args.out or (
+            Path(configured).expanduser() if configured else DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+        )
+        try:
+            base = load_quota_spend_ledger(live_path if live_path.exists() else args.base)
+            checked = enrich_ledger(
+                base, measurements, registry=registry, now=now if args.now else datetime.now(UTC)
+            )
+        except (ValueError, QuotaSpendLedgerError):
+            print(
+                "hapax-quota-telemetry-writer: invalid local ledger; no write performed",
+                file=sys.stderr,
+            )
+            return 1
+        payload = (
+            checked.schema_v1_payload()
+            if args.schema_version == 1
+            else checked.model_dump(mode="json")
+        )
+        print(json.dumps(payload, indent=2))
+        return 0
 
     receipts_ok = True
     pull_forward: dict[str, Any] = {
@@ -3790,7 +3944,23 @@ def main(argv: list[str] | None = None) -> int:
                 local_resource_state=resource_state,
                 local_resource_evidence=resource_evidence,
             )
-            write_ledger_atomic(ledger, out_path)
+            if out_path.exists():
+                try:
+                    previous = load_quota_spend_ledger(out_path)
+                except (QuotaSpendLedgerError, OSError, ValueError):
+                    # A damaged previous file must not block every later tick.
+                    print(
+                        "hapax-quota-telemetry-writer: previous live ledger unreadable; "
+                        "operator reports not carried forward",
+                        file=sys.stderr,
+                    )
+                else:
+                    ledger = ledger.model_copy(
+                        update={"operator_reports": previous.operator_reports}
+                    )
+            if measurements is not None and registry is not None:
+                ledger = enrich_ledger(ledger, measurements, registry=registry, now=current_now)
+            write_ledger_atomic(ledger, out_path, schema_version=args.live_schema_version)
         return (
             ledger,
             walls,

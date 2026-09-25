@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -194,6 +194,14 @@ MUST_INCLUDE_REFRESH_MARGIN_SECONDS = 6 * 60
 # R3: the persisted last-known must-include set lives no longer than the
 # proof TTL it exists to keep fresh.
 MUST_INCLUDE_STATE_MAX_AGE_SECONDS = AUTOQUEUE_ADMISSION_TTL_SECONDS
+# Fresh evidence (spec autoqueue-admits-fresh-receipt-or-dossier-next-tick-20260924):
+# an acceptance receipt or review dossier written after a PR's last examination
+# changes its admission inputs, yet the PR is neither queued nor armed, so the
+# rotation alone left the stale admission status standing for a full cycle
+# (#4729: examined 22:07:20Z, receipt 21 s later, next exam ~17 ticks away).
+# Such a PR takes a one-shot full exam in a must-include seat, after the
+# queued/armed/dequeued seats and under the same cap and reserve.
+FRESH_EVIDENCE_TIMESTAMP_FIELDS = ("timestamp", "constituted_at")
 # Failure proofs intentionally refresh less often than success proofs: blocked
 # PRs can sit for days, and GitHub caps commit statuses per SHA+context. Still,
 # when the blocker text changes, the proof must eventually stop advertising
@@ -1454,6 +1462,90 @@ def _listing_head_sha(row: dict[str, Any]) -> str | None:
     return sha if isinstance(sha, str) and sha else None
 
 
+def _listing_head_ref(row: dict[str, Any]) -> str | None:
+    """Head branch from a listing row without hydration (GraphQL or REST shape)."""
+    if "headRefName" in row:
+        ref = row.get("headRefName")
+    else:
+        head = row.get("head")
+        ref = head.get("ref") if isinstance(head, dict) else None
+    return ref if isinstance(ref, str) and ref else None
+
+
+def _evidence_file_newer_than(path: Path, since: datetime, *, now: datetime) -> bool:
+    """Whether a receipt/dossier's mtime or recorded timestamp is after ``since``.
+
+    Times later than ``now`` are discarded: a future-dated file would otherwise
+    read as fresh after every examination until real time caught up. An
+    unreadable or malformed file contributes its mtime only.
+    """
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    except OSError:
+        return False
+    if since < mtime <= now:
+        return True
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    for key in FRESH_EVIDENCE_TIMESTAMP_FIELDS:
+        value = loaded.get(key)
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value)
+            except ValueError:
+                continue
+        if isinstance(value, datetime) and value.tzinfo is not None and since < value <= now:
+            return True
+    return False
+
+
+def _fresh_evidence_probe(
+    tasks: list[TaskNote], *, now: datetime
+) -> Callable[[dict[str, Any], datetime], bool]:
+    """Answer "did a linked receipt or dossier land after ``since``?" for a listing row.
+
+    Rows link to tasks the way ``_matching_tasks`` links hydrated PRs: by
+    ``pr`` first, else by head branch. Each task folder is listed at most once.
+    """
+    by_pr: dict[int, list[TaskNote]] = {}
+    by_branch: dict[str, list[TaskNote]] = {}
+    for task in tasks:
+        if task.pr is not None:
+            by_pr.setdefault(task.pr, []).append(task)
+        if task.branch:
+            by_branch.setdefault(task.branch, []).append(task)
+    listings: dict[Path, list[str]] = {}
+
+    def evidence_paths(task: TaskNote) -> list[Path]:
+        folder = task.path.parent
+        if folder not in listings:
+            try:
+                listings[folder] = sorted(os.listdir(folder))
+            except OSError:
+                listings[folder] = []
+        receipt_prefix = f"{task.task_id}.acceptance"
+        dossier = review_team.review_dossier_path(task.path, task.task_id).name
+        return [
+            folder / name
+            for name in listings[folder]
+            if name == dossier or (name.startswith(receipt_prefix) and name.endswith(".yaml"))
+        ]
+
+    def probe(row: dict[str, Any], since: datetime) -> bool:
+        matches = by_pr.get(row["number"]) or by_branch.get(_listing_head_ref(row) or "", [])
+        return any(
+            _evidence_file_newer_than(path, since, now=now)
+            for task in matches
+            for path in evidence_paths(task)
+        )
+
+    return probe
+
+
 @dataclass(frozen=True)
 class _WindowSelection:
     """One tick's window split by treatment.
@@ -1464,7 +1556,10 @@ class _WindowSelection:
     hydration, no new admission decision. ``full_exam_rows`` are must-include
     rows that need a full pass this tick (dequeued follow-up, R6).
     ``overflow`` lists must-include numbers the cap could not serve (oldest
-    proofs are served first).
+    proofs are served first). ``fresh_served`` are fresh-evidence rows given a
+    one-shot full exam (they are part of ``full_exam_rows``);
+    ``fresh_overflow`` are fresh-evidence rows left unserved this tick, which
+    stay fresh and are carried to the next tick.
     """
 
     rotation_rows: list[dict[str, Any]]
@@ -1473,6 +1568,8 @@ class _WindowSelection:
     overflow: tuple[int, ...]
     must_identities: tuple[tuple[int, str | None], ...]
     armed_live: frozenset[int] = frozenset()
+    fresh_served: tuple[int, ...] = ()
+    fresh_overflow: tuple[int, ...] = ()
 
 
 def _select_pr_window(
@@ -1484,6 +1581,7 @@ def _select_pr_window(
     persist: bool,
     must_include: frozenset[int] | set[int] = frozenset(),
     full_exam: frozenset[int] | set[int] = frozenset(),
+    fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
 ) -> _WindowSelection:
     """Select without acknowledging work. Repeated failures share the fair rotation.
 
@@ -1496,6 +1594,13 @@ def _select_pr_window(
     cap bounds the guarantee's dominance over the rotation, not the window.
     The guarantee never silently dominates: overflow is reported, and the
     oldest proofs are served first.
+
+    ``fresh_evidence(row, since)`` marks a previously examined PR whose linked
+    receipt or dossier landed after its last examination attempt (a hydration
+    failure counts as an attempt). Those rows take one-shot full-exam seats
+    after every other must-include row, within the same cap and reserve; the
+    exam's rotation ack retires them. Never-examined rows already head the
+    rotation and take no seat.
     """
     if limit <= 0:
         raise ValueError("autoqueue limit must be positive")
@@ -1517,20 +1622,43 @@ def _select_pr_window(
         if _must_include_guarantee_disabled():
             armed = set()
         must = (set(must_include) | armed | set(full_exam)) & live
-        must_rows = sorted((row for row in rows if row["number"] in must), key=priority)
+        core_rows = sorted((row for row in rows if row["number"] in must), key=priority)
+        fresh: set[int] = set()
+        if fresh_evidence is not None and not _must_include_guarantee_disabled():
+            for row in rows:
+                number = row["number"]
+                if number in must or number not in examined:
+                    continue
+                last_attempt = examined[number]
+                failure = failures.get(number)
+                if failure:
+                    last_attempt = max(
+                        last_attempt, datetime.fromisoformat(failure["last_failed_at"])
+                    )
+                if fresh_evidence(row, last_attempt):
+                    fresh.add(number)
+        # Queued/armed/dequeued seats first: fresh evidence only fills what the
+        # #4716 guarantee leaves of the cap.
+        must_rows = [
+            *core_rows,
+            *sorted((row for row in rows if row["number"] in fresh), key=priority),
+        ]
         # No must-include rows: keep the historical window size exactly.
-        reserve_floor = min(len(must), MUST_INCLUDE_CAP) + MUST_INCLUDE_RESERVE if must else 0
+        reserve_floor = (
+            min(len(must_rows), MUST_INCLUDE_CAP) + MUST_INCLUDE_RESERVE if must_rows else 0
+        )
         effective_limit = max(limit, reserve_floor)
         # Cap, not dominance: leave the rotation its reserve even mid-backlog.
         must_capacity = effective_limit - MUST_INCLUDE_RESERVE
         served = must_rows[: max(must_capacity, 0)]
         served_numbers = {row["number"] for row in served}
-        overflow = tuple(row["number"] for row in must_rows[max(must_capacity, 0) :])
+        unserved = [row["number"] for row in must_rows[max(must_capacity, 0) :]]
+        overflow = tuple(number for number in unserved if number in must)
         # Armed rows are R2 refresh seats, not R6 follow-ups: a PR that is armed
         # but has never queued (or re-armed after a dequeue) stays on the cheap
         # refresh path; the R6 one-shot full exam belongs to rows that left the
         # queue unarmed.
-        full_exam_live = (set(full_exam) & live) - armed
+        full_exam_live = ((set(full_exam) & live) - armed) | fresh
         full_exam_rows = [row for row in served if row["number"] in full_exam_live]
         must_refresh = tuple(
             (row["number"], _listing_head_sha(row))
@@ -1540,7 +1668,10 @@ def _select_pr_window(
         rotation_rows = [
             row for row in sorted(rows, key=priority) if row["number"] not in served_numbers
         ][: max(effective_limit - len(served), 0)]
-        must_identities = tuple((row["number"], _listing_head_sha(row)) for row in must_rows)
+        rotation_numbers = {row["number"] for row in rotation_rows}
+        # Fresh rows never enter the persisted must-include set: their seat is
+        # re-derived each tick from evidence vs. the rotation stamp.
+        must_identities = tuple((row["number"], _listing_head_sha(row)) for row in core_rows)
         return _WindowSelection(
             rotation_rows=rotation_rows,
             must_refresh=must_refresh,
@@ -1548,6 +1679,10 @@ def _select_pr_window(
             overflow=overflow,
             must_identities=must_identities,
             armed_live=frozenset(armed),
+            fresh_served=tuple(row["number"] for row in served if row["number"] in fresh),
+            fresh_overflow=tuple(
+                number for number in unserved if number in fresh and number not in rotation_numbers
+            ),
         )
 
 
@@ -1641,6 +1776,7 @@ def fetch_rotating_open_prs(
     runner: Any,
     must_include: frozenset[int] | set[int] = frozenset(),
     full_exam: frozenset[int] | set[int] = frozenset(),
+    fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
 ) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]], _WindowSelection]:
     """Prove the complete estate, then hydrate at most limit identities independently.
 
@@ -1676,6 +1812,7 @@ def fetch_rotating_open_prs(
         persist=persist,
         must_include=must_include,
         full_exam=full_exam,
+        fresh_evidence=fresh_evidence,
     )
     if selection.overflow:
         LOG.warning(
@@ -1684,6 +1821,14 @@ def fetch_rotating_open_prs(
             len(selection.overflow),
             MUST_INCLUDE_CAP,
             list(selection.overflow),
+        )
+    if selection.fresh_overflow:
+        LOG.warning(
+            "fresh-evidence overflow: %d PRs with a receipt/dossier newer than their last "
+            "exam did not fit the must-include cap (%d); carried to the next tick: %s",
+            len(selection.fresh_overflow),
+            MUST_INCLUDE_CAP,
+            list(selection.fresh_overflow),
         )
     with _rotation_state(repo=repo, state_path=state_path, persist=False) as (_, failures):
         failures = {
@@ -4468,6 +4613,7 @@ def run_reconciler(
                 runner=runner or subprocess.run,
                 must_include=queued_prs,
                 full_exam=dequeued_followup,
+                fresh_evidence=_fresh_evidence_probe(tasks, now=now),
             )
         else:
             prs, listing_route = fetch_open_prs(
@@ -4990,6 +5136,10 @@ def run_reconciler(
             "starved": starved,
             "dequeued_followup": sorted(
                 dequeued_followup - (window.armed_live if window is not None else frozenset())
+            ),
+            "fresh_evidence": sorted(window.fresh_served) if window is not None else [],
+            "fresh_evidence_overflow": (
+                sorted(window.fresh_overflow) if window is not None else []
             ),
         },
         "decisions": [decision.as_dict() for decision in decisions],
