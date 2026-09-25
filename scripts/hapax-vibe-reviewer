@@ -11,6 +11,12 @@ disabled and one turn. Two refusals, each reported as a route outage:
   Team allowance (`plan_type: chat`). The seat runs only when the configured key's own whoami
   entry is the Team plan; otherwise it is refused rather than switching billing implicitly (next
   action for the coordinator: rebind Vibe to the Team account).
+
+Vibe runs inside the declared capability envelope (``shared.capability_envelope``): a fresh home
+holding only the key file (bound read-only) and a trusted-folders file, an empty workdir, and a
+cleared environment. Measured 2026-09-25 on this wrapper's argv, an inherited HOME put the estate's
+``~/.vibe/AGENTS.md`` into every review. A host without a usable envelope is a route outage, never
+an unenveloped run.
 """
 
 from __future__ import annotations
@@ -28,6 +34,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.capability_envelope import (  # noqa: E402
+    CredentialBind,
+    DeclaredFile,
+    EnvelopeCarrierError,
+    EnvelopeDeclaration,
+    EnvelopeRefusal,
+    execute,
+    render,
+)
 from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
 
 WRAPPER = "hapax-vibe-reviewer"
@@ -108,6 +123,42 @@ def command(binary: str, prompt: str, workdir: Path) -> list[str]:
     ]
 
 
+def runtime_dirs(binary: Path, home: Path) -> tuple[Path, ...]:
+    """Host directories vibe needs inside the envelope, bound read-only.
+
+    Default: the uv tool directory that holds the binary, and uv's managed interpreters, whole,
+    because the tool venv's python points through a minor-version symlink. HAPAX_VIBE_RUNTIME_DIRS
+    (colon-separated) replaces the default for a relocated install.
+    """
+
+    declared = os.environ.get("HAPAX_VIBE_RUNTIME_DIRS", "")
+    if declared:
+        candidates = [Path(p) for p in declared.split(":") if p]
+    else:
+        candidates = [binary.resolve().parents[1], home / ".local" / "share" / "uv" / "python"]
+    return tuple(p for p in candidates if p.exists())
+
+
+def run_enveloped(binary: str, text: str, home: Path, scratch: Path) -> subprocess.CompletedProcess:
+    """Render and run vibe inside the declared envelope. Raises EnvelopeRefusal."""
+
+    workdir = scratch / "work"
+    workdir.mkdir()
+    trusted = scratch / "trusted_folders.toml"
+    trusted.write_text('trusted = ["/work"]\nuntrusted = []\n', encoding="utf-8")
+    vibe = Path(binary)
+    declaration = EnvelopeDeclaration(
+        harness="vibe",
+        argv=tuple(command(str(vibe.resolve()), text, Path("/work"))),
+        binaries=runtime_dirs(vibe, home),
+        workdir=workdir,
+        credentials=(CredentialBind(source=home / ".vibe" / ".env", target=".vibe/.env"),),
+        home_files=(DeclaredFile(source=trusted, target=".vibe/trusted_folders.toml"),),
+    )
+    rendered = render(declaration, run_root=scratch / "run")
+    return execute(rendered, timeout=1800)
+
+
 def main() -> int:
     prompt = sys.stdin.read()
     if not prompt.strip():
@@ -131,16 +182,23 @@ def main() -> int:
     binary = vibe_bin()
     if not binary:
         return refuse(WRAPPER, "vibe binary not found; install vibe or set HAPAX_VIBE_BIN")
+    home = Path.home()
+    if not (home / ".vibe" / ".env").is_file():
+        return refuse(
+            WRAPPER,
+            "no ~/.vibe/.env: the envelope carries the key only as that file, bound read-only; "
+            "next action (coordinator): put the Team key in ~/.vibe/.env",
+        )
     with tempfile.TemporaryDirectory(prefix="hapax-vibe-review-") as tmp:
         try:
-            result = subprocess.run(
-                command(binary, text, Path(tmp)),
-                cwd=tmp,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except OSError as exc:
+            result = run_enveloped(binary, text, home, Path(tmp))
+        except EnvelopeRefusal as exc:
+            return refuse(WRAPPER, f"envelope refused: {exc}")
+        except EnvelopeCarrierError as exc:
+            # The seat runs only inside the declared envelope; the constitution substitutes
+            # another family rather than running vibe unenveloped.
+            return refuse(WRAPPER, f"{exc} (coordinator)")
+        except (OSError, subprocess.TimeoutExpired) as exc:
             return refuse(WRAPPER, f"failed to launch vibe ({type(exc).__name__})")
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
