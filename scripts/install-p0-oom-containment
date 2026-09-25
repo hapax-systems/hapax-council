@@ -1573,10 +1573,15 @@ docker_policy_for_container() {
 }
 
 docker_container_records() {
-    local output record id name
+    local output record id name remainder
     output="$("$DOCKER" ps -a --no-trunc --format '{{.ID}}|{{.Names}}')" || return 1
     while IFS= read -r record; do
         [ -n "$record" ] || continue
+        remainder="${record#*|}"
+        if [ "$remainder" = "$record" ] || [[ "$remainder" == *"|"* ]]; then
+            echo "unparseable Docker identity record: $record" >&2
+            return 1
+        fi
         IFS='|' read -r id name <<< "$record"
         if ! [[ "$id" =~ ^[0-9a-f]{12,64}$ ]] || [ -z "$name" ]; then
             echo "unparseable Docker identity record: $record" >&2
