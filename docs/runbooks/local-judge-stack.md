@@ -115,8 +115,11 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   3090 grounding instance (TabbyAPI `:5000`) is independent. Confirm with `nvidia-smi`.
 - **Host-memory ceiling:** both systemd and manual launches use `--memory 4G
   --memory-swap 6G` (4 GiB RAM plus 2 GiB swap). Before runtime closure after a
-  limit change, run this eight-worker canary and require identical container
-  health/restart/OOM state plus unchanged `oom` and `oom_kill` counters:
+  limit change, deploy `hapax-local-judge.service` only through the manifest-owned
+  P0 OOM package; ordinary post-merge deployment stages it without copying or
+  restarting the user unit. Then run this eight-worker canary and require
+  identical container health/restart/OOM state plus unchanged `oom` and
+  `oom_kill` counters:
 
   ```bash
   set -euo pipefail
@@ -135,7 +138,7 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
       python run_verifierbench.py --endpoint http://localhost:5001 \
       --n 24 --workers 8 --out "$results"
   )
-  jq -e -s 'length == 24 and all(.[]; .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
+  jq -e -s 'length == 24 and all(.[]; type == "object" and has("error") and has("pred") and .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
     "$results" >/dev/null
   after_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
   after_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
