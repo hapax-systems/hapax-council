@@ -54,8 +54,8 @@ def test_the_system_rota_unit_is_admitted() -> None:
     "path",
     [
         "/user.slice/user-1000.slice/user@1000.service/app.slice/hapax-witness-rota@r1.service",
-        "/user.slice/user-1000.slice/user@1000.service/system.slice/"
-        "system-hapax\\x2dwitness\\x2drota.slice/hapax-witness-rota@r1.service",
+        # A "system.slice" nested inside the user manager, not the real system slice.
+        "/user.slice/user-1000.slice/user@1000.service" + ROTA,
     ],
 )
 def test_a_user_slice_unit_with_the_rota_name_is_refused(path: str) -> None:
@@ -170,6 +170,8 @@ def exchange(
             b.sendall(request)
             b.shutdown(socket.SHUT_WR)
         except OSError:
+            # The holder may refuse and close before the whole request is sent; the reply
+            # (or its absence) is still read below and is what the test asserts on.
             pass
         chunks = []
         while chunk := b.recv(65536):
