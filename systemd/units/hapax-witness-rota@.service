@@ -1,0 +1,20 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Witness pending pre-submission records with the pinned agy reviewer
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/shared/witness_rota.py
+OnFailure=hapax-root-failure-intake@%n.service
+After=hapax-signing-holder.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hapax
+ExecStart=/usr/local/sbin/hapax-witness-rota
+Environment=HAPAX_AGY_BIN=/usr/local/lib/hapax/witness-rota/agy
+Environment=PATH=/usr/bin:/bin
+TimeoutStartSec=2h
+SyslogIdentifier=hapax-witness-rota
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=full
+NoNewPrivileges=yes

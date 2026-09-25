@@ -129,6 +129,70 @@ def _qualifying(record: Mapping[str, Any], verdicts: Sequence[Verdict]) -> list[
     ]
 
 
+def precheck(record: Mapping[str, Any], *, evidence_root: Path, now: datetime) -> list[str]:
+    """Why the record cannot be witnessed now (format, window, evidence); [] when it can."""
+    problems = _record_problems(record)
+    window = _window(record)
+    if problems or window is None:
+        return problems
+    start, end = window
+    if not start <= now <= end:
+        return [f"the record's window has closed or not opened; {_NEXT}"]
+    return _evidence_problems(record, evidence_root)
+
+
+def receipt_slot(record: Mapping[str, Any], out_dir: Path) -> tuple[str, Path] | None:
+    """The record's task id and receipt path, or None when the record cannot be identified."""
+    fingerprint, nonce = str(record.get("artifact_fingerprint", "")), str(record.get("nonce", ""))
+    if not _HEX64.fullmatch(fingerprint) or not _NONCE.fullmatch(nonce):
+        return None
+    task_id = f"witness-{fingerprint[:16]}-{nonce[:16]}"
+    return task_id, out_dir / f"{task_id}{PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX}"
+
+
+def _write_once(path: Path, data: Mapping[str, Any]) -> bool:
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(dict(data), fh, sort_keys=False)
+    return True
+
+
+def record_refusal(
+    record: Mapping[str, Any],
+    reasons: Sequence[str],
+    out_dir: Path,
+    *,
+    now: datetime,
+    execution_identity: Mapping[str, Any] | None = None,
+) -> Path | None:
+    """Record a refusal (for example "no witness") in the record's receipt slot.
+
+    The resolver never accepts it (the verdict is not ``quorum-accept`` and it is unsigned), and
+    it occupies the slot, so a retry needs a new nonce. None when the record cannot be identified
+    or the slot is taken.
+    """
+    slot = receipt_slot(record, out_dir)
+    if slot is None:
+        return None
+    task_id, path = slot
+    refusal = {
+        "dossier_schema": 1,
+        "task_id": task_id,
+        "gate": GATE,
+        "artifact_fingerprint": record["artifact_fingerprint"],
+        "nonce": record["nonce"],
+        "author": record.get("author"),
+        "review_team_verdict": "refused",
+        "refusals": list(reasons),
+        "witness_execution": dict(execution_identity or {}),
+        "produced_at": now.astimezone(UTC).isoformat(),
+    }
+    return path if _write_once(path, refusal) else None
+
+
 def produce(
     record: Mapping[str, Any],
     verdicts: Sequence[Verdict],
@@ -137,19 +201,15 @@ def produce(
     evidence_root: Path,
     now: datetime,
     sign: Callable[[Mapping[str, Any]], str] | None = None,
+    execution_identity: Mapping[str, Any] | None = None,
 ) -> Produced:
     """Write one signed witness receipt for the record, or refuse and write nothing."""
     sign = sign or request_signature
-    refusals = _record_problems(record)
+    refusals = precheck(record, evidence_root=evidence_root, now=now)
     window = _window(record)
     if refusals or window is None:
         return Produced(None, refusals)
-    start, end = window
-    if not start <= now <= end:
-        return Produced(None, [f"the record's window has closed or not opened; {_NEXT}"])
-    refusals = _evidence_problems(record, evidence_root)
-    if refusals:
-        return Produced(None, refusals)
+    start, _ = window
     qualifying = _qualifying(record, [v for v in verdicts if start <= v.at <= now])
     families = {v.family.casefold() for v in qualifying}
     quorum = QUORUM[record["tier"]]
@@ -163,7 +223,10 @@ def produce(
             ],
         )
     fingerprint, nonce = record["artifact_fingerprint"], record["nonce"]
-    task_id = f"witness-{fingerprint[:16]}-{nonce[:16]}"
+    slot = receipt_slot(record, out_dir)
+    if slot is None:
+        return Produced(None, [f"the record cannot be identified; {_NEXT}"])
+    task_id, path = slot
     dossier: dict[str, Any] = {
         "dossier_schema": 1,
         "task_id": task_id,
@@ -195,6 +258,7 @@ def produce(
             for v in qualifying
         ],
         "produced_at": now.astimezone(UTC).isoformat(),
+        "witness_execution": dict(execution_identity or {}),
         "authority_issuer": AUTHORITY_ISSUER,
     }
     try:
@@ -204,13 +268,8 @@ def produce(
             None,
             [f"the signing holder refused: {exc}; next action: run the witness in its rota unit"],
         )
-    path = out_dir / f"{task_id}{PUBLIC_GATE_REVIEW_DOSSIER_SUFFIX}"
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
+    if not _write_once(path, dossier):
         return Produced(
             None, [f"{path.name} already exists; next action: the author issues a new nonce"]
         )
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        yaml.safe_dump(dossier, fh, sort_keys=False)
     return Produced(path)

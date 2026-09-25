@@ -1,0 +1,144 @@
+#!/usr/bin/bash
+# Install the signing holder and the witness rota (operator act O3, once per installer version).
+#
+# Everything the witness-rota unit executes can obtain a signature from the holder, so nothing it
+# runs may be lane-writable. This installer puts root-owned copies of the holder and rota code,
+# the reviewer, and a pinned agy under /usr/local, and records the pinned agy's sha256 and
+# version. It runs only as root, only from the active source release
+# (~/.cache/hapax/source-activation/worktree -> releases/<commit>), only when that commit is an
+# ancestor of origin/main, and it installs committed bytes, never working-tree edits. Git and the
+# agy copy run as the release's owner, never as root. A new agy pin is an O9 root act and
+# triggers the capability re-characterization row.
+set -euo pipefail
+umask 022
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ACTUAL_UID="$(/usr/bin/id -u)"
+if [ "$ACTUAL_UID" != 0 ] && [ "${HAPAX_WR_TEST_ACTUAL_UID:-}" = 0 ]; then
+    ACTUAL_UID=0
+fi
+OWNER_UID="${HAPAX_WR_OWNER_UID:-1000}"
+OWNER_HOME="${HAPAX_WR_OWNER_HOME:-$(getent passwd "$OWNER_UID" | cut -d: -f6 || true)}"
+OWNER_GID="${HAPAX_WR_OWNER_GID:-$(getent passwd "$OWNER_UID" | cut -d: -f4 || true)}"
+DEST_ROOT="${HAPAX_WR_DEST_ROOT:-}"
+ROOT_UID="${HAPAX_WR_ROOT_UID:-0}"
+ROOT_GID="${HAPAX_WR_ROOT_GID:-0}"
+SYSTEMCTL="${HAPAX_WR_SYSTEMCTL:-/usr/bin/systemctl}"
+HOLDER_LIB="$DEST_ROOT/usr/local/lib/hapax/signing-holder/shared"
+ROTA_DIR="$DEST_ROOT/usr/local/lib/hapax/witness-rota"
+ROTA_LIB="$ROTA_DIR/shared"
+SBIN="$DEST_ROOT/usr/local/sbin"
+UNITS="$DEST_ROOT/etc/systemd/system"
+CREDENTIAL_NAME=hapax-public-gate-authority-hmac-key
+CREDENTIAL="$DEST_ROOT/etc/credstore.encrypted/$CREDENTIAL_NAME"
+AGY_SRC="$OWNER_HOME/.local/bin/agy"
+STABLE="$OWNER_HOME/.cache/hapax/source-activation/worktree"
+RECEIPT="$OWNER_HOME/.local/state/hapax/root-required/installed-receipts/witness-rota.sha"
+MAIN_REF=refs/remotes/origin/main
+CHARACTERIZATION_ROW=capability-work-specification-characterization-20260925
+
+refuse() {
+    echo "install-witness-rota: $1" >&2
+    exit 2
+}
+
+# Run a command as the release owner with a clean environment.
+as_owner() {
+    local env=(/usr/bin/env -i PATH=/usr/bin:/bin HOME="$OWNER_HOME" LC_ALL=C
+        GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0)
+    if [ "$(/usr/bin/id -u)" = 0 ]; then
+        /usr/bin/setpriv --reuid="$OWNER_UID" --regid="$OWNER_GID" --init-groups -- "${env[@]}" "$@"
+    else
+        "${env[@]}" "$@"
+    fi
+}
+
+[ "$ACTUAL_UID" = 0 ] \
+    || refuse "must run as root; next action: sudo $STABLE/scripts/install-witness-rota"
+[ -n "$OWNER_HOME" ] && [ -n "$OWNER_GID" ] \
+    || refuse "cannot resolve the home and group of uid $OWNER_UID; next action: set HAPAX_WR_OWNER_HOME and HAPAX_WR_OWNER_GID"
+[ -f "$CREDENTIAL" ] \
+    || refuse "the holder's encrypted credential $CREDENTIAL is missing; next action: hapax-secret $CREDENTIAL_NAME | sudo systemd-creds encrypt --name=$CREDENTIAL_NAME - $CREDENTIAL, then rerun"
+[ "$ROOT" = "$(realpath -e "$STABLE" 2>/dev/null || true)" ] \
+    || refuse "$ROOT is not the active release $STABLE; next action: sudo $STABLE/scripts/install-witness-rota"
+HEAD_SHA="$(as_owner /usr/bin/git -C "$ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)"
+[ -n "$HEAD_SHA" ] && [ "$HEAD_SHA" = "$(basename "$ROOT")" ] \
+    || refuse "release $ROOT is at ${HEAD_SHA:-no commit}, not its named commit; next action: rebuild the release from source activation"
+as_owner /usr/bin/git -C "$ROOT" merge-base --is-ancestor "$HEAD_SHA" "$MAIN_REF" \
+    || refuse "release $HEAD_SHA is not an ancestor of $MAIN_REF; next action: activate a released main commit and rerun"
+# agy must run, as its owner, and report a version; the pin records it.
+AGY_VERSION="$(as_owner "$AGY_SRC" --version 2>/dev/null | head -n 1 || true)"
+[ -n "$AGY_VERSION" ] || refuse "$AGY_SRC did not run or reported no version; next action: repair the owner's agy install, then rerun"
+
+RELS=(
+    shared/public_gate_receipts.py
+    shared/signing_holder.py
+    shared/public_gate_receipts.py
+    shared/signing_holder.py
+    shared/witness_receipt.py
+    shared/witness_rota.py
+    scripts/hapax-agy-reviewer
+    scripts/hapax-signing-holder
+    scripts/hapax-witness-rota
+    systemd/units/hapax-signing-holder.socket
+    systemd/units/hapax-signing-holder@.service
+    systemd/units/hapax-witness-rota@.service
+    systemd/units/hapax-witness-rota.timer
+)
+DESTS=(
+    "$HOLDER_LIB/public_gate_receipts.py"
+    "$HOLDER_LIB/signing_holder.py"
+    "$ROTA_LIB/public_gate_receipts.py"
+    "$ROTA_LIB/signing_holder.py"
+    "$ROTA_LIB/witness_receipt.py"
+    "$ROTA_LIB/witness_rota.py"
+    "$ROTA_DIR/hapax-agy-reviewer"
+    "$SBIN/hapax-signing-holder"
+    "$SBIN/hapax-witness-rota"
+    "$UNITS/hapax-signing-holder.socket"
+    "$UNITS/hapax-signing-holder@.service"
+    "$UNITS/hapax-witness-rota@.service"
+    "$UNITS/hapax-witness-rota.timer"
+)
+MODES=(0644 0644 0644 0644 0644 0644 0755 0755 0755 0644 0644 0644 0644)
+
+# Stage everything before installing anything, so any failure installs nothing.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+for i in "${!RELS[@]}"; do
+    as_owner /usr/bin/git -C "$ROOT" cat-file blob "$HEAD_SHA:${RELS[$i]}" > "$STAGE/$i" \
+        || refuse "${RELS[$i]} is missing at $HEAD_SHA; next action: restore it on main"
+done
+: > "$STAGE/empty"
+# The agy copy is read with the owner's rights, so a planted link cannot make root read anything.
+as_owner /usr/bin/cat "$AGY_SRC" > "$STAGE/agy" \
+    || refuse "cannot read $AGY_SRC as its owner; next action: repair the agy install"
+AGY_SHA="$(sha256sum "$STAGE/agy" | cut -d' ' -f1)"
+/usr/bin/python3 -I -c 'import json, sys; json.dump({"sha256": sys.argv[1], "version": sys.argv[2], "source": sys.argv[3], "release": sys.argv[4]}, open(sys.argv[5], "w"))' \
+    "$AGY_SHA" "$AGY_VERSION" "$AGY_SRC" "$HEAD_SHA" "$STAGE/agy.pin"
+PREVIOUS_SHA=""
+if [ -f "$ROTA_DIR/agy.pin" ]; then
+    PREVIOUS_SHA="$(/usr/bin/python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1])).get("sha256", ""))' "$ROTA_DIR/agy.pin" 2>/dev/null || true)"
+fi
+
+/usr/bin/install -d -o "$ROOT_UID" -g "$ROOT_GID" -m 0755 "$HOLDER_LIB" "$ROTA_LIB"
+/usr/bin/install -o "$ROOT_UID" -g "$ROOT_GID" -m 0644 "$STAGE/empty" "$HOLDER_LIB/__init__.py"
+/usr/bin/install -o "$ROOT_UID" -g "$ROOT_GID" -m 0644 "$STAGE/empty" "$ROTA_LIB/__init__.py"
+for i in "${!RELS[@]}"; do
+    /usr/bin/install -D -o "$ROOT_UID" -g "$ROOT_GID" -m "${MODES[$i]}" "$STAGE/$i" "${DESTS[$i]}"
+done
+/usr/bin/install -o "$ROOT_UID" -g "$ROOT_GID" -m 0755 "$STAGE/agy" "$ROTA_DIR/agy"
+/usr/bin/install -o "$ROOT_UID" -g "$ROOT_GID" -m 0644 "$STAGE/agy.pin" "$ROTA_DIR/agy.pin"
+if [ -n "$PREVIOUS_SHA" ] && [ "$PREVIOUS_SHA" != "$AGY_SHA" ]; then
+    echo "re-pin: agy ${PREVIOUS_SHA:0:12} -> ${AGY_SHA:0:12} ($AGY_VERSION); next action: the $CHARACTERIZATION_ROW row re-characterizes the witness"
+fi
+
+"$SYSTEMCTL" daemon-reload
+"$SYSTEMCTL" enable --now hapax-signing-holder.socket
+"$SYSTEMCTL" enable --now hapax-witness-rota.timer
+
+as_owner /usr/bin/mkdir -p "$(dirname "$RECEIPT")"
+printf '%s\n' "$HEAD_SHA" | as_owner /usr/bin/tee "$RECEIPT" > /dev/null
+echo "installed the signing holder and witness rota at $HEAD_SHA; agy pinned at $AGY_VERSION (${AGY_SHA:0:12})"

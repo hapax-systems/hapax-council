@@ -316,3 +316,44 @@ def test_the_default_signer_is_the_holder(evidence_root, out_dir, monkeypatch) -
     monkeypatch.setattr(wr, "request_signature", holder)
     result = produce(record(evidence_root), [GEMINI], out_dir, evidence_root=evidence_root, now=NOW)
     assert result.path is not None and len(calls) == 1
+
+
+# --- the witness's observed execution identity, and recorded refusals ---
+
+IDENTITY = {"agy_sha256": "e" * 64, "agy_version": "1.2.11", "lane_agy_differs": True}
+
+
+def test_the_receipt_records_the_witness_execution_identity(evidence_root, out_dir) -> None:
+    result = run(evidence_root, out_dir, execution_identity=IDENTITY)
+    assert result.path is not None
+    data = yaml.safe_load(result.path.read_text())
+    assert data["witness_execution"] == IDENTITY
+    assert data["authority_signature"] == sign(data)
+
+
+def test_a_refusal_is_recorded_in_the_receipt_slot_and_never_resolves(
+    evidence_root, out_dir, tmp_path
+) -> None:
+    rec = record(evidence_root)
+    path = wr.record_refusal(
+        rec, ["no witness: agy unavailable"], out_dir, now=NOW, execution_identity=IDENTITY
+    )
+    assert path is not None
+    data = yaml.safe_load(path.read_text())
+    assert data["review_team_verdict"] == "refused"
+    assert data["refusals"] == ["no witness: agy unavailable"]
+    assert data["witness_execution"] == IDENTITY
+    _receipt(tmp_path / "receipts", DIGEST, data["task_id"])
+    assert not _resolves(tmp_path / "receipts", out_dir, DIGEST)
+
+
+def test_a_recorded_refusal_occupies_the_slot(evidence_root, out_dir) -> None:
+    rec = record(evidence_root)
+    assert wr.record_refusal(rec, ["no witness"], out_dir, now=NOW) is not None
+    assert run(evidence_root, out_dir, rec=rec).path is None
+
+
+def test_a_refusal_for_an_unidentifiable_record_writes_nothing(evidence_root, out_dir) -> None:
+    rec = record(evidence_root, nonce="short")
+    assert wr.record_refusal(rec, ["malformed"], out_dir, now=NOW) is None
+    assert list(out_dir.iterdir()) == []
