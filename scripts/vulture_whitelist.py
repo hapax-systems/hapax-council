@@ -5292,3 +5292,59 @@ _ = (
     _ema_render_reduction_row,
     _ema_split_frontmatter,
 )
+
+# cc-task communication-pathway-audience-channel-reception-20260925, slice 1: the
+# canonicaliser and mechanical checks ship ahead of their producer. Slice 2 (the gate's
+# evaluate() child) is the static caller; it removes these entries and carries a red-first
+# test that they are gone.
+from shared.communication_pathway import (  # noqa: E402
+    act_seen as _cp_act_seen,
+)
+from shared.communication_pathway import (  # noqa: E402
+    bare_line_ends as _cp_bare_line_ends,
+)
+from shared.communication_pathway import (  # noqa: E402
+    canonical_digest as _cp_canonical_digest,
+)
+from shared.communication_pathway import (  # noqa: E402
+    duplicated_parts as _cp_duplicated_parts,
+)
+from shared.communication_pathway import (  # noqa: E402
+    email_manifest as _cp_email_manifest,
+)
+from shared.communication_pathway import (  # noqa: E402
+    long_lines as _cp_long_lines,
+)
+from shared.communication_pathway import (  # noqa: E402
+    markdown_flags as _cp_markdown_flags,
+)
+from shared.communication_pathway import (  # noqa: E402
+    norm_table_missing as _cp_norm_table_missing,
+)
+from shared.communication_pathway import (  # noqa: E402
+    subject_problems as _cp_subject_problems,
+)
+from shared.communication_pathway import (  # noqa: E402
+    to_crlf as _cp_to_crlf,
+)
+from shared.communication_pathway import (  # noqa: E402
+    url_punctuation_flags as _cp_url_punctuation_flags,
+)
+from shared.communication_pathway import (  # noqa: E402
+    within_window as _cp_within_window,
+)
+
+_ = (
+    _cp_act_seen,
+    _cp_bare_line_ends,
+    _cp_canonical_digest,
+    _cp_duplicated_parts,
+    _cp_email_manifest,
+    _cp_long_lines,
+    _cp_markdown_flags,
+    _cp_norm_table_missing,
+    _cp_subject_problems,
+    _cp_to_crlf,
+    _cp_url_punctuation_flags,
+    _cp_within_window,
+)
