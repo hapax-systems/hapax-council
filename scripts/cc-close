@@ -176,11 +176,12 @@ if [[ "$final_status" == "done" ]]; then
   # (frontier_review_required) tasks close only with a signed acceptance
   # receipt (<task_id>.acceptance.yaml beside the note). The checker honors
   # HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1 directly; non-review-floor tasks
-  # pass through untouched.
+  # pass through untouched. --pr is forwarded so the receipt is bound to the
+  # head of the same PR the merge gate below checks, not to a PR-less reading.
   RECEIPT_CHECKER="$SCRIPT_DIR/cc-close-acceptance-receipt-check.py"
   if [[ -f "$RECEIPT_CHECKER" ]]; then
     set +e
-    python3 "$RECEIPT_CHECKER" "$note_path"
+    python3 "$RECEIPT_CHECKER" "$note_path" ${pr:+--pr "$pr"}
     receipt_rc=$?
     set -e
     if [[ "$receipt_rc" -ne 0 ]]; then
