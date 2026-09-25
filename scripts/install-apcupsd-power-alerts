@@ -486,10 +486,22 @@ PY
         HAPAX_APCUPSD_TARGET_UID \
         HAPAX_APCUPSD_TARGET_GID \
         HAPAX_APCUPSD_TARGET_HOME \
+        HAPAX_APCUPSD_DEST \
+        HAPAX_APCUPSD_AUDIT_DIR \
+        HAPAX_APCUPSD_AUDIT_GROUP \
+        HAPAX_UPS_AUDIT_LOG \
+        HAPAX_UPS_AUDIT_LOG_OWNER_UID \
+        HAPAX_UPS_AUDIT_LOG_OWNER_GID \
+        HAPAX_APCUPSD_LOGROTATE_DEST \
+        HAPAX_UPOWER_CONF_DEST \
+        HAPAX_APCUPSD_SYSTEMCTL \
+        HAPAX_APCUPSD_BUSCTL \
+        HAPAX_APCUPSD_APCACCESS \
         HAPAX_APCUPSD_GETENT \
+        HAPAX_APCUPSD_INSTALL_SUDO \
         HAPAX_APCUPSD_INSTALL_TEST_ACTUAL_UID; do
         if [[ -v "$selector" ]]; then
-            echo "apcupsd installer: $selector selects caller-selected production identity or state; remove it or use a confined HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT harness" >&2
+            echo "apcupsd installer: $selector selects a caller-selected production destination, command, identity, or state; remove it or use a confined HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT harness" >&2
             return 2
         fi
     done
@@ -509,6 +521,19 @@ PY
     TARGET_UID="$nss_uid"
     TARGET_GID="$nss_gid"
     TARGET_HOME="$nss_home"
+    DEST="/etc/apcupsd"
+    AUDIT_DIR="$DEFAULT_AUDIT_DIR"
+    AUDIT_GROUP="$DEFAULT_AUDIT_GROUP"
+    AUDIT_LOG="$DEFAULT_AUDIT_LOG"
+    AUDIT_LOG_OWNER_UID=""
+    AUDIT_LOG_OWNER_GID=""
+    LOGROTATE_DEST="/etc/logrotate.d/hapax-ups-power-events"
+    UPOWER_CONF_DEST="/etc/UPower/UPower.conf.d/90-hapax-apcupsd-owner.conf"
+    SYSTEMCTL="/usr/bin/systemctl"
+    BUSCTL="/usr/bin/busctl"
+    APCACCESS="/usr/bin/apcaccess"
+    GETENT="/usr/bin/getent"
+    SUDO="/usr/bin/sudo"
     ROOT_REQUIRED_STATE_ROOT="$nss_home/.local/state/hapax/root-required"
     ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_STATE_ROOT/current-source"
     ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/installed-receipts"
