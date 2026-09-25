@@ -759,6 +759,7 @@ host_optional_user_units=(
 )
 
 HOST_POLICY_LOADED=0
+HOST_POLICY_AUTHORITY=""
 HOST_HOSTNAME=""
 HOST_PROFILE=""
 HOST_PHYSICAL_BYTES=""
@@ -1026,6 +1027,7 @@ load_host_policy() {
     fi
     while IFS='=' read -r key value; do
         case "$key" in
+            POLICY_AUTHORITY) HOST_POLICY_AUTHORITY="$value" ;;
             HOSTNAME) HOST_HOSTNAME="$value" ;;
             PROFILE) HOST_PROFILE="$value" ;;
             PHYSICAL_BYTES) HOST_PHYSICAL_BYTES="$value" ;;
@@ -1040,6 +1042,24 @@ load_host_policy() {
                 ;;
         esac
     done <<< "$output"
+    case "$HOST_POLICY_AUTHORITY" in
+        internal-sealed-package-source)
+            if [ "$AUTHENTICATED_SEALED_SOURCE" -ne 1 ]; then
+                echo "OOM host policy falsely claims sealed-package authority; next action: restore the matched installer/audit package" >&2
+                return 1
+            fi
+            ;;
+        non-authoritative-source-tree|non-authoritative-test-override)
+            if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
+                echo "sealed OOM package did not emit sealed-package authority; next action: leave the deferral pending and regenerate it with hapax-post-merge-deploy" >&2
+                return 1
+            fi
+            ;;
+        *)
+            echo "unacceptable OOM host policy authority: ${HOST_POLICY_AUTHORITY:-missing}; next action: restore the matched installer/audit package" >&2
+            return 1
+            ;;
+    esac
     [[ "$HOST_HOSTNAME" =~ ^hapax-(appendix|podium)$ ]] \
         && [[ "$HOST_PROFILE" =~ ^(appendix|podium)$ ]] \
         && [[ "$HOST_PHYSICAL_BYTES" =~ ^[0-9]+$ ]] \
