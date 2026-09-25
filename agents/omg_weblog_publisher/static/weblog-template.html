@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>Hapax Weblog{separator}{post-title}</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{feeds}
+<link rel="me" href="https://hapax.omg.lol/">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+@import url('https://static.omg.lol/type/fontawesome-free/css/all.css');
+
+:root {
+  --bg: #1d2021;
+  --surface: #282828;
+  --ink: #ebdbb2;
+  --muted: #a89984;
+  --line: #3c3836;
+  --soft: #32302f;
+  --link: #83a598;
+  --link-hover: #8ec07c;
+  --accent: #fe8019;
+  --yellow: #fabd2f;
+  --green: #b8bb26;
+  --red: #fb4934;
+  --purple: #d3869b;
+  --shadow: none;
+}
+
+* { box-sizing: border-box; }
+html { min-height: 100%; }
+body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace; font-size: 14px; line-height: 1.65; }
+a { color: var(--link); text-decoration: none; border-bottom: 1px dotted var(--muted); }
+a:hover, a:focus-visible { color: var(--link-hover); border-bottom-color: var(--link-hover); }
+img, video { max-width: 100%; height: auto; }
+.site-header, .hapax-weblog-shell, .site-footer { width: min(100% - 2.5rem, 72rem); margin-inline: auto; }
+.site-header { padding: 2rem 0 1rem; border-bottom: 1px solid var(--line); }
+.weblog-title { margin: 0; font-size: 1.6rem; line-height: 1; }
+.weblog-title a { color: var(--green); text-decoration: none; border-bottom: none; }
+.site-description { max-width: 44rem; margin: 0.6rem 0 0; color: var(--muted); font-size: 0.85rem; }
+.site-nav { display: flex; flex-wrap: wrap; gap: 0.45rem 0.9rem; margin-top: 0.8rem; font-size: 0.85rem; }
+.site-nav:empty { display: none; }
+.site-nav a { color: var(--muted); border-bottom: none; }
+.site-nav a:hover, .site-nav a:focus-visible { color: var(--ink); border-bottom: 1px solid var(--accent); }
+.hapax-weblog-shell { display: grid; grid-template-columns: minmax(0, 1fr) 16rem; gap: clamp(1.5rem, 4vw, 3rem); align-items: start; padding: 1.5rem 0 3rem; }
+main { min-width: 0; }
+article { min-width: 0; background: var(--surface); border: 1px solid var(--line); padding: clamp(1.25rem, 3.6vw, 2rem); }
+article > *:first-child { margin-top: 0; }
+article > *:last-child { margin-bottom: 0; }
+h1, h2, h3, h4 { line-height: 1.18; font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+h1 { font-size: 1.5rem; color: var(--yellow); }
+h2 { margin-top: 2rem; font-size: 1.15rem; color: var(--yellow); border-bottom: 1px solid var(--line); padding-bottom: 0.3rem; }
+h3 { margin-top: 1.6rem; font-size: 1rem; color: var(--accent); }
+p, li { line-height: 1.68; }
+strong { color: var(--accent); }
+em { color: var(--muted); }
+blockquote { margin: 1.5rem 0; padding: 0.1rem 0 0.1rem 1rem; border-left: 3px solid var(--accent); color: var(--muted); }
+pre, code { font-family: 'JetBrains Mono', monospace; }
+pre { max-width: 100%; overflow-x: auto; padding: 1rem; background: var(--soft); border: 1px solid var(--line); }
+code { font-size: 0.9em; background: var(--soft); color: var(--green); padding: 0.1rem 0.3rem; }
+pre code { background: transparent; padding: 0; }
+table { display: block; width: 100%; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.85rem; }
+th, td { border: 1px solid var(--line); padding: 0.4rem 0.6rem; vertical-align: top; }
+th { background: var(--soft); color: var(--yellow); text-align: left; font-weight: 700; }
+.post-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem 1rem; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.8rem; }
+.hapax-weblog-sidebar { position: sticky; top: 1.25rem; min-width: 0; border-left: 1px solid var(--line); padding-left: 1rem; color: var(--muted); font-size: 0.8rem; line-height: 1.45; }
+.hapax-weblog-sidebar section + section { margin-top: 1.5rem; }
+.hapax-weblog-sidebar h2 { margin: 0 0 0.6rem; color: var(--green); font-size: 0.7rem; line-height: 1.2; text-transform: uppercase; letter-spacing: 0.1em; border-bottom: none; }
+.hapax-weblog-sidebar ul { list-style: none; margin: 0; padding: 0; }
+.hapax-weblog-sidebar li + li { margin-top: 0.46rem; }
+.hapax-weblog-sidebar a { overflow-wrap: anywhere; }
+.site-footer { padding: 1.5rem 0 3rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.8rem; }
+.site-footer p { margin: 0; }
+.post-tags a.tag { display: inline-block; background: var(--soft); color: var(--purple); padding: 0.1rem 0.4rem; margin: 0.1rem; font-size: 0.75rem; border: 1px solid var(--line); }
+.post-tags a.tag:hover { color: var(--link-hover); border-color: var(--link-hover); }
+@media (max-width: 58rem) {
+  .site-header, .hapax-weblog-shell, .site-footer { width: min(100% - 2rem, 72rem); }
+  .site-header { padding-top: 1.5rem; }
+  .hapax-weblog-shell { display: block; padding-top: 1.25rem; }
+  article { margin-inline: -1rem; border-left: 0; border-right: 0; }
+  .post-meta { justify-content: flex-start; }
+  .hapax-weblog-sidebar { position: static; margin-top: 2rem; padding-top: 1.25rem; padding-left: 0; border-left: 0; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+<header class="site-header">
+  <h1 class="weblog-title"><a href="/">Hapax Weblog</a></h1>
+  <p class="site-description">Public notes, ledgers, and disclosures from the Hapax system.</p>
+  <nav class="site-nav" aria-label="Primary">{navigation}</nav>
+</header>
+<div class="hapax-weblog-shell">
+  <main id="content">
+    <article>
+      {body}
+      <div class="post-meta">
+        <span>{date}</span>
+        <span>{tags}</span>
+      </div>
+    </article>
+  </main>
+  <aside class="hapax-weblog-sidebar" aria-label="Weblog links">
+    <section>
+      <h2>Evergreen docs</h2>
+      <ul>
+        <li><a href="/2026/04/refusal-brief-an-automation-tractability-disclosure">Refusal Brief</a></li>
+        <li><a href="/2026/04/cohort-disparity-disclosure-soundcloud-first-hours-distribution">Cohort Disparity Disclosure</a></li>
+      </ul>
+    </section>
+    <section>
+      <h2>Recent posts</h2>
+      {recent-posts}
+    </section>
+    <section>
+      <h2>Links</h2>
+      <ul>
+        <li><a rel="me" href="https://hapax.omg.lol/">Profile</a></li>
+        <li><a href="https://hapax.omg.lol/support">Support</a></li>
+        <li><a href="/rss.xml">RSS</a></li>
+        <li><a href="https://github.com/hapax-systems/hapax-council">Source</a></li>
+        <li><a href="https://www.youtube.com/@LegomenaLive">Stream</a></li>
+      </ul>
+    </section>
+  </aside>
+</div>
+<footer class="site-footer">
+  <p>Hapax weblog · <a href="/rss.xml">RSS</a> · <a href="https://hapax.omg.lol/support">Support</a></p>
+</footer>
+</body>
+</html>

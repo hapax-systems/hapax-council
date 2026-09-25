@@ -1,0 +1,29 @@
+{
+  "schema": "hapax.omg-weblog-template.export.v1",
+  "address": "hapax",
+  "surface": "hapax.weblog.lol",
+  "asset": "weblog-template.html",
+  "asset_bytes": 6766,
+  "asset_sha256": "73c1f4b8476cf57edb8901f90da80e874fecb460b17b2a992a196d405ac988bf", "asset_sha256_note": "Public SHA-256 digest of exported public HTML; not a credential. # pragma: allowlist secret",
+  "source_endpoint": "GET https://api.omg.lol/address/hapax/weblog/template",
+  "source_endpoint_host_evidence": "The provider's own API reference (https://api.omg.lol/, retrieved 2026-09-24T20:21:35Z) shows the template endpoints with curl examples against https://api.omg.lol/address/foobar/weblog/template, for both GET (retrieve) and POST (update). Probed the same path on 2026-09-24T20:21Z: api.omg.lol returned HTTP 401 for an unauthenticated request (auth required, matching the documented 'Bearer Token' marking); omg.lol returned HTTP 302 with no body, i.e. it is not the API host. api.omg.lol is therefore the correct host.",
+  "source_endpoint_doc_retrieved_at": "2026-09-24T20:21:35Z",
+  "source_endpoint_doc_sha256": "1e55c743e08ba4f391e9cbb491b8f327d276aa87a2c4cbe6fe403ef0b3adce00", "source_endpoint_doc_sha256_note": "Public SHA-256 of the retrieved provider API reference page; not a credential. # pragma: allowlist secret",
+  "credential": "FileStore via hapax-secret; the value is never persisted in this repository",
+  "exported_at": "2026-09-24T19:57:00Z",
+  "exported_by_lane": "fugu-omglol",
+  "preimage_bytes": 6711,
+  "preimage_sha256": "0842d93a43e80831fd4646268c369dc6a919f12dd7bd718f54131230e132a777", "preimage_sha256_note": "Public SHA-256 digest of the pre-change provider template; not a credential. # pragma: allowlist secret",
+  "change": "added <link rel=\"me\" href=\"https://hapax.omg.lol/\"> in <head> and rel=\"me\" on the Links-aside Profile anchor (2026-09-24T19:09Z)",
+  "identity_directions_pinned": "This record and its guard test pin the weblog -> profile direction only. The profile -> weblog half is produced by agents/omg_web_builder/static/index.html and is not part of this record.",
+  "verification": {
+    "anonymous_postimage": "https://hapax.weblog.lol/",
+    "anonymous_postimage_bytes": 17973,
+    "anonymous_postimage_sha256": "5f712ee9a4e61943303872dd366df49534509197fa1874cf94aeff6cad00dbe6", "anonymous_postimage_sha256_note": "Public SHA-256 digest of the anonymous post-change page; not a credential. # pragma: allowlist secret",
+    "checked_at": "2026-09-24T19:54:52Z"
+  },
+  "re_export_recipe": "Re-read the endpoint above; if the returned sha256 differs from asset_sha256, the provider template changed outside this record and the tracked asset must be re-exported and re-reviewed before it can be trusted. Do not hand-edit the asset to match.",
+  "known_limit": "This asset is a record of the provider's template, not the template's source of truth. The provider accepts whole-body replacement (POST /weblog/template) with no server-side merge, so a partial write silently deletes everything absent from the body.",
+  "writer_guard_required": "Any future writer of this template must fetch the full current body, then compare it against the intended change, then write the complete body — never a fragment. This record does not implement that guard.",
+  "pragma_note": "The '# pragma: allowlist secret' text inside the *_note values is honored by this repository's own scan-before-push hook (measured 2026-09-24: a push carrying these public digests was refused as 'Hex High Entropy String' before the annotation and accepted after it). Other scanners may not honor it; the strings are public digests of public HTML, not credentials, so the worst case is a false positive, never a leak."
+}
