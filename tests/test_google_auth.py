@@ -97,6 +97,69 @@ def test_non_interactive_build_service_refuses_instead_of_building_an_unauthenti
     assert "mint-google-token.py" not in message
 
 
+def test_unrefreshable_token_refuses_without_opening_a_consent_flow():
+    """Review finding at a9c30e854 (major): only an ABSENT token was tested. An expired token
+    whose refresh fails must also refuse under ``interactive=False``, without saving anything and
+    without reaching the browser consent flow."""
+    import sys
+    from types import ModuleType
+
+    from shared.google_auth import GoogleCredentialsUnavailable, build_service
+
+    creds = MagicMock()
+    creds.valid = False
+    creds.expired = True
+    creds.refresh_token = "stale"
+    creds.refresh.side_effect = RuntimeError("invalid_grant")
+    flow_module = ModuleType("google_auth_oauthlib.flow")
+    flow_module.InstalledAppFlow = MagicMock(name="InstalledAppFlow")
+    with (
+        patch("shared.google_auth._load_token", return_value=creds),
+        patch("shared.google_auth._save_token") as save,
+        patch("shared.google_auth.discovery_build") as build,
+        patch.dict(sys.modules, {"google_auth_oauthlib.flow": flow_module}),
+    ):
+        with pytest.raises(GoogleCredentialsUnavailable):
+            build_service("drive", "v3", [_DRIVE_RO], interactive=False)
+    creds.refresh.assert_called_once()
+    save.assert_not_called()
+    build.assert_not_called()
+    flow_module.InstalledAppFlow.from_client_config.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("module", "builder"),
+    [
+        ("agents.gmail_sync", "_get_gmail_service"),
+        ("agents.gcalendar_sync", "_get_calendar_service"),
+        ("agents.gdrive_sync", "_get_drive_service"),
+        ("agents.youtube_sync", "_get_youtube_service"),
+    ],
+)
+def test_each_sync_daemon_refuses_instead_of_parking_on_consent(module: str, builder: str):
+    """Review finding at a9c30e854 (major): caller behaviour was checked as source text. This
+    EXECUTES each daemon's service builder with no token; it must refuse with the named remedy
+    and never reach the browser consent flow that would park a systemd unit forever."""
+    import importlib
+    import sys
+    from types import ModuleType
+
+    from shared.google_auth import GoogleCredentialsUnavailable
+
+    flow_module = ModuleType("google_auth_oauthlib.flow")
+    flow_module.InstalledAppFlow = MagicMock(name="InstalledAppFlow")
+    target = importlib.import_module(module)
+    with (
+        patch("shared.google_auth._load_token", return_value=None),
+        patch("shared.google_auth.discovery_build") as build,
+        patch.dict(sys.modules, {"google_auth_oauthlib.flow": flow_module}),
+    ):
+        with pytest.raises(GoogleCredentialsUnavailable, match="Next action"):
+            getattr(target, builder)()
+    build.assert_not_called()
+    flow_module.InstalledAppFlow.from_client_config.assert_not_called()
+
+
 def _recovery_command_argv(message: str) -> list[str]:
     """Extract the shell-safe recovery command from an auth refusal."""
     marker = "Next action: mint the token once, interactively, on this host: "
