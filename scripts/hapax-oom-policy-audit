@@ -198,7 +198,7 @@ def _profile_table_path() -> Path:
 
 def _hostname() -> str:
     override = os.environ.get("HAPAX_OOM_AUDIT_HOSTNAME", "").strip()
-    return (override or socket.gethostname()).split(".", 1)[0]
+    return override or socket.gethostname()
 
 
 def _memtotal_kib() -> int:

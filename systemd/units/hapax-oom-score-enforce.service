@@ -3,6 +3,7 @@
 Description=Retired Hapax root-to-user OOM score bridge sentinel
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 StartLimitIntervalSec=0
+RefuseManualStart=yes
 
 [Service]
 Type=oneshot

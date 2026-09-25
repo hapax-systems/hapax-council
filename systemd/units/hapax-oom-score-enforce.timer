@@ -2,6 +2,7 @@
 # Hapax-Install-Scope: system
 Description=Retired Hapax OOM score timer (must remain disabled)
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
+RefuseManualStart=yes
 
 [Timer]
 OnBootSec=120s
