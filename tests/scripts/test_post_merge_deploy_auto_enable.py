@@ -163,6 +163,7 @@ def _run(
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["HOME"] = str(home)
     env["REPO"] = str(repo)
+    env["HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT"] = str(tmp_path)
     env["HAPAX_POST_MERGE_TRACE_PATH"] = str(tmp_path / "trace.jsonl")
     env.pop("GITHUB_WORKSPACE", None)
     if extra_env:

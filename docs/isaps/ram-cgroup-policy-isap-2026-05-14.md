@@ -5,6 +5,12 @@
 **Request**: REQ-20260513155814-ram-swap-cgroup-policy
 **Authority Case**: CASE-INFRA-GOV-001
 
+> Historical analysis and proposal, superseded by the source-controlled OOM
+> policy in `systemd/README.md`. Negative score grants inside the delegated
+> user manager are retired; current delegated services use `OOMScoreAdjust=100`
+> plus cgroup memory reservations. Measurements and proposals below are kept as
+> the 2026-05-14 incident record, not as current installation instructions.
+
 ## Current State (measured 2026-05-14T00:42Z)
 
 ### Memory Configuration
