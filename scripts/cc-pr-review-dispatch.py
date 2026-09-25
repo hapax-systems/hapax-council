@@ -578,6 +578,13 @@ PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 SEAT_OUTAGE_VERDICTS = review_team.FAMILY_OUTAGE_VERDICTS | {"invalid-output"}
 #: ``outage_cause`` recorded on a seat whose clean-exit reply was empty.
 EMPTY_OUTPUT_OUTAGE_CAUSE = "empty_output"
+#: ``outage_cause`` for a seat whose reviewer wrapper reported, on a process failure, that the
+#: model spent its whole completion budget reasoning (``scripts/hapax-glmcp-reviewer``). The
+#: seat cannot vote on that budget, so its family is latched out rather than burned per packet.
+REASONING_BUDGET_OUTAGE_CAUSE = "reasoning_budget_exhausted"
+#: A line a reviewer wrapper authored itself, e.g. ``hapax-glmcp-reviewer: api error: ...``.
+#: Only these lines of a failed reviewer's stderr are kept; pass-through CLI output is not.
+REVIEWER_WRAPPER_LINE_RE = re.compile(r"\Ahapax-[a-z0-9]+(?:-[a-z0-9]+)*-reviewer: ")
 
 
 #: agy's own notice when headless mode auto-denies a tool and it stops without a reply
@@ -2394,6 +2401,23 @@ def sanitize_reviewer_diagnostic(text: str, *, limit: int = MAX_REVIEW_RUNNER_ST
     return truncate_context(redacted, limit=limit).strip()
 
 
+def reviewer_wrapper_lines(stderr: str) -> list[str]:
+    """The lines a failed reviewer's wrapper authored, minus the one that echoes model stdout."""
+
+    return [
+        line
+        for line in (stderr or "").splitlines()
+        if REVIEWER_WRAPPER_LINE_RE.match(line)
+        and not line.startswith(CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX)
+    ]
+
+
+def reviewer_wrapper_excerpt(stderr: str) -> str:
+    """A failed reviewer's own diagnostic lines, sanitized and bounded, for logs and dossier."""
+
+    return sanitize_reviewer_diagnostic(" | ".join(reviewer_wrapper_lines(stderr)))
+
+
 def render_payg_fallback_excerpt(text: str) -> str | None:
     """Return an allowlisted PAYG fallback diagnostic, never raw reviewer stderr."""
 
@@ -2644,6 +2668,7 @@ def dispatch_reviews(
         diagnostic_stdout = ""
         runner_stderr_excerpt = ""
         reviewer_internal_error = False
+        reasoning_budget_exhausted = False
         try:
             family_cfg = dict(family_cfgs[seat.family])
             if task_id:
@@ -2657,17 +2682,26 @@ def dispatch_reviews(
             else:
                 reply = str(runner_result)
         except ReviewerProcessError as exc:
+            wrapper_excerpt = reviewer_wrapper_excerpt(exc.stderr)
             LOG.warning(
-                "reviewer %s (%s) process failed rc=%d; diagnostics kept in memory "
-                "for classification only",
+                "reviewer %s (%s) process failed rc=%d; wrapper said: %s",
                 seat.id,
                 seat.family,
                 exc.returncode,
+                wrapper_excerpt or "nothing (other output omitted)",
             )
             reply = ""
             process_failed = True
             process_output = f"reviewer process failed rc={exc.returncode}; output omitted"
-            runner_stderr_excerpt = process_output
+            runner_stderr_excerpt = (
+                f"{process_output}; wrapper: {wrapper_excerpt}"
+                if wrapper_excerpt
+                else process_output
+            )
+            reasoning_budget_exhausted = any(
+                f": {REASONING_BUDGET_OUTAGE_CAUSE}:" in line
+                for line in reviewer_wrapper_lines(exc.stderr)
+            )
             if exc.stderr.strip():
                 wrapper_stdout_quota_wall = reviewer_stdout_quota_wall_diagnostic(exc.stderr)
                 wrapper_stdout_diagnostic = reviewer_stdout_classifier_diagnostic(exc.stderr)
@@ -2734,6 +2768,18 @@ def dispatch_reviews(
                     seat.family,
                 )
                 verdict = "reviewer-internal-error"
+            elif process_failed and reasoning_budget_exhausted:
+                # The wrapper's own line on a process failure, never model output: the seat
+                # spent its budget reasoning and cannot vote on it. Latch the family out.
+                LOG.warning(
+                    "reviewer %s (%s) exhausted its completion budget reasoning -> verdict "
+                    "reviewer-route-unavailable (%s)",
+                    seat.id,
+                    seat.family,
+                    REASONING_BUDGET_OUTAGE_CAUSE,
+                )
+                verdict = "reviewer-route-unavailable"
+                outage_cause = REASONING_BUDGET_OUTAGE_CAUSE
             elif walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
