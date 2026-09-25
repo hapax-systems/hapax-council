@@ -865,6 +865,37 @@ def test_process_role_phrase_outside_the_incumbent_row_is_ignored(tmp_path: Path
     assert other.stdout.strip() == ""
 
 
+def test_quiet_prints_only_the_total_line(tmp_path: Path) -> None:
+    _write_row(
+        tmp_path,
+        "lane-row",
+        _offered("lane-row", created="2026-09-24T20:17:27Z"),
+        "coordinator copy\n",
+    )
+    proc = _run(tmp_path, "--commit", "WORKTREE", "--at", AT_2217, "--quiet")
+    assert proc.returncode == 0, proc.stderr
+    lines = [line for line in proc.stdout.splitlines() if line]
+    assert len(lines) == 1
+    assert lines[0].startswith("TOTAL rows=")
+    assert "lane-row" not in proc.stdout
+
+
+def test_drop_in_uses_oneshot_base_and_activation_worktree() -> None:
+    base = Path.home() / ".config/systemd/user/lanebus-staleness-sweep.service"
+    if not base.is_file():
+        pytest.skip("base user unit is not installed on this host")
+    text = base.read_text(encoding="utf-8")
+    assert "Type=oneshot" in text
+    drop = (
+        ROOT
+        / "systemd/units/lanebus-staleness-sweep.service.d/seat-owed-set.conf"
+    )
+    body = drop.read_text(encoding="utf-8")
+    assert "ExecStart=-" not in body
+    assert ".cache/hapax/source-activation/worktree/scripts/hapax-seat-owed-set" in body
+    assert "hapax-council--grok-owedset" not in body
+
+
 def test_bad_commit_is_not_an_empty_owed_set(tmp_path: Path) -> None:
     proc = _run(tmp_path, "--commit", "deadbeef", "--at", AT_2217, "--json")
     assert proc.returncode != 0
