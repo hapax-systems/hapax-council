@@ -86,6 +86,35 @@ def _copy_apcupsd_package(dest_root: Path) -> None:
         shutil.copy2(REPO_ROOT / relative, dest)
 
 
+def _repo_with_replaced_apcupsd_package(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "ups-test@example.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "UPS Test"], cwd=repo, check=True)
+    _copy_apcupsd_package(repo)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "canonical package"], cwd=repo, check=True, capture_output=True
+    )
+    canonical_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+
+    substituted = repo / "config/apcupsd/onbattery"
+    substituted.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    substituted.chmod(0o755)
+    subprocess.run(["git", "add", str(substituted.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "replacement package"], cwd=repo, check=True, capture_output=True
+    )
+    replacement_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    subprocess.run(["git", "replace", canonical_sha, replacement_sha], cwd=repo, check=True)
+    return repo, canonical_sha
+
+
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
@@ -993,6 +1022,7 @@ def test_installer_fails_closed_when_canonical_audit_group_is_missing(
         env={
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_APCUPSD_GETENT": str(fake_getent),
             "HAPAX_APCUPSD_TARGET_HOME": str(tmp_path),
             "HAPAX_APCUPSD_TARGET_GID": str(os.getgid()),
             "HAPAX_APCUPSD_DEST": "/etc/apcupsd",
@@ -1768,6 +1798,63 @@ def test_apcupsd_install_ignores_ambient_git_repository_selectors(
 def test_apcupsd_install_ignores_replace_refs_when_binding_package_source(
     tmp_path: Path,
 ) -> None:
+    repo, canonical_sha = _repo_with_replaced_apcupsd_package(tmp_path)
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(repo), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": canonical_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "does not match claimed commit" in result.stderr
+    assert "config/apcupsd/onbattery" in result.stderr
+    assert not live.exists()
+
+
+def test_apcupsd_package_binding_ignores_path_git_wrapper(tmp_path: Path) -> None:
+    repo, canonical_sha = _repo_with_replaced_apcupsd_package(tmp_path)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        '#!/bin/sh\nunset GIT_NO_REPLACE_OBJECTS\nexec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    live = tmp_path / "live-apcupsd"
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(repo), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            "HAPAX_APCUPSD_DEST": str(live),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": canonical_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(repo),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "does not match claimed commit" in result.stderr
+    assert "config/apcupsd/onbattery" in result.stderr
+    assert not live.exists()
+
+
+def test_apcupsd_package_binding_ignores_path_cmp_wrapper(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
@@ -1781,18 +1868,14 @@ def test_apcupsd_install_ignores_replace_refs_when_binding_package_source(
     canonical_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
     ).stdout.strip()
-
     substituted = repo / "config/apcupsd/onbattery"
     substituted.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     substituted.chmod(0o755)
-    subprocess.run(["git", "add", str(substituted.relative_to(repo))], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "replacement package"], cwd=repo, check=True, capture_output=True
-    )
-    replacement_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True
-    ).stdout.strip()
-    subprocess.run(["git", "replace", canonical_sha, replacement_sha], cwd=repo, check=True)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_cmp = fake_bin / "cmp"
+    fake_cmp.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_cmp.chmod(0o755)
     live = tmp_path / "live-apcupsd"
 
     result = subprocess.run(
@@ -1802,6 +1885,7 @@ def test_apcupsd_install_ignores_replace_refs_when_binding_package_source(
         check=False,
         env={
             **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "HAPAX_APCUPSD_INSTALL_SUDO": "",
             "HAPAX_APCUPSD_DEST": str(live),
             "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": canonical_sha,
