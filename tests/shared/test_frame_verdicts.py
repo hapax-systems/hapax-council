@@ -3056,6 +3056,58 @@ def test_selected_file_spelled_as_directory_is_refused_beside_an_outside_ref(
         fv.scope_within_decayed(refs, verdicts, council_root=tmp_path, vault_root=tmp_path)
 
 
+# Review finding at 86a6436c2 (local-1, critical): `_denoted_selected_files` returned () whenever
+# `scope_pattern is None`. A LITERAL ref with components beneath the selected regular file has no
+# wildcard, so it took that path, and `hostname/x` was never even checked because it is not
+# directory-spelled. Red on 86a6436c2 for all four literal cases; the globbed twin
+# `hostnam[e]/x` was already refused.
+
+
+@pytest.mark.parametrize("spelling", ["hostname/x", "hostname/x/", "hostname/x/y", "hostname/x/y/"])
+@pytest.mark.parametrize("outside_first", [False, True], ids=["file-first", "outside-first"])
+def test_literal_components_beneath_a_selected_file_are_refused_beside_an_outside_ref(
+    tmp_path: Path, spelling: str, outside_first: bool
+) -> None:
+    root, outside, verdicts = _single_file_member(tmp_path)
+    refs = [f"{root}/{spelling}", str(outside)]
+    if outside_first:
+        refs.reverse()
+    with pytest.raises(fv.NonCanonicalScopeRef, match="resolves to declared member file"):
+        fv.scope_within_decayed(refs, verdicts, council_root=tmp_path, vault_root=tmp_path)
+
+
+def test_literal_path_beneath_a_directory_member_is_unaffected(tmp_path: Path) -> None:
+    """Control: an ordinary literal file ref under a member DIRECTORY has no regular-file ancestor
+    and keeps its existing verdict."""
+    root = tmp_path / "tree"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "a.txt").write_text("a", encoding="utf-8")
+    member = fv.DecayedMember("m", "scope_exited", (root,), ("sub/*.txt",), ())
+    verdicts = fv.FrameVerdicts("fixture", tmp_path, NOW, (member,), ())
+    inside = fv.scope_within_decayed(
+        [f"{root}/sub/a.txt"], verdicts, council_root=tmp_path, vault_root=tmp_path
+    )
+    assert inside.all_inside
+    partial = fv.scope_within_decayed(
+        [f"{root}/sub/a.txt", str(tmp_path / "outside.txt")],
+        verdicts,
+        council_root=tmp_path,
+        vault_root=tmp_path,
+    )
+    assert not partial.all_inside
+
+
+def test_literal_path_beneath_an_unselected_file_is_not_this_refusal(tmp_path: Path) -> None:
+    """Control: a regular-file ancestor the member does NOT select is not the member's file, so
+    this guard does not refuse on it."""
+    root, outside, verdicts = _single_file_member(tmp_path)
+    (root / "other").write_text("x", encoding="utf-8")
+    result = fv.scope_within_decayed(
+        [f"{root}/other/x", str(outside)], verdicts, council_root=tmp_path, vault_root=tmp_path
+    )
+    assert not result.all_inside
+
+
 @pytest.mark.parametrize("spelling", ["hostname", "hostnam[e]"])
 def test_selected_file_spelled_as_a_file_stays_inside(tmp_path: Path, spelling: str) -> None:
     root, _outside, verdicts = _single_file_member(tmp_path)

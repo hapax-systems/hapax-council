@@ -3306,17 +3306,52 @@ def test_row_s2s_a_root_classification_fault_is_observed_before_pathlib_hides_it
     monkeypatch.setattr(
         os,
         "stat",
-        # The FIRST root stat is the glob's own `parent_path.is_dir()`, measured rather than
-        # guessed: faulting {2} reaches a different refusal, {3} and {7} are admitted, and
-        # {4}-{6} are the scope-component resolution. Only {1} isolates this layer, and a row
-        # written against a plausible-looking schedule passed for the wrong reason until the
-        # mutation said so.
-        _StatFaultingOnFirstAttempts(str(root), {1}, OSError(40, "Too many levels of symlinks")),
+        # The schedule is measured rather than guessed. Since 2026-09-25 the FIRST root stat is
+        # the literal-ref ancestor walk (`_regular_file_ancestor`, the row below), so the glob's
+        # own `parent_path.is_dir()` is the SECOND. At {1} this row still passed with this layer
+        # mutated out, because the ancestor walk refused first: a row that passes for the wrong
+        # reason. {2} isolates this layer, and the assertion names its diagnosis, not the
+        # generic refusal that follows when the layer is disabled. {3} and {7} are admitted, and
+        # {4}-{6} are the scope-component resolution.
+        _StatFaultingOnFirstAttempts(str(root), {2}, OSError(40, "Too many levels of symlinks")),
     )
 
     with pytest.raises(fv.NonCanonicalScopeRef) as caught:
         fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
-    assert "cannot" in str(caught.value)
+    assert "cannot enumerate member pattern" in str(caught.value)
+    assert caught.value.remedy
+
+
+def test_row_s2s_ancestor_a_literal_ref_ancestor_fault_is_refused_not_hidden(tmp_path, monkeypatch):
+    """The literal-ref ancestor walk (2026-09-25) classifies each ancestor with `stat`, never
+    `Path.is_file`, which swallows ELOOP and EBADF and answers False. It runs before the glob, so
+    hiding a transient fault here would reopen the fifth layer above. It refuses by name."""
+    base = tmp_path / "base"
+    root = base / "bin"
+    root.mkdir(parents=True)
+    selected = root / "fsck.ext2"
+    selected.write_bytes(b"e2fsck NEEDLE\n")
+    scope_alias = root / "e2fsck"
+    os.link(selected, scope_alias)
+    member = {
+        "id": "root-classification-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["fsck.ext2"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("root-classification-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+    monkeypatch.setattr(
+        os,
+        "stat",
+        _StatFaultingOnFirstAttempts(str(root), {1}, OSError(40, "Too many levels of symlinks")),
+    )
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
+    assert f"cannot resolve scope component {root}" in str(caught.value)
     assert caught.value.remedy
 
 

@@ -3824,8 +3824,13 @@ def _denoted_selected_files(
     and file-type refusals downstream name the scope glob, the component and the intended target,
     and this position knows none of them.
     """
-    if scope_pattern is None or not surface:
+    if not surface:
         return ()
+    if scope_pattern is None:
+        # A LITERAL ref has no pattern to expand, but it can still apply components beneath a
+        # selected regular file (`hostname/x`), which is the same subject as `hostnam[e]/x`.
+        # Returning () here admitted it beside an outside ref (local-1, at `86a6436c2`).
+        return _selected_regular_ancestor(base, surface)
     segments = [segment for segment in scope_pattern.split("/") if segment]
     for depth in range(1, len(segments) + 1):
         try:
@@ -3849,6 +3854,44 @@ def _denoted_selected_files(
         # scope, and searching deeper is meaningless because there is no deeper.
         return ()
     return ()
+
+
+def _regular_file_ancestor(path: Path) -> Path | None:
+    """The nearest proper ancestor of ``path`` that is a regular file, if any.
+
+    A regular file cannot contain anything, so at most one ancestor can be one.
+
+    **Classified with `stat`, never `Path.is_file`.** `is_file` swallows pathlib's ignorable
+    errnos (ELOOP, EBADF among them) and answers False. This walk stats the member root BEFORE
+    the glob does, so answering False would consume a transient fault and hide it: the fifth
+    layer the S2s row pins. ENOENT and ENOTDIR are decided absence, and the walk moves up. Any
+    other error is the unknown this module refuses over, so it refuses by name.
+    """
+    for ancestor in path.parents:
+        try:
+            status = ancestor.stat()
+        except OSError as exc:
+            if exc.errno in _DECIDED_ABSENCE_ERRNOS:
+                continue
+            raise _unresolved_scope_component(ancestor, exc) from exc
+        if stat_module.S_ISREG(status.st_mode):
+            return ancestor
+    return None
+
+
+def _selected_regular_ancestor(path: Path, surface: frozenset[Path]) -> tuple[Path, ...] | None:
+    """`(file,)` when a literal ref applies components beneath a SELECTED regular file.
+
+    Follows `_denoted_selected_files`' contract: `()` refuses nothing, and `None` means the
+    identity comparison could not be read, so nothing is established here.
+    """
+    ancestor = _regular_file_ancestor(path)
+    if ancestor is None:
+        return ()
+    selects = _entries_select_surface([ancestor], surface)
+    if selects is None:
+        return None
+    return (ancestor,) if selects else ()
 
 
 def _identity_reaches_surface(candidates: tuple[Path, ...], surface: frozenset[Path]) -> bool:
@@ -3938,6 +3981,15 @@ def ref_within_member(
         # the four cases that deliberately refuse nothing.
         denoted = _denoted_selected_files(
             path, scope_pattern, surface, directory_spelled=directory_spelled
+        )
+        if denoted:
+            _refuse_directory_spelled_file(denoted[0])
+    elif scope_pattern is None and _regular_file_ancestor(path) is not None:
+        # A literal ref WITHOUT a directory suffix can still put components beneath a selected
+        # file (`hostname/x`). The surface is built only when a regular-file ancestor exists, so
+        # ordinary refs pay one stat per ancestor and nothing more.
+        denoted = _denoted_selected_files(
+            path, None, _member_selected_surface(member), directory_spelled=False
         )
         if denoted:
             _refuse_directory_spelled_file(denoted[0])
