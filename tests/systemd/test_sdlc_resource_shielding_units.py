@@ -8,7 +8,10 @@ load-bearing directives from silently regressing.
 from __future__ import annotations
 
 import ast
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -420,16 +423,61 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     assert "--oom-kill-disable" not in text
 
 
-def test_local_judge_runtime_canary_fails_fast() -> None:
+def _local_judge_runtime_canary() -> str:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
     marker = text.index("container=hapax-local-judge")
     start = text.rfind("```bash", 0, marker)
     end = text.index("```", marker)
-    canary = text[start:end]
+    return text[start:end]
+
+
+def test_local_judge_runtime_canary_fails_fast() -> None:
+    canary = _local_judge_runtime_canary()
     assert canary.index("set -euo pipefail") < canary.index("container=hapax-local-judge")
     assert "run_verifierbench.py" in canary
     assert "length == 24" in canary
+    assert 'has("error")' in canary
+    assert 'has("pred")' in canary
     assert ".error == null" in canary
     assert '.pred == "A" or .pred == "B" or .pred == "C"' in canary
     assert 'test "$before_state" = "$after_state"' in canary
     assert 'test "$before_oom" = "$after_oom"' in canary
+
+
+def test_local_judge_runtime_canary_executes_jsonl_acceptance_predicate() -> None:
+    jq = shutil.which("jq")
+    assert jq is not None
+    match = re.search(r"jq -e -s '([^']+)'", _local_judge_runtime_canary())
+    assert match is not None
+    predicate = match.group(1)
+
+    valid = [{"pred": ("A", "B", "C")[index % 3], "error": None} for index in range(24)]
+    cases = {
+        "complete": ("\n".join(json.dumps(row) for row in valid), True),
+        "partial": ("\n".join(json.dumps(row) for row in valid[:-1]), False),
+        "errored": (
+            "\n".join(json.dumps(row) for row in [*valid[:-1], {"pred": "A", "error": "timeout"}]),
+            False,
+        ),
+        "invalid-prediction": (
+            "\n".join(json.dumps(row) for row in [*valid[:-1], {"pred": "D", "error": None}]),
+            False,
+        ),
+        "missing-error-key": (
+            "\n".join(json.dumps(row) for row in [*valid[:-1], {"pred": "A"}]),
+            False,
+        ),
+        "malformed-json": ("\n".join(json.dumps(row) for row in valid[:-1]) + '\n{"pred":', False),
+    }
+
+    for name, (payload, should_pass) in cases.items():
+        result = subprocess.run(
+            [jq, "-e", "-s", predicate],
+            input=f"{payload}\n",
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert (result.returncode == 0) is should_pass, (
+            f"{name}: rc={result.returncode} stderr={result.stderr}"
+        )

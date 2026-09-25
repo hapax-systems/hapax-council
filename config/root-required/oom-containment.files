@@ -22,6 +22,7 @@ systemd/system/sshd.service.d/oom-protect.conf
 systemd/units/hapax-root-failure-intake@.service
 systemd/units/hapax-oom-score-enforce.service
 systemd/units/hapax-oom-score-enforce.timer
+systemd/units/hapax-local-judge.service
 systemd/units/hapax-oom-policy-audit.service
 systemd/units/hapax-oom-policy-audit.timer
 systemd/units/hapax-root-required-deploy-audit.service

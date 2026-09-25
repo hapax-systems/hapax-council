@@ -110,6 +110,7 @@ Installs the P0 host-profiled OOM containment package:
   scripts/hapax-root-required-deploy-audit            -> /usr/local/sbin/hapax-root-required-deploy-audit
   config/root-required/oom-host-profiles.tsv          -> /usr/local/share/hapax/root-required/
   selected host zram policy                           -> /etc/systemd/zram-generator.conf
+  systemd/units/hapax-local-judge.service             -> ~/.config/systemd/user/
   systemd/units/hapax-{oom-policy,root-required-deploy}-audit.{service,timer}
                                                      -> ~/.config/systemd/user/
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
@@ -570,7 +571,8 @@ system_units=(
     systemd/units/hapax-oom-score-enforce.service
     systemd/units/hapax-oom-score-enforce.timer
 )
-user_audit_units=(
+managed_user_units=(
+    systemd/units/hapax-local-judge.service
     systemd/units/hapax-oom-policy-audit.service
     systemd/units/hapax-oom-policy-audit.timer
     systemd/units/hapax-root-required-deploy-audit.service
@@ -623,7 +625,7 @@ package_files=(
     "$oom_sudoers_source"
     "${system_dropins[@]}"
     "${system_units[@]}"
-    "${user_audit_units[@]}"
+    "${managed_user_units[@]}"
     "${user_slice_dropins[@]}"
     "${user_protection_dropins[@]}"
     "$earlyoom_source"
@@ -2149,7 +2151,7 @@ install_live() {
 
     scrub_legacy_user_oom_overrides
 
-    for rel in "${user_audit_units[@]}"; do
+    for rel in "${managed_user_units[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         install -d -m 0755 "$(dirname "$dest")"
         [ ! -L "$dest" ] || rm -f "$dest"
@@ -2416,10 +2418,10 @@ verify_live() {
     for rel in "${user_protection_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
     done
-    for rel in "${user_audit_units[@]}"; do
+    for rel in "${managed_user_units[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         if [ -L "$dest" ]; then
-            echo "live P0 audit unit is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "live P0 managed user unit is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
         verify_pair "$(src_path "$rel")" "$dest"
