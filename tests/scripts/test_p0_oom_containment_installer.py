@@ -226,8 +226,8 @@ case "$1" in
   inspect)
     id="${{@: -1}}"
     case "$id" in
-      {JUDGE_CONTAINER_ID}) printf '%s|/%s|%s|%s\n' "$id" hapax-local-judge {4 * 1024**3} {6 * 1024**3} ;;
-      {MCP_CONTAINER_ID}) printf '%s|/%s|%s|%s\n' "$id" hapax-github-mcp-hapax-123 {512 * 1024**2} {768 * 1024**2} ;;
+      {JUDGE_CONTAINER_ID}) printf '%s|/%s|%s|%s|%s\n' "$id" hapax-local-judge {4 * 1024**3} {6 * 1024**3} null ;;
+      {MCP_CONTAINER_ID}) printf '%s|/%s|%s|%s|%s\n' "$id" hapax-github-mcp-hapax-123 {512 * 1024**2} {768 * 1024**2} null ;;
       *) exit 1 ;;
     esac
     ;;
@@ -747,6 +747,10 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
         ("enumeration-failure", "podium", "none"),
         ("reenumeration-failure", "podium", "none"),
         ("post-update-mismatch", "podium", "none"),
+        ("oom-kill-disabled", "podium", "none"),
+        ("oom-kill-invalid", "podium", "none"),
+        ("inspect-extra-output", "podium", "none"),
+        ("inspect-missing-field", "podium", "none"),
         ("second-reload-failure", "podium", "none"),
         ("second-user-reload-failure", "podium", "none"),
     ],
@@ -1014,6 +1018,12 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         fake_docker = Path(os.environ["HAPAX_OOM_DOCKER"])
         docker_calls = Path(os.environ["HAPAX_TEST_DOCKER_CALLS"])
         mcp_memory = 0 if docker_mode == "post-update-mismatch" else 512 * 1024**2
+        if docker_mode == "oom-kill-disabled":
+            mcp_oom_kill_disable = "true"
+        elif docker_mode == "oom-kill-invalid":
+            mcp_oom_kill_disable = "FALSE"
+        else:
+            mcp_oom_kill_disable = "null"
         gone = tmp_path / "mcp-gone"
         if docker_mode == "disappear":
             update_action = (
@@ -1046,11 +1056,20 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             )
         else:
             update_action = "exit 0\n"
-        mcp_inspect = (
-            'echo "simulated Docker inspect denial" >&2; exit 1'
-            if docker_mode == "inspect-failure-present"
-            else f"printf '%s|/%s|%s|%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {768 * 1024**2}"
-        )
+        if docker_mode == "inspect-failure-present":
+            mcp_inspect = 'echo "simulated Docker inspect denial" >&2; exit 1'
+        elif docker_mode == "inspect-extra-output":
+            mcp_inspect = (
+                f"printf '%s|/%s|%s|%s|%s\\nunexpected\\n' \"$id\" "
+                f"hapax-github-mcp-hapax-123 {mcp_memory} {768 * 1024**2} null"
+            )
+        elif docker_mode == "inspect-missing-field":
+            mcp_inspect = (
+                f"printf '%s|/%s|%s|%s\\n' \"$id\" "
+                f"hapax-github-mcp-hapax-123 {mcp_memory} {768 * 1024**2}"
+            )
+        else:
+            mcp_inspect = f"printf '%s|/%s|%s|%s|%s\\n' \"$id\" hapax-github-mcp-hapax-123 {mcp_memory} {768 * 1024**2} {mcp_oom_kill_disable}"
         if docker_mode == "replace":
             mcp_record = (
                 f"if [ -e {gone!s} ]; then printf '%s\\n' "
@@ -1089,7 +1108,7 @@ case "$1" in
   inspect)
     id="${{@: -1}}"
     case "$id" in
-      {JUDGE_CONTAINER_ID}) printf '%s|/%s|%s|%s\n' "$id" hapax-local-judge {4 * 1024**3} {6 * 1024**3} ;;
+      {JUDGE_CONTAINER_ID}) printf '%s|/%s|%s|%s|%s\n' "$id" hapax-local-judge {4 * 1024**3} {6 * 1024**3} null ;;
       {MCP_CONTAINER_ID}) {mcp_inspect} ;;
       *) exit 1 ;;
     esac
@@ -1195,6 +1214,10 @@ esac
             "reenumeration-failure",
             "malformed-record",
             "post-update-mismatch",
+            "oom-kill-disabled",
+            "oom-kill-invalid",
+            "inspect-extra-output",
+            "inspect-missing-field",
             "second-reload-failure",
             "second-user-reload-failure",
         }
@@ -1237,6 +1260,16 @@ esac
         elif docker_mode == "reenumeration-failure":
             assert "simulated Docker re-enumeration denial" in result.stderr
             assert "re-enumeration failed" in result.stderr
+        elif docker_mode == "oom-kill-disabled":
+            assert "OomKillDisable=true" in result.stderr
+            assert "expected_OomKillDisable=false-or-null" in result.stderr
+            assert "recreate the container" in result.stderr
+        elif docker_mode == "oom-kill-invalid":
+            assert "unparseable Docker OomKillDisable" in result.stderr
+            assert "canonical null, false, or true" in result.stderr
+        elif docker_mode in {"inspect-extra-output", "inspect-missing-field"}:
+            assert "unparseable Docker inspect result" in result.stderr
+            assert "one five-field record" in result.stderr
         else:
             assert "Docker" in result.stderr
         return

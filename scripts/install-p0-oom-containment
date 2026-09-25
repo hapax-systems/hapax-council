@@ -1632,20 +1632,33 @@ docker_target_records() {
 
 verify_docker_container_limit() {
     local id="$1" name="$2" memory="$3" memory_swap="$4"
-    local output inspected_id inspected_name actual_memory actual_swap expected_memory expected_swap
-    if ! output="$("$DOCKER" inspect --format '{{.Id}}|{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}' "$id" 2>&1)"; then
+    local output separators inspected_id inspected_name actual_memory actual_swap oom_kill_disable
+    local expected_memory expected_swap
+    if ! output="$("$DOCKER" inspect --format '{{.Id}}|{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{json .HostConfig.OomKillDisable}}' "$id" 2>&1)"; then
         echo "Docker inspect failed for $name id=$id: ${output:-no diagnostics returned}" >&2
         return 2
     fi
-    IFS='|' read -r inspected_id inspected_name actual_memory actual_swap <<< "$output"
+    separators="${output//[^|]/}"
+    if [[ "$output" == *$'\n'* ]] || [ "${#separators}" -ne 4 ]; then
+        echo "unparseable Docker inspect result for $name id=$id: expected one five-field record, got ${output:-empty}; next action: rerun scripts/install-p0-oom-containment --install --verify-live after repairing Docker inspect output" >&2
+        return 1
+    fi
+    IFS='|' read -r inspected_id inspected_name actual_memory actual_swap oom_kill_disable <<< "$output"
+    if [ "$oom_kill_disable" != "null" ] \
+        && [ "$oom_kill_disable" != "false" ] \
+        && [ "$oom_kill_disable" != "true" ]; then
+        echo "unparseable Docker OomKillDisable for $name id=$id: expected canonical null, false, or true, got ${oom_kill_disable:-empty}; next action: rerun scripts/install-p0-oom-containment --install --verify-live after repairing Docker inspect output" >&2
+        return 1
+    fi
     inspected_name="${inspected_name#/}"
     expected_memory="$(memory_to_bytes "$memory")" || return 1
     expected_swap="$(memory_to_bytes "$memory_swap")" || return 1
     if [ "$inspected_id" != "$id" ] \
         || [ "$inspected_name" != "$name" ] \
         || [ "$actual_memory" != "$expected_memory" ] \
-        || [ "$actual_swap" != "$expected_swap" ]; then
-        echo "Docker memory-limit drift for $name: id=${inspected_id:-unavailable} name=${inspected_name:-unavailable} Memory=${actual_memory:-unavailable} MemorySwap=${actual_swap:-unavailable} expected_id=$id expected_limits=$expected_memory/$expected_swap; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        || [ "$actual_swap" != "$expected_swap" ] \
+        || [ "$oom_kill_disable" = "true" ]; then
+        echo "Docker containment drift for $name: id=${inspected_id:-unavailable} name=${inspected_name:-unavailable} Memory=${actual_memory:-unavailable} MemorySwap=${actual_swap:-unavailable} OomKillDisable=${oom_kill_disable:-unavailable} expected_id=$id expected_limits=$expected_memory/$expected_swap expected_OomKillDisable=false-or-null; next action: recreate the container from its governed launch source without --oom-kill-disable and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
 }
