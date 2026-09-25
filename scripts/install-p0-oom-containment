@@ -118,8 +118,9 @@ Installs the P0 host-profiled OOM containment package:
 
 The app.slice and session.slice drop-ins are copied, not symlinked, so live
 containment does not depend on a mutable PR worktree. Runtime activation uses
-set-property instead of restarting either slice. Run as the target account;
-the installer uses sudo only for root-owned destinations and refuses
+set-property without restarting either slice, then removes the generated
+control files and reloads the receipt-owned canonical policy. Run as the target
+account; the installer uses sudo only for root-owned destinations and refuses
 whole-script root execution.
 USAGE
 }
@@ -1029,8 +1030,8 @@ governed_dropin_suffixes() {
         user@1000.service)
             printf '%s\n' user@1000.service.d user@.service.d service.d
             ;;
-        app.slice)
-            printf '%s\n' app.slice.d slice.d
+        system.slice|user.slice|app.slice|session.slice)
+            printf '%s\n' "$1.d" slice.d
             ;;
         *)
             return 1
@@ -1066,11 +1067,11 @@ systemctl_generated_property_value() {
 control_property_kind() {
     local scope="$1" unit="$2" key="$3" path="$4" persistent runtime
     case "$scope|$unit" in
-        system\|user-1000.slice|system\|user@1000.service)
+        system\|system.slice|system\|user.slice|system\|user-1000.slice|system\|user@1000.service)
             persistent="$SYSTEMD_SYSTEM_CONTROL_DIR/$unit.d/50-$key.conf"
             runtime="$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR/$unit.d/50-$key.conf"
             ;;
-        user\|app.slice)
+        user\|app.slice|user\|session.slice)
             persistent="$SYSTEMD_USER_CONTROL_DIR/$unit.d/50-$key.conf"
             runtime="$SYSTEMD_USER_RUNTIME_CONTROL_DIR/$unit.d/50-$key.conf"
             ;;
@@ -1085,14 +1086,6 @@ control_property_kind() {
     else
         return 1
     fi
-}
-
-runtime_property_matches_source() {
-    local rel="$1" key="$2" path="$3" actual expected_raw expected
-    actual="$(systemctl_generated_property_value "$path" "$key")" || return 1
-    expected_raw="$(selected_source_unit_value "$rel" "$key")" || return 1
-    expected="$(memory_to_bytes "$expected_raw")" || return 1
-    [ "$actual" = "$expected" ]
 }
 
 is_known_legacy_memory_override() {
@@ -1110,7 +1103,7 @@ is_known_legacy_memory_override() {
 }
 
 check_governed_unit_dropins() {
-    local allow_repair="$1" scope="$2" unit="$3" rel="$4" canonical="$5"
+    local allow_repair="$1" scope="$2" unit="$3" canonical="$4"
     local root suffix path rc key kind found_kind roots_output
     if [ "$scope" = "system" ]; then
         roots_output="$(governed_system_unit_search_paths)" || return 1
@@ -1157,10 +1150,6 @@ check_governed_unit_dropins() {
                             found_kind="$kind"
                             break
                         fi
-                        if [ "$kind" = "runtime" ] && runtime_property_matches_source "$rel" "$key" "$path"; then
-                            found_kind="$kind"
-                            break
-                        fi
                     fi
                     echo "unowned OOM memory assignment for $unit at $path; next action: remove the governed-key assignment or fold it into the receipt-bound host profile" >&2
                     return 1
@@ -1176,15 +1165,18 @@ check_governed_unit_dropins() {
 
 check_governed_memory_dropins() {
     local allow_repair="$1"
+    check_governed_unit_dropins "$allow_repair" system system.slice \
+        "$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf" || return 1
+    check_governed_unit_dropins "$allow_repair" system user.slice \
+        "$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf" || return 1
     check_governed_unit_dropins "$allow_repair" system user-1000.slice \
-        systemd/system/user-1000.slice.d/oom-containment.conf \
         "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf" || return 1
     check_governed_unit_dropins "$allow_repair" system user@1000.service \
-        systemd/system/user@1000.service.d/oom.conf \
         "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf" || return 1
     check_governed_unit_dropins "$allow_repair" user app.slice \
-        systemd/units/app.slice.d/oom-containment.conf \
         "$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf" || return 1
+    check_governed_unit_dropins "$allow_repair" user session.slice \
+        "$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf" || return 1
 }
 
 check_zram_dropin_overrides() {
@@ -1227,37 +1219,110 @@ validate_no_unauthorized_host_policy_overrides() {
     check_zram_dropin_overrides "$allow_legacy" || return 1
 }
 
-scrub_persistent_set_property_files() {
+scrub_generated_memory_property_files() {
     local spec scope unit dir key path value
+    local -a dirs
     for spec in \
-        "system|user-1000.slice|$SYSTEMD_SYSTEM_CONTROL_DIR/user-1000.slice.d" \
-        "system|user@1000.service|$SYSTEMD_SYSTEM_CONTROL_DIR/user@1000.service.d" \
-        "user|app.slice|$SYSTEMD_USER_CONTROL_DIR/app.slice.d"; do
+        "system|system.slice" \
+        "system|user.slice" \
+        "system|user-1000.slice" \
+        "system|user@1000.service" \
+        "user|app.slice" \
+        "user|session.slice"; do
         scope="${spec%%|*}"
-        spec="${spec#*|}"
-        unit="${spec%%|*}"
-        dir="${spec#*|}"
-        [ -d "$dir" ] || continue
-        for key in "${GOVERNED_MEMORY_KEYS[@]}"; do
-            path="$dir/50-$key.conf"
-            [ -e "$path" ] || [ -L "$path" ] || continue
-            value="$(systemctl_generated_property_value "$path" "$key")" || {
-                echo "refusing non-systemctl persistent control file at governed path: $path; next action: inspect and remove or govern it explicitly before reinstalling" >&2
-                return 1
-            }
-            if [ "$scope" = "system" ]; then
-                run_root rm -f -- "$path"
-            else
-                rm -f -- "$path"
-            fi
-            echo "removed stale persistent set-property override for $unit $key=$value"
-        done
+        unit="${spec#*|}"
+        unit="${unit%%|*}"
         if [ "$scope" = "system" ]; then
-            run_root rmdir "$dir" 2>/dev/null || true
+            dirs=(
+                "$SYSTEMD_SYSTEM_CONTROL_DIR/$unit.d"
+                "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR/$unit.d"
+            )
         else
-            rmdir "$dir" 2>/dev/null || true
+            dirs=(
+                "$SYSTEMD_USER_CONTROL_DIR/$unit.d"
+                "$SYSTEMD_USER_RUNTIME_CONTROL_DIR/$unit.d"
+            )
         fi
+        for dir in "${dirs[@]}"; do
+            [ -d "$dir" ] || continue
+            for key in "${GOVERNED_MEMORY_KEYS[@]}"; do
+                path="$dir/50-$key.conf"
+                [ -e "$path" ] || [ -L "$path" ] || continue
+                value="$(systemctl_generated_property_value "$path" "$key")" || {
+                    echo "refusing non-systemctl control file at governed path: $path; next action: inspect and remove or govern it explicitly before reinstalling" >&2
+                    return 1
+                }
+                if [ "$scope" = "system" ]; then
+                    run_root rm -f -- "$path"
+                else
+                    rm -f -- "$path"
+                fi
+                echo "removed generated set-property override for $unit $key=$value at $path"
+            done
+            if [ "$scope" = "system" ]; then
+                run_root rmdir "$dir" 2>/dev/null || true
+            else
+                rmdir "$dir" 2>/dev/null || true
+            fi
+        done
     done
+}
+
+loaded_memory_dropin_paths() {
+    local scope="$1" unit="$2"
+    if [ "$scope" = "system" ]; then
+        "$SYSTEMCTL" show "$unit" -p DropInPaths --value 2>/dev/null
+    else
+        user_systemctl show "$unit" -p DropInPaths --value 2>/dev/null
+    fi
+}
+
+verify_loaded_governed_unit_dropins() {
+    local scope="$1" unit="$2" canonical="$3" paths path rc canonical_found=0
+    if ! paths="$(loaded_memory_dropin_paths "$scope" "$unit")"; then
+        echo "unable to query authoritative DropInPaths for $unit; next action: restore the manager query and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    fi
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        if [ "$path" = "$canonical" ]; then
+            if [ ! -f "$path" ] || [ -L "$path" ]; then
+                echo "authoritative DropInPaths reports an unsafe canonical OOM memory source for $unit: $path; next action: reinstall the receipt-bound regular file and reload the manager" >&2
+                return 1
+            fi
+            canonical_found=$((canonical_found + 1))
+            continue
+        fi
+        if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
+            echo "authoritative DropInPaths reports an unowned OOM memory assignment for $unit at $path; next action: remove the assignment and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        else
+            rc=$?
+            if [ "$rc" -gt 1 ]; then
+                echo "unable to inspect authoritative DropInPath for $unit: $path; next action: restore a readable regular source or remove it before rerunning the installer" >&2
+                return 1
+            fi
+        fi
+    done < <(printf '%s\n' "$paths" | tr ' ' '\n')
+    if [ "$canonical_found" -ne 1 ]; then
+        echo "authoritative DropInPaths for $unit does not contain exactly one receipt-owned source: expected=$canonical actual=${paths:-none}; next action: reload the manager from the installed canonical policy and rerun --verify-live" >&2
+        return 1
+    fi
+}
+
+verify_loaded_memory_dropin_ownership() {
+    verify_loaded_governed_unit_dropins system system.slice \
+        "$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf" || return 1
+    verify_loaded_governed_unit_dropins system user.slice \
+        "$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf" || return 1
+    verify_loaded_governed_unit_dropins system user-1000.slice \
+        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf" || return 1
+    verify_loaded_governed_unit_dropins system user@1000.service \
+        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf" || return 1
+    verify_loaded_governed_unit_dropins user app.slice \
+        "$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf" || return 1
+    verify_loaded_governed_unit_dropins user session.slice \
+        "$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf" || return 1
 }
 
 source_unit_optional_value() {
@@ -1978,7 +2043,7 @@ install_live() {
         "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf"
     rm -f "$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf"
     run_root rm -f "$LEGACY_ZRAM_POLICY_DEST"
-    scrub_persistent_set_property_files
+    scrub_generated_memory_property_files
     validate_no_unauthorized_host_policy_overrides 0
 
     for rel in "${user_protection_dropins[@]}"; do
@@ -2038,6 +2103,16 @@ install_live() {
             "MemorySwapMax=$(source_unit_value "$session_slice_dropin" MemorySwapMax)" \
             "MemoryLow=$(source_unit_value "$session_slice_dropin" MemoryLow)" \
             "MemoryMin=$(source_unit_value "$session_slice_dropin" MemoryMin)"
+        scrub_generated_memory_property_files
+        validate_no_unauthorized_host_policy_overrides 0
+        run_root "$SYSTEMCTL" daemon-reload || {
+            echo "unable to reload the system manager after scrubbing transient OOM controls; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        }
+        user_systemctl daemon-reload || {
+            echo "unable to reload the user manager after scrubbing transient OOM controls; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            return 1
+        }
         apply_recovery_unit_oom_scores
         refresh_protected_user_unit_snapshot
         apply_protected_user_unit_oom_scores
@@ -2176,6 +2251,7 @@ verify_selected_host_policy_files() {
         return 1
     fi
     validate_no_unauthorized_host_policy_overrides 0
+    verify_loaded_memory_dropin_ownership
 }
 
 verify_live() {

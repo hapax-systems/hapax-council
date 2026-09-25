@@ -96,6 +96,10 @@ APPENDIX_OPTIONAL_USER_UNITS = frozenset(
         "hapax-imagination.service",
     }
 )
+GOVERNED_MEMORY_ASSIGNMENT = re.compile(
+    r"^[ \t]*(?:MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[ \t]*=",
+    re.MULTILINE,
+)
 
 
 @dataclass
@@ -355,6 +359,24 @@ def _docker() -> str:
     return os.environ.get("HAPAX_OOM_AUDIT_DOCKER", "/usr/bin/docker")
 
 
+def _systemd_policy_dir(name: str, default: Path) -> Path:
+    override = os.environ.get(name, "").strip()
+    if not override:
+        return default
+    _require_test_override(name)
+    return Path(override)
+
+
+def _systemd_system_dir() -> Path:
+    return _systemd_policy_dir("HAPAX_OOM_AUDIT_SYSTEMD_SYSTEM_DIR", Path("/etc/systemd/system"))
+
+
+def _systemd_user_dir() -> Path:
+    return _systemd_policy_dir(
+        "HAPAX_OOM_AUDIT_SYSTEMD_USER_DIR", Path.home() / ".config/systemd/user"
+    )
+
+
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(args, capture_output=True, text=True, timeout=10, check=False)
@@ -388,6 +410,92 @@ def _int_value(value: str | None) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _audit_loaded_governed_unit_dropins(
+    unit: str, canonical: Path, *, user: bool = False
+) -> Check:
+    values = _show(unit, ["DropInPaths"], user=user)
+    check_name = f"{unit.replace('-', '_').replace('@', '_at_')}_memory_dropin_ownership"
+    if "_error" in values:
+        return Check(
+            check_name,
+            "error",
+            str(canonical),
+            "N/A",
+            f"cannot query authoritative DropInPaths: {values['_error']}; {NEXT_OOM_INSTALL}",
+        )
+    paths = [Path(item) for item in values.get("DropInPaths", "").split() if item]
+    canonical_count = paths.count(canonical)
+    if canonical_count != 1:
+        return Check(
+            check_name,
+            "gap",
+            str(canonical),
+            " ".join(map(str, paths)) or "none",
+            "authoritative DropInPaths does not contain exactly one receipt-owned memory source; "
+            f"{NEXT_OOM_INSTALL}",
+        )
+    if not canonical.is_file() or canonical.is_symlink():
+        return Check(
+            check_name,
+            "gap",
+            f"regular receipt-owned {canonical}",
+            str(canonical),
+            f"canonical memory source is missing, non-regular, or symlinked; {NEXT_OOM_INSTALL}",
+        )
+    for path in paths:
+        if path == canonical:
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return Check(
+                check_name,
+                "error",
+                "all non-receipt DropInPaths readable and free of governed memory assignments",
+                str(path),
+                f"cannot inspect authoritative DropInPath: {exc}; {NEXT_OOM_INSTALL}",
+            )
+        if GOVERNED_MEMORY_ASSIGNMENT.search(body):
+            return Check(
+                check_name,
+                "gap",
+                "no governed memory assignment outside the receipt-owned source",
+                str(path),
+                f"authoritative DropInPaths reports an unowned memory assignment; {NEXT_OOM_INSTALL}",
+            )
+    return Check(
+        check_name,
+        "pass",
+        str(canonical),
+        " ".join(map(str, paths)),
+    )
+
+
+def audit_loaded_memory_dropin_ownership(uid: int) -> list[Check]:
+    system_dir = _systemd_system_dir()
+    user_dir = _systemd_user_dir()
+    return [
+        _audit_loaded_governed_unit_dropins(
+            "system.slice", system_dir / "system.slice.d/oom-containment.conf"
+        ),
+        _audit_loaded_governed_unit_dropins(
+            "user.slice", system_dir / "user.slice.d/oom-containment.conf"
+        ),
+        _audit_loaded_governed_unit_dropins(
+            f"user-{uid}.slice", system_dir / f"user-{uid}.slice.d/oom-containment.conf"
+        ),
+        _audit_loaded_governed_unit_dropins(
+            f"user@{uid}.service", system_dir / f"user@{uid}.service.d/oom.conf"
+        ),
+        _audit_loaded_governed_unit_dropins(
+            "app.slice", user_dir / "app.slice.d/oom-containment.conf", user=True
+        ),
+        _audit_loaded_governed_unit_dropins(
+            "session.slice", user_dir / "session.slice.d/oom-containment.conf", user=True
+        ),
+    ]
 
 
 def audit_user_manager(uid: int) -> Check:
@@ -1545,6 +1653,7 @@ def main(argv: list[str] | None = None) -> int:
                     *audit_sshd_policy(),
                     *audit_system_slice_reservation(),
                     *audit_user_slice_reservation(),
+                    *audit_loaded_memory_dropin_ownership(args.uid),
                     *audit_system_memory_unit(f"user-{args.uid}.slice", policy),
                     *audit_system_memory_unit(f"user@{args.uid}.service", policy),
                     *audit_app_slice(policy),
