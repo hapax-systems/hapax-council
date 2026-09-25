@@ -977,6 +977,33 @@ def test_nonterminal_frontmatter_dependency_blocks_claim(tmp_path: Path) -> None
     assert "unfinished-dep (status_not_fulfilling:in_progress)" in result.stderr
 
 
+@pytest.mark.parametrize(("verdict", "claims"), [("accepted", True), ("rejected", False)])
+def test_accepted_dependency_does_not_block_its_successor(
+    tmp_path: Path, verdict: str, claims: bool
+) -> None:
+    """M102 (E0 -> E1, dev16 2026-09-24): accepted but not closed work blocked the p0
+    successor's claim with status_not_fulfilling:in_progress."""
+    home = tmp_path / "home"
+    dep = _write_task(home, "active", "accepted-dep", status="in_progress", assigned_to="cx-peer")
+    (dep.parent / "accepted-dep.acceptance.yaml").write_text(
+        "acceptor: operator\n"
+        f"verdict: {verdict}\n"
+        "timestamp: 2026-09-24T23:40:00Z\n"
+        "artifact: frame/entitlement-census-and-single-view-20260924.md\n",
+        encoding="utf-8",
+    )
+    target = _write_task(home, "active", "successor", depends_on="\n  - accepted-dep")
+
+    result = _claim(home, "successor")
+
+    if claims:
+        assert result.returncode == 0, result.stderr
+        assert "status: claimed" in target.read_text(encoding="utf-8")
+    else:
+        assert result.returncode == 5
+        assert "accepted-dep (status_not_fulfilling:in_progress)" in result.stderr
+
+
 def test_blocked_task_refusal_includes_reason_and_witness(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(

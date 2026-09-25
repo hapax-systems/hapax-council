@@ -1085,6 +1085,9 @@ if claim_mode == "claim":
                 repo,
             ),
             require_route_metadata_validity=True,
+            # An accepted dependency (valid receipt beside it) no longer blocks its
+            # successor for want of a closed status (M102).
+            note_path=dep_path,
         )
         if not validity.valid:
             unmet.append(f"{dep_id} ({'; '.join(validity.blockers)})")
