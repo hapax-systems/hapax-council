@@ -1,0 +1,12 @@
+[Unit]
+Description=Record privilege escalation every 10 minutes over an overlapping 12-minute window
+# Hapax-Auto-Enable: true
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=hapax-escalation-detector.service
+
+[Install]
+WantedBy=timers.target
