@@ -2280,6 +2280,78 @@ def test_installed_oom_repair_cannot_erase_newer_desired_receipt(tmp_path: Path)
     assert (drain_dir / "DRAINED.txt").is_file()
 
 
+@pytest.mark.parametrize(
+    "installed_kind",
+    ("malformed", "fifo", "dangling-symlink", "directory"),
+)
+def test_oom_package_order_does_not_mask_invalid_installed_receipt(
+    tmp_path: Path,
+    installed_kind: str,
+) -> None:
+    stage = tmp_path / "stage"
+    for relative in OOM_PACKAGE_FILES:
+        destination = stage / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        blob = subprocess.run(
+            ["git", "show", f"{REPO_HEAD}:{relative}"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        destination.write_bytes(blob)
+        git_mode = subprocess.run(
+            ["git", "ls-tree", REPO_HEAD, "--", relative],
+            cwd=REPO_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout.split()[0]
+        destination.chmod(0o755 if git_mode == "100755" else 0o644)
+    (stage / ".hapax-root-required-package-sha").write_text(f"{REPO_HEAD}\n", encoding="utf-8")
+    (stage / "RUNBOOK.txt").write_text("pending\n", encoding="utf-8")
+    installed_root = tmp_path / "root-state/installed-receipts"
+    desired_root = tmp_path / "root-state/desired-receipts"
+    installed_root.mkdir(parents=True)
+    desired_root.mkdir(parents=True)
+    installed = installed_root / "oom-containment.sha"
+    desired = desired_root / "oom-containment.sha"
+    if installed_kind == "malformed":
+        installed.write_text(f"{'f' * 40}\n", encoding="utf-8")
+        installed.chmod(0o600)
+    elif installed_kind == "fifo":
+        os.mkfifo(installed, mode=0o600)
+    elif installed_kind == "dangling-symlink":
+        installed.symlink_to(tmp_path / "missing-installed-receipt")
+    else:
+        installed.mkdir(mode=0o700)
+    desired.write_text(f"{REPO_HEAD}\n", encoding="utf-8")
+    desired.chmod(0o600)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(stage), "--install"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_INSTALL_SUDO": "",
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+            "HAPAX_ROOT_REQUIRED_DRAIN_DIR": str(stage),
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT": str(installed_root),
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT": str(desired_root),
+        },
+    )
+
+    assert result.returncode == 1
+    if installed_kind == "malformed":
+        assert "cannot validate OOM package order for installed=" in result.stderr
+    else:
+        assert "unsafe installed root-required receipt" in result.stderr
+    assert not Path(os.environ["HAPAX_OOM_EARLYOOM_DEST"]).exists()
+    assert (stage / "RUNBOOK.txt").is_file()
+
+
 def test_oom_squash_equivalence_rejects_newer_manifest_file(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -3946,7 +4018,21 @@ def _run_install_verify_live(
         activation.mkdir()
         _copy_oom_package(activation)
         authority = activation / "scripts/hapax-post-merge-deploy"
-        authority.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
+        authority.write_text(
+            "#!/usr/bin/bash\n"
+            "set -euo pipefail\n"
+            'if [ "${1:-}" = --verify-local-judge-cap-receipt-snapshot ]; then\n'
+            '  [[ "$HAPAX_ROOT_REQUIRED_STATE_ROOT" =~ ^/proc/[1-9][0-9]*/fd/[0-9]+$ ]]\n'
+            '  [ "$HAPAX_ROOT_REQUIRED_LOCK_MODE" = exclusive ]\n'
+            "  for name in HAPAX_ROOT_REQUIRED_LOCK_FD HAPAX_ROOT_REQUIRED_STATE_FD "
+            "HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD; do\n"
+            '    value="${!name}"\n'
+            '    [[ "$value" =~ ^[0-9]+$ ]]\n'
+            '    [ -e "/proc/$$/fd/$value" ]\n'
+            "  done\n"
+            "fi\n",
+            encoding="utf-8",
+        )
         authority.chmod(0o755)
         subprocess.run(["git", "init", "-q"], cwd=activation, check=True)
         subprocess.run(
@@ -3975,6 +4061,11 @@ def _run_install_verify_live(
         desired = state_root / "desired-receipts" / "oom-containment.sha"
         desired.parent.mkdir(parents=True)
         desired.write_text(f"{package_sha}\n", encoding="utf-8")
+        if host_profile == "appendix":
+            cap_receipt = state_root / "local-judge-cap-canary" / f"{package_sha}.env"
+            cap_receipt.parent.mkdir()
+            cap_receipt.write_text("schema=1\n", encoding="utf-8")
+            cap_receipt.chmod(0o600)
         fake_sudo = tmp_path / "deferred-sudo"
         fake_sudo.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
         fake_sudo.chmod(0o755)
@@ -3994,7 +4085,9 @@ def _run_install_verify_live(
         env.update(
             {
                 "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
-                "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME": "hapax-podium",
+                "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_HOSTNAME": (
+                    "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
+                ),
                 "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
                 "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
                 "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO": str(fake_sudo),
