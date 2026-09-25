@@ -274,7 +274,8 @@ class ReadbackRef(_Strict):
             )
         if not self.secret:
             raise ValueError(
-                f"readback {self.readback_id!r} needs the credential NAME it reads with"
+                f"readback {self.readback_id!r} needs the credential NAME it reads with; next "
+                "action: set secret to the FileStore name (never a value)"
             )
         return self
 
@@ -290,7 +291,10 @@ class DeclaredReference(_Strict):
         _aware(self.recorded_at, "recorded_at")
         _aware(self.expires_at, "expires_at")
         if self.expires_at <= self.recorded_at:
-            raise ValueError("a declared reference must expire after it was recorded")
+            raise ValueError(
+                "a declared reference must expire after it was recorded; next action: set "
+                "expires_at later than recorded_at (the fact's own renewal date, or recorded_at + 30 d)"
+            )
         return self
 
 
@@ -308,7 +312,10 @@ class HostBinding(_Strict):
                     "as an ssh option; next action: set target to a plain host name"
                 )
         elif self.target is not None:
-            raise ValueError(f"host {self.host_id!r}: a local binding takes no target")
+            raise ValueError(
+                f"host {self.host_id!r}: a local binding takes no target; next action: remove "
+                "target, or set transport to ssh_batch for a remote host"
+            )
         return self
 
 
@@ -323,7 +330,10 @@ class ServingEndpoint(_Strict):
     @classmethod
     def _bare_origin(cls, value: str) -> str:
         if not _BASE_URL_RE.match(value):
-            raise ValueError("base_url must be scheme://host[:port] with no path")
+            raise ValueError(
+                "base_url must be scheme://host[:port] with no path; next action: drop the path, "
+                "and set models_path to /v1/models or /api/tags"
+            )
         return value
 
 
@@ -402,10 +412,16 @@ class EntitlementDecl(_Strict):
                 "remove its readbacks and vendor cache"
             )
         if self.vendor_cache is not None and self.vendor_cache not in VENDOR_CACHES:
-            raise ValueError(f"{self.entitlement_id}: unknown vendor cache {self.vendor_cache!r}")
+            raise ValueError(
+                f"{self.entitlement_id}: unknown vendor cache {self.vendor_cache!r}; next action: "
+                f"name one of {sorted(VENDOR_CACHES)}, or add a reader to VENDOR_CACHES through review"
+            )
         for rel in self.login_files:
             if rel.startswith("/") or ".." in rel.split("/"):
-                raise ValueError(f"{self.entitlement_id}: login file {rel!r} must be home-relative")
+                raise ValueError(
+                    f"{self.entitlement_id}: login file {rel!r} must be home-relative; next "
+                    "action: write it relative to $HOME with no leading / and no .."
+                )
         return self
 
 
@@ -429,7 +445,10 @@ class CensusConfig(_Strict):
         ):
             duplicates = sorted({i for i in ids if ids.count(i) > 1})
             if duplicates:
-                raise ValueError(f"duplicate {label}: {duplicates}")
+                raise ValueError(
+                    f"duplicate {label}: {duplicates}; next action: keep one declaration per id "
+                    "(rename or merge the duplicates)"
+                )
         return self
 
 
@@ -457,11 +476,15 @@ def load_registry(path: Path) -> dict[str, Any]:
         ) from exc
     if not isinstance(payload, dict):
         raise CensusConfigError(
-            f"platform registry {path} is not a JSON object; nothing was written"
+            f"platform registry {path} is not a JSON object; nothing was written. Next action: "
+            "restore the registry file from origin/main, then rerun the producer"
         )
     for key in ("routes", "omitted_capability_shapes"):
         if key in payload and not isinstance(payload[key], list):
-            raise CensusConfigError(f"platform registry {path}: {key!r} must be a list")
+            raise CensusConfigError(
+                f"platform registry {path}: {key!r} must be a list; nothing was written. Next "
+                "action: restore the registry file from origin/main, then rerun the producer"
+            )
     return payload
 
 

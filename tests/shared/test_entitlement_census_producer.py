@@ -612,6 +612,67 @@ def test_determine_row_holds_the_intake_until_the_registry_declarations_merge() 
     assert row["cadence_seconds"] < row["evidence_ttl_seconds"]
 
 
+def test_duplicate_free_config_validates_and_duplicate_ids_are_refused() -> None:
+    """Review round 2 (claude-1 on 031c400e) claimed ``_unique`` ends in ``return s``. It ends in
+    ``return self``; this pins it: a duplicate-free declaration validates, a duplicate is refused."""
+    config = _config([_decl("a"), _decl("b")])
+    assert [e.entitlement_id for e in config.entitlements] == ["a", "b"]
+    with pytest.raises(ValidationError, match="duplicate entitlement_id"):
+        _config([_decl("a"), _decl("a")])
+
+
+_REF = {
+    "fact": "f",
+    "source": "s",
+    "recorded_at": "2026-09-01T00:00:00Z",
+    "expires_at": "2026-10-01T00:00:00Z",
+}
+
+
+@pytest.mark.parametrize(
+    ("entitlements", "extra"),
+    [
+        ([_decl(readbacks=[{"readback_id": "kimi_usages", "secret": None}])], {}),
+        ([_decl(readbacks=[{"readback_id": "chat_completions", "secret": "k"}])], {}),
+        ([_decl(declared_refs=[{**_REF, "expires_at": "2026-08-01T00:00:00Z"}])], {}),
+        ([_decl(declared_refs=[{**_REF, "recorded_at": "2026-09-01T00:00:00"}])], {}),
+        ([], {"hosts": [{"host_id": "x", "transport": "ssh_batch"}]}),
+        ([], {"hosts": [{"host_id": "x", "transport": "local", "target": "h"}]}),
+        (
+            [],
+            {
+                "serving_endpoints": [
+                    {
+                        "endpoint_id": "e",
+                        "host_id": "h",
+                        "base_url": "http://h:1/path",
+                        "models_path": "/v1/models",
+                    }
+                ]
+            },
+        ),
+        (
+            [
+                _decl(
+                    terms_restricted=True, readbacks=[{"readback_id": "kimi_usages", "secret": "k"}]
+                )
+            ],
+            {},
+        ),
+        ([_decl(vendor_cache="nope")], {}),
+        ([_decl(login_files=["/etc/passwd"])], {}),
+        ([_decl("a"), _decl("a")], {}),
+    ],
+)
+def test_every_declaration_error_names_a_next_action(
+    entitlements: list[dict[str, Any]], extra: dict[str, Any]
+) -> None:
+    """Axiom executive_function: errors must include next actions (review round 2, gemini-1)."""
+    with pytest.raises(ValidationError) as excinfo:
+        _config(entitlements, **extra)
+    assert "next action" in str(excinfo.value).lower()
+
+
 def test_shipped_config_loads_and_names_every_census_provider() -> None:
     shipped = load_census_config(ENTITLEMENT_CENSUS_CONFIG)
     ids = [e.entitlement_id for e in shipped.entitlements]
