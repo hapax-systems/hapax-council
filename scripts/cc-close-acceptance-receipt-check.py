@@ -216,24 +216,30 @@ def gate(
     task_id = str(frontmatter.get("task_id") or path.stem)
     receipt = acceptance_receipt_path(path, task_id)
     if not blockers:
+        # Re-read to bind the head. The receipt was validated a moment ago, so any
+        # failure here means it changed or vanished in between; every outcome that is
+        # not a mapping refuses with a typed blocker. That includes None: an empty
+        # file, e.g. one truncated mid-write.
+        head_blockers: tuple[str, ...]
         try:
             loaded = yaml.safe_load(receipt.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as exc:
-            # Validated a moment ago; a failure now is a changed or vanished receipt.
-            loaded = None
-            head_blockers: tuple[str, ...] = (f"acceptance_receipt_malformed:{type(exc).__name__}",)
-        if isinstance(loaded, Mapping):
-            head_blockers, detail = receipt_head_blockers(
-                frontmatter,
-                loaded,
-                cli_pr=cli_pr,
-                cli_repo=cli_repo,
-                head_lookup=head_lookup,
-            )
-            if not head_blockers:
-                return 0, f"valid acceptance receipt present; {detail}"
-        elif loaded is not None:
-            head_blockers = (f"acceptance_receipt_malformed:not_a_mapping:{type(loaded).__name__}",)
+            head_blockers = (f"acceptance_receipt_malformed:{type(exc).__name__}",)
+        else:
+            if isinstance(loaded, Mapping):
+                head_blockers, detail = receipt_head_blockers(
+                    frontmatter,
+                    loaded,
+                    cli_pr=cli_pr,
+                    cli_repo=cli_repo,
+                    head_lookup=head_lookup,
+                )
+                if not head_blockers:
+                    return 0, f"valid acceptance receipt present; {detail}"
+            else:
+                head_blockers = (
+                    f"acceptance_receipt_malformed:not_a_mapping:{type(loaded).__name__}",
+                )
         return 2, _head_refusal(task_id, receipt, head_blockers)
 
     lines = [

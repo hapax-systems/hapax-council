@@ -316,6 +316,90 @@ class TestReceiptHeadBinding:
         assert "no PR declared" in message
         assert lookup.calls == []
 
+    def test_malformed_pr_number_refuses_without_lookup(self, tmp_path: Path) -> None:
+        checker = _load_checker()
+        note = _write_pr_note(tmp_path, "task-r", pr="12x")
+        (tmp_path / "task-r.acceptance.yaml").write_text(_bound_receipt(pr=None), encoding="utf-8")
+        lookup = _Lookup(HEAD_A)
+
+        code, message = checker.gate(note, head_lookup=lookup)
+
+        assert code == 2
+        assert "acceptance_receipt_pr_malformed:12x" in message
+        assert lookup.calls == []
+
+    def test_malformed_pr_repo_refuses_without_lookup(self, tmp_path: Path) -> None:
+        checker = _load_checker()
+        note = _write_pr_note(tmp_path, "task-r", pr_repo="garbage")
+        (tmp_path / "task-r.acceptance.yaml").write_text(_bound_receipt(), encoding="utf-8")
+        lookup = _Lookup(HEAD_A)
+
+        code, message = checker.gate(note, head_lookup=lookup)
+
+        assert code == 2
+        assert "acceptance_receipt_pr_repo_malformed:garbage" in message
+        assert "pr_repo: <owner>/<name>" in message
+        assert lookup.calls == []
+
+
+class TestReceiptReloadAfterValidation:
+    """The gate validates the receipt, then re-reads it to bind the head.
+
+    The receipt can change between the two reads. Whatever the re-read finds, it must
+    refuse with a typed blocker, never crash and never pass. ``acceptance_receipt_blockers``
+    is stubbed to report the first read as valid so that each re-read case is reached
+    deterministically.
+    """
+
+    def _gate_on_reload(
+        self, tmp_path: Path, monkeypatch: object, receipt_text: str | None
+    ) -> tuple[int, str, _Lookup]:
+        checker = _load_checker()
+        monkeypatch.setattr(checker, "acceptance_receipt_blockers", lambda *_a: ())  # type: ignore[attr-defined]
+        note = _write_pr_note(tmp_path, "task-r")
+        if receipt_text is not None:
+            (tmp_path / "task-r.acceptance.yaml").write_text(receipt_text, encoding="utf-8")
+        lookup = _Lookup(HEAD_A)
+        code, message = checker.gate(note, head_lookup=lookup)
+        return code, message, lookup
+
+    def test_receipt_truncated_to_empty_refuses_typed(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        code, message, lookup = self._gate_on_reload(tmp_path, monkeypatch, "")
+
+        assert code == 2
+        assert "acceptance_receipt_malformed:not_a_mapping:NoneType" in message
+        assert lookup.calls == []
+
+    def test_receipt_no_longer_a_mapping_refuses_typed(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        code, message, lookup = self._gate_on_reload(tmp_path, monkeypatch, "- a\n- b\n")
+
+        assert code == 2
+        assert "acceptance_receipt_malformed:not_a_mapping:list" in message
+        assert lookup.calls == []
+
+    def test_receipt_unparseable_on_reload_refuses_typed(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        code, message, lookup = self._gate_on_reload(tmp_path, monkeypatch, "acceptor: [\n")
+
+        assert code == 2
+        assert "acceptance_receipt_malformed:" in message
+        assert "Error" in message
+        assert lookup.calls == []
+
+    def test_receipt_vanished_on_reload_refuses_typed(
+        self, tmp_path: Path, monkeypatch: object
+    ) -> None:
+        code, message, lookup = self._gate_on_reload(tmp_path, monkeypatch, None)
+
+        assert code == 2
+        assert "acceptance_receipt_malformed:FileNotFoundError" in message
+        assert lookup.calls == []
+
 
 def _vault(home: Path) -> Path:
     root = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
