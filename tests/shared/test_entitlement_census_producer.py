@@ -1442,6 +1442,14 @@ def test_prepaid_with_zero_recorded_calls_is_underuse() -> None:
     assert "0 calls recorded" in utilization["reason"]
 
 
+def test_unreadable_ledger_is_unjudged_never_zero_calls() -> None:
+    """Zero calls is a finding; a ledger that could not be read is not. Keep them apart."""
+    config = _config([_ledger_decl("featherless", cost_class="prepaid", monthly_cost_usd=200.0)])
+    utilization = _row(_run(config, provider_calls=None), "featherless").utilization
+    assert utilization["underuse"] is None
+    assert "not read" in utilization["reason"]
+
+
 def test_flat_price_slots_utilization_is_busy_time_over_slot_capacity() -> None:
     config = _config([_ledger_decl("verboo", monthly_cost_usd=269.0, concurrency_slots=2)])
     # Period renews on the 19th: 2026-09-19T00:00Z to NOW is 6 d 1 h.
