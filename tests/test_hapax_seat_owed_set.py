@@ -798,6 +798,79 @@ def test_reply_that_names_an_ask_without_a_disposition_does_not_dispose(tmp_path
     assert "20260925T023937Z-dev17-dossier-4744-quorum-accept.md" in names
 
 
+def test_ticket_number_does_not_match_inside_the_timestamp(tmp_path: Path) -> None:
+    _bus(
+        tmp_path,
+        "dev1",
+        "20260925T014745Z-dev17-other-ask.md",
+        "\n".join(
+            [
+                "---",
+                "from: dev17",
+                "ack: true",
+                "created_at: 2026-09-25T01:47:45Z",
+                "---",
+                "# Other ask",
+                "",
+            ]
+        ),
+    )
+    _bus(
+        tmp_path,
+        "dev17",
+        "20260925T020000Z-dev1-reply.md",
+        "\n".join(
+            [
+                "---",
+                "from: claude/dev1",
+                "created_at: 2026-09-25T02:00:00Z",
+                "re: #4745",
+                "---",
+                "done",
+                "",
+            ]
+        ),
+    )
+    payload = _payload(
+        _run(tmp_path, "--commit", "WORKTREE", "--at", "2026-09-25T03:00:00+00:00", "--json")
+    )
+    names = [item["name"] for item in payload["bus"]]
+    assert "20260925T014745Z-dev17-other-ask.md" in names
+
+
+def test_process_role_phrase_outside_the_incumbent_row_is_ignored(tmp_path: Path) -> None:
+    _seat(
+        tmp_path,
+        "\n".join(
+            [
+                "| incumbent | claude/dev1 — The process role is `dev1-seat`. |",
+                "",
+                "## 5",
+                "process role is `other-role`",
+            ]
+        ),
+    )
+    created = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _write_row(
+        tmp_path,
+        "lane-row",
+        _offered("lane-row", created=created),
+        "coordinator copy\n",
+    )
+    refreshed = _run(tmp_path, "--refresh-cache")
+    assert refreshed.returncode == 0, refreshed.stderr
+    seated = _start(tmp_path, "dev1-seat", "clear")
+    other = _start(tmp_path, "other-role", "clear")
+    assert "lane-row" in json.loads(seated.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert other.stdout.strip() == ""
+
+
+def test_bad_commit_is_not_an_empty_owed_set(tmp_path: Path) -> None:
+    proc = _run(tmp_path, "--commit", "deadbeef", "--at", AT_2217, "--json")
+    assert proc.returncode != 0
+    assert "OWED BY THE SEAT (0)" not in proc.stdout
+
+
 def test_reply_older_than_the_ask_does_not_dispose_it(tmp_path: Path) -> None:
     _bus(
         tmp_path,

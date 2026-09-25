@@ -59,13 +59,21 @@ NULLS = ("", "null", "none", "~")
 OPEN_STATUS = {"offered", "blocked", "claimed", "in_progress", "pr_open"}
 
 
+def _incumbent_line(text: str) -> str:
+    for line in text.splitlines():
+        if line.startswith("| incumbent |"):
+            return line
+    return ""
+
+
 def roles_from_seat_text(text: str) -> set[str]:
-    """Seat actors named by the §0 incumbent row. No role is added by hand."""
+    """Seat actors named on the §0 incumbent row. No role is added by hand."""
+    line = _incumbent_line(text)
     roles: set[str] = set()
-    named = re.search(r"process role is `([^`]+)`", text)
+    named = re.search(r"process role is `([^`]+)`", line)
     if named:
         roles.add(named.group(1).strip())
-    row = re.search(r"^\| incumbent \| ([a-z]*/[a-z0-9-]*)", text, re.M)
+    row = re.search(r"^\| incumbent \| ([a-z]*/[a-z0-9-]*)", line)
     if row:
         full = row.group(1)
         roles.add(full)
@@ -92,6 +100,10 @@ def git(vault: Path, *args: str, stdin: bytes | None = None) -> bytes:
         capture_output=True,
         check=False,
     )
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        message = detail[-1] if detail else f"git exit {proc.returncode}"
+        raise RuntimeError(message)
     return proc.stdout
 
 
@@ -238,8 +250,11 @@ def _re_names(re_value: str, inbound_name: str, inbound_text: str) -> bool:
         if line.startswith("# "):
             title = line
             break
-    haystack = f"{inbound_name}\n{title}"
-    return any(number in haystack for number in re.findall(r"#(\d+)", re_value))
+    # Match the ticket number, not digits inside the filename's timestamp.
+    stamped = re.sub(r"^\d{8}T\d{4,6}Z-?", "", Path(inbound_name).stem)
+    segments = set(re.findall(r"\d+", stamped))
+    titled = set(re.findall(r"#(\d+)", title))
+    return any(number in segments or number in titled for number in re.findall(r"#(\d+)", re_value))
 
 
 def _reply_disposes(
@@ -583,9 +598,10 @@ def incumbent_identity(vault: Path) -> tuple[str, str]:
         text = (vault / SEAT_FILE).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return "", ""
-    named = re.search(r"process role is `([^`]+)`", text)
+    line = _incumbent_line(text)
+    named = re.search(r"process role is `([^`]+)`", line)
     process = named.group(1).strip() if named else ""
-    inbox_match = re.search(r"^\| incumbent \| [a-z]*/([a-z0-9-]*)", text, re.M)
+    inbox_match = re.search(r"^\| incumbent \| [a-z]*/([a-z0-9-]*)", line)
     inbox = inbox_match.group(1) if inbox_match else ""
     if not process:
         process = inbox
