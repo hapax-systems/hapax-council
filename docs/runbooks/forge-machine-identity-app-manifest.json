@@ -1,0 +1,14 @@
+{
+  "name": "hapax-forge",
+  "url": "https://github.com/hapax-systems",
+  "description": "Automation account for the hapax-systems repositories. Commits and pull requests from this account are made by software acting for the estate's operator, not typed by a person at the time.",
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "metadata": "read"
+  },
+  "default_events": [],
+  "redirect_url": "https://github.com/hapax-systems",
+  "request_oauth_on_install": false
+}
