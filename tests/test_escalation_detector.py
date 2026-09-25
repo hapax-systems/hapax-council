@@ -142,6 +142,42 @@ def test_exec_into_an_ordinary_container_is_not_recorded():
     assert ed.docker_findings([_event("exec_start: sh")], {"c1": _inspect()}) == []
 
 
+def _with_healthcheck(test: list[str]) -> dict[str, object]:
+    inspect = _inspect(mounts=[{"Type": "bind", "Source": "/etc", "Destination": "/e"}])
+    inspect["Config"] = {"Healthcheck": {"Test": test}}
+    return inspect
+
+
+def test_the_containers_own_shell_healthcheck_is_not_recorded():
+    inspect = {"c1": _with_healthcheck(["CMD-SHELL", "pg_isready -U postgres"])}
+    events = [_event("exec_create: /bin/sh -c pg_isready -U postgres")]
+    events.append(_event("exec_start: /bin/sh -c pg_isready -U postgres"))
+    assert ed.docker_findings(events, inspect) == []
+
+
+def test_the_containers_own_exec_form_healthcheck_is_not_recorded():
+    inspect = {"c1": _with_healthcheck(["CMD", "curl", "-f", "http://localhost/health"])}
+    events = [_event("exec_start: curl -f http://localhost/health")]
+    assert ed.docker_findings(events, inspect) == []
+
+
+def test_an_exec_that_only_contains_the_healthcheck_command_is_recorded():
+    inspect = {"c1": _with_healthcheck(["CMD-SHELL", "pg_isready -U postgres"])}
+    events = [_event("exec_start: /bin/sh -c pg_isready -U postgres; id")]
+    assert [f.kind for f in ed.docker_findings(events, inspect)] == [
+        "exec_into_escalated_container"
+    ]
+
+
+def test_a_healthcheck_command_run_in_another_container_is_recorded():
+    inspect = {
+        "c1": _with_healthcheck(["CMD-SHELL", "pg_isready -U postgres"]),
+        "c2": _inspect(privileged=True),
+    }
+    events = [_event("exec_start: /bin/sh -c pg_isready -U postgres", cid="c2")]
+    assert [f.subject for f in ed.docker_findings(events, inspect)] == ["c2"]
+
+
 def test_container_without_inspect_data_is_recorded_as_unknown_not_skipped():
     findings = ed.docker_findings([_event("create", cid="gone")], {})
     assert [(f.kind, f.subject) for f in findings] == [("container_uninspectable", "gone")]

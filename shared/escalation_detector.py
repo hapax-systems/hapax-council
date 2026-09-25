@@ -134,6 +134,22 @@ def container_risk(inspect: Mapping[str, Any]) -> list[str]:
     return risks
 
 
+def _is_own_healthcheck(action: str, inspect: Mapping[str, Any]) -> bool:
+    """True when an exec runs exactly the container's configured healthcheck.
+
+    Docker runs a healthcheck as an exec every interval. Its command was fixed when the container
+    was created, and that creation is itself recorded, so only an exact match is excluded; an
+    exec that merely contains the healthcheck command is still recorded.
+    """
+    test = ((inspect.get("Config") or {}).get("Healthcheck") or {}).get("Test") or []
+    command = action.partition(": ")[2]
+    if len(test) == 2 and test[0] == "CMD-SHELL":
+        return command == f"/bin/sh -c {test[1]}"
+    if len(test) >= 2 and test[0] == "CMD":
+        return command == " ".join(test[1:])
+    return False
+
+
 def docker_findings(
     events: Iterable[Mapping[str, Any]], inspect_by_id: Mapping[str, Mapping[str, Any]]
 ) -> list[Finding]:
@@ -153,7 +169,7 @@ def docker_findings(
             findings.append(Finding("container_uninspectable", "docker", cid, action, False, at))
             continue
         risks = container_risk(inspect)
-        if not risks:
+        if not risks or (is_exec and _is_own_healthcheck(action, inspect)):
             continue
         sensitive = any(r.startswith("host-mount:") or r == "privileged" for r in risks)
         kind = "exec_into_escalated_container" if is_exec else "container_escalated"
