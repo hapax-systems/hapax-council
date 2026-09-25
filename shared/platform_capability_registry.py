@@ -240,6 +240,7 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    Z_AI_GLM_5_3 = "z_ai-glm-5.3"
     KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
@@ -2518,6 +2519,7 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "gemini-3.5-flash": ModelId.GEMINI_3_5_FLASH,
     "z_ai-glm-coding-plan:glm-5": ModelId.Z_AI_GLM_5,
     "z_ai-glm-coding-plan:glm-5.2": ModelId.Z_AI_GLM_5_2,
+    "z_ai-glm-coding-plan:glm-5.3": ModelId.Z_AI_GLM_5_3,
     "litellm.anthropic.claude-opus-4-cloud-burst": ModelId.CLAUDE_OPUS_4_8,
     "litellm.provider-gateway-maintenance": ModelId.GEMINI_3_1_PRO_PREVIEW,
 }

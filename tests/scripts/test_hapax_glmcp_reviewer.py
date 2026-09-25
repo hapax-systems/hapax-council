@@ -9,6 +9,7 @@ import json
 import sys
 import threading
 import urllib.error
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import ModuleType
@@ -79,6 +80,20 @@ class RawResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+def _payg_reply(model: str, content: str = "```yaml\nverdict: accept\n```") -> dict:
+    """A PAYG success body as Z.ai returns it: the served model and token usage included."""
+    return {
+        "model": model,
+        "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 1200,
+            "prompt_tokens_details": {"cached_tokens": 200},
+            "completion_tokens": 300,
+            "completion_tokens_details": {"reasoning_tokens": 120},
+        },
+    }
 
 
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -259,15 +274,13 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
                 {},
                 io.BytesIO(json.dumps(body).encode("utf-8")),
             )
-        return FakeResponse(
-            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
-        )
+        return FakeResponse(_payg_reply("glm-5.2"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
     monkeypatch.setattr(
         module,
         "_require_payg_spend_gate",
-        lambda: module.PaygSpendGate(
+        lambda **_kwargs: module.PaygSpendGate(
             state="eligible_active_budget",
             budget_id="tb-20260706-zai-glmcp-payg-review",
             budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
@@ -362,15 +375,13 @@ def test_call_glm_payg_retries_once_with_thinking_enabled_on_1210(
                 {},
                 io.BytesIO(json.dumps(payload).encode("utf-8")),
             )
-        return FakeResponse(
-            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
-        )
+        return FakeResponse(_payg_reply("glm-5.3"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
     monkeypatch.setattr(
         module,
         "_require_payg_spend_gate",
-        lambda: module.PaygSpendGate(
+        lambda **_kwargs: module.PaygSpendGate(
             state="eligible_active_budget",
             budget_id="tb-20260706-zai-glmcp-payg-review",
             budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
@@ -435,7 +446,7 @@ def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
     monkeypatch.setattr(
         module,
         "_require_payg_spend_gate",
-        lambda: module.PaygSpendGate(
+        lambda **_kwargs: module.PaygSpendGate(
             state="eligible_active_budget",
             budget_id="tb-20260706-zai-glmcp-payg-review",
             budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
@@ -507,7 +518,7 @@ def test_call_glm_refuses_payg_before_http_when_spend_gate_closed(
             io.BytesIO(json.dumps(body).encode("utf-8")),
         )
 
-    def refuse_gate() -> object:
+    def refuse_gate(**_kwargs: object) -> object:
         raise module.ApiError(
             "PAYG fallback refused by paid-spend gate: matching TransitionBudget cap exhausted"
         )
@@ -558,7 +569,7 @@ def test_call_glm_refuses_payg_before_http_when_spend_receipt_reservation_fails(
     monkeypatch.setattr(
         module,
         "_require_payg_spend_gate",
-        lambda: module.PaygSpendGate(
+        lambda **_kwargs: module.PaygSpendGate(
             state="eligible_active_budget",
             budget_id="tb-20260706-zai-glmcp-payg-review",
             budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
@@ -645,7 +656,7 @@ def test_call_glm_failed_live_ledger_reservation_leaves_no_spend_receipt(
     monkeypatch.setattr(
         module,
         "_require_payg_spend_gate",
-        lambda: module.PaygSpendGate(
+        lambda **_kwargs: module.PaygSpendGate(
             state="eligible_active_budget",
             budget_id="tb-20260706-zai-glmcp-payg-review",
             budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
@@ -690,7 +701,7 @@ def test_payg_budget_request_requires_governed_task_id(monkeypatch: pytest.Monke
     monkeypatch.delenv("HAPAX_CC_TASK_ID", raising=False)
 
     with pytest.raises(module.ApiError, match="missing governed task id"):
-        module._payg_budget_request()
+        module._payg_budget_request(estimated_cost_usd=Decimal("0.05"))
 
 
 def test_payg_spend_receipt_carries_gate_event_task_hash(
@@ -741,6 +752,7 @@ def test_payg_spend_receipt_carries_gate_event_task_hash(
         gate=gate,
         config=config,
         primary_error=primary,
+        estimated_cost_usd=Decimal("0.05"),
     )
     module._write_payg_spend_receipt_file(
         reservation=reservation,
@@ -782,6 +794,20 @@ def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
     payload = json.loads(
         (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
     )
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+    # Room for exactly one price-derived reservation: the reconciled first call leaves less
+    # than a second reservation needs.
+    one_call = module._payg_reservation_usd("review prompt", config)
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
         if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
@@ -792,7 +818,7 @@ def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
                 (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
-            budget["daily_cap_usd"] = "0.05"
+            budget["daily_cap_usd"] = str(one_call)
         elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
             budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -821,22 +847,9 @@ def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
                 {},
                 io.BytesIO(json.dumps(body).encode("utf-8")),
             )
-        return FakeResponse(
-            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
-        )
+        return FakeResponse(_payg_reply("glm-5.2"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
-    config = module.ReviewConfig(
-        secret_entry="glmcp/api-key",
-        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
-        model="glm-5.2",
-        timeout_seconds=42,
-        max_tokens=123,
-        temperature=0,
-        thinking="disabled",
-        payg_fallback=True,
-        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
-    )
 
     assert module.call_glm("review prompt", config, "test-secret-token") == (
         "```yaml\nverdict: accept\n```"
@@ -872,6 +885,18 @@ def test_call_glm_real_gate_blocks_second_payg_when_per_task_cap_used(
     payload = json.loads(
         (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
     )
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+    one_call = module._payg_reservation_usd("review prompt", config)
     payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
     for budget in payload["transition_budgets"]:
         if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
@@ -882,7 +907,7 @@ def test_call_glm_real_gate_blocks_second_payg_when_per_task_cap_used(
                 (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
-            budget["per_task_cap_usd"] = "0.05"
+            budget["per_task_cap_usd"] = str(one_call)
             budget["daily_cap_usd"] = "20.00"
         elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
             budget["lifecycle_state"] = "retired"
@@ -913,22 +938,9 @@ def test_call_glm_real_gate_blocks_second_payg_when_per_task_cap_used(
                 {},
                 io.BytesIO(json.dumps(body).encode("utf-8")),
             )
-        return FakeResponse(
-            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
-        )
+        return FakeResponse(_payg_reply("glm-5.2"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
-    config = module.ReviewConfig(
-        secret_entry="glmcp/api-key",
-        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
-        model="glm-5.2",
-        timeout_seconds=42,
-        max_tokens=123,
-        temperature=0,
-        thinking="disabled",
-        payg_fallback=True,
-        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
-    )
 
     assert module.call_glm("review prompt", config, "test-secret-token") == (
         "```yaml\nverdict: accept\n```"
@@ -986,7 +998,7 @@ def test_require_payg_spend_gate_reloads_live_ledger_and_rejects_existing_task_s
     )
 
     with module._quota_spend_live_lock(), pytest.raises(module.ApiError, match="cap exhausted"):
-        module._require_payg_spend_gate()
+        module._require_payg_spend_gate(estimated_cost_usd=Decimal("0.05"))
 
 
 def test_call_glm_failed_payg_fallback_reconciles_failed_reservations(
@@ -1136,9 +1148,7 @@ def test_call_glm_repeated_successful_payg_uses_new_reconciled_spend_receipt(
                 {},
                 io.BytesIO(json.dumps(body).encode("utf-8")),
             )
-        return FakeResponse(
-            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
-        )
+        return FakeResponse(_payg_reply("glm-5.2"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
     config = module.ReviewConfig(
@@ -1171,8 +1181,307 @@ def test_call_glm_repeated_successful_payg_uses_new_reconciled_spend_receipt(
         receipt.reconciliation_state is module.SpendReconciliationState.RECONCILED
         for receipt in receipts
     )
-    assert all(receipt.actual_cost_usd == receipt.estimated_cost_usd for receipt in receipts)
-    assert len(list(receipt_dir.glob("glmcp-payg-spend-*.yaml"))) == 2
+    # Actual is the provider-reported usage at list price, not the reservation:
+    # (1000 uncached x 1.40 + 200 cached x 0.26 + 300 output x 4.40) / 1M.
+    assert all(receipt.actual_cost_usd == Decimal("0.002772") for receipt in receipts)
+    assert all(receipt.actual_cost_usd < receipt.estimated_cost_usd for receipt in receipts)
+    bodies = [p.read_text(encoding="utf-8") for p in receipt_dir.glob("glmcp-payg-spend-*.yaml")]
+    assert len(bodies) == 2
+    for body in bodies:
+        assert "served_model: glm-5.2" in body
+        assert "usage_prompt_tokens: 1200" in body
+        assert "usage_cached_tokens: 200" in body
+        assert "usage_completion_tokens: 300" in body
+        assert "usage_reasoning_tokens: 120" in body
+        assert "price_basis_ref: docs.z.ai-guides-overview-pricing-20260924" in body
+
+
+def _live_payg_setup(
+    module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    per_task_cap_usd: str = "2.00",
+) -> tuple[Path, Path, list[str]]:
+    """A live ledger with the July review budget open now, and a quota-walled Coding Plan."""
+    now = module.datetime.now(module.UTC).replace(microsecond=0)
+    ledger_path = tmp_path / "quota-spend-ledger-live.json"
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    payload = json.loads(
+        (REPO_ROOT / "config" / "quota-spend-ledger-fixtures.json").read_text(encoding="utf-8")
+    )
+    payload["captured_at"] = now.isoformat().replace("+00:00", "Z")
+    for budget in payload["transition_budgets"]:
+        if budget["budget_id"] == GLMCP_PAYG_BUDGET_ID:
+            budget["created_at"] = (
+                (now - module.timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["expires_at"] = (
+                (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+            )
+            budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+            budget["per_task_cap_usd"] = per_task_cap_usd
+            budget["daily_cap_usd"] = "20.00"
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
+    ledger_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
+    monkeypatch.setenv(
+        "HAPAX_GLMCP_REVIEW_TASK_ID",
+        "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+    )
+    monkeypatch.setenv("HAPAX_REVIEW_SEAT_ID", "glm-1")
+    return ledger_path, receipt_dir, []
+
+
+def _walled_then(payg_body: dict, seen_urls: list[str]) -> object:
+    def fake_open(request: object, *, timeout: float) -> FakeResponse:
+        seen_urls.append(request.full_url)
+        if request.full_url == "https://api.z.ai/api/coding/paas/v4/chat/completions":
+            body = {"error": {"code": "1310", "message": "Quota exhausted."}}
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(json.dumps(body).encode()),
+            )
+        return FakeResponse(payg_body)
+
+    return fake_open
+
+
+def _payg_config(
+    module: ModuleType, *, model: str = "glm-5.3", thinking: str = "enabled"
+) -> object:
+    return module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model=model,
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking=thinking,
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+
+def _glmcp_receipts(module: ModuleType, ledger_path: Path) -> list[object]:
+    """GLMCP receipts this test's call reserved (the fixture carries its own governance ones)."""
+    return [
+        receipt
+        for receipt in module.load_quota_spend_ledger(ledger_path).spend_receipts
+        if receipt.route_id == "glmcp.review.direct"
+        and receipt.task_id == "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("served", "expected"),
+    [("glm-4.6", "differs from requested 'glm-5.3'"), (None, "named no served model")],
+)
+def test_call_glm_payg_refuses_reply_from_unrequested_or_unnamed_model_and_freezes_spend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    served: str | None,
+    expected: str,
+) -> None:
+    """Unsafe case: a PAYG reply from a model we did not ask for enters review quorum as GLM-5.3,
+    or its spend is recorded at the requested model's price when a dearer model ran.
+
+    The call billed at an unknown price: the reply is refused and the spend is frozen, holding
+    the higher of the reservation and the usage at the dearest known rates."""
+    module = _load_module()
+    ledger_path, receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    body = _payg_reply("glm-5.3")
+    if served is None:
+        del body["model"]
+    else:
+        body["model"] = served
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
+    config = _payg_config(module)
+    reserved = module._payg_reservation_usd("review prompt", config)
+    # 1200 prompt + 300 completion tokens at the dearest known rates ($1.40 / $4.40 per 1M)
+    ceiling = Decimal("0.003000")
+
+    with pytest.raises(module.ApiError) as excinfo:
+        module.call_glm("review prompt", config, "test-secret-token")
+
+    message = str(excinfo.value)
+    assert expected in message
+    assert "spend frozen" in message
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.FROZEN_REFUSED
+    assert receipt.actual_cost_usd is None
+    assert receipt.cost_against_cap() == max(reserved, ceiling)
+    [body_file] = receipt_dir.glob("glmcp-payg-spend-*.yaml")
+    text = body_file.read_text(encoding="utf-8")
+    assert "status: spend_frozen" in text
+    assert "reconciliation_state: frozen_refused" in text
+
+
+def test_call_glm_payg_actual_above_reservation_freezes_spend_at_the_actual(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Unsafe case: the provider reports more usage than the reservation allowed, and the
+    ledger records it as an ordinary reconciliation. The reservation bound failed: the higher
+    figure counts and further paid spend is refused until someone looks."""
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    body = _payg_reply("glm-5.3")
+    body["usage"]["prompt_tokens"] = 100_000
+    body["usage"]["prompt_tokens_details"]["cached_tokens"] = 0
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
+    config = _payg_config(module)
+    # (100000 x 1.40 + 300 x 4.40) / 1M
+    actual = Decimal("0.141320")
+    assert actual > module._payg_reservation_usd("review prompt", config)
+
+    reply = module.call_glm("review prompt", config, "test-secret-token")
+
+    assert reply == "```yaml\nverdict: accept\n```"
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.FROZEN_REFUSED
+    assert receipt.cost_against_cap() == actual
+    assert "exceeds the reservation" in receipt.reconciliation_reason
+    assert "spend frozen" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("reply_content", ["```yaml\nverdict: accept\n```", ""])
+def test_call_glm_payg_inconsistent_usage_freezes_instead_of_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reply_content: str,
+) -> None:
+    """Review r2 item 4: a provider usage report the price function rejects (cached above
+    prompt) raised outside the handled errors, crashing the reviewer with its reservation left
+    pending. The spend is frozen at the reservation or the dearest-rate ceiling instead."""
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    body = _payg_reply("glm-5.3", content=reply_content)
+    body["usage"]["prompt_tokens_details"]["cached_tokens"] = 5_000  # more than prompt_tokens
+    if not reply_content:
+        body["choices"][0]["message"]["reasoning_content"] = "thinking..."
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
+    prompt = "x" * 2_000
+
+    try:
+        module.call_glm(prompt, _payg_config(module), "test-secret-token")
+    except module.ApiError:
+        assert not reply_content  # only the empty reply is refused; nothing else escapes
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.FROZEN_REFUSED
+    assert "inconsistent" in receipt.reconciliation_reason
+
+
+@pytest.mark.parametrize("error", [ValueError, KeyError, ArithmeticError, TypeError])
+def test_call_glm_payg_any_pricing_failure_freezes_instead_of_leaving_a_pending_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    error: type[Exception],
+) -> None:
+    """Review r3 (Muse N4): pricing a billed response must not escape with the reservation left
+    pending, whatever it raises; the spend freezes at the reservation or the ceiling."""
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(_payg_reply("glm-5.3"), seen_urls))
+
+    def broken_price(**_kwargs: object) -> object:
+        raise error("pricing failed")
+
+    monkeypatch.setattr(module, "glmcp_payg_usage_cost_usd", broken_price)
+
+    reply = module.call_glm("x" * 2_000, _payg_config(module), "test-secret-token")
+
+    assert reply == "```yaml\nverdict: accept\n```"
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.FROZEN_REFUSED
+    assert "pricing failed" in receipt.reconciliation_reason
+
+
+def test_call_glm_payg_billed_empty_reply_is_reconciled_not_left_pending(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Unsafe case: reasoning consumes max_tokens, content is empty, the call billed, and the
+    reservation stays pending forever with no evidence of the charge (22 such on 2026-09-18)."""
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    body = _payg_reply("glm-5.3", content="")
+    body["choices"][0]["message"]["reasoning_content"] = "thinking..."
+    body["choices"][0]["finish_reason"] = "length"
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
+
+    # A prompt large enough for the reported 1200 prompt tokens, so the byte bound holds.
+    prompt = "x" * 2_000
+
+    with pytest.raises(module.ApiError, match="reasoning_content was present"):
+        module.call_glm(prompt, _payg_config(module), "test-secret-token")
+
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.RECONCILED
+    assert receipt.actual_cost_usd == Decimal("0.002772")
+
+
+def test_call_glm_payg_gate_charges_the_priced_reservation_before_http(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Unsafe case: a flat $0.05 estimate admits a call whose list-price bound is far larger.
+
+    A 100 KB prompt bounds at ~$0.28 of input; with a $0.05 task cap it must be refused before
+    any PAYG request leaves the host."""
+    module = _load_module()
+    _ledger_path, receipt_dir, seen_urls = _live_payg_setup(
+        module, monkeypatch, tmp_path, per_task_cap_usd="0.05"
+    )
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(_payg_reply("glm-5.3"), seen_urls))
+    config = _payg_config(module)
+    big_prompt = "x" * 100_000
+    assert module._payg_reservation_usd(big_prompt, config) > Decimal("0.05")
+
+    with pytest.raises(module.ApiError, match="cap exhausted"):
+        module.call_glm(big_prompt, config, "test-secret-token")
+
+    assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
+    assert list(receipt_dir.glob("glmcp-payg-spend-*.yaml")) == []
+
+
+def test_call_glm_payg_refuses_unpriced_model_before_http(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    _ledger_path, receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(_payg_reply("glm-4.6"), seen_urls))
+
+    with pytest.raises(module.ApiError, match="no Z.ai PAYG list price for model 'glm-4.6'"):
+        module.call_glm("review prompt", _payg_config(module, model="glm-4.6"), "k")
+
+    assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
+    assert list(receipt_dir.glob("glmcp-payg-spend-*.yaml")) == []
+
+
+def test_payg_reservation_names_the_requested_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A glm-5.3 call was stamped model_id z_ai-glm-5.2 until 2026-09-24; identity must match."""
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(_payg_reply("glm-5.3"), seen_urls))
+
+    module.call_glm("review prompt", _payg_config(module), "test-secret-token")
+
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.model_or_engine == "glm-5.3"
+    assert receipt.model_id is not None
+    assert receipt.model_id.value == "z_ai-glm-5.3"
 
 
 def test_payg_spend_reservation_suffix_survives_same_ledger_snapshot(
@@ -1254,8 +1563,13 @@ def test_payg_spend_reservation_suffix_survives_same_ledger_snapshot(
         ledger_path=ledger_path,
     )
 
-    first = module._build_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
-    second = module._build_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
+    amount = Decimal("0.05")
+    first = module._build_payg_spend_receipt(
+        gate=gate, config=config, primary_error=primary, estimated_cost_usd=amount
+    )
+    second = module._build_payg_spend_receipt(
+        gate=gate, config=config, primary_error=primary, estimated_cost_usd=amount
+    )
 
     assert first.spend_receipt.spend_id != second.spend_receipt.spend_id
     assert first.spend_receipt.spend_id.endswith("-111111111111")
@@ -1329,8 +1643,13 @@ def test_payg_spend_reservation_does_not_reuse_existing_pending_receipt(
         ledger_path=ledger_path,
     )
 
-    first = module._reserve_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
-    second = module._reserve_payg_spend_receipt(gate=gate, config=config, primary_error=primary)
+    amount = Decimal("0.05")
+    first = module._reserve_payg_spend_receipt(
+        gate=gate, config=config, primary_error=primary, estimated_cost_usd=amount
+    )
+    second = module._reserve_payg_spend_receipt(
+        gate=gate, config=config, primary_error=primary, estimated_cost_usd=amount
+    )
 
     assert first.spend_receipt.spend_id != second.spend_receipt.spend_id
     loaded = module.load_quota_spend_ledger(ledger_path)
@@ -1499,6 +1818,7 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
         ),
         config=config,
         primary_error=primary,
+        estimated_cost_usd=Decimal("0.05"),
     )
 
     receipt = reservation.path.read_text(encoding="utf-8")
@@ -1582,6 +1902,7 @@ def test_payg_spend_reservation_rolls_back_ledger_on_receipt_write_crash(
             ),
             config=config,
             primary_error=primary,
+            estimated_cost_usd=Decimal("0.05"),
         )
 
     after_ids = {
@@ -1618,7 +1939,7 @@ def test_payg_spend_reservation_appends_to_live_ledger(
     }
     decision = module.evaluate_paid_route_eligibility(
         loaded,
-        module._payg_budget_request(),
+        module._payg_budget_request(estimated_cost_usd=Decimal("0.05")),
         now=module.datetime.fromisoformat("2026-07-06T14:05:00+00:00"),
     )
     assert decision.eligible
@@ -1689,6 +2010,7 @@ def test_payg_spend_receipt_write_error_has_next_action(
         gate=gate,
         config=config,
         primary_error=primary,
+        estimated_cost_usd=Decimal("0.05"),
     )
 
     with pytest.raises(module.ApiError) as excinfo:
@@ -2173,6 +2495,34 @@ def test_check_mode_does_not_print_secret(
     assert "glmcp/api-key" not in captured.out
     assert "test-secret-token" not in captured.out
     assert "test-secret-token" not in captured.err
+
+
+def test_main_refuses_payg_before_any_request_when_the_priced_reservation_exceeds_the_task_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Review r3 dossier (claude-1, tests-cover-the-diff): through the reviewer's own entry
+    point, with config from the environment and the real live-ledger gate (nothing stubbed but
+    the network and the secret store), a prompt whose priced reservation exceeds the task cap
+    is refused after the Coding Plan wall and before any PAYG request leaves the host. No spend
+    receipt is written."""
+    module = _load_module()
+    _clean_env(monkeypatch)
+    _ledger_path, receipt_dir, seen_urls = _live_payg_setup(
+        module, monkeypatch, tmp_path, per_task_cap_usd="0.05"
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO("x" * 100_000))
+    monkeypatch.setattr(module, "read_secret", lambda _entry: "test-secret-token")
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(_payg_reply("glm-5.3"), seen_urls))
+
+    rc = module.main([])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "cap exhausted" in err
+    assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
+    assert list(receipt_dir.glob("glmcp-payg-spend-*.yaml")) == []
 
 
 def test_main_prints_model_reply(

@@ -4174,6 +4174,37 @@ _QuotaHeadroomLedger.schema_v1_payload
 
 _QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
 
+from shared.quota_spend_ledger import (  # noqa: E402
+    TransitionBudget as _QuotaSpendLedgerTransitionBudget,
+)
+
+_QuotaSpendLedgerTransitionBudget._serialize_without_absent_provider_balance
+
+# GLMCP PAYG spend helpers: called by the extensionless scripts/hapax-glmcp-reviewer
+# (reservation before the paid call, usage-based reconciliation or freeze after it) and
+# scripts/hapax-quota-telemetry-writer (freezing untrusted receipts), which vulture does not scan.
+from shared.quota_spend_ledger import (  # noqa: E402
+    frozen_spend_receipt_payload as _frozen_spend_receipt_payload,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_reservation_usd as _glmcp_payg_reservation_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_usage_ceiling_usd as _glmcp_payg_usage_ceiling_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_usage_cost_usd as _glmcp_payg_usage_cost_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    settle_spend_covered_by_provider_balance as _settle_spend_covered_by_provider_balance,
+)
+
+_frozen_spend_receipt_payload
+_settle_spend_covered_by_provider_balance
+_glmcp_payg_reservation_usd
+_glmcp_payg_usage_ceiling_usd
+_glmcp_payg_usage_cost_usd
+
 # Platform session contract v1: exported adapter-conformance helpers are invoked
 # by fixture suites and future trainyard adapter runners. Pydantic field validators
 # are framework entrypoints, and the diff-only vulture gate does not count tests.
