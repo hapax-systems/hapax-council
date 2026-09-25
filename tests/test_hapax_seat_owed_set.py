@@ -393,8 +393,8 @@ def test_v3_oracle_at_2217() -> None:
     assert totals["new"] == 35
     assert totals["backlog"] == 499
     assert totals["unknown_age"] == 152
-    assert totals["S4"] == 11
-    assert totals["ack_true"] == 2
+    assert totals["S4"] == 15
+    assert totals["ack_true"] == 3
     missing = [task_id for task_id in TARGETS if payload["targets"][task_id] == "ABSENT"]
     assert missing == []
 
@@ -467,7 +467,10 @@ def test_disable_s3_drops_only_verboo() -> None:
 
 
 def test_disable_s1_s2_s5_leaves_both_s3_rows() -> None:
-    """S3 is 2 at this snapshot. The other row is entitlement-census-and-single-view."""
+    """Pins both counts. |O| is 2 rows. Among the 16 targets, 15 are absent.
+
+    E0 (entitlement-census-and-single-view) is the second S3 row and is not a target.
+    """
     if not _have(COMMIT_2217):
         pytest.skip("vault snapshot a847f9f3e is not present")
     other = "entitlement-census-and-single-view-20260924"
@@ -483,12 +486,15 @@ def test_disable_s1_s2_s5_leaves_both_s3_rows() -> None:
             "S1,S2,S5",
             "--json",
             "--targets",
-            f"{VERBOO},{other}",
+            ",".join([*TARGETS, other]),
         )
     )
     assert payload["totals"]["rows"] == 2
     assert payload["totals"]["S3"] == 2
-    assert payload["targets"][VERBOO].startswith("IN")
+    present_targets = [
+        task_id for task_id in TARGETS if payload["targets"][task_id].startswith("IN")
+    ]
+    assert present_targets == [VERBOO]
     assert payload["targets"][other].startswith("IN")
 
 
@@ -630,6 +636,7 @@ def test_re_token_disposes_the_answered_ask(tmp_path: Path) -> None:
                 "created_at: 2026-09-25T02:40:57Z",
                 "re: dossiers #4739, #4744, #4745",
                 "---",
+                "done",
                 "",
             ]
         ),
@@ -677,6 +684,7 @@ def test_later_message_on_the_same_thread_disposes(tmp_path: Path) -> None:
                 "created_at: 2026-09-25T02:00:00Z",
                 "thread: same-thread",
                 "---",
+                "done",
                 "",
             ]
         ),
@@ -685,6 +693,149 @@ def test_later_message_on_the_same_thread_disposes(tmp_path: Path) -> None:
         _run(tmp_path, "--commit", "WORKTREE", "--at", "2026-09-25T03:00:00+00:00", "--json")
     )
     assert payload["bus"] == []
+
+
+def _decision(vault: Path, in_force: bool) -> None:
+    path = vault / "30-areas" / "hapax" / "frame" / "seat-stop-decisions.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "m103_in_force: " + ("true" if in_force else "false") + "\n"
+        "cite: session-conductor-false-parent-spawn-repair-20260924\n",
+        encoding="utf-8",
+    )
+
+
+def _start(vault: Path, role: str, source: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HAPAX_AGENT_ROLE"] = role
+    return subprocess.run(
+        ["python3", str(SCRIPT), "--vault", str(vault), "--session-start"],
+        input=json.dumps({"source": source}),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+def test_resume_non_seat_receives_conductor_directive_while_m103_holds(tmp_path: Path) -> None:
+    _seat(tmp_path, "| incumbent | claude/dev1 — The process role is `dev1-seat`. |")
+    _decision(tmp_path, True)
+    proc = _start(tmp_path, "grok-owedset", "resume")
+    assert proc.returncode == 0, proc.stderr
+    text = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "CONDUCTOR: stop yours now:" in text
+    assert "--role grok-owedset stop" in text
+    assert "OWED BY THE SEAT" not in text
+
+
+def test_resume_non_seat_gets_no_directive_when_m103_is_absent(tmp_path: Path) -> None:
+    _seat(tmp_path, "| incumbent | claude/dev1 — The process role is `dev1-seat`. |")
+    _decision(tmp_path, False)
+    proc = _start(tmp_path, "grok-owedset", "resume")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == ""
+
+
+def test_seat_resume_receives_owed_set_and_conductor_directive(tmp_path: Path) -> None:
+    created = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _write_row(
+        tmp_path,
+        "lane-row",
+        _offered("lane-row", created=created),
+        "## Session log\n- 2026-09-25T01:00:00Z dev3: drafted\n",
+    )
+    _seat(tmp_path, "| incumbent | claude/dev1 — The process role is `dev1-seat`. |")
+    _decision(tmp_path, True)
+    refreshed = _run(tmp_path, "--refresh-cache")
+    assert refreshed.returncode == 0, refreshed.stderr
+    proc = _start(tmp_path, "dev1-seat", "resume")
+    assert proc.returncode == 0, proc.stderr
+    text = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "OWED BY THE SEAT" in text
+    assert "lane-row" in text
+    assert "CONDUCTOR: stop yours now:" in text
+    assert "--role dev1-seat stop" in text
+
+
+def test_reply_that_names_an_ask_without_a_disposition_does_not_dispose(tmp_path: Path) -> None:
+    _bus(
+        tmp_path,
+        "dev1",
+        "20260925T023937Z-dev17-dossier-4744-quorum-accept.md",
+        "\n".join(
+            [
+                "---",
+                "from: dev17",
+                "ack: true",
+                "created_at: 2026-09-25T02:39:37Z",
+                "---",
+                "# Dossier #4744",
+                "",
+            ]
+        ),
+    )
+    _bus(
+        tmp_path,
+        "dev17",
+        "20260925T024057Z-dev1-follow-ups-after-merge.md",
+        "\n".join(
+            [
+                "---",
+                "from: claude/dev1",
+                "created_at: 2026-09-25T02:40:57Z",
+                "re: dossiers #4739, #4744, #4745",
+                "---",
+                "follow-ups only",
+                "",
+            ]
+        ),
+    )
+    payload = _payload(
+        _run(tmp_path, "--commit", "WORKTREE", "--at", "2026-09-25T03:00:00+00:00", "--json")
+    )
+    names = [item["name"] for item in payload["bus"]]
+    assert "20260925T023937Z-dev17-dossier-4744-quorum-accept.md" in names
+
+
+def test_reply_older_than_the_ask_does_not_dispose_it(tmp_path: Path) -> None:
+    _bus(
+        tmp_path,
+        "dev1",
+        "20260925T023937Z-dev17-dossier-4744-quorum-accept.md",
+        "\n".join(
+            [
+                "---",
+                "from: dev17",
+                "ack: true",
+                "created_at: 2026-09-25T02:39:37Z",
+                "---",
+                "# Dossier #4744",
+                "",
+            ]
+        ),
+    )
+    _bus(
+        tmp_path,
+        "dev17",
+        "20260925T010000Z-dev1-earlier.md",
+        "\n".join(
+            [
+                "---",
+                "from: claude/dev1",
+                "created_at: 2026-09-25T01:00:00Z",
+                "re: #4744",
+                "---",
+                "done",
+                "",
+            ]
+        ),
+    )
+    payload = _payload(
+        _run(tmp_path, "--commit", "WORKTREE", "--at", "2026-09-25T03:00:00+00:00", "--json")
+    )
+    names = [item["name"] for item in payload["bus"]]
+    assert "20260925T023937Z-dev17-dossier-4744-quorum-accept.md" in names
 
 
 def test_reply_without_re_or_thread_stays_owed(tmp_path: Path) -> None:

@@ -215,6 +215,18 @@ def _is_seat_from(from_field: str, process_role: str, inbox: str) -> bool:
     return bool(inbox and inbox in tokens)
 
 
+DISPOSITION_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_])(?:granted|declined|done|admitted|held:|deferred_until:)(?![A-Za-z0-9_])",
+    re.I,
+)
+DECISIONS_REL = "30-areas/hapax/frame/seat-stop-decisions.yaml"
+CONDUCTOR_DIRECTIVE = (
+    "CONDUCTOR: stop yours now: uv run --project ~/projects/hapax-council "
+    "--directory ~/projects/hapax-council python -m agents.session_conductor "
+    "--role {role} stop (M103; conductor-start re-creates it on every session start)"
+)
+
+
 def _re_names(re_value: str, inbound_name: str, inbound_text: str) -> bool:
     if not re_value:
         return False
@@ -235,17 +247,21 @@ def _reply_disposes(
     inbound_text: str,
     inbound_fm: dict[str, str],
     inbound_time: datetime | None,
-    replies: list[tuple[str, dict[str, str]]],
+    replies: list[tuple[str, dict[str, str], str]],
     *,
     process_role: str,
     inbox: str,
     at: datetime,
 ) -> bool:
-    for reply_name, reply_fm in replies:
+    for reply_name, reply_fm, reply_text in replies:
+        if not DISPOSITION_TOKEN.search(reply_text):
+            continue
         if not _is_seat_from(reply_fm.get("from", ""), process_role, inbox):
             continue
         reply_time = _message_time(reply_fm, reply_name)
         if reply_time is not None and reply_time > at:
+            continue
+        if reply_time is not None and inbound_time is not None and reply_time <= inbound_time:
             continue
         if _re_names(reply_fm.get("re", ""), inbound_name, inbound_text):
             return True
@@ -354,21 +370,36 @@ def project(
             if not flag:
                 continue
             asks.append((rel, name, stamp, flag, msg_fm))
-        replies_by_sender: dict[str, list[tuple[str, dict[str, str]]]] = {}
+        replies_by_sender: dict[str, list[tuple[str, dict[str, str], str]]] = {}
         senders = {
             _sender_token(item[4].get("from", ""))
             for item in asks
             if _sender_token(item[4].get("from", ""))
         }
+        oldest_ask: dict[str, datetime] = {}
+        for _rel, name, stamp, _flag, msg_fm in asks:
+            sender = _sender_token(msg_fm.get("from", ""))
+            when = parse_ts(stamp + "+00:00") or _message_time(msg_fm, name)
+            if sender and when is not None:
+                prior = oldest_ask.get(sender)
+                if prior is None or when < prior:
+                    oldest_ask[sender] = when
         for sender in senders:
-            reply_rels = [
-                rel
-                for rel in list_md(vault, commit, f"{BUS}/{sender}")
-                if "/read/" not in rel and rel.endswith(".md")
-            ]
+            cutoff = oldest_ask.get(sender)
+            reply_rels = []
+            for rel in list_md(vault, commit, f"{BUS}/{sender}"):
+                if "/read/" in rel or not rel.endswith(".md"):
+                    continue
+                # Only open replies newer than this sender's oldest open ask.
+                # An unstamped name is not opened.
+                stamped = _stamp_from_name(Path(rel).name)
+                if cutoff is not None and (stamped is None or stamped <= cutoff):
+                    continue
+                reply_rels.append(rel)
             reply_bodies = read_many(vault, commit, reply_rels)
             replies_by_sender[sender] = [
-                (Path(rel).name, front(reply_bodies.get(rel, ""))) for rel in reply_rels
+                (Path(rel).name, front(reply_bodies.get(rel, "")), reply_bodies.get(rel, ""))
+                for rel in reply_rels
             ]
         seat_from = process_role or seat
         for _rel, name, stamp, flag, msg_fm in asks:
@@ -581,23 +612,46 @@ def _hook_json(text: str) -> str:
     )
 
 
-def session_start_payload(vault: Path) -> str:
-    """Read the precomputed summary. Do not scan the task store on this path.
+def _m103_in_force(vault: Path) -> bool:
+    """True only when the declared decision file says so. Section 5 is not read."""
+    try:
+        text = (vault / DECISIONS_REL).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("m103_in_force:"):
+            return stripped.split(":", 1)[1].strip().lower() == "true"
+    return False
 
-    A live project() opened 1908 files and took 13.60s on 2026-09-25T03:04Z,
-    which is past the 10s SessionStart budget. The 15-minute staleness sweep
-    refreshes the file.
-    """
-    process, _inbox = incumbent_identity(vault)
-    if not process or os.environ.get("HAPAX_AGENT_ROLE", "") != process:
+
+def _session_source(raw: str) -> str:
+    raw = raw.strip()
+    if not raw:
         return ""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    return str(data.get("source") or "")
+
+
+def _directive_applies(source: str, role: str, seat_role: str, in_force: bool) -> bool:
+    if not in_force or not role:
+        return False
+    if source in ("", "startup", "resume"):
+        return True
+    return source == "clear" and role == seat_role
+
+
+def _owed_context(vault: Path, process: str) -> str:
     summary = cache_dir(vault) / "seat-owed-set-summary.txt"
     try:
         raw = summary.read_text(encoding="utf-8")
     except OSError:
-        return _hook_json(_unavailable_line(vault))
+        return _unavailable_line(vault)
     if not raw.startswith("generated_at:"):
-        return _hook_json(_unavailable_line(vault))
+        return _unavailable_line(vault)
     header, _, body = raw.partition("\n")
     generated = parse_ts(header.split(":", 1)[1].strip())
     age = ""
@@ -614,7 +668,26 @@ def session_start_payload(vault: Path) -> str:
         "Backlog items are owed one disposition within 24 hours of this activation. "
         "Update the section 0 heartbeat row with your new transcript path." + age
     )
-    return _hook_json(intro + "\n\n" + body.strip())
+    return intro + "\n\n" + body.strip()
+
+
+def session_start_payload(vault: Path, source: str = "") -> str:
+    """Read the precomputed summary and the stop-decision file. Do not scan.
+
+    A live project() opened 1908 files and took 13.60s on 2026-09-25T03:04Z,
+    which is past the 10s SessionStart budget. The 15-minute staleness sweep
+    refreshes the owed-set file.
+    """
+    process, _inbox = incumbent_identity(vault)
+    role = os.environ.get("HAPAX_AGENT_ROLE", "")
+    parts: list[str] = []
+    if role and process and role == process:
+        parts.append(_owed_context(vault, process))
+    if _directive_applies(source, role, process, _m103_in_force(vault)):
+        parts.append(CONDUCTOR_DIRECTIVE.format(role=role))
+    if not parts:
+        return ""
+    return _hook_json("\n\n".join(parts))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -636,12 +709,13 @@ def main(argv: list[str] | None = None) -> int:
     vault = Path(args.vault) if args.vault else DEFAULT_VAULT
 
     if args.session_start:
+        raw_stdin = ""
         if not sys.stdin.isatty():
             # A closed hook pipe must not skip the owed-set injection below.
             with contextlib.suppress(OSError):
-                sys.stdin.read()
+                raw_stdin = sys.stdin.read()
         try:
-            payload = session_start_payload(vault)
+            payload = session_start_payload(vault, _session_source(raw_stdin))
         except Exception as exc:  # a hook failure must still print one line
             payload = _hook_json(
                 "OWED BY THE SEAT (unavailable: "
