@@ -494,6 +494,7 @@ if canon_enforced:
         ClaimPublicationIntent,
         ClaimResidueArchiveHold,
         archive_dispatch_only_claim_residue,
+        archive_epoch_only_claim_residue,
         inspect_claim_publications,
         recover_claim_publications,
         resolve_applied_claim_publication,
@@ -641,13 +642,36 @@ if canon_enforced:
             cache_dir / f"cc-claim-dispatch-{key}.json",
         )
     )
+    _residue_observed_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Epoch first: the dispatch pass skips any key whose epoch sidecar still exists, so a
+    # role carrying both kinds of residue is only cleared when this runs ahead of it.
+    try:
+        _epoch_archived = archive_epoch_only_claim_residue(
+            vault_root=path.parent.parent,
+            cache_dir=cache_dir,
+            role=role,
+            session_id=session_id,
+            current_task_id=task_id,
+            observed_at=_residue_observed_at,
+        )
+    except ClaimResidueArchiveHold as exc:
+        print(f"cc-claim: {exc.message}", file=sys.stderr)
+        sys.exit(8)
+    for _kind in ("terminal", "lapsed"):
+        _paths = [str(dest) for dest, kind in _epoch_archived if kind == _kind]
+        if _paths:
+            print(
+                f"cc-claim: archived {_kind} epoch-only claim residue before admitted "
+                "claim: " + ", ".join(_paths),
+                file=sys.stderr,
+            )
     _archive_dispatch_only_claim_residue(
         vault_root=path.parent.parent,
         cache_dir=cache_dir,
         role=role,
         session_id=session_id,
         current_task_id=task_id,
-        observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        observed_at=_residue_observed_at,
     )
     # A unit recorded under a live charter keeps the charter's sidecars; they
     # belong to the parent, not to this task, and must not read as this

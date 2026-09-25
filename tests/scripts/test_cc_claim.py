@@ -776,6 +776,199 @@ def test_default_claim_after_normal_close_archives_dispatch_only_residue(
     ]
 
 
+# --- epoch-only claim residue (claim-epoch-only-residue-reaper-20260916, PR #4700) ---
+# A close, quarantine or partial reap removes cc-active-task-<key> and leaves the epoch;
+# cc-claim then entered resolve_applied_claim_publication on ANY sidecar and wedged every
+# later claim by the role (M104b: vbe-1, 2026-09-25). Ported from beta's #4700.
+
+
+def _strand_epoch_only_residue(
+    home: Path, first_task: str, *, terminal: bool, status: str | None = None
+) -> Path:
+    """Leave only the epoch sidecars behind, as a quarantine or partial reap does."""
+
+    task_root = _task_root(home)
+    active_note = next((task_root / "active").glob(f"{first_task}*.md"))
+    if terminal:
+        closed_note = task_root / "closed" / active_note.name
+        closed_note.write_text(
+            active_note.read_text(encoding="utf-8").replace("status: claimed", "status: done", 1),
+            encoding="utf-8",
+        )
+        active_note.unlink()
+    elif status is not None:
+        active_note.write_text(
+            active_note.read_text(encoding="utf-8").replace(
+                "status: claimed", f"status: {status}", 1
+            ),
+            encoding="utf-8",
+        )
+    cache = home / ".cache" / "hapax"
+    for key in ("cx-test", f"cx-test-{_SESSION_ID}"):
+        (cache / f"cc-active-task-{key}").unlink()
+        (cache / f"cc-claim-dispatch-{key}.json").unlink()
+        assert (cache / f"cc-claim-epoch-{key}").is_file()
+    return task_root
+
+
+def test_default_claim_refuses_epoch_only_residue_of_another_live_task(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "epoch-residue-live")
+    first = _claim(home, "epoch-residue-live")
+    assert first.returncode == 0, first.stderr
+    task_root = _strand_epoch_only_residue(home, "epoch-residue-live", terminal=False)
+    cache = home / ".cache" / "hapax"
+    before = {
+        key: (cache / f"cc-claim-epoch-{key}").read_bytes()
+        for key in ("cx-test", f"cx-test-{_SESSION_ID}")
+    }
+
+    _write_task(home, "active", "claim-behind-live-lease")
+    second = _claim(home, "claim-behind-live-lease")
+
+    assert second.returncode != 0
+    assert "epoch-residue-live" in second.stderr
+    assert "stale lease" in second.stderr
+    # a live lease is not residue: nothing may move
+    for key, content in before.items():
+        assert (cache / f"cc-claim-epoch-{key}").read_bytes() == content
+    assert not (task_root / "_lineage" / "epoch-residue-live").exists()
+
+
+def test_default_claim_refuses_own_task_epoch_when_the_row_is_another_lanes(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "reassigned-row")
+    first = _claim(home, "reassigned-row")
+    assert first.returncode == 0, first.stderr
+    task_root = _strand_epoch_only_residue(home, "reassigned-row", terminal=False, status="pr_open")
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("assigned_to: cx-test", "assigned_to: cx-other"),
+        encoding="utf-8",
+    )
+
+    second = _claim(home, "reassigned-row")
+
+    assert second.returncode != 0
+    assert (home / ".cache" / "hapax" / "cc-claim-epoch-cx-test").is_file()
+    assert not (task_root / "_lineage" / "reassigned-row").exists()
+
+
+def test_default_claim_resumes_own_row_over_its_lapsed_epoch(tmp_path: Path) -> None:
+    """The live-own-row case (cx-blue 2026-09-19T03:24Z): a lane returning to its own
+    `pr_open` row for a review round after its marker was released. The lapsed epoch
+    is archived and the resume republishes; eta #4668 and zeta #4676 hit this."""
+
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "own-review-round")
+    first = _claim(home, "own-review-round")
+    assert first.returncode == 0, first.stderr
+    task_root = _strand_epoch_only_residue(
+        home, "own-review-round", terminal=False, status="pr_open"
+    )
+
+    # A lane returning for a review round arrives under a fresh dispatch.
+    again = _claim(
+        home,
+        "own-review-round",
+        extra_env={"HAPAX_CLAIM_DISPATCH_BINDING_HASH": "b" * 64},
+    )
+
+    assert again.returncode == 0, again.stderr
+    assert "archived lapsed epoch-only claim residue" in again.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "status: pr_open" in text
+    assert "assigned_to: cx-test" in text
+    cache = home / ".cache" / "hapax"
+    assert (cache / "cc-active-task-cx-test").read_text(encoding="utf-8") == "own-review-round\n"
+    archived = sorted(
+        (task_root / "_lineage" / "own-review-round").glob("removed-epoch-residue-*/cc-claim-*")
+    )
+    assert [path.name for path in archived] == [
+        "cc-claim-epoch-cx-test",
+        f"cc-claim-epoch-cx-test-{_SESSION_ID}",
+    ]
+
+
+def test_default_claim_archives_epoch_only_residue_of_a_terminal_task(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "epoch-residue-terminal")
+    first = _claim(home, "epoch-residue-terminal")
+    assert first.returncode == 0, first.stderr
+    task_root = _strand_epoch_only_residue(home, "epoch-residue-terminal", terminal=True)
+    cache = home / ".cache" / "hapax"
+    # A lookalike key of a different role that shares this role's prefix must never be
+    # swept as this role's residue.
+    lookalike = cache / "cc-claim-epoch-cx-test-money"
+    lookalike.write_text("1789000000 epoch-residue-terminal\n", encoding="utf-8")
+
+    second_note = _write_task(home, "active", "claim-after-epoch-residue")
+    second = _claim(home, "claim-after-epoch-residue")
+
+    assert second.returncode == 0, second.stderr
+    assert "archived terminal epoch-only claim residue" in second.stderr
+    assert "status: claimed" in second_note.read_text(encoding="utf-8")
+    assert (cache / "cc-active-task-cx-test").read_text(encoding="utf-8") == (
+        "claim-after-epoch-residue\n"
+    )
+    assert lookalike.read_text(encoding="utf-8") == "1789000000 epoch-residue-terminal\n"
+    lineage = task_root / "_lineage" / "epoch-residue-terminal"
+    archived = sorted(lineage.glob("removed-epoch-residue-*/cc-claim-epoch-*"))
+    assert [path.name for path in archived] == [
+        "cc-claim-epoch-cx-test",
+        f"cc-claim-epoch-cx-test-{_SESSION_ID}",
+    ]
+    manifest = next(lineage.glob("removed-epoch-residue-*/README.md"))
+    assert "epoch-residue-terminal" in manifest.read_text(encoding="utf-8")
+
+
+def test_default_claim_clears_mixed_epoch_and_dispatch_residue(tmp_path: Path) -> None:
+    """The residue shape measured on lane beta, 2026-09-19: an epoch AND a dispatch binding.
+
+    The dispatch pass skips any key whose epoch still exists, so the epoch pass must run
+    first for the two to compose.
+    """
+    home = tmp_path / "home"
+    _write_task(home, "active", "mixed-residue-first")
+    first = _claim(home, "mixed-residue-first")
+    assert first.returncode == 0, first.stderr
+
+    task_root = _task_root(home)
+    active_note = next((task_root / "active").glob("mixed-residue-first*.md"))
+    (task_root / "closed" / active_note.name).write_text(
+        active_note.read_text(encoding="utf-8").replace("status: claimed", "status: done", 1),
+        encoding="utf-8",
+    )
+    active_note.unlink()
+    cache = home / ".cache" / "hapax"
+    for key in ("cx-test", f"cx-test-{_SESSION_ID}"):
+        (cache / f"cc-active-task-{key}").unlink()
+        assert (cache / f"cc-claim-epoch-{key}").is_file()
+        assert (cache / f"cc-claim-dispatch-{key}.json").is_file()
+
+    second_note = _write_task(home, "active", "claim-after-mixed-residue")
+    second = _claim(home, "claim-after-mixed-residue")
+
+    assert second.returncode == 0, second.stderr
+    assert "archived terminal epoch-only claim residue" in second.stderr
+    assert "archived terminal dispatch-only claim residue" in second.stderr
+    assert "status: claimed" in second_note.read_text(encoding="utf-8")
+    lineage = task_root / "_lineage" / "mixed-residue-first"
+    assert sorted(p.name for p in lineage.glob("removed-epoch-residue-*/cc-claim-epoch-*")) == [
+        "cc-claim-epoch-cx-test",
+        f"cc-claim-epoch-cx-test-{_SESSION_ID}",
+    ]
+    assert sorted(
+        p.name for p in lineage.glob("closed-claim-dispatch-residue-*/cc-claim-dispatch-*.json")
+    ) == sorted(
+        [
+            "cc-claim-dispatch-cx-test.json",
+            f"cc-claim-dispatch-cx-test-{_SESSION_ID}.json",
+        ]
+    )
+
+
 def test_default_claim_holds_existing_publication_for_different_dispatch(
     tmp_path: Path,
 ) -> None:
