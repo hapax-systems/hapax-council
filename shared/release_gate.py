@@ -921,6 +921,14 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
 #: pinned by the composition suite (egress-boundary-pin executes the lane's
 #: pins per PR; all-green requires the jobs), which runs in the required full
 #: shard on every PR head.
+#: Five entries admit the compositor recording-consent and perception-writer
+#: fail-closed shape: ``agents/studio_compositor/{lifecycle,models,state}.py``
+#: and ``agents/hapax_daimonion/_perception_state_writer.py`` are production
+#: sources, so exact files (``compositor.py`` and any future sibling stay
+#: held); ``tests/studio_compositor`` is a collected test tree, a directory
+#: like ``tests/shared`` whose landing layer is the merge-queue full shard.
+#: The shard ignores or deselects a few of its files (ci.yml), so the tree's
+#: landing evidence is partial, as it is for the other collected trees.
 LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     ".github/workflows/ci.yml",
     "agents/_governance.py",
@@ -931,10 +939,14 @@ LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     "agents/_governance/consent_reader.py",
     "agents/_governance/provenance.py",
     "agents/_governance/revocation.py",
+    "agents/hapax_daimonion/_perception_state_writer.py",
     "agents/hapax_daimonion/conversation_pipeline.py",
     "agents/hapax_daimonion/conversational_policy.py",
     "agents/studio_compositor/consent.py",
     "agents/studio_compositor/consent_live_egress.py",
+    "agents/studio_compositor/lifecycle.py",
+    "agents/studio_compositor/models.py",
+    "agents/studio_compositor/state.py",
     "axioms/contracts",
     "logos/_governance.py",
     "logos/api/deps/stream_redaction.py",
@@ -959,6 +971,7 @@ LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     "tests/logos",
     "tests/scripts",
     "tests/shared",
+    "tests/studio_compositor",
     "tests/test_affordance_pipeline.py",
     "tests/test_archive_purge.py",
     "tests/test_consent_gate.py",

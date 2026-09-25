@@ -241,10 +241,14 @@ def test_consent_containment_lane_surfaces_is_exact() -> None:
         "agents/_governance/consent_reader.py",
         "agents/_governance/provenance.py",
         "agents/_governance/revocation.py",
+        "agents/hapax_daimonion/_perception_state_writer.py",
         "agents/hapax_daimonion/conversation_pipeline.py",
         "agents/hapax_daimonion/conversational_policy.py",
         "agents/studio_compositor/consent.py",
         "agents/studio_compositor/consent_live_egress.py",
+        "agents/studio_compositor/lifecycle.py",
+        "agents/studio_compositor/models.py",
+        "agents/studio_compositor/state.py",
         "axioms/contracts",
         "logos/_governance.py",
         "logos/api/deps/stream_redaction.py",
@@ -269,6 +273,7 @@ def test_consent_containment_lane_surfaces_is_exact() -> None:
         "tests/logos",
         "tests/scripts",
         "tests/shared",
+        "tests/studio_compositor",
         "tests/test_affordance_pipeline.py",
         "tests/test_archive_purge.py",
         "tests/test_consent_gate.py",
@@ -277,8 +282,8 @@ def test_consent_containment_lane_surfaces_is_exact() -> None:
         "tests/test_revocation_wiring.py",
     )
     # The count is machine-checked so prose can never understate the lane's
-    # governance blast radius (review F round 3): 43 entries, not fewer.
-    assert len(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES) == 43
+    # governance blast radius (review F round 3): 48 entries, not fewer.
+    assert len(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES) == 48
 
 
 def test_consent_containment_lane_admits_lane_shapes() -> None:
@@ -301,6 +306,9 @@ def test_consent_containment_lane_admits_lane_shapes() -> None:
             ".github/workflows/ci.yml",
             "tests/test_consent_gate.py",
             "tests/test_consent_label.py",
+            "agents/studio_compositor/lifecycle.py",
+            "agents/hapax_daimonion/_perception_state_writer.py",
+            "tests/studio_compositor/test_recording_consent_fail_closed.py",
             "docs/runbooks/pii-containment.md",
         ],
     )
@@ -321,6 +329,9 @@ def test_consent_containment_lane_boundary_is_anchored() -> None:
             "agents/_governance.py.bak",
             "packages/agentgov/src/agentgov/new_egress.py",
             "agents/_governance/new_surface.py",
+            "agents/studio_compositor/compositor.py",
+            "agents/studio_compositor/lifecycle.py.bak",
+            "agents/hapax_daimonion/_perception_state_writer.py.bak",
         ],
     )
     assert assessment.eligible is False
@@ -328,6 +339,9 @@ def test_consent_containment_lane_boundary_is_anchored() -> None:
     for held in (
         "agents/_governance.py.bak",
         "agents/_governance/new_surface.py",
+        "agents/hapax_daimonion/_perception_state_writer.py.bak",
+        "agents/studio_compositor/compositor.py",
+        "agents/studio_compositor/lifecycle.py.bak",
         "packages/agentgov/src/agentgov/new_egress.py",
         "shared/governance/other.py",
     ):
@@ -346,6 +360,21 @@ def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> N
     assert _path_in_consent_containment_lane(".github/workflows/ci.yml")
     assert _path_in_consent_containment_lane("tests/test_consent_gate.py")
     assert _path_in_consent_containment_lane("tests/test_consent_label.py")
+    assert _path_in_consent_containment_lane("agents/studio_compositor/lifecycle.py")
+    assert _path_in_consent_containment_lane("agents/studio_compositor/models.py")
+    assert _path_in_consent_containment_lane("agents/studio_compositor/state.py")
+    assert _path_in_consent_containment_lane("agents/hapax_daimonion/_perception_state_writer.py")
+    assert _path_in_consent_containment_lane(
+        "tests/studio_compositor/test_recording_consent_fail_closed.py"
+    )
+    assert not _path_in_consent_containment_lane("agents/studio_compositor")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/compositor.py")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/lifecycle.py.bak")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/state/x.py")
+    assert not _path_in_consent_containment_lane(
+        "agents/hapax_daimonion/_perception_state_writer.py.bak"
+    )
+    assert not _path_in_consent_containment_lane("tests/studio_compositor_other/x.py")
     assert not _path_in_consent_containment_lane(".github/workflows/ci.yml.bak")
     assert not _path_in_consent_containment_lane(".github/workflows/other.yml")
     assert not _path_in_consent_containment_lane("tests/test_consent_gate.py.bak")
@@ -356,6 +385,57 @@ def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> N
     assert not _path_in_consent_containment_lane("   ")
     assert not _path_in_consent_containment_lane("./shared/governance/consent.py")
     assert not _path_in_consent_containment_lane("packages/agentgov/src/agentgov/other.py")
+
+
+def test_consent_containment_lane_admits_consent_fail_closed_live_perception_shape() -> None:
+    # The exact changed-file set of the compositor recording-consent and
+    # perception-writer fail-closed fix: four production sources as exact
+    # entries, its compositor suite under the tests/studio_compositor tree,
+    # and its writer suite under tests/hapax_daimonion. With the full
+    # mitigation set, nothing is left outside the coverage bound.
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=[
+            "agents/hapax_daimonion/_perception_state_writer.py",
+            "agents/studio_compositor/lifecycle.py",
+            "agents/studio_compositor/models.py",
+            "agents/studio_compositor/state.py",
+            "tests/hapax_daimonion/test_perception_state_writer_consent.py",
+            "tests/studio_compositor/test_recording_consent_fail_closed.py",
+        ],
+    )
+    assert not any("egress_evidence_uncovered" in b for b in assessment.blockers), (
+        assessment.blockers
+    )
+
+
+#: Directory entries the lane doctrine admits: axioms/contracts (person-named
+#: deletions) and the test trees. Every other entry is a production source and
+#: must be an exact file, so a future file beside it stays outside the lane.
+_LANE_DIRECTORY_ENTRIES_ADMITTED = frozenset(
+    {
+        "axioms/contracts",
+        "packages/agentgov/tests",
+        "tests/hapax_daimonion",
+        "tests/logos",
+        "tests/scripts",
+        "tests/shared",
+        "tests/studio_compositor",
+    }
+)
+
+
+def test_consent_containment_lane_production_entries_are_exact_files() -> None:
+    # Unsafe case: a production directory admitted where only exact files are
+    # ratified (e.g. agents/studio_compositor for its three consent-bearing
+    # modules) would silently admit compositor.py and every future sibling.
+    # Only the ratified directory entries may be directories on the tree.
+    repo_root = Path(__file__).resolve().parents[1]
+    directories = {
+        entry for entry in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES if (repo_root / entry).is_dir()
+    }
+    assert directories == _LANE_DIRECTORY_ENTRIES_ADMITTED
 
 
 def test_consent_containment_lane_entries_exist_with_evidence_substrate() -> None:
