@@ -1,3 +1,11 @@
+---
+title: Seat owed set
+date: 2026-09-25
+authority_case: CASE-SYSTEM-INTEGRITY-20260611
+status: runbook
+mutation_surface: source_docs
+---
+
 # Seat owed set
 
 The owed set is the control point. Section 5 of the seat note is narrative.
