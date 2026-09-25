@@ -161,7 +161,7 @@ def load_recent_concept_dois(*, path: Path = DEFAULT_RECENT_CONCEPT_DOIS_PATH) -
 def main() -> int:
     """Single-pass verification entry for systemd timer.
 
-    Reads the operator's ORCID iD from ``pass show orcid/orcid`` via
+    Reads the operator's ORCID iD (env, then the FileStore) via
     ``shared.orcid.operator_orcid``; fetches the operator's ORCID works; loads expected concept-DOIs from
     ``~/hapax-state/publications/recent-concept-dois.txt``; logs any
     missing DOIs (ntfy escalation on >72h-old gaps belongs in Phase 3

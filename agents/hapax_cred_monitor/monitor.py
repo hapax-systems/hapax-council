@@ -1,7 +1,8 @@
-"""Snapshot the password-store entry set and compute arrival/departure deltas.
+"""Snapshot the FileStore secret-name set and compute arrival/departure deltas.
 
-Walks ``~/.password-store/`` for ``.gpg`` files, yielding entry NAMES only.
-Never opens, decrypts, or shells out to ``gpg`` / ``pass show``. Never
+Lists the store's ``<name>.bin`` blob names through ``shared.secrets.list_secret_names``,
+yielding NAMES only (the mapped form ``hapax-secret --list`` prints, e.g. ``api-anthropic``).
+Never opens or decrypts a blob, never resolves a value, never touches pass. Never
 returns or logs values. The snapshot is a sorted tuple of strings; the
 delta is a pair of frozensets (arrived, departed).
 
@@ -18,17 +19,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+from shared.secrets import list_secret_names, secret_store_root
 
-DEFAULT_PASS_STORE = Path.home() / ".password-store"
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class Snapshot:
-    """Point-in-time view of the password-store entry set.
+    """Point-in-time view of the FileStore secret-name set.
 
     Attributes:
-        entries: Sorted tuple of entry names (no values, no .gpg suffix).
+        entries: Sorted tuple of secret names (no values, no .bin suffix).
         captured_at: UTC ISO-8601 timestamp of the walk.
         store_path: The directory walked (recorded for diagnostics).
     """
@@ -56,32 +57,24 @@ class Delta:
         return bool(self.arrived) or bool(self.departed)
 
 
-def walk_pass_store(store: Path = DEFAULT_PASS_STORE) -> Snapshot:
-    """Walk the pass store and return a Snapshot of entry names.
+def walk_secret_store(root: Path | None = None) -> Snapshot:
+    """List the FileStore and return a Snapshot of secret names.
 
-    Reads only directory structure and ``.gpg`` filenames. Never opens
-    or decrypts a file. If the store is missing, returns an empty
-    snapshot (the absence is itself the signal — no entries means no
-    services unblocked).
+    Reads only the store directory's blob filenames. Never opens or decrypts a blob. ``root``
+    names an explicit store directory (tests, a replica); otherwise the host's FileStore, or
+    ``hapax-secret --list`` where the module is absent. A missing store yields an empty
+    snapshot (the absence is itself the signal — no names means no services unblocked).
     """
     captured_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if not store.is_dir():
-        log.warning("pass store missing at %s", store)
-        return Snapshot(entries=(), captured_at=captured_at, store_path=str(store))
-
-    names: list[str] = []
-    for gpg_path in store.rglob("*.gpg"):
-        try:
-            rel = gpg_path.relative_to(store)
-        except ValueError:
-            continue
-        # Drop the .gpg suffix; preserve the relative path as the entry name.
-        name = str(rel.with_suffix(""))
-        names.append(name)
+    target = root if root is not None else secret_store_root()
+    if target is not None and not target.is_dir():
+        log.warning("secret store missing at %s", target)
+        return Snapshot(entries=(), captured_at=captured_at, store_path=str(target))
+    names = list_secret_names(target)
     return Snapshot(
         entries=tuple(sorted(names)),
         captured_at=captured_at,
-        store_path=str(store),
+        store_path=str(target) if target is not None else "hapax-secret --list",
     )
 
 

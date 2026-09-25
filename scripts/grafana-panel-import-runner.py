@@ -14,8 +14,8 @@ Usage::
 
     grafana-panel-import-runner.py --panel-json path/to/tv-panel.json [--screenshot]
 
-Authentication is read from ``pass show grafana/api-key`` first, falling
-back to the ``GRAFANA_API_KEY`` env var, falling back to ``--api-key``.
+Authentication is read from the ``GRAFANA_API_KEY`` env var first, then the
+FileStore (``grafana/api-key``, through ``shared.secrets``), then ``--api-key``.
 The runner aborts with a clear message if no key is present rather than
 prompting the operator (the dissolution intent is to remove the
 operator-blocking step entirely).
@@ -30,36 +30,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
+from shared.secrets import SecretUnavailable, get_secret
+
 DEFAULT_GRAFANA_URL = os.environ.get("HAPAX_GRAFANA_URL", "http://localhost:3001")
-DEFAULT_PASS_PATH = "grafana/api-key"
+DEFAULT_SECRET_NAME = "grafana/api-key"  # pragma: allowlist secret
 
 
 def _resolve_api_key(cli_key: str | None) -> str | None:
-    """Resolve the Grafana API key from pass / env / CLI in that order."""
+    """Resolve the Grafana API key: GRAFANA_API_KEY env, then the FileStore, then --api-key."""
     try:
-        result = subprocess.run(
-            ["pass", "show", DEFAULT_PASS_PATH],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if result.returncode == 0:
-            key = result.stdout.strip().splitlines()[0]
-            if key:
-                return key
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    env_key = os.environ.get("GRAFANA_API_KEY", "").strip()
-    if env_key:
-        return env_key
+        key = get_secret(DEFAULT_SECRET_NAME, env="GRAFANA_API_KEY", required=False)
+    except SecretUnavailable:
+        key = None
+    if key and key.strip():
+        return key.strip().splitlines()[0]
     if cli_key:
         return cli_key
     return None
@@ -150,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--api-key",
         default=None,
-        help="Grafana API key (last-resort fallback; prefer pass show grafana/api-key)",
+        help="Grafana API key (last resort; prefer GRAFANA_API_KEY or the FileStore grafana/api-key)",
     )
     parser.add_argument(
         "--screenshot",
@@ -172,8 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     api_key = _resolve_api_key(args.api_key)
     if not api_key:
         print(
-            f"error: Grafana API key not found. Tried: pass show {DEFAULT_PASS_PATH}, "
-            f"GRAFANA_API_KEY env var, --api-key flag.",
+            f"error: Grafana API key not found. Tried: GRAFANA_API_KEY env var, the FileStore "
+            f"({DEFAULT_SECRET_NAME}), --api-key flag.",
             file=sys.stderr,
         )
         return 3

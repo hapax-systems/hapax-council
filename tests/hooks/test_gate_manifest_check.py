@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -212,3 +213,48 @@ def test_ci_job_drift_fails(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "ci jobs drift" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("target", "removed", "expected"),
+    [
+        (
+            "hapax-codex",
+            '. "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh"',
+            "helper source",
+        ),
+        (
+            "hapax-codex",
+            'bind_codex_common_config "$HOME" "$WORKDIR" "$HOOK" "$LOGOS_BASE_URL"',
+            "helper call",
+        ),
+        ("hapax-codex", '"${CODEX_COMMON_CONFIG_ARGS[@]}"', "helper argv"),
+        ("capability-execution.sh", "hooks.PreToolUse=", "hooks.PreToolUse override"),
+    ],
+)
+def test_codex_common_configuration_drift_fails(
+    tmp_path: Path, target: str, removed: str, expected: str
+) -> None:
+    settings = _write_claude_settings(tmp_path)
+    for name in ("hapax-codex", "capability-execution.sh"):
+        content = (REPO_ROOT / "scripts" / name).read_text()
+        if name == target:
+            assert content.count(removed) == 1
+            content = content.replace(removed, "")
+        (tmp_path / name).write_text(content)
+
+    result = _run("--claude-settings", settings, "--codex-launcher", tmp_path / "hapax-codex")
+
+    assert result.returncode == 1, result.stdout
+    assert expected in result.stderr
+
+
+def test_codex_common_configuration_missing_helper_fails(tmp_path: Path) -> None:
+    settings = _write_claude_settings(tmp_path)
+    launcher = tmp_path / "hapax-codex"
+    launcher.write_text((REPO_ROOT / "scripts/hapax-codex").read_text())
+
+    result = _run("--claude-settings", settings, "--codex-launcher", launcher)
+
+    assert result.returncode == 1
+    assert "common configuration helper unreadable" in result.stderr

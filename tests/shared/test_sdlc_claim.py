@@ -4103,6 +4103,77 @@ def test_inspection_holds_unknown_and_unsafe_journal_entries(tmp_path: Path) -> 
     assert symlink_results[0].reason_code == "fs_snapshot_directory_unsafe"
 
 
+def test_inspection_does_not_hold_on_a_journal_it_already_told_you_to_quarantine(
+    tmp_path: Path,
+) -> None:
+    """The remedy must not be the condition.
+
+    An unknown entry's repair action is "quarantine every entry outside the exact
+    claim publication grammar", and quarantining renames the journal to
+    ``claim-pub-<sha>.quarantined-<stamp>`` — which is outside that grammar. So the
+    hold demanded its own cause, and could only be cleared by moving the journal out
+    of the scan root by hand (measured 2026-09-13, cx-p0, twice).
+
+    All three stamp shapes that exist on disk are covered, because **no code
+    produces this name** — every "quarantine ..." string in the module is a repair
+    action addressed to a person, so the suffix is a hand convention and a matcher
+    pinned to one stamp grammar would leave the others holding forever.
+    """
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    transactions = tmp_path / "transactions"
+    transactions.mkdir(mode=0o700)
+    sha = "a" * 64
+    for stamp in ("20260821", "20260905T0041Z", "20260913T205924Z"):
+        quarantined = transactions / f"claim-pub-{sha}.quarantined-{stamp}"
+        quarantined.mkdir(mode=0o700)
+        (quarantined / "manifest.json").write_bytes(b"{}\n")
+        (quarantined / "manifest.json").chmod(0o600)
+
+    results = _inspect_without_effect(
+        tmp_path,
+        cache_dir=cache,
+        transaction_root=transactions,
+    )
+
+    assert results == ()
+
+    # Fail-open check: a genuinely foreign entry is still held, so the skip is a
+    # verdict about an already-remedied journal and not a hole in the grammar.
+    foreign = transactions / "claim-pub-not-a-journal"
+    foreign.mkdir(mode=0o700)
+    held = _inspect_without_effect(
+        tmp_path,
+        cache_dir=cache,
+        transaction_root=transactions,
+    )
+    assert [entry.publication_id for entry in held] == ["claim-pub-not-a-journal"]
+    assert held[0].reason_code == "claim_publication_transaction_entry_unknown"
+    assert foreign.is_dir()
+    foreign.rmdir()
+
+    # And the state cx-p0 ACTUALLY produced: the live journal still present beside its
+    # quarantined sibling, same sha. "The verdict drops, the evidence does not" has to mean the
+    # live journal is inspected normally while the sibling is skipped — so the skip must be
+    # narrow (this exact suffixed name) and not sha-wide. A reviewer noted the three stamp
+    # grammars above never put both forms on disk at once, which is the case that matters.
+    live = transactions / f"claim-pub-{sha}"
+    live.mkdir(mode=0o700)
+    both = _inspect_without_effect(
+        tmp_path,
+        cache_dir=cache,
+        transaction_root=transactions,
+    )
+    assert [entry.publication_id for entry in both] == [f"claim-pub-{sha}"], (
+        "the live journal was skipped along with its quarantined sibling — the skip is "
+        "sha-wide, so quarantining one attempt would hide the next one at the same sha"
+    )
+    assert live.is_dir()
+    for stamp in ("20260821", "20260905T0041Z", "20260913T205924Z"):
+        assert (transactions / f"claim-pub-{sha}.quarantined-{stamp}").is_dir()
+
+
 def test_publication_identity_is_deterministic_but_path_bound(tmp_path: Path) -> None:
     first = _fixture(tmp_path / "one")
     second = _fixture(tmp_path / "two")

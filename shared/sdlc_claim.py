@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -53,7 +54,11 @@ from shared.execution_admission import (
     require_admitted_execution_lease,
 )
 from shared.frontmatter import parse_frontmatter_with_diagnostics
-from shared.sdlc_lifecycle import TASK_CLAIMABLE_STATUSES, TASK_RESUMABLE_STATUSES
+from shared.sdlc_lifecycle import (
+    TASK_CLAIMABLE_STATUSES,
+    TASK_RESUMABLE_STATUSES,
+    TASK_TERMINAL_STATUSES,
+)
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
     ClaimLeaseSnapshot,
@@ -63,6 +68,7 @@ from shared.sdlc_task_store import (
     load_claim_dispatch_binding,
     resolve_task_note,
 )
+from shared.task_note_lock import held_by_current_thread, projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -2431,6 +2437,21 @@ def _claim_publication_lock(
     *,
     lock_root: Path | None,
 ) -> Iterator[None]:
+    # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
+    # it, so a caller that already holds one and asks for this is hold-and-wait across two
+    # lock domains: it would sit on the role lock while a publisher on the other side sits on
+    # its note. Both waits are bounded, so the failure is mutual refusal rather than a wedge —
+    # but "bounded" is not "safe", and a count of acquisition sites cannot see this shape at
+    # all, because it needs no new site: an existing note-holder calling onward into claim
+    # publication is enough. Refuse before opening anything.
+    held = held_by_current_thread()
+    if held:
+        raise ClaimPublicationError(
+            "claim_publication_lock_order_inversion",
+            "release the projected-path lock before publishing a claim; the role lock is "
+            "taken first and the note lock inside it, never the reverse",
+            ", ".join(f"{lock_root_}:{name}" for lock_root_, name in held),
+        )
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
     digest = _claim_publication_role_lock_digest(intent.role)
@@ -2475,7 +2496,18 @@ def _claim_publication_lock(
                         str(path),
                     ) from exc
                 time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
-        yield
+        # The role lock above serializes one role's publications against each other. It does
+        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
+        # not by the note, and it lives under a different root. So the publication's
+        # _apply_projections calls — which take no lock of their own — could land between a
+        # transition's preimage pin and its atomic install. Take the projection lock too.
+        #
+        # Order is role-then-note, always. One direction only means no cycle — and the
+        # direction is enforced at the top of this function, not inferred from the number of
+        # places the role lock is taken: the guard refuses when the calling thread already holds
+        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
+        with projected_path_lock(intent.task_id, (intent.note_path,)):
+            yield
     finally:
         if locked:
             try:
@@ -4887,6 +4919,32 @@ def _content_address_for_file(path: Path, content: bytes) -> ContentAddress:
 
 
 _CLAIM_PUBLICATION_DIRECTORY_RE = re.compile(r"^claim-pub-[0-9a-f]{64}$")
+#: A journal an operator has already quarantined in place.
+#:
+#: Deliberately tolerant after the suffix, because **no code in this estate
+#: produces this name.** Every "quarantine …" string in this module and in
+#: ``coord_projection`` is a *repair action* addressed to a person, so the suffix
+#: is a hand-applied convention and the four journals on disk carry three
+#: different shapes (``.quarantined-20260821``, ``.quarantined-20260905T0041Z``,
+#: ``.quarantined-20260913T205924Z``). A regex pinning any one timestamp grammar
+#: would leave the others holding forever, so this matches the marker and not the
+#: stamp. Tightening it requires first giving the estate a quarantine *verb* —
+#: filed separately, not assumed here.
+#:
+#: "No code produces this name" is the SOLE rationale for a deliberately loose pattern that
+#: skips inspection, so it is recheckable rather than asserted. From the repo root::
+#:
+#:     rg -n 'quarantined-' --glob '!*.md' -- scripts shared agents hooks
+#:
+#: Expected as of 2026-09-15, and stated so the output DECIDES something rather than merely
+#: printing: four hits in this file (this comment and the pattern itself) plus exactly one
+#: unrelated hit, ``scripts/hapax-audio-topology`` returning the audio-domain constant
+#: ``"quarantined-declared-inactive"``. **No hit renames, creates or otherwise emits a
+#: ``claim-pub-<sha>.quarantined-<stamp>`` directory.** If that ever changes, this pattern can
+#: and should be tightened to the grammar the new producer emits.
+_CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE = re.compile(
+    r"^claim-pub-[0-9a-f]{64}\.quarantined-\S+$"
+)
 _CLAIM_PUBLICATION_BLOB_RE = re.compile(r"^[0-9]{4}\.(?:before|after)$")
 _MAX_CLAIM_PUBLICATIONS = 4096
 _MAX_CLAIM_JOURNAL_CHILDREN = 32
@@ -5045,6 +5103,16 @@ def _capture_claim_journals(
     root_frontier = (listing, _directory_address(directory))
     for name in names:
         if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(name) is None:
+            if _CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE.fullmatch(name) is not None:
+                # An already-quarantined journal is the completed remedy, not an
+                # unknown entry. Holding on it prescribed "quarantine every entry
+                # outside the exact grammar" — the very act that produced this
+                # name — so the hold demanded its own cause and could only be
+                # cleared by moving the journal out of the scan root by hand
+                # (measured 2026-09-13: cx-p0 had to do exactly that). The names
+                # stay in the content-addressed listing above, so skipping the
+                # hold drops the verdict, not the evidence.
+                continue
             entries.append(
                 _ClaimJournalCaptureFailure(
                     name,
@@ -6095,6 +6163,149 @@ def recover_claim_publications(
     return tuple(results)
 
 
+class ClaimResidueArchiveHold(RuntimeError):
+    """Terminal dispatch-only claim residue cannot be lawfully archived."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+def _safe_lineage_component(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._:-]+", "_", value).strip("._:-")[:160] or "unknown"
+
+
+def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Path | None:
+    for subdir in ("closed", "active"):
+        root = vault_root / subdir
+        exact = root / f"{observed_task_id}.md"
+        if exact.is_file():
+            return exact
+        for candidate in sorted(root.glob(f"{observed_task_id}-*.md")):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
+    task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
+    if task_path is None:
+        return "missing"
+    text = task_path.read_text(encoding="utf-8")
+    match = re.search(r"^status:[ \t]*(.*)$", text, re.MULTILINE)
+    return (match.group(1).strip() if match else "") or "unknown"
+
+
+def archive_dispatch_only_claim_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    role: str,
+    session_id: str,
+    current_task_id: str,
+    observed_at: str,
+) -> list[Path]:
+    """Archive terminal dispatch-only residue into the task lineage.
+
+    Returns the archived destination paths (empty when no residue existed).
+    Raises :class:`ClaimResidueArchiveHold` when the residue belongs to a live
+    claim, another lane, or a non-terminal task — the caller holds the claim.
+    The move tolerates a cross-device cache/vault boundary (shutil.move falls
+    back to copy+unlink where os.replace raises EXDEV) and is idempotent under
+    retry after a half-applied crash: an existing lineage directory is reused,
+    an already-moved dispatch file is not moved again, and the README is
+    (re)written from the binding.
+    """
+
+    keys_to_check: set[str] = {role, f"{role}-{session_id}"}
+    role_dispatch = claim_dispatch_binding_path(cache_dir, role)
+    if role_dispatch.exists() and not (
+        (cache_dir / f"cc-active-task-{role}").exists()
+        or (cache_dir / f"cc-claim-epoch-{role}").exists()
+    ):
+        try:
+            role_binding = load_claim_dispatch_binding(role_dispatch)
+        except TaskStoreError:
+            role_binding = None
+        if role_binding is not None:
+            keys_to_check.add(f"{role}-{role_binding.session_id}")
+
+    dispatch_only: list[tuple[str, Path, ClaimDispatchBinding]] = []
+    for claim_key in sorted(keys_to_check):
+        dispatch_path = claim_dispatch_binding_path(cache_dir, claim_key)
+        claim_path = cache_dir / f"cc-active-task-{claim_key}"
+        epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+        if not dispatch_path.exists():
+            continue
+        if claim_path.exists() or epoch_path.exists():
+            continue
+        try:
+            binding = load_claim_dispatch_binding(dispatch_path)
+        except TaskStoreError as exc:
+            raise ClaimResidueArchiveHold(
+                f"HOLD - {exc}. Next action: restore the matching "
+                f"cc-active-task/cc-claim-epoch sidecars for {dispatch_path}, "
+                "or archive this corrupt dispatch-only residue through the "
+                "task lineage before retrying."
+            ) from exc
+        if binding.task_id == current_task_id:
+            raise ClaimResidueArchiveHold(
+                "HOLD - current task has dispatch-only claim residue "
+                f"at {dispatch_path}. Next action: restore the matching "
+                "cc-active-task and cc-claim-epoch sidecars for this admitted "
+                "claim, or run admitted recovery before retrying."
+            )
+        if binding.lane != role:
+            raise ClaimResidueArchiveHold(
+                "HOLD - dispatch-only claim residue is bound to a "
+                f"different lane at {dispatch_path}. Next action: preserve the "
+                "sidecar and ask the owning lane/operator to reconcile its "
+                "claim lineage before retrying."
+            )
+        status = _task_status_for_any_state(vault_root, binding.task_id)
+        if status not in TASK_TERMINAL_STATUSES:
+            raise ClaimResidueArchiveHold(
+                "HOLD - dispatch-only claim residue belongs to a "
+                f"non-terminal or missing task (task_id={binding.task_id}, "
+                f"status={status}). Next action: restore the matching "
+                "cc-active-task/cc-claim-epoch sidecars or close/release that "
+                "task through the governed lifecycle before retrying."
+            )
+        dispatch_only.append((claim_key, dispatch_path, binding))
+
+    if not dispatch_only:
+        return []
+
+    lineage_root = vault_root / "_lineage"
+    archived: list[Path] = []
+    for claim_key, dispatch_path, binding in dispatch_only:
+        lineage_dir = (
+            lineage_root
+            / _safe_lineage_component(binding.task_id)
+            / (
+                "closed-claim-dispatch-residue-"
+                f"{_safe_lineage_component(observed_at)}-"
+                f"{_safe_lineage_component(claim_key)}"
+            )
+        )
+        lineage_dir.mkdir(parents=True, exist_ok=True)
+        destination = lineage_dir / dispatch_path.name
+        if dispatch_path.exists():
+            shutil.move(str(dispatch_path), str(destination))
+        (lineage_dir / "README.md").write_text(
+            "Archived dispatch-only claim residue before a fresh admitted claim.\n"
+            f"task_id: {binding.task_id}\n"
+            f"claim_key: {claim_key}\n"
+            f"source: {dispatch_path}\n"
+            f"archived_at: {observed_at}\n"
+            "reason: normal close removed active/epoch sidecars but preserved "
+            "the dispatch binding spent leg.\n",
+            encoding="utf-8",
+        )
+        archived.append(destination)
+    return archived
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -6110,6 +6321,9 @@ __all__ = [
     "ClaimPublicationInspection",
     "ClaimPublicationReceipt",
     "ClaimPublicationRecoveryResult",
+    "ClaimResidueArchiveHold",
+    "admitted_claim_publication_id",
+    "archive_dispatch_only_claim_residue",
     "admitted_claim_publication_id",
     "claim_publication_id",
     "claim_publication_mutation_scope_address",

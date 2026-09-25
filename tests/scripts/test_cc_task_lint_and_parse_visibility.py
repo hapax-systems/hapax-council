@@ -40,6 +40,24 @@ def test_lint_passes_clean_note(tmp_path):
     assert problems == [] and warnings == []
 
 
+def test_lint_grandfathers_historical_singleton_claude_preferred_platforms(tmp_path):
+    lint_mod = _load("cc_task_lint_od2", REPO / "scripts" / "cc-task-lint")
+    note = tmp_path / "historical.md"
+    note.write_text(
+        "---\n"
+        "type: cc-task\n"
+        "task_id: historical\n"
+        "status: offered\n"
+        "authority_case: C-1\n"
+        "parent_spec: spec.md\n"
+        "route_constraints:\n"
+        "  preferred_platforms: [claude]\n"
+        "---\nbody\n"
+    )
+    problems, warnings = lint_mod.lint(note, contract=True)
+    assert problems == [] and warnings == []
+
+
 def test_autoqueue_frontmatter_returns_reason(tmp_path):
     aq = _load("cc_pr_autoqueue", REPO / "scripts" / "cc-pr-autoqueue.py")
     bad = tmp_path / "bad.md"

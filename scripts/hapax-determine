@@ -34,12 +34,17 @@ their own receipts; this owns scheduling, liveness, and the run ledger.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -59,9 +64,39 @@ DEFAULT_RUN_LEDGER = Path.home() / ".cache" / "hapax" / "determination" / "runs.
 #: producer behind it — the harness's own liveness is the thing being protected.
 DEFAULT_PRODUCER_TIMEOUT_S = 300
 
+#: Bounded wait to ACQUIRE a per-producer lock before skipping with reason ``lock_timeout``.
+#: Must stay comfortably below hapax-determine.service's TimeoutStartSec (1200s) so a wedged
+#: lock holder cannot convert the timer invocation into a systemd kill; the concurrent
+#: invoker instead records an honest skip and lets the holder's own bounds resolve it.
+DEFAULT_LOCK_WAIT_S = 120.0
+#: Retry cadence while waiting for a contended per-producer lock. Kept as a module constant
+#: so tests can shrink it instead of sleeping real retry intervals.
+LOCK_RETRY_INTERVAL_S = 0.5
+#: Injectable monotonic clock (module global, read at call time): the completion witness
+#: below is derived from invocation-wide monotonic elapsed, so tests must be able to
+#: advance that elapsed — including pre-execution work like lock waits and earlier
+#: producers — without running real time.
+monotonic_clock = time.monotonic
+
 
 def _iso(ts: datetime) -> str:
     return ts.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _iso_precise(ts: datetime) -> str:
+    """`_iso`, plus milliseconds when nonzero.
+
+    `completed_at` must survive truncation: the supersession comparison below
+    runs against a whole-second force decision, so a winner finishing 0.8s
+    after the decision must not truncate back onto the decision second, or
+    the forced waiter duplicates it (critical finding on #4665, round 7).
+    Fractional digits are emitted only when nonzero, so whole-second stamps
+    keep their exact prior wire form and `_parse_iso` reads both.
+    """
+    base = _iso(ts)
+    if ts.microsecond:
+        return base[:-1] + f".{ts.microsecond // 1000:03d}Z"
+    return base
 
 
 def _parse_iso(value: object) -> datetime | None:
@@ -72,6 +107,26 @@ def _parse_iso(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _completion_of(record: dict[str, Any]) -> datetime | None:
+    """When a run actually finished: the stamped witness, else the legacy
+    anchor plus measured duration, else the anchor alone.
+
+    Supersession compares THIS, never ``ran_at`` alone: ``ran_at`` is the
+    invocation anchor, so a winner that STARTED before a forced waiter's
+    justification but finished while it waited compares as older than the
+    decision and would be duplicated (critical finding on #4665, round 4).
+    Legacy rows without the witness fall back to anchor + duration_s.
+    """
+    completed = _parse_iso(str(record.get("completed_at") or ""))
+    if completed is not None:
+        return completed
+    ran_at = _parse_iso(str(record.get("ran_at") or ""))
+    duration_s = record.get("duration_s")
+    if ran_at is not None and isinstance(duration_s, (int, float)):
+        return ran_at + timedelta(seconds=duration_s)
+    return ran_at
 
 
 def load_registry(path: Path) -> list[dict[str, Any]]:
@@ -132,15 +187,78 @@ def is_due(producer: dict[str, Any], last: dict[str, Any] | None, now: datetime)
     return (now - at).total_seconds() >= producer["cadence_seconds"]
 
 
+def producer_lock_path(ledger: Path, producer_id: str) -> Path:
+    """Per-producer advisory lock beside the run ledger that gates the same run.
+
+    The harness now has two invokers on one cadence: the systemd timer, and
+    `hapax-quota-telemetry-writer` pulling a receipt producer forward so its
+    read cannot land one mint behind (the quota-surface freshness flap). They
+    overlap — the telemetry timer fires ~18s before the determine timer. The
+    lock path derives from the LEDGER's parent, so a test ledger locks inside
+    the test's tmp_path and never the live cache.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", producer_id) or "producer"
+    return ledger.parent / "locks" / f"{safe}.lock"
+
+
+class ProducerLockTimeout(RuntimeError):
+    """A per-producer lock stayed held longer than the bounded wait (review finding on #4665).
+
+    Raised, not slept past: the previous unbounded ``LOCK_EX`` made the loser's fate depend
+    on the holder's outer bounds — a wedged holder meant systemd killed the waiter, and the
+    skip path was never reached deterministically.
+    """
+
+
+@contextmanager
+def producer_lock(
+    ledger: Path,
+    producer_id: str,
+    *,
+    wait_s: float = DEFAULT_LOCK_WAIT_S,
+    retry_interval_s: float | None = None,
+) -> Iterator[None]:
+    lock_path = producer_lock_path(ledger, producer_id)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        # LOCK_NB with a bounded retry instead of an unbounded blocking flock: release is no
+        # longer "guaranteed only by the outer bounds" of whichever invoker won. A holder
+        # that outlives the wait produces ProducerLockTimeout — a recorded skip, not a hang
+        # the unit timeout has to kill (review finding on #4665). The retry interval is read
+        # from the module global at call time so tests can shrink it.
+        interval = retry_interval_s if retry_interval_s is not None else LOCK_RETRY_INTERVAL_S
+        deadline = monotonic_clock() + wait_s
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                remaining = deadline - monotonic_clock()
+                if remaining <= 0:
+                    raise ProducerLockTimeout(
+                        f"{producer_id}: producer lock held longer than the {wait_s:.0f}s wait"
+                    ) from None
+                time.sleep(min(interval, remaining))
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def run_producer(
-    producer: dict[str, Any], *, now: datetime, repo_root: Path, timeout: int
+    producer: dict[str, Any],
+    *,
+    now: datetime,
+    repo_root: Path,
+    timeout: int,
+    invocation_mono_started: float | None = None,
 ) -> dict[str, Any]:
     """Execute one producer and return its run record. Never raises on producer failure."""
     argv = list(producer["command"])
     exe = argv[0]
     if not os.path.isabs(exe):
         argv[0] = str(repo_root / exe)
-    started = time.monotonic()
+    started = monotonic_clock()
     record: dict[str, Any] = {
         "ran_at": _iso(now),
         "producer_id": producer["id"],
@@ -149,6 +267,19 @@ def run_producer(
         "provenance": producer.get("provenance"),
         "host": os.uname().nodename,
     }
+    # `ran_at` above is the INVOCATION anchor (the caller's decision clock);
+    # `completed_at` is stamped on every terminal path below as the invocation
+    # anchor plus the invocation-wide monotonic elapsed AT THE TERMINAL EVENT
+    # — not the producer's own duration added to the anchor. The registry runs
+    # claude-account-live before agy-review-quota and the lock wait precedes
+    # both, so anchor + this producer's duration undercounts the real
+    # completion instant by exactly that preceding work: a producer that
+    # started at T+100 and ran 20s completed at T+120, not T+20, and a forced
+    # waiter justified at T+110 must defer to it (critical finding on #4665,
+    # round 5, C1). The invocation anchor is passed by main; direct callers
+    # without one fall back to this producer's own start, which is identical
+    # for a single unprompted producer.
+
     # Which code produced this determination, stamped in a `finally` so it is measured AFTER the
     # producer ran, on every exit including timeout and unlaunchable.
     #
@@ -164,17 +295,173 @@ def run_producer(
     # is otherwise unreadable.
     try:
         try:
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            record.update(
-                outcome="timeout", returncode=None, duration_s=round(time.monotonic() - started, 2)
+            proc = subprocess.Popen(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                # start_new_session makes the producer a session and process-group
+                # leader, so the timeout path below can kill the WHOLE tree.
+                # Producers here spawn the real provider call as their own
+                # descendant, and subprocess.run's timeout kills only the direct
+                # child: the reviewer tree survived the kill, kept running after
+                # the timeout record released the producer lock, and a forced
+                # invocation overlapped a still-live provider call (major
+                # finding on #4665, round 10, M1).
+                start_new_session=True,
             )
-            return record
         except OSError as exc:
+            ended = monotonic_clock()
             record.update(
-                outcome="unlaunchable", returncode=None, error=f"{type(exc).__name__}: {exc}"
+                outcome="unlaunchable",
+                returncode=None,
+                error=f"{type(exc).__name__}: {exc}",
+                # No duration_s by design (claude-1 minor, #4665 round 8): the
+                # producer never ran, so there is no producer duration to
+                # report — only the spawn attempt itself. Completion consumers
+                # go through _completion_of, which prefers the completed_at
+                # witness below and falls back to ran_at ALONE when duration_s
+                # is absent, so an unlaunchable record never claims a later
+                # completion than its witness — the asymmetry is conservative
+                # and pinned by test.
+                # The spawn failed at the attempt instant: "completed" (by
+                # failing) then, with the invocation-wide elapsed still
+                # covering every lock wait and earlier producer that preceded
+                # this one.
+                completed_at=_iso_precise(
+                    now
+                    + timedelta(
+                        seconds=ended
+                        - (
+                            invocation_mono_started
+                            if invocation_mono_started is not None
+                            else started
+                        )
+                    )
+                ),
             )
             return record
+
+        try:
+            _, stderr_text = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Kill the entire process group and REAP before stamping the
+            # record: the timeout outcome below returns and releases the
+            # producer lock, so nothing of this tree may still be running when
+            # the next invocation takes it.
+            try:
+                group_id = os.getpgid(proc.pid)
+            except (ProcessLookupError, PermissionError):
+                # Group already gone, or not ours to address as a group: the
+                # direct child is the only target that can still be named.
+                group_id = None
+            try:
+                if group_id is None:
+                    proc.kill()
+                else:
+                    os.killpg(group_id, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # Belt and braces: the group dissolved between lookup and
+                # signal — fall back to the direct child so the reap below
+                # still has a process to wait on.
+                proc.kill()
+            try:
+                proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                # The child is dead (SIGKILL above) but descendants still
+                # hold the pipes: an unbounded communicate() here blocks on
+                # their EOF forever — the reviewer's timeout=0.2 repro with a
+                # 12s pipe-holding descendant only returned at 12.02s because
+                # the sleep ENDED; a longer holder never returns (codex-1
+                # major M1, #4665 round 12). Close OUR read ends — the
+                # holders take SIGPIPE/EPIPE on their next write — then wait
+                # on the child alone, bounded. Never communicate() again: the
+                # closed streams would raise, and the pipes are the hang.
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    # Unreachable while the child carries a delivered
+                    # SIGKILL, but the harness must never hang on a reap
+                    # that will not finish: name the group and return
+                    # bounded. The operator next-action is the group query,
+                    # against the concrete group id this tree ran under
+                    # (codex-1 minor D2, #4665 round 13: the diagnostic used
+                    # to print a literal <pgid> placeholder, leaving the
+                    # next action unexecutable as written).
+                    if group_id is not None:
+                        record["group_sweep"] = (
+                            f"unresolved-descendants; next: ps -o pid,pgid,cmd -g {group_id}"
+                        )
+                    else:
+                        record["group_sweep"] = (
+                            f"unresolved-descendants; next: ps -o pid,pgid,cmd -p {proc.pid}"
+                        )
+                else:
+                    # Reaped after the pipe close, but the holders were real:
+                    # name the concrete group so the sweep is auditable as
+                    # written (codex-1 minor D2, #4665 round 14 — the bare
+                    # label left the next action unexecutable).
+                    if group_id is not None:
+                        record["group_sweep"] = (
+                            f"descendants-held-pipes; reaped after pipe close; "
+                            f"next: ps -o pid,pgid,cmd -g {group_id}"
+                        )
+                    else:
+                        record["group_sweep"] = (
+                            f"descendants-held-pipes; reaped after pipe close; "
+                            f"next: ps -o pid,pgid,cmd -p {proc.pid}"
+                        )
+            ended = monotonic_clock()
+            record.update(
+                outcome="timeout",
+                returncode=None,
+                duration_s=round(ended - started, 2),
+                # Explicit None test, not `or`: a monotonic anchor of 0.0 is
+                # falsy and would silently fall back to this producer's own
+                # start, re-introducing the undercount the anchor exists to
+                # close.
+                completed_at=_iso_precise(
+                    now
+                    + timedelta(
+                        seconds=ended
+                        - (
+                            invocation_mono_started
+                            if invocation_mono_started is not None
+                            else started
+                        )
+                    )
+                ),
+            )
+            return record
+
+        # Normal completion still sweeps the producer's whole process group
+        # before the terminal record publishes and the producer lock releases
+        # (codex-1 major, #4665 round 11, M2): a producer that handles its OWN
+        # inner timeout — the agy admission producer's 240s smoke timeout
+        # inside this harness's 300s budget — kills its direct child, exits
+        # rc=2 through this ordinary path, and can leave provider descendants
+        # alive in the group. proc.pid is the pgid (start_new_session above
+        # made the child a group leader at spawn), so killpg needs no getpgid
+        # — the child is already reaped here and its pid must not be re-read.
+        # An empty group raises ProcessLookupError: the common healthy exit,
+        # nothing to kill. PermissionError means the surviving members left
+        # our group entirely — a bounded leak the record names rather than
+        # hides (glm-1 minor, #4665 round 10).
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # proc.pid is the pgid (start_new_session made the child a group
+            # leader at spawn): name the concrete group the survivors left, so
+            # the bounded leak is locatable as written (codex-1 minor D2,
+            # #4665 round 14 — the bare label left the leak unlocatable).
+            record["group_sweep"] = (
+                f"permission-denied-bounded-leak; next: ps -o pid,pgid,cmd -g {proc.pid}"
+            )
 
         rc = proc.returncode
         success = set(producer.get("success_exit_codes") or [0])
@@ -187,11 +474,20 @@ def run_producer(
             outcome = "declined"
         else:
             outcome = "failed"
+        ended = monotonic_clock()
+        duration_s = round(ended - started, 2)
         record.update(
             outcome=outcome,
             returncode=rc,
-            duration_s=round(time.monotonic() - started, 2),
-            stderr=(proc.stderr or "").strip()[:500],
+            duration_s=duration_s,
+            completed_at=_iso_precise(
+                now
+                + timedelta(
+                    seconds=ended
+                    - (invocation_mono_started if invocation_mono_started is not None else started)
+                )
+            ),
+            stderr=(stderr_text or "").strip()[:500],
         )
         return record
     finally:
@@ -266,8 +562,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--producer", action="append", dest="only", help="run only these ids")
     parser.add_argument("--force", action="store_true", help="ignore cadence, run anyway")
+    parser.add_argument(
+        "--force-justified-at",
+        metavar="ISO8601-UTC",
+        help=(
+            "decision instant that justified a --force run; a producer run whose "
+            "completion witness (completed_at; legacy rows: ran_at + duration_s) "
+            "lands at or after it, per the in-lock ledger re-read, supersedes the "
+            "force and is skipped instead of duplicated — same-second ties skip, "
+            "they never duplicate"
+        ),
+    )
     parser.add_argument("--timeout", type=int, default=DEFAULT_PRODUCER_TIMEOUT_S)
     parser.add_argument("--check", action="store_true", help="report liveness only; run nothing")
+    parser.add_argument(
+        "--lock-wait",
+        type=float,
+        default=DEFAULT_LOCK_WAIT_S,
+        metavar="SECONDS",
+        help="bounded wait to acquire a per-producer lock before skipping (lock_timeout)",
+    )
     parser.add_argument("--now")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -276,6 +590,23 @@ def main(argv: list[str] | None = None) -> int:
     if now is None:
         print("invalid --now; expected ISO-8601 UTC", file=sys.stderr)
         return 2
+    # Invocation-wide monotonic anchor paired with the decision clock above:
+    # every `completed_at` witness below is `now` + elapsed-since-here, so the
+    # witness includes lock waits and earlier producers, not just the record's
+    # own subprocess duration (critical finding on #4665, round 5, C1).
+    invocation_mono_started = monotonic_clock()
+    force_justified_at = None
+    if args.force_justified_at:
+        force_justified_at = _parse_iso(args.force_justified_at)
+        if force_justified_at is None:
+            print(
+                "invalid --force-justified-at; expected ISO-8601 UTC, whole-second Z "
+                "form, e.g. --force-justified-at 2026-09-12T20:39:13Z (a corrected "
+                "invocation: scripts/hapax-determine --producer agy-review-quota "
+                "--force --force-justified-at 2026-09-12T20:39:13Z)",
+                file=sys.stderr,
+            )
+            return 2
     try:
         producers = load_registry(args.registry)
     except (OSError, ValueError) as exc:
@@ -295,13 +626,100 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.check:
         for p in producers:
-            if not args.force and not is_due(p, runs.get(p["id"]), now):
-                payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
-                continue
-            record = run_producer(p, now=now, repo_root=args.repo_root, timeout=args.timeout)
-            append_run(args.run_ledger, record)
-            runs[p["id"]] = record
-            payload["ran"].append(record)
+            # The due decision is made INSIDE the per-producer lock, against a
+            # fresh read of the ledger. Two invokers share one cadence (timer +
+            # telemetry pull-forward); whoever locks first runs and appends, and
+            # the second re-reads `ran_at` and skips — one provider round trip
+            # per cadence window, no matter who fired or in what order. The
+            # re-read also refreshes the liveness view, so an invoker that
+            # skipped behind a concurrent winner reports the winner's run, not
+            # a false `never_ran` deficit.
+            #
+            # `--force` is the freshness-consumer escape hatch (the telemetry
+            # writer's pull-forward): it runs even when the cadence says not
+            # due, because the CALLER has measured that the receipt this
+            # producer mints will not stay fresh through its next read. The
+            # run-ledger append below keeps the one-run-per-window invariant
+            # intact — a later invoker in the same window re-reads the fresh
+            # `ran_at` and skips — so force shifts WHEN a run happens, never
+            # HOW MANY.
+            #
+            # `--force-justified-at` revalidates the force under the lock: the
+            # caller's justification was computed BEFORE this invoker waited,
+            # so a run that finished after that instant cannot have been
+            # counted by it — a concurrent winner minted while this invoker
+            # waited. The comparison is on the run's COMPLETION instant
+            # (`completed_at`, legacy rows: `ran_at + duration_s`), never
+            # `ran_at` alone: a winner that started before the decision and
+            # completed during the wait is exactly the duplicate the round-4
+            # critical described — its invocation anchor predates the force
+            # decision, so only the completion witness can supersede it.
+            # Skipping as superseded (without appending) keeps exactly one
+            # producer run per window even when force and the timer cross
+            # locks (major finding on #4665, round 3: a forced waiter
+            # duplicated the concurrent winner's run because the pre-lock
+            # force decision bypassed the in-lock due check).
+            #
+            # The comparison is `>=`, not `>`: `completed_at` carries
+            # sub-second precision, but the caller's decision instant is a
+            # whole-second stamp, so a winner completing within the decision's
+            # second lands strictly after the decision stamp yet may precede
+            # or follow the actual decision moment — the same-second case is
+            # ambiguous. Ties resolve toward supersession: a duplicate forced
+            # run is a provider round-trip that nothing undoes, while a
+            # skipped-but-needed run self-heals at the next cadence window
+            # (critical finding on #4665, round 7: whole-second truncation
+            # made a T+0.8 completion equal the T decision and the forced
+            # waiter duplicated the winner).
+            try:
+                with producer_lock(args.run_ledger, p["id"], wait_s=args.lock_wait):
+                    latest = last_runs(args.run_ledger).get(p["id"])
+                    if latest is not None:
+                        runs[p["id"]] = latest
+                    if args.force and force_justified_at is not None and latest is not None:
+                        winner_completed_at = _completion_of(latest)
+                        if (
+                            winner_completed_at is not None
+                            and winner_completed_at >= force_justified_at
+                        ):
+                            payload["skipped"].append(
+                                {
+                                    "producer_id": p["id"],
+                                    "reason": "force_superseded",
+                                    "detail": (
+                                        f"run at {latest.get('ran_at')} completed at "
+                                        f"{_iso_precise(winner_completed_at)}, at or after "
+                                        f"the force decision at {args.force_justified_at}; "
+                                        "the winner's run already minted this window"
+                                    ),
+                                }
+                            )
+                            continue
+                    if not args.force and not is_due(p, latest, now):
+                        payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
+                        continue
+                    record = run_producer(
+                        p,
+                        now=now,
+                        repo_root=args.repo_root,
+                        timeout=args.timeout,
+                        invocation_mono_started=invocation_mono_started,
+                    )
+                    append_run(args.run_ledger, record)
+                    runs[p["id"]] = record
+                    payload["ran"].append(record)
+            except ProducerLockTimeout as exc:
+                # A holder that outlives the bounded wait is running the producer itself
+                # (or wedged behind its own unit timeout); this invoker records an honest
+                # skip instead of hanging to a systemd kill (major finding on #4665).
+                payload["skipped"].append(
+                    {
+                        "producer_id": p["id"],
+                        "reason": "lock_timeout",
+                        "waited_s": args.lock_wait,
+                        "detail": str(exc),
+                    }
+                )
 
     payload["liveness"] = liveness(producers, runs, now)
 
@@ -324,6 +742,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         for r in payload["ran"]:
             print(f"{r['producer_id']}: {r['outcome']} (rc={r.get('returncode')})")
+        for s in payload["skipped"]:
+            print(f"SKIPPED {s['producer_id']}: {s['reason']}", file=sys.stderr)
+            if s["reason"] == "lock_timeout":
+                print(
+                    f"  another invoker held {s['producer_id']} past the {s['waited_s']:.0f}s "
+                    "lock wait. Next: its run (if any) is in the run ledger — "
+                    f"tail the ledger or rerun {sys.argv[0]} --check to reconcile; "
+                    "no action needed if the holder is a live determine fire.",
+                    file=sys.stderr,
+                )
         for d in payload["liveness"]:
             print(f"DEFICIT {d['producer_id']}: {d['deficit']}", file=sys.stderr)
         for pid in payload["runs_without_identified_checkout"]:

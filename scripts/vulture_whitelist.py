@@ -4161,9 +4161,49 @@ PerceptionPoint._geometry_policy
 
 # pydantic @model_serializer(mode="wrap") — invoked by pydantic during
 # model_dump, not by an explicit static call site.
+# The extensionless hapax-quota-telemetry-writer calls these for its v2
+# measurement projection, read-only --check, and operator-report subcommand.
+from shared.quota_headroom import collect_measurements, enrich_ledger, operator_report  # noqa: E402
+from shared.quota_spend_ledger import QuotaSpendLedger as _QuotaHeadroomLedger  # noqa: E402
 from shared.quota_spend_ledger import SpendReceipt as _QuotaSpendLedgerSpendReceipt  # noqa: E402
 
+collect_measurements
+enrich_ledger
+operator_report
+_QuotaHeadroomLedger.schema_v1_payload
+
 _QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
+
+from shared.quota_spend_ledger import (  # noqa: E402
+    TransitionBudget as _QuotaSpendLedgerTransitionBudget,
+)
+
+_QuotaSpendLedgerTransitionBudget._serialize_without_absent_provider_balance
+
+# GLMCP PAYG spend helpers: called by the extensionless scripts/hapax-glmcp-reviewer
+# (reservation before the paid call, usage-based reconciliation or freeze after it) and
+# scripts/hapax-quota-telemetry-writer (freezing untrusted receipts), which vulture does not scan.
+from shared.quota_spend_ledger import (  # noqa: E402
+    frozen_spend_receipt_payload as _frozen_spend_receipt_payload,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_reservation_usd as _glmcp_payg_reservation_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_usage_ceiling_usd as _glmcp_payg_usage_ceiling_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_usage_cost_usd as _glmcp_payg_usage_cost_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    settle_spend_covered_by_provider_balance as _settle_spend_covered_by_provider_balance,
+)
+
+_frozen_spend_receipt_payload
+_settle_spend_covered_by_provider_balance
+_glmcp_payg_reservation_usd
+_glmcp_payg_usage_ceiling_usd
+_glmcp_payg_usage_cost_usd
 
 # Platform session contract v1: exported adapter-conformance helpers are invoked
 # by fixture suites and future trainyard adapter runners. Pydantic field validators
@@ -4253,6 +4293,12 @@ is_persistent
 from shared.gate_event_producer import build_gate_event  # noqa: E402
 
 build_gate_event
+
+# Called by read_native_lifecycle_receipt in the extensionless methodology
+# dispatcher; tests/scripts/test_codex_identity_consumer.py executes that caller.
+from shared.codex_execution_receipt import recheck_codex_run_identity  # noqa: E402
+
+recheck_codex_run_identity
 
 # Additive measurement-loop keystone (CCEF/H STEP 7): the witnessed-outcome producer's public
 # API — callers (witnessed cc-task-gate / CI / review verdict sites) wire in a follow-on, like
@@ -4750,6 +4796,9 @@ from shared.capability_adapter_protocol import (  # noqa: E402
     CodexAdapter as _CodexAdapter,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
+    KimiAdapter as _KimiAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
     RetiredAntigravFailureClassifier as _RetiredAntigravFailureClassifier,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
@@ -4776,6 +4825,7 @@ _ = (
     _RetiredAntigravFailureClassifier,
     _ClaudeAdapter,
     _CodexAdapter,
+    _KimiAdapter,
 )
 
 # worker_failure_witness (capability-adapter-worker-path): the receipt-append + guarded
@@ -4960,11 +5010,25 @@ from shared.entitlement_capability import is_routable_supply as _is_routable_sup
 
 _ = (_classify_entitlement, _is_routable_supply)
 
-# GitHub PR status helper consumed by scripts/hapax-merge-queue-lineage, an
+# GitHub PR status helpers consumed by scripts/hapax-merge-queue-lineage, an
 # extensionless Python CLI that vulture's source scan does not follow.
+#
+# `get_pr_status_graphql` joined its REST sibling here 2026-08-30. Lineage hydrates a PR over the
+# transport the cycle chose: GraphQL when the balancer routed there, REST otherwise, with the
+# other pool used as a fallback only when it is measured above its floor. Both are called from
+# that same invisible file. DETECTOR BLIND SPOT, not dead code — the second kind.
+#
+# (This comment previously said hydration "follows either chosen transport", which was true of
+# the intent and false of the code at the time — the GraphQL branch was gated on REST being
+# healthy, so it refused GraphQL exactly when REST was empty. Fixed; the wording is now what
+# the code does rather than what it meant to.)
+#
+# Recheck, because the justification is only worth what it can be checked against:
+#   rg -n "get_pr_status_(rest|graphql)" scripts/hapax-merge-queue-lineage
+from github_pr_status import get_pr_status_graphql as _get_pr_status_graphql  # noqa: E402
 from github_pr_status import get_pr_status_rest as _get_pr_status_rest  # noqa: E402
 
-_ = (_get_pr_status_rest,)
+_ = (_get_pr_status_rest, _get_pr_status_graphql)
 
 # ---------------------------------------------------------------------------
 # Agentic-trust evidence-only non-supply plane (PR #4503)
@@ -5145,3 +5209,79 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# Native load-set observation is called by the extensionless
+# scripts/hapax-platform-capability-receipts producer; Pydantic invokes the
+# declared-path validator during registry parsing. Both have behavior tests.
+from shared.capability_load_set import observe_load_set as _observe_load_set  # noqa: E402
+from shared.platform_capability_registry import NativeLoadFile as _NativeLoadFile  # noqa: E402
+
+_observe_load_set
+_NativeLoadFile._relative_binding
+
+# Charter claim machinery (cc-task charter-breach-reporter-publication-validation-20260922):
+# every production caller lives in inline-python heredocs inside extensionless bash —
+# scripts/cc-claim (sidecar_belongs_to, child_may_mint, record_unit) and
+# hooks/scripts/cc-task-gate.impl.sh (obligation_breaches, write_obligation_report).
+# DETECTOR BLIND SPOT, not dead code: vulture never parses those heredocs. Exercised
+# by tests/scripts/test_cc_claim_charter.py and tests/shared/test_charter_claim.py.
+# residue_without_active_lease shipped with the module but had no caller — removed
+# rather than whitelisted (superseded by archive_dispatch_only_claim_residue in
+# shared/sdlc_claim.py, #4713).
+from shared.charter_claim import (  # noqa: E402
+    child_may_mint as _charter_child_may_mint,
+)
+from shared.charter_claim import (
+    obligation_breaches as _charter_obligation_breaches,
+)
+from shared.charter_claim import (
+    record_unit as _charter_record_unit,
+)
+from shared.charter_claim import (
+    sidecar_belongs_to as _charter_sidecar_belongs_to,
+)
+from shared.charter_claim import (
+    write_obligation_report as _charter_write_obligation_report,
+)
+
+_ = (
+    _charter_sidecar_belongs_to,
+    _charter_child_may_mint,
+    _charter_record_unit,
+    _charter_write_obligation_report,
+    _charter_obligation_breaches,
+)
+
+# ENCOUNTERED-MACHINERY auditor. The pure evaluation module is called only by the extensionless
+# producer `scripts/hapax-encountered-machinery-audit` (declared in
+# config/determination-producers.json and run by hapax-determine). Vulture does not scan that
+# script.
+from shared.encountered_machinery_audit import Trend as _EmaTrend  # noqa: E402
+from shared.encountered_machinery_audit import (  # noqa: E402
+    parse_catalogue as _ema_parse_catalogue,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    parse_ledger as _ema_parse_ledger,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    render_flag_drop as _ema_render_flag_drop,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    render_pile_status as _ema_render_pile_status,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    render_reduction_row as _ema_render_reduction_row,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    split_frontmatter as _ema_split_frontmatter,
+)
+
+_ = (
+    _EmaTrend.unobserved,
+    _ema_parse_catalogue,
+    _ema_parse_ledger,
+    _ema_render_flag_drop,
+    _ema_render_pile_status,
+    _ema_render_reduction_row,
+    _ema_split_frontmatter,
+)

@@ -73,6 +73,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.sonnet",
         "claude.review.opus",
         "claude.interactive.full",
+        "kimi.interactive.lane",
         "codex.headless.full",
         "codex.headless.spark",
         "agy.review.direct",
@@ -93,6 +94,8 @@ CLAUDE_REVIEW_ROUTE_ID = "claude.review.opus"
 CLAUDE_REVIEW_ADMISSION_BLOCKER = "claude_review_seat_receipt_admission_required"
 CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER = "claude_review_route_specific_quota_receipt_absent"
 CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER = "account_live_quota_receipt_absent"
+KIMI_INTERACTIVE_ROUTE_ID = "kimi.interactive.lane"
+KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
@@ -102,6 +105,13 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     # the route stays held — lane/session presence never clears this.
     CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
     CLAUDE_REVIEW_ROUTE_ID: CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER,
+    # kimi.interactive.lane: same contract — a hapax.kimi_quota_admission.v1 receipt minted by
+    # ~/.local/bin/hapax-kimi-quota-admission and folded into the live ledger by the telemetry
+    # writer (PR #4660) clears the fail-closed receipt blocker. The route id follows the minter's
+    # live contract (ROUTE_ID = "kimi.interactive.lane"), not the claude .interactive.full shape.
+    # Lane/session presence never clears this (review finding gemini-1, 2026-09-12: a route
+    # missing from this set can never clear its config-recorded blocker).
+    KIMI_INTERACTIVE_ROUTE_ID: KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER,
 }
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 _WRAPPER_CAPABILITY_REASON_PREFIXES = (
@@ -140,6 +150,7 @@ class Platform(StrEnum):
     CODEX = "codex"
     GEMINI = "gemini"
     GLMCP = "glmcp"
+    KIMI = "kimi"
     LOCAL_TOOL = "local_tool"
     VIBE = "vibe"
 
@@ -160,6 +171,7 @@ class Profile(StrEnum):
     FULL = "full"
     HAIKU = "haiku"
     JR = "jr"
+    LANE = "lane"
     LITE = "lite"
     OPENROUTER = "openrouter"
     OPUS = "opus"
@@ -218,6 +230,7 @@ class ModelId(StrEnum):
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
+    GPT_6_ASTRA = "gpt-6-astra"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
@@ -227,6 +240,8 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    Z_AI_GLM_5_3 = "z_ai-glm-5.3"
+    KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
 
@@ -850,6 +865,46 @@ class SupplyVector(StrictModel):
     supply_descriptor: SupplyDescriptor | None = None
 
 
+class NativeLoadFile(StrictModel):
+    """One declared input. An unknown digest is explicit, never a match."""
+
+    root: Literal["native_home", "project"]
+    path: str = Field(min_length=1)
+    kind: Literal["instructions", "configuration"]
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    digest_description: str | None = None
+    required: bool = True
+
+    @model_validator(mode="after")
+    def _relative_binding(self) -> Self:
+        from pathlib import PurePosixPath
+
+        path = PurePosixPath(self.path)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("load-set paths must stay within their declared root")
+        return self
+
+
+class NativeLoadSet(StrictModel):
+    """Declared native inputs within the existing route contract.
+
+    Null extension lists mean unobserved, whereas [] deliberately declares none.
+    Host observations do not enforce isolation. OCI construction may constrain
+    inputs, but still cannot attest that a model used delivered instructions.
+    """
+
+    native_home: str = Field(min_length=1)
+    home_env: str | None = None
+    files: list[NativeLoadFile] = Field(min_length=1)
+    memory_scope: str = Field(min_length=1)
+    plugins: list[str] | None = None
+    skills: list[str] | None = None
+    hooks: list[str] | None = None
+    mcp: list[str] | None = None
+    loading_flags: list[str] | None = None
+    source_refs: list[str] = Field(min_length=1)
+
+
 class PlatformCapabilityRoute(StrictModel):
     registry_schema: Literal[1] = 1
     route_id: str
@@ -864,6 +919,7 @@ class PlatformCapabilityRoute(StrictModel):
     blocked_reasons: list[str] = Field(default_factory=list)
     model_or_engine: str | None
     execution_descriptor: ExecutionDescriptor
+    native_load_set: NativeLoadSet | None = None
     descriptor_variants: list[DescriptorVariant] = Field(default_factory=list)
     paid_provider: str | None = None
     paid_profile: str | None = None
@@ -1658,7 +1714,7 @@ def build_supply_vector(
             lane_id=lane_id,
             mode=route.mode,
             profile=route.profile,
-            model_fingerprint=route.model_or_engine,
+            model_fingerprint=str(route.execution_descriptor.model_id),
             launcher_contract=route.launcher,
             sanctioned_wrapper=route.sanctioned_wrapper,
             approval_posture=route.approval_posture,
@@ -2121,14 +2177,18 @@ def _apply_receipt_to_route_payload(
     # not clear the quota blockers of its siblings (review finding on #4616).
     quota_observed_for_route = _receipt_quota_names_route(receipt, route_payload)
     if receipt.quota.status is EvidenceStatus.OBSERVED and not quota_observed_for_route:
-        quota_reason_codes = ["account_live_quota_receipt_absent"]
+        quota_reason_codes = list(
+            dict.fromkeys([*quota_reason_codes, "account_live_quota_receipt_absent"])
+        )
     _apply_surface(
         freshness,
         "quota",
         checked_at=observed_at,
         stale_after=quota_stale_after,
         evidence_refs=[*receipt.quota.evidence_refs, receipt_ref],
-        reason_codes=quota_reason_codes if not quota_observed_for_route else [],
+        # Observing quota (including exhausted quota) is not an availability
+        # verdict. Route correlation cannot discard reported blockers.
+        reason_codes=quota_reason_codes,
         removable_reasons=_quota_unobservable_removable_reasons(route_payload)
         if quota_unobservable_nonblocking
         else (
@@ -2165,8 +2225,6 @@ def _apply_receipt_to_route_payload(
         top_blockers.extend(capability_reason_codes)
     if resource_status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(resource_reason_codes)
-    if not quota_observed_for_route and not quota_unobservable_nonblocking:
-        top_blockers.extend(quota_reason_codes)
 
     removable_top_blockers = {"provider_docs_evidence_absent"}
     if capability_status is EvidenceStatus.OBSERVED:
@@ -2221,6 +2279,10 @@ def _apply_receipt_to_route_payload(
                 reason for reason in quota_evidence.get("blocked_reasons", []) if reason != blocker
             ]
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
+    # Project the final quota surface after clearing historical top-level
+    # blockers. A current reason must survive even if an older instance of
+    # that reason was eligible for removal.
+    top_blockers.extend(freshness["evidence"]["quota"]["blocked_reasons"])
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
 
@@ -2420,7 +2482,7 @@ def _apply_surface(
 
 
 #: Effort tokens historically smuggled into ``model_or_engine`` (e.g. codex.headless.full's
-#: ``gpt-5.5-xhigh``). ``derive_execution_descriptor`` splits them back into structured axes.
+#: ``gpt-6-astra-xhigh``). ``derive_execution_descriptor`` splits them back into structured axes.
 _SMUGGLED_EFFORT_SUFFIXES: dict[str, Effort] = {
     "-max": Effort.MAX,
     "-xhigh": Effort.XHIGH,
@@ -2448,6 +2510,7 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "claude-sonnet-5": ModelId.CLAUDE_SONNET_5,
     "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
     "gpt-5.5": ModelId.GPT_5_5,
+    "gpt-6-astra": ModelId.GPT_6_ASTRA,
     "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
     "gpt-oss-120b": ModelId.GPT_OSS_120B,
     "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,
@@ -2456,6 +2519,7 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "gemini-3.5-flash": ModelId.GEMINI_3_5_FLASH,
     "z_ai-glm-coding-plan:glm-5": ModelId.Z_AI_GLM_5,
     "z_ai-glm-coding-plan:glm-5.2": ModelId.Z_AI_GLM_5_2,
+    "z_ai-glm-coding-plan:glm-5.3": ModelId.Z_AI_GLM_5_3,
     "litellm.anthropic.claude-opus-4-cloud-burst": ModelId.CLAUDE_OPUS_4_8,
     "litellm.provider-gateway-maintenance": ModelId.GEMINI_3_1_PRO_PREVIEW,
 }
@@ -2464,8 +2528,8 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
 def derive_execution_descriptor(route: PlatformCapabilityRoute) -> ExecutionDescriptor:
     """Project a route's implicit execution descriptor from its legacy ``model_or_engine``.
 
-    Best-effort: it surfaces effort smuggled into the model string (``gpt-5.5-xhigh`` ->
-    model_id ``gpt-5.5`` + effort ``XHIGH``) and maps the model onto the dated
+    Best-effort: it surfaces effort smuggled into the model string (``gpt-6-astra-xhigh`` ->
+    model_id ``gpt-6-astra`` + effort ``XHIGH``) and maps the model onto the dated
     :class:`ModelId` catalog (unmapped -> ``ModelId.UNKNOWN``). effort that the data never
     carried is ``Effort.NONE``; context_mode/quantization stay at conservative defaults.
     Used to GENERATE the stored ``execution_descriptor`` backfill and demonstrate the

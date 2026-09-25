@@ -137,13 +137,32 @@ mkdir -p "$STATE_DIR"
 
 log() { printf '%s lane-supervisor: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
-local_dev_maintenance_mode() {
+site_class() {
+  # Explicit site classes (G1 D2). Host names and mode strings map here; they
+  # are placement hints, not identity. remote/thin-client are NOT appendix.
   local mode="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
   if [ -z "$mode" ]; then
     mode="${HAPAX_DEFAULT_DISPATCH_HOST:-${HAPAX_DISPATCH_HOST:-local}}"
   fi
   case "$mode" in
-    appendix | hapax-appendix | appendix-only | appendix_only | remote | thin-client | thin_client)
+    appendix|hapax-appendix|appendix-only|appendix_only)
+      echo "appendix-only"
+      ;;
+    remote|thin-client|thin_client|remote-client)
+      echo "remote-client"
+      ;;
+    *)
+      echo "local"
+      ;;
+  esac
+}
+
+local_dev_maintenance_mode() {
+  # Policy derived from site class, not from the mode string. Both non-local
+  # classes suppress local required-lane launch; they stay distinct so a future
+  # policy split is one map entry, not a string-match rewrite.
+  case "$(site_class)" in
+    appendix-only|remote-client)
       echo "appendix-only"
       ;;
     *)
@@ -152,7 +171,9 @@ local_dev_maintenance_mode() {
   esac
 }
 
+SITE_CLASS="$(site_class)"
 LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
+log "site-class ${SITE_CLASS} (maintenance=${LOCAL_DEV_MAINTENANCE_MODE})"
 if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
   log "appendix-only local-dev maintenance: unclaimed idle-await respawns disabled; active claimed-task resumes preserved"
 fi
@@ -331,6 +352,49 @@ activate_p0_codex_drain_lane() {
 
 # ── liveness ──────────────────────────────────────────────────────────────────
 
+# Every session target below is anchored to the EXACT name. tmux resolves a bare
+# target by exact name, then by PREFIX, then by fnmatch — so `hapax-claude-cx-cap`
+# resolves to `hapax-claude-cx-cap-money` whenever the former is missing, and this
+# estate's lane names do nest like that. Measured on tmux 3.7c, private socket, with
+# only `hapax-claude-delta-2` running: `has-session -t hapax-claude-delta` returned 0
+# and `kill-session -t hapax-claude-delta` killed the sibling. `=name` forces an exact
+# match on has-session and kill-session. It does NOT help list-panes: `-s -t =name`
+# still reported the sibling's panes instead of failing — so the pane list is read
+# server-wide and filtered on the exact name rather than targeted at all.
+
+# tmux_session_panes <session> <format>: one line of <format> per pane belonging to
+# exactly <session>, across ALL of its windows. Empty when it has none.
+tmux_session_panes() {
+  local session="$1" fmt="$2"
+  tmux list-panes -a -F "#{session_name}"$'\t'"$fmt" 2>/dev/null |
+    awk -F '\t' -v s="$session" '$1 == s { print substr($0, length(s) + 2) }'
+}
+
+# A session is alive only if it still has at least one LIVE pane.
+#
+# `has-session` is not that test. Lane windows are now created with
+# `remain-on-exit failed` (see hapax-claude / hapax-codex), so a pane whose process
+# dies on a signal or a non-zero status is KEPT — exit status, signal and scrollback
+# intact — because a lane death used to destroy its own evidence. But a retained dead
+# pane keeps the SESSION, so `has-session` reports a corpse as a live lane and the
+# supervisor never respawns it. That is FM-11 defeated by the very change meant to make
+# deaths legible, which is why liveness moved here rather than remain-on-exit being
+# left off.
+#
+# Every window matters: a lane whose active window died must not read as alive on the
+# strength of another, which is why the listing is server-wide (`-a`) and filtered by
+# session rather than `list-panes -t <session>`, which reports one window.
+tmux_has_live_pane() {
+  local session="$1" states=""
+  tmux has-session -t "=$session" 2>/dev/null || return 1
+  states="$(tmux_session_panes "$session" '#{pane_dead}')"
+  # No pane list at all — a tmux too old for the format, or a race with teardown.
+  # Fall back to has-session, which is what this test used to be. Failing OPEN keeps a
+  # working lane running; failing closed would respawn on top of a live one.
+  [ -n "$states" ] || return 0
+  printf '%s\n' "$states" | grep -qx '0'
+}
+
 claude_alive() {
   local lane="$1" pidfile="$RUNTIME_DIR/$1.pid" pid=""
   if [ -f "$pidfile" ]; then
@@ -339,10 +403,90 @@ claude_alive() {
       return 0
     fi
   fi
-  tmux has-session -t "hapax-claude-$lane" 2>/dev/null
+  tmux_has_live_pane "hapax-claude-$lane"
 }
 
-tmux_session_alive() { tmux has-session -t "$1" 2>/dev/null; }
+tmux_session_alive() { tmux_has_live_pane "$1"; }
+
+# ── dead-pane forensics ──────────────────────────────────────────────────────
+#
+# The measured gap this closes: the dev lane's claude died at 01:19:34Z with no
+# coredump, no kernel line, no oomd record and no supervisor or launcher kill — and
+# the pane went with it, so the cause was not merely unknown but UNMEASURABLE. With
+# `remain-on-exit failed` the corpse is kept; this reads it before the respawn clears
+# it away. Writing the log is therefore a precondition of the kill, not a courtesy
+# after it: kill first and the evidence is gone exactly as before.
+#
+# A tmux hook could capture this and deliberately does not. Measured 2026-09-16:
+# `pane-exited` never fires when `remain-on-exit` retains the pane (nothing exited —
+# the pane went dead), but `pane-died` does, and `#{hook_pane}`, `#{pane_dead_status}`,
+# `#{pane_dead_signal}` and `#{pane_start_command}` all resolve correctly inside it.
+# It is still the wrong home for this: the corpse must also be KILLED or the launcher
+# cannot start, the capture and the kill have to be one ordered unit owned by whoever
+# does the respawn, and a hook set at launch covers only sessions created after this
+# change — not one left by an older launcher or started by hand. Splitting the record
+# across a hook and this function would be two writers for one log.
+PANE_EXIT_LOG_DIR="${HAPAX_PANE_EXIT_LOG_DIR:-$HOME/.cache/hapax/tmux-pane-exits}"
+PANE_EXIT_RETENTION_DAYS="${HAPAX_PANE_EXIT_RETENTION_DAYS:-30}"
+
+# capture_dead_pane <lane> <session>: record why the pane died, then remove the
+# session so the launcher's `new-session` can succeed. Never fails the caller — a
+# respawn must not be blocked by the forensics failing.
+capture_dead_pane() {
+  local lane="$1" session="$2" stamp logfile pane dead=""
+  tmux has-session -t "=$session" 2>/dev/null || return 0
+
+  # Only a session with NO live pane is a corpse. Anything else is a working lane and
+  # must never be killed here on the strength of one dead window.
+  if tmux_has_live_pane "$session"; then
+    return 0
+  fi
+
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$PANE_EXIT_LOG_DIR" 2>/dev/null || true
+  logfile="$PANE_EXIT_LOG_DIR/$stamp-$lane.log"
+
+  {
+    printf 'lane: %s\n' "$lane"
+    printf 'session: %s\n' "$session"
+    printf 'captured_at: %s\n' "$stamp"
+    # One block per pane, addressed by pane id rather than by session: `capture-pane
+    # -t <session>` reads only the current window's active pane, which would silently
+    # drop the very pane that died in a multi-window lane.
+    while IFS= read -r pane; do
+      [ -n "$pane" ] || continue
+      # These four fields are the whole reason this function exists. status and signal
+      # say HOW it died — and they are mutually exclusive, so both must be recorded
+      # (measured: SIGKILL gives signal=9 with status empty; `exit 42` gives status=42
+      # with signal empty). start_command says what was running, dead_time says when.
+      tmux display-message -p -t "$pane" \
+        'pane: #{pane_id} pane_dead=#{pane_dead} pane_dead_status=#{pane_dead_status} pane_dead_signal=#{pane_dead_signal} pane_dead_time=#{pane_dead_time} pane_start_command=#{pane_start_command}' \
+        2>/dev/null || printf 'pane: %s <display-message failed>\n' "$pane"
+      printf -- '--- %s: last 60 lines ---\n' "$pane"
+      tmux capture-pane -p -S -60 -t "$pane" 2>/dev/null || printf '<capture-pane failed>\n'
+    done <<< "$(tmux_session_panes "$session" '#{pane_id}')"
+  } >"$logfile" 2>/dev/null || true
+
+  dead="$(tmux_session_panes "$session" 'status=#{pane_dead_status} signal=#{pane_dead_signal}' | head -1 || true)"
+  # Name the evidence only if it exists. The capture is best-effort by design — a
+  # respawn must never be blocked by forensics failing — which is exactly why this
+  # line may not assert a file it has not checked: pointing the operator at an empty
+  # path is the silent loss this whole change exists to remove.
+  if [ -s "$logfile" ]; then
+    log "$lane: dead pane retained by remain-on-exit (${dead:-unknown}) — forensics in $logfile"
+  else
+    log "$lane: dead pane retained by remain-on-exit (${dead:-unknown}) — forensics NOT written to $logfile and this corpse is cleared below, so its last lines are lost; next: make $PANE_EXIT_LOG_DIR a writable directory before the next death (mkdir -p \"$PANE_EXIT_LOG_DIR\"; ls -ld \"$PANE_EXIT_LOG_DIR\") or point HAPAX_PANE_EXIT_LOG_DIR elsewhere"
+  fi
+
+  # Only now. The launchers refuse to start over an existing session, so the kill is
+  # what makes the respawn possible; doing it before the read would restore exactly the
+  # blindness this exists to remove. Exact name: see the liveness section.
+  tmux kill-session -t "=$session" 2>/dev/null || true
+
+  # Retention, best-effort and last, so a prune failure never costs us a capture.
+  find "$PANE_EXIT_LOG_DIR" -maxdepth 1 -name '*.log' -type f \
+    -mtime "+$PANE_EXIT_RETENTION_DAYS" -delete 2>/dev/null || true
+}
 
 # ── spam control ────────────────────────────────────────────────────────────
 
@@ -578,6 +722,15 @@ guard() {
     fi
     return 0
   fi
+
+  # The lane is dead and about to be relaunched. With `remain-on-exit failed` the dead
+  # pane may still be holding its session open, and both launchers refuse to start over
+  # an existing session — so read the corpse and only then clear it. This sits AFTER the
+  # dry-run return on purpose: a dry run must not destroy the thing it is describing.
+  case "$kind" in
+    claude) capture_dead_pane "$lane" "hapax-claude-$lane" ;;
+    codex)  capture_dead_pane "$lane" "hapax-codex-$lane" ;;
+  esac
 
   # respawn_tracked=1 only for the synchronous launchers whose exit code we can
   # observe; the backgrounded headless resume returns immediately (rc unknowable

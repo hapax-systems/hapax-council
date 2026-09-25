@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
 SENDER = REPO_ROOT / "scripts" / "hapax-codex-send"
@@ -68,6 +70,7 @@ printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
     # default cc-claim path fails and hapax-codex surfaces it as exit 8.
     env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
     env["HAPAX_SESSION_ID"] = "0f9f9f9f-1111-2222-3333-444455556666"
+    env.pop("HAPAX_METHODOLOGY_DISPATCH_TASK", None)
     env.pop("CODEX_THREAD_NAME", None)
     env.pop("CODEX_ROLE", None)
     env.pop("CODEX_SESSION_NAME", None)
@@ -78,6 +81,18 @@ printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
     env.pop("HAPAX_PARENT_AGENT_INTERFACE", None)
     env.pop("HAPAX_PARENT_AGENT_NAME", None)
     return env, args_file, env_file
+
+
+def _write_descriptor_runtime(path: Path) -> None:
+    (path / "scripts").mkdir(parents=True, exist_ok=True)
+    for directory in ("shared", "config"):
+        (path / directory).symlink_to(REPO_ROOT / directory, target_is_directory=True)
+    runtime = Path(sys.executable).parent.parent
+    assert (runtime / "bin/python").is_file(), "fixture requires a provisioned Python runtime"
+    (path / ".venv").symlink_to(runtime, target_is_directory=True)
+    shutil.copy2(
+        REPO_ROOT / "scripts/capability-execution.sh", path / "scripts/capability-execution.sh"
+    )
 
 
 def _thin_launcher_path(tmp_path: Path) -> Path:
@@ -289,6 +304,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -329,6 +345,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -383,6 +400,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -423,6 +441,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -720,6 +739,7 @@ exit 0
 def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
     env, args_file, _env_file = _env_with_fake_codex(tmp_path)
     council = tmp_path / "council"
+    _write_descriptor_runtime(council)
     hook = council / "hooks" / "scripts" / "codex-hook-adapter.sh"
     hook.parent.mkdir(parents=True)
     hook.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -766,6 +786,7 @@ def test_launcher_missing_codex_reports_next_action(tmp_path: Path) -> None:
     bad_candidate.mkdir()
 
     env["HAPAX_CODEX_BIN_PATH"] = str(bad_candidate)
+    _write_descriptor_runtime(tmp_path / "council")
     env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "council")
     env["HAPAX_SESSION_ID"] = "launcher-missing-codex-session"
     env["NPM_CONFIG_PREFIX"] = ""
@@ -1524,6 +1545,10 @@ def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_
     assert "task_id: demo-task" in bootstrap
     assert "idle_update_seconds: 270" in bootstrap
     assert f"{REPO_ROOT}/AGENTS.md" in bootstrap
+    assert "Shared conventions arrive through the Codex global AGENTS.md binding" in bootstrap
+    assert "/.config/hapax/agent-instructions/AGENTS.md" in bootstrap
+    assert "/projects/CLAUDE.md" not in bootstrap
+    assert "do not reread a CLAUDE.md symlink" in bootstrap
     assert "relay/preflight note" in bootstrap
     assert "Codex version, MCP startup warnings" in bootstrap
     assert "not actively producing" in bootstrap
@@ -1850,7 +1875,7 @@ def test_idle_cadence_contract_defaults_to_relay_protocol_270() -> None:
 
     assert 'HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"' in launcher
     assert 'HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-180}"' not in launcher
-    assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 270)" in agents
+    assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 270 seconds)" in agents
     assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 180)" not in agents
 
 
@@ -2010,6 +2035,142 @@ def test_current_session_relay_retirement_blocks_without_force(tmp_path: Path) -
     assert "relay 'cx-red' is retired/wound-down" in result.stderr
 
 
+def _tmux_invocations(tmux_args: Path) -> list[list[str]]:
+    """Split the fake-tmux recorder's log into one argument list per invocation.
+
+    The launcher calls tmux more than once per lane — ``new-session`` and then
+    ``set-option ... remain-on-exit failed``, which keeps a badly-dead pane for
+    hapax-lane-supervisor to autopsy — so neither "the file" nor "its last line"
+    identifies a single call any more. Each invocation is delimited by ``--``.
+    """
+    blocks: list[list[str]] = []
+    for line in tmux_args.read_text().splitlines():
+        if line == "--":
+            blocks.append([])
+        elif blocks:
+            blocks[-1].append(line)
+    return blocks
+
+
+def _new_session_args(tmux_args: Path) -> list[str]:
+    for block in _tmux_invocations(tmux_args):
+        if block and block[0] == "new-session":
+            return block
+    raise AssertionError(f"no new-session invocation recorded: {tmux_args.read_text()!r}")
+
+
+_REMAIN_ON_EXIT_CALL = [
+    "set-option",
+    "-w",
+    "-t",
+    "=hapax-codex-cx-amber:",
+    "remain-on-exit",
+    "failed",
+]
+
+
+def _assert_remain_on_exit_set_after_new_session(tmux_args: Path) -> None:
+    blocks = _tmux_invocations(tmux_args)
+    starts = [
+        i
+        for i, b in enumerate(blocks)
+        if b[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
+    ]
+    assert starts, f"no new-session recorded: {blocks}"
+    assert _REMAIN_ON_EXIT_CALL in blocks[starts[0] + 1 :], (
+        f"remain-on-exit was not set after new-session: {blocks}"
+    )
+
+
+def _recording_tmux(tmp_path: Path, tmux_args: Path) -> None:
+    """A tmux that records every invocation and exits with the status the test
+    injects for ``new-session`` / ``set-option``, so the launcher's own handling of
+    those failures is what runs."""
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' -- "$@" >> {tmux_args}
+case "${{1:-}}" in
+  has-session) exit 1 ;;
+  new-session) exit "${{FAKE_TMUX_NEW_SESSION_RC:-0}}" ;;
+  set-option)  exit "${{FAKE_TMUX_SET_OPTION_RC:-0}}" ;;
+  *) exit 0 ;;
+esac
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+
+def _run_terminal_launch(env: dict[str, str], terminal: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--terminal",
+            terminal,
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+
+def test_terminal_foot_sets_remain_on_exit_after_new_session(tmp_path: Path) -> None:
+    """The ``foot)`` branch creates the session through the same helper as ``tmux)``
+    and must set remain-on-exit too; ``foot`` itself is faked."""
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    tmux_args = tmp_path / "tmux-args.txt"
+    _recording_tmux(tmp_path, tmux_args)
+    fake_foot = tmp_path / "bin" / "foot"
+    fake_foot.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake_foot.chmod(0o755)
+    result = _run_terminal_launch(env, "foot")
+    assert result.returncode == 0, result.stderr
+    _assert_remain_on_exit_set_after_new_session(tmux_args)
+
+
+def test_terminal_tmux_fails_open_when_set_option_fails(tmp_path: Path) -> None:
+    """Losing the forensics option must not refuse the launch, and must not be
+    silent: exit 0, the session name still printed, a warning naming the next
+    action on stderr."""
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    tmux_args = tmp_path / "tmux-args.txt"
+    _recording_tmux(tmp_path, tmux_args)
+    env["FAKE_TMUX_SET_OPTION_RC"] = "1"
+    result = _run_terminal_launch(env, "tmux")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "hapax-codex-cx-amber"
+    assert "could not set remain-on-exit on hapax-codex-cx-amber" in result.stderr, result.stderr
+    assert "next:" in result.stderr and "tmux -V" in result.stderr, result.stderr
+
+
+def test_terminal_tmux_propagates_new_session_failure(tmp_path: Path) -> None:
+    """A failed ``new-session`` fails the launch with a non-zero status and never
+    goes on to set options on a session that does not exist."""
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    tmux_args = tmp_path / "tmux-args.txt"
+    _recording_tmux(tmp_path, tmux_args)
+    env["FAKE_TMUX_NEW_SESSION_RC"] = "7"
+    result = _run_terminal_launch(env, "tmux")
+    assert result.returncode != 0, "a failed new-session was reported as a successful launch"
+    assert result.stdout.strip() != "hapax-codex-cx-amber"
+    assert not any(b[:1] == ["set-option"] for b in _tmux_invocations(tmux_args)), (
+        tmux_args.read_text()
+    )
+
+
 def test_terminal_tmux_starts_codex_runner_without_parent_claim(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     _write_active_task(env, "demo-task")
@@ -2020,7 +2181,7 @@ def test_terminal_tmux_starts_codex_runner_without_parent_claim(tmp_path: Path) 
 if [ "$1" = "has-session" ]; then
   exit 1
 fi
-printf '%s\\n' "$@" > {tmux_args}
+printf '%s\\n' -- "$@" >> {tmux_args}
 """
     )
     fake_tmux.chmod(0o755)
@@ -2052,13 +2213,18 @@ printf '%s\\n' "$@" > {tmux_args}
     assert "new-session" in args
     assert "hapax-codex-cx-amber" in args
 
-    runner = Path(args.strip().splitlines()[-1])
+    runner = Path(_new_session_args(tmux_args)[-1])
     runner_text = runner.read_text()
     assert "hapax-codex" in runner_text
     assert "--session cx-amber" in runner_text
     assert "--force" in runner_text
     assert "--task demo-task" in runner_text
     assert "--no-claim" not in runner_text
+    # The CALL SITE, not just the helper: the tmux branch must set remain-on-exit
+    # on the session it just created, so a bad death keeps its pane for
+    # hapax-lane-supervisor to read. Reverting the branch to an inline new-session
+    # leaves the helper defined-but-unused, and this is what catches that.
+    _assert_remain_on_exit_set_after_new_session(tmux_args)
 
 
 def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex(tmp_path: Path) -> None:
@@ -2081,7 +2247,7 @@ case "$1" in
     printf '%s\\n' 4321
     ;;
   new-session)
-    printf '%s\\n' "$@" > {tmux_args}
+    printf '%s\\n' -- "$@" >> {tmux_args}
     ;;
 esac
 """,
@@ -2115,9 +2281,9 @@ esac
     assert "status: claimed" in task_text
     assert "assigned_to: cx-amber" in task_text
     assert result.stdout.strip() == "hapax-codex-cx-amber"
-    tmux_lines = tmux_args.read_text(encoding="utf-8").splitlines()
-    assert tmux_lines[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
-    runner = Path(tmux_lines[-1])
+    new_session = _new_session_args(tmux_args)
+    assert new_session[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
+    runner = Path(new_session[-1])
     runner_text = runner.read_text(encoding="utf-8")
     assert "\nssh " in runner_text
     assert "bash" in runner_text
@@ -2221,7 +2387,7 @@ case "$1" in
     printf '%s\\n' 4321
     ;;
   new-session)
-    printf '%s\\n' "$@" > {tmux_args}
+    printf '%s\\n' -- "$@" >> {tmux_args}
     ;;
 esac
 """,
@@ -2251,7 +2417,7 @@ esac
     )
 
     assert result.returncode == 0, result.stderr
-    runner = Path(tmux_args.read_text(encoding="utf-8").splitlines()[-1])
+    runner = Path(_new_session_args(tmux_args)[-1])
     try:
         runner_result = subprocess.run(
             [str(runner)],
@@ -2286,7 +2452,7 @@ def test_terminal_tmux_allows_assigned_ready_state_task(tmp_path: Path) -> None:
 if [ "$1" = "has-session" ]; then
   exit 1
 fi
-printf '%s\\n' "$@" > {tmux_args}
+printf '%s\\n' -- "$@" >> {tmux_args}
 """
     )
     fake_tmux.chmod(0o755)
@@ -2314,7 +2480,7 @@ printf '%s\\n' "$@" > {tmux_args}
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "hapax-codex-cx-amber"
-    runner = Path(tmux_args.read_text().strip().splitlines()[-1])
+    runner = Path(_new_session_args(tmux_args)[-1])
     runner_text = runner.read_text()
     assert "--session cx-amber" in runner_text
     assert "--task demo-task" in runner_text
@@ -2456,9 +2622,16 @@ esac
     assert "--app-id\nhapax-codex-cx-violet" in args
     assert "--title\ncx-violet" in args
     assert "--working-directory" in args
-    assert "tmux\nattach-session\n-t\nhapax-codex-cx-violet" in args
+    # Anchored, and this is the one that carries the OPERATOR: measured on 3.7c with only
+    # `hapax-probe-delta-2` running, `attach-session -t hapax-probe-delta` resolved to the
+    # sibling (it reached "open terminal failed") where `-t =hapax-probe-delta` said
+    # "can't find session". Unanchored, a lane whose session is gone next to a
+    # longer-named one attaches the operator's keystrokes to the wrong lane's pane.
+    assert "tmux\nattach-session\n-t\n=hapax-codex-cx-violet" in args
     tmux_text = tmux_log.read_text()
-    assert "has-session -t hapax-codex-cx-violet" in tmux_text
+    # Anchored: a bare target would prefix-match a session whose name merely
+    # extends this one (measured on tmux 3.7c), and attach the operator to it.
+    assert "has-session -t =hapax-codex-cx-violet" in tmux_text
     assert "new-session -d -s hapax-codex-cx-violet" in tmux_text
     assert "dispatch movetoworkspacesilent name:1,address:0xabc" in hyprctl_args.read_text()
 

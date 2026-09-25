@@ -861,3 +861,167 @@ def test_load_dedup_tracker_non_dict_returns_empty(tmp_path, payload, kind, monk
     dedup_path.write_text(payload)
     monkeypatch.setattr(ingest, "DEDUP_PATH", dedup_path)
     assert ingest._load_dedup_tracker() == {}, f"non-dict root={kind} must yield empty"
+
+
+# ── consent failure never becomes permission ────────────────────────────────
+
+
+class TestIngestConsentFailureNeverBecomesPermission:
+    """Driven through the actual caller, ingest_file: a document naming
+    people is upserted only when every named person has an affirmative
+    contract. A registry that cannot be loaded or checked, a fail-closed
+    registry, malformed ``people`` metadata or a non-boolean answer never
+    reaches the vector store."""
+
+    SUBJECT = "synthetic-subject-c"
+
+    def _patch_registry(self, monkeypatch, *, load_exc=None, check=None, fail_closed=False):
+        import shared.governance.consent as consent_mod
+
+        calls = {"load": 0, "check": 0}
+
+        class _Registry:
+            def __init__(self, *_a, **_k):
+                pass
+
+            def load(self, *_a, **_k):
+                calls["load"] += 1
+                if load_exc is not None:
+                    raise load_exc
+                return 0 if fail_closed else 1
+
+            @property
+            def fail_closed(self):
+                return fail_closed
+
+            def contract_check(self, person_id, data_category):
+                calls["check"] += 1
+                if isinstance(check, BaseException):
+                    raise check
+                return False if fail_closed else check
+
+        monkeypatch.setattr(consent_mod, "ConsentRegistry", _Registry)
+        return calls
+
+    def _ingest(
+        self,
+        tmp_path,
+        monkeypatch,
+        people_yaml: str | None,
+        source_service_yaml: str = "document",
+    ):
+        import agents.refusal_brief as refusal_pkg
+
+        front = f"---\nsource_service: {source_service_yaml}\n"
+        if people_yaml is not None:
+            front += f"people: {people_yaml}\n"
+        doc = tmp_path / "note.md"
+        doc.write_text(front + "---\nbody text\n", encoding="utf-8")
+        client = MagicMock()
+        refusals: list = []
+        monkeypatch.setattr(ingest, "extract_chunks", lambda _p: [ingest.TextChunk("body text")])
+        monkeypatch.setattr(ingest, "embed_batch", lambda texts, **_k: [[0.1, 0.2] for _ in texts])
+        monkeypatch.setattr(ingest, "ensure_collection", lambda *_a, **_k: None)
+        monkeypatch.setattr(ingest, "delete_file_points", lambda *_a, **_k: None)
+        monkeypatch.setattr(ingest, "get_qdrant", lambda: client)
+        monkeypatch.setattr(refusal_pkg, "append", lambda ev, **_: refusals.append(ev) or True)
+        result = ingest.ingest_file(doc)
+        return result, client.upsert.called, refusals
+
+    def test_registry_load_failure_is_not_permission(self, tmp_path, monkeypatch):
+        self._patch_registry(monkeypatch, load_exc=RuntimeError("contracts unreadable"))
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]")
+        assert upserted is False
+        assert result[0] is False
+        assert result[1].startswith("consent_unavailable:")
+
+    def test_failed_current_check_is_retried_not_permitted(self, tmp_path, monkeypatch):
+        # The custody-failure shape: the check itself raises.
+        self._patch_registry(monkeypatch, check=RuntimeError("custody unavailable"))
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]")
+        assert upserted is False
+        assert result[0] is False
+        assert result[1].startswith("consent_unavailable:")
+
+    def test_fail_closed_registry_is_retried_not_permitted(self, tmp_path, monkeypatch):
+        self._patch_registry(monkeypatch, fail_closed=True)
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]")
+        assert upserted is False
+        assert result == (False, "consent_unavailable:consent_registry_unavailable")
+
+    def test_scalar_people_is_malformed_even_when_registry_would_grant(self, tmp_path, monkeypatch):
+        self._patch_registry(monkeypatch, check=True)
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, self.SUBJECT)
+        assert upserted is False
+        assert result == (True, "consent_skipped")
+
+    def test_non_string_person_is_malformed_even_when_registry_would_grant(
+        self, tmp_path, monkeypatch
+    ):
+        self._patch_registry(monkeypatch, check=True)
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, "[5]")
+        assert upserted is False
+        assert result == (True, "consent_skipped")
+
+    @pytest.mark.parametrize("source_service_yaml", ["5", "[document, gmail]", "{a: b}", "' '"])
+    def test_malformed_source_service_is_refused_even_when_registry_would_grant(
+        self, tmp_path, monkeypatch, source_service_yaml
+    ):
+        calls = self._patch_registry(monkeypatch, check=True)
+        result, upserted, refusals = self._ingest(
+            tmp_path, monkeypatch, f"[{self.SUBJECT}]", source_service_yaml
+        )
+        assert calls["check"] == 0
+        assert upserted is False
+        assert result == (True, "consent_skipped")
+        assert len(refusals) == 1
+        assert "malformed_source_service" in refusals[0].reason
+        assert self.SUBJECT not in refusals[0].reason
+
+    def test_positive_control_other_source_service_is_checked_and_ingested(
+        self, tmp_path, monkeypatch
+    ):
+        calls = self._patch_registry(monkeypatch, check=True)
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]", "gmail")
+        assert calls["check"] == 1
+        assert upserted is True
+        assert result == (True, "")
+
+    def test_non_boolean_answer_is_not_permission(self, tmp_path, monkeypatch):
+        self._patch_registry(monkeypatch, check="yes")
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]")
+        assert upserted is False
+        assert result[0] is False
+        assert result[1].startswith("consent_unavailable:")
+
+    def test_refusal_is_audited_sanitized_with_remedy(self, tmp_path, monkeypatch):
+        self._patch_registry(monkeypatch, check=RuntimeError(f"custody {self.SUBJECT}"))
+        result, _, refusals = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]")
+        assert len(refusals) == 1
+        reason = refusals[0].reason
+        assert refusals[0].axiom == "interpersonal_transparency"
+        assert "RuntimeError" in reason
+        assert "remedy" in reason
+        assert self.SUBJECT not in reason
+        assert self.SUBJECT not in result[1]
+
+    def test_negative_control_unconsented_person_is_skipped(self, tmp_path, monkeypatch):
+        self._patch_registry(monkeypatch, check=False)
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]")
+        assert upserted is False
+        assert result == (True, "consent_skipped")
+
+    def test_positive_control_consented_person_is_ingested(self, tmp_path, monkeypatch):
+        calls = self._patch_registry(monkeypatch, check=True)
+        result, upserted, refusals = self._ingest(tmp_path, monkeypatch, f"[{self.SUBJECT}]")
+        assert calls["check"] == 1
+        assert upserted is True
+        assert result == (True, "")
+        assert refusals == []
+
+    def test_document_without_people_does_not_consult_consent(self, tmp_path, monkeypatch):
+        calls = self._patch_registry(monkeypatch, load_exc=RuntimeError("must not be read"))
+        result, upserted, _ = self._ingest(tmp_path, monkeypatch, None)
+        assert calls["load"] == 0
+        assert upserted is True
+        assert result == (True, "")

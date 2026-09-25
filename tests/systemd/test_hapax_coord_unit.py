@@ -27,7 +27,11 @@ def test_hapax_coord_unit_uses_coord_activation_worktree() -> None:
     assert parser.get("Service", "Type") == "simple"
     assert parser.get("Unit", "ConditionPathExists") == f"{COORD_ACTIVATION}/scripts/run-dev.sh"
     assert parser.get("Service", "WorkingDirectory") == COORD_ACTIVATION
-    assert parser.get("Service", "ExecStart") == f"{COORD_ACTIVATION}/scripts/run-dev.sh --daemon"
+    assert (
+        parser.get("Service", "ExecStart")
+        == f"/usr/bin/env bash {COORD_ACTIVATION}/scripts/run-dev.sh"
+        " --host 127.0.0.1 --port 8765 --daemon"
+    )
 
 
 def test_hapax_coord_unit_avoids_reapable_or_mutable_d2_roots() -> None:

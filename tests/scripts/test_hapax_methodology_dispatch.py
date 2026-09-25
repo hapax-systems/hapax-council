@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -34,6 +35,96 @@ def _dispatcher_module() -> ModuleType:
     sys.modules[loader.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _native_lifecycle_writer(variant: str = "matching") -> str:
+    """Independent native-stream/receipt fixture, executed only by the fake launcher."""
+    return (
+        f"{sys.executable} - <<'PY'\n"
+        f"variant = {variant!r}\n"
+        + textwrap.dedent(
+            r"""
+            import hashlib
+            import json
+            import os
+            from pathlib import Path
+
+            if variant == "missing":
+                raise SystemExit(0)
+            receipt = Path(os.environ["HAPAX_NATIVE_LIFECYCLE_RECEIPT"])
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            stream = receipt.with_suffix(".jsonl")
+            events = [
+                {"type": "thread.started", "thread_id": "native-fixture-session"},
+                {"type": "turn.started"},
+                {"type": "turn.completed"},
+            ]
+            stream.write_bytes(
+                ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+            )
+            observed = {
+                "receipt_path": str(receipt),
+                "stream_path": str(stream),
+                "platform": "codex",
+                "phase": "complete",
+                "session_id": "native-fixture-session",
+                "session_identity": "single_native_session",
+                "readiness": "unobserved",
+                "complete": True,
+                "cancel_requested": False,
+                "cancel_confirmed": False,
+                "resume": "unobserved",
+                "process_returncode": 0,
+                "owned_native_process": True,
+                "evidence": [
+                    {"offset": 0, "line": 1, "type": "thread.started"},
+                    {"offset": 0, "line": 2, "type": "turn.started"},
+                    {"offset": 0, "line": 3, "type": "turn.completed"},
+                ],
+                "malformed_lines": 0,
+                "may_authorize": False,
+            }
+            if variant == "wrong_path":
+                observed["receipt_path"] = "/another/launch.json"
+            elif variant == "wrong_platform":
+                observed["platform"] = "claude"
+            elif variant == "escalation":
+                observed["may_authorize"] = True
+            elif variant == "invalid_owned":
+                observed["owned_native_process"] = "true"
+            elif variant == "bool_returncode":
+                observed["process_returncode"] = False
+            elif variant == "transport_status":
+                observed["owned_native_process"] = False
+            elif variant == "transport":
+                observed.update(
+                    owned_native_process=False,
+                    process_returncode=None,
+                    phase="turn_complete",
+                    complete=False,
+                )
+            elif variant == "missing_field":
+                observed.pop("complete")
+            elif variant == "false_complete":
+                events[-1] = {"type": "turn.failed"}
+                stream.write_bytes(
+                    ("\n".join(json.dumps(event) for event in events) + "\n").encode()
+                )
+            elif variant == "malformed_stream":
+                stream.write_bytes(b"[]\n")
+            elif variant == "stale_stream":
+                stream.write_bytes(b"")
+            observed["stream_sha256"] = hashlib.sha256(stream.read_bytes()).hexdigest()
+            if variant == "bad_hash":
+                digest = observed["stream_sha256"]
+                observed["stream_sha256"] = ("1" if digest[0] == "0" else "0") + digest[1:]
+            if variant == "malformed":
+                observed = []
+            receipt.write_text(json.dumps(observed))
+            """
+        )
+        + "PY\n"
+    )
 
 
 def _fresh_registry(tmp_path: Path, *, codex_exec_auth_host: str = "appendix") -> Path:
@@ -1626,7 +1717,7 @@ def test_launch_authority_violation_writes_blocked_receipt(
     monkeypatch.setattr(module, "_await_sdlc_admission", lambda args: None)
 
     class RefusingAdapter:
-        def launch(self, *, decision, request, launch_callable):
+        def launch(self, *, decision, request, launch_callable, collect_result_ref=None):
             raise module.AuthorityViolation("fixture refusal")
 
     monkeypatch.setattr(module, "_worker_adapter_for_launch", lambda platform: RefusingAdapter())
@@ -1683,12 +1774,13 @@ printf '%s\\n' "$@" > {launcher_args}
     launch_calls: list[tuple[str, str]] = []
 
     class SpyCodexAdapter(module.CodexAdapter):
-        def launch(self, *, decision, request, launch_callable):
+        def launch(self, *, decision, request, launch_callable, collect_result_ref=None):
             launch_calls.append((decision.action.value, request.platform))
             return super().launch(
                 decision=decision,
                 request=request,
                 launch_callable=launch_callable,
+                collect_result_ref=collect_result_ref,
             )
 
     monkeypatch.setitem(module._WORKER_FAILURE_ADAPTERS, "codex", SpyCodexAdapter)
@@ -2166,7 +2258,27 @@ printf '%s\\n' "$@" > {launcher_args}
     assert states == [("offered",)]
 
 
-def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "native_observation",
+    [
+        "matching",
+        "transport",
+        "wrong_path",
+        "malformed",
+        "missing",
+        "wrong_platform",
+        "escalation",
+        "invalid_owned",
+        "bool_returncode",
+        "transport_status",
+        "missing_field",
+        "false_complete",
+        "malformed_stream",
+        "stale_stream",
+        "bad_hash",
+    ],
+)
+def test_launches_codex_headless_through_codex_launcher(tmp_path: Path, native_observation) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(
@@ -2186,6 +2298,7 @@ def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
         f"""#!/usr/bin/env bash
 printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
 printf '%s\\n' "$@" > {launcher_args}
+{_native_lifecycle_writer(native_observation)}
 """,
         encoding="utf-8",
     )
@@ -2212,7 +2325,9 @@ printf '%s\\n' "$@" > {launcher_args}
     # Strictly MQ-bound governed Codex launches may reactivate a clean retired
     # relay. Local fallback remains independently restricted to P0 drain lanes.
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith("--task\ngoverned-build\n--force\ncx-green\n")
+    assert recorded.startswith(
+        "--execution-route\ncodex.headless.full\n--task\ngoverned-build\n--force\ncx-green\n"
+    )
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded
@@ -2235,6 +2350,21 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["coord_dispatch_replayed"] is False
     assert receipt["coord_dispatch_cleanup_state"] == "processed"
     assert receipt["dispatch_host"] == "appendix"
+    expected_phase = {
+        "matching": "complete",
+        "transport": "turn_complete",
+    }.get(native_observation, "unobserved")
+    assert receipt["native_lifecycle"]["phase"] == expected_phase
+    assert receipt["native_lifecycle"]["may_authorize"] is False
+    assert receipt["native_lifecycle"]["complete"] is (native_observation == "matching")
+    if expected_phase == "unobserved":
+        assert receipt["result_ref"] is None
+        assert receipt["native_lifecycle"]["reason"]
+    else:
+        result_ref = receipt["result_ref"]
+        assert (
+            result_ref["sha256"] == hashlib.sha256(Path(result_ref["ref"]).read_bytes()).hexdigest()
+        )
     assert launcher_env.read_text(encoding="utf-8").splitlines() == [
         "host=appendix",
         "fallback=",
@@ -2326,7 +2456,7 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "Profile: full" in recorded
     assert launcher_env.read_text(encoding="utf-8").splitlines() == [
         "host=appendix",
-        "model=opus",
+        "model=claude-opus-4-8",
     ]
 
     receipt = json.loads(
@@ -2737,7 +2867,12 @@ printf '%s\\n' "$@" > {launcher_args}
 
     assert result.returncode == 0, result.stderr
     codex_args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert codex_args[0:2] == ["--task", "governed-build"]
+    assert codex_args[0:4] == [
+        "--execution-route",
+        "codex.headless.full",
+        "--task",
+        "governed-build",
+    ]
     assert "cx-green" in codex_args
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
@@ -2883,7 +3018,9 @@ printf '%s\\n' "$@" > {launcher_args}
         "fallback=local",
     ]
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith(f"--task\n{task_id}\n--force\ncx-p0\n")
+    assert recorded.startswith(
+        f"--execution-route\ncodex.headless.full\n--task\n{task_id}\n--force\ncx-p0\n"
+    )
 
 
 def test_codex_p0_incident_local_fallback_force_is_independent_of_reactivation_flag(
@@ -2940,7 +3077,7 @@ printf '%s\\n' "$@" > {launcher_args}
     ]
     recorded = launcher_args.read_text(encoding="utf-8")
     assert recorded.startswith(
-        "--task\np0-incident-sdlc-task-stalled-test\n--force\n--no-claim\ncx-p0\n"
+        "--execution-route\ncodex.headless.full\n--task\np0-incident-sdlc-task-stalled-test\n--force\n--no-claim\ncx-p0\n"
     )
 
 
@@ -2997,7 +3134,9 @@ printf '%s\\n' "$@" > {launcher_args}
 
     assert result.returncode == 0, result.stderr
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith(f"--task\n{task_id}\n--force\n--no-claim\ncx-fugu\n")
+    assert recorded.startswith(
+        f"--execution-route\ncodex.headless.full\n--task\n{task_id}\n--force\n--no-claim\ncx-fugu\n"
+    )
     assert launcher_env.read_text(encoding="utf-8").splitlines() == [
         "host=appendix",
         "fallback=",
@@ -3565,7 +3704,12 @@ def test_codex_p0_incident_local_fallback_respects_empty_override(
     )
 
 
-def test_launch_idempotency_replays_without_second_launcher_call(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "replay_evidence", ["valid", "receipt_tampered", "stream_tampered", "missing", "legacy"]
+)
+def test_launch_idempotency_replays_without_second_launcher_call(
+    tmp_path: Path, replay_evidence: str
+) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(
@@ -3589,6 +3733,7 @@ if [ -f {launch_count} ]; then
 fi
 printf '%s\\n' "$((count + 1))" > {launch_count}
 printf '%s\\n' "$@" > {launcher_args}
+{_native_lifecycle_writer("missing" if replay_evidence == "legacy" else "matching")}
 """,
         encoding="utf-8",
     )
@@ -3613,6 +3758,30 @@ printf '%s\\n' "$@" > {launcher_args}
         },
     )
     assert first.returncode == 0, first.stderr
+    ledger = tmp_path / "ledger" / "methodology-dispatch.jsonl"
+    first_receipt = json.loads(ledger.read_text().splitlines()[-1])
+    original_ref = first_receipt["result_ref"]
+    original_native_paths = set((tmp_path / "ledger").glob("native-lifecycle-*.json"))
+    if replay_evidence == "legacy":
+        assert original_ref is None
+        assert first_receipt["native_lifecycle"]["phase"] == "unobserved"
+    else:
+        assert original_ref is not None
+        original_path = Path(original_ref["ref"])
+        original_bytes = original_path.read_bytes()
+        assert original_ref["sha256"] == hashlib.sha256(original_bytes).hexdigest()
+        assert first_receipt["native_lifecycle"]["phase"] == "complete"
+        original_observation = json.loads(original_bytes)
+        if replay_evidence == "receipt_tampered":
+            # Same JSON value, different exact bytes.
+            original_path.write_bytes(original_bytes + b"\n")
+        elif replay_evidence == "stream_tampered":
+            stream = Path(original_observation["stream_path"])
+            # Same lifecycle events, different exact bytes.
+            stream.write_bytes(stream.read_bytes() + b"\n")
+        elif replay_evidence == "missing":
+            original_path.unlink()
+            original_native_paths.remove(original_path)
     with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
         message_id = conn.execute("SELECT message_id FROM messages").fetchone()[0]
 
@@ -3647,6 +3816,137 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     assert receipt["coord_dispatch_replayed"] is True
     assert receipt["coord_dispatch_reason"] == "replayed_succeeded"
+    assert receipt["coord_dispatch_cleanup_state"] == "processed"
+    assert receipt["launch_returncode"] == 0
+    assert receipt["launched"] is True
+    assert receipt["result_ref"] == original_ref
+    assert receipt["native_lifecycle"]["may_authorize"] is False
+    assert set((tmp_path / "ledger").glob("native-lifecycle-*.json")) == original_native_paths
+    if replay_evidence == "valid":
+        assert receipt["native_lifecycle"] == first_receipt["native_lifecycle"]
+    else:
+        assert receipt["native_lifecycle"]["phase"] == "unobserved"
+        assert receipt["native_lifecycle"]["complete"] is False
+        assert (
+            receipt["native_lifecycle"]["reason"]
+            == {
+                "receipt_tampered": "native_receipt_hash_mismatch",
+                "stream_tampered": "native_stream_hash_mismatch",
+                "missing": "native_receipt_unavailable",
+                "legacy": "native_receipt_reference_unavailable",
+            }[replay_evidence]
+        )
+    with sqlite3.connect(tmp_path / "relay" / "messages.db") as conn:
+        assert conn.execute("SELECT state FROM recipients").fetchall() == [("processed",)]
+    events = [
+        json.loads(line) for line in (tmp_path / "coord" / "ledger.jsonl").read_text().splitlines()
+    ]
+    terminal = [
+        event for event in events if event["event_type"] == "coord_dispatch.launch_succeeded"
+    ]
+    assert len(terminal) == 1
+    assert terminal[0]["payload"]["result_ref"] == original_ref
+
+
+@pytest.mark.parametrize("returncode", [0, 42])
+@pytest.mark.parametrize("collection_failure", ["raises", "invalid", "invalid_path"])
+def test_result_reference_failure_preserves_mq_terminal_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    collection_failure: str,
+) -> None:
+    from shared.coord_dispatch import run_atomic_dispatch_launch
+
+    module = _dispatcher_module()
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        f"""
+        kind: build
+        authority_case: CASE-TEST-001
+        parent_spec: {spec}
+        """,
+    )
+    mq_db, message_id = _maybe_write_durable_mq_binding(
+        tmp_path, ("--task", "governed-build", "--lane", "cx-green")
+    )
+    assert message_id is not None
+    monkeypatch.setenv("HAPAX_RELAY_DIR", str(tmp_path / "relay"))
+    event_log = module.CoordEventLog(
+        db_path=tmp_path / "coord" / "ledger.db",
+        jsonl_path=tmp_path / "coord" / "ledger.jsonl",
+        spool_dir=tmp_path / "coord" / "spool",
+    )
+    request = module.DispatchLaunchRequest(
+        task_id="governed-build",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        authority_case="CASE-TEST-001",
+        parent_spec=str(spec),
+        message_id=message_id,
+        mq_db_path=mq_db,
+        event_log=event_log,
+    )
+    calls = []
+
+    def launch():
+        calls.append("launch")
+        return returncode
+
+    def collect():
+        assert calls == ["launch"]
+        calls.append("collect")
+        if collection_failure == "raises":
+            raise OSError("receipt collection failed after native launch")
+        if collection_failure == "invalid_path":
+            return {"ref": "receipt\0.json", "sha256": "a" * 64}
+        return {"ref": "invalid", "sha256": "invalid"}
+
+    first = run_atomic_dispatch_launch(request, launch, collect_result_ref=collect)
+    expected_state = "processed" if returncode == 0 else "deferred"
+    assert first.launch_returncode == returncode
+    assert first.launched is (returncode == 0)
+    assert (first.result_ref is not None) is (collection_failure == "invalid_path")
+    assert first.cleanup_state == expected_state
+    assert _recipient_row(mq_db, message_id, "cx-green")["state"] == expected_state
+
+    def forbidden():
+        pytest.fail("terminal replay invoked launch or receipt collection")
+
+    replay = run_atomic_dispatch_launch(request, forbidden, collect_result_ref=forbidden)
+    assert calls == ["launch", "collect"]
+    assert replay.replayed is True
+    assert replay.launch_returncode == returncode
+    assert replay.launched == first.launched
+    assert replay.result_ref == first.result_ref
+    assert replay.cleanup_state == expected_state
+    if collection_failure == "invalid_path":
+        # Exercise the actual receipt reader at the replay boundary. Invalid
+        # filesystem syntax is unobserved evidence, not a new launch outcome.
+        observed, reference = module.read_native_lifecycle_receipt(
+            Path(replay.result_ref.ref), platform="codex", result_ref=replay.result_ref
+        )
+        assert reference is None
+        assert observed["phase"] == "unobserved" and not observed["complete"]
+        assert replay.launch_returncode == returncode
+    terminal = [
+        event
+        for event in event_log.replay().events
+        if event.event_type
+        in {
+            "coord_dispatch.launch_succeeded",
+            "coord_dispatch.launch_failed",
+        }
+    ]
+    assert len(terminal) == 1
+    assert terminal[0].payload["returncode"] == returncode
+    assert terminal[0].payload["result_ref"] == (
+        first.result_ref.model_dump() if first.result_ref is not None else None
+    )
 
 
 def test_failed_launch_cleans_up_mq_state_and_records_failure(tmp_path: Path) -> None:
@@ -3818,10 +4118,10 @@ printf '%s\\n' "$@" > {launcher_args}
 def test_glmcp_platform_receipt_uses_sanctioned_review_wrapper_check(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
-    pass_stub = bin_dir / "pass"
-    pass_stub.write_text(
+    secret_stub = bin_dir / "hapax-secret"
+    secret_stub.write_text(
         """#!/usr/bin/env bash
-if [ "$1" = "show" ] && [ "$2" = "glmcp/api-key" ]; then
+if [ "$1" = "glmcp/api-key" ]; then
   printf '%s\n' 'test-secret-token'
   exit 0
 fi
@@ -3829,7 +4129,7 @@ exit 1
 """,
         encoding="utf-8",
     )
-    pass_stub.chmod(0o755)
+    secret_stub.chmod(0o755)
     receipt_dir = tmp_path / "receipts"
 
     result = subprocess.run(
@@ -3844,7 +4144,11 @@ exit 1
             "glmcp",
             "--json",
         ],
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REINS_SECRET_STORE": str(tmp_path / "empty-secrets"),
+        },
         text=True,
         capture_output=True,
         check=False,
@@ -3859,7 +4163,7 @@ exit 1
     assert receipt["platform"] == "glmcp"
     assert receipt["routes"] == ["glmcp.review.direct"]
     assert receipt["cli"]["binary"] == "scripts/hapax-glmcp-reviewer"
-    assert "model=glm-5.2" in receipt["cli"]["version"]
+    assert "model=glm-5.3" in receipt["cli"]["version"]
     assert "payg_fallback=enabled" in receipt["cli"]["version"]
     receipt_text = json.dumps(receipt)
     assert "test-secret-token" not in receipt_text
@@ -4259,6 +4563,11 @@ printf '%s\\n' "$@" > {launcher_args}
         "tmux",
         "--task",
         "governed-build",
+        "--",
+        "--model",
+        "claude-opus-4-8",
+        "--effort",
+        "max",
     ]
 
 

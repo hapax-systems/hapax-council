@@ -20,7 +20,7 @@ READ-ONLY contract:
     Forbidden verbs (``send``, ``initiate``, ``payout``, ``transfer``)
     do not appear; the contract test enforces this by source scan.
 
-If no operator npub is available in pass, the listener disables
+If no operator npub is available in the FileStore, the listener disables
 itself with a ``RefusalEvent`` and the other rails continue.
 """
 
@@ -210,7 +210,7 @@ class NostrZapListener:
             emit_rail_refusal(
                 rail="nostr_zap",
                 surface="nostr-npub-bootstrap",
-                reason="No nostr/npub-hex in pass; zap subscription disabled.",
+                reason="No nostr/npub-hex in the FileStore; zap subscription disabled.",
             )
             self._disabled = True
             return

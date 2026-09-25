@@ -353,7 +353,7 @@ PYEOF
     PATH="$PATH" \
     REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" \
     SSL_CERT_FILE="${SSL_CERT_FILE:-}" \
-    "$codex_bin" exec \
+    "$codex_bin" exec "${CODEX_EXECUTION_ARGS[@]}" \
       --ephemeral \
       --skip-git-repo-check \
       --ignore-rules \
@@ -419,6 +419,7 @@ payload = {
     "workdir": workdir,
     "codex_bin_path": os.environ.get("HAPAX_CODEX_BIN_PATH", ""),
     "npm_config_prefix": os.environ.get("NPM_CONFIG_PREFIX", ""),
+    "execution_args": json.loads(os.environ["HAPAX_CODEX_EXECUTION_ARGS"]),
     "codex_exec_auth_timeout": os.environ.get("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", "30"),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
@@ -489,7 +490,6 @@ for name in (
     "HAPAX_IDLE_UPDATE_SECONDS",
     "HAPAX_CODEX_BIN_PATH",
     "NPM_CONFIG_PREFIX",
-    "PASSWORD_STORE_DIR",
 ):
     value = os.environ.get(name)
     if value is not None:
@@ -598,7 +598,7 @@ else:
     if not os.path.isdir(auth_workdir):
         auth_workdir=os.path.expanduser("~")
     try:
-        result=subprocess.run([codex_bin,"exec","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=auth_timeout,env=env)
+        result=subprocess.run([codex_bin,"exec",*p["execution_args"],"--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=auth_timeout,env=env)
     except (OSError,subprocess.TimeoutExpired) as exc:
         actuation_error="codex_saved_auth_exec_failed:"+type(exc).__name__
     else:
@@ -702,7 +702,7 @@ argv=p["argv"]; argv[0]=codex_bin; os.execv(codex_bin, argv)'
 
 usage() {
   cat >&2 <<'EOF'
-usage: hapax-codex-headless [--task TASK_ID] [--no-claim] [--force] <cx-session> <governed-initial-message> [-- codex exec args...]
+usage: hapax-codex-headless [--task TASK_ID] [--execution-route ROUTE_OR_LEAF] [--no-claim] [--force] <cx-session> <governed-initial-message> [-- codex exec args...]
 
 Default-deny: enable with `touch ~/.cache/hapax/enable-codex-headless` or
 HAPAX_CODEX_HEADLESS_ALLOW=1. The governed initial message is the codex exec
@@ -714,9 +714,18 @@ SESSION=""
 CODEX_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 CLAIM_TASK=1
 FORCE=0
+EXECUTION_ROUTE="codex.headless.full"
 CODEX_EXTRA=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --execution-route)
+      EXECUTION_ROUTE="${2:?--execution-route requires a registry route}"
+      shift 2
+      ;;
+    --execution-route=*)
+      EXECUTION_ROUTE="${1#*=}"
+      shift
+      ;;
     --task)
       CODEX_TASK="${2:-}"
       shift 2
@@ -761,6 +770,20 @@ INITIAL_MSG="${1:-}"
 if [[ $# -gt 0 ]]; then
   CODEX_EXTRA+=("$@")
 fi
+
+# Resolve identity before any provider call or launch side effect.
+# The installed launcher follows the activator's source binding. An explicit
+# relocated council root remains supported; the legacy default primary checkout
+# is not an identity-source fallback.
+EXECUTION_SOURCE_ROOT="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-${HAPAX_COUNCIL_DIR:-$HOME/.cache/hapax/source-activation/worktree}}"
+if [[ ! -r "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh" ]]; then
+  echo "hapax-codex-headless: identity source unavailable at $EXECUTION_SOURCE_ROOT; next action: restore the governed hapax-source-activate release or an explicitly provisioned source root" >&2
+  exit 9
+fi
+# shellcheck source=scripts/capability-execution.sh
+EXECUTION_SOURCE_ROOT="$(cd -- "$EXECUTION_SOURCE_ROOT" && pwd -P)" || exit 9
+. "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh"
+bind_codex_execution || exit 9
 
 if [[ -z "$INITIAL_MSG" ]]; then
   echo "hapax-codex-headless: governed initial message required" >&2
@@ -827,7 +850,6 @@ export HAPAX_WORKTREE_ROLE="$HAPAX_AGENT_SLOT"
 export HAPAX_SESSION_ID="$SESSION_UUID"
 export CLAUDE_ROLE="${CLAUDE_ROLE:-$SESSION}"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
-export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 
@@ -880,6 +902,7 @@ DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.js
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 CODEX_PID=""
+CODEX_PGID=""
 CODEX_BIN=""
 LOCAL_FALLBACK_AUTH_PROVEN=0
 # shellcheck disable=SC2329
@@ -1095,29 +1118,17 @@ DISPATCH:
 "
 INITIAL_MSG="${SDLC_PREAMBLE}${INITIAL_MSG}"
 
-# Config mirrors hapax-codex's governed CODEX_ARGS (shared contract — keep in
-# sync): full-access sandbox under external governance, the codex-hook-adapter on
-# every phase, and the hapax MCP surface. `--json` streams JSONL events; `--cd`
-# binds the worktree; trust is scoped to the worktree.
+# The shared helper binds common approval, trust, hook and Hapax MCP settings.
+# Headless invocation/output flags and additional MCP tools remain explicit here.
+bind_codex_common_config "$HOME" "$WORKDIR" "$HOOK" "$LOGOS_BASE_URL"
 CODEX_ARGS=(
   exec
   --dangerously-bypass-approvals-and-sandbox
   --skip-git-repo-check
   --json
   --cd "$WORKDIR"
-  -c 'model="gpt-5.5"'
-  -c 'model_reasoning_effort="xhigh"'
-  -c 'approval_policy="never"'
-  -c 'sandbox_mode="danger-full-access"'
-  -c "projects.\"$HOME/projects\".trust_level=\"trusted\""
-  -c "projects.\"$WORKDIR\".trust_level=\"trusted\""
-  -c "hooks.SessionStart=[{command=\"$HOOK\",timeout=20,statusMessage=\"Loading Hapax context\"}]"
-  -c "hooks.PreToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax guardrails\"}]"
-  -c "hooks.PostToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax audit\"}]"
-  -c "hooks.Stop=[{command=\"$HOOK\",timeout=20,statusMessage=\"Writing Hapax session summary\"}]"
-  -c "mcp_servers.hapax.command=\"$HOME/.local/bin/uv\""
-  -c "mcp_servers.hapax.args=[\"--directory\",\"$HOME/projects/hapax-mcp\",\"run\",\"hapax-mcp\"]"
-  -c "mcp_servers.hapax.env.LOGOS_BASE_URL=\"$LOGOS_BASE_URL\""
+  "${CODEX_EXECUTION_ARGS[@]}"
+  "${CODEX_COMMON_CONFIG_ARGS[@]}"
   -c "mcp_servers.github.command=\"$COUNCIL_DIR/scripts/hapax-github-mcp\""
   -c "mcp_servers.context7.command=\"$COUNCIL_DIR/scripts/hapax-context7-mcp\""
 )
@@ -1129,6 +1140,82 @@ echo "  log: $LOG_FILE"
 echo "  pid: $PID_FILE"
 
 cd "$WORKDIR"
+# Each launch owns a fresh event stream. Preserve prior lane output and keep the
+# legacy path as an alias for readers; diagnostics cannot corrupt JSON evidence.
+NATIVE_LOG_FILE="$(mktemp "$LOG_DIR/native-XXXXXXXX.jsonl")"
+DIAGNOSTICS_FILE="${NATIVE_LOG_FILE%.jsonl}.stderr.log"
+if [[ -e "$LOG_FILE" && ! -L "$LOG_FILE" ]]; then
+  mv "$LOG_FILE" "${NATIVE_LOG_FILE%.jsonl}.predecessor.log"
+  echo "  predecessor log: ${NATIVE_LOG_FILE%.jsonl}.predecessor.log"
+fi
+OUTPUT_ALIAS="${NATIVE_LOG_FILE%.jsonl}.alias"
+ln -s "$(basename "$NATIVE_LOG_FILE")" "$OUTPUT_ALIAS"
+mv -Tf "$OUTPUT_ALIAS" "$LOG_FILE"
+CANCEL_SIGNAL=0
+# Native records use millisecond UTC timestamps; capture before this fresh exec.
+NATIVE_LAUNCH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+NATIVE_LAUNCH_HOME="${CODEX_HOME:-$HOME/.codex}"
+write_native_lifecycle() {
+  local receipt="${HAPAX_NATIVE_LIFECYCLE_RECEIPT:-${NATIVE_LOG_FILE%.jsonl}.receipt.json}"
+  # hapax-source-activate owns this binding and promotes the complete source
+  # tree; hapax-post-merge-deploy publishes scripts/hapax-* as installed copies.
+  # Use the source already selected for identity resolution, even if activation
+  # advances while the native child runs. Keep its provisioned interpreter too.
+  local observer_root="$EXECUTION_SOURCE_ROOT"
+  local local_args=()
+  # Observation runs on the caller, including for SSH dispatch. SSH wait status
+  # does not establish remote native exit, cancellation, or completion.
+  [[ -z "$DISPATCH_HOST" ]] && local_args+=(--local-child)
+  # Old modules without the receipt CLI exit successfully without observing.
+  # Require a newly created, nonempty regular receipt; preserve predecessors.
+  if [[ -e "$receipt" || -L "$receipt" ]] \
+    || ! "$observer_root/.venv/bin/python" -I "$observer_root/shared/execution_observer.py" \
+    --stream "$NATIVE_LOG_FILE" --diagnostics "$DIAGNOSTICS_FILE" --receipt "$receipt" \
+    --returncode "$EXIT_CODE" --cancel-signal "$CANCEL_SIGNAL" "${local_args[@]}" \
+    --execution-descriptor "$HAPAX_CODEX_EXECUTION_DESCRIPTOR" --execution-route "$EXECUTION_ROUTE" \
+    --native-home "$NATIVE_LAUNCH_HOME" --workdir "$WORKDIR" \
+    --launch-started-at "$NATIVE_LAUNCH_STARTED_AT" \
+    2>>"$DIAGNOSTICS_FILE" \
+    || [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
+    echo "hapax-codex-headless: native lifecycle observation unavailable (producer failed or no fresh receipt at $receipt); next action: inspect $NATIVE_LOG_FILE and $DIAGNOSTICS_FILE, verify the observer CLI under $observer_root through governed hapax-source-activate, then replay observation to a fresh receipt before relying on completion" >&2
+  fi
+  # Observation failure is diagnostic; retain the waited child's exit status.
+  return 0
+}
+cancel_native_child() {
+  local signal_name="$1" signal_number="$2" attempt
+  trap '' TERM INT
+
+  # This group was created by our launch, never recovered from a PID file.
+  # Its leader may be an npm wrapper that exits before the native child.
+  # Killing the local SSH group still establishes no remote native ownership.
+  if [[ -n "$CODEX_PGID" ]] \
+    && kill -s "$signal_name" -- "-$CODEX_PGID" 2>/dev/null; then
+    CANCEL_SIGNAL="$signal_number"
+    for attempt in {1..50}; do
+      if ! kill -0 -- "-$CODEX_PGID" 2>/dev/null; then
+        # Once absent, abandon this numeric identity rather than retrying it.
+        CODEX_PGID=""
+        break
+      fi
+      sleep 0.1
+    done
+    if [[ -n "$CODEX_PGID" ]] && kill -KILL -- "-$CODEX_PGID" 2>/dev/null; then
+      CANCEL_SIGNAL=9
+    fi
+  fi
+  CODEX_PGID=""
+
+  if [[ -n "$CODEX_PID" ]]; then
+    # wait also returns Bash's cached status for an already-exited wrapper.
+    # Retain its numeric ambiguity; group signaling is not native wait proof.
+    if wait "$CODEX_PID"; then EXIT_CODE=0; else EXIT_CODE=$?; fi
+    write_native_lifecycle
+  fi
+  exit "$((128 + signal_number))"
+}
+trap 'cancel_native_child TERM 15' TERM
+trap 'cancel_native_child INT 2' INT
 if [[ -n "$DISPATCH_HOST" ]]; then
   CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
   if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
@@ -1138,14 +1225,37 @@ if [[ -n "$DISPATCH_HOST" ]]; then
   export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
+fi
+
+# A signal between fork and recording $! must not strand the new child.
+# Record requests here; do not ignore signals in the child at launch.
+PENDING_CANCEL=""
+trap 'PENDING_CANCEL=TERM' TERM
+trap 'PENDING_CANCEL=INT' INT
+MONITOR_WAS_SET=0
+[[ $- == *m* ]] && MONITOR_WAS_SET=1
+# Bash assigns this single-command background job its own PGID, including
+# noninteractive shells. Restore the prior setting immediately after launch.
+set -m
+if [[ -n "$DISPATCH_HOST" ]]; then
   ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
     -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" "$REMOTE_EXEC_COMMAND" \
-    >>"$LOG_FILE" 2>&1 &
+    </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 else
-  "$CODEX_BIN" "${CODEX_ARGS[@]}" >>"$LOG_FILE" 2>&1 &
+  "$CODEX_BIN" "${CODEX_ARGS[@]}" </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 fi
 CODEX_PID=$!
+CODEX_PGID="$CODEX_PID"
+if [[ "$MONITOR_WAS_SET" == 0 ]]; then
+  set +m
+fi
 echo "$CODEX_PID" >"$PID_FILE"
+trap 'cancel_native_child TERM 15' TERM
+trap 'cancel_native_child INT 2' INT
+case "$PENDING_CANCEL" in
+  TERM) cancel_native_child TERM 15 ;;
+  INT) cancel_native_child INT 2 ;;
+esac
 echo "hapax-codex-headless: pid=$CODEX_PID"
 if [[ -z "$DISPATCH_HOST" && -n "$DISPATCH_FALLBACK_REASON" ]]; then
   write_local_dispatch_proof "$CODEX_PID" "1" "$DISPATCH_FALLBACK_REASON"
@@ -1156,5 +1266,8 @@ if wait "$CODEX_PID"; then
 else
   EXIT_CODE=$?
 fi
+trap - TERM INT
+CODEX_PGID=""
+write_native_lifecycle
 echo "hapax-codex-headless: $SESSION exited (code=$EXIT_CODE)"
 exit "$EXIT_CODE"

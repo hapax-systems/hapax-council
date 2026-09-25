@@ -18,7 +18,6 @@ HAPAX_CACHE_DIR: Path = HAPAX_HOME / ".cache"
 HAPAX_PROJECTS_DIR: Path = HAPAX_HOME / "projects"
 LLM_STACK_DIR: Path = HAPAX_HOME / "llm-stack"
 CLAUDE_CONFIG_DIR: Path = HAPAX_HOME / ".claude"
-PASSWORD_STORE_DIR: Path = HAPAX_HOME / ".password-store"
 RAG_SOURCES_DIR: Path = HAPAX_HOME / "documents" / "rag-sources"
 
 AXIOM_AUDIT_DIR: Path = HAPAX_CACHE_DIR / "axiom-audit"
@@ -58,7 +57,6 @@ PI_FLEET: dict[str, dict] = {
 
 COMPOSE_FILE = LLM_STACK_DIR / "docker-compose.yml"
 AGENTS_COMPOSE_FILE = AI_AGENTS_DIR / "docker-compose.yml"
-PASSWORD_STORE = PASSWORD_STORE_DIR
 
 CORE_CONTAINERS = {"qdrant", "ollama", "postgres", "litellm"}
 PODIUM_THIN_CLIENT_CORE_CONTAINERS = {"qdrant", "postgres", "redis", "litellm"}
@@ -85,7 +83,7 @@ REQUIRED_QDRANT_COLLECTIONS = {
     "operator-patterns",
     "studio-moments",
 }
-PASS_ENTRIES = [
+EXPECTED_SECRETS = [
     "api/anthropic",
     "api/google",
     "litellm/master-key",

@@ -66,6 +66,9 @@ def _write_fake_tmux(bin_dir: Path) -> None:
                 *) shift ;;
               esac
             done
+            # `=name` is tmux's exact-match anchor (a bare name also prefix-matches);
+            # the supervisor anchors every session target, so honour the syntax.
+            target="${target#=}"
             for live in ${TMUX_LIVE:-}; do
               [ "$live" = "$target" ] && exit 0
             done

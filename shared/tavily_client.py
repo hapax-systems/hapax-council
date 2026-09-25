@@ -10,7 +10,6 @@ import logging
 import math
 import os
 import re
-import subprocess
 import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
@@ -23,13 +22,16 @@ import httpx
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from shared.secrets import get_secret
+
 API_BASE_URL = "https://api.tavily.com"
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "tavily.yaml"
 DEFAULT_STATE_DIR = Path("~/.cache/hapax/tavily").expanduser()
 DEFAULT_CACHE_DIR = DEFAULT_STATE_DIR / "cache"
 DEFAULT_LEDGER_PATH = DEFAULT_STATE_DIR / "usage.jsonl"
 DEFAULT_LOCK_DIR = DEFAULT_STATE_DIR / "locks"
-PASS_ENTRIES = ("tavily/api-key", "api/tavily")
+#: FileStore names tried in order, after the environment.
+SECRET_NAMES = ("tavily/api-key", "api/tavily")
 logger = logging.getLogger(__name__)
 
 SearchDepth = Literal["basic", "advanced", "fast", "ultra-fast"]
@@ -292,33 +294,23 @@ def _usage_section_payload(data: Mapping[str, Any], section: str) -> Any:
     return value
 
 
-def pass_first_line(name: str) -> str:
-    """Return the first line from pass, or an empty string."""
-    try:
-        result = subprocess.run(
-            ["pass", "show", name],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return ""
-    if result.returncode != 0:
-        return ""
-    return result.stdout.splitlines()[0].strip() if result.stdout.splitlines() else ""
-
-
 def load_tavily_api_key(env: Mapping[str, str] | None = None) -> str:
-    """Load Tavily API key from env, then expected pass entries."""
+    """The Tavily API key from the environment, then the FileStore. Never from pass.
+
+    Returns ``""`` when no key is configured — the existing contract, which callers branch
+    on rather than catching. A tampered blob is NOT absence and propagates
+    ``SecretIntegrityFailed``: presenting corruption as "no key configured" would send the
+    operator to put a secret that is already there, over a blob nobody has audited.
+    """
+
     env = env or os.environ
     value = env.get("TAVILY_API_KEY", "").strip()
     if value:
         return value
-    for entry in PASS_ENTRIES:
-        value = pass_first_line(entry)
-        if value:
-            return value
+    for name in SECRET_NAMES:
+        stored = get_secret(name, required=False)
+        if stored:
+            return stored.strip()
     return ""
 
 

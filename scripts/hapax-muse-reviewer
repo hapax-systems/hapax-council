@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Meta Muse substitute reviewer seat for the review-team registry (read-only).
+
+Runs `muse exec` on the dispatcher's prompt in an empty temporary workspace, with web tools,
+shell and writes disabled and no session log. Measured reliable up to 96 KB prompts
+(2026-09-24 review panels); a larger prompt is refused as a route outage rather than
+risking a partial review.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
+
+WRAPPER = "hapax-muse-reviewer"
+MAX_PROMPT_BYTES = 96_000
+REASONING_EFFORT = "high"
+
+
+def muse_bin() -> str | None:
+    return os.environ.get("HAPAX_MUSE_BIN") or shutil.which("muse")
+
+
+def command(binary: str, prompt_file: Path, workspace: Path) -> list[str]:
+    return [
+        binary,
+        "exec",
+        "--prompt-file",
+        str(prompt_file),
+        "--reasoning-effort",
+        REASONING_EFFORT,
+        "--workspace",
+        str(workspace),
+        "--disable-web-tools",
+        "--disable-shell",
+        "--disable-write",
+        "--no-session-log",
+        "--no-foreign-personal-context",
+    ]
+
+
+def main() -> int:
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
+    text = f"{SEAT_PREAMBLE}\n\n{prompt.strip()}\n"
+    size = len(text.encode("utf-8"))
+    if size > MAX_PROMPT_BYTES:
+        return refuse(
+            WRAPPER,
+            f"prompt of {size} bytes exceeds the measured muse ceiling of {MAX_PROMPT_BYTES}; "
+            "the constitution substitutes another family",
+        )
+    binary = muse_bin()
+    if not binary:
+        return refuse(WRAPPER, "muse binary not found; install muse or set HAPAX_MUSE_BIN")
+    with tempfile.TemporaryDirectory(prefix="hapax-muse-review-") as tmp:
+        workspace = Path(tmp) / "workspace"
+        workspace.mkdir()
+        prompt_file = Path(tmp) / "review-prompt.md"
+        prompt_file.write_text(text, encoding="utf-8")
+        try:
+            result = subprocess.run(
+                command(binary, prompt_file, workspace),
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            return refuse(WRAPPER, f"failed to launch muse ({type(exc).__name__})")
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -47,7 +47,7 @@ def test_renew_once_returns_false_when_project_id_missing() -> None:
     with (
         mock.patch.object(watch_renewal, "load_credentials", return_value=mock.Mock()),
         mock.patch.object(watch_renewal, "build_gmail_service", return_value=mock.Mock()),
-        mock.patch.object(watch_renewal, "_pass_show", return_value=None),
+        mock.patch.object(watch_renewal, "_read_secret", return_value=None),
     ):
         assert watch_renewal.renew_once() is False
     assert _counter("no_project") - before == 1.0
@@ -60,7 +60,7 @@ def test_renew_once_returns_false_when_label_bootstrap_fails() -> None:
     with (
         mock.patch.object(watch_renewal, "load_credentials", return_value=mock.Mock()),
         mock.patch.object(watch_renewal, "build_gmail_service", return_value=mock.Mock()),
-        mock.patch.object(watch_renewal, "_pass_show", return_value="my-project"),
+        mock.patch.object(watch_renewal, "_read_secret", return_value="my-project"),
         mock.patch.object(
             watch_renewal,
             "bootstrap_labels",
@@ -90,7 +90,7 @@ def test_renew_once_returns_true_on_success(
     with (
         mock.patch.object(watch_renewal, "load_credentials", return_value=mock.Mock()),
         mock.patch.object(watch_renewal, "build_gmail_service", return_value=fake_service),
-        mock.patch.object(watch_renewal, "_pass_show", return_value="my-project"),
+        mock.patch.object(watch_renewal, "_read_secret", return_value="my-project"),
         mock.patch.object(watch_renewal, "bootstrap_labels", return_value=fake_label_ids),
     ):
         assert watch_renewal.renew_once() is True
@@ -122,7 +122,7 @@ def test_renew_once_handles_watch_http_error(
     with (
         mock.patch.object(watch_renewal, "load_credentials", return_value=mock.Mock()),
         mock.patch.object(watch_renewal, "build_gmail_service", return_value=fake_service),
-        mock.patch.object(watch_renewal, "_pass_show", return_value="my-project"),
+        mock.patch.object(watch_renewal, "_read_secret", return_value="my-project"),
         mock.patch.object(watch_renewal, "bootstrap_labels", return_value=fake_label_ids),
     ):
         assert watch_renewal.renew_once() is False

@@ -1,15 +1,15 @@
 """CLI entry: ``uv run python -m agents.publication_bus``.
 
 Surfaces the publication-bus wire-status registry as an operator-action
-queue. For every CRED_BLOCKED publisher, prints the ``pass insert`` key
-required to unblock wiring, alongside surface slug + rationale.
+queue. For every CRED_BLOCKED publisher, prints the secret name required to
+unblock wiring (put with ``hapax-secret``), alongside surface slug + rationale.
 
-Phase 2 hook: when the operator runs each ``pass insert`` command, the
+Phase 2 hook: when the operator puts each secret, the
 wire-status entry flips to WIRED via a follow-up adapter PR (one map
 entry in ``publish_orchestrator._DISPATCH_MAP``).
 
-``--check-creds`` polls the local ``pass`` store and emits the LIVE
-status: keys present in pass become PRESENT (ready to wire), keys still
+``--check-creds`` polls the FileStore (presence only, never values) and
+emits the LIVE status: names present become PRESENT (ready to wire), names still
 absent stay MISSING. This pairs with the cred-provisioner script
 (``scripts/bootstrap_cred_tokens.py``, #1667) to give the operator a
 "what's left to mint" view at a glance.
@@ -18,8 +18,6 @@ absent stay MISSING. This pairs with the cred-provisioner script
 from __future__ import annotations
 
 import argparse
-import shutil
-import subprocess
 import sys
 
 from agents.publication_bus.wire_status import (
@@ -27,6 +25,7 @@ from agents.publication_bus.wire_status import (
     cred_blocked_pass_keys,
     status_summary,
 )
+from shared.secrets import has_secret, put_instruction
 
 
 def render_operator_queue() -> str:
@@ -59,33 +58,22 @@ def render_operator_queue() -> str:
 
     keys = cred_blocked_pass_keys()
     if keys:
-        lines.append("## Unblocking pass commands")
+        lines.append("## Unblocking puts (hapax-secret TTY dialogue, one name each)")
         lines.append("")
         for k in keys:
-            lines.append(f"  pass insert {k}")
+            lines.append(f"  {put_instruction(k)}")
         lines.append("")
 
     return "\n".join(lines)
 
 
-def _key_present_in_pass(key: str) -> bool:
-    """Return True iff ``pass show <key>`` exits 0."""
-    if not shutil.which("pass"):
-        return False
-    try:
-        result = subprocess.run(
-            ["pass", "show", key],
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
-    return result.returncode == 0
+def _key_present(key: str) -> bool:
+    """Whether the secret named ``key`` is present — presence only, never its value."""
+    return has_secret(key)
 
 
 def render_live_cred_status() -> str:
-    """Poll pass-store for each CRED_BLOCKED key; emit PRESENT/MISSING per key."""
+    """Poll the FileStore for each CRED_BLOCKED key; emit PRESENT/MISSING per key."""
     lines: list[str] = []
     lines.append("# Publication-bus live cred-status")
     lines.append("")
@@ -99,14 +87,14 @@ def render_live_cred_status() -> str:
     present: list[str] = []
     missing: list[str] = []
     for k in keys:
-        (present if _key_present_in_pass(k) else missing).append(k)
+        (present if _key_present(k) else missing).append(k)
 
     lines.append(f"PRESENT: {len(present):>3} / {len(keys)} cred-blocked keys")
     lines.append(f"MISSING: {len(missing):>3} / {len(keys)} cred-blocked keys")
     lines.append("")
 
     if present:
-        lines.append("## Ready-to-wire (pass-store has the key)")
+        lines.append("## Ready-to-wire (the FileStore has the key)")
         lines.append("")
         for k in sorted(present):
             lines.append(f"  + {k}")
@@ -134,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check-creds",
         action="store_true",
-        help="Poll the local pass-store and emit live PRESENT/MISSING per key",
+        help="Poll the FileStore (presence only) and emit live PRESENT/MISSING per key",
     )
     args = parser.parse_args(argv)
 

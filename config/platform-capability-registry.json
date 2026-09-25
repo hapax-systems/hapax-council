@@ -22,6 +22,7 @@
     "claude.headless.sonnet",
     "claude.review.opus",
     "claude.interactive.full",
+    "kimi.interactive.lane",
     "codex.headless.full",
     "codex.headless.spark",
     "agy.review.direct",
@@ -1173,6 +1174,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.headless.full",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "headless",
       "profile": "full",
@@ -1488,6 +1527,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.interactive.full",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "interactive",
       "profile": "full",
@@ -1801,7 +1878,408 @@
     },
     {
       "registry_schema": 1,
+      "route_id": "kimi.interactive.lane",
+      "native_load_set": {
+        "native_home": ".kimi-code",
+        "home_env": "KIMI_CODE_HOME",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "429d0a5636d3c75d341804260920bd6f7d6902139f30397793f7da1f32920147", "digest_description": "Public SHA-256 of kimi global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "config.toml",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
+      "platform": "kimi",
+      "mode": "interactive",
+      "profile": "lane",
+      "launcher": "~/.local/bin/hapax-kimi <lane>",
+      "summary": "Kimi Code managed interactive tmux lane with canonical gate hooks",
+      "notes": "Visible kimi managed-service lane (kimi-code/k3, 1M context). PreToolUse hooks chain into the canonical cc-task-gate via ~/.kimi-code/hooks/kimi-hook-adapter.sh; in-lane mutation denial without claim verified 2026-09-10. Admission is fail-closed on the route-specific quota receipt: a fresh hapax.kimi_quota_admission.v1 receipt from ~/.local/bin/hapax-kimi-quota-admission (minimal kimi -p round-trip; no prompt or output content persisted, digest only), folded by scripts/hapax-quota-telemetry-writer so the live ledger records kimi.interactive.lane as fresh. Availability-measured only: the kimi managed service exposes no client-side quota fraction (limits surface only at the wall); quota_fraction: unobservable is contract, not a gap claim. Quality measurement: W-Q pilot epoch 1 (frame/coordination-20260904/WQ-PILOT-REPORT-20260911.md) — kimi-k3 passed all its cells (S1 executable defect fix x2, S2 review found P1+P3 both runs with zero false findings, S3 grounded research 3/3 x2), inside the registered margin vs glm-5.3 and grok-4.6; no routing inference at pilot n=3. Operator ratified the coordinating-lane succession 2026-09-10 (PLATFORM-READINESS-COORDINATOR-EVALUATION-20260910.md, ratified 2026-09-10T14:05Z); routing-plane admission is this entry.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "route_specific_quota_receipt_absent"
+      ],
+      "model_or_engine": "kimi-code/k3",
+      "execution_descriptor": {
+        "model_id": "kimi-code/k3",
+        "effort": "max",
+        "context_mode": "extended_1m",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": true,
+        "source": true,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "authoritative",
+      "tool_state": [
+        {
+          "tool_id": "filesystem",
+          "available": true,
+          "authority_use": [
+            "read",
+            "write"
+          ],
+          "observed_at": "2026-09-11T02:07:33Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:filesystem"
+        },
+        {
+          "tool_id": "local_shell",
+          "available": true,
+          "authority_use": [
+            "read",
+            "execute",
+            "verify"
+          ],
+          "observed_at": "2026-09-11T02:07:33Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:local_shell"
+        },
+        {
+          "tool_id": "browser",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-09-11T02:07:33Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:browser"
+        },
+        {
+          "tool_id": "context7",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-09-11T02:07:33Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:context7"
+        },
+        {
+          "tool_id": "github",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-09-11T02:07:33Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:github"
+        },
+        {
+          "tool_id": "hapax-mcp",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-09-11T02:07:33Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:hapax-mcp"
+        },
+        {
+          "tool_id": "playwright",
+          "available": true,
+          "authority_use": [
+            "read"
+          ],
+          "observed_at": "2026-09-11T02:07:33Z",
+          "stale_after": "24h",
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:playwright"
+        }
+      ],
+      "tool_access": {
+        "filesystem": "read_write",
+        "shell": "full",
+        "browser": true,
+        "mcp": [
+          "context7",
+          "github",
+          "hapax-mcp",
+          "playwright"
+        ]
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_required",
+          "frontier_review_required",
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [
+          "frame/coordination-20260904/WQ-PILOT-REPORT-20260911.md: kimi-k3 == glm-5.3 == grok-4.6 within registered pilot margin (S1/S2/S3 cells, 2 runs each)"
+        ],
+        "excluded_task_classes": [
+          "runtime_mutation_without_isap",
+          "provider_spend",
+          "public_release_without_gate"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "telemetry": {
+        "quota_source": "ledger",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": "2026-09-11T02:07:33Z",
+        "capability_stale_after": "24h",
+        "quota_checked_at": "2026-09-11T14:25:50Z",
+        "quota_stale_after": "15m",
+        "resource_checked_at": "2026-09-11T02:07:33Z",
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": "2026-09-11T02:07:33Z",
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [
+              "local:kimi --version:0.42.0:2026-09-11T02:07Z",
+              "local:~/.local/bin/hapax-kimi:launcher-contract-reviewed:2026-09-10T13:00Z",
+              "local:~/.kimi-code/hooks/kimi-hook-adapter.sh:cc-task-gate-mutation-denial-verified:2026-09-10T13:31Z"
+            ],
+            "blocked_reasons": []
+          },
+          "quota": {
+            "evidence_refs": [
+              "relay-receipt:kimi-quota-admission-20260911t142550z.yaml:witness:kimi-quota-smoke-20260911t142550z:supported_tool:hapax-kimi-quota-admission:model:kimi-code/k3"
+            ],
+            "blocked_reasons": [
+              "route_specific_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [
+              "local:~/.local/bin/hapax-kimi:visible-launcher-present:2026-09-10T13:00Z"
+            ],
+            "blocked_reasons": []
+          },
+          "provider_docs": {
+            "evidence_refs": [
+              "official:https://www.kimi.com/code/docs/en/"
+            ],
+            "blocked_reasons": []
+          }
+        }
+      },
+      "known_unknowns": [
+        "Dimensional scores below are pilot-bounded measurement records (epoch 1, n=3) — they are not rankings and order no routing preference; floor-meeting confirmation (n >= 8 / n >= 16) pending.",
+        "Kimi exposes no client-side quota fraction; availability is the only measurable quota signal.",
+        "Headless kimi dispatch (non-interactive worker launches) is not admitted by this entry; interactive tmux lanes only."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "frame/coordination-20260904/WQ-PILOT-REPORT-20260911.md:s3:3-of-3-grounded-points:x2-runs"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "local:~/.kimi-code/hooks/kimi-hook-adapter.sh:cc-task-gate-mutation-denial-verified:2026-09-10T13:31Z",
+            "relay:cx-blue.yaml:succession-checkpoints"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "frame/coordination-20260904/WQ-PILOT-REPORT-20260911.md:s1-executable-repair:x2"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "frame/coordination-20260904/GATE0B-M2-READINESS-RECOVERY-CONTRACT-20260911.md"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "frame/coordination-20260904/ESTATE-WORKING-VIEW.md:session-transition-20260910"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "local:~/.kimi-code/config.toml:max_context_size-1048576",
+            "frame/coordination-20260904/ESTATE-WORKING-VIEW.md:whole-estate-intake-20260910"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 3,
+          "confidence": 2,
+          "evidence_refs": [
+            "official:https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/providers.html",
+            "official:https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 3,
+          "confidence": 1,
+          "evidence_refs": [
+            "platform-capability-registry:kimi.interactive.lane:dimensional-score:multimodal_verification:not-exercised"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "frame/coordination-20260904/RECOVERY-ITEMS-DIAGNOSIS-20260911.md"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "frame/coordination-20260904/test_gate0b_source_selection_entrypoint_root.py:14-cases-green",
+            "frame/coordination-20260904/GATE0B-M2-ENTRYPOINT-ACCEPTANCE-20260911.md"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 5,
+          "confidence": 4,
+          "evidence_refs": [
+            "relay:cx-blue.yaml:checkpoint_20260910T145100Z-succession-executed",
+            "frame/coordination-20260904/PLATFORM-READINESS-COORDINATOR-EVALUATION-20260910.md:ratified"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 5,
+          "confidence": 3,
+          "evidence_refs": [
+            "local:~/.local/bin/hapax-glmcp:secret-on-tmpfs-only:2026-09-10",
+            "local:~/.local/bin/hapax-kimi-quota-admission:digest-only-no-content-persisted"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "frame/coordination-20260904/PLATFORM-READINESS-COORDINATOR-EVALUATION-20260910.md:bounded-claims-throughout"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 4,
+          "confidence": 2,
+          "evidence_refs": [
+            "frame/coordination-20260904/M50-PR4658-REVIEW-EVIDENCE-20260911.md:timestamp-mislabels-caught-and-corrected"
+          ],
+          "observed_at": "2026-09-11T04:25:00Z",
+          "stale_after": "24h"
+        }
+      },
+      "sanctioned_wrapper": "~/.local/bin/hapax-kimi",
+      "approval_posture": "no_ask_hooks_enforced",
+      "capability_tier": "frontier_full",
+      "worker_tier": "full_worker"
+    },
+    {
+      "registry_schema": 1,
       "route_id": "claude.headless.opus",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "headless",
       "profile": "opus",
@@ -2128,12 +2606,42 @@
     {
       "registry_schema": 1,
       "route_id": "claude.review.opus",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "Intended blind review: --safe-mode requests auto-memory disabled; --no-session-persistence requested. Managed policy and effective native inputs remain unobserved.",
+        "plugins": [],
+        "skills": [],
+        "hooks": null,
+        "mcp": [],
+        "loading_flags": [
+          "--safe-mode",
+          "--disable-slash-commands",
+          "--no-session-persistence",
+          "--strict-mcp-config"
+        ],
+        "source_refs": [
+          "scripts/hapax-claude-reviewer",
+          "docs/runbooks/agent-instruction-binding.md",
+          "https://code.claude.com/docs/en/cli-reference",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "review",
       "profile": "opus",
-      "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p --model opus with empty --tools/--allowedTools, explicit --disallowedTools, manual permission mode, safe mode, disabled slash commands, no session persistence, empty strict MCP config; YAML verdict on stdout)",
+      "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p with descriptor-bound model/effort arguments and effort/fast-mode environment, empty --tools/--allowedTools, explicit --disallowedTools, manual permission mode, safe mode, disabled slash commands, no session persistence, empty strict MCP config; YAML verdict on stdout)",
       "summary": "Claude Opus no-tools review seat",
-      "notes": "Read-only Claude review route. The wrapper pins Opus, disables tools, and preserves strict fenced-YAML output for review-team dossiers.",
+      "notes": "Read-only Claude review route. The wrapper derives invocation controls from the route execution descriptor, disables tools, and preserves strict fenced-YAML output for review-team dossiers.",
       "route_state": "blocked",
       "blocked_reasons": [
         "claude_review_seat_receipt_admission_required",
@@ -2374,6 +2882,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.headless.sonnet",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "headless",
       "profile": "sonnet",
@@ -2701,19 +3247,57 @@
     {
       "registry_schema": 1,
       "route_id": "codex.headless.full",
+      "native_load_set": {
+        "native_home": ".codex",
+        "home_env": "CODEX_HOME",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5", "digest_description": "Public SHA-256 of agy global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "config.toml",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "codex",
       "mode": "headless",
       "profile": "full",
       "launcher": "scripts/hapax-codex --session <lane> --terminal tmux --task <task>",
       "summary": "Codex full-capability tmux lane with methodology bootstrap",
-      "notes": "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
+      "notes": "Default Codex SOP: GPT-6 Astra xhigh from the Codex launcher.",
       "route_state": "blocked",
       "blocked_reasons": [
         "account_live_quota_receipt_absent"
       ],
-      "model_or_engine": "gpt-5.5-xhigh",
+      "model_or_engine": "gpt-6-astra-xhigh",
       "execution_descriptor": {
-        "model_id": "gpt-5.5",
+        "model_id": "gpt-6-astra",
         "effort": "xhigh",
         "context_mode": "standard",
         "fast_mode": "off",
@@ -3018,6 +3602,44 @@
     {
       "registry_schema": 1,
       "route_id": "codex.headless.spark",
+      "native_load_set": {
+        "native_home": ".codex",
+        "home_env": "CODEX_HOME",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5", "digest_description": "Public SHA-256 of agy global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "config.toml",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "codex",
       "mode": "headless",
       "profile": "spark",
@@ -3338,6 +3960,44 @@
     {
       "registry_schema": 1,
       "route_id": "vibe.headless.full",
+      "native_load_set": {
+        "native_home": ".vibe",
+        "home_env": "VIBE_HOME",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "c931932e87b776c7b2feb57d07130a2aecfa65efca2cb1dbb4d0b9d1208b6dc4", "digest_description": "Public SHA-256 of vibe global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "config.toml",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "vibe",
       "mode": "headless",
       "profile": "full",
@@ -3608,6 +4268,34 @@
     {
       "registry_schema": 1,
       "route_id": "agy.review.direct",
+      "native_load_set": {
+        "native_home": ".gemini",
+        "home_env": null,
+        "files": [
+          {
+            "root": "native_home",
+            "path": "antigravity-cli/settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "per-invocation temporary HOME/XDG/workspace; wrapper seeds only its OAuth binding and writes review-dossier.md. Native/provider memory behavior remains unobserved.",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": [
+          "--sandbox",
+          "--dangerously-skip-permissions",
+          "--disable-slash-commands"
+        ],
+        "source_refs": [
+          "scripts/hapax-agy-reviewer",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "agy",
       "mode": "review",
       "profile": "direct",
@@ -4189,6 +4877,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.headless.haiku",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "headless",
       "profile": "haiku",

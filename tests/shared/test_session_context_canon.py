@@ -4765,13 +4765,23 @@ def test_pre_observability_checkpoint_is_lossless_and_replayable() -> None:
 
 def test_contract_semantic_supersession_binds_current_and_predecessor(rich_context) -> None:
     fixtures = Path(__file__).parents[2] / "packages/hapax-context-canon/tests/fixtures"
-    frame = rich_context["frame"]
-    projections = {name: rich_context[name] for name in ("operator", "yard", "hapax")}
+    current_frame = rich_context["frame"]
+    # The receipt's "current" artifacts are frozen at its creation, not regenerated
+    # from today's source hashes. Rebuild their projections and retain the live
+    # frame's protected-commitment checks below without rewriting historical bytes.
+    frame = ContextFrame.model_validate_json((fixtures / "gate0-frame.json").read_bytes())
+    projections = {
+        name: ProjectionEnvelope.model_validate(payload)
+        for name, payload in json.loads((fixtures / "gate0-projections.json").read_text()).items()
+    }
+    assert set(projections) == {"operator", "yard", "hapax"}
+    for projection in projections.values():
+        assert verify_projection(frame, projection) == projection
     compatibility = project_context_bundle_v1(
         frame,
-        operator_private=rich_context["operator"],
-        yard_context=rich_context["yard"],
-        hapax_substrate=rich_context["hapax"],
+        operator_private=projections["operator"],
+        yard_context=projections["yard"],
+        hapax_substrate=projections["hapax"],
     )
     assert (fixtures / "gate0-frame.json").read_bytes() == canonical_json_bytes(frame) + b"\n"
     assert (fixtures / "gate0-projections.json").read_bytes() == canonical_json_bytes(
@@ -4837,5 +4847,6 @@ def test_contract_semantic_supersession_binds_current_and_predecessor(rich_conte
     )
     for field, expected in receipt["protected_commitments"].items():
         assert getattr(frame.position, field) == expected["current"]
+        assert getattr(current_frame.position, field) == expected["current"]
         assert predecessor_frame["position"][field] == expected["predecessor"]
         assert expected["current"] == expected["predecessor"]

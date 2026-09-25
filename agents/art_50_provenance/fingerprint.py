@@ -1,14 +1,21 @@
-"""Image fingerprinting for the Article 50 image MVP."""
+"""Image fingerprinting for the Article 50 image MVP.
+
+Pillow is imported where image bytes are opened, never at module import: this package is
+imported by the publication-bus surface registry and by capability inventory in a minimal
+environment (pydantic and pyyaml only), and an eager image dependency made that whole
+inventory source unavailable.
+"""
 
 from __future__ import annotations
 
 import hashlib
 from io import BytesIO
-from typing import Any
-
-from PIL import Image
+from typing import TYPE_CHECKING, Any
 
 from agents.art_50_provenance.models import FingerprintBundle
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 
 class PdqUnavailable(RuntimeError):
@@ -73,6 +80,7 @@ def _fallback_pdq_dct_hex(image: Image.Image) -> str:
 
     import cv2
     import numpy as np
+    from PIL import Image
 
     gray = image.convert("L").resize((64, 64), Image.Resampling.LANCZOS)
     arr = np.asarray(gray, dtype=np.float32)
@@ -89,6 +97,8 @@ def compute_image_fingerprints(
     require_native_pdq: bool = False,
 ) -> FingerprintBundle:
     """Compute cryptographic and perceptual fingerprints for image bytes."""
+
+    from PIL import Image
 
     sha256 = hashlib.sha256(image_bytes).hexdigest()
     with Image.open(BytesIO(image_bytes)) as opened:
