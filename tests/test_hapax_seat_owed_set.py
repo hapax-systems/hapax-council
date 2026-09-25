@@ -886,10 +886,7 @@ def test_drop_in_uses_oneshot_base_and_activation_worktree() -> None:
         pytest.skip("base user unit is not installed on this host")
     text = base.read_text(encoding="utf-8")
     assert "Type=oneshot" in text
-    drop = (
-        ROOT
-        / "systemd/units/lanebus-staleness-sweep.service.d/seat-owed-set.conf"
-    )
+    drop = ROOT / "systemd/units/lanebus-staleness-sweep.service.d/seat-owed-set.conf"
     body = drop.read_text(encoding="utf-8")
     assert "ExecStart=-" not in body
     assert ".cache/hapax/source-activation/worktree/scripts/hapax-seat-owed-set" in body
