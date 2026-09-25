@@ -73,6 +73,52 @@ def test_ingest_spool_leaves_malformed_file(tmp_path: Path) -> None:
     assert bad.exists()  # left in place so the intent is not lost
 
 
+def test_ingest_spool_removes_the_lock_sidecar_with_the_consumed_intent(
+    tmp_path: Path,
+) -> None:
+    """A consumed intent leaves NO residue — including the flock sidecar.
+
+    Production census on 2026-09-25 (row
+    coord-ledger-appendix-mirror-destroys-local-appends-20260925): 43 orphaned
+    `.jsonl.lock` sidecars in the live spool dir, one per intent consumed since
+    June — `ingest_spool` unlinked the intent but not the `append_jsonl` lock.
+    """
+    log = _log(tmp_path)
+    receipt = log.spool_fail_open(
+        _event(), writer=CoordWriter.shim(lane="zeta"), reason="daemon_down"
+    )
+    assert receipt.spool_path is not None
+    lock_sidecar = receipt.spool_path.with_name(receipt.spool_path.name + ".lock")
+    assert lock_sidecar.exists()
+
+    result = log.ingest_spool()
+
+    assert result.ingested == 1
+    assert not receipt.spool_path.exists()
+    assert not lock_sidecar.exists(), "the consumed intent's lock sidecar must go with it"
+
+
+def test_ingest_spool_redelivered_intent_is_ingested_exactly_once(tmp_path: Path) -> None:
+    """A forwarded spool can deliver the same intent twice; the ledger lands it once.
+
+    The coord-ledger mirror row routes appendix-side writers to a forwarding
+    spool the canonical writer ingests; forwarding can redeliver (rsync re-run
+    before the source cleanup). `event_id UNIQUE` makes the second delivery an
+    idempotent duplicate: consumed, counted, never a second canonical row.
+    """
+    log = _log(tmp_path)
+    log.spool_fail_open(_event(), writer=CoordWriter.shim(lane="zeta"), reason="daemon_down")
+    first = log.ingest_spool()
+    assert (first.ingested, first.duplicates, first.failed) == (1, 0, 0)
+
+    # Redelivery: the same intent arrives again as a fresh spool file.
+    log.spool_fail_open(_event(), writer=CoordWriter.shim(lane="zeta"), reason="forwarded")
+    second = log.ingest_spool()
+
+    assert (second.ingested, second.duplicates, second.failed) == (0, 1, 0)
+    assert sum(1 for e in log.replay().events if e.event_id == "evt-1") == 1
+
+
 def test_ingest_spool_noop_when_no_spool_dir(tmp_path: Path) -> None:
     result = _log(tmp_path).ingest_spool()
     assert (result.ingested, result.duplicates, result.failed) == (0, 0, 0)

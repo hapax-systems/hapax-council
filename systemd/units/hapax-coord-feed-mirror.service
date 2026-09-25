@@ -1,0 +1,38 @@
+# Pull coord feeds from podium (the production ingestion host) so appendix
+# dev/SDLC consumers (the coord smoke gate, lane checkouts of hapax-coord) see
+# fresh feeds. One-directional pull; appendix never writes back.
+# Born 2026-06-12: cx-gold UX-2 smoke run blocked on missing sdlc-vocab.json
+# (REQ-20260612-exec-host-provisioning-contract).
+#
+# ALLOWLIST (since 2026-09-25, row
+# coord-ledger-appendix-mirror-destroys-local-appends-20260925). The payload is
+# the FEED plane ONLY: sdlc-vocab.json, review-receipts.json, sdlc-events.jsonl,
+# sdlc-events.shadow.json. Everything else under coord/ is never mirrored:
+#
+# - ledger.db / ledger.db-wal / ledger.db-shm / ledger.jsonl / spool/ are the
+#   coordination EVENT LOG. A timestamp-preserving rsync replace of a WAL ledger
+#   silently discards every local canonical commit and leaves the local writer
+#   failing "disk I/O error" indefinitely while integrity_check reports ok
+#   (relay/inflections/20260810-coord-mirror-destroys-the-ledger-it-mirrors.md,
+#   measured: frame/append-only-logs-20260925 E2 §3). This exclude-list shape
+#   is why 70 methodology-dispatch intents of 2026-09-23/24 never landed.
+#   appendix's ledger.db is a downstream replica; appendix coord writers spool
+#   for the canonical writer on podium (shared/coord_event_log.py docstring).
+# - grants/ and grant-key are the ESCAPE-AUTHORIZATION plane (2026-08-04
+#   incident): a grant minted on podium must not become valid on appendix by
+#   riding a feed mirror. Each host mints its own.
+#
+# Pinned by tests/systemd/test_coord_feed_mirror_unit.py, including a real
+# rsync run that must leave a live local WAL untouched.
+[Unit]
+Description=Pull coord feeds from podium (dev-host mirror)
+Wants=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rsync -a --timeout=10 \
+          --include=sdlc-vocab.json --include=review-receipts.json \
+          --include=sdlc-events.jsonl --include=sdlc-events.shadow.json \
+          --exclude='*' \
+          hapax-podium:.cache/hapax/coord/  %h/.cache/hapax/coord/
