@@ -468,15 +468,25 @@ def _build_port_descriptors(
 
 def _generation_roots(activation_generation: ContentAddress) -> tuple[ContentAddress, ...]:
     shared = Path(__file__).resolve().parent
-    roots = (
-        activation_generation,
-        module_file_address(shared / "coord_projection.py"),
-        module_file_address(shared / "execution_admission.py"),
-        module_file_address(Path(__file__)),
-        module_file_address(shared / "gate0b_claim_publication_lease.py"),
-        module_file_address(shared / "gate0b_claim_publication_effect.py"),
-        module_file_address(shared / "sdlc_claim.py"),
-    )
+    roots = [activation_generation]
+    for name in (
+        "coord_projection.py",
+        "content_address.py",
+        "execution_admission.py",
+        "gate0b_claim_publication_install.py",
+        "gate0b_claim_publication_lease.py",
+        "gate0b_claim_publication_effect.py",
+        "sdlc_claim.py",
+    ):
+        # Keep stable, owner-bound file hashing; bind the source's repo-relative
+        # identity instead of its release/worktree-specific absolute location.
+        address = module_file_address(shared / name)
+        roots.append(
+            ContentAddress(
+                ref=f"file:shared/{name}@sha256:{address.sha256}",
+                sha256=address.sha256,
+            )
+        )
     return tuple(
         sorted({(item.ref, item.sha256): item for item in roots}.values(), key=lambda x: x.ref)
     )

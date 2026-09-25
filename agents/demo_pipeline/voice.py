@@ -12,6 +12,8 @@ from typing import Literal
 import httpx
 import numpy as np
 
+from shared.secrets import SecretUnavailable, get_secret
+
 log = logging.getLogger(__name__)
 
 TTS_URL = "http://localhost:4123"
@@ -78,16 +80,12 @@ def generate_voice_segment_kokoro(
 
 
 def check_elevenlabs_available() -> bool:
-    """Check if ElevenLabs API key is available."""
+    """Whether an ElevenLabs API key resolves (env ``ELEVENLABS_API_KEY``, then the FileStore)."""
     try:
-        import subprocess
-
-        result = subprocess.run(
-            ["pass", "show", "elevenlabs/api-key"], capture_output=True, text=True
-        )
-        return result.returncode == 0 and len(result.stdout.strip()) > 10
-    except Exception:
+        key = get_secret("elevenlabs/api-key", env="ELEVENLABS_API_KEY", required=False) or ""
+    except SecretUnavailable:
         return False
+    return len(key.strip()) > 10
 
 
 def generate_voice_segment_elevenlabs(
@@ -97,13 +95,9 @@ def generate_voice_segment_elevenlabs(
     model_id: str = "eleven_multilingual_v2",
 ) -> None:
     """Generate a voice segment using ElevenLabs API."""
-    import subprocess
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    api_key = subprocess.run(
-        ["pass", "show", "elevenlabs/api-key"], capture_output=True, text=True
-    ).stdout.strip()
+    api_key = get_secret("elevenlabs/api-key", env="ELEVENLABS_API_KEY")
 
     response = httpx.post(
         f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
@@ -232,7 +226,7 @@ def generate_all_voice_segments(
             resolved_backend = "kokoro"
         else:
             raise RuntimeError(
-                "No TTS backend available. Set up ElevenLabs (pass insert elevenlabs/api-key), "
+                "No TTS backend available. Set up ElevenLabs (put elevenlabs/api-key with hapax-secret), "
                 "start Chatterbox, or install Kokoro (uv sync)."
             )
     # else: backend == "chatterbox", use_kokoro stays False

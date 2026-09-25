@@ -577,6 +577,25 @@ def test_safe_read_text_tolerates_missing_file(tmp_path: Path) -> None:
     assert module._safe_read_text(present) == "hello"
 
 
+def test_rewrite_under_lock_reports_unreadable_note(tmp_path: Path, capsys) -> None:
+    """A note that vanishes under the lock is a skip with a next action, not silence."""
+
+    module = _load_module()
+    gone = tmp_path / "active" / "vanished.md"
+    gone.parent.mkdir(parents=True)
+
+    def mutate(text: str) -> str:
+        raise AssertionError("must not mutate an unreadable note")
+
+    def revalidate(text: str) -> str | None:
+        raise AssertionError("must not revalidate an unreadable note")
+
+    assert module._rewrite_under_lock(gone, mutate, revalidate) is False
+    err = capsys.readouterr().err
+    assert "vanished skipped — unreadable under the lock" in err, err
+    assert f"ls {gone.parent.parent}/*/vanished*" in err, err
+
+
 def test_blocked_candidates_survives_concurrent_close(tmp_path: Path, monkeypatch) -> None:
     """Regression: a note moved out of active/ mid-sweep must not crash.
 

@@ -31,6 +31,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from shared.secrets import get_secret
 from shared.url_safety import url_matches_domain
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -394,7 +395,7 @@ current_channel: str = ""
 class LivestreamDescriptionUpdater:
     """Updates YouTube livestream description with attribution links.
 
-    Reads OAuth2 credentials from `pass show google/youtube-token`.
+    Reads OAuth2 credentials from the FileStore (`google/token`) through shared.secrets.
     Automatically refreshes access tokens when expired.
     """
 
@@ -412,18 +413,13 @@ class LivestreamDescriptionUpdater:
 
     def _load_credentials(self) -> None:
         try:
-            result = subprocess.run(
-                ["pass", "show", "google/token"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
+            token_json = get_secret("google/token", required=False)
+            if not token_json:
                 log.info(
                     "YouTube API: no credentials in google/token (re-run Google OAuth consent)"
                 )
                 return
-            self._credentials = json.loads(result.stdout.strip())
+            self._credentials = json.loads(token_json.strip())
             scopes = self._credentials.get("scopes", [])
             if "https://www.googleapis.com/auth/youtube.force-ssl" not in scopes:
                 log.info(

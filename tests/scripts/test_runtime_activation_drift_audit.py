@@ -137,12 +137,10 @@ def test_failed_unit_is_a_finding_even_when_timer_driven(tmp_path: Path) -> None
 
 
 def test_parse_units_output_handles_separate_failure_bullet() -> None:
-    rows = audit.parse_units_output(
-        "● hapax-obsidian-publish-sync.service loaded failed failed Hapax Obsidian Publish sync\n"
-    )
+    rows = audit.parse_units_output("● example.service loaded failed failed Example fixture\n")
 
-    assert rows["hapax-obsidian-publish-sync.service"].active_state == "failed"
-    assert rows["hapax-obsidian-publish-sync.service"].sub_state == "failed"
+    assert rows["example.service"].active_state == "failed"
+    assert rows["example.service"].sub_state == "failed"
 
 
 def test_stale_artifact_is_critical(tmp_path: Path) -> None:

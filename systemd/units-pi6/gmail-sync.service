@@ -8,7 +8,6 @@ Type=oneshot
 WorkingDirectory=/home/hapax/projects/hapax-council
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GNUPGHOME=/home/hapax/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
 Environment=PYTHONPATH=/home/hapax/projects/hapax-council
 ExecStart=/home/hapax/projects/hapax-council/.venv-sync/bin/python -m agents.gmail_sync --auto
 MemoryMax=512M

@@ -16,8 +16,14 @@ exists for that sensitive class.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from shared.release_gate import (
+    LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES,
     LIVE_EGRESS_MITIGATION_CHECKS,
+    _path_in_consent_containment_lane,
     assess_release_auto_arm_estate,
 )
 from shared.sdlc_lifecycle import (
@@ -215,6 +221,164 @@ def test_egress_auto_arm_coverage_bound_holds_uncovered_paths() -> None:
     )
 
 
+def test_consent_containment_lane_surfaces_is_exact() -> None:
+    # Drift pin: this tuple IS the consent-containment lane the release gate
+    # admits past the coverage bound. Extending or narrowing it re-scopes what
+    # a live-egress-sensitive PR may touch without new behavioral evidence —
+    # a ratification act, never an edit. Update this test deliberately, and
+    # extend the egress-boundary-pin job's consent pins first: evidence
+    # follows coverage, coverage follows the pin suite. Production sources are
+    # exact files (fail-closed for future files beside them); only
+    # axioms/contracts (person-named deletions) and the test trees (not egress
+    # surfaces; landing layer is the merge-queue full shard) are directories.
+    assert LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES == (
+        ".github/workflows/ci.yml",
+        "agents/_governance.py",
+        "agents/_governance/carrier.py",
+        "agents/_governance/consent.py",
+        "agents/_governance/consent_gate.py",
+        "agents/_governance/consent_label.py",
+        "agents/_governance/consent_reader.py",
+        "agents/_governance/provenance.py",
+        "agents/_governance/revocation.py",
+        "agents/hapax_daimonion/conversation_pipeline.py",
+        "agents/hapax_daimonion/conversational_policy.py",
+        "agents/studio_compositor/consent.py",
+        "agents/studio_compositor/consent_live_egress.py",
+        "axioms/contracts",
+        "logos/_governance.py",
+        "logos/api/deps/stream_redaction.py",
+        "logos/api/routes/consent.py",
+        "logos/api/routes/data.py",
+        "packages/agentgov/src/agentgov/carrier.py",
+        "packages/agentgov/src/agentgov/consent.py",
+        "packages/agentgov/src/agentgov/consent_label.py",
+        "packages/agentgov/src/agentgov/provenance.py",
+        "packages/agentgov/src/agentgov/revocation.py",
+        "packages/agentgov/tests",
+        "scripts/archive-purge.py",
+        "scripts/hapax-guest-consent",
+        "scripts/screwm-guest-source.py",
+        "scripts/vulture_whitelist.py",
+        "shared/face_enrollment_registry.py",
+        "shared/governance/consent.py",
+        "shared/governance/consent_gate.py",
+        "shared/governance/consent_reader.py",
+        "tests/conftest.py",
+        "tests/hapax_daimonion",
+        "tests/logos",
+        "tests/scripts",
+        "tests/shared",
+        "tests/test_affordance_pipeline.py",
+        "tests/test_archive_purge.py",
+        "tests/test_consent_gate.py",
+        "tests/test_consent_label.py",
+        "tests/test_consent_pipeline_reader.py",
+        "tests/test_revocation_wiring.py",
+    )
+    # The count is machine-checked so prose can never understate the lane's
+    # governance blast radius (review F round 3): 43 entries, not fewer.
+    assert len(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES) == 43
+
+
+def test_consent_containment_lane_admits_lane_shapes() -> None:
+    # Every non-doc shape of the containment PR class — contract deletions,
+    # test helpers, package sources, gate files, docs — passes the coverage
+    # bound with the full mitigation set: the lane's pins (per PR) plus the
+    # full suite at landing are its behavioral evidence.
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=[
+            "shared/release_gate.py",
+            "axioms/contracts/contract-removed-one.yaml",
+            "axioms/contracts/contract-removed-two.yaml",
+            "packages/agentgov/src/agentgov/consent.py",
+            "packages/agentgov/tests/test_consent_binding.py",
+            "agents/_governance/consent_reader.py",
+            "tests/shared/test_consent_round_ten.py",
+            "agents/studio_compositor/consent_live_egress.py",
+            ".github/workflows/ci.yml",
+            "tests/test_consent_gate.py",
+            "tests/test_consent_label.py",
+            "docs/runbooks/pii-containment.md",
+        ],
+    )
+    assert not any("egress_evidence_uncovered" in b for b in assessment.blockers)
+    assert assessment.eligible is True
+
+
+def test_consent_containment_lane_boundary_is_anchored() -> None:
+    # The lane is exact-or-directory-prefix, never substring, and production
+    # trees fail CLOSED for future files: a sibling of a lane entry, a
+    # lookalike extension, and a brand-new production source beside admitted
+    # ones are all outside the lane and held by the coverage bound.
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=[
+            "shared/governance/other.py",
+            "agents/_governance.py.bak",
+            "packages/agentgov/src/agentgov/new_egress.py",
+            "agents/_governance/new_surface.py",
+        ],
+    )
+    assert assessment.eligible is False
+    blockers = list(assessment.blockers)
+    for held in (
+        "agents/_governance.py.bak",
+        "agents/_governance/new_surface.py",
+        "packages/agentgov/src/agentgov/new_egress.py",
+        "shared/governance/other.py",
+    ):
+        assert any(held in blocker for blocker in blockers), (
+            f"lane boundary leaked for {held}: {blockers}"
+        )
+
+
+def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> None:
+    # Direct unit pin for the lane matcher: exact-file and under-directory
+    # admission, sibling/lookalike denials, and degenerate inputs — empty and
+    # whitespace-only paths match nothing.
+    assert _path_in_consent_containment_lane("shared/governance/consent.py")
+    assert _path_in_consent_containment_lane("agents/_governance.py")
+    assert _path_in_consent_containment_lane("tests/logos/test_anything.py")
+    assert _path_in_consent_containment_lane(".github/workflows/ci.yml")
+    assert _path_in_consent_containment_lane("tests/test_consent_gate.py")
+    assert _path_in_consent_containment_lane("tests/test_consent_label.py")
+    assert not _path_in_consent_containment_lane(".github/workflows/ci.yml.bak")
+    assert not _path_in_consent_containment_lane(".github/workflows/other.yml")
+    assert not _path_in_consent_containment_lane("tests/test_consent_gate.py.bak")
+    assert not _path_in_consent_containment_lane("shared/governance/other.py")
+    assert not _path_in_consent_containment_lane("agents/_governance.py.bak")
+    assert not _path_in_consent_containment_lane("tests/logos-other/x.py")
+    assert not _path_in_consent_containment_lane("")
+    assert not _path_in_consent_containment_lane("   ")
+    assert not _path_in_consent_containment_lane("./shared/governance/consent.py")
+    assert not _path_in_consent_containment_lane("packages/agentgov/src/agentgov/other.py")
+
+
+def test_consent_containment_lane_entries_exist_with_evidence_substrate() -> None:
+    # The landing-time layer of the lane's evidence (test-full-shard executes
+    # the whole tests/ tree at merge, anchored by
+    # test_composition_suite_itself_runs_in_the_required_full_shard) presumes
+    # every admitted entry exists on disk with its suites present — a lane
+    # entry whose path vanished, or whose directory emptied, would silently
+    # degrade the three-layer evidence shape to two layers. The allowlist is
+    # machine-coupled to its substrate: every entry exists, none hollow.
+    repo_root = Path(__file__).resolve().parents[1]
+    missing: list[str] = []
+    hollow: list[str] = []
+    for entry in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES:
+        path = repo_root / entry
+        if not path.exists():
+            missing.append(entry)
+        elif path.is_dir() and not any(path.iterdir()):
+            hollow.append(entry)
+    assert not missing, f"lane entries absent from the tree: {missing}"
+    assert not hollow, f"lane directories carry no evidence substrate: {hollow}"
+
+
 def test_egress_coverage_bound_unevaluable_without_changed_files() -> None:
     # A caller that supplies no PR file list cannot evaluate the coverage bound —
     # the wrapper holds closed (unbounded behavioral evidence is no evidence).
@@ -408,6 +572,59 @@ def test_sensitive_path_matches_claude_md_file_segment() -> None:
     assert any("sensitive_path" in blocker for blocker in assessment.blockers)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "AGENTS.md",
+        "nested/AGENTS.md",
+        "CLAUDE.md",
+        "nested/CLAUDE.md",
+        "config/agent-instructions/AGENTS.md",
+        "config/agent-instructions/native/claude.md",
+        "config/agent-instructions/native/grok.md",
+        "config/agent-instructions/native/kimi.md",
+        "config/agent-instructions/native/vibe.md",
+        "config/agent-instructions/native/future-client.md",
+        "config/agent-instructions/bindings.json",
+        "docs/runbooks/council-domain-context.md",
+        "scripts/install-agent-instructions.py",
+    ],
+)
+@pytest.mark.parametrize("prefix", ["", "hapax-council/", "/abs/repo/"])
+def test_sensitive_path_matches_instruction_sources(path: str, prefix: str) -> None:
+    path = prefix + path
+    assessment = assess_release_auto_arm(_eligible_frontmatter(mutation_scope_refs=[path]))
+    assert assessment.eligible is False
+    assert f"sensitive_path:{path}" in assessment.blockers
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/AGENTS.md.example",
+        "docs/CLAUDE.md.example",
+        "docs/runbooks/ordinary.md",
+        "config/ordinary.yaml",
+        "config/agent-instructions/README.md",
+        "config/agent-instructions/native-extra/grok.md",
+        "config/agent-instructions/bindings.json.example",
+        "config/agent-instructions-extra/bindings.json",
+        "other-config/agent-instructions/native/grok.md",
+        "docs/runbooks/council-domain-context.md.example",
+        "docs/runbooks/other-council-domain-context.md",
+        "other-docs/runbooks/council-domain-context.md",
+        "scripts/install-agent-instructions.py.example",
+        "scripts/other-install-agent-instructions.py",
+        "other-scripts/install-agent-instructions.py",
+    ],
+)
+@pytest.mark.parametrize("prefix", ["", "hapax-council/", "/abs/repo/"])
+def test_instruction_lookalikes_and_ordinary_docs_are_not_sensitive(path: str, prefix: str) -> None:
+    assessment = assess_release_auto_arm(_eligible_frontmatter(mutation_scope_refs=[prefix + path]))
+    assert assessment.eligible is True
+    assert assessment.blockers == ()
+
+
 def test_ineligible_when_public_current_already_true() -> None:
     assessment = assess_release_auto_arm(_eligible_frontmatter(public_current=True))
     assert assessment.eligible is False
@@ -593,3 +810,87 @@ def test_nonsensitive_task_stays_eligible_with_verified_checks() -> None:
         _eligible_frontmatter(), verified_checks={"secrets-scan", "test"}
     )
     assert assessment.eligible
+
+
+# ── M129: a declared false takes precedence over the keyword deriver ───
+#
+# The title and tags are an upstream free variable. The keyword deriver may add
+# a sensitive class the route omits, but never override the route's authored
+# ``false``. Omitted, non-boolean and unvalidated declarations keep today's
+# derivation: failure narrows.
+
+# "live" is a verb here, as in cc-claim-governed-rebinding-20260914's title.
+_LIVE_VERB_TITLE = "The exclusivity primitive belongs where the lease lock and transaction live"
+_EGRESS = "audio_or_live_egress_sensitive"
+_NON_EGRESS_CHANGED_FILES = ["scripts/cc-claim", "shared/sdlc_claim.py", "tests/test_x.py"]
+
+
+def _live_verb_frontmatter(**overrides: object) -> dict[str, object]:
+    return _eligible_frontmatter(title=_LIVE_VERB_TITLE, **overrides)
+
+
+@pytest.mark.parametrize(
+    "placement",
+    [
+        pytest.param(lambda flags: {"risk_flags": flags}, id="top-level"),
+        pytest.param(lambda flags: {"route_metadata": {"risk_flags": flags}}, id="nested"),
+    ],
+)
+def test_declared_false_vetoes_the_keyword_derived_egress_class(placement) -> None:
+    fm = _live_verb_frontmatter(**placement({_EGRESS: False}))
+
+    assessment = assess_release_auto_arm_estate(
+        fm, verified_checks=set(), changed_files=_NON_EGRESS_CHANGED_FILES
+    )
+
+    assert assessment.eligible is True
+    assert assessment.blockers == ()
+
+
+def test_undeclared_flag_keeps_the_keyword_derivation() -> None:
+    assessment = assess_release_auto_arm(_live_verb_frontmatter())
+
+    assert assessment.eligible is False
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+def test_a_declared_false_on_one_flag_does_not_veto_another_omitted_flag() -> None:
+    # The parsed RiskFlags model defaults an omitted flag to False; only the raw
+    # declaration may veto, so a sibling's false must leave the egress class held.
+    fm = _live_verb_frontmatter(risk_flags={"governance_sensitive": False})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+@pytest.mark.parametrize("title", [_LIVE_VERB_TITLE, "Reform improve dispatch resilience"])
+def test_declared_true_is_kept(title: str) -> None:
+    fm = _eligible_frontmatter(title=title, risk_flags={_EGRESS: True})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert assessment.eligible is False
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+@pytest.mark.parametrize("declared", ["false", "False", "no", 0, None], ids=repr)
+def test_non_boolean_declaration_keeps_the_keyword_derivation(declared: object) -> None:
+    fm = _live_verb_frontmatter(risk_flags={_EGRESS: declared})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+def test_unvalidated_route_metadata_keeps_the_keyword_derivation() -> None:
+    from shared.route_metadata_schema import RouteMetadataStatus, assess_route_metadata
+
+    fm = _live_verb_frontmatter(
+        risk_flags={_EGRESS: False}, mutation_surface="not-a-mutation-surface"
+    )
+    assert assess_route_metadata(fm).status is RouteMetadataStatus.MALFORMED
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers

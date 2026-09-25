@@ -1,0 +1,8 @@
+# Public Cloudflare resource identifiers and a source digest, never credentials.
+worker = "han-mail-receive"
+namespace_title = "hrl-han-inbound"
+namespace_id = "f886ed11efb6423daf58468e25fb48af" # pragma: allowlist secret
+rule_id = "c662e78fcd41466a956a0ab99197f1de" # pragma: allowlist secret
+source_sha256 = "99b06609b0cd3d9db15f492da03a2c904e5fcc95c94bfdc111f3a32fbf55f5ce" # pragma: allowlist secret
+workers_dev = false
+previews_enabled = false

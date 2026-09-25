@@ -17,10 +17,6 @@ def _readme() -> str:
     return README.read_text(encoding="utf-8")
 
 
-def _squash_whitespace(text: str) -> str:
-    return " ".join(text.lower().split())
-
-
 class TestNoCtaCopy:
     FORBIDDEN_PHRASES = (
         "Pull requests welcome",
@@ -106,34 +102,8 @@ class TestAudienceValueCopy:
         # not on public copy.
         assert "hn and technical readers" not in body
 
-    def test_obsidian_home_covers_public_reader_values(self) -> None:
-        body = _squash_whitespace(OBSIDIAN_HOME.read_text(encoding="utf-8"))
-        for value_statement in (
-            "adopters can find bounded hooks",
-            "technical leaders can see where authority and write paths stop",
-            "researchers can inspect claim and refusal evidence",
-            "harness readers can compare",
-            "public egress is part of the governed task surface",
-        ):
-            assert value_statement in body
-
-    def test_obsidian_home_scale_claims_are_recheckable(self) -> None:
-        body = OBSIDIAN_HOME.read_text(encoding="utf-8")
-        assert "190 source-visible agent directories" in body
-        assert "147 equipment records" in body
-        assert "200+ AI agents" not in body
-        assert "150+ pieces of studio equipment" not in body
-        for command in (
-            "find agents -mindepth 1 -maxdepth 1 -type d | wc -l",
-            "find config/equipment -maxdepth 1 -type f",
-            "uv run python scripts/check-public-surface-claims.py --warnings-fail",
-        ):
-            assert command in body
-
-    def test_obsidian_home_links_public_mcp_repo_after_live_readback(self) -> None:
-        body = OBSIDIAN_HOME.read_text(encoding="utf-8")
-        assert "https://github.com/hapax-systems/hapax-mcp" in body
-        assert "not listed as public until live-state readback reports" not in body
+    def test_obsidian_home_is_absent_from_public_copy(self) -> None:
+        assert not (OBSIDIAN_HOME.exists() or OBSIDIAN_HOME.is_symlink())
 
 
 class TestMetadataCoherence:

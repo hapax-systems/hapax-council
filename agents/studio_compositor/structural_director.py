@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 
 from agents.studio_compositor.action_receipts import emit_action_receipt
 from shared.action_receipt import ActionReceiptStatus
+from shared.secrets import get_secret
 
 log = logging.getLogger(__name__)
 
@@ -414,7 +415,6 @@ def _default_llm_fn(prompt: str) -> str:
     Best-effort: imports are lazy so tests can stub this without pulling
     in the heavy director_loop module.
     """
-    import subprocess
     import urllib.request
 
     from agents.studio_compositor.director_loop import _DIRECTOR_LLM_LOCK, _LLMInFlight
@@ -425,15 +425,9 @@ def _default_llm_fn(prompt: str) -> str:
 
     litellm_url = "http://localhost:4000/v1/chat/completions"
     try:
-        # Reuse the same key fetch as director_loop._get_litellm_key
+        # Same key resolution as scene_classifier._get_litellm_key: env, FileStore, CLI.
         try:
-            result = subprocess.run(
-                ["pass", "show", "litellm/master-key"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            key = result.stdout.strip()
+            key = get_secret("litellm/master-key", env="LITELLM_API_KEY", required=False) or ""
         except Exception:
             key = ""
         body = json.dumps(

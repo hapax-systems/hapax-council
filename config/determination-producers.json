@@ -41,6 +41,20 @@
       "declined_exit_codes": [],
       "notes": "Runs a REAL scripts/hapax-agy-reviewer smoke and requires schema-conformant fenced-YAML stdout, so the receipt cannot be minted without a completed provider round trip. Measured 2026-08-19: honest, fully mechanical on hapax-appendix, and on no timer — its receipts had been expired since 2026-08-17, which is why the gemini review family was unseatable. Its TTL is 900s, so cadence must stay well under that. NOTE its rc=2 is INDETERMINATE and is deliberately NOT listed as declined: agy collapses smoke-timeout, quota wall, auth failure, and model non-compliance into one exit code, so classifying it as a healthy decline would launder a broken producer as good news. Observed both within one minute on 2026-08-19 — a clean produce in 24s and a self-timeout at 240s, both indistinguishable at the exit code. Until agy discriminates, rc=2 surfaces as a failure. The fix belongs in agy, not in a generous mapping here.",
       "timeout_seconds": 300
+    },
+    {
+      "id": "encountered-machinery-audit",
+      "property": "encountered_machinery_pile",
+      "subjects": ["frame.encountered-machinery"],
+      "command": ["scripts/hapax-encountered-machinery-audit", "--run-on-host", "hapax-podium", "--json"],
+      "cadence_seconds": 3600,
+      "evidence_ttl_seconds": 10800,
+      "provenance": "mechanical",
+      "host_scope": "designated_host",
+      "success_exit_codes": [0],
+      "declined_exit_codes": [],
+      "notes": "Evaluates the MECHANISM-DISPOSITION-THRESHOLDS ladder (T1-T9: T8 is entries unjudged after 7 d, T9 is judgments resting on unjudged or accidental walls) over ENCOUNTERED-MACHINERY plus its class ledger. The primary metric is the accidental share. It mints offered reduction rows (authority unset, WIP cap 3), posts one lanebus drop to the seat when the flag set changes, and rewrites the derived ENCOUNTERED-MACHINERY-PILE-STATUS.md only when its content changes. Hourly because the ladder's tightest clocks are 'same working day' (T2) and 24 h (T3): hourly gives a same-day row at least 20 chances and bounds T3 lateness to 1 h, at a cost of about 1 s plus two local git reads. Minutes would only rewrite an NFS file and reread history for nothing. The TTL of 3 h tolerates two missed runs before the pile status is stale. --run-on-host: every host runs hapax-determine against the one shared vault, and a second writer would double-post and race the mint. Podium holds the vault on local disk, so it avoids the NFS client stalls of M100/M107. On any other host the run exits 0 with 'skipped'. rc 1 means an action failed (mint, post, write) and the next run retries; rc 2 means the inputs were unreadable. Both page, correctly.",
+      "timeout_seconds": 180
     }
   ]
 }

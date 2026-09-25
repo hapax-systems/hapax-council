@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+# The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
+# the symlink path — so the lib lives beside the TARGET and must be resolved first (measured:
+# invoked through the symlink, `${BASH_SOURCE[0]%/*}/lib` was ~/.local/bin/lib, absent, rc=1).
+# /usr/bin/readlink by absolute path keeps this independent of PATH; the fallback keeps a host
+# without coreutils on the direct-invocation behaviour rather than dying here.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
+
 # hapax-backup-watchdog — Verify backup health for Tier 1 and critical offsite
 #
 # Checks:
@@ -28,12 +38,15 @@ log() { echo "[$(date -Iseconds)] $1"; }
 restic_password() {
     local entry="$1" label="$2"
     local password
-    password="$(pass show "$entry" 2>/dev/null | sed -n '1p')" || {
-        FAILURES+=("$label: cannot read restic password from pass entry '$entry'")
+    # `hapax_secret_read`, not `_get`: an EMPTY password and an UNREADABLE one need
+    # different operator actions, and a backup that runs with an empty repository password
+    # is worse than one that refuses.
+    password="$(hapax_secret_read "$entry")" || {
+        FAILURES+=("$label: cannot read the restic password '$entry' from the FileStore; put it with \`hapax-secret $entry\`")
         return 1
     }
     if [[ -z "$password" ]]; then
-        FAILURES+=("$label: restic password entry '$entry' is empty")
+        FAILURES+=("$label: the restic password '$entry' is empty; re-put it with \`hapax-secret $entry\`")
         return 1
     fi
     printf '%s' "$password"
@@ -115,7 +128,7 @@ check_qdrant_snapshots
 check_postgres_dump_in_snapshot() {
     local repo="$1" label="$2" entry="$3"
     local pw
-    pw="$(pass show "$entry" 2>/dev/null | sed -n '1p')" || {
+    pw="$(hapax_secret_read "$entry")" || {
         FAILURES+=("$label: dump-check cannot read restic password")
         return
     }

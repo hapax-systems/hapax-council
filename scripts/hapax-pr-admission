@@ -39,7 +39,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from github_pr_status import list_open_pr_statuses_rest
+from github_pr_status import PrListingUnavailable, list_open_pr_statuses
 
 from shared.merge_queue_lineage import (
     DEFAULT_LEDGER_PATH,
@@ -93,6 +93,7 @@ def load_state() -> dict[str, Any]:
     data.setdefault("exit_stable_ticks_required", DEFAULT_STABLE_TICKS)
     data.setdefault("stable_ticks_observed", 0)
     data.setdefault("allowed_existing_branches", [])
+    data.setdefault("branch_snapshot_unavailable", False)
     data.setdefault("allowed_exception_tokens", [])
     return data
 
@@ -107,24 +108,63 @@ def save_state(state: dict[str, Any]) -> None:
     tmp.replace(CONTROL_PATH)
 
 
-def query_open_prs() -> list[dict[str, Any]]:
-    """Return open PR status snapshots via REST/core, not GraphQL."""
+def query_open_prs_measured() -> tuple[list[dict[str, Any]], bool]:
+    """Open PR rows, plus whether the listing could be measured at all.
+
+    Routed rather than merely guarded. An earlier revision only stopped this consumer CRASHING
+    when the REST pool was measured empty, which left the admission timer polling REST
+    exclusively while GraphQL sat idle — the exact condition this change exists to end.
+
+    The pair exists because `[]` answers two different questions here: the list wants "no rows",
+    the count wants "no rows, and we looked". A separate availability probe would answer the
+    second by spending a whole second listing to learn what this call already knew.
+    """
     if not shutil.which("gh"):
-        return []
+        return [], False
     try:
-        return list_open_pr_statuses_rest(
+        rows, _route = list_open_pr_statuses(
             repo=DEFAULT_REPO,
             repo_root=REPO_ROOT,
             runner=subprocess.run,
             limit=100,
+            # REST list rows omit `mergeable_state`, so without this `classify_pr` loses BEHIND
+            # and BLOCKED. `gh pr list --json` returns mergeStateStatus natively, so the GraphQL
+            # path already has it — the flag applies to the REST path only.
             hydrate_pull=True,
         )
-    except (subprocess.SubprocessError, json.JSONDecodeError):
-        return []
+    except (subprocess.SubprocessError, json.JSONDecodeError, PrListingUnavailable):
+        return [], False
+    return rows, True
+
+
+def query_open_prs() -> list[dict[str, Any]]:
+    """Open PR status snapshots. `[]` here means "no rows" OR "could not look" — callers that
+    need to tell those apart must use `query_open_prs_measured`."""
+    rows, _measured = query_open_prs_measured()
+    return rows
 
 
 def current_throttle_decision(open_count: int | None = None):
-    prs_count = len(query_open_prs()) if open_count is None else open_count
+    # An unavailable listing is not evidence of a quiet fleet. `len([])` would report zero open
+    # PRs and drop the advisory `busy` signal on no evidence at all; the advisory count errs the
+    # other way, which is the only direction that cannot understate load. (The consequence is
+    # bounded — open_pr_count is advisory-only and never triggers a freeze — but a measurement
+    # that reads as a fact should not be manufactured from a failed call.)
+    if open_count is None:
+        prs, measured = query_open_prs_measured()
+        if not measured:
+            # Say so. Substituting the advisory count is the right *number* and a misleading
+            # *label*: without this line an unmeasurable fleet is indistinguishable from a
+            # genuinely busy one, and the two call for opposite responses.
+            print(
+                "hapax-pr-admission: open-PR listing unavailable; using the advisory count "
+                f"({ADVISORY_OPEN_PR_COUNT}) so an unmeasurable fleet reads busy, not quiet. "
+                "This is NOT a measured open-PR count.",
+                file=sys.stderr,
+            )
+        prs_count = len(prs) if measured else ADVISORY_OPEN_PR_COUNT
+    else:
+        prs_count = open_count
     records = read_jsonl_records(MERGE_QUEUE_LEDGER_PATH)
     return decide_fleet_throttle(
         records,
@@ -161,7 +201,7 @@ def classify_pr(pr: dict[str, Any]) -> str:
 
 def cmd_status(args: argparse.Namespace) -> int:
     state = load_state()
-    prs = query_open_prs()
+    prs, measured = query_open_prs_measured()
     open_count = len(prs)
     by_class: dict[str, list[int]] = {}
     for pr in prs:
@@ -170,7 +210,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"PR admission governor: mode = {state['mode']}")
     print(f"  Updated: {state['updated']}  set_by: {state['set_by']}")
     print(f"  Reason:  {state['reason']}")
-    print(f"  Open PRs: {open_count}")
+    # "0" and "we could not look" are different facts, and this line is the one an operator
+    # reads to decide whether the fleet is quiet.
+    print(f"  Open PRs: {open_count if measured else 'UNAVAILABLE (listing could not be read)'}")
     for cls in ("failed", "pending", "behind", "blocked", "green"):
         nums = by_class.get(cls, [])
         if nums:
@@ -243,26 +285,60 @@ def _print_merge_queue_summary() -> None:
             print(f"    - {pr}: {reason.kind} — {reason.reason}")
 
 
-def _snapshot_open_branches() -> list[str]:
-    return sorted({pr["headRefName"] for pr in query_open_prs()})
+def _snapshot_open_branches() -> list[str] | None:
+    """Open branches, or None when the listing could not be measured.
+
+    `freeze` and `drain` PERSIST this as `allowed_existing_branches` and `entry_open_pr_count`.
+    An unavailable listing would write "no open branches" into durable state — a baseline that
+    is wrong in the direction that blocks work, and that survives long after the pool recovers.
+    A transient miscount is recoverable; a persisted one is not, so this reports the difference
+    rather than flattening it to an empty list.
+    """
+    rows, measured = query_open_prs_measured()
+    if not measured:
+        return None
+    return sorted({pr["headRefName"] for pr in rows})
 
 
 def cmd_freeze_or_drain(args: argparse.Namespace, mode: str) -> int:
     state = load_state()
     snapshot = _snapshot_open_branches()
+    # An explicit freeze/drain must ACTIVATE the gate even when the branch listing cannot be
+    # read. The previous revision refused (exit 2) and returned before `save_state`, so if the
+    # governor was `normal` it stayed `normal` and kept admitting NEW PRs through an outage —
+    # a fail-open on the paradigm case a freeze exists to stop. Found by review on #4610.
+    #
+    # `cmd_auto` already has the safe representation for exactly this state: mode set,
+    # `allowed_existing_branches` empty, `branch_snapshot_unavailable: True`, entry count None.
+    # `check_admission` then grandfathers existing branches (it cannot tell which were in
+    # flight) while still refusing `branch=None`, i.e. new PR creation. That is narrower than
+    # the measured path, never wider — the direction a fallback must err in.
     state.update(
         {
             "mode": mode,
             "set_by": _role_from_env(),
             "reason": args.reason,
-            "entry_open_pr_count": len(snapshot),
+            "entry_open_pr_count": len(snapshot) if snapshot is not None else None,
             "stable_ticks_observed": 0,
-            "allowed_existing_branches": snapshot,
+            "allowed_existing_branches": snapshot or [],
+            # True only when the listing could not be read THIS time. Without the explicit
+            # False on the measured path the flag was write-once: an outage-era `True` survived
+            # into a later, properly-measured freeze and kept relaxing it.
+            "branch_snapshot_unavailable": snapshot is None,
         }
     )
     save_state(state)
     print(f"PR admission governor: mode set to {mode} by {state['set_by']}")
     print(f"  Reason: {args.reason}")
+    if snapshot is None:
+        print(
+            "  Branch snapshot UNAVAILABLE — the open-PR listing could not be read. New PR "
+            "creation is refused; existing branches are permitted rather than blocked on absent "
+            "evidence. Rerun once `github_pr_status.py rate` reports headroom to record the "
+            "snapshot.",
+            file=sys.stderr,
+        )
+        return 0
     print(f"  Snapshot of {len(snapshot)} open branches:")
     for b in snapshot:
         print(f"    {b}")
@@ -279,7 +355,17 @@ def cmd_drain(args: argparse.Namespace) -> int:
 
 def cmd_normal(args: argparse.Namespace) -> int:
     state = load_state()
-    open_count = len(query_open_prs())
+    # `len(query_open_prs())` reads an unavailable listing as zero. Fixing that in
+    # `current_throttle_decision` and leaving the other call sites is the sibling omission
+    # this workstream keeps repeating, so both counting sites use the measured pair.
+    _open_rows, _open_measured = query_open_prs_measured()
+    if not _open_measured:
+        print(
+            "hapax-pr-admission: open-PR listing unavailable; advisory count substituted "
+            "(not a measured count)",
+            file=sys.stderr,
+        )
+    open_count = len(_open_rows) if _open_measured else ADVISORY_OPEN_PR_COUNT
     throttle = current_throttle_decision(open_count)
     can_clear = not throttle.frozen
     if not can_clear and not args.force:
@@ -297,6 +383,9 @@ def cmd_normal(args: argparse.Namespace) -> int:
             "stable_ticks_observed": 0,
             "allowed_existing_branches": [],
             "allowed_exception_tokens": [],
+            # Returning to normal retires the freeze this flag qualified. Left set, the relaxation
+            # was carried forward into whatever freeze came next.
+            "branch_snapshot_unavailable": False,
         }
     )
     save_state(state)
@@ -334,18 +423,54 @@ def is_admission_allowed(branch: str | None) -> tuple[bool, str]:
     """Library entry point used by hooks and CI.
 
     Returns (allowed, reason). branch=None tests admission of new PR creation.
+
+    **REPRESENTATION, NOT THE ENFORCEMENT PATH — verified 2026-09-01.** The docstring above says
+    "used by hooks", and no hook calls it: `hooks/scripts/pr-admission-gate.sh` reads
+    `pr-admission-governor.yaml` directly, blocks `gh pr create` and `gh pr ready` UNCONDITIONALLY
+    whenever mode is drain/frozen, and never consults `branch_snapshot_unavailable`. Two searches
+    (call sites, and the hook's own source) find only tests calling this.
+
+    So the enforced behaviour is STRICTER than this function describes, and a reviewer reading only
+    this function will mis-state what the governor does — which is how a residual finding was filed
+    against a bypass that production cannot reach. Keep this function correct anyway: it is the
+    stated contract, CI may adopt it, and a permissive library beside a strict hook is a trap for
+    whoever wires the two together. But do not mistake tightening it for tightening the estate.
     """
     state = load_state()
     if state["mode"] == "normal":
         return True, "normal mode"
     if branch is not None and branch in state.get("allowed_existing_branches", []):
         return True, f"branch {branch} in snapshot"
+    if state.get("branch_snapshot_unavailable") and branch is not None:
+        # The freeze was taken on ledger evidence while the branch listing could not be read.
+        # An empty snapshot would then mean "nothing is grandfathered", which blocks in-flight
+        # work on absent evidence rather than on a measurement. Permit, and say why.
+        #
+        # **`branch is not None` is the whole guard.** This returned True unconditionally, and
+        # `branch=None` is this function's documented signal for NEW PR CREATION — the paradigm
+        # case a freeze exists to stop. Grandfathering it meant an auto-freeze taken during a
+        # listing outage admitted new PRs, which is not a narrowed failure path but a wider one:
+        # the fallback permitted MORE than the measured path would have. Found by review.
+        #
+        # An unrecognised branch name is still permitted, and that is deliberate rather than
+        # overlooked: the rationale — do not block in-flight work on absent evidence — applies to
+        # any branch that may have pre-existed, and nothing here can tell which did. Creation is
+        # the case where absent evidence cannot be an excuse, because nothing was in flight.
+        return True, (
+            f"mode is {state['mode']} but the branch snapshot was unavailable when it was "
+            "taken; existing branches are permitted rather than blocked on absent evidence"
+        )
     return False, f"mode is {state['mode']} and branch {branch!r} not in snapshot"
 
 
 # Advisory open-PR count fed to the failure-rate policy. Open count alone is
 # NEVER a freeze (FM-3) — the only freeze is failure-rate based. The old
 # ``AUTO_FREEZE_THRESHOLD`` name implied a count freeze that no longer exists.
+# Used as the stand-in count when the open-PR listing could not be measured at all. It is the
+# same threshold the throttle policy calls "busy", so an unmeasurable fleet reads as busy rather
+# than quiet — the only direction that cannot understate load. It is advisory-only: a high open-PR
+# count never freezes admission (the merge queue serializes landings), so erring this way costs a
+# `busy` annotation and never a wrong freeze.
 ADVISORY_OPEN_PR_COUNT = 10
 AUTO_FREEZE_THRESHOLD = ADVISORY_OPEN_PR_COUNT  # deprecated alias
 
@@ -357,25 +482,48 @@ def cmd_auto(args: argparse.Namespace) -> int:
     No-op (exit 0) for unrelated cases. Only acts when thresholds cross.
     """
     state = load_state()
-    open_count = len(query_open_prs())
+    # `len(query_open_prs())` reads an unavailable listing as zero. Fixing that in
+    # `current_throttle_decision` and leaving the other call sites is the sibling omission
+    # this workstream keeps repeating, so both counting sites use the measured pair.
+    _open_rows, _open_measured = query_open_prs_measured()
+    if not _open_measured:
+        print(
+            "hapax-pr-admission: open-PR listing unavailable; advisory count substituted "
+            "(not a measured count)",
+            file=sys.stderr,
+        )
+    open_count = len(_open_rows) if _open_measured else ADVISORY_OPEN_PR_COUNT
     throttle = current_throttle_decision(open_count)
     mode = state["mode"]
 
     # Auto-freeze trigger: rate-attributed, not raw open-PR count.
     if mode == "normal" and throttle.frozen:
         snapshot = _snapshot_open_branches()
+        # The freeze itself is warranted by the LEDGER's failure rate, not by the listing — so
+        # an unavailable listing must not suppress it. Deferring here would withhold a safety
+        # action during exactly the outage that might warrant it. What the listing decides is
+        # only the grandfathering BASELINE, and that is recorded as unknown rather than as an
+        # empty list, so `is_admission_allowed` can tell "no branches were open" from "we could
+        # not look" and permit in-flight work instead of blocking all of it.
         state.update(
             {
                 "mode": "frozen",
                 "set_by": "auto",
                 "reason": f"auto-freeze: {throttle.reason}",
-                "entry_open_pr_count": len(snapshot),
+                "entry_open_pr_count": len(snapshot) if snapshot is not None else None,
                 "stable_ticks_observed": 0,
-                "allowed_existing_branches": snapshot,
+                "allowed_existing_branches": snapshot or [],
+                "branch_snapshot_unavailable": snapshot is None,
             }
         )
         save_state(state)
-        print(f"AUTO-FREEZE: {throttle.reason}; snapshot {len(snapshot)} branches")
+        detail = (
+            f"snapshot {len(snapshot)} branches"
+            if snapshot is not None
+            else "branch snapshot UNAVAILABLE — existing branches are permitted rather than "
+            "blocked on absent evidence"
+        )
+        print(f"AUTO-FREEZE: {throttle.reason}; {detail}")
         return 0
 
     # Auto-clear trigger: auto-thaw immediately when the rate drops.
@@ -388,6 +536,8 @@ def cmd_auto(args: argparse.Namespace) -> int:
                 "stable_ticks_observed": 0,
                 "allowed_existing_branches": [],
                 "allowed_exception_tokens": [],
+                # Same as the manual clear: the flag qualified a freeze that is now retired.
+                "branch_snapshot_unavailable": False,
             }
         )
         save_state(state)

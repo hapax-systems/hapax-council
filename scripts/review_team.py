@@ -118,6 +118,8 @@ REVIEWER_VERDICTS = frozenset(
     }
 )
 FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})
+#: Verdicts that are votes. Every other verdict is an outage or a failure and never a vote.
+VOTING_VERDICTS = frozenset({"accept", "accept-with-findings", "block"})
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
@@ -670,6 +672,25 @@ def review_registry_with_route_families(
     return out
 
 
+def substitute_families(registry: Mapping[str, Any]) -> frozenset[str]:
+    """Families declared ``substitute: true``: they fill seats the core families cannot.
+
+    A substitute is never part of t1's every-family requirement, and it is seated only after
+    every available core family (writer included) is, so it never displaces a core family.
+    """
+
+    return frozenset(
+        str(entry.get("family") or "").strip()
+        for entry in review_family_entries(registry)
+        if entry.get("substitute") is True
+    )
+
+
+def _core_roster(registry: Mapping[str, Any]) -> list[str]:
+    substitutes = substitute_families(registry)
+    return [e["family"] for e in review_family_entries(registry) if e["family"] not in substitutes]
+
+
 def review_family_route_ids(registry: Mapping[str, Any]) -> dict[str, str]:
     """Review families that require a platform-capability route admission."""
 
@@ -956,9 +977,16 @@ def constitute_team(
     """Constitute the review team for a class — deterministic, fail-closed.
 
     Rules (spec §2/§3): t3 = 2 seats / 2 families; t2 = 3 seats, >=2 families;
-    t1 = 4-5 seats, ALL roster families or :class:`ValueError`. The writer's
+    t1 = 4-5 seats, ALL core roster families or :class:`ValueError`. The writer's
     family never holds the majority alone (cap = ``size // 2``); non-writer
     families seat first, rotated by ``pr_number`` for fairness.
+
+    DISTINCT-FAMILY FLOOR (review-constitution-walled-family-substitution-20260924):
+    every seat is a different family. A second seat from the same family is lost
+    coverage, never a substitute. Seats go to non-writer core families, then the
+    writer's family, then declared substitute families (``substitute: true``); if
+    fewer distinct families are available than the class seats, this raises
+    ``same_family_reseat`` rather than repeat one.
 
     DEGRADATION RULE (n-tier symmetry principal; postmortem 2026-06-12,
     failure class #1): when a roster family is out on an OBSERVED quota wall
@@ -993,10 +1021,11 @@ def constitute_team(
     degraded: list[str] = []
     route_degraded: dict[str, tuple[str, ...]] = {}
 
+    substitutes = substitute_families(registry)
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
         if sizing.get("require_all_families"):
-            missing = [f for f in roster if f not in available]
+            missing = [f for f in roster if f not in available and f not in substitutes]
             degradable = set(outage_families) | set(route_blocked)
             if missing and all(f in degradable for f in missing):
                 degraded = sorted(missing)
@@ -1042,32 +1071,31 @@ def constitute_team(
             f"only available: {','.join(available)}"
         )
 
-    rot = pr_number % len(available)
-    rotated = available[rot:] + available[:rot]
-    non_writer = [f for f in rotated if f != writer_family]
-    writer_cap = size // 2  # strict-majority guard: writer seats can never reach size//2 + 1
+    def rotated(families: list[str]) -> list[str]:
+        if not families:
+            return []
+        rot = pr_number % len(families)
+        return families[rot:] + families[:rot]
 
-    seat_families: list[str] = []
-    for family in non_writer:  # one seat per non-writer family first
-        if len(seat_families) < size:
-            seat_families.append(family)
-    writer_seats = 0
-    if writer_family in rotated and len(seat_families) < size and writer_seats < writer_cap:
-        seat_families.append(writer_family)
-        writer_seats += 1
-    fill = 0
-    while len(seat_families) < size:
-        if non_writer:
-            seat_families.append(non_writer[fill % len(non_writer)])
-            fill += 1
-        elif writer_seats < writer_cap:
-            seat_families.append(writer_family)
-            writer_seats += 1
-        else:
-            raise ValueError(
-                "cannot constitute team: only the writer's own family is available "
-                "and it would hold the majority alone"
-            )
+    # Core families rotate for fairness. Substitutes are taken in declared order (the registry
+    # lists them by measured reliability), so declaring them never changes which core
+    # families a PR draws.
+    core = rotated([f for f in available if f not in substitutes])
+    subs = [f for f in available if f in substitutes]
+    writer_cap = size // 2  # strict-majority guard: writer seats can never reach size//2 + 1
+    order = [f for f in core if f != writer_family]
+    if writer_family in core and writer_cap >= 1:
+        order.append(writer_family)
+    order.extend(f for f in subs if f != writer_family)
+    if writer_family in subs and writer_cap >= 1:
+        order.append(writer_family)
+    seat_families = order[:size]
+    if len(seat_families) < size:
+        raise ValueError(
+            f"same_family_reseat: {team_class} seats {size} distinct model families; "
+            f"only {len(seat_families)} available ({','.join(seat_families) or 'none'}), "
+            "and a second seat from one family is not a substitute"
+        )
     if len(set(seat_families)) < min_families:
         raise ValueError(
             f"constituted team spans {len(set(seat_families))} families; "
@@ -1626,7 +1654,7 @@ def synthesize_dossier(
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in review_family_entries(registry)]
+    roster = _core_roster(registry)  # t1's every-family rule counts core families only
     # an outage-degraded constitution judges itself by the DEGRADED rules:
     # t2 sizing, roster minus the walled families (postmortem 2026-06-12 —
     # otherwise require_all_families would seal the verdict it already
@@ -1720,6 +1748,20 @@ def synthesize_dossier(
                     "detail": blocker,
                 }
             )
+    for review in reviews:
+        if str(review.get("verdict", "")).lower() in ACCEPT_VERDICTS and any(
+            isinstance(f, Mapping) and str(f.get("severity", "")).lower() == "critical"
+            for f in review.get("findings") or []
+        ):
+            escalations.append(
+                {
+                    "kind": "verdict-contradicts-findings",
+                    "reviewer": str(review.get("id")),
+                    "family": str(review.get("family")),
+                    "detail": "an accept verdict names a critical finding; the critical stands",
+                }
+            )
+    family_floor = _family_floor(reviews)
 
     if criticals and sizing.get("block_on_named_critical", True):
         verdict = "blocked"
@@ -1730,6 +1772,8 @@ def synthesize_dossier(
             quorum_met = False
         if quorum_met and sizing.get("require_all_families"):
             quorum_met = set(roster) <= accept_families
+        if quorum_met and not family_floor["met"]:
+            quorum_met = False
         verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
 
     return {
@@ -1755,7 +1799,31 @@ def synthesize_dossier(
         "reviewers": _reviews_with_phantom_resolutions(reviews, phantom_criticals),
         "escalations": escalations,
         "accept_count": len(accepts),
+        "family_floor": family_floor,
         "review_team_verdict": verdict,
+    }
+
+
+def _family_floor(reviews: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The distinct-family floor: every seat a different family, and every seat voted.
+
+    A walled, dead, empty or unparseable seat is an outage, so its family did not review;
+    a reseated family is lost coverage. Either leaves the team below the floor it was
+    constituted at, and a team below its floor never reaches quorum-accept.
+    """
+
+    seated = [str(r.get("family")) for r in reviews]
+    voting = sorted(
+        {
+            str(r.get("family"))
+            for r in reviews
+            if str(r.get("verdict") or "").lower() in VOTING_VERDICTS
+        }
+    )
+    return {
+        "seated_families": sorted(set(seated)),
+        "voting_families": voting,
+        "met": bool(seated) and len(set(seated)) == len(seated) == len(voting),
     }
 
 
@@ -2044,6 +2112,18 @@ def _dossier_validity_blockers(
     required_size = _required_team_size(sizing)
     if len(reviews) < required_size:
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
+    # The distinct-family floor binds merge admission too, so a dossier written before the
+    # rule (a reseated family, or a seat that never voted) cannot admit a merge.
+    seated_families = [str(r.get("family") or "missing") for r in reviews]
+    reseated = sorted({f for f in seated_families if seated_families.count(f) > 1})
+    if reseated:
+        blockers.append("review_dossier_same_family_reseat:" + ",".join(reseated))
+    floor = _family_floor(reviews)
+    if not reseated and not floor["met"]:
+        blockers.append(
+            "review_dossier_below_family_floor:"
+            f"voting={len(floor['voting_families'])}/seated={len(seated_families)}"
+        )
 
     # go-gate: drop literal-defect phantoms only against a checkout proven to be
     # the reviewed head. Local autoqueue often runs outside the PR checkout, so
@@ -2104,7 +2184,9 @@ def _dossier_validity_blockers(
             f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
         )
     if sizing.get("require_all_families"):
-        missing_families = roster - {str(r.get("family")) for r in accepts}
+        missing_families = (roster - substitute_families(registry)) - {
+            str(r.get("family")) for r in accepts
+        }
         if missing_families:
             blockers.append(
                 "review_dossier_family_diversity:missing_accept_from="

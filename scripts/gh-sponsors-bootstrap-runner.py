@@ -7,13 +7,14 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 import tomllib
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+
+from shared.secrets import put_instruction, put_secret
 
 LIVE_ENV = "HAPAX_GH_SPONSORS_LIVE_APPLY"
 DEFAULT_CONFIG = Path.home() / ".config/hapax/gh-sponsors-tiers.toml"
@@ -295,23 +296,18 @@ def pass_records(config: SponsorsBootstrapConfig, outcome: dict[str, Any]) -> di
     return records
 
 
-def write_pass_value(key: str, value: str) -> None:
-    subprocess.run(
-        ["pass", "insert", "-m", key],
-        input=f"{value}\n",
-        text=True,
-        check=True,
-    )
+def write_secret_value(key: str, value: str) -> None:
+    put_secret(key, value.encode("utf-8"))
 
 
-def write_pass_plan(path: Path, records: dict[str, str]) -> None:
+def write_secret_plan(path: Path, records: dict[str, str]) -> None:
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
-        "# Values are intentionally omitted; rerun with --apply --write-pass after live capture.",
+        "# Values are intentionally omitted; rerun with --apply --write-secrets after live capture.",
     ]
     for key in sorted(records):
-        lines.append(f"pass insert -m {key!r}")
+        lines.append(put_instruction(key))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -321,7 +317,7 @@ def _args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--open-browser", action="store_true")
     parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--write-pass", action="store_true")
+    parser.add_argument("--write-secrets", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -329,7 +325,7 @@ def main(
     argv: list[str] | None = None,
     *,
     portal_runner: Any = run_playwright,
-    pass_writer: Any = write_pass_value,
+    secret_writer: Any = write_secret_value,
     env: dict[str, str] | os._Environ[str] = os.environ,
 ) -> int:
     args = _args(argv)
@@ -355,16 +351,16 @@ def main(
     if args.open_browser or args.apply:
         outcome = portal_runner(config, output_dir=output_dir, apply=args.apply)
     records = pass_records(config, outcome)
-    if args.write_pass:
+    if args.write_secrets:
         if not args.apply:
             print(
-                "--write-pass requires --apply so dry-runs cannot mutate pass-store",
+                "--write-secrets requires --apply so dry-runs cannot mutate the FileStore",
                 file=sys.stderr,
             )
             return 2
         for key, value in records.items():
-            pass_writer(key, value)
-    write_pass_plan(output_dir / "pass-store-plan.sh", records)
+            secret_writer(key, value)
+    write_secret_plan(output_dir / "secret-put-plan.sh", records)
     summary = {
         "output_dir": str(output_dir),
         "profile_url": outcome.get("profile_url"),

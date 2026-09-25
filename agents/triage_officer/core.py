@@ -393,6 +393,14 @@ Body:
 """
 
 
+def _preferred_platforms_for_mint(suitability: list[Platform]) -> list[str]:
+    """OD2: omit a singleton walled carrier rather than minting preferred_platforms:[claude]."""
+    names = [str(item).strip() for item in suitability]
+    if len(names) == 1 and names[0].lower() == "claude":
+        return []
+    return names
+
+
 def _route_metadata(annotation: TaskTriageAnnotation) -> RouteMetadata:
     review_requirement: dict[str, object] = {}
     authority = annotation.authority_level
@@ -410,7 +418,9 @@ def _route_metadata(annotation: TaskTriageAnnotation) -> RouteMetadata:
             "authority_level": authority.value,
             "mutation_surface": annotation.mutation_surface.value,
             "route_constraints": {
-                "preferred_platforms": annotation.platform_suitability,
+                "preferred_platforms": _preferred_platforms_for_mint(
+                    annotation.platform_suitability
+                ),
                 "allowed_platforms": annotation.platform_suitability,
                 "prohibited_platforms": [],
             },

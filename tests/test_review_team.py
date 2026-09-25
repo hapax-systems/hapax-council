@@ -275,13 +275,13 @@ class TestLensRegistry:
         """Claude (a reasoning model) must be given a bare-fence output directive,
         or it prepends prose and the strict dossier parser discards its verdict as
         invalid-output (a lost vote). The wrapper owns the no-prose contract,
-        model pin, and tool denial so the registry does not carry a raw CLI."""
+        descriptor binding, and tool denial so the registry does not carry a raw CLI."""
         roster = _registry()["families"]
         claude = next(entry for entry in roster if entry["family"] == "claude")
         cmd = claude["reviewer_command"]
         assert cmd == ["scripts/hapax-claude-reviewer"]
         wrapper = (REPO_ROOT / "scripts" / "hapax-claude-reviewer").read_text(encoding="utf-8")
-        assert 'PINNED_REVIEW_MODEL = "opus"' in wrapper
+        assert 'REVIEW_EXECUTION_ROUTE = "claude.review.opus"' in wrapper
         assert '"--allowedTools"' in wrapper
         assert "exactly one fenced yaml" in wrapper
         assert "invalid-output" in wrapper
@@ -334,6 +334,61 @@ def _load_review_team_module():
 
 
 class TestLensSelection:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "AGENTS.md",
+            "nested/AGENTS.md",
+            "CLAUDE.md",
+            "nested/CLAUDE.md",
+            "config/agent-instructions/AGENTS.md",
+            "config/agent-instructions/native/claude.md",
+            "config/agent-instructions/native/grok.md",
+            "config/agent-instructions/native/kimi.md",
+            "config/agent-instructions/native/vibe.md",
+            "config/agent-instructions/native/future-client.md",
+            "config/agent-instructions/bindings.json",
+            "docs/runbooks/council-domain-context.md",
+            "scripts/install-agent-instructions.py",
+        ],
+    )
+    @pytest.mark.parametrize("risk_tier", ["T2", "T3"])
+    def test_instruction_sources_require_governance_lenses_and_t1(
+        self, path: str, risk_tier: str
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        lenses = rt.lenses_for_files([path], reg)
+        assert {"axiom-compliance", "formal-soundness", "consent-provenance"} <= set(lenses)
+        assert rt.team_class_for({"risk_tier": risk_tier}, [path], reg) == "t1_critical"
+
+    @pytest.mark.parametrize(
+        ("path", "expected_class"),
+        [
+            ("docs/AGENTS.md.example", "t3_docs"),
+            ("docs/CLAUDE.md.example", "t3_docs"),
+            ("docs/runbooks/ordinary.md", "t3_docs"),
+            ("config/ordinary.yaml", "t2_standard"),
+            ("config/agent-instructions/README.md", "t3_docs"),
+            ("config/agent-instructions/native/claude.md.example", "t2_standard"),
+            ("config/agent-instructions/native-extra/claude.md", "t3_docs"),
+            ("config/agent-instructions/bindings.json.example", "t2_standard"),
+            ("config/agent-instructions-extra/bindings.json", "t2_standard"),
+            ("docs/runbooks/council-domain-context.md.example", "t3_docs"),
+            ("docs/runbooks/other-council-domain-context.md", "t3_docs"),
+            ("scripts/install-agent-instructions.py.example", "t2_standard"),
+            ("scripts/other-install-agent-instructions.py", "t2_standard"),
+        ],
+    )
+    def test_instruction_lookalikes_and_ordinary_docs_keep_normal_review(
+        self, path: str, expected_class: str
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        lenses = rt.lenses_for_files([path], reg)
+        assert set(lenses) == set(reg["always_on_lenses"])
+        assert rt.team_class_for({"risk_tier": "T2"}, [path], reg) == expected_class
+
     def test_daimonion_diff_gets_daimonion_lenses_plus_always_on(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
@@ -457,7 +512,8 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
         assert 4 <= len(team.seats) <= 5
-        roster = {entry["family"] for entry in reg["families"]}
+        # every CORE family; substitute families only fill seats the core cannot
+        roster = {entry["family"] for entry in reg["families"] if not entry.get("substitute")}
         assert roster <= {seat.family for seat in team.seats}
 
     def test_t1_route_blocked_family_degrades_with_receipt_reason(self) -> None:
@@ -497,10 +553,11 @@ class TestConstitution:
             "codex",
             expanded,
             pr_number=0,
-            available_families=("claude", "haiku-review"),
+            available_families=("claude", "haiku-review", "muse"),
             route_blocked_families=blocked,
         )
-        assert {seat.family for seat in team.seats} == {"claude", "haiku-review"}
+        # the extra route is a core family and seats before the substitute; no reseat of claude
+        assert {seat.family for seat in team.seats} == {"claude", "haiku-review", "muse"}
         dossier = rt.synthesize_dossier(
             task_id="task-x",
             pr_number=99,
@@ -510,7 +567,7 @@ class TestConstitution:
             reviews=[
                 _review("claude-1", "claude", "accept"),
                 _review("haiku-review-1", "haiku-review", "accept"),
-                _review("claude-2", "claude", "invalid-output"),
+                _review("muse-1", "muse", "block"),
             ],
             lenses=ALWAYS_ON_LENSES,
             constituted_at="2026-06-11T20:00:00+00:00",
@@ -593,8 +650,16 @@ class TestConstitution:
         expanded = rt.review_registry_with_route_families(
             _registry(), platform_registry=platform_registry
         )
-        families = {entry["family"] for entry in rt.review_family_entries(expanded)}
-        assert {"vibe", "local_tool", "ornith", "fugu"}.isdisjoint(families)
+        entries = rt.review_family_entries(expanded)
+        families = {entry["family"] for entry in entries}
+        assert {"local_tool", "ornith", "fugu"}.isdisjoint(families)
+        # vibe reviews only as the declared static substitute seat, never via its worker route
+        assert not any(
+            entry.get("review_family_source") == "platform_capability_registry" for entry in entries
+        )
+        vibe = next(entry for entry in entries if entry["family"] == "vibe")
+        assert vibe["reviewer_command"] == ["scripts/hapax-vibe-reviewer"]
+        assert "route_id" not in vibe
 
     def test_static_review_roster_behavior_remains_unchanged_without_extra_descriptor(self) -> None:
         rt = _load_review_team_module()
@@ -711,6 +776,203 @@ class TestConstitution:
         for lane in ("iota", "antigrav", "antigrav-2", "antigravity", "agy", "agy-review"):
             with pytest.raises(ValueError, match="retired authoring lane"):
                 rt.writer_family_for_lane(lane, reg)
+
+
+class TestDistinctFamilyFloor:
+    """review-constitution-walled-family-substitution-20260924, seat finding 21:05:30Z: the
+    diversity floor is distinct families. A second seat from the same family is never a
+    substitute. Declared substitute families (Muse, Vibe, the local fleet) fill seats the
+    core families cannot, and every seated family must vote."""
+
+    SUBSTITUTES = {"muse", "vibe", "local"}
+
+    def test_registry_declares_the_granted_substitute_families(self) -> None:
+        rt = _load_review_team_module()
+        entries = {e["family"]: e for e in rt.review_family_entries(rt.load_lens_registry())}
+        assert set(entries) >= self.SUBSTITUTES
+        for family in self.SUBSTITUTES:
+            entry = entries[family]
+            assert entry["substitute"] is True
+            assert "route_id" not in entry  # option (a): static, walls exclude via quota readers
+            wrapper = REPO_ROOT / entry["reviewer_command"][0]
+            assert wrapper.is_file() and os.access(wrapper, os.X_OK)
+        assert rt.substitute_families(rt.load_lens_registry()) == frozenset(self.SUBSTITUTES)
+
+    def test_constitution_never_reseats_a_family(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        for pr in range(12):
+            team = rt.constitute_team(
+                "t2_standard",
+                "claude",
+                reg,
+                pr_number=pr,
+                outage_families={"codex"},
+                route_blocked_families={"glm": ("glmcp.review.direct:route_state_blocked",)},
+            )
+            families = [seat.family for seat in team.seats]
+            assert len(families) == len(set(families)) == 3
+
+    def test_substitute_fills_only_what_core_cannot(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        full = rt.constitute_team("t2_standard", "claude", reg, pr_number=42)
+        assert not {seat.family for seat in full.seats} & self.SUBSTITUTES
+        short = rt.constitute_team(
+            "t2_standard",
+            "claude",
+            reg,
+            pr_number=42,
+            outage_families={"codex"},
+            route_blocked_families={"glm": ("glmcp.review.direct:route_state_blocked",)},
+        )
+        families = {seat.family for seat in short.seats}
+        assert {"gemini", "claude"} <= families
+        assert len(families & self.SUBSTITUTES) == 1
+
+    def test_too_few_distinct_families_refuses_instead_of_reseating(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        blocked = {f: ("route_state_blocked",) for f in ("glm", *self.SUBSTITUTES)}
+        with pytest.raises(ValueError, match="same_family_reseat"):
+            rt.constitute_team(
+                "t2_standard",
+                "claude",
+                reg,
+                pr_number=42,
+                outage_families={"codex"},
+                route_blocked_families=blocked,
+            )
+
+    def test_t1_requires_every_core_family_not_the_substitutes(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
+        families = {seat.family for seat in team.seats}
+        assert families == {"claude", "codex", "gemini", "glm"}
+        dossier = _synth(
+            rt,
+            [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
+            team_class="t1_critical",
+        )
+        assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_t1_merge_admission_requires_core_families_not_the_substitutes(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
+            team_class="t1_critical",
+        )
+        blockers = rt._dossier_validity_blockers(
+            dossier, pr_head_sha="a" * 40, registry=reg, route_blocked_families={}
+        )
+        assert not [b for b in blockers if b.startswith("review_dossier_family_diversity")]
+        assert blockers == ()
+
+    def test_a_dead_seat_leaves_the_team_below_floor(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "reviewer-route-unavailable"),
+                _review("claude-1", "claude", "accept"),
+            ],
+        )
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"] == {
+            "seated_families": ["claude", "codex", "gemini"],
+            "voting_families": ["claude", "codex"],
+            "met": False,
+        }
+
+    def test_a_reseated_family_is_below_floor_even_when_every_seat_accepts(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-2", "gemini", "accept"),
+            ],
+        )
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"]["met"] is False
+
+    def test_full_distinct_vote_meets_the_floor(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("muse-1", "muse", "accept-with-findings"),
+            ],
+        )
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert dossier["family_floor"]["met"] is True
+
+    def test_verdict_that_contradicts_its_findings_is_escalated(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", findings=[_critical("hidden critical")]),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "accept"),
+            ],
+        )
+        kinds = [(e["kind"], e.get("reviewer")) for e in dossier["escalations"]]
+        assert ("verdict-contradicts-findings", "codex-1") in kinds
+        assert dossier["review_team_verdict"] == "blocked"
+
+    @pytest.mark.parametrize(
+        ("reviews", "blocker"),
+        [
+            (
+                [
+                    ("gemini-1", "gemini", "accept"),
+                    ("claude-1", "claude", "accept"),
+                    ("gemini-2", "gemini", "accept"),
+                ],
+                "review_dossier_same_family_reseat:gemini",
+            ),
+            (
+                [
+                    ("codex-1", "codex", "accept"),
+                    ("gemini-1", "gemini", "invalid-output"),
+                    ("claude-1", "claude", "accept"),
+                ],
+                "review_dossier_below_family_floor:voting=2/seated=3",
+            ),
+        ],
+    )
+    def test_merge_admission_refuses_a_pre_rule_dossier(
+        self, reviews: list[tuple[str, str, str]], blocker: str
+    ) -> None:
+        # A dossier written before the rule (recorded as quorum-accept) must not admit a merge.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = {
+            "dossier_schema": 1,
+            "task_id": "task-x",
+            "pr": 99,
+            "head_sha": "a" * 40,
+            "team_class": "t2_standard",
+            "quorum_required": 2,
+            "constituted_at": "2026-06-11T20:00:00+00:00",
+            "constitution_notes": [],
+            "lenses": list(ALWAYS_ON_LENSES),
+            "reviewers": [_review(i, f, v) for i, f, v in reviews],
+            "escalations": [],
+            "review_team_verdict": "quorum-accept",
+        }
+        blockers = rt._dossier_validity_blockers(
+            dossier, pr_head_sha="a" * 40, registry=reg, route_blocked_families={}
+        )
+        assert blocker in blockers
 
 
 def _review(
@@ -2092,7 +2354,8 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                # a substitute fills the walled family's seat; a gemini reseat is below floor
+                _review("muse-1", "muse", "accept"),
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -2108,7 +2371,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("glm-1", "glm", "accept"),
                 _review("claude-1", "claude", "quota-wall", checklist={}),
             ],
             team_class="t1_critical",
@@ -2130,7 +2393,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),  # substitute, never a reseat
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -2208,7 +2471,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),  # substitute, never a reseat
             ],
             team_class="t2_standard",
             constitution_notes=notes,
@@ -2237,7 +2500,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),
             ],
             team_class="t2_standard",
             constitution_notes=notes,
@@ -2397,7 +2660,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -2752,7 +3015,9 @@ class TestGoGate:
         reviews = [
             _review("gemini-1", "gemini", "block", findings=[phantom]),
             _review("codex-1", "codex", "accept"),
-            _review("claude-1", "claude", "invalid-output"),
+            # a vote that is not an accept (a dead seat would leave the team below the
+            # distinct-family floor), so only the phantom-resolved block can make quorum
+            _review("claude-1", "claude", "block"),
         ]
         dossier = _synth(rt, reviews, repo_root=tmp_path)
 
@@ -2773,7 +3038,7 @@ class TestGoGate:
         reviews = [
             _review("gemini-1", "gemini", "block", findings=[phantom]),
             _review("codex-1", "codex", "accept"),
-            _review("claude-1", "claude", "invalid-output"),
+            _review("claude-1", "claude", "block"),  # a vote, not an accept (see above)
         ]
         dossier = _synth(rt, reviews, repo_root=tmp_path)
 
@@ -3337,6 +3602,8 @@ class TestDispatcherRepoThreading:
             changed_files = ["scripts/review_team.py"]
 
         monkeypatch.setattr(dispatch, "fetch_pr", lambda *a, **k: _PrInfo())
+        # Constitution reads quota wall traces; keep this test off the host's live traces.
+        monkeypatch.setattr(dispatch, "WALL_TRACE_HOME", tmp_path / "wall-home")
         seen: list[tuple] = []
         real = rt.find_task_notes
 

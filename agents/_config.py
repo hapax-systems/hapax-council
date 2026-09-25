@@ -67,7 +67,6 @@ DISTRO_WORK_DIR: Path = HAPAX_PROJECTS_DIR / "distro-work"
 OBSIDIAN_HAPAX_DIR: Path = HAPAX_PROJECTS_DIR / "obsidian-hapax"
 LLM_STACK_DIR: Path = HAPAX_HOME / "llm-stack"
 CLAUDE_CONFIG_DIR: Path = HAPAX_HOME / ".claude"
-PASSWORD_STORE_DIR: Path = HAPAX_HOME / ".password-store"
 RAG_SOURCES_DIR: Path = HAPAX_HOME / "documents" / "rag-sources"
 SYSTEMD_USER_DIR: Path = Path.home() / ".config" / "systemd" / "user"
 

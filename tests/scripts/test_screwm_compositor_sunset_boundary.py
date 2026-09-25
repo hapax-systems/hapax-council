@@ -70,6 +70,8 @@ def test_all_compositor_capabilities_remain_required_ports() -> None:
 
 def test_guidance_replaces_stale_tauri_only_runtime_with_aggregate_boundary() -> None:
     guidance = CLAUDE_PATH.read_text(encoding="utf-8")
+    assert "docs/runbooks/council-domain-context.md" in guidance
+    guidance += "\n" + (REPO_ROOT / "docs/runbooks/council-domain-context.md").read_text()
     compact_guidance = _compact(guidance)
 
     assert "## Tauri-Only Runtime" not in guidance

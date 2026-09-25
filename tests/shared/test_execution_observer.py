@@ -12,7 +12,112 @@ from shared.execution_observer import (
     check_execution_invariant,
     observe_claude_transcript,
     observe_codex_rollout,
+    observe_native_lifecycle,
 )
+
+
+def test_native_success_needs_result_and_owned_process_exit(tmp_path):
+    path = _write(
+        tmp_path / "native.jsonl",
+        [
+            {"type": "thread.started", "thread_id": "owned"},
+            {"type": "turn.started"},
+            {"type": "turn.completed"},
+        ],
+    )
+    running = observe_native_lifecycle(path, platform="codex")
+    assert running["phase"] == "turn_complete" and not running["complete"]
+    assert running["readiness"] == "unobserved"
+    assert observe_native_lifecycle(path, platform="codex", process_returncode=0)["complete"]
+    assert not observe_native_lifecycle(path, platform="codex", process_returncode=1)["complete"]
+
+
+def test_stale_success_before_launch_offset_never_completes_new_run(tmp_path):
+    path = _write(tmp_path / "native.jsonl", [{"type": "turn.completed"}])
+    offset = path.stat().st_size
+    with path.open("a") as out:
+        out.write(json.dumps({"type": "thread.started", "thread_id": "new"}) + "\n")
+    result = observe_native_lifecycle(path, platform="codex", offset=offset, process_returncode=0)
+    assert result["phase"] == "exited_unverified"
+    assert result["session_id"] == "new"
+
+
+def test_missing_or_mixed_native_session_identity_never_completes(tmp_path):
+    for starts in ([], ["old", "new"]):
+        path = _write(
+            tmp_path / "native.jsonl",
+            [{"type": "thread.started", "thread_id": value} for value in starts]
+            + [{"type": "turn.completed"}],
+        )
+        observed = observe_native_lifecycle(path, platform="codex", process_returncode=0)
+        assert not observed["complete"]
+        assert observed["session_identity"] != "single_native_session"
+
+
+def test_cancel_request_requires_witnessed_signal_termination(tmp_path):
+    path = _write(tmp_path / "native.jsonl", [{"type": "turn.started"}])
+    for rc in (None, 0, 1, 143):
+        result = observe_native_lifecycle(
+            path, platform="codex", cancellation_requested=True, process_returncode=rc
+        )
+        assert not result["cancel_confirmed"]
+    assert observe_native_lifecycle(
+        path, platform="codex", cancellation_requested=True, process_returncode=-15
+    )["cancel_confirmed"]
+
+
+def test_resume_identity_mismatch_never_completes(tmp_path):
+    path = _write(
+        tmp_path / "native.jsonl",
+        [
+            {"type": "system", "subtype": "init", "session_id": "new"},
+            {"type": "result", "subtype": "success"},
+        ],
+    )
+    result = observe_native_lifecycle(
+        path, platform="claude", process_returncode=0, expected_resume_id="old"
+    )
+    assert result["resume"] == "session_mismatch"
+    assert not result["complete"]
+
+
+def test_resume_requires_one_observed_native_identity(tmp_path):
+    for platform in ("claude", "codex"):
+        for starts, expected in (
+            ([], "unobserved"),
+            (["other", "expected"], "unobserved"),
+            (["expected", "other"], "unobserved"),
+            (["other"], "session_mismatch"),
+            (["expected"], "same_native_session"),
+        ):
+            events = (
+                [{"type": "thread.started", "thread_id": value} for value in starts]
+                + [{"type": "turn.completed"}]
+                if platform == "codex"
+                else [
+                    {"type": "system", "subtype": "init", "session_id": value} for value in starts
+                ]
+                + [{"type": "result", "subtype": "success"}]
+            )
+            path = _write(tmp_path / "resume.jsonl", events)
+            result = observe_native_lifecycle(
+                path, platform=platform, process_returncode=0, expected_resume_id="expected"
+            )
+            assert result["resume"] == expected, (platform, starts, result)
+            assert result["complete"] is (expected == "same_native_session")
+
+
+def test_partial_or_malformed_native_stream_never_claims_complete(tmp_path):
+    path = _write(
+        tmp_path / "native.jsonl",
+        [{"type": "thread.started", "thread_id": "session"}, {"type": "turn.completed"}],
+    )
+    assert observe_native_lifecycle(path, platform="codex", process_returncode=0)["complete"]
+    with path.open("a") as out:
+        out.write('{"type":')
+    result = observe_native_lifecycle(path, platform="codex", process_returncode=0)
+    assert result["malformed_lines"] == 1
+    assert not result["complete"]
 
 
 def _write(path: Path, records: list[dict]) -> Path:

@@ -15,6 +15,7 @@ usage() {
   cat <<'EOF'
 usage: hapax-codex [--session cx-color] [--slot alpha|beta|delta|epsilon] [--cd DIR]
                    [--task TASK_ID] [--bootstrap FILE] [--task-gate]
+                   [--execution-route ROUTE_OR_LEAF]
                    [--terminal none|tmux|foot] [--force] [--no-claim]
                    [--] [codex args...]
 
@@ -236,7 +237,7 @@ live_codex_session_exists() {
     fi
   fi
 
-  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$tmux_name" 2>/dev/null; then
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "=$tmux_name" 2>/dev/null; then
     return 0
   fi
 
@@ -346,26 +347,15 @@ ensure_codex_worktree() {
   fi
 }
 
-pass_first_line() {
-  local name="$1"
-  command -v pass >/dev/null 2>&1 || return 1
-  pass show "$name" 2>/dev/null | sed -n '1p'
-}
-
-load_first_available_pass_secret() {
-  local env_name="$1"
-  shift
-  [ -n "${!env_name:-}" ] && return 0
-  local entry value
-  for entry in "$@"; do
-    value="$(pass_first_line "$entry" || true)"
-    if [ -n "$value" ]; then
-      export "$env_name=$value"
-      return 0
-    fi
-  done
-  return 1
-}
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+# The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
+# the symlink path — so the lib lives beside the TARGET and must be resolved first (measured:
+# invoked through the symlink, `${BASH_SOURCE[0]%/*}/lib` was ~/.local/bin/lib, absent, rc=1).
+# /usr/bin/readlink by absolute path keeps this independent of PATH; the fallback keeps a host
+# without coreutils on the direct-invocation behaviour rather than dying here.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
 
 load_header_from_claude_mcp() {
   local env_name="$1"
@@ -521,7 +511,7 @@ PYEOF
     PATH="$PATH" \
     REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" \
     SSL_CERT_FILE="${SSL_CERT_FILE:-}" \
-    "$codex_bin" exec \
+    "$codex_bin" exec "${CODEX_EXECUTION_ARGS[@]}" \
       --ephemeral \
       --skip-git-repo-check \
       --ignore-rules \
@@ -576,6 +566,7 @@ payload = {
     "binaries": ["python3", "codex"],
     "codex_bin_path": os.environ.get("HAPAX_CODEX_BIN_PATH", ""),
     "npm_config_prefix": os.environ.get("NPM_CONFIG_PREFIX", ""),
+    "execution_args": json.loads(os.environ["HAPAX_CODEX_EXECUTION_ARGS"]),
     "codex_exec_auth_timeout": os.environ.get("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", "30"),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
@@ -621,7 +612,6 @@ for name in (
     "HAPAX_IDLE_UPDATE_SECONDS",
     "HAPAX_CODEX_BIN_PATH",
     "NPM_CONFIG_PREFIX",
-    "PASSWORD_STORE_DIR",
 ):
     value = os.environ.get(name)
     if value is not None:
@@ -731,7 +721,7 @@ else:
     if not math.isfinite(timeout_s) or timeout_s <= 0:
         timeout_s=30.0
     try:
-        result=subprocess.run([codex_bin,"exec","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=timeout_s,env=env)
+        result=subprocess.run([codex_bin,"exec",*p["execution_args"],"--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=timeout_s,env=env)
     except subprocess.TimeoutExpired:
         auth_error="codex_saved_auth_exec_timeout"
     except OSError as exc:
@@ -782,7 +772,13 @@ write_local_dispatch_proof() {
   [ -n "$proof_file" ] || return 0
   mkdir -p "$(dirname "$proof_file")" 2>/dev/null || return 0
   if [ -n "${TMUX_BIN:-}" ] && [ -n "${TMUX_NAME:-}" ]; then
-    pane_pid="$("$TMUX_BIN" list-panes -t "$TMUX_NAME" -F '#{pane_pid}' 2>/dev/null | sed -n '1p' || true)"
+    # Server-wide listing filtered on the EXACT name, never `-t "$TMUX_NAME"`: a bare
+    # target prefix-matches a longer-named session, and `=` does not anchor list-panes
+    # (measured on 3.7c — `-s -t =name` still reported the sibling's panes). This pid
+    # goes into a dispatch PROOF, so reading a sibling's pane would name the wrong
+    # process in the evidence.
+    pane_pid="$("$TMUX_BIN" list-panes -a -F '#{session_name} #{pane_pid}' 2>/dev/null |
+      awk -v s="$TMUX_NAME" '$1 == s { print $2; exit }' || true)"
   fi
   cgroup="$(cat /proc/self/cgroup 2>/dev/null || true)"
   python3 - "$proof_file" "$SESSION" "${TASK_ID:-}" "${DISPATCH_HOST_REQUESTED:-}" \
@@ -910,10 +906,19 @@ TERMINAL="${HAPAX_CODEX_TERMINAL:-none}"
 TASK_GATE=0
 CLAIM_TASK=1
 FORCE=0
+EXECUTION_ROUTE="codex.headless.full"
 CODEX_EXTRA=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --execution-route)
+      EXECUTION_ROUTE="${2:?--execution-route requires a registry route}"
+      shift 2
+      ;;
+    --execution-route=*)
+      EXECUTION_ROUTE="${1#*=}"
+      shift
+      ;;
     --session|--thread|--name)
       SESSION="${2:-}"
       shift 2
@@ -1024,6 +1029,20 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# Resolve identity before any provider call or launch side effect.
+# The installed launcher follows the activator's source binding. An explicit
+# relocated council root remains supported; the legacy default primary checkout
+# is not an identity-source fallback.
+EXECUTION_SOURCE_ROOT="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-${HAPAX_COUNCIL_DIR:-$HOME/.cache/hapax/source-activation/worktree}}"
+if [[ ! -r "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh" ]]; then
+  echo "hapax-codex: identity source unavailable at $EXECUTION_SOURCE_ROOT; next action: restore the governed hapax-source-activate release or an explicitly provisioned source root" >&2
+  exit 9
+fi
+# shellcheck source=scripts/capability-execution.sh
+EXECUTION_SOURCE_ROOT="$(cd -- "$EXECUTION_SOURCE_ROOT" && pwd -P)" || exit 9
+. "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh"
+bind_codex_execution || exit 9
 
 if [ -z "$SESSION" ]; then
   SESSION="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-}}}}}"
@@ -1173,7 +1192,7 @@ case "$TERMINAL" in
       echo "hapax-codex: tmux not found" >&2
       exit 10
     fi
-    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+    if "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
       echo "hapax-codex: tmux session already exists: $TMUX_NAME" >&2
       exit 11
     fi
@@ -1189,7 +1208,7 @@ case "$TERMINAL" in
       echo "hapax-codex: tmux not found; visible Codex sessions require tmux backing" >&2
       exit 10
     fi
-    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+    if "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
       echo "hapax-codex: tmux session already exists: $TMUX_NAME" >&2
       exit 11
     fi
@@ -1217,7 +1236,6 @@ export HAPAX_WORKTREE_ROLE="$SLOT"
 export HAPAX_SESSION_ID="$SESSION_UUID"
 export CLAUDE_ROLE="${CLAUDE_ROLE:-$SESSION}"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
-export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 export HAPAX_CC_TASK_GATE="$TASK_GATE"
@@ -1330,7 +1348,7 @@ elif { [ -n "$TASK_ID" ] || [ "$TERMINAL" != "none" ]; } && [ "$explicit_codex_c
 
 First actions:
 
-1. Read $HOME/projects/CLAUDE.md, $COUNCIL_DIR/CLAUDE.md, $COUNCIL_DIR/AGENTS.md, $WORKDIR/CLAUDE.md, and $WORKDIR/AGENTS.md when present. Parent AGENTS/posture files are authoritative when the clean child worktree is behind the bootstrap branch.
+1. Read $HOME/AGENTS.md for workspace orientation. Shared conventions arrive through the Codex global AGENTS.md binding; if absent, read $HOME/.config/hapax/agent-instructions/AGENTS.md. Read canonical $COUNCIL_DIR/AGENTS.md and $WORKDIR/AGENTS.md when present and not already delivered; read substantive CLAUDE.md files in unmigrated scopes, but do not reread a CLAUDE.md symlink to an already-read AGENTS.md. Parent AGENTS/posture files are authoritative when the clean child worktree is behind the bootstrap branch.
 2. Treat $WORKDIR as the Codex worktree for this thread. Greek slot names are coordination lanes, not Codex worktree names; do not migrate work into Claude-era hapax-council--delta/epsilon/main-red paths unless the parent explicitly passed --cd.
 3. Read the parent Codex posture from $COUNCIL_DIR even when the target worktree is stale or detached: $COUNCIL_DIR/scripts/hapax-codex, $COUNCIL_DIR/config/codex/config.toml, $COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh, and $COUNCIL_DIR/hooks/scripts/agent-role.sh.
 4. Read the active task note if task_id is not "none".
@@ -1406,22 +1424,12 @@ if [ -n "$BOOTSTRAP_FILE" ] && [ "$explicit_codex_command" -eq 0 ]; then
   fi
 fi
 
+bind_codex_common_config "$HOME" "$WORKDIR" "$HOOK" "$LOGOS_BASE_URL"
 CODEX_ARGS=(
   --dangerously-bypass-approvals-and-sandbox
   --cd "$WORKDIR"
-  -c 'model="gpt-5.5"'
-  -c 'model_reasoning_effort="xhigh"'
-  -c 'approval_policy="never"'
-  -c 'sandbox_mode="danger-full-access"'
-  -c "projects.\"$HOME/projects\".trust_level=\"trusted\""
-  -c "projects.\"$WORKDIR\".trust_level=\"trusted\""
-  -c "hooks.SessionStart=[{command=\"$HOOK\",timeout=20,statusMessage=\"Loading Hapax context\"}]"
-  -c "hooks.PreToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax guardrails\"}]"
-  -c "hooks.PostToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax audit\"}]"
-  -c "hooks.Stop=[{command=\"$HOOK\",timeout=20,statusMessage=\"Writing Hapax session summary\"}]"
-  -c "mcp_servers.hapax.command=\"$HOME/.local/bin/uv\""
-  -c "mcp_servers.hapax.args=[\"--directory\",\"$HOME/projects/hapax-mcp\",\"run\",\"hapax-mcp\"]"
-  -c "mcp_servers.hapax.env.LOGOS_BASE_URL=\"$LOGOS_BASE_URL\""
+  "${CODEX_EXECUTION_ARGS[@]}"
+  "${CODEX_COMMON_CONFIG_ARGS[@]}"
   -c "mcp_servers.context7.command=\"$COUNCIL_DIR/scripts/hapax-context7-mcp\""
   -c "mcp_servers.github.command=\"$COUNCIL_DIR/scripts/hapax-github-mcp\""
   -c "mcp_servers.playwright.command=\"$COUNCIL_DIR/scripts/hapax-playwright-mcp\""
@@ -1475,7 +1483,7 @@ if ! RUNNER="$(mktemp "$RUNNER_TEMPLATE")"; then
 fi
 umask "$RUNNER_UMASK"
 chmod 700 "$RUNNER"
-CHILD_ARGS=(--session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
+CHILD_ARGS=(--execution-route "$EXECUTION_ROUTE" --session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
 if [ "$FORCE" -eq 1 ]; then
   CHILD_ARGS+=(--force)
 fi
@@ -1558,8 +1566,13 @@ else
     # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
     # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
+    printf 'export HAPAX_SOURCE_ACTIVATE_WORKTREE=%q\n' "$EXECUTION_SOURCE_ROOT"
+    if [ -n "${HAPAX_PLATFORM_CAPABILITY_REGISTRY:-}" ]; then
+      printf 'export HAPAX_PLATFORM_CAPABILITY_REGISTRY=%q\n' "$HAPAX_PLATFORM_CAPABILITY_REGISTRY"
+    fi
     printf 'cd %q\n' "$WORKDIR"
-    printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
+    printf 'exec %q' "$EXECUTION_SOURCE_ROOT/scripts/hapax-codex"
     for arg in "${CHILD_ARGS[@]}"; do
       printf ' %q' "$arg"
     done
@@ -1568,9 +1581,41 @@ else
 fi
 chmod 700 "$RUNNER"
 
+# Create the lane's detached tmux session and KEEP its pane when the runner dies badly.
+#
+# Why `remain-on-exit failed` rather than tmux's default: when a lane's process died,
+# tmux tore the pane down with it, taking the exit status, the death signal and the
+# whole scrollback. The dev lane's death at 2026-09-16T01:19:34Z left no coredump, no
+# kernel line, no oomd record, no killer — and no pane left to ask, so the cause was
+# not merely unknown but unmeasurable. `failed` retains the pane on a non-zero exit or
+# a signal (measured on tmux 3.6b: SIGKILL -> pane_dead_signal=9, `exit 42` ->
+# pane_dead_status=42) while a CLEAN exit still closes it, so an orderly stop is never
+# mistaken for a death.
+#
+# This is half a change. A retained pane keeps the SESSION, and this launcher refuses
+# to start when its session already exists — so `remain-on-exit` alone would wedge the
+# lane it makes legible. hapax-lane-supervisor's capture_dead_pane reads the corpse
+# into ~/.cache/hapax/tmux-pane-exits/ and then kills the session so this launcher can
+# run again. The two ship together; neither is correct alone.
+#
+# `-t "=$TMUX_NAME:"` — anchored, and no window index. `=` pins the EXACT session name:
+# a bare target falls back to prefix and then fnmatch matching, and lane names nest
+# (`cx-cap` / `cx-cap-money`). The trailing `:` makes it a window target resolving to
+# that session's current window — the one window a fresh `new-session -d` has —
+# whatever base-index is. `"$TMUX_NAME":1` is correct only where base-index is 1, and
+# tmux's default is 0 (measured: `no such window`); a bare `=$TMUX_NAME` is refused as a
+# window target (measured on 3.7c: `no such window: =...`).
+tmux_new_lane_session() {
+  "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER" || return $?
+  # Fail open and say so: losing the forensics option is bad, refusing to launch the
+  # lane over it is worse, and a silent loss is how the original gap survived.
+  "$TMUX_BIN" set-option -w -t "=$TMUX_NAME:" remain-on-exit failed 2>/dev/null ||
+    echo "hapax-codex: could not set remain-on-exit on $TMUX_NAME; the lane is running but a bad death will leave no pane to inspect. next: check \`tmux -V\` (remain-on-exit=failed needs tmux >= 3.2), then \`tmux show-options -w -t =$TMUX_NAME: remain-on-exit\`" >&2
+}
+
 case "$TERMINAL" in
   tmux)
-    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    tmux_new_lane_session
     if [ -n "$DISPATCH_HOST_REQUESTED" ] || [ -n "$DISPATCH_HOST" ] || [ -n "$DISPATCH_FALLBACK_REASON" ]; then
       if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
         write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON" "$RUNNER"
@@ -1581,8 +1626,8 @@ case "$TERMINAL" in
     printf '%s\n' "$TMUX_NAME"
     ;;
   foot)
-    if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
-      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    if ! "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null; then
+      tmux_new_lane_session
     fi
     if [ -n "$DISPATCH_HOST_REQUESTED" ] || [ -n "$DISPATCH_HOST" ] || [ -n "$DISPATCH_FALLBACK_REASON" ]; then
       if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
@@ -1591,6 +1636,12 @@ case "$TERMINAL" in
         write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "0" "" "$RUNNER"
       fi
     fi
+    # `=`: attach the operator to THIS lane and refuse otherwise. Measured on 3.7c with
+    # only `hapax-probe-delta-2` running: `attach-session -t hapax-probe-delta` resolved
+    # to the sibling (it got as far as "open terminal failed"), while
+    # `-t =hapax-probe-delta` said "can't find session". An unanchored attach puts the
+    # operator's own keystrokes into another lane's pane whenever this lane's session is
+    # gone and a longer-named one is not.
     case "$(basename "$FOOT_BIN")" in
       footclient)
         "$FOOT_BIN" -E -N -H \
@@ -1598,7 +1649,7 @@ case "$TERMINAL" in
           --app-id "hapax-codex-$SESSION" \
           --title "$SESSION" \
           --working-directory "$WORKDIR" \
-          "$TMUX_BIN" attach-session -t "$TMUX_NAME"
+          "$TMUX_BIN" attach-session -t "=$TMUX_NAME"
         move_foot_window_to_workspace "$SESSION" "$FOOT_TARGET_WORKSPACE"
         ;;
       *)
@@ -1607,7 +1658,7 @@ case "$TERMINAL" in
           --app-id "hapax-codex-$SESSION" \
           --title "$SESSION" \
           --working-directory "$WORKDIR" \
-          "$TMUX_BIN" attach-session -t "$TMUX_NAME" >/dev/null 2>&1
+          "$TMUX_BIN" attach-session -t "=$TMUX_NAME" >/dev/null 2>&1
         move_foot_window_to_workspace "$SESSION" "$FOOT_TARGET_WORKSPACE"
         ;;
     esac

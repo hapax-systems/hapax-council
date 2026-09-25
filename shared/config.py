@@ -66,7 +66,6 @@ HAPAX_CACHE_DIR: Path = HAPAX_HOME / ".cache"
 HAPAX_PROJECTS_DIR: Path = HAPAX_HOME / "projects"
 LLM_STACK_DIR: Path = HAPAX_HOME / "llm-stack"
 CLAUDE_CONFIG_DIR: Path = HAPAX_HOME / ".claude"
-PASSWORD_STORE_DIR: Path = HAPAX_HOME / ".password-store"
 RAG_SOURCES_DIR: Path = HAPAX_HOME / "documents" / "rag-sources"
 
 # systemd user dir is always relative to real $HOME (not HAPAX_HOME)

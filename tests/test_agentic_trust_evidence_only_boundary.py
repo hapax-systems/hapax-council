@@ -135,6 +135,16 @@ def _repo_operational_files() -> tuple[Path, ...]:
             path = directory / name
             if _is_non_operational_path(path, is_directory=False):
                 continue
+            # The root instruction alias is authored once at AGENTS.md, which
+            # this inventory visits directly. No other symlink can hide source.
+            if (
+                path == ROOT / "CLAUDE.md"
+                and path.is_symlink()
+                and path.readlink() == Path("AGENTS.md")
+                and (ROOT / "AGENTS.md").is_file()
+                and not (ROOT / "AGENTS.md").is_symlink()
+            ):
+                continue
             if path.is_symlink() or not path.is_file():
                 raise AssertionError(f"operational topology path is not a regular file: {path}")
             files.append(path)
@@ -532,6 +542,38 @@ def test_strict_registry_loader_is_confined_to_reporting_not_admission() -> None
         "scripts/hapax-platform-capability-freshness",
         "scripts/hapax-platform-capability-receipts",
         "scripts/review_team.py",
+        "shared/capability_execution.py",
         "shared/cockpit_agent_capabilities.py",
         "shared/dispatcher_policy.py",
     }
+
+
+@pytest.mark.parametrize(
+    "alias_kind",
+    ["canonical", "renamed", "retargeted", "missing-target", "chained-target", "directory"],
+)
+def test_operational_inventory_allows_only_the_canonical_instruction_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alias_kind: str
+) -> None:
+    canonical = tmp_path / "AGENTS.md"
+    (tmp_path / "worker.py").write_text("from pathlib import Path\n", encoding="utf-8")
+    if alias_kind == "directory":
+        canonical.mkdir()
+    elif alias_kind == "chained-target":
+        (tmp_path / "elsewhere.md").write_text("instructions\n", encoding="utf-8")
+        canonical.symlink_to("elsewhere.md")
+    elif alias_kind != "missing-target":
+        canonical.write_text("instructions\n", encoding="utf-8")
+    alias_name = "renamed.md" if alias_kind == "renamed" else "CLAUDE.md"
+    target = "worker.py" if alias_kind == "retargeted" else "AGENTS.md"
+    (tmp_path / alias_name).symlink_to(target)
+    monkeypatch.setitem(globals(), "ROOT", tmp_path)
+    _repo_operational_files.cache_clear()
+    try:
+        if alias_kind == "canonical":
+            assert set(_repo_operational_files()) == {canonical, tmp_path / "worker.py"}
+        else:
+            with pytest.raises(AssertionError, match="operational topology"):
+                _repo_operational_files()
+    finally:
+        _repo_operational_files.cache_clear()
