@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -280,6 +281,12 @@ class TestServiceProfileCompleteness:
 
         assert allocation.limit == 16.0
         assert allocation.enforcement == Enforcement.HARD
+
+        compendium = (Path(__file__).resolve().parents[2] / "docs/compendium.md").read_text()
+        assert "MemoryHigh=12G, MemoryMax=16G" in compendium
+        assert (
+            "systemctl --user show hapax-daimonion.service -p MemoryHigh -p MemoryMax" in compendium
+        )
 
     def test_delegated_broadcast_profiles_never_model_negative_oom_scores(self):
         modeled_scores = {

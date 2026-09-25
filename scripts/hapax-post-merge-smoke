@@ -26,32 +26,12 @@ SHA="${1:-HEAD}"
 REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}"
 DRYRUN="${HAPAX_SMOKE_DRYRUN:-0}"
 
-cd "$REPO_ROOT" || exit 0
-
-# Resolve the SHA range. If SHA is a single commit, compare against its
-# first parent. Tolerant of merge commits and squash-merges.
-if ! SHA_RESOLVED="$(git rev-parse --verify --quiet "${SHA}^{commit}")"; then
-    echo "smoke: invalid SHA '$SHA'; skipping" >&2
-    exit 0
-fi
-SHA="$SHA_RESOLVED"
-if FIRST_PARENT="$(git rev-parse --verify --quiet "${SHA}^1" 2>/dev/null)"; then
-    DIFF_BASE="$FIRST_PARENT"
-else
-    DIFF_BASE="${SHA}~1"
-fi
-
-CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..${SHA}" 2>/dev/null || true)"
-[ -z "$CHANGED_FILES" ] && exit 0
-
-# ── Failure tracking ─────────────────────────────────────────────────
-
+# Failure tracking is installed before change discovery so a broken Git object
+# graph cannot turn the smoke run into an empty successful change set.
 FAILED_GATES=()
 record_failure() {
     FAILED_GATES+=("$1: $2")
 }
-
-# ── Helper: emit ntfy + stderr on any failure ────────────────────────
 
 emit_failure_notice() {
     local count=${#FAILED_GATES[@]}
@@ -72,6 +52,34 @@ emit_failure_notice() {
     fi
 }
 trap emit_failure_notice EXIT
+
+if ! cd "$REPO_ROOT"; then
+    record_failure \
+        "change-discovery" \
+        "cannot enter repository root $REPO_ROOT; next action: restore the deployed source root and rerun this smoke"
+    exit 0
+fi
+
+# Resolve the SHA range. If SHA is a single commit, compare against its
+# first parent. Tolerant of merge commits and squash-merges.
+if ! SHA_RESOLVED="$(git rev-parse --verify --quiet "${SHA}^{commit}")"; then
+    echo "smoke: invalid SHA '$SHA'; skipping" >&2
+    exit 0
+fi
+SHA="$SHA_RESOLVED"
+if FIRST_PARENT="$(git rev-parse --verify --quiet "${SHA}^1" 2>/dev/null)"; then
+    DIFF_BASE="$FIRST_PARENT"
+else
+    DIFF_BASE="${SHA}~1"
+fi
+
+if ! CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..${SHA}" 2>/dev/null)"; then
+    record_failure \
+        "change-discovery" \
+        "cannot enumerate changed files for ${DIFF_BASE}..${SHA}; next action: verify both commit objects with git cat-file -e and rerun this smoke"
+    exit 0
+fi
+[ -z "$CHANGED_FILES" ] && exit 0
 
 # ── Gate: services-restarted ─────────────────────────────────────────
 # When any systemd/units/*.service is in the diff, verify units that should

@@ -153,6 +153,35 @@ exec /usr/bin/git "$@"
         assert result.returncode == 0
         assert "pinned.service not active" in result.stderr
 
+    def test_git_diff_failure_is_operator_visible_and_notified(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(repo, {"README.md": "changed\n"})
+        marker = repo / "ntfy-called"
+        result = _run(
+            sha,
+            cwd=repo,
+            extra_env={
+                "NTFY_TOPIC": "test-topic",
+                "HAPAX_SMOKE_NTFY_MARKER": str(marker),
+            },
+            stubs={
+                "git": r"""
+if [ "${1:-}" = diff ]; then
+    printf 'simulated object read failure\n' >&2
+    exit 91
+fi
+exec /usr/bin/git "$@"
+""",
+                "curl": 'printf called > "$HAPAX_SMOKE_NTFY_MARKER"',
+            },
+        )
+
+        assert result.returncode == 0
+        assert "smoke FAIL: change-discovery:" in result.stderr
+        assert "cannot enumerate changed files" in result.stderr
+        assert "next action:" in result.stderr
+        assert marker.read_text() == "called"
+
 
 # ── Gate: services-restarted ───────────────────────────────────────
 

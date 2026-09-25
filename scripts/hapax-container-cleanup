@@ -7,3 +7,4 @@ set -euo pipefail
 # lease from an orphan, so the launcher owns lifecycle reconciliation.
 /usr/bin/printf '[%s] retired: launcher owns lifecycle reconciliation; no container mutation performed\n' \
     "$(/usr/bin/date -Iseconds)"
+exit 0

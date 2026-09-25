@@ -1228,7 +1228,7 @@ select_oom_host_profile() {
     if [ "$ROOT_AUDIT_TEST_MODE" = "1" ] && [ -n "$ROOT_AUDIT_HOSTNAME_OVERRIDE" ]; then
         hostname="$ROOT_AUDIT_HOSTNAME_OVERRIDE"
     else
-        hostname="$(/usr/bin/hostname --short)"
+        hostname="$(/usr/bin/hostname)"
     fi
     if [ "$ROOT_AUDIT_TEST_MODE" = "1" ] && [ -n "$ROOT_AUDIT_MEMTOTAL_KIB_OVERRIDE" ]; then
         memtotal_kib="$ROOT_AUDIT_MEMTOTAL_KIB_OVERRIDE"

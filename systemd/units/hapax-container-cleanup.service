@@ -3,6 +3,7 @@ Description=Retired Hapax container cleanup safety sentinel
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-container-cleanup
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-container-cleanup
 MemoryMax=128M
 SyslogIdentifier=hapax-container-cleanup
