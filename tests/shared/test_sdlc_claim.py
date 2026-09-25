@@ -4354,3 +4354,117 @@ def test_require_refuses_missing_blob_and_unsafe_receipt(tmp_path: Path) -> None
         )
     assert raised.value.reason_code == "fs_snapshot_file_unsafe"
     assert not unsafe.locks.exists()
+
+
+def _churning_transaction_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    churn: str,
+    transient: bool = False,
+) -> tuple[Path, Path, list[int]]:
+    """Make each inspection race a peer claim writing into the shared root."""
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    # The receipt root is absent, so the snapshot lists and watches the whole
+    # cache directory, as it does for the busy ~/.cache/hapax in production.
+    peer_state = cache / "cc-active-task-peer"
+    peer_state.write_bytes(b"peer-task-0\n")
+    transactions = tmp_path / "transactions"
+    transactions.mkdir(mode=0o700)
+    original = sdlc_claim.ReadOnlyFsSnapshot.seal
+    captures: list[int] = []
+
+    def racing(snapshot: object) -> object:
+        captures.append(len(captures) + 1)
+        if not transient or len(captures) == 1:
+            if churn == "concurrent_change":
+                # A peer lane rewrites its own claim file in place: no listing
+                # or directory stamp changes; only the watch guard sees it.
+                with peer_state.open("r+b") as handle:
+                    handle.write(f"peer-task-{len(captures)}\n".encode())
+            else:
+                (transactions / f"peer-{len(captures)}.tmp").write_bytes(b"peer")
+        return original(snapshot)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sdlc_claim.ReadOnlyFsSnapshot, "seal", racing)
+    return cache, transactions, captures
+
+
+def test_inspection_retake_is_only_for_concurrent_change_not_other_snapshot_holds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="root_entry_added"
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert [item.reason_code for item in results] == ["fs_snapshot_directory_changed"]
+    assert captures == [1]
+    assert sleeps == []
+
+
+def test_inspection_concurrent_change_retake_is_bounded_with_jitter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="concurrent_change"
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert [(item.disposition, item.reason_code) for item in results] == [
+        ("hold", "fs_snapshot_concurrent_change")
+    ]
+    assert results[0].publication_id == f"transaction-root:{transactions}"
+    assert len(captures) == sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+    assert len(sleeps) == sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS - 1
+    low, high = sdlc_claim.INSPECTION_CHURN_JITTER_SECONDS
+    assert all(low <= delay <= high for delay in sleeps)
+
+
+def test_inspection_concurrent_change_retake_stops_at_its_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="concurrent_change"
+    )
+    now = [0.0]
+
+    def clock() -> float:
+        now[0] += 20.0
+        return now[0]
+
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", clock)
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert [item.reason_code for item in results] == ["fs_snapshot_concurrent_change"]
+    assert 1 <= len(captures) < sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+
+
+def test_inspection_recovers_from_a_transient_concurrent_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="concurrent_change", transient=True
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert results == ()
+    assert captures == [1, 2]
+    assert len(sleeps) == 1

@@ -14,6 +14,7 @@ import fcntl
 import hashlib
 import json
 import os
+import random
 import re
 import secrets
 import shutil
@@ -97,6 +98,15 @@ _RECOVERABLE_ADMITTED_STATES = frozenset(
 )
 _CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS = 30.0
 _CLAIM_PUBLICATION_LOCK_RETRY_SECONDS = 0.05
+# A peer claim writing into the shared transaction root trips the estate-scope
+# snapshot guard (M101). Inspection is a pure read, so only that global hold is
+# retaken, a bounded number of times; every other inspection result is final.
+_INSPECTION_CHURN_REASON = "fs_snapshot_concurrent_change"
+INSPECTION_CHURN_MAX_ATTEMPTS = 4
+INSPECTION_CHURN_DEADLINE_SECONDS = 30.0
+INSPECTION_CHURN_JITTER_SECONDS = (0.25, 1.5)
+_churn_sleep = time.sleep
+_churn_clock = time.monotonic
 
 
 class ClaimPublicationError(RuntimeError):
@@ -5559,8 +5569,47 @@ def inspect_claim_publications(
     expected_publication_id: str | None = None,
     expected_disposition: Literal["terminal_applied", "terminal_aborted"] | None = None,
 ) -> tuple[ClaimPublicationInspection, ...]:
-    """Inspect estate history and unresolved journals without granting current eligibility."""
+    """Inspect estate history and unresolved journals without granting current eligibility.
 
+    A whole-root snapshot that raced a concurrent write is retaken, with jitter,
+    at most ``INSPECTION_CHURN_MAX_ATTEMPTS`` times inside
+    ``INSPECTION_CHURN_DEADLINE_SECONDS``; the last observation is returned.
+    """
+
+    deadline = _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    attempt = 1
+    while True:
+        inspections = _inspect_claim_publications_once(
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            receipt_root=receipt_root,
+            task_id=task_id,
+            expected_publication_id=expected_publication_id,
+            expected_disposition=expected_disposition,
+        )
+        raced = (
+            len(inspections) == 1
+            and inspections[0].reason_code == _INSPECTION_CHURN_REASON
+            and inspections[0].publication_id.startswith("transaction-root:")
+        )
+        if not raced:
+            return inspections
+        delay = random.uniform(*INSPECTION_CHURN_JITTER_SECONDS)
+        if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or _churn_clock() + delay > deadline:
+            return inspections
+        _churn_sleep(delay)
+        attempt += 1
+
+
+def _inspect_claim_publications_once(
+    *,
+    cache_dir: Path | None,
+    transaction_root: Path | None,
+    receipt_root: Path | None,
+    task_id: str | None,
+    expected_publication_id: str | None,
+    expected_disposition: Literal["terminal_applied", "terminal_aborted"] | None,
+) -> tuple[ClaimPublicationInspection, ...]:
     trusted_cache = _normalized(cache_dir or (Path.home() / ".cache" / "hapax"))
     root = _manifest_root(transaction_root, trusted_cache)
     trusted_receipt_root = _receipt_root(trusted_cache, receipt_root)
