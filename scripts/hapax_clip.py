@@ -22,6 +22,7 @@ import base64
 import hashlib
 import json
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -218,10 +219,21 @@ def push_kde(
     run: Callable[..., subprocess.CompletedProcess[str]] = _run,
 ) -> None:
     device_id = str(route.detail).split()[-1]
-    command = ["kdeconnect-cli", "-d", device_id, "--share-text", pasted]
-    if route.via != "local":
-        command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", route.via, *command]
-    result = run(command)
+    if route.via == "local":
+        command = ["kdeconnect-cli", "-d", device_id, "--share-text", pasted]
+        result = run(command)
+    else:
+        # The payload stays on stdin. ssh joins argv into one remote shell
+        # string, so the text must not be an argument.
+        reader = (
+            "import sys,subprocess; "
+            "t=sys.stdin.read(); "
+            "raise SystemExit(subprocess.run("
+            '["kdeconnect-cli","-d",sys.argv[1],"--share-text",t]).returncode)'
+        )
+        remote = "python3 -c " + shlex.quote(reader) + " " + shlex.quote(device_id)
+        command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", route.via, remote]
+        result = run(command, text=pasted)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise RouteUnavailable(

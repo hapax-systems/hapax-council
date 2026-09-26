@@ -133,6 +133,33 @@ def test_push_kde_failure_names_the_next_action() -> None:
         raise AssertionError("share failure returned")
 
 
+HAZARD = "cat <<'EOF'\necho \"quoted 'mix'\" | tee /tmp/x\nEOF\n"
+
+
+def test_kde_via_ssh_round_trips_a_hostile_payload_on_stdin() -> None:
+    clip = load()
+    raw = HAZARD.encode()
+    pasted = clip.format_shell(raw)
+    assert " " in HAZARD and "'" in HAZARD and '"' in HAZARD
+    assert "|" in HAZARD and "\n" in HAZARD and "<<" in HAZARD
+    seen: dict[str, object] = {}
+
+    def run(argv: list[str], text: str | None = None) -> subprocess.CompletedProcess[str]:
+        seen["argv"] = argv
+        seen["text"] = text
+        return _completed(argv, text, code=0)
+
+    route = clip.Route("kdeconnect", "hapax-podium.local", "steamdeck abcdef0123456789")
+    clip.push_kde(route, pasted, run=run)
+    argv = seen["argv"]
+    assert isinstance(argv, list)
+    joined = " ".join(argv)
+    assert pasted not in joined
+    assert seen["text"] == pasted
+    encoded = [line for line in pasted.splitlines() if line.startswith("echo ")][0].split()[1]
+    assert base64.b64decode(encoded) == raw
+
+
 def test_unreadable_file_names_the_next_action(tmp_path: Path, capsys) -> None:
     clip = load()
     missing = tmp_path / "missing.txt"
