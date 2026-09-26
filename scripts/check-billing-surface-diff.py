@@ -4,9 +4,18 @@
 The provider_billing_sensitive release class's deterministic evidence
 (RELEASE_MITIGATION_CHECKS, shared/sdlc_lifecycle.py): the ci.yml job
 ``billing-surface-scan`` runs this scan on every PR head, and the autoqueue
-counts its SUCCESS as proof that the change cannot enable API or PAYG spend or
-move work to another billing surface (the no-implicit-API/PAYG rule; memory
-provider-spend-is-standing-authorized-not-api-spend).
+counts its SUCCESS as one arm of that class's evidence (the no-implicit-API/PAYG
+rule; memory provider-spend-is-standing-authorized-not-api-spend).
+
+**What success proves, and what it does not.** Success proves exactly this: no
+ADDED line in the diff matched this scan's syntactic patterns. It is **not
+proof** that the change cannot enable API or PAYG spend — a syntactic scan
+cannot give that guarantee, and no reader should take it from this check. The
+semantic layer — whether the change routes spend or moves work to another
+billing surface in a way no pattern names — is the review-team quorum's, which
+is why the class requires both arms. Findings are likewise syntactic: a line
+that cannot be pattern-matched is a limitation of the scan, not a
+characterization of the change.
 
 The scan reads a unified diff and flags any ADDED line that:
 
@@ -20,13 +29,16 @@ The scan reads a unified diff and flags any ADDED line that:
 - rebinds a capacity pool or plan type to the api_paid_spend (PAYG) class
   (``capacity-pool-payg``).
 
-Only added lines of non-doc files are scanned. Protective credential strips
-(the governed launchers' ``os.environ.pop`` / ``del`` / ``unset`` of inherited
-keys), clients bound to the governed LiteLLM proxy route (the estate's
-quota-ledgered billing path), and lines carrying the visible
-``billing-scan:allow`` marker never fail the scan; marker uses are printed as
-``allowed`` so review sees every one. The scan is syntactic; the semantic
-layer is the review-team quorum (the same trust split as the egress class).
+Only added lines of non-doc files are scanned. The following never fail the
+scan, and each is printed as ``allowed`` so review sees every one: protective
+credential strips (the governed launchers' ``os.environ.pop`` / ``del`` /
+``unset`` of inherited keys); a call whose OWN route target (``base_url`` /
+``api_base`` / ``endpoint``) binds it to the governed LiteLLM proxy host — the
+estate's quota-ledgered billing path; and lines carrying the visible
+``billing-scan:allow`` marker. **A proxy name elsewhere on the line never
+exempts it**: a comment, a variable name or a neighbouring literal cannot bind a
+route. The scan is syntactic; the semantic layer is the review-team quorum (the
+same trust split as the egress class).
 
 Exit codes: 0 clean, 1 findings, 2 fail-closed (no usable diff input).
 """
@@ -71,13 +83,29 @@ _CREDENTIAL_ENV_READ_RES = (
 _API_KEY_ROUTE_RES = (
     re.compile(r"\bapi_key\s*=\s*[^\s,)]"),
     re.compile(r"\bapiKey\s*[:=]\s*[^\s,)}]"),
-    re.compile(r"[\"']?Authorization[\"']?\s*[:=]\s*[\"']?\s*Bearer\b"),
+    # A header assignment, in plain, subscript and f-string forms. The optional
+    # ``\]?`` covers ``headers["Authorization"] = ...``; the optional
+    # ``(?:f|rf|br|rb)?`` prefix covers ``f"Bearer {token}"``, which a
+    # plain-quote-only pattern misses (gemini, review round 1, 2026-09-26).
+    re.compile(r"[\"']?Authorization[\"']?\]?\s*[:=]\s*[\"']?\s*Bearer\b"),
+    re.compile(r"[\"']?Authorization[\"']?\]?\s*[:=]\s*(?:f|rf|br|rb)[\"']\s*Bearer\b"),
 )
 
 #: A client bound to the local LiteLLM proxy is the governed, quota-ledgered
 #: route — not a new billing surface (its spend is metered by
 #: shared/quota_spend_ledger.py).
-_GOVERNED_PROXY_HINT = re.compile(r"litellm|127\.0\.0\.1|localhost", re.IGNORECASE)
+#:
+#: The exemption is bound to the ROUTE TARGET, never to a substring of the line
+#: (codex critical, review round 1, 2026-09-26): ``OpenAI(api_key=key)  #
+#: localhost`` must be flagged, because a proxy's *name* in a comment, a
+#: variable name or a neighbouring literal cannot bind the route. A target
+#: counts only when it is an argument of the call being constructed.
+_GOVERNED_PROXY_HOSTS = ("127.0.0.1", "localhost", "::1", "litellm")
+_ROUTE_TARGET_RE = re.compile(
+    r"\b(?:base_url|baseURL|api_base|apiBase|api_endpoint|endpoint|proxy)\b"
+    r"\s*[:=]\s*(?P<q>[\"'])(?P<target>[^\"']+)(?P=q)",
+    re.IGNORECASE,
+)
 
 #: The estate's paid provider API hosts (registry: config/platform-capability-
 #: registry.json; clients: shared/tavily_client.py, shared/runway_gen3_client.py,
@@ -99,9 +127,7 @@ _PROVIDER_API_HOSTS = (
     "api.runwayml.com",
 )
 _PROVIDER_HOST_RE = re.compile(
-    r"https?://(?:"
-    + "|".join(re.escape(host) for host in _PROVIDER_API_HOSTS)
-    + r")(?:[/\"'\s]|$)"
+    r"https?://(?:" + "|".join(re.escape(host) for host in _PROVIDER_API_HOSTS) + r")(?:[/\"'\s]|$)"
 )
 
 #: Zero-argument provider SDK constructors read their credential from the
@@ -140,16 +166,48 @@ def _is_doc_path(path: str) -> bool:
     return lowered.endswith(_DOC_SUFFIXES) or lowered.startswith("docs/")
 
 
+def _host_of(target: str) -> str:
+    """Reduce a route target to its host, for governed-proxy comparison."""
+
+    value = target.strip()
+    if "//" in value:
+        value = value.split("//", 1)[1]
+    if "@" in value:
+        value = value.rsplit("@", 1)[1]
+    value = value.split("/", 1)[0]
+    if value.startswith("["):  # bracketed IPv6, e.g. [::1]:4000
+        return value.split("]", 1)[0].lstrip("[").strip().lower()
+    return value.split(":", 1)[0].strip().lower()
+
+
+def _route_target_is_governed_proxy(content: str) -> bool:
+    """True only when a call's own route target binds it to a governed proxy.
+
+    Deliberately strict, per the review's critical: a target counts only when it
+    is an argument inside the call's parentheses. A standalone assignment, a
+    comment, or a neighbouring literal cannot exempt the line.
+    """
+
+    open_at = content.find("(")
+    close_at = content.rfind(")")
+    if open_at == -1 or close_at == -1 or close_at < open_at:
+        return False
+    for match in _ROUTE_TARGET_RE.finditer(content):
+        if not (open_at < match.start() < close_at):
+            continue
+        if _host_of(match.group("target")) in _GOVERNED_PROXY_HOSTS:
+            return True
+    return False
+
+
 def _classify_line(content: str) -> tuple[str, ...]:
     kinds: list[str] = []
     protective = any(pattern.search(content) for pattern in _PROTECTIVE_RES)
-    if not protective and any(
-        pattern.search(content) for pattern in _CREDENTIAL_ENV_READ_RES
-    ):
+    if not protective and any(pattern.search(content) for pattern in _CREDENTIAL_ENV_READ_RES):
         kinds.append("credential-env-read")
     if _PROVIDER_HOST_RE.search(content) or _BARE_PROVIDER_SDK_RE.search(content):
         kinds.append("provider-api-endpoint")
-    if not _GOVERNED_PROXY_HINT.search(content) and any(
+    if not _route_target_is_governed_proxy(content) and any(
         pattern.search(content) for pattern in _API_KEY_ROUTE_RES
     ):
         kinds.append("api-key-route")
@@ -249,6 +307,34 @@ def main(argv: list[str] | None = None) -> int:
     text = _read_diff(args)
     if text is None:
         return 2
+    # Fail CLOSED on unusable input (codex major, review round 1, 2026-09-26): an
+    # empty or structureless diff is not evidence that the change is clean, and
+    # reporting success on it would let a gate bless a diff it never read.
+    #
+    # ONE guard, two messages. Emptiness is a *kind* of structurelessness — both
+    # mean no added line could be read — so the predicate is the structure, not
+    # two separate conditions. (An empty-only guard beside a structural one is
+    # dead code: the structural guard already fails empty input closed. That
+    # redundancy was measured, not assumed: with the empty guard disabled the
+    # whole case-2 set still passed.)
+    if not text.strip() or ("diff --git " not in text and "+++ " not in text):
+        if not text.strip():
+            print(
+                "billing-surface-scan: FAIL-CLOSED: empty diff input is not evidence. "
+                "Next action: pass the PR diff (--base/--head) or a non-empty "
+                "(--diff-file); a PR that genuinely changes no file is covered by the "
+                "merge-group duplicate sentinel, not by this scan reporting success.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "billing-surface-scan: FAIL-CLOSED: input has no unified-diff structure "
+                "(no 'diff --git' and no '+++ ' file header), so no added line could be "
+                "read. Next action: confirm the diff command and rerun; a truncated or "
+                "prose input must never read as a clean scan.",
+                file=sys.stderr,
+            )
+        return 2
     result = scan_unified_diff(text)
     for finding in result.allowed:
         print(
@@ -260,7 +346,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{finding.path}:{finding.line}: {finding.kind}: {finding.text}")
         print(
             f"billing-surface-scan: FAIL: {len(result.findings)} billing-surface "
-            "mutation(s) in the diff"
+            "mutation(s) in the diff. Next action: remove the added billing surface "
+            "or route the client through the governed LiteLLM proxy, then rerun; if "
+            "the line is a scan fixture or a pattern definition, mark it visibly with "
+            f"{ALLOW_MARKER} so review sees the exemption. If a finding is wrong, fix "
+            "the scan in the same PR rather than exempting the line."
         )
         return 1
     print(

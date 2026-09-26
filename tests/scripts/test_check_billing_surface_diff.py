@@ -57,7 +57,9 @@ def test_clean_diff_reports_no_findings(scanner: ModuleType) -> None:
 
 def test_api_key_route_added_fails(scanner: ModuleType) -> None:
     # The spec's must-fail case: a PR that adds an API-key route.
-    line = '    client = OpenAI(base_url=base, api_key=read_key())'  # billing-scan:allow: fixture data
+    line = (
+        "    client = OpenAI(base_url=base, api_key=read_key())"  # billing-scan:allow: fixture data
+    )
     diff = _diff("shared/foo_client.py", [line])
     result = scanner.scan_unified_diff(diff)
     assert any(f.kind == "api-key-route" for f in result.findings)
@@ -166,7 +168,7 @@ def test_governed_litellm_proxy_client_passes(scanner: ModuleType) -> None:
 
 
 def test_doc_files_are_not_scanned(scanner: ModuleType) -> None:
-    line = '    client = OpenAI(api_key=read_key())'
+    line = "    client = OpenAI(api_key=read_key())"
     diff = _diff("docs/runbooks/foo.md", [line])
     assert scanner.scan_unified_diff(diff).findings == ()
     diff = _diff("notes.txt", [line])
@@ -177,7 +179,7 @@ def test_removed_and_context_lines_are_ignored(scanner: ModuleType) -> None:
     diff = _diff(
         "shared/foo.py",
         ["    return 42"],
-        removed=['    client = OpenAI(api_key=read_key())'],
+        removed=["    client = OpenAI(api_key=read_key())"],
     )
     result = scanner.scan_unified_diff(diff)
     assert result.findings == ()
@@ -195,6 +197,71 @@ def test_empty_diff_passes(scanner: ModuleType) -> None:
     assert scanner.scan_unified_diff("").findings == ()
 
 
+# ── review round 1 (2026-09-26): codex critical + gemini major + docs ────────────
+
+
+def test_proxy_hint_in_a_comment_does_not_exempt_a_direct_api_key_route(
+    scanner: ModuleType,
+) -> None:
+    """A bare mention of the proxy anywhere on the line must not exempt it.
+
+    The exemption is bound to the ROUTE TARGET (a base_url/api_base bound to a
+    governed proxy host), never to a substring of the line: a comment, a variable
+    name or a neighbouring literal cannot buy an exemption.
+    """
+
+    line = "    client = OpenAI(api_key=key)  # localhost"  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a proxy name in a comment exempted a direct API-key route"
+    )
+
+
+def test_proxy_name_only_in_a_neighbouring_literal_does_not_exempt(
+    scanner: ModuleType,
+) -> None:
+    """The same class, second shape: the proxy name lives in another literal."""
+
+    line = '    client = OpenAI(api_key=key); note = "litellm"'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a proxy name in a neighbouring literal exempted a direct API-key route"
+    )
+
+
+def test_route_bound_to_governed_proxy_is_still_exempt(scanner: ModuleType) -> None:
+    """Positive control: the legitimate exemption must survive the fix."""
+
+    line = '    client = OpenAI(api_key=LITELLM_KEY, base_url="http://127.0.0.1:4000/v1")'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == (), "a client genuinely bound to the proxy must stay exempt"
+
+
+def test_bearer_token_in_a_python_fstring_fails(scanner: ModuleType) -> None:
+    """gemini major: the f-string form of a Bearer header must be flagged."""
+
+    line = '    headers = {"Authorization": f"Bearer {token}"}'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "the bearer-token regex did not cover a Python f-string"
+    )
+
+
+def test_bearer_token_fstring_attribute_form_fails(scanner: ModuleType) -> None:
+    """The same class, second shape: an f-string built from an attribute."""
+
+    line = "    self.headers['Authorization'] = f'Bearer {self._api_key}'"  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "the bearer-token regex did not cover the f-string attribute form"
+    )
+
+
 def test_main_clean_diff_exits_zero(scanner: ModuleType, tmp_path: Path) -> None:
     path = tmp_path / "clean.diff"
     path.write_text(_diff("shared/foo.py", ["x = 1"]), encoding="utf-8")
@@ -204,13 +271,17 @@ def test_main_clean_diff_exits_zero(scanner: ModuleType, tmp_path: Path) -> None
 def test_main_flagged_diff_exits_one(scanner: ModuleType, tmp_path: Path) -> None:
     path = tmp_path / "flagged.diff"
     path.write_text(
-        _diff("shared/foo.py", ['    client = OpenAI(api_key=read_key())  # billing-scan:allow']),  # billing-scan:allow: fixture data
+        _diff(
+            "shared/foo.py", ["    client = OpenAI(api_key=read_key())  # billing-scan:allow"]
+        ),  # billing-scan:allow: fixture data
         encoding="utf-8",
     )
     # The allow marker passes the scan...
     assert scanner.main(["--diff-file", str(path)]) == 0
     path.write_text(
-        _diff("shared/foo.py", ['    client = OpenAI(api_key=read_key())']),  # billing-scan:allow: fixture data
+        _diff(
+            "shared/foo.py", ["    client = OpenAI(api_key=read_key())"]
+        ),  # billing-scan:allow: fixture data
         encoding="utf-8",
     )
     # ...and without it the same content fails.
@@ -223,3 +294,53 @@ def test_main_missing_diff_file_fails_closed(scanner: ModuleType, tmp_path: Path
 
 def test_main_without_input_mode_fails_closed(scanner: ModuleType) -> None:
     assert scanner.main([]) == 2
+
+
+def test_main_empty_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    """codex major: empty input is not evidence. A gate must not report success on it."""
+
+    path = tmp_path / "empty.diff"
+    path.write_text("", encoding="utf-8")
+    assert scanner.main(["--diff-file", str(path)]) == 2
+
+
+def test_main_whitespace_only_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "blank.diff"
+    path.write_text("\n\n   \n", encoding="utf-8")
+    assert scanner.main(["--diff-file", str(path)]) == 2
+
+
+def test_main_malformed_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    """Text that is not a unified diff at all is unusable input, not a clean scan."""
+
+    path = tmp_path / "prose.diff"
+    path.write_text("this is not a unified diff\nit has no file headers\n", encoding="utf-8")
+    assert scanner.main(["--diff-file", str(path)]) == 2
+
+
+def test_main_diff_with_no_file_headers_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    """A truncated diff (hunks with no ``diff --git``/``+++`` header) is unusable."""
+
+    path = tmp_path / "truncated.diff"
+    path.write_text(
+        "@@ -1,1 +1,1 @@\n+client = OpenAI(api_key=key)\n", encoding="utf-8"
+    )  # billing-scan:allow: fixture data
+    assert scanner.main(["--diff-file", str(path)]) == 2
+
+
+def test_scanner_docs_state_only_what_success_proves(scanner: ModuleType) -> None:
+    """codex major: the docs must not overstate the scan's guarantee.
+
+    Success proves that no ADDED line matched this scan's syntactic patterns. It
+    does not prove the change cannot spend: semantic spend routing is the review
+    quorum's layer. A docstring that claims the former is a false claim.
+    """
+
+    # Whitespace-normalised: the claim is what matters, not the line wrapping.
+    doc = " ".join((scanner.__doc__ or "").split())
+    assert "proves no ADDED line opens a billing surface" not in doc, (
+        "the scanner docs still claim proof that a syntactic scan cannot give"
+    )
+    assert "not proof" in doc or "does not prove" in doc, (
+        "the scanner docs must say what success does not prove"
+    )
