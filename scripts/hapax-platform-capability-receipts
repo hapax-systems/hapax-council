@@ -55,6 +55,7 @@ from shared.platform_capability_receipts import (  # noqa: E402
     SurfaceEvidence,
     ToolEvidence,
     WrapperEvidence,
+    load_platform_capability_receipt,
     receipt_reference,
 )
 from shared.platform_capability_registry import (  # noqa: E402
@@ -942,6 +943,91 @@ def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path
     return path
 
 
+def freeze_codex_invocation(
+    *,
+    output: Path,
+    registry_path: Path,
+    route_id: str,
+    home: Path,
+    project: Path,
+    env: dict[str, str],
+    argv: list[str],
+    wrapper: Path,
+    launch_id: str,
+) -> PlatformCapabilityReceipt:
+    """Freeze support-only load evidence and consume its exact durable readback.
+
+    No auth/quota/CLI probes run here. This per-launch artifact belongs beside
+    the native stream, never in the host route-eligibility receipt directory.
+    """
+    from shared.capability_load_set import observe_codex_invocation
+
+    if route_id != "codex.headless.full" or not launch_id:
+        raise ValueError(
+            "unsupported invocation route; next action: use the qualified local full route"
+        )
+    registry, _ = load_platform_capability_registry_for_dispatch(
+        registry_path, apply_receipts=False
+    )
+    route = next((route for route in registry.routes if route.route_id == route_id), None)
+    if route is None or route.native_load_set is None:
+        raise ValueError(
+            "missing load declaration; next action: restore the selected route declaration"
+        )
+    observation = observe_codex_invocation(
+        route.native_load_set, home=home, project=project, env=env, argv=argv
+    )
+    observation["invocation"]["launch_id"] = launch_id
+    now = datetime.now(UTC)
+    unobserved = SurfaceEvidence(
+        status=EvidenceStatus.UNOBSERVABLE,
+        source="invocation_construction",
+        observed_at=now,
+        stale_after="24h",
+        reason_codes=["not_probed_by_invocation_inventory"],
+    )
+    receipt = PlatformCapabilityReceipt(
+        receipt_id=launch_id,
+        platform="codex",
+        routes=[route_id],
+        observed_at=now,
+        stale_after="24h",
+        cli=CliEvidence(
+            binary="codex", available=False, error="not_probed_by_invocation_inventory"
+        ),
+        wrapper=WrapperEvidence(
+            path=str(wrapper.resolve()),
+            exists=wrapper.is_file(),
+            executable=os.access(wrapper, os.X_OK),
+            sha256=sha256_file(wrapper),
+        ),
+        load_sets={route_id: observation},
+        capability=unobserved,
+        resource=unobserved,
+        quota=unobserved,
+        provider_docs=ProviderDocsEvidence(
+            refs=[f"platform-capability-registry:{route_id}"],
+            fetched_at=now,
+            stale_after="24h",
+            fetch_status=EvidenceStatus.UNOBSERVABLE,
+        ),
+        known_unknowns=[
+            "Explicit argv construction only; ambient extensions and native loading unobserved.",
+            "No semantic use, route admission, provider identity or quota attestation.",
+        ],
+    )
+    # Existing artifacts (including symlinks) are evidence, never replaceable.
+    with output.open("x", encoding="utf-8") as handle:
+        handle.write(receipt.model_dump_json(indent=2) + "\n")
+    readback = load_platform_capability_receipt(output)
+    if readback != receipt:
+        raise ValueError(
+            "invocation receipt readback mismatch; next action: retain the failed artifact "
+            "and investigate before retrying with a fresh invocation"
+        )
+    return readback
+
+
 def positive_float_env_default(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -1014,7 +1100,61 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--codex-invocation-output", type=Path)
+    parser.add_argument("--execution-route")
+    parser.add_argument("--invocation-workdir", type=Path)
+    parser.add_argument("--invocation-wrapper", type=Path)
+    parser.add_argument("--invocation-id")
     args = parser.parse_args(argv)
+
+    if args.codex_invocation_output is not None:
+        if (
+            not all(
+                (
+                    args.execution_route,
+                    args.invocation_workdir,
+                    args.invocation_wrapper,
+                    args.invocation_id,
+                )
+            )
+            or args.codex_exec_auth_probe
+            or args.dry_run
+            or args.now
+            or args.all
+            or args.platform
+        ):
+            parser.error(
+                "invocation observation needs route/workdir/wrapper/id and no host probe, "
+                "dry-run or clock override; next action: use a fresh governed launch"
+            )
+        try:
+            raw = sys.stdin.buffer.read()
+            if not raw.endswith(b"\0"):
+                raise ValueError(
+                    "missing NUL-delimited argv; next action: use the governed launcher"
+                )
+            receipt = freeze_codex_invocation(
+                output=args.codex_invocation_output,
+                registry_path=args.registry,
+                route_id=args.execution_route,
+                home=Path.home(),
+                project=args.invocation_workdir,
+                env=dict(os.environ),
+                argv=raw[:-1].decode().split("\0"),
+                wrapper=args.invocation_wrapper,
+                launch_id=args.invocation_id,
+            )
+        except (OSError, ValueError) as exc:
+            # Never echo arbitrary config values or prompts in parser errors.
+            print(
+                f"invocation load receipt refused ({type(exc).__name__}); next action: "
+                "inspect the selected declaration and supported invocation arguments, "
+                "preserve any existing receipt, then retry a fresh launch",
+                file=sys.stderr,
+            )
+            return 9
+        print(receipt_reference(receipt))
+        return 0
 
     observed_at = parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
     registry, non_supply_observation_errors = load_platform_capability_registry_for_dispatch(

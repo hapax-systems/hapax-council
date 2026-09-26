@@ -45,6 +45,116 @@ API_NOW_DT = datetime.fromisoformat(API_NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
 
 
+@pytest.mark.parametrize("predecessor", ["file", "symlink"])
+def test_invocation_receipt_readback_preserves_unknowns_and_refuses_overwrite(
+    tmp_path, predecessor
+):
+    namespace = runpy.run_path(str(SCRIPT))
+    freeze = namespace["freeze_codex_invocation"]
+    output = tmp_path / "launch.load-set.json"
+    kwargs = dict(
+        output=output,
+        registry_path=REGISTRY,
+        route_id="codex.headless.full",
+        home=tmp_path / "home",
+        project=tmp_path / "workdir",
+        env={},
+        argv=[
+            "exec",
+            "--cd",
+            str(tmp_path / "actual"),
+            "-c",
+            f'mcp_servers.demo.env.KEY="{SECRET}"',
+        ],
+        wrapper=REPO_ROOT / "scripts/hapax-codex-headless",
+        launch_id="native-fresh",
+    )
+    with patch("subprocess.run", side_effect=AssertionError("unexpected provider/CLI probe")):
+        receipt = freeze(**kwargs)
+    retained = output.read_bytes()
+    readback = load_platform_capability_receipt(output)
+    assert readback == receipt
+    assert SECRET.encode() not in retained
+    assert readback.routes == ["codex.headless.full"]
+    observation = readback.load_sets["codex.headless.full"]
+    assert observation["resolved_roots"]["project"] == str(tmp_path / "actual")
+    assert observation["invocation"]["launch_id"] == "native-fresh"
+    assert observation["invocation"]["configured_extensions"]["mcp"] == ["demo"]
+    assert observation["extensions"]["mcp"] is None
+    assert observation["native_loading"] == "unobserved"
+    assert observation["may_authorize"] is False
+    assert readback.capability.status.value == "unobservable"
+    assert readback.quota.status.value == "unobservable"
+    if predecessor == "symlink":
+        old = tmp_path / "predecessor.json"
+        output.rename(old)
+        output.symlink_to(old)
+    with pytest.raises(FileExistsError):
+        freeze(**kwargs)
+    assert output.read_bytes() == retained
+
+
+@pytest.mark.parametrize("fault", ["route", "binding", "unknown", "loading"])
+def test_invocation_receipt_consumer_rejects_substitution(tmp_path, monkeypatch, fault):
+    namespace = runpy.run_path(str(SCRIPT))
+    freeze = namespace["freeze_codex_invocation"]
+
+    def corrupt(path):
+        receipt = load_platform_capability_receipt(path)
+        observation = receipt.load_sets["codex.headless.full"]
+        if fault == "route":
+            receipt.routes = ["agy.review.direct"]
+        elif fault == "binding":
+            observation["invocation"]["binding_sha256"] = "0" * 64
+        elif fault == "unknown":
+            observation["extensions"]["skills"] = []
+        else:
+            observation["native_loading"] = "observed"
+        return receipt
+
+    monkeypatch.setitem(freeze.__globals__, "load_platform_capability_receipt", corrupt)
+    with pytest.raises(ValueError, match="readback.*next action"):
+        freeze(
+            output=tmp_path / "launch.json",
+            registry_path=REGISTRY,
+            route_id="codex.headless.full",
+            home=tmp_path,
+            project=tmp_path,
+            env={},
+            argv=["exec"],
+            wrapper=SCRIPT,
+            launch_id="native-fresh",
+        )
+
+
+def test_invocation_cli_dry_run_cannot_write(tmp_path):
+    output = tmp_path / "receipt.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--registry",
+            str(REGISTRY),
+            "--dry-run",
+            "--codex-invocation-output",
+            str(output),
+            "--execution-route",
+            "codex.headless.full",
+            "--invocation-workdir",
+            str(tmp_path),
+            "--invocation-wrapper",
+            str(SCRIPT),
+            "--invocation-id",
+            "native-dry-run",
+        ],
+        input=b"exec\0",
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 2
+    assert not output.exists()
+
+
 def _receipt_source_fixture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

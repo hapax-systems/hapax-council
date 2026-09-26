@@ -4,6 +4,32 @@
 lanes. It must not create or repair remote worktrees until the local dispatch has
 passed the task/claim gate and the single-live-lane PID guard.
 
+## Invocation load evidence
+
+Fresh local `codex.headless.full` launches freeze a
+`native-*.load-set.json` beside their native stream before starting the child.
+The selected release's `hapax-platform-capability-receipts` writes the existing
+`PlatformCapabilityReceipt.load_sets` representation and reads it back through
+the existing typed reader. A failed write, existing artifact or unequal
+readback refuses the launch with exit 9. Keep failed/predecessor artifacts;
+retry with a fresh launch after repairing the reported boundary.
+
+The observation binds the declaration digest, actual native home, final `--cd`
+root and prompt-free argument digest. It records explicit hook/MCP override
+names after later argv overrides, flag names and declared-file hashes. Config
+values, command bodies, environment values and prompt text are not persisted.
+Unknown argument shapes, including resume/review/worktree submodes, refuse
+instead of producing a misleading inventory; qualify their construction before
+extending this bounded observer.
+
+This is construction evidence. It does not attest native loading or instruction
+use, and it does not turn unknown ambient plugins, skills, hooks or MCP into
+empty sets. Host configuration presence remains a filesystem observation.
+Capability, resource, quota and provider-doc probes remain unobserved in this
+per-invocation receipt. Do not copy it into the host capability receipt directory
+or use it to admit routes. SSH, Spark, interactive and blind-review invocations
+are outside this producer's scope and receive no such observation.
+
 ## Declared execution identity
 
 Both Codex launchers resolve identity before any auth probe, claim or spawn.

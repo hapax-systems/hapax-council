@@ -24,6 +24,7 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
+    monkeypatch.delenv("HAPAX_CODEX_HEADLESS_WORKDIR", raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
     monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
     monkeypatch.delenv("HAPAX_NATIVE_LIFECYCLE_RECEIPT", raising=False)
@@ -271,6 +272,10 @@ def _write_descriptor_runtime(path: Path) -> None:
     (path / ".venv").symlink_to(runtime, target_is_directory=True)
     shutil.copy2(
         REPO_ROOT / "scripts/capability-execution.sh", path / "scripts/capability-execution.sh"
+    )
+    shutil.copy2(
+        REPO_ROOT / "scripts/hapax-platform-capability-receipts",
+        path / "scripts/hapax-platform-capability-receipts",
     )
 
 
@@ -780,7 +785,8 @@ exit 99
     )
     _write_executable(
         bin_dir / "codex",
-        f"""printf '%s\n' "$*" > "{codex_args}"
+        f"""if ! compgen -G '{log_dir}/native-*.load-set.json' >/dev/null; then exit 98; fi
+printf '%s\n' "$*" > "{codex_args}"
 printf '%s\\n' '{{"type":"thread.started","thread_id":"native-test"}}' '{{"type":"turn.started"}}' '{{"type":"turn.completed"}}'
 echo 'harmless native warning' >&2
 exit 0
@@ -806,6 +812,23 @@ exit 0
     assert result.returncode == 0, result.stderr
     assert not ssh_called.exists()
     assert codex_args.exists()
+    load_receipts = list(log_dir.glob("native-*.load-set.json"))
+    assert len(load_receipts) == 1
+    load_receipt = json.loads(load_receipts[0].read_text())
+    load_set = load_receipt["load_sets"]["codex.headless.full"]
+    assert load_set["resolved_roots"] == {
+        "native_home": str(home / ".codex"),
+        "project": str(workdir),
+    }
+    assert load_set["invocation"]["configured_extensions"] == {
+        "hooks": ["PostToolUse", "PreToolUse", "SessionStart", "Stop"],
+        "mcp": ["context7", "github", "hapax"],
+    }
+    assert load_set["native_loading"] == "unobserved"
+    assert load_set["extensions"]["plugins"] is None
+    assert load_set["boundary"] == "invocation_construction"
+    assert "governed prompt" not in load_receipts[0].read_text()
+    assert "SDLC DISCIPLINE" not in load_receipts[0].read_text()
     receipts = list((cache / "codex-headless/cx-amber").glob("native-*.receipt.json"))
     assert len(receipts) == 1
     observed = json.loads(receipts[0].read_text())
@@ -891,6 +914,49 @@ def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, termination)
         if process.poll() is None:
             process.kill()
             process.communicate(timeout=2)
+
+
+def test_codex_headless_does_not_launch_child_when_load_observation_refuses(tmp_path):
+    home = tmp_path / "home"
+    (home / ".cache/hapax").mkdir(parents=True)
+    (home / "projects/hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree with spaces"
+    workdir.mkdir()
+    bin_dir = tmp_path / "bin"
+    child = tmp_path / "child-called"
+    _write_executable(bin_dir / "hostname", "echo hapax-appendix\n")
+    _write_executable(bin_dir / "codex", f'touch "{child}"\nexit 0\n')
+    result = subprocess.run(
+        [
+            str(SCRIPT),
+            "--task",
+            "task-x",
+            "--no-claim",
+            "--force",
+            "cx-amber",
+            "private prompt",
+            "--",
+            "--unqualified-secret-argument=private-value",
+        ],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+            "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
+            "HAPAX_DISPATCH_HOST": "appendix",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 9, result.stderr
+    assert "load receipt unavailable" in result.stderr
+    assert "next action" in result.stderr
+    assert not child.exists()
+    assert "private-value" not in result.stderr
+    assert "private prompt" not in result.stderr
 
 
 def _fixture_process_running(pid: int) -> bool:

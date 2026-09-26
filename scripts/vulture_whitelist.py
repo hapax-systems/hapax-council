@@ -5220,7 +5220,14 @@ _observed_host_identity
 # Native load-set observation is called by the extensionless
 # scripts/hapax-platform-capability-receipts producer; Pydantic invokes the
 # declared-path validator during registry parsing. Both have behavior tests.
+# The extensionless receipt CLI calls this at the local headless argv boundary.
+# Exercised through the actual launcher in test_hapax_codex_headless.py.
+from shared.capability_load_set import (  # noqa: E402
+    observe_codex_invocation as _observe_codex_invocation,
+)
 from shared.capability_load_set import observe_load_set as _observe_load_set  # noqa: E402
+
+_observe_codex_invocation
 from shared.platform_capability_registry import NativeLoadFile as _NativeLoadFile  # noqa: E402
 
 _observe_load_set

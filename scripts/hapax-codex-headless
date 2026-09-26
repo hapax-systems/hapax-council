@@ -1133,7 +1133,6 @@ CODEX_ARGS=(
   -c "mcp_servers.context7.command=\"$COUNCIL_DIR/scripts/hapax-context7-mcp\""
 )
 CODEX_ARGS+=("${CODEX_EXTRA[@]}")
-CODEX_ARGS+=("$INITIAL_MSG")
 
 echo "hapax-codex-headless: starting $SESSION (task=$CODEX_TASK) in $WORKDIR"
 echo "  log: $LOG_FILE"
@@ -1155,6 +1154,22 @@ CANCEL_SIGNAL=0
 # Native records use millisecond UTC timestamps; capture before this fresh exec.
 NATIVE_LAUNCH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
 NATIVE_LAUNCH_HOME="${CODEX_HOME:-$HOME/.codex}"
+# This is the actual local construction boundary. Do not observe SSH inputs
+# against this host or mix worker roots into the independent reviewer routes.
+if [[ -z "$DISPATCH_HOST" && "$EXECUTION_ROUTE" == "codex.headless.full" ]]; then
+  LOAD_RECEIPT="${NATIVE_LOG_FILE%.jsonl}.load-set.json"
+  if ! printf '%s\0' "${CODEX_ARGS[@]}" | "$EXECUTION_SOURCE_ROOT/.venv/bin/python" -I \
+    "$EXECUTION_SOURCE_ROOT/scripts/hapax-platform-capability-receipts" \
+    --registry "${HAPAX_PLATFORM_CAPABILITY_REGISTRY:-$EXECUTION_SOURCE_ROOT/config/platform-capability-registry.json}" \
+    --codex-invocation-output "$LOAD_RECEIPT" --execution-route "$EXECUTION_ROUTE" \
+    --invocation-workdir "$WORKDIR" --invocation-wrapper "${BASH_SOURCE[0]}" \
+    --invocation-id "$(basename "${NATIVE_LOG_FILE%.jsonl}")"; then
+    echo "hapax-codex-headless: load receipt unavailable; next action: inspect $LOAD_RECEIPT and the selected source observer before a fresh launch" >&2
+    exit 9
+  fi
+fi
+# Prompt contents never enter the load inventory or its argument digest.
+CODEX_ARGS+=("$INITIAL_MSG")
 write_native_lifecycle() {
   local receipt="${HAPAX_NATIVE_LIFECYCLE_RECEIPT:-${NATIVE_LOG_FILE%.jsonl}.receipt.json}"
   # hapax-source-activate owns this binding and promotes the complete source
