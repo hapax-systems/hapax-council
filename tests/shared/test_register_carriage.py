@@ -20,43 +20,64 @@ from shared.publication_hardening.lint import (
 
 #: The 31 FIX units, verbatim from dev20's sweep's FIX table (R1–R31).
 SWEEP_FIX_UNITS: tuple[tuple[str, str], ...] = (
-    ('R1', 'A proposition. A deadline. A result to answer to.'),
-    ('R2', 'Finding out, in public.'),
-    ('R3', 'Research · engineering · public evidence'),
-    ('R4', 'Proceed under measurement'),
-    ('R5', 'Position / State the claim and what would change it.'),
-    ('R5', 'Test / Fix the rules. Inspect the evidence.'),
-    ('R5', 'Score / Publish misses alongside hits.'),
-    ('R5', 'Implication / Record the next decision and why.'),
-    ('R6', 'A protocol, with its current limits visible.'),
-    ('R7', '01 / Evidence in view'),
-    ('R7', '02 / The prospective record'),
-    ('R7', '03 / Across the laboratory'),
-    ('R8', 'What does the claim support?'),
-    ('R9', 'A forecast needs a finish line.'),
-    ('R10', 'The draft slate asks what institutions will disclose, what commitments become records, and what a public capability measurement will show.'),
-    ('R11', 'Research, systems, and field notes.'),
-    ('R12', 'A laboratory, with agents on staff.'),
-    ('R13', 'Our position on AI progress is a commitment to finding out, in public, with instruments. Each claim must answer to evidence. No midpoint, predetermined ending, or reputation can do that work for it.'),
-    ('R14', 'Our position on AI progress is a commitment to finding out, in public, with instruments.'),
-    ('R15', 'An agent-staffed R&D laboratory.'),
-    ('R16', 'Position, test, score, implication: that loop is the work. A public, inspectable record is the intended product.'),
-    ('R17', "What stands behind this site is its record, the procedure that released it, the network's duty to correct it, and the legal entity's answerability in law, not any person's endorsement of its wording, apart from the sentences on withdrawal and retention, which the principal adopted; see the review record."),
-    ('R18', 'Research with an inspectable record.'),
-    ('R19', 'The claim, its support, and the limits travel together.'),
-    ('R20', 'One front door. Many working parts.'),
-    ('R21', 'The original stays visible.'),
-    ('R22', 'Four questions, not a ladder.'),
-    ('R23', 'Provenance is not proof of truth.'),
-    ('R23', 'It identifies the record to be checked.'),
-    ('R24', 'Corrections preserve the original.'),
-    ('R25', 'A public framework earns no predictive credit merely by existing. A record of disclosure is not a measure of safety. Some risks are not quantifiable. No probability here is a certification, compliance determination, or permission to proceed regardless of evidence.'),
-    ('R26', 'A sent message is not a published correction or evidence of review.'),
-    ('R27', 'Agreement with one claim requires no allegiance to the lab.'),
-    ('R28', 'Not registered. No prospective outcomes have been scored.'),
-    ('R29', 'Not registered. No outcome or prospective score is claimed.'),
-    ('R30', 'What this record is. It describes how this edition of the site was produced and checked, so that any reader can check that account.'),
-    ('R31', 'This page is not here.')
+    ("R1", "A proposition. A deadline. A result to answer to."),
+    ("R2", "Finding out, in public."),
+    ("R3", "Research · engineering · public evidence"),
+    ("R4", "Proceed under measurement"),
+    ("R5", "Position / State the claim and what would change it."),
+    ("R5", "Test / Fix the rules. Inspect the evidence."),
+    ("R5", "Score / Publish misses alongside hits."),
+    ("R5", "Implication / Record the next decision and why."),
+    ("R6", "A protocol, with its current limits visible."),
+    ("R7", "01 / Evidence in view"),
+    ("R7", "02 / The prospective record"),
+    ("R7", "03 / Across the laboratory"),
+    ("R8", "What does the claim support?"),
+    ("R9", "A forecast needs a finish line."),
+    (
+        "R10",
+        "The draft slate asks what institutions will disclose, what commitments become records, and what a public capability measurement will show.",
+    ),
+    ("R11", "Research, systems, and field notes."),
+    ("R12", "A laboratory, with agents on staff."),
+    (
+        "R13",
+        "Our position on AI progress is a commitment to finding out, in public, with instruments. Each claim must answer to evidence. No midpoint, predetermined ending, or reputation can do that work for it.",
+    ),
+    (
+        "R14",
+        "Our position on AI progress is a commitment to finding out, in public, with instruments.",
+    ),
+    ("R15", "An agent-staffed R&D laboratory."),
+    (
+        "R16",
+        "Position, test, score, implication: that loop is the work. A public, inspectable record is the intended product.",
+    ),
+    (
+        "R17",
+        "What stands behind this site is its record, the procedure that released it, the network's duty to correct it, and the legal entity's answerability in law, not any person's endorsement of its wording, apart from the sentences on withdrawal and retention, which the principal adopted; see the review record.",
+    ),
+    ("R18", "Research with an inspectable record."),
+    ("R19", "The claim, its support, and the limits travel together."),
+    ("R20", "One front door. Many working parts."),
+    ("R21", "The original stays visible."),
+    ("R22", "Four questions, not a ladder."),
+    ("R23", "Provenance is not proof of truth."),
+    ("R23", "It identifies the record to be checked."),
+    ("R24", "Corrections preserve the original."),
+    (
+        "R25",
+        "A public framework earns no predictive credit merely by existing. A record of disclosure is not a measure of safety. Some risks are not quantifiable. No probability here is a certification, compliance determination, or permission to proceed regardless of evidence.",
+    ),
+    ("R26", "A sent message is not a published correction or evidence of review."),
+    ("R27", "Agreement with one claim requires no allegiance to the lab."),
+    ("R28", "Not registered. No prospective outcomes have been scored."),
+    ("R29", "Not registered. No outcome or prospective score is claimed."),
+    (
+        "R30",
+        "What this record is. It describes how this edition of the site was produced and checked, so that any reader can check that account.",
+    ),
+    ("R31", "This page is not here."),
 )
 
 #: The spec's eight positive fixtures: each must flag, and the expected devices must be among
@@ -91,7 +112,7 @@ def _devices(text: str) -> set[int]:
 
 def test_each_device_has_a_case() -> None:
     cases = {
-        1: "A deadline.",
+        1: "The next decision.",
         2: "A proposition. A deadline. A result to answer to.",
         3: "Proceed under measurement",
         4: "Four questions, not a ladder.",
@@ -108,7 +129,9 @@ def test_each_device_has_a_case() -> None:
 def test_spec_positive_fixtures_flag(text: str, expected: tuple[int, ...]) -> None:
     devices = _devices(text)
     assert devices, f"the lint missed the positive fixture {text!r}"
-    assert set(expected) & devices, f"expected one of devices {expected} for {text!r}; got {devices}"
+    assert set(expected) & devices, (
+        f"expected one of devices {expected} for {text!r}; got {devices}"
+    )
 
 
 @pytest.mark.parametrize("text", SPEC_NEGATIVE)
@@ -117,7 +140,7 @@ def test_spec_negative_fixtures_are_quiet_or_carry_a_keep(text: str) -> None:
     if not findings:
         return
     keeps = {name for name, _reason in REGISTER_KEEP_DISPOSITIONS}
-    assert any(f"Keep disposition available: " in f.message for f in findings), (
+    assert any("Keep disposition available: " in f.message for f in findings), (
         f"{text!r} flagged with no documented keep disposition available: "
         f"{[f.message for f in findings]}"
     )
@@ -174,3 +197,18 @@ def test_keep_dispositions_cover_the_amendments_not_forbidden_list() -> None:
         "negation",
     ):
         assert any(fragment in reason for reason in reasons), fragment
+
+
+def test_a_built_page_is_linted_by_its_block_units() -> None:
+    """Tag-stripped text merges blocks and invents units; block units are the built-page input."""
+    page = (
+        "<html><body><nav><a href='/'>Research</a><a href='/r'>Register</a></nav>"
+        "<h1>Public properties</h1>"
+        "<p>One front door. Many working parts.</p>"
+        "<p>The catalogue lists these records and their sources.</p></body></html>"
+    )
+    findings = check_register_carriage_text(page, file_label="page.html")
+    texts = [f.message for f in findings]
+    assert any("One front door" in t for t in texts), texts
+    assert not any("Research Register" in t for t in texts), "nav chrome was merged into a unit"
+    assert all(f.line >= 1 for f in findings)

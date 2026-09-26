@@ -365,6 +365,291 @@ def check_non_anthropomorphic_register_text(
     return findings
 
 
+REGISTER_CARRIAGE_RULE = "Hapax.RegisterCarriage"
+
+# The six devices, verbatim from AMENDMENT-ADOPTED-register-writerly-carriage-20260925.md
+# (sha256 42dac12b60f5e99c5e42b5b457099bd2f06239820b4a839c174f477630d35989).
+REGISTER_CARRIAGE_DEVICES: tuple[tuple[int, str], ...] = (
+    (1, "fragments or verbless sentences used for effect"),
+    (2, "tricolon: three or more parallel phrases used for rhythm, not to enumerate real items"),
+    (3, "aphorisms, maxims, slogans, taglines and closing flourishes"),
+    (4, "antithesis for effect"),
+    (5, "rhetorical questions the text does not put to the reader to answer"),
+    (
+        6,
+        "dramatic one-line paragraphs, and series of short declaratives or imperatives for emphasis",
+    ),
+)
+
+# The amendment's "Not forbidden" list as DOCUMENTED KEEP DISPOSITIONS. A keep is recorded with
+# its reason per edition; these are never silent exemptions, so a finding in one of these shapes
+# still carries the keep category it may be disposed under.
+REGISTER_KEEP_DISPOSITIONS: tuple[tuple[str, str], ...] = (
+    ("section_label", "plain label or heading that names a section"),
+    ("literal_enumeration", "literal enumeration of real items"),
+    ("answered_question", "question the section literally answers"),
+    ("data_line", "data line"),
+    ("plain_instruction", "plain instruction"),
+    ("scope_negation", "scope statement whose negation carries a limit"),
+)
+
+_REGISTER_FINITE = re.compile(
+    r"\b(is|are|was|were|be|been|being|am|has|have|had|do|does|did|can|could|will|would|shall|"
+    r"should|may|might|must|isn't|aren't|wasn't|don't|doesn't|didn't|won't|cannot|can't)\b"
+    r"|\b\w+(ed|es)\b|\b(it|this|that|they|we|he|she|who|which) \w+s\b",
+    re.IGNORECASE,
+)
+_REGISTER_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\u201c\"'(])")
+# A finite-verb test for the FRAGMENT device that stays quiet on plain prose. The port's cheap
+# `\w+(ed|es)\b` proxy fires on participles and imperatives ("Proceed", "agent-staffed") and
+# swallowed real fragments; dropping it made ordinary prose ("The artifact proposes a claim.")
+# look verbless, which broke the shipped plain-prose fixture. This keeps auxiliaries, the
+# pronoun+verb shape, and an -ed/-es inflection on a word that is NOT hyphen-preceded
+# (a hyphenated participle is an adjective, not the sentence's verb), plus an explicit
+# imperative carve-out: an imperative-led fragment is a fragment whatever its suffix.
+_REGISTER_FINITE_AUX = re.compile(
+    r"\b(is|are|was|were|be|been|being|am|has|have|had|do|does|did|can|could|will|would|shall|"
+    r"should|may|might|must|isn't|aren't|wasn't|don't|doesn't|didn't|won't|cannot|can't)\b"
+    r"|\b(it|this|that|they|we|he|she|who|which) \w+s\b"
+    r"|(?<!-)\b\w+(?:ed|es)\b",
+    re.IGNORECASE,
+)
+
+
+def _register_is_fragment(unit: str) -> bool:
+    """Over-inclusive: a unit with no finite-verb signal, or an imperative-led short unit."""
+    head = unit.split()[0] if unit.split() else ""
+    if head and _REGISTER_IMPERATIVE_HEAD.match(unit) and _register_words(unit) <= 12:
+        # A bare imperative ("Proceed under measurement") is a fragment for the register check
+        # even though its head may carry an -ed/-s suffix.
+        return not _REGISTER_FINITE_AUX.search(unit.split(" ", 1)[1] if " " in unit else "")
+    return not _REGISTER_FINITE_AUX.search(unit)
+
+
+_REGISTER_IMPERATIVE_HEAD = re.compile(
+    r"\A(?:proceed|download|use|read|see|check|inspect|run|open|fix|test|score|record|publish|state|keep|position|"
+    r"visit|send|add|remove|report|review|note|reproduce|recompute|follow|apply)\b",
+    re.IGNORECASE,
+)
+_REGISTER_SCOPE_NEGATION = re.compile(
+    r"\b(?:does not|do not|is not|are not|cannot|not a|not an|never)\b[^.;]{0,80}"
+    r"\b(?:verif\w+|certif\w+|guarantee\w*|evidence|proof|measure\w*|identif\w+|truth|"
+    r"endorse\w*|authoriz\w*|permission|exhaustive|replicat\w+)\b",
+    re.IGNORECASE,
+)
+_REGISTER_ENUMERATION = re.compile(r"\s·\s|\s\((?:\d+|[a-z])\)\s|\A\s*\d+\.\s")
+
+
+def _register_words(text: str) -> int:
+    return len(re.findall(r"[A-Za-z0-9\u2019'%-]+", text))
+
+
+def _register_sentences(unit: str) -> list[str]:
+    return [part.strip() for part in _REGISTER_SENTENCE_SPLIT.split(unit) if part.strip()]
+
+
+def _register_units(text: str) -> list[tuple[int, str]]:
+    """Block units with their first 1-based line number: blank-line separated paragraphs."""
+    units: list[tuple[int, str]] = []
+    current: list[str] = []
+    start = 0
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if line.strip():
+            if not current:
+                start = lineno
+            current.append(line.strip())
+            continue
+        if current:
+            units.append((start, " ".join(current)))
+            current = []
+    if current:
+        units.append((start, " ".join(current)))
+    return units
+
+
+def _register_keep_hint(unit: str, sentences: list[str]) -> str | None:
+    """The keep category this unit may be disposed under, when its shape names one."""
+    stripped = unit.strip()
+    if stripped.endswith("?") and re.match(r"\A\s*(?:\d+\.|\(\d+\))\s", stripped):
+        return "answered_question"
+    if _REGISTER_ENUMERATION.match(stripped) or "\u00b7" in stripped:
+        return "literal_enumeration"
+    if _REGISTER_SCOPE_NEGATION.search(stripped):
+        return "scope_negation"
+    if re.search(r"\d", stripped) and len(re.findall(r"\d", stripped)) >= max(
+        2, len(stripped.split()) // 3
+    ):
+        return "data_line"
+    if _REGISTER_IMPERATIVE_HEAD.match(stripped) and not stripped.endswith(("!", "?")):
+        return "plain_instruction"
+    if (
+        len(sentences) == 1
+        and len(stripped.split()) <= 6
+        and not stripped.endswith((".", "!", "?"))
+    ):
+        return "section_label"
+    return None
+
+
+#: Block-level tags whose inner text is one register unit on a built page. A built page must be
+#: linted by its block units, not by tag-stripped text: stripping merges navigation chrome and
+#: adjacent blocks into one pseudo-unit and invents findings (measured on the correction edition).
+_REGISTER_BLOCK_TAGS = "p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption|figcaption"
+
+
+def _register_html_units(text: str) -> list[tuple[int, str]]:
+    """Block units from built HTML, with the 1-based line of each opening tag."""
+    units: list[tuple[int, str]] = []
+    for match in re.finditer(
+        rf"<({_REGISTER_BLOCK_TAGS})\b[^>]*>(.*?)</\1>", text, re.IGNORECASE | re.DOTALL
+    ):
+        body = re.sub(r"<[^>]+>", " ", match.group(2))
+        body = re.sub(r"\s+", " ", body).strip()
+        if body:
+            units.append((text[: match.start()].count("\n") + 1, body))
+    return units
+
+
+def _register_looks_like_html(text: str) -> bool:
+    return bool(re.search(r"<(?:p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption)\b", text, re.I))
+
+
+def check_register_carriage_text(
+    text: str,
+    *,
+    file_label: str = "<artifact>",
+) -> list[LintFinding]:
+    """Flag writerly and rhetorical carriage (the six devices), over-inclusive by design.
+
+    One finding per (unit, device), carrying the device number, the line, the text, and — when
+    the unit's shape names one — the documented keep disposition it may be recorded under.
+    """
+    findings: list[LintFinding] = []
+    units = _register_html_units(text) if _register_looks_like_html(text) else _register_units(text)
+    for lineno, unit in units:
+        if _register_words(unit) < 3:
+            continue
+        sentences = _register_sentences(unit)
+        short = [s for s in sentences if _register_words(s) <= 6]
+        hint = _register_keep_hint(unit, sentences)
+        hint_text = (
+            f" Keep disposition available: {dict(REGISTER_KEEP_DISPOSITIONS)[hint]}."
+            if hint
+            else ""
+        )
+        hits: list[tuple[int, str]] = []
+
+        fragment = next(
+            (s for s in sentences if 3 <= _register_words(s) <= 14 and _register_is_fragment(s)),
+            None,
+        )
+        if (
+            fragment is None
+            and not unit.endswith((".", "!", "?"))
+            and 3 <= _register_words(unit) <= 14
+            and _register_is_fragment(unit)
+        ):
+            fragment = unit
+        if fragment is not None:
+            hits.append((1, fragment))
+        clauses = (
+            [clause.strip() for clause in re.split(r"[,;]", sentences[0]) if clause.strip()]
+            if sentences
+            else []
+        )
+        core_clauses = [c for c in clauses if _register_words(c) <= 8]
+        parallel_wh = re.findall(r"\bwhat\b[^,;.]{0,80}", unit)
+        series_parts = [part.strip() for part in re.split(r"\s[·/]\s", unit) if part.strip()]
+        if (
+            len(short) >= 3
+            or (len(clauses) >= 3 and len(core_clauses) >= 2)
+            or len(parallel_wh) >= 3
+            or len(series_parts) >= 3
+        ):
+            evidence = (
+                " / ".join(short[:3])
+                if len(short) >= 3
+                else (
+                    " / ".join(series_parts[:3])
+                    if len(series_parts) >= 3
+                    else (sentences[0] if sentences else unit)
+                )
+            )
+            hits.append((2, evidence))
+        if len(sentences) >= 2 and _register_words(sentences[-1]) <= 6:
+            hits.append((3, sentences[-1]))
+        elif (
+            (
+                len(sentences) == 1
+                and _register_words(unit) <= 8
+                and not re.match(r"\A\s*(?:what|which|how|why|when|where)\b", unit, re.IGNORECASE)
+            )
+            or _register_words(unit) <= 16
+            and re.search(
+                r"\b(?:no|not|never)\b[^.;]{0,50}\b(?:allegiance|outcome|score|correction|evidence|"
+                r"guarantee|permission|certification|credit|truth|proof|register\w*|claims?|promise\w*)\b",
+                unit,
+                re.IGNORECASE,
+            )
+        ):
+            hits.append((3, unit))
+        if (
+            re.search(r"\b(?:is|are|was|were) not\b[^.;]{0,60}\b(?:or|but)\b", unit, re.IGNORECASE)
+            or re.search(r"\b\w+(?: \w+){0,3}, not (?:a |an |the )?\w+", unit)
+            or re.search(r"\bnot\b[^.;]{1,60}\bbut\b", unit)
+            or re.search(r"\bnot\b[^.;]{1,40};", unit)
+        ):
+            hits.append((4, unit))
+        for sentence in sentences:
+            if sentence.endswith("?"):
+                hits.append((5, sentence))
+                break
+        imperative_units = sentences + [
+            part.strip()
+            for part in re.split(r"\s[·/]\s", unit)
+            if part.strip() and part.strip() not in sentences
+        ]
+        imperatives = [
+            s
+            for s in imperative_units
+            if _REGISTER_IMPERATIVE_HEAD.match(s) and _register_words(s) <= 12
+        ]
+        if len(sentences) >= 2 and all(_register_words(s) <= 6 for s in sentences):
+            hits.append((6, " / ".join(sentences)))
+        elif len(sentences) == 1 and _register_words(unit) <= 7 and unit.endswith("."):
+            hits.append((6, unit))
+        elif len(imperatives) >= 2:
+            hits.append((6, " / ".join(imperatives)))
+        elif len(series_parts) >= 2 and any(
+            _REGISTER_IMPERATIVE_HEAD.match(part) for part in series_parts
+        ):
+            hits.append((6, " / ".join(series_parts[:3])))
+        elif (
+            len(sentences) >= 2
+            and _register_words(sentences[0]) <= 6
+            and re.match(r"\A\s*(?:what|which|how|why|when|where)\b", sentences[0], re.IGNORECASE)
+        ):
+            hits.append((6, sentences[0]))
+
+        names = dict(REGISTER_CARRIAGE_DEVICES)
+        for device, evidence in hits:
+            findings.append(
+                LintFinding(
+                    file=file_label,
+                    line=lineno,
+                    level="warning",
+                    rule=REGISTER_CARRIAGE_RULE,
+                    message=(
+                        f"Device {device} ({names[device]}): {evidence!r}. Rewrite as a plain "
+                        f"statement that carries the same content."
+                        f"{hint_text}"
+                    ),
+                )
+            )
+
+    return findings
+
+
 def run_vale(path: Path, config: Path | None = None) -> list[LintFinding]:
     """Run Vale and parse JSON output into LintFindings."""
     import json
@@ -411,6 +696,7 @@ def lint_file(path: Path, config: Path | None = None) -> list[LintFinding]:
     findings.extend(check_public_claim_overreach(path))
     text = path.read_text(encoding="utf-8")
     findings.extend(check_formal_register_text(text, file_label=str(path)))
+    findings.extend(check_register_carriage_text(text, file_label=str(path)))
     findings.extend(check_non_anthropomorphic_register_text(text, file_label=str(path)))
     findings.extend(run_vale(path, config=config))
     return findings
@@ -422,5 +708,6 @@ def lint_text(text: str, *, file_label: str = "<artifact>") -> list[LintFinding]
     findings.extend(check_heading_hierarchy_text(text, file_label=file_label))
     findings.extend(check_public_claim_overreach_text(text, file_label=file_label))
     findings.extend(check_formal_register_text(text, file_label=file_label))
+    findings.extend(check_register_carriage_text(text, file_label=file_label))
     findings.extend(check_non_anthropomorphic_register_text(text, file_label=file_label))
     return findings
