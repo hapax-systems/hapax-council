@@ -53,6 +53,7 @@ def test_team_load_never_softened():
 def test_remote_target_fail_open(monkeypatch, tmp_path):
     import shared.sdlc_pressure_gate as g
 
+    monkeypatch.setattr(g, "local_hostname", lambda: "pressure-test-local")
     monkeypatch.setattr(g, "read_remote_pressure", lambda host, timeout_s=4.0: None)
     d = admission_state(target_host="hapax-appendix", state_path=tmp_path / "s.json")
     assert d.state == "open"
@@ -63,6 +64,7 @@ def test_remote_target_uses_remote_pressure(monkeypatch, tmp_path):
     import shared.sdlc_pressure_gate as g
     from shared.sdlc_pressure_gate import PsiReading
 
+    monkeypatch.setattr(g, "local_hostname", lambda: "pressure-test-local")
     monkeypatch.setattr(
         g, "read_remote_pressure", lambda host, timeout_s=4.0: (PsiReading(2.0, 2.0), 0.1)
     )

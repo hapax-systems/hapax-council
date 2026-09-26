@@ -109,6 +109,29 @@ If default mode holds on install corruption or stale claim state, repair that
 condition and rerun `cc-claim`. Do not switch to the fallback for routine
 stale-claim cleanup.
 
+## Governed Rebinding Is Not Yet Available
+
+The prospective publication basis can represent `rebind`, but this does not
+authorize transfer. An internal rebinding intent currently refuses with
+`claim_rebind_attempt_domain_unqualified` before publication effects. There is
+no new supported `cc-claim --rebind` command or launcher resume path.
+
+The existing SDLC slice is a CPU fence. A waited launcher, a successful scope
+creation, `HAPAX_SDLC_SLICE_ATTACHED=1`, or an empty cgroup does not prove that
+all descendants and owned restart authority have ended. Explicit attempt-domain
+requests to that provider refuse before its ordinary availability fallbacks;
+normal CPU fencing remains available. Unknown and remote observations cannot
+authorize a transfer.
+
+Keep the original claim and its predecessor evidence. The missing producer must
+bind the actual admitted claim, task, role, session, epoch, dispatch identity,
+host, boot and process birth to an execution domain with qualified descendant
+and restart-authority termination. Its evidence must then be revalidated inside
+the claim transaction. `--rehydrate-activation-cache` only repairs absent
+projections of an already-applied claim; it cannot change the owner. Release
+remains a separate authorized lifecycle operation. Do not copy binding sidecars
+or infer transfer authority from a missing pane or PID file.
+
 ## Emergency Fallback
 
 ```bash

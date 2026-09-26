@@ -60,6 +60,10 @@ from shared.sdlc_lifecycle import (
     TASK_RESUMABLE_STATUSES,
     TASK_TERMINAL_STATUSES,
 )
+from shared.sdlc_pressure_gate import (
+    SdlcAttemptDomainError,
+    require_sdlc_attempt_domain_support,
+)
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
     ClaimLeaseSnapshot,
@@ -1962,6 +1966,14 @@ def _publication_paths(intent: ClaimPublicationIntent) -> tuple[Path, ...]:
 
 
 def _validate_intent(intent: ClaimPublicationIntent) -> None:
+    if intent.claim_mode == "rebind":
+        # Admission vocabulary is not a terminal-attempt witness. The current
+        # execution-domain provider has no qualified success path; preserve a
+        # typed hold before journals, note projections or sidecars can change.
+        try:
+            require_sdlc_attempt_domain_support()
+        except SdlcAttemptDomainError as exc:
+            raise ClaimPublicationError(exc.reason_code, exc.repair_action, intent.task_id) from exc
     try:
         checked_binding = ClaimDispatchBinding.create(
             task_id=intent.binding.task_id,

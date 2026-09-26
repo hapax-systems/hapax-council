@@ -1504,7 +1504,7 @@ class ProspectiveClaimPublicationBasis(_FrozenModel):
     dispatch_binding_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     dispatch_binding_receipt_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     coord_dispatch_idempotency_key: str
-    claim_mode: Literal["claim", "resume"]
+    claim_mode: Literal["claim", "resume", "rebind"]
     from_status: str
     to_status: str
     task_note_before_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -1561,7 +1561,7 @@ def build_prospective_claim_publication_basis(
     dispatch_binding_hash: str,
     dispatch_binding_receipt_hash: str,
     coord_dispatch_idempotency_key: str,
-    claim_mode: Literal["claim", "resume"],
+    claim_mode: Literal["claim", "resume", "rebind"],
     from_status: str,
     to_status: str,
     task_note_before_sha256: str,
