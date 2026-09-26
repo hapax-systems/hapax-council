@@ -86,7 +86,6 @@ REQUIRED: dict[str, str] = {
     "LANGFUSE_SECRET_KEY": "langfuse-secret-key",
     "HF_TOKEN": "api-huggingface",
     "MISTRAL_API_KEY": "api-mistral",
-    "OPENAI_API_KEY": "api-openai",
 }
 OPTIONAL: dict[str, str] = {
     "SOUNDCLOUD_CLIENT_ID": "soundcloud-client-id",
