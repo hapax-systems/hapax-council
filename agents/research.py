@@ -176,7 +176,8 @@ async def search_web(
             )
 
             domain_filter = list(domains)[:20] if domains else None
-            text = search_snippets(
+            text = await asyncio.to_thread(
+                search_snippets,
                 query,
                 lane="scout_horizon",
                 max_results=5,
@@ -231,7 +232,8 @@ async def deep_research(
             )
 
             domain_filter = list(domains)[:20] if domains else None
-            text = search_snippets(
+            text = await asyncio.to_thread(
+                search_snippets,
                 question,
                 lane="research_reports",
                 max_results=5,

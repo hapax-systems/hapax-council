@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
+from collections.abc import Awaitable, Callable
 from unittest.mock import patch
 
 import pytest
@@ -39,6 +43,52 @@ async def test_search_web_error_names_next_action() -> None:
         result = await search_web(None, "stigmergy")
     assert "Web search unavailable" in result
     assert "next_action=" in result
+
+
+async def _loop_runs_during_search(
+    call: Callable[..., Awaitable[str]],
+) -> None:
+    """A blocking search must not stall the event loop."""
+
+    started = threading.Event()
+    release = threading.Event()
+    loop_ran = asyncio.Event()
+    observed: dict[str, bool] = {}
+
+    def _block(*_args: object, **_kwargs: object) -> str:
+        started.set()
+        release.wait(timeout=3)
+        return "a hit"
+
+    async def _mark() -> None:
+        await asyncio.sleep(0)
+        loop_ran.set()
+
+    def _watch() -> None:
+        assert started.wait(timeout=2)
+        time.sleep(0.05)
+        observed["while_blocked"] = loop_ran.is_set()
+        release.set()
+
+    watcher = threading.Thread(target=_watch)
+    with patch("shared.tavily_client.search_snippets", _block):
+        search_task = asyncio.create_task(call(None, "stigmergy"))
+        mark_task = asyncio.create_task(_mark())
+        watcher.start()
+        await search_task
+    watcher.join(timeout=3)
+    await mark_task
+    assert observed.get("while_blocked") is True
+
+
+@pytest.mark.asyncio
+async def test_search_web_does_not_block_the_event_loop() -> None:
+    await _loop_runs_during_search(search_web)
+
+
+@pytest.mark.asyncio
+async def test_deep_research_does_not_block_the_event_loop() -> None:
+    await _loop_runs_during_search(deep_research)
 
 
 @pytest.mark.asyncio
