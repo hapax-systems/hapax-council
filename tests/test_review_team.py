@@ -1478,6 +1478,23 @@ class TestDiffCoverageQuorum:
     def _frontmatter(self, task_id: str = "task-x") -> dict:
         return {"task_id": task_id}
 
+    def _precoverage_dossier(self, rt) -> dict:
+        """The shape a pre-coverage dispatcher wrote: no coverage stamps, and the
+        verdict/accept_count the old rule recorded (it counted every accept)."""
+
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", diff_full_bytes=None),
+                _review("gemini-1", "gemini", "accept", diff_full_bytes=None),
+                _review("claude-1", "claude", "accept", diff_full_bytes=None),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        dossier["accept_count"] = 3
+        dossier["escalations"] = []
+        return dossier
+
     def test_truncated_diff_accept_does_not_reach_quorum(self) -> None:
         rt = _load_review_team_module()
         dossier = _synth(
@@ -1625,6 +1642,79 @@ class TestDiffCoverageQuorum:
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert "review_seat_partial_coverage:codex-1" in blockers
         assert not [b for b in blockers if "split_or_full_fetch" in b]
+
+    def test_precoverage_dossier_on_small_diff_keeps_certification(self, tmp_path: Path) -> None:
+        # Seat ruling 2026-09-26: an unstamped dossier derives coverage from the
+        # dispatcher-measured full diff size at the dossier head; at or under the
+        # dispatcher's truncation threshold the seats saw the whole diff.
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._precoverage_dossier(rt))
+        calls: list[tuple[int, str]] = []
+
+        def measurer(pr_number: int, head_sha: str) -> int:
+            calls.append((pr_number, head_sha))
+            return 48_000
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40, diff_size_measurer=measurer
+        )
+        assert blockers == ()
+        assert calls and calls[0][1] == "a" * 40
+
+    def test_precoverage_dossier_on_oversize_diff_loses_certification(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._precoverage_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            diff_size_measurer=lambda _pr, _sha: 235_477,
+        )
+        assert "review_seat_partial_coverage:codex-1" in blockers
+        assert "review_seat_partial_coverage:gemini-1" in blockers
+        assert "review_seat_partial_coverage:claude-1" in blockers
+        assert "review_diff_truncated_split_or_full_fetch:80000/235477" in blockers
+        assert "review_dossier_quorum_not_met:0/2" in blockers
+        # The recorded verdict was honestly quorum-accept under the old rule; the gate
+        # blocks on the recomputed quorum, not on a verdict-field mismatch.
+        assert "review_team_verdict_not_quorum_accept:quorum-accept" not in blockers
+
+    def test_precoverage_dossier_unmeasurable_fails_closed(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._precoverage_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            diff_size_measurer=lambda _pr, _sha: None,
+        )
+        assert "review_seat_partial_coverage:codex-1" in blockers
+        assert "review_seat_partial_coverage:gemini-1" in blockers
+        assert "review_seat_partial_coverage:claude-1" in blockers
+        assert not [b for b in blockers if "split_or_full_fetch" in b]
+
+    def test_stamped_partial_dossier_does_not_call_the_measurer(self, tmp_path: Path) -> None:
+        # The stamp is authoritative: a recorded partial stays partial, and no
+        # measurement is even attempted when every accept carries a stamp.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept", diff_delivered_bytes=220),
+                _review("claude-1", "claude", "accept", diff_delivered_bytes=220),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        calls: list[tuple[int, str]] = []
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            diff_size_measurer=lambda pr, sha: calls.append((pr, sha)) or 48_000,
+        )
+        assert "review_seat_partial_coverage:gemini-1" in blockers
+        assert calls == []
 
 
 class TestVerdictBlockers:

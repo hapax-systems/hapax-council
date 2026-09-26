@@ -29,7 +29,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -145,6 +145,14 @@ TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 DIFF_FULL_BYTES_FIELD = "diff_full_bytes"
 DIFF_DELIVERED_BYTES_FIELD = "diff_delivered_bytes"
 DIFF_FULL_FETCH_WITNESSED_FIELD = "diff_full_fetch_witnessed"
+
+#: The dispatcher's diff-truncation threshold (``MAX_DIFF_CHARS`` in
+#: scripts/cc-pr-review-dispatch.py), in chars — the measure ``truncate_diff``
+#: applies. review_team cannot import the dispatcher (it is the lower-level
+#: module), so the value is mirrored here and pinned equal by test. The gate's
+#: derivation boundary ("the seats saw the whole diff") IS the dispatcher's
+#: truncation point; the two must never drift apart.
+DIFF_FULL_COVERAGE_MAX_CHARS = 80_000
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
 #: canonical fixture; the rest cover the codex/gemini/glm families' phrasings).
@@ -1673,6 +1681,52 @@ def _split_partial_coverage_accepts(
     return counting, partial
 
 
+def _coverage_unstamped(review: Mapping[str, Any]) -> bool:
+    """No coverage stamp at all (a pre-coverage dossier): every field absent.
+
+    A record with SOME fields present but missing/invalid others is malformed,
+    not unstamped — derivation never rescues a partial stamp.
+    """
+
+    return (
+        DIFF_FULL_BYTES_FIELD not in review
+        and DIFF_DELIVERED_BYTES_FIELD not in review
+        and DIFF_FULL_FETCH_WITNESSED_FIELD not in review
+    )
+
+
+def _with_derived_diff_coverage(
+    reviews: Sequence[Mapping[str, Any]],
+    *,
+    full_diff_chars: int | None,
+) -> list[Mapping[str, Any]]:
+    """Inject derived coverage into UNSTAMPED review records (pre-coverage dossiers).
+
+    ``full_diff_chars`` is the dispatcher-measured full diff size at the dossier
+    head, in chars — the measure ``truncate_diff`` applies
+    ``DIFF_FULL_COVERAGE_MAX_CHARS`` to — or None when unmeasurable. At or under
+    the threshold the seats saw the whole diff; over it the seat's packet was
+    truncated at the threshold (delivered is recorded as the cap, an upper
+    bound). Unmeasurable returns the records unchanged, so unstamped accepts
+    still fail closed downstream. Stamped records are authoritative and are
+    never touched.
+    """
+
+    if full_diff_chars is None:
+        return list(reviews)
+    out: list[Mapping[str, Any]] = []
+    for review in reviews:
+        if not _coverage_unstamped(review):
+            out.append(review)
+            continue
+        record = dict(review)
+        record[DIFF_FULL_BYTES_FIELD] = full_diff_chars
+        record[DIFF_DELIVERED_BYTES_FIELD] = min(full_diff_chars, DIFF_FULL_COVERAGE_MAX_CHARS)
+        record[DIFF_FULL_FETCH_WITNESSED_FIELD] = False
+        out.append(record)
+    return out
+
+
 def _required_team_size(sizing: Mapping[str, Any]) -> int:
     return int(sizing.get("team_size") or sizing.get("team_size_min") or 1)
 
@@ -2005,9 +2059,15 @@ def _dossier_validity_blockers(
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
     floor_release_out: dict[str, Any] | None = None,
+    diff_size_measurer: Callable[[int, str], int | None] | None = None,
 ) -> tuple[str, ...]:
     """Blockers for a recorded dossier; ``floor_release_out`` receives the T2 rule's evidence
-    when the rule stood in for the family floor (the dossier may still carry other blockers)."""
+    when the rule stood in for the family floor (the dossier may still carry other blockers).
+
+    ``diff_size_measurer(pr_number, dossier_head_sha)`` returns the dispatcher-measured
+    full diff size in chars at the dossier head, or None when unmeasurable. It is
+    consulted only when an accept-verdict review carries no coverage stamp (a
+    pre-coverage dossier); without it, unstamped accepts fail closed."""
 
     blockers: list[str] = []
     scoped_files = (
@@ -2268,6 +2328,28 @@ def _dossier_validity_blockers(
             "review_dossier_unknown_reviewer_verdict:" + ",".join(sorted(unknown_verdicts))
         )
 
+    # Pre-coverage dossiers carry no per-seat coverage stamp (seat ruling
+    # 2026-09-26): derive coverage from the dispatcher-measured full diff size
+    # at the dossier head rather than failing closed wholesale. At or under the
+    # dispatcher's truncation threshold the seats saw the whole diff; only an
+    # unmeasurable dossier fails closed. Stamped records are authoritative and
+    # never derived over. The measurer runs at most once, and only when an
+    # accept-verdict review is unstamped.
+    if diff_size_measurer is not None and any(
+        _coverage_unstamped(r) and str(r.get("verdict") or "").lower() in ACCEPT_VERDICTS
+        for r in reviews
+    ):
+        measure_pr = pr_number
+        if measure_pr is None:
+            try:
+                measure_pr = int(dossier.get("pr"))
+            except (TypeError, ValueError):
+                measure_pr = None
+        derived_chars = (
+            diff_size_measurer(measure_pr, dossier_sha) if measure_pr is not None else None
+        )
+        reviews = _with_derived_diff_coverage(reviews, full_diff_chars=derived_chars)
+
     required_size = _required_team_size(sizing)
     if len(reviews) < required_size:
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
@@ -2409,6 +2491,7 @@ def review_dossier_validity_blockers(
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
     floor_release_out: dict[str, Any] | None = None,
+    diff_size_measurer: Callable[[int, str], int | None] | None = None,
 ) -> tuple[str, ...]:
     """Validate a recorded review dossier without honoring any gate killswitch.
 
@@ -2448,6 +2531,7 @@ def review_dossier_validity_blockers(
         admission_time=admission_time,
         route_blocked_families=route_blocked_families,
         floor_release_out=floor_release_out,
+        diff_size_measurer=diff_size_measurer,
     )
 
 
@@ -2463,6 +2547,7 @@ def review_team_verdict_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    diff_size_measurer: Callable[[int, str], int | None] | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
 
@@ -2489,4 +2574,5 @@ def review_team_verdict_blockers(
         outage_state_path=outage_state_path,
         admission_time=admission_time,
         route_blocked_families=route_blocked_families,
+        diff_size_measurer=diff_size_measurer,
     )

@@ -741,6 +741,12 @@ class TestApply:
             assert review["diff_full_fetch_witnessed"] is False
         assert dossier["review_team_verdict"] == "quorum-accept"
 
+    def test_coverage_derivation_threshold_matches_the_dispatcher_cap(self) -> None:
+        # review_team cannot import the dispatcher (it is the lower-level module), so
+        # the derivation threshold is mirrored there and pinned equal here: the gate's
+        # "the seats saw the whole diff" boundary IS the dispatcher's truncation point.
+        assert dispatch.review_team.DIFF_FULL_COVERAGE_MAX_CHARS == dispatch.MAX_DIFF_CHARS
+
     def test_oversize_diff_marks_seats_partial_and_denies_quorum(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "".join(
