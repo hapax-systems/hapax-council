@@ -14,6 +14,10 @@ Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-cl
 
 [Service]
 Type=oneshot
+# The governor's refuse exits are NORMAL outcomes, not unit failures: 3 = over the pace line,
+# 4 = no fresh ledgered reading. Without this the timer would show the unit as failed every
+# time the pool is legitimately over pace.
+SuccessExitStatus=3 4
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python \
   %h/.cache/hapax/source-activation/worktree/scripts/hapax-claude-pool-pace record --json
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
