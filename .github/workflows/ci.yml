@@ -653,8 +653,9 @@ jobs:
           SUITES: ${{ steps.select.outputs.suites }}
         run: |
           set -euo pipefail
+          read -r -a suites <<< "$SUITES"
           # Exit 4 (file absent) and 5 (no tests collected) fail the job too.
-          uv run --no-sync pytest --confcutdir=tests $SUITES -q --tb=short
+          uv run --no-sync pytest --confcutdir=tests "${suites[@]}" -q --tb=short
 
 
   typecheck:

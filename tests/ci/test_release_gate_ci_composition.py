@@ -418,7 +418,8 @@ def test_consent_coupled_suites_job_executes_the_selected_suites_fail_closed() -
     runs = [step for step in job["steps"] if re.search(r"\bpytest\b", str(step.get("run", "")))]
     assert len(runs) == 1, "consent-coupled-suites must execute the selected suites exactly once"
     execute = runs[0]
-    assert re.search(r"uv run\b[^\n]*\bpytest\b[^\n]*\$SUITES", str(execute["run"]))
+    assert 'read -r -a suites <<< "$SUITES"' in str(execute["run"])
+    assert re.search(r'uv run\b[^\n]*\bpytest\b[^\n]*"\$\{suites\[@\]\}"', str(execute["run"]))
     assert "steps.select.outputs.suites" in str(execute["env"]["SUITES"])
     # Runs whenever a suite was selected; never a docs-only or other bypass.
     assert "steps.select.outputs.suites != ''" in str(execute["if"])
