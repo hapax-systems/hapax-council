@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -973,11 +973,12 @@ LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
 #: without that suite stays held (fail-closed, exactly as before). The named
 #: suites themselves are admitted as exact files, never their whole tree (the
 #: compositor tree holds ignored/deselected files the shard never runs).
+#: A suite counts as carried only when the caller also says which changed
+#: files were DELETED (``deleted_files``) and the suite is not among them; an
+#: unknown change status (``None``) admits no coupled path at all.
 #: Interim until the egress-boundary-pin job executes both suites per PR
 #: (fail-closed on an absent file); then the pairs move into the lane as exact
-#: entries. Limit: ``changed_files`` carries paths without status, so a PR that
-#: deletes a suite while touching its source is admitted here; the per-PR pin
-#: closes that case.
+#: entries.
 LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS: tuple[tuple[str, str], ...] = (
     (
         "agents/hapax_daimonion/_perception_state_writer.py",
@@ -1000,11 +1001,18 @@ LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS: tuple[tuple[str, str], ...] = (
 _LIVE_EGRESS_FLAG = "audio_or_live_egress_sensitive"
 
 
-def _path_admitted_by_consent_coupling(path: str, changed: frozenset[str]) -> bool:
-    """Exact-match admission for a named consent suite, or a coupled source with its suite."""
+def _path_admitted_by_consent_coupling(
+    path: str, changed: frozenset[str], deleted: frozenset[str] | None
+) -> bool:
+    """Exact-match admission for a named consent suite, or a coupled source with its suite.
+
+    A deleted suite is never carried, and an unknown change status admits nothing.
+    """
+    if deleted is None:
+        return False
     token = path.strip()
     return any(
-        token == suite or (token == source and suite in changed)
+        suite not in deleted and (token == suite or (token == source and suite in changed))
         for source, suite in LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS
     )
 
@@ -1023,12 +1031,19 @@ def _path_in_consent_containment_lane(path: str) -> bool:
     )
 
 
-def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
+def _egress_uncovered_paths(
+    changed_files: Sequence[str], deleted_files: Collection[str] | None = None
+) -> list[str]:
     def _is_doc(path: str) -> bool:
         lowered = path.strip().lower()
         return lowered.endswith((".md", ".rst", ".txt")) or lowered.startswith("docs/")
 
     changed = frozenset(path.strip() for path in changed_files if path.strip())
+    deleted = (
+        None
+        if deleted_files is None
+        else frozenset(path.strip() for path in deleted_files if path.strip())
+    )
     return sorted(
         {
             path
@@ -1036,7 +1051,7 @@ def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
             if not _is_doc(path)
             and path not in LIVE_EGRESS_AUTO_ARM_COVERAGE
             and not _path_in_consent_containment_lane(path)
-            and not _path_admitted_by_consent_coupling(path, changed)
+            and not _path_admitted_by_consent_coupling(path, changed, deleted)
         }
     )
 
@@ -1047,6 +1062,7 @@ def assess_release_auto_arm_estate(
     now: float | datetime | None = None,
     verified_checks: set[str] | None = None,
     changed_files: Sequence[str] | None = None,
+    deleted_files: Collection[str] | None = None,
 ):
     """assess_release_auto_arm with the estate's post-canon-freeze extensions.
 
@@ -1084,7 +1100,7 @@ def assess_release_auto_arm_estate(
             # hold closed rather than arm on unbounded behavioral evidence.
             blockers.append("egress_evidence_coverage_unevaluable:no_changed_files")
         else:
-            uncovered = _egress_uncovered_paths(changed_files)
+            uncovered = _egress_uncovered_paths(changed_files, deleted_files)
             if uncovered:
                 blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))
     return _dataclass_replace(base, blockers=tuple(blockers), eligible=not blockers)

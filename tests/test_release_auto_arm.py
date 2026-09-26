@@ -395,11 +395,14 @@ _COMPOSITOR_SOURCES = (
 )
 
 
-def _egress_uncovered(changed_files: list[str]) -> set[str]:
+def _egress_uncovered(
+    changed_files: list[str], deleted_files: tuple[str, ...] | None = ()
+) -> set[str]:
     assessment = assess_release_auto_arm_estate(
         _egress_frontmatter(),
         verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
         changed_files=changed_files,
+        deleted_files=deleted_files,
     )
     prefix = "egress_evidence_uncovered_paths:"
     return {
@@ -484,6 +487,36 @@ def test_consent_coupled_admission_admits_only_the_named_suites() -> None:
         "agents/studio_compositor/compositor.py",
         f"{_WRITER}.bak",
     }
+
+
+def test_consent_coupled_source_with_deleted_suite_fails_closed() -> None:
+    # Unsafe case: the suite is in the changed files because the PR DELETES it.
+    # A deleted suite is not carried: the source stays held, and so does the
+    # deletion itself (removing a named consent suite is never admitted).
+    assert _egress_uncovered([_WRITER, _WRITER_SUITE], deleted_files=(_WRITER_SUITE,)) == {_WRITER}
+    assert _egress_uncovered(
+        [*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE], deleted_files=(_COMPOSITOR_SUITE,)
+    ) == {*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE}
+
+
+def test_consent_coupled_unknown_change_status_fails_closed() -> None:
+    # A caller that cannot say which files were deleted (deleted_files=None)
+    # gets no coupled admission at all; lane members are unaffected.
+    assert _egress_uncovered(
+        [_WRITER, *_COMPOSITOR_SOURCES, _WRITER_SUITE, _COMPOSITOR_SUITE], deleted_files=None
+    ) == {_WRITER, *_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE}
+    assert not _egress_uncovered(["tests/test_consent_gate.py"], deleted_files=None)
+
+
+def test_consent_coupled_admission_ignores_unrelated_deletions() -> None:
+    # Deleting an unrelated file does not revoke a carried suite.
+    assert (
+        _egress_uncovered(
+            [_WRITER, _WRITER_SUITE, "tests/shared/test_old.py"],
+            deleted_files=("tests/shared/test_old.py",),
+        )
+        == set()
+    )
 
 
 def test_consent_coupled_production_sources_exist() -> None:
