@@ -59,6 +59,7 @@ def _supervisor_fixture(tmp_path: Path, *, intake_exit: int) -> tuple[Path, dict
     env.update(
         {
             "HOME": str(home),
+            "HAPAX_LOCAL_DEV_MAINTENANCE_MODE": "local",
             "PATH": f"{fake_bin}:{env['PATH']}",
             "HAPAX_SUPERVISOR_STATE_DIR": str(tmp_path / "state"),
             "HAPAX_SUPERVISOR_RUNTIME_DIR": str(tmp_path / "runtime"),

@@ -176,12 +176,14 @@ RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-r
 # recent claude.
 LAST_KILL_REASON=""
 LAST_CHILD_EXIT_CODE=""
+LAST_CHILD_LOG_OFFSET=0
 
 last_log_line() {
   # Last non-empty line of claude's combined log (stdout+stderr both append to
   # LOG_FILE), sanitized to a single-line YAML-plain-scalar fragment.
   [[ -r "$LOG_FILE" ]] || return 0
-  awk 'NF { line = $0 } END { if (line) print line }' "$LOG_FILE" 2>/dev/null \
+  tail -c "+$(( LAST_CHILD_LOG_OFFSET + 1 ))" "$LOG_FILE" 2>/dev/null \
+    | awk 'NF { line = $0 } END { if (line) print line }' \
     | sed -E 's/:[[:space:]]+/:/g; s/[[:space:]]+#/ /g' \
     | cut -c1-120
 }
@@ -202,7 +204,25 @@ compute_retire_reason() {
     printf 'disabled_by_latch;launcher_rc=%s\n' "$launcher_rc"
     return 0
   fi
-  if [[ "$LAST_CHILD_EXIT_CODE" == "0" ]] && grep -q '"type":"result"' "$LOG_FILE" 2>/dev/null; then
+  if [[ "$LAST_CHILD_EXIT_CODE" == "0" ]] && python3 - "$LOG_FILE" "$LAST_CHILD_LOG_OFFSET" <<'PYRESULT'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "rb") as output:
+        output.seek(int(sys.argv[2]))
+        for line in output:
+            try:
+                event = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(event, dict) and event.get("type") == "result":
+                sys.exit(0)
+except (OSError, ValueError):
+    pass
+sys.exit(1)
+PYRESULT
+  then
     printf 'clean exit (headless)\n'
     return 0
   fi
@@ -715,40 +735,142 @@ try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
     pass
-# Exec-host identity materialization (taxonomy-a3-session-identity): the
-# session-keyed claim + role marker must exist on the host where the lane
-# RUNS, or the gate falls back to a stale legacy file and cc-claim re-binding
-# walls the lane (the recurring appendix claim gap). Best-effort: a failure is
-# recorded in the proof, never allowed to kill the dispatch.
-sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); keyable=False; materialized=False
+# Materialization participates in the execution hosts claim publication domain.
+# This lock excludes participating local publishers only, never another host.
+# Missing contracts or unresolved writes hold before native exec; they are not
+# permission to fall back to a legacy role claim or to transfer ownership.
+from pathlib import Path
+import re
+import stat
+
+def read_sidecar(path):
+    # Opening with NOFOLLOW closes the inspection/open symlink gap. NONBLOCK
+    # lets fstat reject a FIFO without waiting for a writer. Never read devices,
+    # directories or multiply linked evidence through this binding.
+    try:
+        fd=os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError("sidecar unavailable") from exc
+    try:
+        metadata=os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink!=1:
+            raise ValueError("sidecar is not a regular single-link file")
+        # Newline normalization would accept nonmatching CRLF bytes as a retry.
+        with os.fdopen(fd,"r",encoding="utf-8",newline="",closefd=False) as source:
+            data=source.read(4097)
+        if len(data)>4096:
+            raise ValueError("sidecar oversized")
+        return data
+    finally:
+        os.close(fd)
+
+def publish_sidecar(path, line):
+    # Exclusive creation cannot follow even a dangling link. A racing existing
+    # entry must be safely inspected and match exactly; never truncate it.
+    try:
+        with open(path,"x",encoding="utf-8") as target:
+            target.write(line)
+    except FileExistsError:
+        if read_sidecar(path)!=line:
+            raise ValueError("sidecar publication binding unresolved")
+
+sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK","")
+materialized=False; materialization_reason="remote_claim_contract_unavailable"; claim_epoch=None
 try:
     sys.path.insert(0, p["workdir"])
     from shared.session_identity import is_claim_keyable_session_id
-    keyable=is_claim_keyable_session_id(sid)
-except Exception:
-    keyable=bool(sid) and "/" not in sid and not sid.isdigit() and not sid.rsplit("-",1)[-1].isdigit()
-try:
-    if keyable and role:
-        cache=os.path.join(os.path.expanduser("~"),".cache","hapax")
-        os.makedirs(cache,exist_ok=True)
-        open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
-        if task:
-            import time as _time
-            epoch_line=str(int(_time.time()))+" "+task+"\n"
-            # Task-bound epoch sidecars are written BEFORE the caches they
-            # vouch for: task_is_terminal trusts a sidecar only when it names
-            # this task and has NO mtime fallback, so a matching cache must
-            # never be visible without its sidecar.
-            open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
-            open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
-            open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
-            open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
-            materialized=True
+    from shared.sdlc_claim import claim_role_exclusion
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
 except Exception:
     pass
+else:
+    if not (sid == sid.strip() and is_claim_keyable_session_id(sid) and
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", role) and
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", task)):
+        materialization_reason="remote_claim_identity_invalid"
+    else:
+        materialization_reason="remote_claim_materialization_failed"
+        try:
+            roots=default_claim_publication_roots(home=Path.home())
+            # Match cc-claim on THIS execution host. Acquire role before any
+            # future task/note lock; retain it through every sidecar write.
+            with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)):
+                cache=roots.claim_cache_dir
+                # This is materialization of this binding, not a rebind. Even
+                # under exclusion, a conflicting/empty cache requires repair.
+                cache_path=Path(cache)
+                keys=(role,role+"-"+sid)
+                try:
+                    claims=[cache_path / ("cc-active-task-"+role)]
+                    claims+=list(cache_path.glob("cc-active-task-"+role+"-*"))
+                    epochs=[cache_path / ("cc-claim-epoch-"+role)]
+                    epochs+=list(cache_path.glob("cc-claim-epoch-"+role+"-*"))
+                    observed_sidecars=set()
+                    for candidate in claims:
+                        content=read_sidecar(candidate)
+                        if content is None:
+                            continue
+                        if candidate.name not in ("cc-active-task-"+key for key in keys) or content != task+"\n":
+                            raise ValueError("claim binding unresolved")
+                        observed_sidecars.add(candidate.name)
+                    epoch_values=set()
+                    for candidate in epochs:
+                        content=read_sidecar(candidate)
+                        if content is None:
+                            continue
+                        fields=content.split()
+                        if (candidate.name not in ("cc-claim-epoch-"+key for key in keys) or
+                                len(fields)!=2 or not fields[0].isdigit() or int(fields[0])<=0 or
+                                content!=str(int(fields[0]))+" "+task+"\n"):
+                            raise ValueError("epoch binding unresolved")
+                        epoch_values.add(int(fields[0]))
+                        observed_sidecars.add(candidate.name)
+                    if len(epoch_values)>1:
+                        raise ValueError("epoch binding unresolved")
+                    # A matching role claim can belong to a legacy live writer.
+                    # Only an empty claim namespace or a complete exact binding
+                    # is materializable; never fill gaps in ownership evidence.
+                    expected_sidecars={prefix+key for prefix in ("cc-active-task-","cc-claim-epoch-") for key in keys}
+                    if observed_sidecars and observed_sidecars!=expected_sidecars:
+                        raise ValueError("claim binding incomplete")
+                except ValueError:
+                    materialization_reason="remote_claim_binding_unresolved"
+                    raise
+                os.makedirs(cache,exist_ok=True)
+                # Different roles hold different locks. Publish this session
+                # identity create-once so their concurrent arrivals cannot
+                # overwrite each other. Preserve matching and partial markers.
+                marker=cache_path / ("session-role-"+sid)
+                try:
+                    publish_sidecar(marker,role+"\n")
+                except ValueError:
+                    materialization_reason="remote_session_role_unresolved"
+                    raise
+                import time as _time
+                claim_epoch=next(iter(epoch_values)) if epoch_values else int(_time.time())
+                epoch_line=str(claim_epoch)+" "+task+"\n"
+                # Epochs precede the caches they vouch for, under the same lock.
+                try:
+                    for key in keys:
+                        publish_sidecar(cache_path / ("cc-claim-epoch-"+key),epoch_line)
+                    for key in keys:
+                        publish_sidecar(cache_path / ("cc-active-task-"+key),task+"\n")
+                except ValueError:
+                    materialization_reason="remote_claim_binding_unresolved"
+                    raise
+            materialized=True
+            materialization_reason=None
+        except Exception as exc:
+            materialization_reason=getattr(exc,"reason_code",materialization_reason)
+
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
-    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"claude-headless","requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"task_id":task or None,"claim_materialized":materialized}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"claude-headless","requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":p["argv"][0] if p.get("argv") else None,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"task_id":task or None,"claim_materialized":materialized,"claim_epoch":claim_epoch,"claim_materialization_reason":materialization_reason,"dispatch_state":"ready" if materialized else "hold"}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+if not materialized:
+    print("hapax-claude-headless: "+str(materialization_reason)+"; hold remote exec; next action: qualify the execution-host claim contract and inspect partial sidecars before retrying",file=sys.stderr)
+    sys.exit(75)
 argv=p["argv"]; os.execvp(argv[0], argv)'
 
 RESTART_COUNT=0
@@ -805,6 +927,11 @@ while true; do
     exit 77
   fi
 
+  # The combined log is append-only across child attempts. Preserve it while
+  # restricting teardown's result evidence to this particular child.
+  LAST_CHILD_LOG_OFFSET="$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)"
+  LAST_CHILD_EXIT_CODE=""
+  LAST_KILL_REASON=""
   if [[ -n "$DISPATCH_HOST" ]]; then
     # G2 inner exec on the Workshop: cd the lane's appendix-local worktree and
     # run THAT host's PATH `claude`. fd 3 (the podium FIFO) feeds the ssh child's
@@ -826,6 +953,13 @@ while true; do
   fi
   CLAUDE_PID=$!
   echo "$CLAUDE_PID" > "$PID_FILE"
+  # Extend the existing PID binding to the claim's session key. Retain these
+  # boot-local observations after exit so a live pane cannot mask this writer's
+  # death. Never bind a remote writer to the local SSH transport's PID.
+  if [[ -z "$DISPATCH_HOST" ]]; then
+    printf '%s\n' "$$" > "$PIPE_DIR/$ROLE-$SESSION_UUID.launcher.pid"
+    printf '%s\n' "$CLAUDE_PID" > "$PIPE_DIR/$ROLE-$SESSION_UUID.pid"
+  fi
   echo "hapax-claude-headless: pid=$CLAUDE_PID (restart #$RESTART_COUNT)"
 
   # Out-of-band teardown watchdog. claude reads its stdin from the FIFO whose

@@ -37,6 +37,7 @@ def _base_env(tmp_path: Path, *, notify_record: Path, codex_rc: int) -> dict[str
     )
     env = dict(os.environ)
     env.update(
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="local",
         HAPAX_SUPERVISOR_STATE_DIR=str(state),
         HAPAX_SUPERVISOR_WORKTREE_ROOT=str(worktrees),
         HAPAX_SUPERVISOR_VAULT_ROOT=str(tmp_path / "vault"),

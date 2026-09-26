@@ -117,7 +117,9 @@ case "$cmd" in
     row() { case "$fmt" in *'#{session_name}'*) printf '%s\t%s\n' "$1" "$2" ;; *) printf '%s\n' "$2" ;; esac; }
     lane_values() {
       case "$fmt" in
-        *'#{pane_dead}'*) printf '%s\n' ${FAKE_TMUX_PANE_DEAD-} ;;
+        *'#{pane_dead}'*)
+          if [ -f "$TMUX_CALL_LOG.revived" ]; then printf '0\n';
+          else printf '%s\n' ${FAKE_TMUX_PANE_DEAD-}; fi ;;
         *'#{pane_id}'*)   printf '%s\n' ${FAKE_TMUX_PANE_IDS-} ;;
         *)                printf 'status= signal=9\n' ;;
       esac
@@ -158,6 +160,9 @@ case "$cmd" in
   capture-pane)
     fail_on capture-pane && exit 1
     printf 'FAKE-SCROLLBACK-LINE\n'
+    if [ "${FAKE_TMUX_REVIVE_DURING_CAPTURE:-0}" = "1" ]; then
+      touch "$TMUX_CALL_LOG.revived"
+    fi
     exit 0
     ;;
   *) exit 0 ;;
@@ -423,6 +428,30 @@ def test_capture_precedes_kill_session(tmp_path: Path) -> None:
     assert kills, f"the dead session was never killed, so the lane cannot relaunch: {calls}"
     assert captures, f"the pane was never captured: {calls}"
     assert max(captures) < min(kills), f"kill-session ran before capture-pane: {calls}"
+
+
+@pytest.mark.parametrize("kind", ["claude", "codex"])
+def test_pane_becoming_live_during_capture_is_preserved(tmp_path: Path, kind: str) -> None:
+    b = _base(
+        tmp_path,
+        FAKE_TMUX_SESSION_EXISTS="1",
+        FAKE_TMUX_PANE_DEAD="1",
+        FAKE_TMUX_REVIVE_DURING_CAPTURE="1",
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta" if kind == "claude" else "",
+        HAPAX_SUPERVISOR_CODEX_LANES="delta" if kind == "codex" else "",
+        FAKE_TMUX_SESSION_NAME=f"hapax-{kind}-delta",
+    )
+    result = _run(b["env"])
+    assert result.returncode == 0, result.stderr
+    calls = _tmux_calls(b["tmux_calls"])
+    assert any(c.startswith("capture-pane") for c in calls), calls
+    assert Path(str(b["tmux_calls"]) + ".revived").is_file()
+    assert not any(c.startswith("kill-session") for c in calls), calls
+    assert not list(b["calls"].iterdir()), "launched over the newly live pane"
+    assert not (Path(b["env"]["HAPAX_SUPERVISOR_STATE_DIR"]) / "delta.last-restart").exists()
+    assert "respawn_hold:pane_changed_during_capture" in result.stdout
+    assert "next: inspect tmux list-panes -a" in result.stdout
+    assert list(b["pane_logs"].glob("*.log")), "capture evidence must survive the hold"
 
 
 def test_guard_never_captures_a_lane_it_found_alive(tmp_path: Path) -> None:
