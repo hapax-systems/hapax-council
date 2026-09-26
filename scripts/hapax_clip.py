@@ -304,7 +304,15 @@ def newline_for(mode: str, route: Route) -> bytes:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="hapax-clip")
+    parser = argparse.ArgumentParser(
+        prog="hapax-clip",
+        description=(
+            "Push a paste-safe payload. Route (a) is KDE Connect share-text. "
+            "Route (b), SSH into a graphical session (wl-copy or xclip), is "
+            "not live-proven: it ships fail-closed and refuses with a next "
+            "action when no compositor socket exists."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--shell", action="store_true", help="paste-safe POSIX line (default)")
     mode.add_argument("--pwsh", action="store_true", help="PowerShell EncodedCommand")

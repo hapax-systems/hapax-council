@@ -132,6 +132,19 @@ def test_push_kde_failure_names_the_next_action() -> None:
         raise AssertionError("share failure returned")
 
 
+def test_help_labels_route_b_not_live_proven(capsys) -> None:
+    clip = load()
+    try:
+        clip.main(["--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("help did not exit")
+    output = capsys.readouterr().out
+    assert "not live-proven" in output
+    assert "Route (b)" in output
+
+
 def test_linux_probe_and_push_failure() -> None:
     clip = load()
 
