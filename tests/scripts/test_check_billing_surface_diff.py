@@ -6,9 +6,11 @@ The scan reads a PR's unified diff and fails on any ADDED line that opens a
 billing surface: a new credential env read, an API-key client route, a bare
 provider SDK constructor or provider API endpoint literal, or a capacity_pool /
 plan_type rebinding to the api_paid_spend (PAYG) class. Removed and context
-lines, doc files, protective env strips, and lines carrying the visible
-``billing-scan:allow`` marker (test fixtures, pattern definitions — each use is
-review-visible) never fail the scan.
+lines, doc files, Python protective env strips (decided per ast node), and lines
+carrying the visible ``billing-scan:allow`` marker on an allowlisted path (test
+fixtures, pattern definitions — each use is review-visible) never fail the scan.
+**Non-Python files are granted no exemption of any kind**, and every exemption
+the scan grants is reported as ``allowed`` with its path, line and kind.
 """
 
 from __future__ import annotations
@@ -21,6 +23,44 @@ from types import ModuleType
 import pytest
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts/check-billing-surface-diff.py"
+
+#: The ONLY names the scanner's text path (non-Python files, unparseable Python) may
+#: call. That path grants no exemptions of any kind, so a helper called there is a new
+#: exemption site by construction: adding one means editing this list in the test — the
+#: point being that it cannot land silently. Owned by the test, not the scanner, so a
+#: change to the scanner cannot widen its own guard.
+TEXT_PATH_ALLOWED_CALLS = frozenset(
+    {
+        "_text_classes",
+        "emit_line",
+        "_pattern_only_classes",
+        "_KEY_BEARING_PROBE",
+        "_marker_is_allowed_on",
+        "search",
+        "append",
+        "Finding",
+        "any",
+        "strip",
+        # Names the text-path loop legitimately reads/uses. None of them can suppress a
+        # finding: `path`/`endswith` are the file-kind test the fail-closed probe needs,
+        # and `findings` is only ever `.append`ed to (a finding, never an exemption).
+        "path",
+        "endswith",
+        "findings",
+    }
+)
+
+#: Every function in the scanner that decides a **boolean from text** — the only shape an
+#: exemption can take if it is decided from line content. Each is a DETECTOR, not an
+#: exemption: none of them is consulted to suppress a finding. A fourth entry is a fourth
+#: exemption site by construction, so it must be declared here and justified.
+TEXT_BOOL_PREDICATES = frozenset(
+    {
+        "_credential_name_matches",  # does this literal name a credential variable?
+        "_is_doc_path",  # is this path a doc file (a SCOPE decision, not an exemption)?
+        "_marker_is_allowed_on",  # is this PATH allowlisted (never line content)?
+    }
+)
 
 
 @pytest.fixture(scope="module")
@@ -97,17 +137,45 @@ def test_process_env_credential_read_fails(scanner: ModuleType) -> None:
 
 
 def test_protective_env_strip_passes(scanner: ModuleType) -> None:
+    """The governed launcher strip, in Python: exempt per node — and reported."""
+
     diff = _diff(
-        "scripts/hapax-foo",
+        "shared/foo_launcher.py",
         [
             'os.environ.pop("OPENAI_API_KEY", None)',
-            "unset OPENAI_API_KEY",
             'del os.environ["ANTHROPIC_API_KEY"]',
-            'env.pop("CODEX_API_KEY", None)',
         ],
     )
     result = scanner.scan_unified_diff(diff)
     assert result.findings == ()
+    assert {f.kind for f in result.allowed} == {"protective-strip"}, (
+        "a granted structural exemption must be reported, with its kind"
+    )
+
+
+def test_launcher_strip_spellings_are_not_findings_even_without_an_exemption(
+    scanner: ModuleType,
+) -> None:
+    """The spellings the estate's launchers use match no pattern, exempt or not.
+
+    Measured over every line of ``scripts/hapax-codex``, ``-headless``, ``-send``,
+    ``-mcp-config-scrub`` and ``install-codex-config.sh``: with text-path exemptions
+    refused, **0** of their lines are flagged — ``unset``/``pop``/``update`` are
+    neither reads nor injections. This is why refusing the text-path exemption is
+    safe for the estate's own convention (it was measured, not assumed).
+    """
+
+    diff = _diff(
+        "scripts/hapax-foo",
+        [
+            "unset OPENAI_API_KEY",
+            'env.pop("CODEX_API_KEY", None)',
+            'os.environ.pop("OPENAI_API_KEY", None)',
+        ],
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == ()
+    assert result.allowed == (), "a non-Python file was granted an exemption"
 
 
 def test_capacity_pool_payg_json_assignment_fails(scanner: ModuleType) -> None:
@@ -640,10 +708,47 @@ def test_allowed_lines_are_listed_with_their_paths(scanner: ModuleType, tmp_path
     with contextlib.redirect_stdout(buf):
         assert scanner.main(["--diff-file", str(path)]) == 0
     out = buf.getvalue()
-    assert "tests/scripts/test_x.py" in out and "billing-scan:allow" in out, (
+    assert "tests/scripts/test_x.py" in out, (
         "the scan summary did not list the exempted line with its path"
     )
+    assert "allowed tests/scripts/test_x.py:" in out and "api-key-route" in out, (
+        "the exempted line was not named by path and kind"
+    )
     assert "exempt" in out.lower(), "the summary does not name the exemption"
+
+
+def test_every_granted_exemption_is_reported_with_its_kind_and_path(
+    scanner: ModuleType, tmp_path: Path
+) -> None:
+    """A structural exemption is not a marker, and the report must not imply it was."""
+
+    import contextlib
+    import io
+
+    path = tmp_path / "structural.diff"
+    path.write_text(
+        _diff(
+            "shared/foo_launcher.py",
+            [
+                # Column 0 on both lines: the region must PARSE as a module, or it would
+                # fall to the text path (where nothing is exempt) and this would not be
+                # the structural path under test.
+                'client = OpenAI(api_key=LITELLM_KEY, base_url="http://127.0.0.1:4000/v1")',
+                'del os.environ["ANTHROPIC_API_KEY"]',
+            ],
+        ),
+        encoding="utf-8",
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert scanner.main(["--diff-file", str(path)]) == 0
+    out = buf.getvalue()
+    assert "allowed shared/foo_launcher.py:" in out, "the exemption was not listed with its path"
+    assert "governed-proxy-route" in out, "the proxy-bound call was not named"
+    assert "protective-strip" in out, "the strip node was not named"
+    assert "exempted 2 site(s)" in out, (
+        "the summary must count the exemptions the gate actually granted"
+    )
 
 
 # ── round 3: the exemption CLASS. No exemption may be decided from line content. ──
@@ -661,11 +766,14 @@ def test_mixed_line_protective_strip_does_not_hide_a_credential_read(
     assert "credential-env-read" in kinds, (
         "a protective strip on the line exempted a credential read on the same line"
     )
-    assert result.allowed == (), "the strip's own node is the only thing exempt, per node"
+    assert {f.kind for f in result.allowed} == {"protective-strip"}, (
+        "the strip's own node is the only thing exempt: the read elsewhere on the line "
+        "must be a finding, and the granted exemption must name the strip alone"
+    )
 
 
 def test_mixed_line_strip_then_read_in_a_non_python_file(scanner: ModuleType) -> None:
-    """The text-path analogue: exemptions there are per STATEMENT, never per line."""
+    """The text-path analogue: and there, NOTHING is exempt — not even a strip."""
 
     line = (
         'unset OLD_API_KEY; key = os.environ["OPENAI_API_KEY"]'  # billing-scan:allow: fixture data
@@ -675,6 +783,64 @@ def test_mixed_line_strip_then_read_in_a_non_python_file(scanner: ModuleType) ->
     assert "credential-env-read" in [f.kind for f in result.findings], (
         "a strip statement exempted a read statement on the same line"
     )
+    assert result.allowed == (), "a non-Python file was granted an exemption"
+
+
+def test_non_python_file_grants_no_exemption_at_all(scanner: ModuleType) -> None:
+    """Seat round 3, item 2: no exemptions for non-Python, per statement or per line.
+
+    Red-first pin for the removal: at ``79c5d1cd7`` the statement-level strip exemption
+    exempted exactly this line (a ``;``-delimited fragment of one line is still line
+    content). It must now be a finding, and nothing may be recorded as allowed.
+    """
+
+    diff = _diff("scripts/foo_launcher.sh", ['del os.environ["ANTHROPIC_API_KEY"]'])
+    result = scanner.scan_unified_diff(diff)
+    assert "credential-env-read" in [f.kind for f in result.findings], (
+        "a text-path exemption exempted a strip in a non-Python file"
+    )
+    assert result.allowed == (), "a non-Python file was granted an exemption"
+
+
+# ── round 3, item 4: a mixed line, per exemption class. One class, one test: an ──
+# ── exemption matched anywhere on a line must never hide a different operation. ──
+
+
+def test_mixed_line_proxy_class_does_not_hide_a_route(scanner: ModuleType) -> None:
+    """The proxy class: a governed-proxy literal on the line must not exempt a route."""
+
+    line = '    note = "http://localhost:4000"; client = OpenAI(api_key=key)'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert "api-key-route" in [f.kind for f in result.findings], (
+        "a proxy literal elsewhere on the line exempted a direct API-key route"
+    )
+    assert result.allowed == (), "the neighbouring literal bought a structural exemption"
+
+
+def test_mixed_line_allow_marker_class_does_not_hide_a_route(scanner: ModuleType) -> None:
+    """The marker class: the marker plus a production route is two findings, not none."""
+
+    line = "    client = OpenAI(api_key=key)  # billing-scan:allow (production)"  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    kinds = [f.kind for f in result.findings]
+    assert "billing-scan-allow-outside-fixtures" in kinds, "the marker was not reported"
+    assert "api-key-route" in kinds, "the marker exempted the route beside it"
+    assert result.allowed == (), "a production path was granted an exemption"
+
+
+def test_mixed_line_pattern_only_class_does_not_hide_a_credential_read(
+    scanner: ModuleType,
+) -> None:
+    """The pattern-only classes carry no exemption, so a line rule hides no read."""
+
+    line = '    key = os.environ["OPENAI_API_KEY"]; url = "https://api.openai.com/v1"'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    kinds = [f.kind for f in result.findings]
+    assert "credential-env-read" in kinds, "a pattern-only class hid a read on the same line"
+    assert "provider-api-endpoint" in kinds, "the endpoint literal was not reported"
 
 
 def test_mixed_line_strip_only_still_passes(scanner: ModuleType) -> None:
@@ -711,9 +877,12 @@ def test_no_exemption_is_decided_from_line_content(scanner: ModuleType) -> None:
     functions = {node.name: node for node in tree.body if isinstance(node, _ast.FunctionDef)}
     declared = getattr(scanner, "EXEMPTION_SITES", None)
     assert declared, "the scanner must declare its exemption sites in EXEMPTION_SITES"
-    assert set(declared) == {"proxy", "protective_strip", "allow_marker"}, (
-        "a new exemption site must be declared here and justified, not smuggled in"
-    )
+    assert set(declared) == {
+        "proxy",
+        "protective_strip",
+        "allow_marker",
+        "text_path_non_python",
+    }, "a new exemption site must be declared here and justified, not smuggled in"
     for name in scanner.NODE_EXEMPTION_FUNCTIONS:
         node = functions.get(name)
         assert node is not None, f"declared exemption site {name} has no implementation"
@@ -737,6 +906,81 @@ def test_no_exemption_is_decided_from_line_content(scanner: ModuleType) -> None:
     assert "path" in marker_params, "the marker exemption must be decided from the PATH"
     assert not (set(marker_params) & set(scanner._LINE_TEXT_NAMES)), (
         "the marker exemption must not be decided from line content"
+    )
+
+    # The text path must grant NOTHING (seat round 3, item 2). This is the clause that
+    # would have caught the statement-level strip exemption that survived this guard's
+    # first version: find `flush`'s text branch — the one that classifies with
+    # `_text_classes` — and assert it can suppress no finding, by any mechanism.
+    # `flush` is nested inside `scan_unified_diff`, so it is found by walking, not from
+    # the module-level function table.
+    flush = next(
+        (
+            node
+            for node in _ast.walk(tree)
+            if isinstance(node, _ast.FunctionDef) and node.name == "flush"
+        ),
+        None,
+    )
+    assert flush is not None, "the region analyser must exist"
+    text_branches = [
+        node.orelse
+        for node in _ast.walk(flush)
+        if isinstance(node, _ast.If)
+        and any(
+            isinstance(sub, _ast.Call)
+            and isinstance(sub.func, _ast.Name)
+            and sub.func.id == "_text_classes"
+            for statement in node.orelse
+            for sub in _ast.walk(statement)
+        )
+    ]
+    assert len(text_branches) == 1, (
+        f"expected exactly one text-path branch in `flush`, found {len(text_branches)}"
+    )
+    branch = [sub for statement in text_branches[0] for sub in _ast.walk(statement)]
+    assert not any(isinstance(n, _ast.Continue) for n in branch), (
+        "the text path contains a `continue`: that is a suppression, and it grants none"
+    )
+    assert not any(isinstance(n, _ast.Name) and n.id == "allowed" for n in branch), (
+        "the text path appends to `allowed`: a non-Python exemption has re-appeared"
+    )
+    called: set[str] = set()
+    for node in branch:
+        if not isinstance(node, _ast.Call):
+            continue
+        if isinstance(node.func, _ast.Name):
+            called.add(node.func.id)
+        elif isinstance(node.func, _ast.Attribute):
+            called.add(node.func.attr)
+            if isinstance(node.func.value, _ast.Name):
+                called.add(node.func.value.id)
+    unexpected = called - TEXT_PATH_ALLOWED_CALLS
+    assert not unexpected, (
+        f"the text path calls {sorted(unexpected)}; it may only call "
+        f"{sorted(TEXT_PATH_ALLOWED_CALLS)}. A helper called here is a fourth exemption "
+        "site: declare it in EXEMPTION_SITES and justify it, or do not call it."
+    )
+
+    # And no such helper may even EXIST undeclared, called or not: a `str -> bool`
+    # predicate is the only shape a line-content exemption can take in this module.
+    text_bool_predicates = {
+        node.name
+        for node in _ast.walk(tree)
+        if isinstance(node, _ast.FunctionDef)
+        and any(
+            arg.arg != "self" and (arg.annotation is None or _ast.unparse(arg.annotation) == "str")
+            for arg in node.args.args
+        )
+        and {arg.arg for arg in node.args.args}
+        and node.returns is not None
+        and _ast.unparse(node.returns) == "bool"  # exactly `-> bool`, not a tuple member
+    }
+    undeclared = text_bool_predicates - TEXT_BOOL_PREDICATES
+    assert not undeclared, (
+        f"new text->bool predicate(s) in the scanner: {sorted(undeclared)}. That is the "
+        "shape an exemption decided from line content takes: declare it in "
+        "TEXT_BOOL_PREDICATES with its justification, or do not add it."
     )
 
 
