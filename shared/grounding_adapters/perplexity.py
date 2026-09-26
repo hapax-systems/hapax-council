@@ -56,9 +56,9 @@ class PerplexityClaimRequest(BaseModel):
 class GroundingEvidenceEnvelope(BaseModel):
     """Standard 17-field evidence envelope."""
 
-    provider_id: str = "perplexity_search_or_sonar"
+    provider_id: str = "perplexity"
     model_id: str
-    tool_id: str = "sonar_api"
+    tool_id: str = "perplexity_api"
     input_claim_request: str
     retrieval_events: list[dict] = Field(default_factory=list)
     source_items: list[dict] = Field(default_factory=list)

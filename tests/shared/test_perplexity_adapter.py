@@ -34,7 +34,9 @@ def test_successful_grounding_produces_valid_envelope():
 
     envelope_fields = set(GroundingEvidenceEnvelope.model_fields.keys())
     assert REQUIRED_EVIDENCE_FIELDS.issubset(envelope_fields)
-    assert envelope.provider_id == "perplexity_search_or_sonar"
+    assert envelope.provider_id == "perplexity"
+    assert envelope.provider_id != "perplexity_search_or_sonar"
+    assert envelope.tool_id != "sonar_api"
     assert envelope.model_id == "web-scout"
     assert not envelope.model_id.startswith("sonar")
     assert len(envelope.citations) == 2

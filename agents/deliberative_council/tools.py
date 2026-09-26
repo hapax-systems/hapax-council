@@ -221,13 +221,12 @@ async def web_verify(ctx: Any, query: str) -> str:
         text = await asyncio.wait_for(asyncio.to_thread(_search), timeout=_WEB_VERIFY_TIMEOUT_S)
     except TimeoutError:
         log.warning("web_verify timed out after %.0fs: %s", _WEB_VERIFY_TIMEOUT_S, query[:80])
-        return _memo_put_governed(
-            key,
-            prefix
-            + f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s — no external evidence gathered; "
-            "next_action=retry later or proceed without external web evidence)",
-            admission,
+        timeout_message = (
+            f"(web_verify timed out after {_WEB_VERIFY_TIMEOUT_S:.0f}s"
+            " — no external evidence gathered;"
+            " next_action=retry later or proceed without external web evidence)"
         )
+        return _memo_put_governed(key, prefix + timeout_message, admission)
     except (
         TavilyConfigError,
         TavilyBudgetExceeded,
