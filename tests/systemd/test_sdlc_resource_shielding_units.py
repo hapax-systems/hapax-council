@@ -11,6 +11,8 @@ import ast
 import re
 from pathlib import Path
 
+from shared.resource_model import DEFAULT_SERVICE_PROFILES
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNITS_DIR = REPO_ROOT / "systemd" / "units"
 INSTALLER = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
@@ -19,17 +21,26 @@ INSTALLER = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
 # 6+7 with SMT siblings). No SDLC worker may ever land here.
 AUDIO_CORES = {6, 7, 14, 15}
 FLEET_FENCE = {0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13}
+SYSTEM_SCOPE_RE = re.compile(r"^[#;]\s*Hapax-Install-Scope:\s*system\s*$", re.IGNORECASE)
 
 
-def _directive(text: str, key: str) -> str | None:
+def _directives(text: str, key: str) -> list[str]:
+    values: list[str] = []
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("#") or "=" not in s:
             continue
         k, v = s.split("=", 1)
         if k.strip() == key:
-            return v.strip()
-    return None
+            values.append(v.strip())
+    return values
+
+
+def _directive(text: str, key: str) -> str | None:
+    """Return the effective value for a scalar systemd directive."""
+
+    values = _directives(text, key)
+    return values[-1] if values else None
 
 
 def _parse_cpu_set(spec: str) -> set[int]:
@@ -43,6 +54,94 @@ def _parse_cpu_set(spec: str) -> set[int]:
     return out
 
 
+def _merged_cpu_set(text: str, key: str) -> set[int]:
+    """Model systemd's list assignment semantics, including an empty reset."""
+
+    effective: set[int] = set()
+    for value in _directives(text, key):
+        if not value:
+            effective.clear()
+        else:
+            effective.update(_parse_cpu_set(value))
+    return effective
+
+
+def _unit_fragments(units_dir: Path, unit_name: str) -> str:
+    paths = [units_dir / unit_name, *sorted((units_dir / f"{unit_name}.d").glob("*.conf"))]
+    return "\n".join(path.read_text() for path in paths if path.is_file())
+
+
+def _is_system_scope(text: str) -> bool:
+    return any(SYSTEM_SCOPE_RE.fullmatch(line.strip()) for line in text.splitlines())
+
+
+def _delegated_oom_assignments(units_dir: Path) -> list[tuple[str, int]]:
+    assignments: list[tuple[str, int]] = []
+    paths = sorted(units_dir.glob("*.service")) + sorted(units_dir.glob("*.service.d/*.conf"))
+    for path in paths:
+        text = path.read_text()
+        if path.parent == units_dir:
+            base_text = text
+        else:
+            base_path = units_dir / path.parent.name.removesuffix(".d")
+            base_text = base_path.read_text() if base_path.is_file() else ""
+        # Install scope belongs to the base unit. Generic drop-in deployment
+        # does not honor a marker injected into a sibling .conf file.
+        if _is_system_scope(base_text):
+            continue
+        for value in _directives(text, "OOMScoreAdjust"):
+            assignments.append((str(path.relative_to(units_dir)), int(value)))
+    return assignments
+
+
+def test_directive_helpers_match_systemd_assignment_semantics() -> None:
+    scalar = "[Service]\nOOMScoreAdjust=100\nOOMScoreAdjust=-500\n"
+    assert _directive(scalar, "OOMScoreAdjust") == "-500"
+
+    affinity = "[Service]\nCPUAffinity=0-2\nCPUAffinity=5\n"
+    assert _merged_cpu_set(affinity, "CPUAffinity") == {0, 1, 2, 5}
+    reset_affinity = affinity + "CPUAffinity=\nCPUAffinity=8 9\n"
+    assert _merged_cpu_set(reset_affinity, "CPUAffinity") == {8, 9}
+
+
+def test_delegated_oom_sweep_includes_sibling_dropins(tmp_path: Path) -> None:
+    (tmp_path / "example.service").write_text("[Service]\nOOMScoreAdjust=100\n", encoding="utf-8")
+    dropin = tmp_path / "example.service.d"
+    dropin.mkdir()
+    (dropin / "zz-override.conf").write_text(
+        "# Hapax-Install-Scope: system\n[Service]\nOOMScoreAdjust=-500\n",
+        encoding="utf-8",
+    )
+
+    assert _delegated_oom_assignments(tmp_path) == [
+        ("example.service", 100),
+        ("example.service.d/zz-override.conf", -500),
+    ]
+
+
+def test_system_scope_is_derived_from_the_base_unit(tmp_path: Path) -> None:
+    (tmp_path / "root-owned.service").write_text(
+        "; Hapax-Install-Scope: system\n[Service]\nOOMScoreAdjust=-900\n",
+        encoding="utf-8",
+    )
+    dropin = tmp_path / "root-owned.service.d"
+    dropin.mkdir()
+    (dropin / "override.conf").write_text("[Service]\nOOMScoreAdjust=-800\n", encoding="utf-8")
+
+    assert _delegated_oom_assignments(tmp_path) == []
+
+
+def test_unit_fragments_include_later_affinity_dropins(tmp_path: Path) -> None:
+    (tmp_path / "example.service").write_text("[Service]\nCPUAffinity=0-2\n", encoding="utf-8")
+    dropin = tmp_path / "example.service.d"
+    dropin.mkdir()
+    (dropin / "10-reset.conf").write_text("[Service]\nCPUAffinity=\n", encoding="utf-8")
+    (dropin / "99-override.conf").write_text("[Service]\nCPUAffinity=6 7\n", encoding="utf-8")
+
+    text = _unit_fragments(tmp_path, "example.service")
+    assert _merged_cpu_set(text, "CPUAffinity") == {6, 7}
+
+
 # ── L1: the elastic yield slice ──────────────────────────────────────────────
 
 
@@ -54,14 +153,14 @@ def test_sdlc_slice_exists_and_is_idle_weighted() -> None:
 
 
 def test_sdlc_slice_fences_audio_cores() -> None:
-    text = (UNITS_DIR / "hapax-sdlc.slice").read_text()
-    allowed = _parse_cpu_set(_directive(text, "AllowedCPUs") or "")
+    text = _unit_fragments(UNITS_DIR, "hapax-sdlc.slice")
+    allowed = _merged_cpu_set(text, "AllowedCPUs")
     assert allowed == FLEET_FENCE
     assert not (allowed & AUDIO_CORES), "no pytest/cargo worker may land on the audio cores"
 
 
 def test_sdlc_slice_throttles_memory_without_killing() -> None:
-    text = (UNITS_DIR / "hapax-sdlc.slice").read_text()
+    text = _unit_fragments(UNITS_DIR, "hapax-sdlc.slice")
     assert _directive(text, "MemoryHigh") == "48G", "MemoryHigh reclaim-throttles, never kills"
     # MemoryMax-as-throttle would SIGKILL a lane mid-work — that is degradation.
     assert _directive(text, "MemoryMax") is None, "MemoryMax must not be used as a throttle"
@@ -174,66 +273,37 @@ def test_broadcast_critical_user_oom_dropins_are_source_controlled() -> None:
         "studio-compositor.service.d/oom-protect.conf",
         "hapax-imagination.service.d/oom-protect.conf",
     }
-    audio_units = {
-        "pipewire.service.d/oom-protect.conf",
-        "pipewire-pulse.service.d/oom-protect.conf",
-        "wireplumber.service.d/oom-protect.conf",
-    }
     for rel in expected:
         text = (UNITS_DIR / rel).read_text()
         assert _directive(text, "OOMScoreAdjust") == "100"
-        if rel in audio_units:
-            assert _directive(text, "ExecStartPost") is None
-            assert _directive(text, "NoNewPrivileges") is None
-        else:
-            assert _directive(text, "ExecStartPost") == "-/usr/local/bin/hapax-oom-score-trigger %n"
+        assert _directive(text, "ExecStartPost") is None
+        assert _directive(text, "NoNewPrivileges") is None
         assert _directive(text, "MemoryLow") is not None
         assert _directive(text, "MemoryMin") is not None
 
+    delegated_assignments = _delegated_oom_assignments(UNITS_DIR)
+    delegated_scores = dict(delegated_assignments)
 
-def test_protected_user_unit_allowlist_and_scores_match_across_runtime_surfaces() -> None:
-    expected = {
-        "pipewire.service": -900,
-        "pipewire-pulse.service": -900,
-        "wireplumber.service": -900,
-        "hapax-daimonion.service": -500,
-        "studio-compositor.service": -800,
-        "hapax-imagination.service": -800,
+    assert delegated_scores["hapax-daimonion.service"] == 100
+    assert delegated_scores["hapax-feedback-loop-detector.service"] == 100
+    assert all(score >= 0 for _, score in delegated_assignments)
+
+
+def test_protected_user_units_have_no_root_negative_score_bridge() -> None:
+    expected_units = {
+        "pipewire.service",
+        "pipewire-pulse.service",
+        "wireplumber.service",
+        "hapax-daimonion.service",
+        "studio-compositor.service",
+        "hapax-imagination.service",
     }
+    expected_scores = {unit: 100 for unit in expected_units}
     oom_installer = (REPO_ROOT / "scripts/install-p0-oom-containment").read_text()
-    installer_block = re.search(
-        r"^protected_user_unit_scores=\(\n(?P<body>.*?)^\)",
-        oom_installer,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert installer_block is not None
-    installer_scores = {}
-    for line in installer_block.group("body").splitlines():
-        unit, score = line.strip().rsplit(":", 1)
-        installer_scores[unit] = int(score)
+    assert "protected_user_unit_scores=(" not in oom_installer
+    assert "--apply-unit" not in oom_installer
 
     enforcer = (REPO_ROOT / "scripts/hapax-oom-score-enforce").read_text()
-    enforcer_scores = {
-        unit: int(score)
-        for unit, score in re.findall(
-            r"^apply_unit_score ([a-z0-9@_.-]+) (-?\d+)$", enforcer, flags=re.MULTILINE
-        )
-    }
-    enforcer_allowlist = {}
-    enforcer_function = re.search(
-        r"protected_user_unit_score\(\) \{(?P<body>.*?)^\}",
-        enforcer,
-        flags=re.MULTILINE | re.DOTALL,
-    )
-    assert enforcer_function is not None
-    for units, score in re.findall(
-        r"^\s+([a-z0-9@_. |/-]+)\)\n\s+printf '%s\\n' (-?\d+)$",
-        enforcer_function.group("body"),
-        flags=re.MULTILINE,
-    ):
-        for unit in units.split("|"):
-            enforcer_allowlist[unit.strip()] = int(score)
-
     audit_tree = ast.parse((REPO_ROOT / "scripts/hapax-oom-policy-audit").read_text())
     audit_scores = None
     for node in audit_tree.body:
@@ -246,25 +316,34 @@ def test_protected_user_unit_allowlist_and_scores_match_across_runtime_surfaces(
     assert audit_scores is not None
 
     trigger = (REPO_ROOT / "scripts/hapax-oom-score-trigger").read_text()
-    trigger_match = re.search(r'case "\$unit" in\n\s+(?P<units>[^\n]+)\) ;;', trigger)
-    assert trigger_match is not None
-    trigger_units = {unit.strip() for unit in trigger_match.group("units").split("|")}
-
     sudoers = (REPO_ROOT / "config/root-required/hapax-oom-score-enforce.sudoers").read_text()
-    sudoers_units = set(re.findall(r"--apply-unit ([a-z0-9@_.-]+)", sudoers))
     dropin_units = {
         path.parent.name.removesuffix(".d")
         for path in UNITS_DIR.glob("*.service.d/oom-protect.conf")
     }
 
-    assert installer_scores == enforcer_scores == enforcer_allowlist == audit_scores == expected
-    assert trigger_units == sudoers_units == dropin_units == set(expected)
+    assert audit_scores == expected_scores
+    assert dropin_units == expected_units
+    modeled_scores = {
+        name: profile.oom_score_adj
+        for name, profile in DEFAULT_SERVICE_PROFILES.items()
+        if profile.oom_score_adj is not None
+    }
+    assert modeled_scores == {
+        unit.removesuffix(".service"): score for unit, score in expected_scores.items()
+    }
+    assert all(unit in enforcer and unit in trigger for unit in expected_units)
+    assert "--apply-unit" not in sudoers
+    assert "HAPAX_OOM_SCORE_ENFORCE" not in sudoers
+    assert "oom_score_adj" not in enforcer + trigger
 
 
 def test_oom_policy_audit_timer_is_source_controlled() -> None:
     timer = (UNITS_DIR / "hapax-oom-policy-audit.timer").read_text()
     service = (UNITS_DIR / "hapax-oom-policy-audit.service").read_text()
-    assert "Hapax-Installer-Owner: scripts/install-p0-oom-containment" in timer
+    assert "Hapax-Source-Owner: config/root-required/oom-containment.files" in service
+    assert "Hapax-Source-Owner: config/root-required/oom-containment.files" in timer
+    assert "Hapax-Installer-Owner" not in service + timer
     assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=5min" in timer
     assert "ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json" in service
@@ -284,10 +363,16 @@ def test_oom_policy_audit_timer_is_source_controlled() -> None:
 def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     timer = (UNITS_DIR / "hapax-root-required-deploy-audit.timer").read_text()
     service = (UNITS_DIR / "hapax-root-required-deploy-audit.service").read_text()
-    assert "Hapax-Installer-Owner: scripts/install-p0-oom-containment" in timer
+    assert "Hapax-Source-Owner: config/root-required/oom-containment.files" in service
+    assert "Hapax-Source-Owner: config/root-required/oom-containment.files" in timer
+    assert "Hapax-Installer-Owner" not in service + timer
     assert "Hapax-Auto-Enable" not in timer
     assert "OnUnitActiveSec=10min" in timer
-    assert "ExecStart=/usr/local/sbin/hapax-root-required-deploy-audit" in service
+    assert (
+        "ExecStart=/usr/bin/env -i HOME=%h XDG_RUNTIME_DIR=%t "
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin LANG=C LC_ALL=C "
+        "/usr/local/sbin/hapax-root-required-deploy-audit"
+    ) in service
     assert "TimeoutStartSec=2min" in service
     assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in service
     audit = (REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit").read_text()
@@ -301,17 +386,23 @@ def test_root_required_deploy_audit_timer_is_source_controlled() -> None:
     assert "ConditionPathExists" not in service
 
 
-def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
+def test_root_oom_enforcer_is_a_disabled_retirement_sentinel() -> None:
     enforcer = (UNITS_DIR / "hapax-oom-score-enforce.service").read_text()
     timer = (UNITS_DIR / "hapax-oom-score-enforce.timer").read_text()
     intake = (UNITS_DIR / "hapax-root-failure-intake@.service").read_text()
     assert "# Hapax-Install-Scope: system" in enforcer
-    assert "OnFailure=hapax-root-failure-intake@%n.service" in enforcer
+    assert "Retired Hapax root-to-user OOM score bridge sentinel" in enforcer
+    assert "OnFailure=" not in enforcer
     assert "Wants=user@1000.service" not in enforcer
-    assert "After=user@1000.service" in enforcer
+    assert "After=user@1000.service" not in enforcer
     assert "StartLimitIntervalSec=0" in enforcer
     assert "StartLimitBurst" not in enforcer
+    assert "TimeoutStartSec=5s" in enforcer
+    assert "must remain disabled" in timer
+    assert "OnBootSec=120s" in timer
+    assert "OnUnitActiveSec=120s" in timer
     assert "AccuracySec=1s" in timer
+    assert "WantedBy=timers.target" not in timer
     assert "# Hapax-Install-Scope: system" in intake
     assert "User=hapax" in intake
     assert "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" in intake
@@ -326,6 +417,10 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
     assert "hapax-systems/hapax-council/blob/main/systemd/README.md" in enforcer
     assert "/home/hapax" not in enforcer
     assert "ConditionPathExists" not in intake
+    enforcer_script = (REPO_ROOT / "scripts/hapax-oom-score-enforce").read_text()
+    assert "/usr/bin/runuser" not in enforcer_script
+    assert "systemctl" not in enforcer_script
+    assert "/proc/" not in enforcer_script
 
 
 # ── L2: the audio-core cpuset fence ──────────────────────────────────────────
@@ -333,14 +428,18 @@ def test_root_oom_enforcer_uses_system_scoped_failure_intake() -> None:
 
 def test_compositor_excluded_from_audio_cores() -> None:
     conf = UNITS_DIR / "studio-compositor.service.d" / "cpu-affinity.conf"
-    allowed = _parse_cpu_set(_directive(conf.read_text(), "CPUAffinity") or "")
+    assert conf.exists()
+    allowed = _merged_cpu_set(
+        _unit_fragments(UNITS_DIR, "studio-compositor.service"), "CPUAffinity"
+    )
+    assert allowed, "studio compositor CPUAffinity must not reset to the unrestricted empty set"
     assert not (allowed & AUDIO_CORES)
 
 
 def test_daimonion_cpu_side_fenced_off_audio_cores() -> None:
     conf = UNITS_DIR / "hapax-daimonion.service.d" / "cpu-affinity.conf"
     assert conf.exists(), "daimonion CPU-side work must be pinned off the audio data-loops"
-    allowed = _parse_cpu_set(_directive(conf.read_text(), "CPUAffinity") or "")
+    allowed = _merged_cpu_set(_unit_fragments(UNITS_DIR, "hapax-daimonion.service"), "CPUAffinity")
     assert allowed, "CPUAffinity must be set"
     assert not (allowed & AUDIO_CORES), "daimonion vision/STT spikes must not preempt audio"
 
@@ -349,7 +448,7 @@ def test_daimonion_cpu_side_fenced_off_audio_cores() -> None:
 
 
 def test_coordinator_has_high_cpuweight() -> None:
-    text = (UNITS_DIR / "hapax-coordinator.service").read_text()
+    text = _unit_fragments(UNITS_DIR, "hapax-coordinator.service")
     weight = _directive(text, "CPUWeight")
     assert weight is not None and weight.isdigit() and int(weight) >= 1000, (
         "the controller must out-weight the idle fleet it throttles"
@@ -359,8 +458,8 @@ def test_coordinator_has_high_cpuweight() -> None:
 def test_coordinator_pinned_to_a_fleet_fenced_core() -> None:
     # The controller gets cores the SDLC fleet is fenced OUT of, so it never
     # starves while throttling the controlled (the exact death of 2026-06-01).
-    text = (UNITS_DIR / "hapax-coordinator.service").read_text()
-    allowed = _parse_cpu_set(_directive(text, "AllowedCPUs") or "")
+    text = _unit_fragments(UNITS_DIR, "hapax-coordinator.service")
+    allowed = _merged_cpu_set(text, "AllowedCPUs")
     assert allowed, "coordinator must pin to a protected cpuset"
     assert not (allowed & FLEET_FENCE), "coordinator cores must be off the SDLC fleet's cpuset"
 
@@ -396,19 +495,26 @@ def test_installer_links_service_dropins() -> None:
     assert '"$REPO_DIR"/*.scope.d' in body
 
 
-def test_p0_oom_containment_has_dedicated_installer() -> None:
-    installer = REPO_ROOT / "scripts" / "install-p0-oom-containment"
-    body = installer.read_text()
-    assert "systemd/system/user-1000.slice.d/oom-containment.conf" in body
-    assert "systemd/system/user@1000.service.d/oom.conf" in body
-    assert "systemd/units/app.slice.d/oom-containment.conf" in body
-    assert "systemd/units/session.slice.d/oom-containment.conf" in body
-    assert "config/earlyoom/default" in body
-    assert "app_slice_value MemoryHigh" in body
-    assert "apply_system_runtime_memory user-1000.slice" in body
-    assert "apply_system_runtime_memory user@1000.service" in body
-    assert "set-property --runtime app.slice" in body
-    assert "set-property --runtime session.slice" in body
-    assert "verify_system_unit_runtime_memory user-1000.slice" in body
-    assert "verify_app_slice_runtime" in body
-    assert "verify_session_slice_runtime" in body
+def test_p0_oom_containment_is_manifest_owned_and_source_only() -> None:
+    validator = (REPO_ROOT / "scripts/install-p0-oom-containment").read_text()
+    manifest = (REPO_ROOT / "config/root-required/oom-containment.files").read_text()
+
+    for relative in (
+        "config/root-required/oom-host-profiles.tsv",
+        "config/root-required/oom-host-policy/appendix/app.slice.conf",
+        "config/root-required/oom-host-policy/podium/app.slice.conf",
+        "systemd/system/user-1000.slice.d/oom-containment.conf",
+        "systemd/system/user@1000.service.d/oom.conf",
+        "systemd/units/app.slice.d/oom-containment.conf",
+        "systemd/units/session.slice.d/oom-containment.conf",
+        "config/earlyoom/default",
+    ):
+        assert relative in manifest
+
+    assert (
+        "production OOM installation and authoritative live verification are unavailable"
+        in validator
+    )
+    assert "set-property --runtime" not in validator
+    assert "apply_system_runtime_memory" not in validator
+    assert "verify_app_slice_runtime" not in validator

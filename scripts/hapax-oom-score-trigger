@@ -1,27 +1,26 @@
-#!/usr/bin/bash
-# Fail-bounded user-side bridge to the allowlisted root OOM score enforcer.
+#!/usr/bin/bash -p
+# Compatibility sentinel for stale user-unit drop-ins during governed cutover.
 set -euo pipefail
+IFS=$' \t\n'
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+export PATH
+unset ENV BASH_ENV CDPATH
 
-unit="${1:-}"
-case "$unit" in
-    pipewire.service | pipewire-pulse.service | wireplumber.service | hapax-daimonion.service | studio-compositor.service | hapax-imagination.service) ;;
+[ "$#" -eq 1 ] || {
+    printf 'usage: hapax-oom-score-trigger UNIT\n' >&2
+    printf 'next action: remove the stale trigger call or pass one retired compatibility unit\n' >&2
+    exit 2
+}
+
+case "$1" in
+    pipewire.service|pipewire-pulse.service|wireplumber.service|\
+    hapax-daimonion.service|studio-compositor.service|hapax-imagination.service)
+        ;;
     *)
-        echo "refusing non-allowlisted protected user unit: $unit; next action: update this trigger allowlist and config/root-required/hapax-oom-score-enforce.sudoers together, then reinstall the OOM package" >&2
+        printf 'refusing non-retired OOM trigger unit: %s\n' "$1" >&2
+        printf 'next action: remove the stale trigger call; no root OOM bridge remains\n' >&2
         exit 2
         ;;
 esac
 
-if [ "${HAPAX_OOM_TRIGGER_TEST_MODE:-0}" = "1" ]; then
-    TIMEOUT="${HAPAX_OOM_TRIGGER_TIMEOUT:-/usr/bin/timeout}"
-    SUDO="${HAPAX_OOM_TRIGGER_SUDO:-/usr/bin/sudo}"
-    ENFORCER="${HAPAX_OOM_TRIGGER_ENFORCER:-/usr/local/sbin/hapax-oom-score-enforce}"
-    DEADLINE="${HAPAX_OOM_TRIGGER_DEADLINE:-5s}"
-else
-    TIMEOUT="/usr/bin/timeout"
-    SUDO="/usr/bin/sudo"
-    ENFORCER="/usr/local/sbin/hapax-oom-score-enforce"
-    DEADLINE="5s"
-fi
-
-exec "$TIMEOUT" --signal=KILL "$DEADLINE" \
-    "$SUDO" -n "$ENFORCER" --apply-unit "$unit"
+printf 'info: root negative OOM trigger is retired; no process state was changed\n'

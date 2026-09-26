@@ -1,5 +1,14 @@
 # Versioned ownership manifest for the root-required OOM containment package.
 config/root-required/oom-containment.files
+config/root-required/oom-host-profiles.tsv
+config/root-required/oom-host-policy/appendix/app.slice.conf
+config/root-required/oom-host-policy/appendix/user-1000.slice.conf
+config/root-required/oom-host-policy/appendix/user@1000.service.conf
+config/root-required/oom-host-policy/appendix/zram-generator.conf
+config/root-required/oom-host-policy/podium/app.slice.conf
+config/root-required/oom-host-policy/podium/user-1000.slice.conf
+config/root-required/oom-host-policy/podium/user@1000.service.conf
+config/root-required/oom-host-policy/podium/zram-generator.conf
 scripts/install-p0-oom-containment
 config/root-required/hapax-oom-score-enforce.sudoers
 systemd/system/system.slice.d/oom-containment.conf
@@ -25,8 +34,11 @@ systemd/units/session.slice.d/oom-containment.conf
 systemd/units/pipewire.service.d/oom-protect.conf
 systemd/units/pipewire-pulse.service.d/oom-protect.conf
 systemd/units/wireplumber.service.d/oom-protect.conf
+systemd/units/hapax-daimonion.service
 systemd/units/hapax-daimonion.service.d/oom-protect.conf
+systemd/units/studio-compositor.service
 systemd/units/studio-compositor.service.d/oom-protect.conf
+systemd/units/hapax-imagination.service
 systemd/units/hapax-imagination.service.d/oom-protect.conf
 config/earlyoom/default
 scripts/hapax-oom-score-enforce

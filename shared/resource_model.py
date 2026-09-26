@@ -440,13 +440,14 @@ DEFAULT_SERVICE_PROFILES: dict[str, ServiceResourceProfile] = {
                 resource_type=ResourceType.RAM,
                 steady_state=4.3,
                 peak=7.33,
-                limit=12.0,
+                limit=16.0,
                 unit="GB",
                 enforcement=Enforcement.HARD,
+                notes="Effective capacity drop-in sets MemoryHigh=12G and MemoryMax=16G.",
             ),
         },
         contention_groups=["CG-GPU0", "CG-CPU-GENERAL", "CG-RAM"],
-        oom_score_adj=-500,
+        oom_score_adj=100,
         labels={"kind": "systemd"},
     ),
     "studio-compositor": ServiceResourceProfile(
@@ -474,6 +475,7 @@ DEFAULT_SERVICE_PROFILES: dict[str, ServiceResourceProfile] = {
             ),
         },
         contention_groups=["CG-GPU0", "CG-CPU-GENERAL", "CG-RAM", "CG-DISK-IO"],
+        oom_score_adj=100,
         labels={"kind": "systemd"},
     ),
     "obs": ServiceResourceProfile(
@@ -608,6 +610,7 @@ DEFAULT_SERVICE_PROFILES: dict[str, ServiceResourceProfile] = {
             ),
         },
         contention_groups=["CG-AUDIO", "CG-RAM"],
+        oom_score_adj=100,
         labels={"kind": "audio"},
     ),
     "wireplumber": ServiceResourceProfile(
@@ -621,6 +624,7 @@ DEFAULT_SERVICE_PROFILES: dict[str, ServiceResourceProfile] = {
             ),
         },
         contention_groups=["CG-AUDIO", "CG-RAM"],
+        oom_score_adj=100,
         labels={"kind": "audio"},
     ),
     "pipewire-pulse": ServiceResourceProfile(
@@ -634,6 +638,7 @@ DEFAULT_SERVICE_PROFILES: dict[str, ServiceResourceProfile] = {
             ),
         },
         contention_groups=["CG-AUDIO", "CG-RAM"],
+        oom_score_adj=100,
         labels={"kind": "audio"},
     ),
     # === Infrastructure (Y5) — degrade only, never drain ===
@@ -1101,6 +1106,7 @@ DEFAULT_SERVICE_PROFILES: dict[str, ServiceResourceProfile] = {
             ),
         },
         contention_groups=["CG-GPU1", "CG-CPU-GENERAL", "CG-RAM"],
+        oom_score_adj=100,
         labels={"kind": "systemd"},
     ),
     "ollama": ServiceResourceProfile(

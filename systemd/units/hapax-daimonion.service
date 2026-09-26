@@ -61,7 +61,7 @@ Environment=OTEL_BSP_SCHEDULE_DELAY=1000
 # to 12G-soft/16G-hard (+4G swap) — measured live values.
 MemoryMax=12G
 MemoryHigh=10G
-OOMScoreAdjust=-500
+OOMScoreAdjust=100
 Nice=-10
 LimitNOFILE=1048576
 SyslogIdentifier=hapax-daimonion

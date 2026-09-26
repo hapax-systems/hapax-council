@@ -70,7 +70,27 @@ P0_OOM_AUDIT_FILES = {
         "OnUnitActiveSec=10min\nUnit=hapax-root-required-deploy-audit.service\n"
     ),
 }
+# Declared by the OOM package manifest and read from the repository, so a package that gains
+# source paths does not require every fixture to restate them (reconcile: #4551).
+OOM_HOST_POLICY_SOURCE_FILES = {
+    relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+    for relative in (
+        "config/root-required/oom-host-profiles.tsv",
+        "config/root-required/oom-host-policy/appendix/app.slice.conf",
+        "config/root-required/oom-host-policy/appendix/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/appendix/user@1000.service.conf",
+        "config/root-required/oom-host-policy/appendix/zram-generator.conf",
+        "config/root-required/oom-host-policy/podium/app.slice.conf",
+        "config/root-required/oom-host-policy/podium/user-1000.slice.conf",
+        "config/root-required/oom-host-policy/podium/user@1000.service.conf",
+        "config/root-required/oom-host-policy/podium/zram-generator.conf",
+        "systemd/units/hapax-daimonion.service",
+        "systemd/units/hapax-imagination.service",
+        "systemd/units/studio-compositor.service",
+    )
+}
 ROOT_AUDIT_SOURCE_FILES = {
+    **OOM_HOST_POLICY_SOURCE_FILES,
     "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
@@ -1040,6 +1060,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
     )
     future_manifest_path = "config/earlyoom/future-policy"
     files = {
+        **OOM_HOST_POLICY_SOURCE_FILES,
         "config/root-required/oom-containment.files": (
             OOM_PACKAGE_MANIFEST + f"{future_manifest_path}\n"
         ),
@@ -1346,6 +1367,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
 ) -> None:
     installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
     files = {
+        **OOM_HOST_POLICY_SOURCE_FILES,
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
