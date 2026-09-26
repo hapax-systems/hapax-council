@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -785,6 +786,163 @@ def test_claude_reviewer_invalid_timeout_env_is_legible(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "invalid HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS" in result.stderr
     assert "using default 1140s" in result.stderr
+
+
+# --- M99: the tool-intent turn end ----------------------------------------------------
+# The seat runs with `--tools ""`. A reply that plans a read ("Let me inspect the classifier
+# source…") ends its one-shot turn with no verdict, which no parser can rescue. Captured bytes:
+# claude-1 on #4740 at 5f1f60154 (dev15, 2026-09-25).
+TOOL_INTENT_REPLY = (
+    REPO_ROOT / "tests/fixtures/review-reply-claude-4740-5f1f60154-tool-intent-turn-end.txt"
+).read_text(encoding="utf-8")
+FENCED_ACCEPT = "```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```\n"
+_BINDING = {
+    "descriptor": {"model_id": "claude-opus-4-8"},
+    "argv": ["--model", "claude-opus-4-8", "--effort", "xhigh"],
+    "env": {},
+}
+
+
+def _load_wrapper(name: str):
+    loader = importlib.machinery.SourceFileLoader(name, str(WRAPPER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _scripted_claude(
+    monkeypatch, module, replies: list[tuple[int, str]], *, seconds_per_call: float = 0.0
+) -> list[dict]:
+    """Replace the child with scripted (returncode, stdout) replies; record every call.
+
+    A fake monotonic clock advances ``seconds_per_call`` per child run, so the shared
+    deadline is observable exactly.
+    """
+
+    calls: list[dict] = []
+    clock = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+    def run(cmd, *, prompt, timeout_seconds, execution_env):
+        calls.append({"cmd": list(cmd), "prompt": prompt, "timeout_seconds": timeout_seconds})
+        clock[0] += seconds_per_call
+        if len(calls) > len(replies):
+            raise AssertionError(f"unexpected claude invocation #{len(calls)}")
+        returncode, stdout = replies[len(calls) - 1]
+        return subprocess.CompletedProcess(cmd, returncode, stdout, "")
+
+    monkeypatch.setattr(module, "_execution_binding", lambda: _BINDING)
+    monkeypatch.setattr(module, "_run_claude", run)
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO("review packet"))
+    return calls
+
+
+def test_the_captured_reply_names_no_verdict() -> None:
+    module = _load_wrapper("reviewer_m99_predicate")
+    assert module._reply_names_no_verdict(TOOL_INTENT_REPLY)
+    assert module._reply_names_no_verdict("")
+    assert module._reply_names_no_verdict("   \n")
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        FENCED_ACCEPT,
+        "```yaml\nverdict: block\nfindings: []\nchecklist: {}\n```\n",
+        # the parser, not the wrapper, judges a verdict wrapped in prose or a sentinel
+        "Here is my review.\n```yaml\nverdict: accept\nfindings: []\n```\n<!-- done -->",
+        # fence-free raw YAML is a verdict the dispatcher can parse
+        "verdict: accept-with-findings\nfindings: []\nchecklist: {}\n",
+        '  "verdict": block\n',
+        # a malformed verdict is still a verdict: re-asking would shop for a different one
+        "```yaml\nverdict: [unterminated\n```\n",
+    ],
+)
+def test_a_reply_that_names_a_verdict_is_never_reasked(monkeypatch, capsys, reply) -> None:
+    module = _load_wrapper("reviewer_m99_verdict")
+    calls = _scripted_claude(monkeypatch, module, [(0, reply)])
+
+    assert module.main([]) == 0
+    assert len(calls) == 1
+    out = capsys.readouterr()
+    assert out.out == reply
+    assert out.err == ""
+
+
+@pytest.mark.parametrize("returncode", [1, 2, 124, 137])
+def test_a_nonzero_exit_is_never_reasked(monkeypatch, capsys, returncode) -> None:
+    # A quota wall, launch failure or timeout is the CLI speaking; a re-ask would spend into
+    # the wall and could launder it into a review.
+    module = _load_wrapper("reviewer_m99_nonzero")
+    calls = _scripted_claude(monkeypatch, module, [(returncode, TOOL_INTENT_REPLY)])
+
+    assert module.main([]) == returncode
+    assert len(calls) == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    # stderr carries the wrapper's nonzero diagnostic and nothing from the re-ask path
+    assert "claude exited nonzero" in out.err
+    assert module.REASK_DIAGNOSTIC not in out.err
+    assert module.REASK_SKIPPED_DIAGNOSTIC not in out.err
+    # the model's (untrusted) stdout is never laundered into stderr either
+    assert "Let me inspect" not in out.err
+
+
+def test_a_second_reply_with_no_verdict_is_returned_without_a_third_attempt(
+    monkeypatch, capsys
+) -> None:
+    module = _load_wrapper("reviewer_m99_bounded")
+    calls = _scripted_claude(monkeypatch, module, [(0, TOOL_INTENT_REPLY), (0, TOOL_INTENT_REPLY)])
+
+    assert module.main([]) == 0
+    assert len(calls) == 2
+    out = capsys.readouterr()
+    assert out.out == TOOL_INTENT_REPLY
+    assert out.err.count(module.REASK_DIAGNOSTIC) == 1
+
+
+def test_no_reask_when_the_shared_deadline_leaves_too_little_time(monkeypatch, capsys) -> None:
+    module = _load_wrapper("reviewer_m99_deadline")
+    calls = _scripted_claude(monkeypatch, module, [(0, TOOL_INTENT_REPLY)])
+
+    assert module.main(["--timeout-seconds", str(module.REASK_MIN_REMAINING_SECONDS - 1)]) == 0
+    assert len(calls) == 1
+    out = capsys.readouterr()
+    assert out.out == TOOL_INTENT_REPLY
+    assert module.REASK_SKIPPED_DIAGNOSTIC in out.err
+
+
+def test_a_reply_with_no_verdict_is_reasked_once_under_the_same_route(monkeypatch, capsys) -> None:
+    module = _load_wrapper("reviewer_m99_reask")
+    calls = _scripted_claude(
+        monkeypatch, module, [(0, TOOL_INTENT_REPLY), (0, FENCED_ACCEPT)], seconds_per_call=100.0
+    )
+
+    assert module.main(["--timeout-seconds", "600"]) == 0
+    assert len(calls) == 2
+    # same binary, model, effort, tool denial and system prompt: a re-ask never changes route
+    assert calls[1]["cmd"] == calls[0]["cmd"]
+    # the packet is replayed whole, followed by the correction; the first reply is not echoed
+    assert calls[1]["prompt"].startswith("review packet")
+    assert module.REASK_CORRECTION in calls[1]["prompt"]
+    assert TOOL_INTENT_REPLY not in calls[1]["prompt"]
+    # one deadline for both calls: the first run spent 100 s of 600, so the re-ask gets 500
+    assert calls[0]["timeout_seconds"] == 600
+    assert calls[1]["timeout_seconds"] == 500
+    out = capsys.readouterr()
+    assert out.out == FENCED_ACCEPT
+    assert out.err.count(module.REASK_DIAGNOSTIC) == 1
+
+
+def test_system_prompt_states_the_seat_has_no_tools_and_the_packet_is_complete() -> None:
+    module = _load_wrapper("reviewer_m99_prompt")
+    prompt = " ".join(module.STRICT_REVIEW_SYSTEM_PROMPT.split())
+    assert "You have no tools" in prompt
+    assert "the packet is the complete evidence" in prompt
+    assert "Never announce an inspection" in prompt
+    # the correction restates the same contract for the one re-ask
+    assert "You have no tools" in module.REASK_CORRECTION
 
 
 @pytest.mark.skipif(

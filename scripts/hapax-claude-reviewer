@@ -10,6 +10,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REVIEW_EXECUTION_ROUTE = "claude.review.opus"
@@ -78,9 +79,39 @@ The checklist value must be nested by lens id. Never put checklist item slugs
 directly under checklist. Finding objects must use severity, lens, file, line,
 title, and detail keys.
 
+You have no tools. You cannot read files, list directories, run commands, open
+a worktree or fetch anything. Any file, path, worktree or command the packet
+mentions is out of reach: the packet is the complete evidence. Never announce an
+inspection or plan a next step; this run has exactly one turn, and a reply that
+plans a read ends it with no verdict. Judge from the packet alone. Where it lacks
+the evidence a lens needs, record that as a finding.
+
 Do all reasoning silently. Reply with exactly one fenced yaml code block and no
 prose.
 """
+
+# M99: a reply that names no verdict at all (the model planned a read it cannot make, and its
+# one turn ended) is re-asked exactly once, under the same route and the same deadline. A reply
+# that names any verdict, however malformed, is never re-asked: the dispatcher's parser judges
+# it, and a second ask would shop for a different verdict. A nonzero exit is never re-asked.
+REPLY_NAMES_A_VERDICT_RE = re.compile(r"^\s*[\"']?verdict[\"']?\s*:", re.IGNORECASE | re.MULTILINE)
+REASK_MIN_REMAINING_SECONDS = 120.0
+REASK_CORRECTION = """
+
+## Correction from the review wrapper
+
+Your previous reply named no verdict. You have no tools, and this is your only
+turn: the packet above is the complete evidence. Reply now with exactly one
+fenced yaml code block (verdict, findings, checklist) and nothing else.
+"""
+REASK_DIAGNOSTIC = (
+    "hapax-claude-reviewer: first reply named no verdict (M99 tool-intent turn end); "
+    "re-asked once under the same route and deadline"
+)
+REASK_SKIPPED_DIAGNOSTIC = (
+    "hapax-claude-reviewer: first reply named no verdict; not re-asked because the shared "
+    "deadline leaves too little time; next action: rerun the review dispatch"
+)
 
 
 def _bounded_timeout_seconds(raw: str) -> float:
@@ -199,6 +230,10 @@ def _stdout_is_quota_wall(stdout: str) -> bool:
     return bool(STDOUT_QUOTA_WALL_RE.fullmatch(stdout.strip()))
 
 
+def _reply_names_no_verdict(stdout: str) -> bool:
+    return REPLY_NAMES_A_VERDICT_RE.search(stdout) is None
+
+
 def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
     try:
         os.killpg(proc.pid, signal.SIGTERM)
@@ -302,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         "--append-system-prompt",
         STRICT_REVIEW_SYSTEM_PROMPT,
     ]
+    deadline = time.monotonic() + args.timeout_seconds
     try:
         result = _run_claude(
             cmd,
@@ -309,6 +345,19 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout_seconds,
             execution_env=binding["env"],
         )
+        if result.returncode == 0 and _reply_names_no_verdict(result.stdout):
+            remaining = deadline - time.monotonic()
+            if remaining < REASK_MIN_REMAINING_SECONDS:
+                print(REASK_SKIPPED_DIAGNOSTIC, file=sys.stderr)
+            else:
+                print(REASK_DIAGNOSTIC, file=sys.stderr)
+                sys.stderr.write(result.stderr)
+                result = _run_claude(
+                    cmd,
+                    prompt=prompt + REASK_CORRECTION,
+                    timeout_seconds=remaining,
+                    execution_env=binding["env"],
+                )
     except OSError as exc:
         print(
             f"hapax-claude-reviewer: failed to launch {args.claude_bin}: {exc}; "
