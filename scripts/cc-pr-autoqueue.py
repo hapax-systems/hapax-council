@@ -709,6 +709,47 @@ def _gh_api_get_json(
         return False, None, f"invalid_json:{exc.__class__.__name__}"
 
 
+def _gh_pr_diff_chars(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> int | None:
+    """Full PR diff size in chars (the dispatcher's ``truncate_diff`` measure), or
+    None when the diff cannot be fetched — the caller treats None as unmeasurable
+    and fails closed."""
+
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    cmd = ["gh", "pr", "diff", str(pr_number), "--repo", repo]
+    try:
+        proc = runner(
+            cmd,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return len(proc.stdout or "")
+
+
+def _default_diff_size_measurer(pr_number: int, head_sha: str) -> int | None:
+    """Gate measurer for pre-coverage dossiers (seat ruling 2026-09-26).
+
+    ``head_sha`` is the dossier head the gate asks about; the live measure is the
+    current head's diff, which the gate equates with the dossier head — a stale
+    head blocks on ``review_dossier_stale_head`` regardless of derived coverage.
+    """
+
+    return _gh_pr_diff_chars(pr_number)
+
+
 def _merge_queue_method_from_ruleset(ruleset: Any) -> tuple[str | None, str | None]:
     if not isinstance(ruleset, dict):
         return None, None
@@ -2615,6 +2656,7 @@ def _task_blockers(
             pr_number=open_pr_number,
             changed_files=changed_files or (),
             changed_file_count=changed_file_count,
+            diff_size_measurer=_default_diff_size_measurer,
         )
     )
 
@@ -2672,6 +2714,7 @@ def _review_team_quorum_evidence_blockers(
         changed_files=changed_files or (),
         changed_file_count=changed_file_count,
         floor_release_out=floor_release,
+        diff_size_measurer=_default_diff_size_measurer,
     )
     if floor_release:
         # The seat's T2 rule admits a merge below the family floor; it is not the

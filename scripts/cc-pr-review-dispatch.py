@@ -2622,16 +2622,40 @@ def dispatch_reviews(
     *,
     task_id: str | None = None,
     task_hash: str | None = None,
+    diff_full_bytes: int | None = None,
+    diff_delivered_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
     """Run all seats in parallel; reviewer failures become named non-accepts."""
 
     family_cfgs = {entry["family"]: entry for entry in review_team.review_family_entries(registry)}
+
+    def _stamp_diff_coverage(review: dict[str, Any]) -> None:
+        # Diff coverage is dispatcher-measured and written here ONLY (M142 corollary):
+        # a seat can never attest its own coverage. When the caller did not measure a
+        # diff, any stale fields are stripped so coverage stays unrecorded (fail-closed
+        # at the quorum gate) rather than forged or inherited.
+        coverage_fields = (
+            review_team.DIFF_FULL_BYTES_FIELD,
+            review_team.DIFF_DELIVERED_BYTES_FIELD,
+            review_team.DIFF_FULL_FETCH_WITNESSED_FIELD,
+        )
+        if diff_full_bytes is None or diff_delivered_bytes is None:
+            for field in coverage_fields:
+                review.pop(field, None)
+            return
+        review[review_team.DIFF_FULL_BYTES_FIELD] = diff_full_bytes
+        review[review_team.DIFF_DELIVERED_BYTES_FIELD] = diff_delivered_bytes
+        # No current registry seat is tool-using: none can have fetched the full diff
+        # itself. A tool-using route's wrapper must witness the fetch before this
+        # flips; reviewer output never sets it.
+        review[review_team.DIFF_FULL_FETCH_WITNESSED_FIELD] = False
 
     def run_one(index: int) -> dict[str, Any]:
         started = time.monotonic()
         review = _run_one_seat(index)
         # Measured per seat, so reviewer timeouts are set from data (M109-dispatch).
         review["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        _stamp_diff_coverage(review)
         return review
 
     def _run_one_seat(index: int) -> dict[str, Any]:
@@ -3884,6 +3908,8 @@ def review_pr(
         reviewer_runner,
         task_id=task_ids[0] if len(task_ids) == 1 else None,
         task_hash=task_hash,
+        diff_full_bytes=len(pr_diff.encode("utf-8")),
+        diff_delivered_bytes=len(diff.encode("utf-8")),
     )
     update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []
@@ -3940,9 +3966,20 @@ def review_pr(
                     "reviewer-internal-error",
                 )
             ]
-            dossier["no_quorum_cause"] = (
-                f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"
-            )
+            partial = [
+                str(esc.get("reviewer"))
+                for esc in dossier.get("escalations") or []
+                if esc.get("kind") == "partial-coverage"
+            ]
+            if dead:
+                dossier["no_quorum_cause"] = f"dead reviewers: {', '.join(dead)}"
+            elif partial:
+                dossier["no_quorum_cause"] = (
+                    "partial diff coverage (truncated diff, no witnessed full fetch): "
+                    + ", ".join(partial)
+                )
+            else:
+                dossier["no_quorum_cause"] = "verdict split below quorum"
         if dossier["review_team_verdict"] == review_team.QUORUM_ACCEPT and dossier.get(
             "degraded_family_outage"
         ):
@@ -4315,8 +4352,18 @@ def review_artifact(
         )
         for seat in constitution.seats
     ]
+    # build_artifact_manifest refuses an oversize set rather than truncating it, so the
+    # delivered review payload is whole by construction (full == delivered).
+    artifact_payload_bytes = sum(len(text.encode("utf-8")) for text in contents.values())
     reviews = dispatch_reviews(
-        constitution, prompts, registry, reviewer_runner, task_id=task_id, task_hash=task_hash
+        constitution,
+        prompts,
+        registry,
+        reviewer_runner,
+        task_id=task_id,
+        task_hash=task_hash,
+        diff_full_bytes=artifact_payload_bytes,
+        diff_delivered_bytes=artifact_payload_bytes,
     )
     update_family_outage(reviews, now_iso)
     dossier = review_team.synthesize_dossier(

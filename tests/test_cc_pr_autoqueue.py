@@ -86,6 +86,7 @@ def _write_review_dossier(
     verdict: str = "quorum-accept",
     reviewers: list[dict[str, Any]] | None = None,
     folder: str = "active",
+    stamp_coverage: bool = True,
 ) -> Path:
     if reviewers is None:
         # Three distinct families, every seat voting: the distinct-family floor
@@ -101,6 +102,13 @@ def _write_review_dossier(
             }
             for family in ("codex", "claude", "gemini")
         ]
+    if stamp_coverage:
+        # The dispatcher stamps per-seat diff coverage on every review record; these
+        # fixtures record full coverage (delivered == full), a small PR's dossier shape.
+        for review in reviewers:
+            review.setdefault("diff_full_bytes", 1000)
+            review.setdefault("diff_delivered_bytes", 1000)
+            review.setdefault("diff_full_fetch_witnessed", False)
     accepts = sum(1 for r in reviewers if r["verdict"] in ("accept", "accept-with-findings"))
     dossier = {
         "dossier_schema": 1,
@@ -160,6 +168,48 @@ class TestReviewTeamGate:
         _write_review_dossier(vault, "task-a", head_sha="sha-42")
         decision = self._classify(vault, _pr(42))
         assert decision.action == "queue", decision.reasons
+
+    def test_unstamped_dossier_on_small_diff_queues(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Seat ruling 2026-09-26: a pre-coverage dossier derives coverage from the
+        # measured full diff size; at or under the dispatcher's cap the seats saw
+        # the whole diff, so certification stands.
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        monkeypatch.setattr(autoqueue, "_default_diff_size_measurer", lambda _pr, _sha: 48_000)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42", stamp_coverage=False)
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == "queue", decision.reasons
+
+    def test_unstamped_dossier_on_oversize_diff_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        monkeypatch.setattr(autoqueue, "_default_diff_size_measurer", lambda _pr, _sha: 235_477)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42", stamp_coverage=False)
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == "blocked"
+        assert any(
+            r.startswith("review_diff_truncated_split_or_full_fetch:") for r in decision.reasons
+        )
+        assert "review_seat_partial_coverage:codex-1" in decision.reasons
+
+    def test_unstamped_dossier_unmeasurable_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        monkeypatch.setattr(autoqueue, "_default_diff_size_measurer", lambda _pr, _sha: None)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42", stamp_coverage=False)
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == "blocked"
+        assert "review_seat_partial_coverage:codex-1" in decision.reasons
+        assert not any("split_or_full_fetch" in r for r in decision.reasons)
 
     def test_changed_file_scope_mismatch_blocks(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)

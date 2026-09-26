@@ -727,6 +727,48 @@ class TestApply:
         assert len(families) >= 2
         assert dossier["review_team_verdict"] == "quorum-accept"
 
+    def test_every_seat_records_diff_coverage(self, tmp_path: Path) -> None:
+        result, gh, _, note = _review(tmp_path)
+        assert result["status"] == "dispatched"
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        full = len(gh.diff.encode("utf-8"))
+        assert full <= dispatch.MAX_DIFF_CHARS  # the fixture diff is delivered whole
+        for review in dossier["reviewers"]:
+            assert review["diff_full_bytes"] == full
+            assert review["diff_delivered_bytes"] == full
+            assert review["diff_full_fetch_witnessed"] is False
+        assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_coverage_derivation_threshold_matches_the_dispatcher_cap(self) -> None:
+        # review_team cannot import the dispatcher (it is the lower-level module), so
+        # the derivation threshold is mirrored there and pinned equal here: the gate's
+        # "the seats saw the whole diff" boundary IS the dispatcher's truncation point.
+        assert dispatch.review_team.DIFF_FULL_COVERAGE_MAX_CHARS == dispatch.MAX_DIFF_CHARS
+
+    def test_oversize_diff_marks_seats_partial_and_denies_quorum(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+        gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "".join(
+            f"+line {i} of an oversize diff payload\n" for i in range(4000)
+        )
+        assert len(gh.diff.encode("utf-8")) > dispatch.MAX_DIFF_CHARS
+        result, _, _, note = _review(tmp_path, gh=gh)
+        assert result["status"] == "dispatched"
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        full = len(gh.diff.encode("utf-8"))
+        for review in dossier["reviewers"]:
+            assert review["diff_full_bytes"] == full
+            assert review["diff_delivered_bytes"] < full
+            assert review["diff_full_fetch_witnessed"] is False
+        assert dossier["accept_count"] == 0
+        assert dossier["review_team_verdict"] == "no-quorum"
+        partial = [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+        assert {e["reviewer"] for e in partial} == {r["id"] for r in dossier["reviewers"]}
+        assert dossier["no_quorum_cause"].startswith("partial diff coverage")
+
     def test_blocked_agy_route_is_not_invoked_as_reviewer(self, tmp_path: Path) -> None:
         result, _, reviewers, note = _review(
             tmp_path,
