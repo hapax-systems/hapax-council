@@ -1,9 +1,9 @@
-"""Render narration audio for Alexis demo v2 — expanded to 45 minutes.
+"""Render narration audio for principal-a2 demo v2 — expanded to 45 minutes.
 
 Hand-crafted narration. No LLM generation. Operator-approved voice.
 Rendered via ElevenLabs (or Kokoro fallback), then choreographed via Opus.
 
-Usage: uv run python scripts/render_alexis_demo_v2.py
+Usage: uv run python scripts/render_principal_a2_demo_v2.py
 """
 
 from __future__ import annotations
@@ -653,7 +653,7 @@ SCENES: list[tuple[str, str]] = [
 ]
 # fmt: on
 
-DEMO_NAME = "alexis-v2-demo"
+DEMO_NAME = "principal-a2-v2-demo"
 
 
 def _slugify(text: str) -> str:
@@ -674,7 +674,7 @@ async def main() -> None:
 
     total_words = sum(len(text.split()) for _, text in SCENES)
     print(
-        f"Alexis demo v2: {len(SCENES)} scenes, ~{total_words} words (~{total_words / 140:.0f} min at 140 WPM)"
+        f"principal-a2 demo v2: {len(SCENES)} scenes, ~{total_words} words (~{total_words / 140:.0f} min at 140 WPM)"
     )
 
     # ── Render audio ──

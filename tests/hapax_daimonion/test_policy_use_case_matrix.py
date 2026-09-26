@@ -9,7 +9,7 @@ Each assertion within a test is a column check.
 
 Use cases (14 rows):
   Operator alone:   idle, coding, production, meeting
-  With guest:       consented, unconsented, child (Simon/Agatha)
+  With guest:       consented, unconsented, child (principal-c2/principal-c1)
   Guest alone:      adult guest, child guest
   Edge cases:       no env, late evening, long session, multi-signal
 
@@ -211,7 +211,7 @@ class TestOperatorWithGuestMatrix:
         _has_format(p)
 
     def test_consented_child(self):
-        """Operator + child (Simon/Agatha): operator style + child scaffolding."""
+        """Operator + child (principal-c2/principal-c1): operator style + child scaffolding."""
         env = FakeEnv(consent_phase="consented", face_count=2)
         p = get_policy(env=env)
         _has_dignity_floor(p)

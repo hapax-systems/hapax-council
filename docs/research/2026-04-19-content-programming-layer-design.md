@@ -707,7 +707,7 @@ still rejects it. The programme layer is consent-*additive* — it can
 forbid further (an `INTERLUDE-ANONYMOUS` programme forbids any
 capability with `medium=visual`) but cannot permit what the affordance
 gate rejects. New: programmes may declare a `consent_scope` (e.g.
-`"guest-jason-2026-04-19"`) which the manager checks at programme
+`"guest-principal-a1-2026-04-19"`) which the manager checks at programme
 start; if the contract is not active, the programme aborts before
 starting. Mid-programme contract expiry fires an abort predicate and
 the manager transitions to a consent-safe variant.

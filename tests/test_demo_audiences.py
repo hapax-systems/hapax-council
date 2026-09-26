@@ -19,7 +19,7 @@ class TestLoadAudiences:
         """Built-in audiences file loads known dossiers."""
         audiences = load_audiences()
         assert len(audiences) >= 2
-        assert "alexis" in audiences
+        assert "principal-a2" in audiences
         assert "chris b" in audiences
 
     def test_load_audiences_from_fixture(self, tmp_path: Path) -> None:

@@ -240,7 +240,7 @@ class TestConsentRevocationTieIn:
                 "--active-condition-pointer",
                 str(tmp_path / "no-pointer.txt"),
                 "--consent-revoked-for",
-                "simon",
+                "principal-c2",
                 "--contracts-dir",
                 str(contracts_dir),
             ]
@@ -262,8 +262,8 @@ class TestConsentRevocationTieIn:
         contracts_dir = tmp_path / "contracts"
         _write_contract(
             contracts_dir,
-            contract_id="simon-biometric",
-            person_id="simon",
+            contract_id="principal-c2-biometric",
+            person_id="principal-c2",
             active=False,
         )
         rc = archive_purge.main(
@@ -276,7 +276,7 @@ class TestConsentRevocationTieIn:
                 "--active-condition-pointer",
                 str(tmp_path / "no-pointer.txt"),
                 "--consent-revoked-for",
-                "simon",
+                "principal-c2",
                 "--contracts-dir",
                 str(contracts_dir),
             ]
@@ -296,8 +296,8 @@ class TestConsentRevocationTieIn:
         contracts_dir = tmp_path / "contracts"
         _write_contract(
             contracts_dir,
-            contract_id="simon-biometric",
-            person_id="simon",
+            contract_id="principal-c2-biometric",
+            person_id="principal-c2",
             active=True,
         )
         rc = archive_purge.main(
@@ -310,7 +310,7 @@ class TestConsentRevocationTieIn:
                 "--active-condition-pointer",
                 str(tmp_path / "no-pointer.txt"),
                 "--consent-revoked-for",
-                "simon",
+                "principal-c2",
                 "--contracts-dir",
                 str(contracts_dir),
             ]
@@ -336,18 +336,18 @@ class TestConsentRevocationTieIn:
                 "--active-condition-pointer",
                 str(tmp_path / "no-pointer.txt"),
                 "--consent-revoked-for",
-                "simon",
+                "principal-c2",
                 "--contracts-dir",
                 str(contracts_dir),
                 "--reason",
-                "guardian revoked simon scope",
+                "guardian revoked principal-c2 scope",
             ]
         )
         log_path = root / "purge.log"
         assert log_path.exists()
         entries = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
-        assert entries[-1]["consent_revoked_for"] == "simon"
-        assert entries[-1]["reason"] == "guardian revoked simon scope"
+        assert entries[-1]["consent_revoked_for"] == "principal-c2"
+        assert entries[-1]["reason"] == "guardian revoked principal-c2 scope"
 
     def test_audit_log_omits_consent_field_when_not_set(self, tmp_path: Path) -> None:
         root, _, _ = _seed_archive(tmp_path)

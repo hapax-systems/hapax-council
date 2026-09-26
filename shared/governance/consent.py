@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 _CONTRACTS_DIR = Path(__file__).parent.parent.parent / "axioms" / "contracts"
 
-REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"simon", "agatha"})
+REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"principal-c2", "principal-c1"})
 
 
 class ConsentRegistry(_BaseConsentRegistry):
