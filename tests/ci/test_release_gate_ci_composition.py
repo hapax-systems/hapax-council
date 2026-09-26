@@ -412,7 +412,7 @@ def test_consent_coupled_suites_job_executes_the_selected_suites_fail_closed() -
     job = _ci()["jobs"]["consent-coupled-suites"]
     steps = {step.get("id"): step for step in job["steps"] if step.get("id")}
     select = str(steps["select"]["run"])
-    assert "coupled_consent_suites_for" in select
+    assert "python -m shared.release_gate --coupled-consent-suites" in select
     assert "absent at head" in select
     assert "set -euo pipefail" in select
     runs = [step for step in job["steps"] if re.search(r"\bpytest\b", str(step.get("run", "")))]

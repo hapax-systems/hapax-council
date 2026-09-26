@@ -1139,3 +1139,24 @@ def assess_release_auto_arm_estate(
             if uncovered:
                 blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))
     return _dataclass_replace(base, blockers=tuple(blockers), eligible=not blockers)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI for the consent-coupled-suites CI job.
+
+    `python -m shared.release_gate --coupled-consent-suites CHANGED_FILES`
+    reads the change set (one path per line) and prints the space-separated
+    consent suites the job must execute; an empty line means none.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="release_gate")
+    parser.add_argument("--coupled-consent-suites", metavar="CHANGED_FILES", required=True)
+    args = parser.parse_args(argv)
+    paths = Path(args.coupled_consent_suites).read_text(encoding="utf-8").splitlines()
+    print(" ".join(coupled_consent_suites_for(paths)))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

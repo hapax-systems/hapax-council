@@ -614,12 +614,8 @@ jobs:
             exit 1
           fi
           suites="$(
-            uv run --no-project --with pyyaml --with pydantic python -c '
-          import sys
-          from shared.release_gate import coupled_consent_suites_for
-          paths = open(sys.argv[1], encoding="utf-8").read().splitlines()
-          print(" ".join(coupled_consent_suites_for(paths)))
-          ' "$changed_files"
+            uv run --no-project --with pyyaml --with pydantic \
+              python -m shared.release_gate --coupled-consent-suites "$changed_files"
           )"
           for suite in $suites; do
             if [ ! -f "$suite" ]; then

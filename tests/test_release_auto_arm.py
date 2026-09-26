@@ -29,6 +29,7 @@ from shared.release_gate import (
     assess_release_auto_arm_estate,
     coupled_consent_suites_for,
 )
+from shared.release_gate import main as release_gate_main
 from shared.sdlc_lifecycle import (
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
@@ -560,6 +561,20 @@ def test_consent_coupled_admission_ignores_unrelated_deletions() -> None:
         )
         == set()
     )
+
+
+def test_release_gate_cli_prints_the_coupled_consent_suites(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The consent-coupled-suites CI job's entrypoint: a change-set file in,
+    # the space-separated suites to execute out (empty for no coupled path).
+    changed = tmp_path / "changed.txt"
+    changed.write_text(f"{_COMPOSITOR_SOURCES[0]}\nshared/foo.py\n{_WRITER}\n", encoding="utf-8")
+    assert release_gate_main(["--coupled-consent-suites", str(changed)]) == 0
+    assert capsys.readouterr().out == f"{_WRITER_SUITE} {_COMPOSITOR_SUITE}\n"
+    changed.write_text("shared/foo.py\n", encoding="utf-8")
+    assert release_gate_main(["--coupled-consent-suites", str(changed)]) == 0
+    assert capsys.readouterr().out == "\n"
 
 
 def test_consent_coupled_production_sources_exist() -> None:
