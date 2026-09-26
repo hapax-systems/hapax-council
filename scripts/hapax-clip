@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# hapax-clip <target> [FILE|-]
+# Push a paste-safe payload to a tailnet clipboard. See scripts/hapax_clip.py.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+exec python3 "$here/hapax_clip.py" "$@"
