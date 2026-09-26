@@ -1242,14 +1242,27 @@ def _review(
     verdict: str = "accept",
     findings: list[dict] | None = None,
     checklist: dict | None = None,
+    *,
+    diff_full_bytes: int | None = 1000,
+    diff_delivered_bytes: int | None = None,
+    diff_full_fetch_witnessed: bool = False,
 ) -> dict:
-    return {
+    record = {
         "id": reviewer_id,
         "family": family,
         "verdict": verdict,
         "findings": findings or [],
         "checklist": (checklist if checklist is not None else ALWAYS_ON_CHECKLIST),
     }
+    # The dispatcher stamps per-seat diff coverage on every review record;
+    # diff_full_bytes=None builds a pre-coverage (legacy) record shape.
+    if diff_full_bytes is not None:
+        record["diff_full_bytes"] = diff_full_bytes
+        record["diff_delivered_bytes"] = (
+            diff_full_bytes if diff_delivered_bytes is None else diff_delivered_bytes
+        )
+        record["diff_full_fetch_witnessed"] = diff_full_fetch_witnessed
+    return record
 
 
 def _critical(title: str = "named critical", resolved: bool = False) -> dict:
@@ -1456,6 +1469,162 @@ def _write_dossier(tmp_path: Path, task_id: str, dossier: dict) -> Path:
     dossier_path = tmp_path / f"{task_id}.review-dossier.yaml"
     dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
     return note
+
+
+class TestDiffCoverageQuorum:
+    """M142 corollary: a seat that reviewed a truncated diff may stop a merge but
+    never certify one — partial evidence does not count toward quorum."""
+
+    def _frontmatter(self, task_id: str = "task-x") -> dict:
+        return {"task_id": task_id}
+
+    def test_truncated_diff_accept_does_not_reach_quorum(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept", diff_delivered_bytes=220),
+                _review("claude-1", "claude", "accept", diff_delivered_bytes=220),
+            ],
+        )
+        assert dossier["accept_count"] == 1
+        assert dossier["review_team_verdict"] == "no-quorum"
+        partial = [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+        assert {e["reviewer"] for e in partial} == {"gemini-1", "claude-1"}
+        by_id = {r["id"]: r for r in dossier["reviewers"]}
+        assert by_id["gemini-1"]["diff_full_bytes"] == 1000
+        assert by_id["gemini-1"]["diff_delivered_bytes"] == 220
+        assert by_id["gemini-1"]["diff_full_fetch_witnessed"] is False
+
+    def test_full_fetch_witnessed_accept_reaches_quorum(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review(
+                    "gemini-1",
+                    "gemini",
+                    "accept",
+                    diff_delivered_bytes=220,
+                    diff_full_fetch_witnessed=True,
+                ),
+                _review(
+                    "claude-1",
+                    "claude",
+                    "accept",
+                    diff_delivered_bytes=220,
+                    diff_full_fetch_witnessed=True,
+                ),
+            ],
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert not [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+
+    def test_partial_seat_critical_still_blocks(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block", [_critical()], diff_delivered_bytes=220),
+            ],
+        )
+        assert dossier["review_team_verdict"] == "blocked"
+        assert any(e["kind"] == "unresolved-critical" for e in dossier["escalations"])
+
+    def test_small_pr_full_coverage_unchanged(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", diff_full_bytes=300),
+                _review("gemini-1", "gemini", "accept", diff_full_bytes=300),
+                _review("claude-1", "claude", "accept", diff_full_bytes=300),
+            ],
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert not [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+
+    def test_unrecorded_coverage_accept_does_not_certify(self) -> None:
+        # Pre-coverage dossiers carry no proof the seat saw the whole diff; fail closed.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", diff_full_bytes=None),
+                _review("gemini-1", "gemini", "accept", diff_full_bytes=None),
+                _review("claude-1", "claude", "accept", diff_full_bytes=None),
+            ],
+        )
+        assert dossier["accept_count"] == 0
+        assert dossier["review_team_verdict"] == "no-quorum"
+        partial = [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+        assert len(partial) == 3
+
+    def test_partial_accept_names_seat_and_oversize_remedy_in_blockers(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept", diff_delivered_bytes=220),
+                _review("claude-1", "claude", "accept", diff_delivered_bytes=220),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_seat_partial_coverage:gemini-1" in blockers
+        assert "review_seat_partial_coverage:claude-1" in blockers
+        assert "review_diff_truncated_split_or_full_fetch:220/1000" in blockers
+        assert "review_dossier_quorum_not_met:1/2" in blockers
+
+    def test_full_fetch_witnessed_dossier_passes_gate(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review(
+                    "gemini-1",
+                    "gemini",
+                    "accept",
+                    diff_delivered_bytes=220,
+                    diff_full_fetch_witnessed=True,
+                ),
+                _review(
+                    "claude-1",
+                    "claude",
+                    "accept",
+                    diff_delivered_bytes=220,
+                    diff_full_fetch_witnessed=True,
+                ),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert not [b for b in blockers if "partial_coverage" in b or "split_or_full_fetch" in b]
+
+    def test_unrecorded_coverage_blocks_without_oversize_remedy(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", diff_full_bytes=None),
+                _review("gemini-1", "gemini", "accept", diff_full_bytes=None),
+                _review("claude-1", "claude", "accept", diff_full_bytes=None),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_seat_partial_coverage:codex-1" in blockers
+        assert not [b for b in blockers if "split_or_full_fetch" in b]
 
 
 class TestVerdictBlockers:

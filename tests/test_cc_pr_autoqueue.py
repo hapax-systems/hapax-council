@@ -101,6 +101,12 @@ def _write_review_dossier(
             }
             for family in ("codex", "claude", "gemini")
         ]
+    # The dispatcher stamps per-seat diff coverage on every review record; these
+    # fixtures record full coverage (delivered == full), a small PR's dossier shape.
+    for review in reviewers:
+        review.setdefault("diff_full_bytes", 1000)
+        review.setdefault("diff_delivered_bytes", 1000)
+        review.setdefault("diff_full_fetch_witnessed", False)
     accepts = sum(1 for r in reviewers if r["verdict"] in ("accept", "accept-with-findings"))
     dossier = {
         "dossier_schema": 1,

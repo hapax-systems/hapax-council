@@ -134,6 +134,18 @@ FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-r
 VOTING_VERDICTS = frozenset({"accept", "accept-with-findings", "block"})
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
 
+#: Per-seat diff-coverage fields on a review record (M142 corollary: a seat that
+#: reviewed a truncated diff may stop a merge but never certify one). They are
+#: written by dispatcher/wrapper machinery ONLY — never parsed from reviewer
+#: output (the strict review-yaml key set already refuses extra keys there):
+#: bytes of the full PR diff, bytes of the diff actually delivered into the
+#: seat's prompt, and whether the seat fetched the full diff itself (tool-using
+#: seats only, witnessed by the fetch). No current registry seat is tool-using,
+#: so the dispatcher records ``diff_full_fetch_witnessed: False`` for every seat.
+DIFF_FULL_BYTES_FIELD = "diff_full_bytes"
+DIFF_DELIVERED_BYTES_FIELD = "diff_delivered_bytes"
+DIFF_FULL_FETCH_WITNESSED_FIELD = "diff_full_fetch_witnessed"
+
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
 #: canonical fixture; the rest cover the codex/gemini/glm families' phrasings).
 _RESET_TIME_SHAPE = (
@@ -1616,6 +1628,51 @@ def _checklist_complete_accepts(
     return [r for r in _accepting(reviews) if not _review_checklist_blockers(r, lenses)]
 
 
+def seat_partial_diff_coverage(review: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The seat's partial-coverage record, or ``None`` when the review may certify.
+
+    A review certifies only on the whole diff: the delivered diff bytes equal
+    the full diff bytes, or trusted machinery witnessed the seat fetch the full
+    diff itself (tool-using seats only; the witness field is written by the
+    dispatcher/wrapper, never by reviewer output). Unrecorded or malformed
+    coverage fails closed — coverage that is not recorded cannot be proven full
+    (M142 corollary: partial evidence may stop a merge, never certify one).
+    """
+
+    if review.get(DIFF_FULL_FETCH_WITNESSED_FIELD) is True:
+        return None
+    full = review.get(DIFF_FULL_BYTES_FIELD)
+    delivered = review.get(DIFF_DELIVERED_BYTES_FIELD)
+    if (
+        not isinstance(full, int)
+        or isinstance(full, bool)
+        or not isinstance(delivered, int)
+        or isinstance(delivered, bool)
+        or full < 0
+        or delivered < 0
+    ):
+        return {"kind": "unrecorded", "delivered_bytes": None, "full_bytes": None}
+    if delivered >= full:
+        return None
+    return {"kind": "truncated", "delivered_bytes": delivered, "full_bytes": full}
+
+
+def _split_partial_coverage_accepts(
+    accepts: Sequence[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], list[tuple[Mapping[str, Any], dict[str, Any]]]]:
+    """(quorum-counting accepts, (partial accept, coverage) pairs)."""
+
+    counting: list[Mapping[str, Any]] = []
+    partial: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
+    for review in accepts:
+        coverage = seat_partial_diff_coverage(review)
+        if coverage is None:
+            counting.append(review)
+        else:
+            partial.append((review, coverage))
+    return counting, partial
+
+
 def _required_team_size(sizing: Mapping[str, Any]) -> int:
     return int(sizing.get("team_size") or sizing.get("team_size_min") or 1)
 
@@ -1693,7 +1750,9 @@ def synthesize_dossier(
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
     quorum_reviews = _reviews_for_quorum(reviews, criticals, phantom_criticals)
-    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
+    accepts, partial_accepts = _split_partial_coverage_accepts(
+        _checklist_complete_accepts(quorum_reviews, lenses)
+    )
     accept_families = {str(r.get("family")) for r in accepts}
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
@@ -1773,6 +1832,23 @@ def synthesize_dossier(
                     "detail": "an accept verdict names a critical finding; the critical stands",
                 }
             )
+    for review, coverage in partial_accepts:
+        if coverage["kind"] == "truncated":
+            detail = (
+                "accept excluded from quorum: the seat reviewed "
+                f"{coverage['delivered_bytes']}/{coverage['full_bytes']} diff bytes "
+                "and no full-diff fetch was witnessed"
+            )
+        else:
+            detail = "accept excluded from quorum: diff coverage unrecorded"
+        escalations.append(
+            {
+                "kind": "partial-coverage",
+                "reviewer": str(review.get("id")),
+                "family": str(review.get("family")),
+                "detail": detail,
+            }
+        )
     family_floor = _family_floor(reviews)
 
     if criticals and sizing.get("block_on_named_critical", True):
@@ -1821,7 +1897,9 @@ def _family_floor(reviews: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
     A walled, dead, empty or unparseable seat is an outage, so its family did not review;
     a reseated family is lost coverage. Either leaves the team below the floor it was
-    constituted at, and a team below its floor never reaches quorum-accept.
+    constituted at, and a team below its floor never reaches quorum-accept. A partial-coverage
+    accept does not vote here either (a seat that saw a truncated diff did not review the PR);
+    a partial-coverage BLOCK still votes — partial evidence may stop a merge.
     """
 
     seated = [str(r.get("family")) for r in reviews]
@@ -1830,6 +1908,10 @@ def _family_floor(reviews: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             str(r.get("family"))
             for r in reviews
             if str(r.get("verdict") or "").lower() in VOTING_VERDICTS
+            and not (
+                str(r.get("verdict") or "").lower() in ACCEPT_VERDICTS
+                and seat_partial_diff_coverage(r) is not None
+            )
         }
     )
     return {
@@ -2233,7 +2315,25 @@ def _dossier_validity_blockers(
         blockers.extend(_review_checklist_blockers(review, lenses))
 
     quorum_reviews = _reviews_for_quorum(reviews, criticals, phantoms)
-    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
+    accepts, partial_accepts = _split_partial_coverage_accepts(
+        _checklist_complete_accepts(quorum_reviews, lenses)
+    )
+    truncated_coverages: list[dict[str, Any]] = []
+    for review, coverage in partial_accepts:
+        # Named per seat (M142 corollary): a partial accept never certifies, and the
+        # autoqueue blocker text says which seat reviewed a truncated diff. A block or
+        # critical from the same seat still counts above — partial evidence may stop
+        # a merge, never certify one.
+        blockers.append(f"review_seat_partial_coverage:{review.get('id')}")
+        if coverage["kind"] == "truncated":
+            truncated_coverages.append(coverage)
+    if truncated_coverages:
+        # The oversize PR's named remedy: split it, or seat tool-using full-fetch
+        # reviewers. There is no silent pass on a truncated diff.
+        blockers.append(
+            "review_diff_truncated_split_or_full_fetch:"
+            f"{truncated_coverages[0]['delivered_bytes']}/{truncated_coverages[0]['full_bytes']}"
+        )
     floor_release = None
     if floor_blocker_at is not None:
         floor_release = t2_family_floor_release(
