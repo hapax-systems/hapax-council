@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import http.server
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -30,6 +31,20 @@ def _review_team():
     module = importlib.util.module_from_spec(spec)
     sys.modules["review_team"] = module
     spec.loader.exec_module(module)
+    return module
+
+
+def _muse_reviewer():
+    if "hapax_muse_reviewer" in sys.modules:
+        return sys.modules["hapax_muse_reviewer"]
+    loader = importlib.machinery.SourceFileLoader(
+        "hapax_muse_reviewer", str(SCRIPTS / "hapax-muse-reviewer")
+    )
+    spec = importlib.util.spec_from_loader("hapax_muse_reviewer", loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["hapax_muse_reviewer"] = module
+    loader.exec_module(module)
     return module
 
 
@@ -75,6 +90,51 @@ def _fake_cli(tmp_path: Path, name: str) -> tuple[Path, Path]:
     return script, record
 
 
+def _fake_muse_host(tmp_path: Path) -> tuple[Path, Path]:
+    """A fake muse that enforces the runtime host's measured start rule.
+
+    muse-bin 1.4.0-R4161.1 (measured 2026-09-25, the muse family-out latch) walks up
+    from the workspace for a `.git` entry and refuses to start when the
+    process-lifetime tool-output root it derives from TMPDIR lands inside that
+    workspace-or-repository.
+    """
+
+    record = tmp_path / "muse-host.record.json"
+    script = tmp_path / "muse"
+    script.write_text(
+        "#!" + sys.executable + "\n"
+        "import json, os, sys\n"
+        "argv = sys.argv[1:]\n"
+        "workspace = os.path.realpath(argv[argv.index('--workspace') + 1])\n"
+        "base = None\n"
+        "cur = workspace\n"
+        "while True:\n"
+        "    if os.path.exists(os.path.join(cur, '.git')):\n"
+        "        base = cur\n"
+        "        break\n"
+        "    parent = os.path.dirname(cur)\n"
+        "    if parent == cur:\n"
+        "        break\n"
+        "    cur = parent\n"
+        "base = base or workspace\n"
+        "raw_tmpdir = os.environ.get('TMPDIR') or '/tmp'\n"
+        "tool = os.path.join(os.path.realpath(raw_tmpdir), 'tbh-process-lifetime-memory-XXXX')\n"
+        "if os.path.commonpath([tool, base]) == base:\n"
+        "    sys.stderr.write(\n"
+        "        \"runtime host failed to start: TMPDIR '%s' produced process-lifetime \"\n"
+        "        \"tool-output root '%s' inside the configured workspace or repository\\n\"\n"
+        "        % (raw_tmpdir, tool))\n"
+        "    sys.exit(1)\n"
+        "body = open(argv[argv.index('--prompt-file') + 1]).read()\n"
+        f"json.dump({{'argv': argv, 'body': body, 'cwd': os.getcwd(), 'tmpdir': raw_tmpdir, "
+        f"'prompt_file': argv[argv.index('--prompt-file') + 1]}}, open({str(record)!r}, 'w'))\n"
+        f"sys.stdout.write({FENCE!r})\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return script, record
+
+
 class TestMuseReviewer:
     def test_runs_read_only_in_an_empty_workspace_and_forwards_the_reply(
         self, tmp_path: Path
@@ -112,6 +172,68 @@ class TestMuseReviewer:
             {"HAPAX_MUSE_BIN": "", "PATH": str(tmp_path)},
         )
         _assert_route_outage(result)
+
+    def test_estate_tmpdir_under_a_repository_never_reaches_the_muse_child(
+        self, tmp_path: Path
+    ) -> None:
+        # Red-first for the 2026-09-25 family-out latch: an estate TMPDIR carrying a
+        # `.git` entry (/store-fast/tmp measured) makes the runtime host refuse to
+        # start; the wrapper must hand the child a pinned TMPDIR outside its
+        # workspace instead of the estate's, and must not unset the estate TMPDIR
+        # for its own scratch.
+        fake, record = _fake_muse_host(tmp_path)
+        estate = tmp_path / "estate-tmp"
+        (estate / ".git").mkdir(parents=True)
+        result = _run(
+            "hapax-muse-reviewer",
+            "REVIEW THIS DIFF",
+            {"HAPAX_MUSE_BIN": str(fake), "TMPDIR": str(estate)},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == FENCE
+        seen = json.loads(record.read_text())
+        argv = seen["argv"]
+        workspace = Path(argv[argv.index("--workspace") + 1])
+        child_tmpdir = Path(seen["tmpdir"])
+        assert child_tmpdir == Path("/tmp")
+        assert child_tmpdir not in workspace.parents and child_tmpdir != workspace
+        assert workspace not in child_tmpdir.parents
+        assert seen["prompt_file"].startswith(str(estate) + "/")
+
+    def test_muse_tmpdir_overlapping_the_workspace_is_refused_before_launch(
+        self, tmp_path: Path
+    ) -> None:
+        estate = tmp_path / "estate-tmp"
+        (estate / ".git").mkdir(parents=True)
+        fake, record = _fake_muse_host(tmp_path)
+        result = _run(
+            "hapax-muse-reviewer",
+            "REVIEW",
+            {
+                "HAPAX_MUSE_BIN": str(fake),
+                "TMPDIR": str(estate),
+                "HAPAX_MUSE_TMPDIR": str(estate / "nested-tmp"),
+            },
+        )
+        _assert_route_outage(result)
+        assert "TMPDIR" in result.stderr and "workspace" in result.stderr
+        assert not record.exists()
+
+    def test_tmpdir_workspace_conflict_matches_the_measured_host_rule(self, tmp_path: Path) -> None:
+        conflict = _muse_reviewer().tmpdir_workspace_conflict
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        workspace = repo / "review" / "workspace"
+        workspace.mkdir(parents=True)
+        assert conflict(workspace, workspace) is not None
+        assert conflict(repo / "tmp", workspace) is not None
+        assert conflict(workspace / "tmp", workspace) is not None
+        # A TMPDIR that merely contains the workspace-or-repository puts the
+        # tool-output root outside it; the host starts (the TMPDIR-unset shape).
+        assert conflict(tmp_path, workspace) is None
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        assert conflict(elsewhere, workspace) is None
 
 
 # Fixture keys: stand-ins, not credentials. The whoami cache is keyed by the first 32 hex of
