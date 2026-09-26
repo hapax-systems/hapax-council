@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -404,6 +405,45 @@ def test_the_auditor_never_writes_the_catalogue_ledger_or_owner_rows(tmp_path: P
     assert rc == 0
     for p, data in before.items():
         assert p.read_bytes() == data, f"{p.name} was rewritten"
+
+
+def _review_team():
+    path = REPO_ROOT / "scripts" / "review_team.py"
+    spec = importlib.util.spec_from_file_location("review_team_for_em_audit", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve their module through sys.modules
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_minted_row_is_linkable_by_the_review_dispatcher(tmp_path: Path) -> None:
+    """A minted row must be reviewable once a PR is set on it.
+
+    `review_team.find_task_notes` links a PR only to a row declaring a matching `pr_repo` (an
+    undeclared one is not a wildcard). #4754's rows declared none, so PR #4762 returned `no_task` at
+    every dispatch until its holder added the field by hand.
+    """
+    audit = _audit()
+    candidate = next(c for c in audit.mint_candidates if c.kind == "reduce")
+    task_id = "encountered-machinery-reduce-claim-20260925"
+    text = ema.render_reduction_row(
+        candidate,
+        audit,
+        task_id=task_id,
+        now=NOW,
+        parent_spec="spec",
+        catalogue_ref="catalogue",
+    )
+    # The claimant links its PR the ordinary way: set `pr` and `branch`, nothing else.
+    text = text.replace("pr: null", "pr: 4999").replace("branch: null", "branch: fix/em-x")
+    active = tmp_path / "active"
+    active.mkdir()
+    (active / f"{task_id}.md").write_text(text, encoding="utf-8")
+    matches = _review_team().find_task_notes(
+        tmp_path, pr_number=4999, head_ref="fix/em-x", pr_repo="hapax-systems/hapax-council"
+    )
+    assert [Path(p).name for p, _ in matches] == [f"{task_id}.md"]
 
 
 def test_minted_rows_carry_no_authority_and_are_not_claimable(tmp_path: Path) -> None:
