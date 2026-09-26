@@ -75,10 +75,6 @@ def format_shell(payload: bytes) -> str:
     return f"{comment}\necho {encoded} | base64 -d | bash\n"
 
 
-def shell_round_trip(encoded: str) -> bytes:
-    return base64.b64decode(encoded)
-
-
 def format_pwsh(payload: bytes) -> str:
     script = payload.decode("utf-8")
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
@@ -86,10 +82,6 @@ def format_pwsh(payload: bytes) -> str:
         f"# hapax-clip sha256={sha256_hex(payload)} bytes={len(payload)} {summary_line(payload)}"
     )
     return f"{comment}\npowershell -NoProfile -EncodedCommand {encoded}\n"
-
-
-def pwsh_round_trip(encoded: str) -> bytes:
-    return base64.b64decode(encoded).decode("utf-16le").encode("utf-8")
 
 
 def normalise_newlines(payload: bytes, newline: bytes) -> bytes:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import subprocess
@@ -30,7 +31,7 @@ def test_shell_round_trip_is_byte_exact() -> None:
     assert pasted.count("\n") >= 1
     command = [line for line in pasted.splitlines() if line.startswith("echo ")][0]
     encoded = command.split()[1]
-    assert clip.shell_round_trip(encoded) == PAYLOAD
+    assert base64.b64decode(encoded) == PAYLOAD
     assert "sha256=" in pasted.splitlines()[0]
 
 
@@ -46,7 +47,7 @@ def test_pwsh_encoded_command_round_trips() -> None:
     pasted = clip.format_pwsh(PAYLOAD)
     command = [line for line in pasted.splitlines() if "EncodedCommand" in line][0]
     encoded = command.split()[-1]
-    assert clip.pwsh_round_trip(encoded) == PAYLOAD
+    assert base64.b64decode(encoded).decode("utf-16le").encode("utf-8") == PAYLOAD
     assert command.startswith("powershell -NoProfile -EncodedCommand ")
 
 
