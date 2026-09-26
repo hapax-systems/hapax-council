@@ -5,6 +5,13 @@ Runs `muse exec` on the dispatcher's prompt in an empty temporary workspace, wit
 shell and writes disabled and no session log. Measured reliable up to 96 KB prompts
 (2026-09-24 review panels); a larger prompt is refused as a route outage rather than
 risking a partial review.
+
+The muse runtime host refuses to start when the process-lifetime tool-output root it
+derives from TMPDIR lands inside the configured workspace or repository. Measured
+2026-09-25: the estate TMPDIR /store-fast/tmp carries a `.git` entry, so the host exited
+rc=1 before any review and the dispatcher latched the family out as dead seat output.
+The estate TMPDIR still chooses this wrapper's own scratch; the muse child runs with a
+pinned TMPDIR outside its workspace (HAPAX_MUSE_TMPDIR, default /tmp).
 """
 
 from __future__ import annotations
@@ -29,6 +36,35 @@ REASONING_EFFORT = "high"
 
 def muse_bin() -> str | None:
     return os.environ.get("HAPAX_MUSE_BIN") or shutil.which("muse")
+
+
+def muse_tmpdir() -> Path:
+    """The TMPDIR the muse child runs with: pinned, never the inherited estate value."""
+    return Path(os.environ.get("HAPAX_MUSE_TMPDIR") or "/tmp")
+
+
+def tmpdir_workspace_conflict(tmpdir: Path, workspace: Path) -> str | None:
+    """Why ``tmpdir`` cannot back ``workspace``, or None when the host would start.
+
+    The runtime host derives its process-lifetime tool-output root directly from
+    TMPDIR and refuses to start when that root lands inside the configured
+    workspace or repository. Measured 2026-09-25 (muse-bin 1.4.0-R4161.1): the
+    host takes the nearest workspace ancestor carrying a `.git` entry as the
+    repository — the workspace itself when there is none — and rejects a
+    tool-output root beneath it.
+    """
+    tmpdir = tmpdir.resolve()
+    base = workspace.resolve()
+    for candidate in (base, *base.parents):
+        if (candidate / ".git").exists():
+            base = candidate
+            break
+    if tmpdir == base or base in tmpdir.parents:
+        return (
+            f"TMPDIR '{tmpdir}' puts the runtime host's tool-output root inside "
+            f"the configured workspace or repository '{base}'"
+        )
+    return None
 
 
 def command(binary: str, prompt_file: Path, workspace: Path) -> list[str]:
@@ -67,12 +103,20 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="hapax-muse-review-") as tmp:
         workspace = Path(tmp) / "workspace"
         workspace.mkdir()
+        conflict = tmpdir_workspace_conflict(muse_tmpdir(), workspace)
+        if conflict:
+            return refuse(
+                WRAPPER,
+                f"{conflict}; the runtime host would refuse to start; "
+                "set HAPAX_MUSE_TMPDIR outside the workspace",
+            )
         prompt_file = Path(tmp) / "review-prompt.md"
         prompt_file.write_text(text, encoding="utf-8")
         try:
             result = subprocess.run(
                 command(binary, prompt_file, workspace),
                 cwd=workspace,
+                env={**os.environ, "TMPDIR": str(muse_tmpdir())},
                 capture_output=True,
                 text=True,
                 check=False,
