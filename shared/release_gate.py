@@ -921,14 +921,6 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
 #: pinned by the composition suite (egress-boundary-pin executes the lane's
 #: pins per PR; all-green requires the jobs), which runs in the required full
 #: shard on every PR head.
-#: Five entries admit the compositor recording-consent and perception-writer
-#: fail-closed shape: ``agents/studio_compositor/{lifecycle,models,state}.py``
-#: and ``agents/hapax_daimonion/_perception_state_writer.py`` are production
-#: sources, so exact files (``compositor.py`` and any future sibling stay
-#: held); ``tests/studio_compositor`` is a collected test tree, a directory
-#: like ``tests/shared`` whose landing layer is the merge-queue full shard.
-#: The shard ignores or deselects a few of its files (ci.yml), so the tree's
-#: landing evidence is partial, as it is for the other collected trees.
 LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     ".github/workflows/ci.yml",
     "agents/_governance.py",
@@ -939,14 +931,10 @@ LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     "agents/_governance/consent_reader.py",
     "agents/_governance/provenance.py",
     "agents/_governance/revocation.py",
-    "agents/hapax_daimonion/_perception_state_writer.py",
     "agents/hapax_daimonion/conversation_pipeline.py",
     "agents/hapax_daimonion/conversational_policy.py",
     "agents/studio_compositor/consent.py",
     "agents/studio_compositor/consent_live_egress.py",
-    "agents/studio_compositor/lifecycle.py",
-    "agents/studio_compositor/models.py",
-    "agents/studio_compositor/state.py",
     "axioms/contracts",
     "logos/_governance.py",
     "logos/api/deps/stream_redaction.py",
@@ -971,7 +959,6 @@ LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     "tests/logos",
     "tests/scripts",
     "tests/shared",
-    "tests/studio_compositor",
     "tests/test_affordance_pipeline.py",
     "tests/test_archive_purge.py",
     "tests/test_consent_gate.py",
@@ -980,7 +967,46 @@ LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     "tests/test_revocation_wiring.py",
 )
 
+#: Coupled consent admissions: ``(production source, consent suite)`` pairs.
+#: A production source here is NOT a lane member. It passes the coverage bound
+#: only when the SAME PR also carries its consent suite, so a PR touching it
+#: without that suite stays held (fail-closed, exactly as before). The named
+#: suites themselves are admitted as exact files, never their whole tree (the
+#: compositor tree holds ignored/deselected files the shard never runs).
+#: Interim until the egress-boundary-pin job executes both suites per PR
+#: (fail-closed on an absent file); then the pairs move into the lane as exact
+#: entries. Limit: ``changed_files`` carries paths without status, so a PR that
+#: deletes a suite while touching its source is admitted here; the per-PR pin
+#: closes that case.
+LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS: tuple[tuple[str, str], ...] = (
+    (
+        "agents/hapax_daimonion/_perception_state_writer.py",
+        "tests/hapax_daimonion/test_perception_state_writer_consent.py",
+    ),
+    (
+        "agents/studio_compositor/lifecycle.py",
+        "tests/studio_compositor/test_recording_consent_fail_closed.py",
+    ),
+    (
+        "agents/studio_compositor/models.py",
+        "tests/studio_compositor/test_recording_consent_fail_closed.py",
+    ),
+    (
+        "agents/studio_compositor/state.py",
+        "tests/studio_compositor/test_recording_consent_fail_closed.py",
+    ),
+)
+
 _LIVE_EGRESS_FLAG = "audio_or_live_egress_sensitive"
+
+
+def _path_admitted_by_consent_coupling(path: str, changed: frozenset[str]) -> bool:
+    """Exact-match admission for a named consent suite, or a coupled source with its suite."""
+    token = path.strip()
+    return any(
+        token == suite or (token == source and suite in changed)
+        for source, suite in LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS
+    )
 
 
 def _path_in_consent_containment_lane(path: str) -> bool:
@@ -1002,14 +1028,15 @@ def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
         lowered = path.strip().lower()
         return lowered.endswith((".md", ".rst", ".txt")) or lowered.startswith("docs/")
 
+    changed = frozenset(path.strip() for path in changed_files if path.strip())
     return sorted(
         {
-            path.strip()
-            for path in changed_files
-            if path.strip()
-            and not _is_doc(path)
-            and path.strip() not in LIVE_EGRESS_AUTO_ARM_COVERAGE
+            path
+            for path in changed
+            if not _is_doc(path)
+            and path not in LIVE_EGRESS_AUTO_ARM_COVERAGE
             and not _path_in_consent_containment_lane(path)
+            and not _path_admitted_by_consent_coupling(path, changed)
         }
     )
 
