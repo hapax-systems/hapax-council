@@ -606,6 +606,59 @@ def test_the_installer_enables_new_timers_which_is_why_the_flag_gates_the_servic
     )
 
 
+# ── review findings on 7128558dc (codex-1, claude-1), red first ──────────────
+
+
+def test_a_note_is_created_exclusively_and_never_replaced(tmp_path: Path) -> None:
+    # Two runs racing on one name: the first creates it, the second must not replace it,
+    # and no temporary file is left behind.
+    path = tmp_path / "REQ-REGISTER-DUE-com-2026-0004-20261001.md"
+    assert sweep.create_note(path, "first\n") is True
+    path.write_text("edited by E3\n", encoding="utf-8")
+    assert sweep.create_note(path, "second\n") is False
+    assert path.read_text(encoding="utf-8") == "edited by E3\n"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
+
+def test_a_write_failure_midway_leaves_only_complete_notes_and_the_rerun_finishes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    real_create = sweep.create_note
+    calls = {"n": 0}
+
+    def fail_second(path, content):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("disk full")
+        return real_create(path, content)
+
+    web = FakeWeb(_register(_commitment()))
+    monkeypatch.setattr(sweep, "create_note", fail_second)
+    rc, requests_dir, state = _run(tmp_path, web, "2026-10-02T00:30:00Z")
+    assert rc == sweep.EXIT_SWEEP_FAILED
+    assert json.loads(state.read_text())["reason"].startswith("write_failed")
+    # The note written before the failure is whole, and nothing partial is left.
+    assert sorted(_written(requests_dir)) == ["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+    assert [p.name for p in requests_dir.iterdir() if p.suffix != ".md"] == []
+    monkeypatch.setattr(sweep, "create_note", real_create)
+    rc, _, state = _run(tmp_path, web, "2026-10-02T00:30:00Z")
+    assert rc == 0
+    recorded = json.loads(state.read_text())
+    assert recorded["created"] == ["REQ-REGISTER-SLIPPED-com-2026-0004-20261001"]
+    assert recorded["skipped_existing"] == ["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+
+
+def test_a_non_200_response_fails_the_sweep(tmp_path: Path) -> None:
+    class ServerError(FakeWeb):
+        def __call__(self, request, data=None, *, timeout: float) -> FakeResponse:
+            return FakeResponse(b"{}", RELEASE_LM, status=500)
+
+    rc, requests_dir, state = _run(tmp_path, ServerError(b""), "2026-10-02T00:30:00Z")
+    assert rc == sweep.EXIT_SWEEP_FAILED
+    assert _written(requests_dir) == {}
+    assert json.loads(state.read_text())["reason"].endswith("http_500")
+
+
 # ── the unit ─────────────────────────────────────────────────────────────────
 
 

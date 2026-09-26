@@ -17,9 +17,15 @@ A commitment's state follows the site (hrl-portal#8): the latest attestation dec
 passing ``check`` discharges; a ``cancellation`` ends the obligation. A standing
 commitment's next due point is its last passing check plus ``review_every``.
 
-It fails, and writes nothing, when it cannot know what is due. A fetch failure, an
-unreadable register, a deadline without an offset, and a register older than the site's
-release (compared by the deploy's Last-Modified) each exit with EXIT_SWEEP_FAILED.
+It fails, and writes no note, when it cannot know what is due. A fetch failure, an
+unreadable register, an unsafe commitment id, a deadline without an offset, a missing intake
+directory, and a register older than the site's release (compared by the deploy's
+Last-Modified) each exit with EXIT_SWEEP_FAILED before any note is written.
+
+A failure while writing notes also exits with EXIT_SWEEP_FAILED (write_failed). Any note
+written before it is complete, because each is created whole and atomically, and the next run
+writes the rest. Notes are created exclusively: an existing note is never replaced, even by a
+concurrent run.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -397,13 +404,43 @@ def render_request(
     return "\n".join(lines + body) + "\n"
 
 
-def write_atomic(path: Path, content: str) -> None:
-    """Write into an existing directory. A missing directory is an error, never created here:
-    a wrong intake path must fail, not fill a stray directory."""
+def _write_temp_beside(path: Path, content: str) -> Path:
+    """A uniquely named temporary file in ``path``'s directory, which must already exist (a
+    missing directory is an error, never created here)."""
 
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return Path(name)
+
+
+def write_atomic(path: Path, content: str) -> None:
+    """Replace ``path`` atomically (the sweep's own state file)."""
+
+    tmp = _write_temp_beside(path, content)
+    try:
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def create_note(path: Path, content: str) -> bool:
+    """Create ``path`` only if the name is free; return whether it was created.
+
+    The content is written whole to a unique temporary file, then hard-linked into place.
+    The link is atomic and fails if the name exists, so a concurrent run can never replace a
+    note, and no reader ever sees a partial one.
+    """
+
+    tmp = _write_temp_beside(path, content)
+    try:
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def write_requests(
@@ -422,16 +459,16 @@ def write_requests(
         for note in notes_for(finding):
             request_id = request_id_for(finding, note)
             name = f"{request_id}.md"
-            if (requests_dir / name).exists() or (closed / name).exists():
+            if (closed / name).exists():
                 skipped.append(request_id)
                 continue
-            write_atomic(
-                requests_dir / name,
-                render_request(
-                    finding, generated_at=generated_at, register_url=register_url, note=note
-                ),
+            content = render_request(
+                finding, generated_at=generated_at, register_url=register_url, note=note
             )
-            created.append(request_id)
+            if create_note(requests_dir / name, content):
+                created.append(request_id)
+            else:
+                skipped.append(request_id)
     return created, skipped
 
 
