@@ -170,14 +170,6 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
         profile="frontier-fast",
         platform_route_id="api.headless.provider_gateway",
     ),
-    "web-research": CapabilityDescriptor(
-        capability_id="cctv.model.web-research",
-        route_id="web-research",
-        provider="perplexity",
-        capacity_pool=CapacityPool.API_PAID_SPEND,
-        profile="web-research",
-        platform_route_id="api.headless.provider_gateway",
-    ),
     "mistral-large": CapabilityDescriptor(
         capability_id="cctv.model.mistral-large",
         route_id="mistral-large",
@@ -223,10 +215,10 @@ MODEL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
 TOOL_CAPABILITIES: dict[str, CapabilityDescriptor] = {
     "web_verify": CapabilityDescriptor(
         capability_id="cctv.tool.web_verify",
-        route_id="web-research",
-        provider="perplexity",
+        route_id="tavily.search",
+        provider="tavily",
         capacity_pool=CapacityPool.API_PAID_SPEND,
-        profile="web-research",
+        profile="research_reports",
         estimated_cost_usd=Decimal("0.01"),
         platform_route_id="api.headless.provider_gateway",
     ),

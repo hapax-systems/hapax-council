@@ -1,5 +1,5 @@
 {
-  "count": 192,
+  "count": 187,
   "records": {
     "agy.review.direct": {
       "fingerprint": "4ea797143ee0282ae82de6de2fa3a874990802f455005825b9eaf48a87da9e68",
@@ -449,22 +449,6 @@
       "fingerprint": "6a4ffd37215b9b56bf06c3b1cf70c3ba3c03a82b42683fb9651a3d539f8c77a5",
       "inventory_disposition": "admitted_supply"
     },
-    "litellm.web-deep": {
-      "fingerprint": "99a8caffed7a85edb3d402f25e1345d1c5e293cfd9252031b476e596629afaa2",
-      "inventory_disposition": "admitted_supply"
-    },
-    "litellm.web-reason": {
-      "fingerprint": "75547d9c4fb950004c695066da043c05682eb0d4826c2c47145536f53f54f4d5",
-      "inventory_disposition": "admitted_supply"
-    },
-    "litellm.web-research": {
-      "fingerprint": "89adb81ed5768e18b6bc6cc5cdfd2f04de42ddf75de9624f3ced472ea8c371b1",
-      "inventory_disposition": "admitted_supply"
-    },
-    "litellm.web-scout": {
-      "fingerprint": "9d99d2d3cb45f90a6b31566f2a42111cd4f1114041486eb195e216d3414e33c1",
-      "inventory_disposition": "admitted_supply"
-    },
     "local_compute.agentic_trust_evaluator_surface": {
       "fingerprint": "99988c906448699bed60717a899c0482442fa805cfd6706eb734bac6203cf299",
       "inventory_disposition": "evidence_only_non_supply"
@@ -508,10 +492,6 @@
     "orchestrator.multi_agent_surface": {
       "fingerprint": "47542a33f6cca296e7146b649faf51c99bde3d03964a532644e077a8805c5327",
       "inventory_disposition": "evidence_only_non_supply"
-    },
-    "perplexity_search_or_sonar": {
-      "fingerprint": "032b843f6c3fa488b4353978836a521d09205c9ea3d23b1f741e70267fea9656",
-      "inventory_disposition": "admitted_supply"
     },
     "public.archive_replay_aperture": {
       "fingerprint": "e9971bf6f462607e4db70b894519c457c23c806448d684e77ebc9ac919f98ced",

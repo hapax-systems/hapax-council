@@ -16,17 +16,16 @@ from .capability_admission import (
     record_capability_admission,
     tool_result_prefix,
 )
-from .litellm_request_policy import litellm_no_fallback_model_settings
 
 log = logging.getLogger(__name__)
 
 HAPAX_COUNCIL_DIR = Path(__file__).resolve().parent.parent.parent
 VAULT_DIR = Path.home() / "Documents" / "Personal"
 MAX_READ_CHARS = 4000
-# web_verify spawns a nested Perplexity agent with no internal bound; one slow
-# call consumed most of a member's research budget and produced the TimeoutError
-# cascade (verified diagnosis 2026-06-14). Bound it so a slow provider degrades
-# to "no external evidence", never a starved member.
+# web_verify calls Tavily with no internal bound; one slow call consumed most of
+# a member's research budget and produced the TimeoutError cascade (verified
+# diagnosis 2026-06-14). Bound it so a slow provider degrades to "no external
+# evidence", never a starved member.
 _WEB_VERIFY_TIMEOUT_S = float(os.environ.get("HAPAX_COUNCIL_WEB_VERIFY_TIMEOUT_S", "45"))
 
 # ── PER-RUN TOOL MEMOIZATION ──────────────────────────────────────────────────
@@ -178,7 +177,7 @@ async def git_provenance(ctx: Any, path: str) -> str:
 
 
 async def web_verify(ctx: Any, query: str) -> str:
-    """Web search via Perplexity Sonar for verifying external claims.
+    """Web search via Tavily for verifying external claims.
 
     Memoized within the active scope (the dominant research cost): an identical query is
     fetched once per segment, and a query that TIMES OUT is memoized too — re-asking it
@@ -201,16 +200,25 @@ async def web_verify(ctx: Any, query: str) -> str:
             "next_action=refresh quota/spend ledger or choose an admitted web research route",
             admission,
         )
-    from pydantic_ai import Agent
+    from shared.tavily_client import (
+        TavilyBudgetExceeded,
+        TavilyConfigError,
+        TavilyPolicyViolation,
+        TavilyRequestError,
+        search_snippets,
+    )
 
-    from shared.config import get_model
-
-    agent = Agent(get_model("web-research"), model_settings=litellm_no_fallback_model_settings())
-    try:
-        result = await asyncio.wait_for(
-            agent.run(f"Search and summarize evidence for or against: {query}"),
-            timeout=_WEB_VERIFY_TIMEOUT_S,
+    def _search() -> str:
+        text = search_snippets(
+            query,
+            lane="research_reports",
+            max_results=5,
+            search_depth="advanced",
         )
+        return text or "Web search returned no results."
+
+    try:
+        text = await asyncio.wait_for(asyncio.to_thread(_search), timeout=_WEB_VERIFY_TIMEOUT_S)
     except TimeoutError:
         log.warning("web_verify timed out after %.0fs: %s", _WEB_VERIFY_TIMEOUT_S, query[:80])
         return _memo_put_governed(
@@ -220,7 +228,20 @@ async def web_verify(ctx: Any, query: str) -> str:
             "next_action=retry later or proceed without external web evidence)",
             admission,
         )
-    return _memo_put_governed(key, prefix + str(result.output)[:MAX_READ_CHARS], admission)
+    except (
+        TavilyConfigError,
+        TavilyBudgetExceeded,
+        TavilyPolicyViolation,
+        TavilyRequestError,
+    ) as exc:
+        log.warning("web_verify failed: %s", exc)
+        return _memo_put_governed(
+            key,
+            prefix + f"Web search unavailable: {exc}; "
+            "next_action=retry later or proceed without external web evidence",
+            admission,
+        )
+    return _memo_put_governed(key, prefix + text[:MAX_READ_CHARS], admission)
 
 
 async def qdrant_lookup(ctx: Any, query: str, collection: str = "affordances") -> str:
