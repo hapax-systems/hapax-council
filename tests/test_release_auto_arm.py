@@ -563,6 +563,21 @@ def test_consent_coupled_admission_ignores_unrelated_deletions() -> None:
     )
 
 
+def test_consent_coupled_admission_without_check_evidence_blocks_and_never_raises() -> None:
+    # verified_checks=None (no PR check evidence supplied) must never raise in
+    # gate code (a raise could take down an autoqueue pass instead of holding
+    # one PR). It holds the PR with the contract's named code for missing
+    # check evidence, and no coupled path is admitted.
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=None,
+        changed_files=[*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE, _WRITER, _WRITER_SUITE],
+        deleted_files=(),
+    )
+    assert assessment.eligible is False
+    assert "risk_flag:audio_or_live_egress_sensitive" in assessment.blockers
+
+
 def test_release_gate_cli_prints_the_coupled_consent_suites(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

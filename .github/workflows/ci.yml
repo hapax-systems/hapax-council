@@ -601,7 +601,7 @@ jobs:
           elif [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
             base="$(printf '%s\n' "$GITHUB_REF_NAME" | sed -n 's/.*-\([0-9a-f]\{40\}\)$/\1/p')"
             if [ -z "$base" ]; then
-              echo "::error::consent-coupled-suites: no merge-group base SHA; refusing to pass unevaluated."
+              echo "::error::consent-coupled-suites: no merge-group base SHA; refusing to pass unevaluated. Next action: re-enqueue the PR so the merge-group ref carries its base SHA."
               exit 1
             fi
             git fetch --quiet origin "$base" || true
@@ -610,7 +610,7 @@ jobs:
             git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
             git diff --no-renames --name-only "$PUSH_BEFORE_SHA" HEAD > "$changed_files"
           else
-            echo "::error::consent-coupled-suites: no stable base SHA for $GITHUB_EVENT_NAME; refusing to pass unevaluated."
+            echo "::error::consent-coupled-suites: no stable base SHA for $GITHUB_EVENT_NAME; refusing to pass unevaluated. Next action: evaluate the change on a pull_request or merge_group run (release evidence is read from PR check runs)."
             exit 1
           fi
           suites="$(
@@ -619,7 +619,7 @@ jobs:
           )"
           for suite in $suites; do
             if [ ! -f "$suite" ]; then
-              echo "::error::coupled consent suite $suite is absent at head"
+              echo "::error::coupled consent suite $suite is absent at head. Next action: add or restore $suite in this change set (a changed coupled source requires its consent suite), or revert the change to its coupled source."
               exit 1
             fi
           done
