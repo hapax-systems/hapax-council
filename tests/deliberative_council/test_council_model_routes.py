@@ -112,11 +112,7 @@ class TestCouncilMemberRoutes:
         def _bad(name: str) -> bool:
             return name in retired or name.startswith("sonar") or "/sonar" in name
 
-        offenders = {
-            alias: route
-            for alias, route in MODELS.items()
-            if _bad(alias) or _bad(route)
-        }
+        offenders = {alias: route for alias, route in MODELS.items() if _bad(alias) or _bad(route)}
         assert offenders == {}
         assert not any(_bad(route) for route in VALID_LITELLM_ROUTES)
         if not _LITELLM_CONFIG.exists():
