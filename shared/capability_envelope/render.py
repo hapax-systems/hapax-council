@@ -308,7 +308,7 @@ def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
             a += ["--ro-bind", str(bind.resolve()), str(bind.absolute())]
 
     for item in decl.home_files:
-        _placeholder(run_home, item.target, directory=False)
+        _placeholder(run_home, item.target, directory=item.source.is_dir())
         a += ["--ro-bind", str(item.source.resolve()), f"{JOB_HOME}/{item.target}"]
     for cred in decl.credentials:
         _placeholder(run_home, cred.target, directory=cred.source.is_dir())

@@ -21,7 +21,13 @@ runs only when its key is on the Team allowance (the wrapper's check), never on 
 Exit status: 0 clean (the enveloped run imported nothing), 1 leak, 2 inconclusive (the enveloped
 run did not complete), 64 refused (for example the billing guard).
 
-usage: python scripts/capability-envelope-import-audit --harness {claude,vibe,muse} --out FILE
+Harnesses: claude, vibe and muse run their reviewer seats' launch shapes; opencode runs a $0 local
+model named in the operator's own opencode config; grok, agy, codex and kimi run on their
+subscription credentials. GLM is not offered while its dispatch is on hold. Each builder refuses
+(exit 64) when its binary or credential is missing, and never copies a credential or a config that
+carries one.
+
+usage: python scripts/capability-envelope-import-audit --harness NAME --out FILE
 """
 
 from __future__ import annotations
@@ -111,6 +117,7 @@ class Launch:
     binds: list[tuple[Path, Path]]
     declaration: EnvelopeDeclaration
     baseline_env: dict[str, str] = field(default_factory=dict)
+    stdin: str | None = None
 
 
 class Refused(Exception):
@@ -163,7 +170,7 @@ def claude_launch(world: World) -> Launch:
         )
     exe = Path(binary).resolve()
     package = exe.parents[1]
-    creds = world.home / ".claude" / ".credentials.json"
+    creds = _credential(world.home / ".claude" / ".credentials.json", "claude")
     slug = str(world.checkout).replace("/", "-")
     for rel, label in [
         (".claude/CLAUDE.md", "user-claude-md"),
@@ -251,7 +258,7 @@ def muse_launch(world: World) -> Launch:
         raise Refused("muse binary not found; next action: install muse or set HAPAX_MUSE_BIN")
     launcher = Path(binary)
     release = _muse_release(launcher)
-    auth = world.home / ".config" / "muse" / "auth.json"
+    auth = _credential(world.home / ".config" / "muse" / "auth.json", "muse")
     for rel, label in [
         (".config/muse/AGENTS.md", "muse-user-agents-md"),
         (".claude/CLAUDE.md", "foreign-claude-md"),
@@ -286,7 +293,299 @@ def muse_launch(world: World) -> Launch:
     )
 
 
-LAUNCHES = {"claude": claude_launch, "vibe": vibe_launch, "muse": muse_launch}
+OPENCODE_PROVIDER = "local-research"
+GROK_MODEL = "grok-4.7"
+AGY_MODEL = "gemini-3.8-flash-high"
+CODEX_MODEL = "gpt-6-astra"
+KIMI_MODEL = "kimi-code/k3"
+_SECRET_KEY_NAMES = {"apikey", "api_key", "token", "secret", "password", "headers", "authorization"}
+
+
+def _binary(env_var: str, name: str, default: Path | None = None) -> Path:
+    found = os.environ.get(env_var) or shutil.which(name)
+    if not found and default is not None and default.exists():
+        found = str(default)
+    if not found:
+        raise Refused(f"{name} binary not found; next action: install {name} or set {env_var}")
+    return Path(found).resolve()
+
+
+def _credential(path: Path, harness: str) -> Path:
+    if not path.exists():
+        raise Refused(
+            f"{harness} credential {path.name} not found; next action: sign {harness} in on this host"
+        )
+    return path
+
+
+def _carries_secret(value: object) -> bool:
+    """Whether a config fragment names a non-empty secret-like field."""
+    if isinstance(value, dict):
+        return any(
+            (str(k).lower() in _SECRET_KEY_NAMES and bool(v)) or _carries_secret(v)
+            for k, v in value.items()
+        )
+    if isinstance(value, list):
+        return any(_carries_secret(v) for v in value)
+    return False
+
+
+def _without_secrets(value: object) -> object:
+    """A copy of a config fragment with every secret-named field dropped."""
+    if isinstance(value, dict):
+        return {
+            k: _without_secrets(v)
+            for k, v in value.items()
+            if str(k).lower() not in _SECRET_KEY_NAMES
+        }
+    if isinstance(value, list):
+        return [_without_secrets(v) for v in value]
+    return value
+
+
+def _toml_scalar(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    return json.dumps(str(value))
+
+
+def _toml_table(name: str, table: dict) -> str:
+    lines = [f"[{name}]"]
+    lines += [f"{key} = {_toml_scalar(val)}" for key, val in table.items()]
+    return "\n".join(lines) + "\n"
+
+
+def opencode_launch(world: World) -> Launch:
+    exe = _binary("HAPAX_OPENCODE_BIN", "opencode")
+    package = exe.parents[1]
+    try:
+        config = json.loads(
+            (world.home / ".config" / "opencode" / "opencode.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise Refused(f"opencode config unreadable ({type(exc).__name__})") from exc
+    provider = (config.get("provider") or {}).get(OPENCODE_PROVIDER)
+    if not isinstance(provider, dict) or not provider.get("models"):
+        raise Refused(
+            f"opencode has no {OPENCODE_PROVIDER} provider with a model; next action: declare the "
+            "local model in ~/.config/opencode/opencode.json"
+        )
+    # A local endpoint needs no key (measured 2026-09-25 with none); any secret-named field is
+    # dropped, never copied. An endpoint that does need one makes the run inconclusive, not leaky.
+    provider = _without_secrets(provider)
+    assert isinstance(provider, dict)
+    model = f"{OPENCODE_PROVIDER}/{next(iter(provider['models']))}"
+    declared = {"$schema": "https://opencode.ai/config.json", "model": model}
+    declared["provider"] = {OPENCODE_PROVIDER: provider}
+    config_file = world.root / "declared" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps(declared, indent=1), encoding="utf-8")
+    world.sentinel(world.mirror / ".config/opencode/AGENTS.md", "user-opencode-agents-md")
+    (world.mirror / ".config/opencode/opencode.json").write_text(json.dumps(declared))
+    argv = [str(exe), "run", "--model", model, PROMPT]
+    declaration = EnvelopeDeclaration(
+        harness="opencode",
+        argv=tuple(argv),
+        binaries=(package,),
+        workdir=world.checkout,
+        home_files=(DeclaredFile(source=config_file, target=".config/opencode/opencode.json"),),
+    )
+    return Launch(argv, [(package, package)], declaration)
+
+
+def grok_launch(world: World) -> Launch:
+    exe = _binary("HAPAX_GROK_BIN", "grok")
+    auth = _credential(world.home / ".grok" / "auth.json", "grok")
+    for rel, label in [
+        (".grok/AGENTS.md", "user-grok-agents-md"),
+        (".grok/memory/sentinel.md", "user-grok-memory"),
+        (".grok/HANDOFF-RESUME.md", "user-grok-handoff"),
+    ]:
+        world.sentinel(world.mirror / rel, label)
+    argv = [
+        str(exe),
+        "--single",
+        PROMPT,
+        "--output-format",
+        "json",
+        "-m",
+        GROK_MODEL,
+        "--disable-web-search",
+    ]
+    declaration = EnvelopeDeclaration(
+        harness="grok",
+        argv=tuple(argv),
+        binaries=(exe,),
+        workdir=world.checkout,
+        credentials=(CredentialBind(source=auth, target=".grok/auth.json", writable=True),),
+    )
+    return Launch(argv, [(auth, auth), (exe, exe)], declaration)
+
+
+def agy_launch(world: World) -> Launch:
+    exe = _binary("HAPAX_AGY_BIN", "agy")
+    agy_home = world.home / ".gemini" / "antigravity-cli"
+    token = _credential(agy_home / "antigravity-oauth-token", "agy")
+    installation = _credential(agy_home / "installation_id", "agy")
+    helpers = agy_home / "bin"
+    for rel, label in [
+        (".gemini/GEMINI.md", "user-gemini-md"),
+        (".gemini/antigravity-cli/brain/sentinel.md", "agy-brain"),
+        (".gemini/antigravity-cli/knowledge/sentinel.md", "agy-knowledge"),
+    ]:
+        world.sentinel(world.mirror / rel, label)
+    settings = world.root / "declared" / "agy-settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"trustedWorkspaces": ["/work"]}), encoding="utf-8")
+    mirror_settings = world.mirror / ".gemini/antigravity-cli/settings.json"
+    mirror_settings.write_text(json.dumps({"trustedWorkspaces": [str(world.checkout)]}))
+    argv = [
+        str(exe),
+        "-p",
+        PROMPT,
+        "--output-format",
+        "json",
+        "--model",
+        AGY_MODEL,
+        "--disable-slash-commands",
+        "--sandbox",
+    ]
+    target = ".gemini/antigravity-cli"
+    home_files = [
+        DeclaredFile(source=installation, target=f"{target}/installation_id"),
+        DeclaredFile(source=settings, target=f"{target}/settings.json"),
+    ]
+    binds = [(token, token), (installation, installation), (exe, exe)]
+    if helpers.is_dir():
+        home_files.append(DeclaredFile(source=helpers, target=f"{target}/bin"))
+        binds.append((helpers, helpers))
+    declaration = EnvelopeDeclaration(
+        harness="agy",
+        argv=tuple(argv),
+        binaries=(exe,),
+        workdir=world.checkout,
+        credentials=(
+            CredentialBind(source=token, target=f"{target}/antigravity-oauth-token", writable=True),
+        ),
+        home_files=tuple(home_files),
+    )
+    return Launch(argv, binds, declaration)
+
+
+def codex_launch(world: World) -> Launch:
+    exe = _binary("HAPAX_CODEX_BIN", "codex")
+    release = exe.parents[1]
+    auth = _credential(world.home / ".codex" / "auth.json", "codex")
+    world.sentinel(world.mirror / ".codex/AGENTS.md", "user-codex-agents-md")
+    argv = [
+        str(exe),
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "-c",
+        f'model="{CODEX_MODEL}"',
+        "-c",
+        'model_reasoning_effort="low"',
+        PROMPT,
+    ]
+    declaration = EnvelopeDeclaration(
+        harness="codex",
+        argv=tuple(argv),
+        binaries=(release,),
+        workdir=world.checkout,
+        credentials=(CredentialBind(source=auth, target=".codex/auth.json", writable=True),),
+    )
+    # codex exec waits on an open stdin; close it (routing table, codex exec one-shot).
+    return Launch(argv, [(auth, auth), (release, release)], declaration, stdin="")
+
+
+def kimi_config(config: dict, model: str) -> str:
+    """A kimi config holding only what a one-shot needs: the model, its provider's endpoint and
+    OAuth pointer, and thinking. Hooks, services and any non-empty api_key are never copied."""
+    models = config.get("models") or {}
+    if model not in models:
+        raise Refused(f"kimi config has no model {model}; next action: pick a declared model")
+    entry = models[model]
+    provider_name = entry.get("provider")
+    provider = (config.get("providers") or {}).get(provider_name)
+    if not isinstance(provider, dict):
+        raise Refused(f"kimi config has no provider {provider_name!r} for {model}")
+    if provider.get("api_key"):
+        raise Refused(
+            f"kimi provider {provider_name} carries an api_key; it is not copied (next action: "
+            "use its OAuth route)"
+        )
+    oauth = provider.get("oauth") or {}
+    if _carries_secret(oauth):
+        raise Refused(f"kimi provider {provider_name} OAuth block carries a secret")
+    out = f"default_model = {_toml_scalar(model)}\n\n"
+    thinking = {
+        k: v for k, v in (config.get("thinking") or {}).items() if k in ("enabled", "effort")
+    }
+    if thinking:
+        out += _toml_table("thinking", thinking) + "\n"
+    quoted = json.dumps(provider_name)
+    provider_fields = {k: provider[k] for k in ("type", "base_url") if k in provider}
+    provider_fields["api_key"] = ""
+    out += _toml_table(f"providers.{quoted}", provider_fields) + "\n"
+    if oauth:
+        oauth_fields = {k: oauth[k] for k in ("storage", "key") if k in oauth}
+        out += _toml_table(f"providers.{quoted}.oauth", oauth_fields) + "\n"
+    model_fields = {k: entry[k] for k in ("provider", "model", "max_context_size") if k in entry}
+    out += _toml_table(f"models.{json.dumps(model)}", model_fields)
+    return out
+
+
+def kimi_launch(world: World) -> Launch:
+    import tomllib
+
+    kimi_home = world.home / ".kimi-code"
+    exe = _binary("HAPAX_KIMI_BIN", "kimi", default=kimi_home / "bin" / "kimi")
+    credentials = _credential(kimi_home / "credentials", "kimi")
+    device_id = _credential(kimi_home / "device_id", "kimi")
+    try:
+        config = tomllib.loads((kimi_home / "config.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(f"kimi config unreadable ({type(exc).__name__})") from exc
+    config_file = world.root / "declared" / "kimi-config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(kimi_config(config, KIMI_MODEL), encoding="utf-8")
+    world.sentinel(world.mirror / ".kimi-code/AGENTS.md", "user-kimi-agents-md")
+    world.sentinel(
+        world.mirror / ".kimi-code/skills/sentinel/SKILL.md", "kimi-user-skill", SKILL_TEMPLATE
+    )
+    (world.mirror / ".kimi-code/config.toml").write_text(config_file.read_text(encoding="utf-8"))
+    argv = [str(exe), "-p", PROMPT, "--output-format", "stream-json", "-m", KIMI_MODEL]
+    declaration = EnvelopeDeclaration(
+        harness="kimi",
+        argv=tuple(argv),
+        binaries=(exe,),
+        workdir=world.checkout,
+        credentials=(
+            CredentialBind(source=credentials, target=".kimi-code/credentials", writable=True),
+        ),
+        home_files=(
+            DeclaredFile(source=device_id, target=".kimi-code/device_id"),
+            DeclaredFile(source=config_file, target=".kimi-code/config.toml"),
+        ),
+    )
+    binds = [(credentials, credentials), (device_id, device_id), (exe, exe)]
+    return Launch(argv, binds, declaration)
+
+
+LAUNCHES = {
+    "agy": agy_launch,
+    "claude": claude_launch,
+    "codex": codex_launch,
+    "grok": grok_launch,
+    "kimi": kimi_launch,
+    "muse": muse_launch,
+    "opencode": opencode_launch,
+    "vibe": vibe_launch,
+}
 
 
 def _scrub(value: str, home: Path) -> str:
@@ -342,7 +641,13 @@ def run_baseline(world: World, launch: Launch) -> dict:
     }
     with OpenWatch(sorted(world.tokens)) as watch:
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=900, env=env, check=False
+            argv,
+            input=launch.stdin,
+            capture_output=True,
+            text=True,
+            timeout=900,
+            env=env,
+            check=False,
         )
     return _observe(world, proc, watch.opened())
 
@@ -350,7 +655,7 @@ def run_baseline(world: World, launch: Launch) -> dict:
 def run_enveloped(world: World, launch: Launch) -> dict:
     rendered = render(launch.declaration, run_root=world.root / "envelope-run")
     with OpenWatch(sorted(world.tokens)) as watch:
-        proc = execute(rendered, timeout=900)
+        proc = execute(rendered, stdin=launch.stdin, timeout=900)
     observed = _observe(world, proc, watch.opened())
     observed["declaration_sha256"] = rendered.facts["declaration_sha256"]
     return observed
