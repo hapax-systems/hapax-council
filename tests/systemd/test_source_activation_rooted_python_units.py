@@ -64,6 +64,11 @@ MIGRATED_UNITS = (
     "hapax-orcid-verifier.service",
     "hapax-publish-orchestrator.service",
     "hapax-live-cuepoints.service",
+    # 2026-09-24: podium's Google/Langfuse syncs (were Pi6 .venv-sync copies)
+    "gcalendar-sync.service",
+    "gdrive-sync.service",
+    "gmail-sync.service",
+    "langfuse-sync.service",
 )
 
 # ── canonical-rooted python -m units intentionally NOT yet migrated. Each is
@@ -117,10 +122,7 @@ KNOWN_CANONICAL_EXCEPTIONS = frozenset(
         "deliberation-eval.service",
         "dev-story-index.service",
         "flow-journal.service",
-        "gcalendar-sync.service",
-        "gdrive-sync.service",
         "git-sync.service",
-        "gmail-sync.service",
         "hapax-content-candidate-discovery.service",
         "hapax-content-resolver.service",
         "hapax-dmn.service",
@@ -130,7 +132,6 @@ KNOWN_CANONICAL_EXCEPTIONS = frozenset(
         "hapax-reverie-monitor.service",
         "hapax-vault-coherence.service",
         "hapax-weekly-review.service",
-        "langfuse-sync.service",
         "manifest-snapshot.service",
         "obsidian-sync.service",
         "policy-decide-promote.service",

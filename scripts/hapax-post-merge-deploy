@@ -1123,6 +1123,16 @@ while IFS= read -r f; do
                 SYSTEMD+=("$f")
             fi
             ;;
+        # Same cross-slash hazard as the archive note above: systemd/*.service
+        # also matches nested trees and installs by basename, so a host-variant
+        # or source copy overwrites the real user unit. 2026-09-17: #4680 put
+        # units-pi6/{gcalendar,gdrive,gmail,langfuse}-sync.service over podium's
+        # live units (203/EXEC on a Pi6-only venv, silent until 2026-09-24).
+        # Known non-deployed trees are skipped here, before the greedy arm; any
+        # other nested unit is unclassified rather than installed.
+        systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
+        systemd/units-pi6/*)              ;; # pi6 host units/wrappers; deployed on that host, not by post-merge
+        systemd/*/*.service|systemd/*/*.timer|systemd/*/*.path) SYSTEMD_UNCLASSIFIED+=("$f") ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
         systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
@@ -1150,8 +1160,6 @@ while IFS= read -r f; do
         systemd/README.md)                ;; # docs
         systemd/units/*.md)               ;; # docs
         systemd/units/*.d/README.md)      ;; # drop-in dir docs (e.g. collapse ledgers)
-        systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
-        systemd/units-pi6/*)              ;; # pi6 host units/wrappers; deployed on that host, not appendix post-merge
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac
 done <<< "$FILES"

@@ -1,19 +1,24 @@
 [Unit]
 Description=gdrive sync (Google API)
-After=network.target
+After=network-online.target
+Wants=network-online.target
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStartPre=/home/hapax/.local/bin/hapax-env-setup
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.gdrive_sync --auto
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.local/bin/hapax-env-setup
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.gdrive_sync --auto
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
-Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=GNUPGHOME=%h/.gnupg
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=gdrive-sync
-MemoryMax=512M
+# Measured 2026-09-24 on podium: a 4-change incremental run peaked at 1.5G
+# (the 213k-file state.json is loaded whole). 3G is 2x that peak.
+MemoryMax=3G
 CPUQuota=30%
+TimeoutStartSec=30min
