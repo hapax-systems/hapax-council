@@ -560,7 +560,7 @@ jobs:
     # Required transitively through all-green.
     needs: [post_merge_duplicate_filter]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Post-merge duplicate required-check sentinel
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
@@ -590,6 +590,13 @@ jobs:
         run: >
           uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
           pytest --confcutdir=tests tests/capability_envelope -q --tb=short -rs
+      - name: Mutation check (each envelope invariant, broken, must turn the suite red)
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          HAPAX_ENVELOPE_REQUIRE_BWRAP: "1"
+        run: >
+          uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
+          python scripts/capability-envelope-mutation-check
 
 
   typecheck:

@@ -112,3 +112,13 @@ The runtime tests need bubblewrap with unprivileged user namespaces. The require
 - runs the suite with `HAPAX_ENVELOPE_REQUIRE_BWRAP=1`.
 
 So CI cannot pass by skipping. `tests/ci/test_capability_envelope_ci.py` pins that job.
+
+**Mutation check:** the same job runs `scripts/capability-envelope-mutation-check`.
+- It breaks each envelope invariant in a temporary copy of the package: a mask, a refusal, a read-only bind, the
+  cleared environment, and so on.
+- It fails unless every mutation turns `tests/capability_envelope` red and the unmutated copy stays green.
+- `tests/scripts/test_capability_envelope_mutation_check.py` checks, in every suite, that each mutation still applies.
+
+```bash
+HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run python scripts/capability-envelope-mutation-check   # prints "ALL KILLED"
+```

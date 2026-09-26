@@ -44,3 +44,17 @@ def test_the_containment_job_runs_the_envelope_suite_with_skips_forbidden():
     assert runs, "the job must run tests/capability_envelope"
     for step in runs:
         assert step.get("env", {}).get("HAPAX_ENVELOPE_REQUIRE_BWRAP") == "1"
+
+
+def test_the_containment_job_runs_the_mutation_check_with_skips_forbidden():
+    """Review of #4784 (muse-1): the mutation red/green proof must run from the repo, not live
+    only in vault transcripts."""
+    job = _jobs()[JOB]
+    runs = [
+        s
+        for s in job["steps"]
+        if "scripts/capability-envelope-mutation-check" in str(s.get("run", ""))
+    ]
+    assert runs, "the job must run the envelope mutation check"
+    for step in runs:
+        assert step.get("env", {}).get("HAPAX_ENVELOPE_REQUIRE_BWRAP") == "1"
