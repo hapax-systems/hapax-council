@@ -383,7 +383,11 @@ def test_slipped_writes_a_candidate_for_e3_carrying_its_evidence_of_absence(tmp_
     rc, requests_dir, _ = _run(tmp_path, FakeWeb(_register(_commitment())), "2026-10-02T00:30:00Z")
     assert rc == 0
     notes = _written(requests_dir)
-    assert list(notes) == ["REQ-REGISTER-SLIPPED-com-2026-0004-20261001"]
+    # The owner demand is written too (codex-1's finding on 268c45e24).
+    assert sorted(notes) == [
+        "REQ-REGISTER-DUE-com-2026-0004-20261001",
+        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001",
+    ]
     note = notes["REQ-REGISTER-SLIPPED-com-2026-0004-20261001"]
     assert note["candidate_kind"] == "slipped"
     assert note["intake_owner"] == "E3 Ledger"
@@ -403,7 +407,10 @@ def test_rerunning_writes_nothing_new_and_never_overwrites(tmp_path: Path) -> No
     rc, _, state = _run(tmp_path, web, "2026-10-03T00:30:00Z")
     assert rc == 0
     assert path.read_text().endswith("edited by E3\n")
-    assert json.loads(state.read_text())["skipped_existing"] == [path.stem]
+    assert json.loads(state.read_text())["skipped_existing"] == [
+        "REQ-REGISTER-DUE-com-2026-0004-20261001",
+        path.stem,
+    ]
 
 
 def test_a_demand_already_moved_to_closed_is_not_rewritten(tmp_path: Path) -> None:
@@ -416,7 +423,7 @@ def test_a_demand_already_moved_to_closed_is_not_rewritten(tmp_path: Path) -> No
         closed / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001.md"
     )
     _run(tmp_path, web, "2026-10-03T00:30:00Z")
-    assert _written(active) == {}
+    assert "REQ-REGISTER-SLIPPED-com-2026-0004-20261001" not in _written(active)
 
 
 def test_dry_run_writes_nothing(tmp_path: Path) -> None:
@@ -439,6 +446,164 @@ def test_todays_register_with_no_commitments_is_a_clean_sweep(tmp_path: Path) ->
     assert _written(requests_dir) == {}
     recorded = json.loads(state.read_text())
     assert recorded["status"] == "ok" and recorded["commitments"] == 0
+
+
+# ── review findings on 268c45e24 (codex-1, claude-1), red first ──────────────
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../../etc/x",  # traversal
+        "x/../../../../outside",  # traversal after a harmless prefix
+        "com/2026",  # a slash
+        "/etc/passwd",  # an absolute path
+        "com\x002026",  # a NUL
+        "..",
+        "",
+        "com 2026",
+        "-leading-dash",
+    ],
+    ids=[
+        "dotdot",
+        "prefix-dotdot",
+        "slash",
+        "absolute",
+        "nul",
+        "bare-dotdot",
+        "empty",
+        "space",
+        "dash",
+    ],
+)
+def test_an_unsafe_commitment_id_is_refused_by_name_and_writes_nothing(
+    tmp_path: Path, bad_id: str
+) -> None:
+    # The intake sits four levels inside tmp_path, so any escape the ids above could make
+    # (at most four levels up) still lands inside tmp_path, where it is seen.
+    requests_dir = tmp_path / "d1" / "d2" / "hapax-requests" / "active"
+    requests_dir.mkdir(parents=True)
+    state = tmp_path / "state.json"
+    rc = sweep.main(
+        [
+            "--write",
+            "--requests-dir",
+            str(requests_dir),
+            "--state-path",
+            str(state),
+            "--now",
+            "2026-10-02T00:30:00Z",
+        ],
+        opener=FakeWeb(_register(_commitment(cid=bad_id))),
+    )
+    assert rc == sweep.EXIT_SWEEP_FAILED
+    assert [p for p in tmp_path.rglob("*") if p.is_file() and p != state] == []
+    reason = json.loads(state.read_text())["reason"]
+    assert reason.startswith("register_invalid:unsafe_commitment_id")
+
+
+def test_a_commitment_first_seen_overdue_also_gets_its_owner_demand(tmp_path: Path) -> None:
+    rc, requests_dir, _ = _run(tmp_path, FakeWeb(_register(_commitment())), "2026-10-02T00:30:00Z")
+    assert rc == 0
+    notes = _written(requests_dir)
+    assert sorted(notes) == [
+        "REQ-REGISTER-DUE-com-2026-0004-20261001",
+        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001",
+    ]
+    owner = notes["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+    assert owner["intake_owner"] == "E1 Identity"
+    assert "was due" in owner["title"]
+
+
+def test_an_owner_demand_written_before_the_due_point_is_not_duplicated(tmp_path: Path) -> None:
+    web = FakeWeb(_register(_commitment()))
+    _run(tmp_path, web, "2026-09-30T12:00:00Z")
+    rc, requests_dir, state = _run(tmp_path, web, "2026-10-02T00:30:00Z")
+    assert rc == 0
+    assert sorted(_written(requests_dir)) == [
+        "REQ-REGISTER-DUE-com-2026-0004-20261001",
+        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001",
+    ]
+    recorded = json.loads(state.read_text())
+    assert recorded["created"] == ["REQ-REGISTER-SLIPPED-com-2026-0004-20261001"]
+    assert recorded["skipped_existing"] == ["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+
+
+def test_a_missing_intake_directory_fails_instead_of_being_created(tmp_path: Path) -> None:
+    missing = tmp_path / "no-such-vault" / "hapax-requests" / "active"
+    state = tmp_path / "state.json"
+    rc = sweep.main(
+        [
+            "--write",
+            "--requests-dir",
+            str(missing),
+            "--state-path",
+            str(state),
+            "--now",
+            "2026-10-02T00:30:00Z",
+        ],
+        opener=FakeWeb(_register(_commitment())),
+    )
+    assert rc == sweep.EXIT_SWEEP_FAILED
+    assert not missing.exists()
+    assert json.loads(state.read_text())["reason"].startswith("intake_missing")
+
+
+def test_a_write_failure_is_a_recorded_failure(tmp_path: Path, monkeypatch) -> None:
+    def refuse(*_args, **_kwargs):
+        raise PermissionError("read-only intake")
+
+    monkeypatch.setattr(sweep, "write_requests", refuse)
+    rc, requests_dir, state = _run(
+        tmp_path, FakeWeb(_register(_commitment())), "2026-10-02T00:30:00Z"
+    )
+    assert rc == sweep.EXIT_SWEEP_FAILED
+    recorded = json.loads(state.read_text())
+    assert recorded["status"] == "failed"
+    assert recorded["reason"].startswith("write_failed")
+
+
+def test_the_default_intake_is_the_vault_request_intake() -> None:
+    # The same intake security-signal-intake writes to; the vault root is ~/Documents/Personal.
+    assert (
+        Path.home() / "Documents/Personal/20-projects/hapax-requests/active"
+        == sweep.DEFAULT_REQUESTS_DIR
+    )
+
+
+def test_a_standing_commitment_with_no_passing_check_is_due_at_its_deadline() -> None:
+    standing = _commitment(
+        cid="com-2026-0010", deadline="2026-10-07T23:59:59Z", standing=True, review_every="P3M"
+    )
+    register = sweep.parse_register(_register(standing))
+    soon = sweep.classify(register, sweep.parse_instant("2026-10-06T00:00:00Z"))
+    assert [f.kind for f in soon] == ["due_soon"]
+    assert soon[0].due == datetime(2026, 10, 7, 23, 59, 59, tzinfo=UTC)
+
+
+def test_an_invalid_review_interval_fails_the_sweep(tmp_path: Path) -> None:
+    standing = _commitment(
+        cid="com-2026-0010", deadline="2026-10-07T23:59:59Z", standing=True, review_every="3 months"
+    )
+    passed = _attestation("att-1", "com-2026-0010", "check", True, "2026-10-07T12:00:00Z")
+    rc, requests_dir, state = _run(
+        tmp_path, FakeWeb(_register(standing, passed)), "2026-12-20T00:00:00Z"
+    )
+    assert rc == sweep.EXIT_SWEEP_FAILED
+    assert _written(requests_dir) == {}
+    assert "review_every" in json.loads(state.read_text())["reason"]
+
+
+def test_the_installer_enables_new_timers_which_is_why_the_flag_gates_the_service() -> None:
+    # The activation contract in one place: install-units.sh enables newly linked timers
+    # (--now) and sweeps linked-but-disabled ones, so only the flag keeps activation a
+    # separate act. If the installer stops enabling timers, this test says so.
+    installer = (REPO_ROOT / "systemd" / "scripts" / "install-units.sh").read_text(encoding="utf-8")
+    assert 'systemctl --user enable --now "$timer"' in installer
+    assert 'systemctl --user enable "$timer_name"' in installer
+    assert "ConditionPathExists=%h/.config/hapax/register-due-sweep.enabled" in SERVICE.read_text(
+        encoding="utf-8"
+    )
 
 
 # ── the unit ─────────────────────────────────────────────────────────────────

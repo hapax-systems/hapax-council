@@ -52,6 +52,11 @@ E3_OWNER = "E3 Ledger"
 EXIT_OK = 0
 EXIT_SWEEP_FAILED = 2
 
+# A commitment id becomes part of a request note's file name, so it must be a plain name: no
+# separator, no traversal, no NUL, no leading dot or dash. The register's ids ("com-2026-0004")
+# fit well inside this grammar.
+_SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
 
 class SweepFailed(Exception):
     """The sweep cannot know what is due; the reason code prefixes the message."""
@@ -184,6 +189,12 @@ def parse_register(body: bytes) -> Register:
         if not isinstance(record, dict):
             raise SweepFailed("register_invalid:record_not_an_object")
         if record.get("type") == "commitment":
+            cid = record.get("id")
+            if not isinstance(cid, str) or not _SAFE_ID_RE.fullmatch(cid):
+                raise SweepFailed(
+                    f"register_invalid:unsafe_commitment_id:{cid!r} (an id becomes a file name and "
+                    "must match [A-Za-z0-9][A-Za-z0-9._-]*; correct the register record)"
+                )
             _require_offset(record, "deadline")
             commitments.append(record)
         elif record.get("type") == "attestation":
@@ -272,8 +283,19 @@ def classify(register: Register, now: datetime) -> list[Finding]:
 # ── demands ──────────────────────────────────────────────────────────────────
 
 
-def request_id_for(finding: Finding) -> str:
-    kind = "DUE" if finding.kind == "due_soon" else "SLIPPED"
+OWNER_DEMAND = "owner"
+SLIPPED_CANDIDATE = "slipped"
+
+
+def notes_for(finding: Finding) -> list[str]:
+    """Every finding gets an owner demand; a slipped one also gets E3's candidate. A commitment
+    first seen after its due point still reaches its obliged owner."""
+
+    return [OWNER_DEMAND, SLIPPED_CANDIDATE] if finding.kind == "slipped" else [OWNER_DEMAND]
+
+
+def request_id_for(finding: Finding, note: str = OWNER_DEMAND) -> str:
+    kind = "SLIPPED" if note == SLIPPED_CANDIDATE else "DUE"
     return f"REQ-REGISTER-{kind}-{finding.commitment_id}-{finding.due.strftime('%Y%m%d')}"
 
 
@@ -282,18 +304,25 @@ def _scalar(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def render_request(finding: Finding, *, generated_at: datetime, register_url: str) -> str:
+def render_request(
+    finding: Finding,
+    *,
+    generated_at: datetime,
+    register_url: str,
+    note: str = OWNER_DEMAND,
+) -> str:
     now = isoformat_z(generated_at)
     due = isoformat_z(finding.due)
-    slipped = finding.kind == "slipped"
-    title = (
-        f"SLIPPED candidate: {finding.commitment_id} passed its due point {due} with no discharging attestation"
-        if slipped
-        else f"Owner demand: {finding.commitment_id} is due {due}"
-    )
+    slipped = note == SLIPPED_CANDIDATE
+    if slipped:
+        title = f"SLIPPED candidate: {finding.commitment_id} passed its due point {due} with no discharging attestation"
+    elif generated_at >= finding.due:
+        title = f"Owner demand: {finding.commitment_id} was due {due} and is not discharged"
+    else:
+        title = f"Owner demand: {finding.commitment_id} is due {due}"
     fields: dict[str, Any] = {
         "type": "hapax-request",
-        "request_id": request_id_for(finding),
+        "request_id": request_id_for(finding, note),
         "title": title,
         "status": "captured",
         "created_at": now,
@@ -352,9 +381,10 @@ def render_request(finding: Finding, *, generated_at: datetime, register_url: st
             "",
             "## Demand",
             "",
-            f'`{finding.commitment_id}` ("{finding.title}") is due at {due}. The obliged is',
-            f"{finding.obliged}. Discharge is an attestation on the register, per the fulfilment below,",
-            "before the due point.",
+            f'`{finding.commitment_id}` ("{finding.title}") '
+            + ("was due" if generated_at >= finding.due else "is due")
+            + f" at {due}. The obliged is",
+            f"{finding.obliged}. Discharge is an attestation on the register, per the fulfilment below.",
             "",
             "## The commitment's fulfilment",
             "",
@@ -368,7 +398,9 @@ def render_request(finding: Finding, *, generated_at: datetime, register_url: st
 
 
 def write_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Write into an existing directory. A missing directory is an error, never created here:
+    a wrong intake path must fail, not fill a stray directory."""
+
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
@@ -387,16 +419,19 @@ def write_requests(
     created: list[str] = []
     skipped: list[str] = []
     for finding in findings:
-        request_id = request_id_for(finding)
-        name = f"{request_id}.md"
-        if (requests_dir / name).exists() or (closed / name).exists():
-            skipped.append(request_id)
-            continue
-        write_atomic(
-            requests_dir / name,
-            render_request(finding, generated_at=generated_at, register_url=register_url),
-        )
-        created.append(request_id)
+        for note in notes_for(finding):
+            request_id = request_id_for(finding, note)
+            name = f"{request_id}.md"
+            if (requests_dir / name).exists() or (closed / name).exists():
+                skipped.append(request_id)
+                continue
+            write_atomic(
+                requests_dir / name,
+                render_request(
+                    finding, generated_at=generated_at, register_url=register_url, note=note
+                ),
+            )
+            created.append(request_id)
     return created, skipped
 
 
@@ -431,61 +466,70 @@ def main(argv: list[str] | None = None, *, opener: Any = None) -> int:
     now = parse_instant(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
     opener = opener or urllib.request.urlopen
 
-    try:
-        try:
-            register, findings = sweep(
-                now=now, opener=opener, register_url=args.register_url, release_url=args.release_url
-            )
-        except SweepFailed:
-            raise
-        except Exception as exc:  # noqa: BLE001 - an unexpected error must never read as "nothing due"
-            raise SweepFailed(f"internal_error:{type(exc).__name__}:{exc}") from exc
-    except SweepFailed as exc:
-        reason = str(exc)
+    def fail(reason: str) -> int:
         print(
             f"register-due-sweep: FAILED — {reason}. Nothing is known to be due or not due. Next action: "
-            "check the register URL and the site's release, then rerun "
+            "fix the named cause (register, site release, or the intake directory), then rerun "
             "`systemctl --user start hapax-register-due-sweep.service`.",
             file=sys.stderr,
         )
         if args.write:
-            write_atomic(
-                args.state_path,
-                json.dumps(
-                    {"status": "failed", "reason": reason, "checked_at": isoformat_z(now)}, indent=2
+            try:
+                write_atomic(
+                    args.state_path,
+                    json.dumps(
+                        {"status": "failed", "reason": reason, "checked_at": isoformat_z(now)},
+                        indent=2,
+                    )
+                    + "\n",
                 )
-                + "\n",
-            )
+            except OSError as exc:
+                print(f"register-due-sweep: could not record the failure: {exc}", file=sys.stderr)
         return EXIT_SWEEP_FAILED
+
+    if args.write and not args.requests_dir.is_dir():
+        return fail(f"intake_missing:{args.requests_dir} is not a directory")
+
+    try:
+        register, findings = sweep(
+            now=now, opener=opener, register_url=args.register_url, release_url=args.release_url
+        )
+    except SweepFailed as exc:
+        return fail(str(exc))
+    except Exception as exc:  # noqa: BLE001 - an unexpected error must never read as "nothing due"
+        return fail(f"internal_error:{type(exc).__name__}:{exc}")
 
     due_soon = [f.commitment_id for f in findings if f.kind == "due_soon"]
     slipped = [f.commitment_id for f in findings if f.kind == "slipped"]
     created: list[str] = []
     skipped: list[str] = []
     if args.write:
-        created, skipped = write_requests(
-            findings,
-            requests_dir=args.requests_dir,
-            generated_at=now,
-            register_url=args.register_url,
-        )
-        write_atomic(
-            args.state_path,
-            json.dumps(
-                {
-                    "status": "ok",
-                    "checked_at": isoformat_z(now),
-                    "snapshot": register.snapshot,
-                    "commitments": len(register.commitments),
-                    "due_soon": due_soon,
-                    "slipped": slipped,
-                    "created": created,
-                    "skipped_existing": skipped,
-                },
-                indent=2,
+        try:
+            created, skipped = write_requests(
+                findings,
+                requests_dir=args.requests_dir,
+                generated_at=now,
+                register_url=args.register_url,
             )
-            + "\n",
-        )
+            write_atomic(
+                args.state_path,
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "checked_at": isoformat_z(now),
+                        "snapshot": register.snapshot,
+                        "commitments": len(register.commitments),
+                        "due_soon": due_soon,
+                        "slipped": slipped,
+                        "created": created,
+                        "skipped_existing": skipped,
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+        except (OSError, ValueError) as exc:
+            return fail(f"write_failed:{type(exc).__name__}:{exc}")
     print(
         f"register-due-sweep: ok snapshot={register.snapshot[:12]} commitments={len(register.commitments)} "
         f"due_soon={due_soon} slipped={slipped} created={created} skipped_existing={skipped}"
