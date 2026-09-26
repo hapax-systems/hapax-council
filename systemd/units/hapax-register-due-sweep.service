@@ -1,0 +1,17 @@
+[Unit]
+Description=Hapax register due-point sweep (R7): owner demands and SLIPPED candidates from the public register
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-register-due-sweep
+After=network-online.target
+Wants=network-online.target
+OnFailure=notify-failure@%n.service
+ConditionPathExists=%h/.cache/hapax/source-activation/worktree/scripts/hapax-register-due-sweep
+# Activation is a separate, authorized act on the host that should run it (podium): create this flag.
+# Without it, an installed and enabled timer starts nothing.
+ConditionPathExists=%h/.config/hapax/register-due-sweep.enabled
+
+[Service]
+Type=oneshot
+Environment=HAPAX_AGENT_NAME=register-due-sweep
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=/usr/bin/python3 %h/.cache/hapax/source-activation/worktree/scripts/hapax-register-due-sweep --write --state-path %h/.cache/hapax/register-due-sweep-state.json
+TimeoutStartSec=120

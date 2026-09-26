@@ -1,0 +1,579 @@
+#!/usr/bin/env python3
+"""Register due-point sweeper (R7, T3): public-loop-register-due-sweeper-20260925.
+
+Once a day, read the public register anonymously and turn its commitments into demands:
+
+- a commitment due within 72 h and not discharged → an owner demand (a request note) for
+  the obliged Eddy;
+- a commitment at or past its due point and not discharged → a SLIPPED record candidate
+  (a request note) for E3, stating only that no discharging attestation exists in the
+  named register snapshot at the time of the sweep.
+
+It never publishes and never dispatches: both outputs are request notes in the existing
+intake, which the seat or the governor routes. It runs no fulfilment check of its own,
+so it never claims a check result.
+
+A commitment's state follows the site (hrl-portal#8): the latest attestation decides. A
+passing ``check`` discharges; a ``cancellation`` ends the obligation. A standing
+commitment's next due point is its last passing check plus ``review_every``.
+
+It fails, and writes no note, when it cannot know what is due. A fetch failure, an
+unreadable register, an unsafe commitment id, a deadline without an offset, a missing intake
+directory, and a register older than the site's release (compared by the deploy's
+Last-Modified) each exit with EXIT_SWEEP_FAILED before any note is written.
+
+A failure while writing notes also exits with EXIT_SWEEP_FAILED (write_failed). Any note
+written before it is complete, because each is created whole and atomically, and the next run
+writes the rest. Notes are created exclusively: an existing note is never replaced, even by a
+concurrent run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from typing import Any
+
+REGISTER_URL = "https://hapaxresearch.com/register/latest/register.json"
+# Any file of the same deploy carries the release's Last-Modified; robots.txt is small.
+RELEASE_URL = "https://hapaxresearch.com/robots.txt"
+USER_AGENT = "hapax-register-due-sweep/1.0 (+https://hapaxresearch.com/; read-only)"
+GENERATOR_ID = "register-due-sweep"
+DEFAULT_REQUESTS_DIR = Path.home() / "Documents/Personal/20-projects/hapax-requests/active"
+DEFAULT_STATE_PATH = Path.home() / ".cache/hapax/register-due-sweep-state.json"
+DEMAND_WINDOW = timedelta(hours=72)
+FETCH_TIMEOUT_S = 30.0
+SUPPORTED_SCHEMA = "1.0"
+E3_OWNER = "E3 Ledger"
+
+EXIT_OK = 0
+EXIT_SWEEP_FAILED = 2
+
+# A commitment id becomes part of a request note's file name, so it must be a plain name: no
+# separator, no traversal, no NUL, no leading dot or dash. The register's ids ("com-2026-0004")
+# fit well inside this grammar.
+_SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+class SweepFailed(Exception):
+    """The sweep cannot know what is due; the reason code prefixes the message."""
+
+
+@dataclass(frozen=True)
+class Register:
+    snapshot: str
+    commitments: tuple[dict[str, Any], ...]
+    attestations: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class Finding:
+    kind: str  # "due_soon" or "slipped"
+    commitment_id: str
+    title: str
+    obliged: str
+    due: datetime
+    standing: bool
+    fulfilment: dict[str, Any]
+    latest_attestation: str | None
+    snapshot: str
+
+
+# ── time ─────────────────────────────────────────────────────────────────────
+
+
+def parse_instant(value: str) -> datetime:
+    """An ISO 8601 date-time with an explicit offset, as UTC. A naive value is refused."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("empty date-time")
+    parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError(f"date-time without an offset: {value}")
+    return parsed.astimezone(UTC)
+
+
+_DURATION_RE = re.compile(
+    r"^P(?:(?P<years>\d+)Y)?(?:(?P<months>\d+)M)?(?:(?P<weeks>\d+)W)?(?:(?P<days>\d+)D)?"
+    r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?$"
+)
+
+
+def add_duration(start: datetime, duration: str) -> datetime:
+    """Add a definite ISO 8601 duration (calendar years and months, then the rest)."""
+
+    match = _DURATION_RE.match(duration or "")
+    if not match or duration in {"P", "PT"}:
+        raise ValueError(f"not a definite ISO 8601 duration: {duration!r}")
+    parts = {k: int(v) for k, v in match.groupdict().items() if v}
+    months = parts.get("years", 0) * 12 + parts.get("months", 0)
+    year, month = divmod(start.month - 1 + months, 12)
+    year += start.year
+    month += 1
+    day = min(start.day, _days_in_month(year, month))
+    moved = start.replace(year=year, month=month, day=day)
+    return moved + timedelta(
+        weeks=parts.get("weeks", 0),
+        days=parts.get("days", 0),
+        hours=parts.get("hours", 0),
+        minutes=parts.get("minutes", 0),
+        seconds=parts.get("seconds", 0),
+    )
+
+
+def _days_in_month(year: int, month: int) -> int:
+    nxt = datetime(year + (month == 12), month % 12 + 1, 1)
+    return (nxt - timedelta(days=1)).day
+
+
+def isoformat_z(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ── reading the register ─────────────────────────────────────────────────────
+
+
+def fetch(url: str, *, now: datetime, opener: Any) -> tuple[bytes, datetime]:
+    """GET ``url`` anonymously past the edge cache; return the body and its Last-Modified."""
+
+    sep = "&" if "?" in url else "?"
+    request = urllib.request.Request(
+        f"{url}{sep}_sweep={int(now.timestamp())}",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json, */*"},
+        method="GET",
+    )
+    try:
+        with opener(request, timeout=FETCH_TIMEOUT_S) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise SweepFailed(f"fetch_failed:{url}:http_{status}")
+            body = response.read()
+            last_modified = response.headers.get("Last-Modified")
+    except SweepFailed:
+        raise
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise SweepFailed(f"fetch_failed:{url}:{type(exc).__name__}:{exc}") from exc
+    if not body:
+        raise SweepFailed(f"fetch_failed:{url}:empty_body")
+    if not last_modified:
+        raise SweepFailed(f"register_stale:{url}:no_last_modified (currency cannot be established)")
+    try:
+        modified = parsedate_to_datetime(last_modified).astimezone(UTC)
+    except (TypeError, ValueError) as exc:
+        raise SweepFailed(f"register_stale:{url}:unreadable_last_modified:{last_modified}") from exc
+    return body, modified
+
+
+def parse_register(body: bytes) -> Register:
+    try:
+        loaded = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise SweepFailed(f"register_invalid:not_json:{exc}") from exc
+    if not isinstance(loaded, dict):
+        raise SweepFailed("register_invalid:not_an_object")
+    if loaded.get("schema_version") != SUPPORTED_SCHEMA:
+        raise SweepFailed(f"register_invalid:schema_version:{loaded.get('schema_version')}")
+    records = loaded.get("records")
+    if not isinstance(records, list):
+        raise SweepFailed("register_invalid:no_records")
+    snapshot = str(loaded.get("snapshot") or "")
+    if not snapshot:
+        raise SweepFailed("register_invalid:no_snapshot")
+    commitments: list[dict[str, Any]] = []
+    attestations: list[dict[str, Any]] = []
+    for item in records:
+        record = item.get("record", item) if isinstance(item, dict) else None
+        if not isinstance(record, dict):
+            raise SweepFailed("register_invalid:record_not_an_object")
+        if record.get("type") == "commitment":
+            cid = record.get("id")
+            if not isinstance(cid, str) or not _SAFE_ID_RE.fullmatch(cid):
+                raise SweepFailed(
+                    f"register_invalid:unsafe_commitment_id:{cid!r} (an id becomes a file name and "
+                    "must match [A-Za-z0-9][A-Za-z0-9._-]*; correct the register record)"
+                )
+            _require_offset(record, "deadline")
+            commitments.append(record)
+        elif record.get("type") == "attestation":
+            _require_offset(record, "checked_at")
+            attestations.append(record)
+    return Register(
+        snapshot=snapshot, commitments=tuple(commitments), attestations=tuple(attestations)
+    )
+
+
+def _require_offset(record: dict[str, Any], field: str) -> None:
+    try:
+        parse_instant(str(record.get(field) or ""))
+    except ValueError as exc:
+        raise SweepFailed(f"register_invalid:{record.get('id')}:{field}:{exc}") from exc
+
+
+# ── classification ───────────────────────────────────────────────────────────
+
+
+def _deciding(attestations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attestations that bear on discharge, oldest first. A refusal decides a submission, not
+    the commitment, so only checks and cancellations are read here."""
+
+    bearing = [a for a in attestations if a.get("kind") in {"check", "cancellation"}]
+    return sorted(bearing, key=lambda a: (parse_instant(a["checked_at"]), str(a.get("id"))))
+
+
+def classify(register: Register, now: datetime) -> list[Finding]:
+    by_obligation: dict[str, list[dict[str, Any]]] = {}
+    for attestation in register.attestations:
+        by_obligation.setdefault(str(attestation.get("obligation")), []).append(attestation)
+
+    findings: list[Finding] = []
+    for commitment in register.commitments:
+        cid = str(commitment.get("id"))
+        history = _deciding(by_obligation.get(cid, []))
+        latest = history[-1] if history else None
+        if latest is not None and latest.get("kind") == "cancellation":
+            continue  # the obligation ended
+        standing = commitment.get("standing") is True
+        passes = [a for a in history if a.get("kind") == "check" and a.get("outcome") is True]
+        if standing:
+            try:
+                due = (
+                    add_duration(
+                        parse_instant(passes[-1]["checked_at"]), str(commitment.get("review_every"))
+                    )
+                    if passes
+                    else parse_instant(commitment["deadline"])
+                )
+            except ValueError as exc:
+                raise SweepFailed(f"register_invalid:{cid}:review_every:{exc}") from exc
+            discharged = False  # a passing check has already moved the due point forward
+        else:
+            due = parse_instant(commitment["deadline"])
+            discharged = (
+                latest is not None
+                and latest.get("kind") == "check"
+                and latest.get("outcome") is True
+            )
+        if discharged:
+            continue
+        if now >= due:
+            kind = "slipped"
+        elif due - now <= DEMAND_WINDOW:
+            kind = "due_soon"
+        else:
+            continue
+        findings.append(
+            Finding(
+                kind=kind,
+                commitment_id=cid,
+                title=str(commitment.get("title") or cid),
+                obliged=str(commitment.get("obliged") or "unassigned"),
+                due=due,
+                standing=standing,
+                fulfilment=dict(commitment.get("fulfilment") or {}),
+                latest_attestation=str(latest["id"]) if latest else None,
+                snapshot=register.snapshot,
+            )
+        )
+    return sorted(findings, key=lambda f: (f.due, f.commitment_id))
+
+
+# ── demands ──────────────────────────────────────────────────────────────────
+
+
+OWNER_DEMAND = "owner"
+SLIPPED_CANDIDATE = "slipped"
+
+
+def notes_for(finding: Finding) -> list[str]:
+    """Every finding gets an owner demand; a slipped one also gets E3's candidate. A commitment
+    first seen after its due point still reaches its obliged owner."""
+
+    return [OWNER_DEMAND, SLIPPED_CANDIDATE] if finding.kind == "slipped" else [OWNER_DEMAND]
+
+
+def request_id_for(finding: Finding, note: str = OWNER_DEMAND) -> str:
+    kind = "SLIPPED" if note == SLIPPED_CANDIDATE else "DUE"
+    return f"REQ-REGISTER-{kind}-{finding.commitment_id}-{finding.due.strftime('%Y%m%d')}"
+
+
+def _scalar(value: Any) -> str:
+    # JSON scalars are valid YAML scalars; this keeps the script stdlib-only.
+    return json.dumps(value, ensure_ascii=False)
+
+
+def render_request(
+    finding: Finding,
+    *,
+    generated_at: datetime,
+    register_url: str,
+    note: str = OWNER_DEMAND,
+) -> str:
+    now = isoformat_z(generated_at)
+    due = isoformat_z(finding.due)
+    slipped = note == SLIPPED_CANDIDATE
+    if slipped:
+        title = f"SLIPPED candidate: {finding.commitment_id} passed its due point {due} with no discharging attestation"
+    elif generated_at >= finding.due:
+        title = f"Owner demand: {finding.commitment_id} was due {due} and is not discharged"
+    else:
+        title = f"Owner demand: {finding.commitment_id} is due {due}"
+    fields: dict[str, Any] = {
+        "type": "hapax-request",
+        "request_id": request_id_for(finding, note),
+        "title": title,
+        "status": "captured",
+        "created_at": now,
+        "updated_at": now,
+        "source": GENERATOR_ID,
+        "requester": GENERATOR_ID,
+        "requested_by": GENERATOR_ID,
+        "intake_owner": E3_OWNER if slipped else finding.obliged,
+        "priority_hint": "p1" if slipped else "p2",
+        "requires_research": False,
+        "commitment_id": finding.commitment_id,
+        "obliged": finding.obliged,
+        "due": due,
+        "standing": finding.standing,
+        "candidate_kind": "slipped" if slipped else None,
+        "latest_attestation": finding.latest_attestation,
+        "register_snapshot": finding.snapshot,
+        "register_url": register_url,
+        "evidence_refs": [
+            f"https://hapaxresearch.com/commitments/{finding.commitment_id}/",
+            register_url,
+        ],
+        "tags": ["public-loop", "register", "e3", "slipped" if slipped else "due-soon"],
+    }
+    lines = ["---", *(f"{key}: {_scalar(value)}" for key, value in fields.items()), "---", ""]
+    fulfilment = finding.fulfilment
+    if slipped:
+        body = [
+            f"# {title}",
+            "",
+            "## What the sweep observed",
+            "",
+            f"At {now}, register snapshot `{finding.snapshot}` held no discharging attestation for",
+            f'`{finding.commitment_id}` ("{finding.title}"), whose due point was {due}.',
+            f"The latest attestation bearing on it was `{finding.latest_attestation or 'none'}`.",
+            "",
+            "This candidate asserts only that absence. The sweep ran no fulfilment check and records no",
+            "check result.",
+            "",
+            "## For E3",
+            "",
+            "- Decide the public record for this slip, per the register's rules (outcomes publish either",
+            "  way; slipped commitments are acknowledged in public).",
+            "- If a check is to be recorded, run the commitment's own fulfilment check and publish its",
+            "  attestation with the real result.",
+            "",
+            "## The commitment's fulfilment",
+            "",
+            f"- check: {fulfilment.get('check', '(not stated)')}",
+            f"- pass_if: {fulfilment.get('pass_if', '(not stated)')}",
+            f"- result_recorded_in: {fulfilment.get('result_recorded_in', '(not stated)')}",
+        ]
+    else:
+        body = [
+            f"# {title}",
+            "",
+            "## Demand",
+            "",
+            f'`{finding.commitment_id}` ("{finding.title}") '
+            + ("was due" if generated_at >= finding.due else "is due")
+            + f" at {due}. The obliged is",
+            f"{finding.obliged}. Discharge is an attestation on the register, per the fulfilment below.",
+            "",
+            "## The commitment's fulfilment",
+            "",
+            f"- check: {fulfilment.get('check', '(not stated)')}",
+            f"- pass_if: {fulfilment.get('pass_if', '(not stated)')}",
+            f"- result_recorded_in: {fulfilment.get('result_recorded_in', '(not stated)')}",
+            "",
+            f"Register snapshot at the sweep: `{finding.snapshot}`.",
+        ]
+    return "\n".join(lines + body) + "\n"
+
+
+def _write_temp_beside(path: Path, content: str) -> Path:
+    """A uniquely named temporary file in ``path``'s directory, which must already exist (a
+    missing directory is an error, never created here)."""
+
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return Path(name)
+
+
+def write_atomic(path: Path, content: str) -> None:
+    """Replace ``path`` atomically (the sweep's own state file)."""
+
+    tmp = _write_temp_beside(path, content)
+    try:
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def create_note(path: Path, content: str) -> bool:
+    """Create ``path`` only if the name is free; return whether it was created.
+
+    The content is written whole to a unique temporary file, then hard-linked into place.
+    The link is atomic and fails if the name exists, so a concurrent run can never replace a
+    note, and no reader ever sees a partial one.
+    """
+
+    tmp = _write_temp_beside(path, content)
+    try:
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_requests(
+    findings: list[Finding],
+    *,
+    requests_dir: Path,
+    generated_at: datetime,
+    register_url: str,
+) -> tuple[list[str], list[str]]:
+    """Create each demand once; never overwrite, and never re-create one already closed."""
+
+    closed = requests_dir.parent / "closed"
+    created: list[str] = []
+    skipped: list[str] = []
+    for finding in findings:
+        for note in notes_for(finding):
+            request_id = request_id_for(finding, note)
+            name = f"{request_id}.md"
+            if (closed / name).exists():
+                skipped.append(request_id)
+                continue
+            content = render_request(
+                finding, generated_at=generated_at, register_url=register_url, note=note
+            )
+            if create_note(requests_dir / name, content):
+                created.append(request_id)
+            else:
+                skipped.append(request_id)
+    return created, skipped
+
+
+# ── main ─────────────────────────────────────────────────────────────────────
+
+
+def sweep(
+    *, now: datetime, opener: Any, register_url: str, release_url: str
+) -> tuple[Register, list[Finding]]:
+    body, register_modified = fetch(register_url, now=now, opener=opener)
+    _, release_modified = fetch(release_url, now=now, opener=opener)
+    if register_modified < release_modified:
+        raise SweepFailed(
+            "register_stale:register.json Last-Modified "
+            f"{isoformat_z(register_modified)} is older than the site's release {isoformat_z(release_modified)}"
+        )
+    register = parse_register(body)
+    return register, classify(register, now)
+
+
+def main(argv: list[str] | None = None, *, opener: Any = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--write", action="store_true", help="write demands and state (default: dry run)"
+    )
+    parser.add_argument("--requests-dir", type=Path, default=DEFAULT_REQUESTS_DIR)
+    parser.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
+    parser.add_argument("--register-url", default=REGISTER_URL)
+    parser.add_argument("--release-url", default=RELEASE_URL)
+    parser.add_argument("--now", help="evaluate at this UTC instant (tests and replays)")
+    args = parser.parse_args(argv)
+    now = parse_instant(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
+    opener = opener or urllib.request.urlopen
+
+    def fail(reason: str) -> int:
+        print(
+            f"register-due-sweep: FAILED — {reason}. Nothing is known to be due or not due. Next action: "
+            "fix the named cause (register, site release, or the intake directory), then rerun "
+            "`systemctl --user start hapax-register-due-sweep.service`.",
+            file=sys.stderr,
+        )
+        if args.write:
+            try:
+                write_atomic(
+                    args.state_path,
+                    json.dumps(
+                        {"status": "failed", "reason": reason, "checked_at": isoformat_z(now)},
+                        indent=2,
+                    )
+                    + "\n",
+                )
+            except OSError as exc:
+                print(f"register-due-sweep: could not record the failure: {exc}", file=sys.stderr)
+        return EXIT_SWEEP_FAILED
+
+    if args.write and not args.requests_dir.is_dir():
+        return fail(f"intake_missing:{args.requests_dir} is not a directory")
+
+    try:
+        register, findings = sweep(
+            now=now, opener=opener, register_url=args.register_url, release_url=args.release_url
+        )
+    except SweepFailed as exc:
+        return fail(str(exc))
+    except Exception as exc:  # noqa: BLE001 - an unexpected error must never read as "nothing due"
+        return fail(f"internal_error:{type(exc).__name__}:{exc}")
+
+    due_soon = [f.commitment_id for f in findings if f.kind == "due_soon"]
+    slipped = [f.commitment_id for f in findings if f.kind == "slipped"]
+    created: list[str] = []
+    skipped: list[str] = []
+    if args.write:
+        try:
+            created, skipped = write_requests(
+                findings,
+                requests_dir=args.requests_dir,
+                generated_at=now,
+                register_url=args.register_url,
+            )
+            write_atomic(
+                args.state_path,
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "checked_at": isoformat_z(now),
+                        "snapshot": register.snapshot,
+                        "commitments": len(register.commitments),
+                        "due_soon": due_soon,
+                        "slipped": slipped,
+                        "created": created,
+                        "skipped_existing": skipped,
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+        except (OSError, ValueError) as exc:
+            return fail(f"write_failed:{type(exc).__name__}:{exc}")
+    print(
+        f"register-due-sweep: ok snapshot={register.snapshot[:12]} commitments={len(register.commitments)} "
+        f"due_soon={due_soon} slipped={slipped} created={created} skipped_existing={skipped}"
+        + ("" if args.write else " (dry run)")
+    )
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main(os.sys.argv[1:]))
