@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""hapax-claude-pool-pace — pace the Claude 7-day pool to a linear line.
+
+WHY THIS EXISTS
+
+On 2026-09-25 about 18 Claude lanes spent the whole Claude 7-DAY pool in about 12 h. Every
+Claude seat was dark from 12:32Z to 22:00Z. The operator accepted a smoothing measure the same
+evening: at most about 14 % of the 7-day pool per day, released only while at or under the
+line, held on overshoot (memory ``claude-weekly-pool-pacing-and-smoothing-20260925``).
+
+THE LINE (and the code that implements it — they must agree)
+
+    line = 2.0 % + 0.6 %/h * hours since the open 7-day window began, capped at 100 %
+
+The 2.0 % start is the seat's ruling of 2026-09-25T23:39Z: the provider reports utilization in
+1 % steps, so a line starting at 0 refuses every launch as soon as the first reading arrives;
+2 % is two reading steps and covers the measured reset-hour burst.
+
+WHAT ALREADY EXISTS, AND WHAT THIS ADDS
+
+The reading needs no new probe. ``scripts/hapax-claude-account-live-observe`` already runs a
+bounded Claude CLI ``-p --output-format stream-json`` probe on a 10-minute timer and mints
+admission receipts carrying the provider's own
+``rate_limit_event.rate_limit_info.unifiedWindows`` numbers; passive serves and headless
+stream-json traces carry the same numbers. ``shared/quota_headroom.py`` reads both sources
+through one reader (``read_claude_probe_receipts``, ``read_claude_stream_windows``), so a
+reader here cannot disagree with the ledger about staleness. The seat ruled composing with
+those (2026-09-25T23:39Z item 3): there is deliberately no second probe.
+
+What was missing is the RULE, its ledger line and its binding:
+
+  record        — write one pacing reading to the existing durable JSONL sink, stream
+                  ``claude-pool``. No provider call. Fails closed (exit 4) if the sink cannot
+                  be written, so no reading reaches a decision without its ledger line.
+  check         — the rule, fail narrow. Exit 0 allow, 3 over pace, 4 unknown (no reading, an
+                  unreadable source, a reading older than 60 min, a closed window, or a
+                  reading with no ledger line). Only exit 0 permits a new Claude lane launch
+                  or release.
+  status        — the same evaluation as machine JSON, for the seat and for Reins/HapX.
+  activate      — write the activation marker the admission gate reads, create-once. The
+                  marker is the governor's armed state; the gate must never infer armed from
+                  the ledger's existence (muse critical, 2026-09-26).
+  release-plan  — the ordered list of held work eligible for release, read-only, ordered by
+                  priority (p0 → p3), then wsjf descending, then created_at ascending.
+                  Releasing is the SEAT's act; this command only emits the order.
+
+FAIL NARROW. A missing, stale, closed, unparseable or unledgered reading refuses. Nothing here
+releases a lane on absent evidence. There is deliberately no bypass flag.
+
+ACTIVATION, NOT MERGE. The paired unit ships without ``Hapax-Auto-Enable``: merging is inert
+and the seat activates (see the PR body's commands), which is what this row's
+``runtime_mutation_authorized: false`` requires.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, Final
+
+REPO_ROOT: Final = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.durable_jsonl_sink import DurableJsonlSink  # noqa: E402
+from shared.quota_headroom import (  # noqa: E402
+    TraceReadError,
+    read_claude_probe_receipts,
+    read_claude_stream_windows,
+)
+
+STREAM_ID: Final = "claude-pool"
+DATA_CLASS: Final = "claude_pool_pace_reading"
+WEEKLY_CAPACITY: Final = "claude.subscription.weekly"
+FIVE_HOUR_CAPACITY: Final = "claude.subscription.five_hour"
+
+#: The 7-day window the pace is measured over, and the operator's accepted line.
+WEEKLY_WINDOW_HOURS: Final = 168.0
+#: The line starts at 2 %, not 0 % (seat ruling 2026-09-25T23:39Z). Why 2 %: the provider
+#: reports utilization in 1 % steps, so a line starting at 0 refuses every launch as soon as
+#: the first reading arrives; 2 % is two reading steps and covers the measured reset-hour
+#: burst (the seat plus the review seats reached 2 % within 45 minutes of the 22:00Z reset).
+WEEKLY_LINE_START_PERCENT: Final = 2.0
+#: 0.6 %/h is the operator's own accepted pace (~14 %/day, memory
+#: claude-weekly-pool-pacing-and-smoothing-20260925). Line = START + RATE x elapsed.
+WEEKLY_LINE_PERCENT_PER_HOUR: Final = 0.6
+#: Secondary ceiling on the 5-hour window, in percent used. This row's declared value; the
+#: seat tunes it, and a reading at or over it refuses even when the weekly line permits.
+FIVE_HOUR_CEILING_PERCENT: Final = 90.0
+#: Two observe-probe periods. Older than this the reading is unknown, never permissive.
+READING_MAX_AGE: Final = timedelta(minutes=60)
+
+EXIT_ALLOW: Final = 0
+EXIT_REFUSE_OVER_PACE: Final = 3
+EXIT_REFUSE_UNKNOWN: Final = 4
+
+DEFAULT_RECEIPT_DIR: Final = Path(
+    os.environ.get("HAPAX_RELAY_RECEIPT_DIR", str(Path.home() / ".cache/hapax/relay/receipts"))
+)
+DEFAULT_HEADLESS_GLOB: Final = str(
+    Path.home() / ".cache" / "hapax" / "claude-headless" / "*" / "output.jsonl"
+)
+#: The activation marker the admission gate reads. Written create-once by ``activate``; its
+#: absence is ``not_armed``, which allows and reports itself.
+DEFAULT_ACTIVATION_PATH: Final = Path(
+    os.environ.get(
+        "HAPAX_CLAUDE_POOL_PACE_ACTIVATION",
+        str(Path.home() / ".cache" / "hapax" / "claude-pool-pace" / "activation.json"),
+    )
+)
+DEFAULT_TASK_ROOT: Final = Path(
+    os.environ.get(
+        "HAPAX_CC_TASK_ROOT", str(Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks")
+    )
+)
+RELEASE_PRIORITY_ORDER: Final = ("p0", "p1", "p2", "p3")
+
+
+def _now(value: str | None) -> datetime:
+    if value is None:
+        return datetime.now(UTC)
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _stamp(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def armed(activation_path: Path) -> tuple[bool, dict[str, Any] | None]:
+    """The governor's armed state, from the explicit activation marker only.
+
+    Never inferred from the ledger: an absent ledger with an armed governor REFUSES (muse
+    critical, 2026-09-26). An unreadable marker refuses rather than assuming either state.
+    """
+    if not activation_path.exists():
+        return False, None
+    data = json.loads(activation_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not data.get("activated_at"):
+        raise ValueError(f"activation marker malformed: {activation_path}")
+    return True, data
+
+
+def activate(activation_path: Path, *, now: datetime, reason: str, by: str) -> int:
+    """Write the activation marker, create-once. The seat's act; this only records it."""
+    if activation_path.exists():
+        print(
+            json.dumps(
+                {
+                    "marker": str(activation_path),
+                    "state": "already_activated",
+                    **json.loads(activation_path.read_text(encoding="utf-8")),
+                },
+                sort_keys=True,
+                indent=2,
+            )
+        )
+        return EXIT_ALLOW
+    activation_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"activated_at": _stamp(now), "by": by, "reason": reason}
+    activation_path.write_text(
+        json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    print(
+        json.dumps(
+            {"marker": str(activation_path), "state": "activated", **payload},
+            sort_keys=True,
+            indent=2,
+        )
+    )
+    return EXIT_ALLOW
+
+
+def read_windows(receipt_dir: Path, headless_glob: str, *, now: datetime) -> list[Any]:
+    """Every Claude window reading the ledger's own readers can see (both sources)."""
+    rows = read_claude_probe_receipts(receipt_dir, now=now)
+    pattern = Path(os.path.expanduser(headless_glob))
+    if pattern.parts[-2:] == ("*", "output.jsonl"):
+        rows += read_claude_stream_windows(pattern.parent.parent, now=now)
+    return rows
+
+
+def newest_reading(rows: list[Any], capacity_id: str, *, now: datetime) -> Any | None:
+    """The newest open-window reading for one capacity, or None (never a zero)."""
+    candidates = [
+        row
+        for row in rows
+        if row.capacity_id == capacity_id
+        and row.quantity is not None
+        and row.observed_at is not None
+        and row.resets_at is not None
+        and row.resets_at > now  # a reading at or past its own reset describes a closed window
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda row: row.observed_at)
+
+
+def weekly_line_percent(weekly: Any) -> float:
+    """The line: 2 % + 0.6 %/h from the start of the open 7-day window, capped at 100 %."""
+    window_start = weekly.resets_at - timedelta(hours=WEEKLY_WINDOW_HOURS)
+    elapsed_hours = max(0.0, (weekly.observed_at - window_start).total_seconds() / 3600.0)
+    return min(100.0, WEEKLY_LINE_START_PERCENT + WEEKLY_LINE_PERCENT_PER_HOUR * elapsed_hours)
+
+
+def ledger_state() -> tuple[str, list[dict[str, Any]]]:
+    """``absent`` / ``unreadable`` / ``empty`` / ``ok`` plus the rows. Never a bare None."""
+    try:
+        path = DurableJsonlSink().path_for_stream(STREAM_ID)
+    except Exception:  # noqa: BLE001 — an unusable sink root is unreadable, not absent
+        return "unreadable", []
+    if not path.exists():
+        return "absent", []
+    try:
+        rows = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except Exception:  # noqa: BLE001 — unreadable is its own refusal, never absence
+        return "unreadable", []
+    return ("ok" if rows else "empty"), rows
+
+
+def _ledgered(payload: dict[str, Any], rows: list[dict[str, Any]]) -> bool:
+    return any(
+        row.get("payload", {}).get("weekly_observed_at") == payload["weekly_observed_at"]
+        for row in rows
+    )
+
+
+def read_state(receipt_dir: Path, headless_glob: str, *, now: datetime) -> dict[str, Any]:
+    """The newest open-window reading, its line, and the rule on the reading alone."""
+    state: dict[str, Any] = {
+        "now": _stamp(now),
+        "line_percent": None,
+        "weekly_used_percent": None,
+        "weekly_resets_at": None,
+        "five_hour_used_percent": None,
+        "reading_age_seconds": None,
+        "ledgered": False,
+        "over_line": None,
+        "decision": "refuse",
+        "reason": "no_claude_window_reading",
+    }
+    try:
+        rows = read_windows(receipt_dir, headless_glob, now=now)
+    except TraceReadError as exc:  # an unreadable source is never permission
+        state["reason"] = "reading_unreadable"
+        state["detail"] = str(exc)
+        return state
+
+    weekly = newest_reading(rows, WEEKLY_CAPACITY, now=now)
+    if weekly is None:
+        return state
+    five_hour = newest_reading(rows, FIVE_HOUR_CAPACITY, now=now)
+
+    age = now - weekly.observed_at
+    state.update(
+        weekly_used_percent=weekly.quantity,
+        weekly_resets_at=_stamp(weekly.resets_at),
+        weekly_observed_at=_stamp(weekly.observed_at),
+        weekly_source=weekly.source,
+        five_hour_used_percent=None if five_hour is None else five_hour.quantity,
+        reading_age_seconds=int(age.total_seconds()),
+        line_percent=round(weekly_line_percent(weekly), 6),
+    )
+    if age > READING_MAX_AGE:
+        state["reason"] = "reading_stale"
+        return state
+
+    over_line = float(weekly.quantity) > float(state["line_percent"])
+    state["over_line"] = over_line
+    if over_line:
+        state["reason"] = "pace_line_exceeded"
+        return state
+    if five_hour is not None and float(five_hour.quantity) >= FIVE_HOUR_CEILING_PERCENT:
+        state["reason"] = "five_hour_ceiling_exceeded"
+        return state
+    state["decision"] = "allow"
+    state["reason"] = "under_pace_line"
+    return state
+
+
+def evaluate(
+    receipt_dir: Path, headless_glob: str, *, now: datetime, activation_path: Path | None = None
+) -> dict[str, Any]:
+    """The pace decision: the reading, its ledger line, and the rule. Fail narrow."""
+    state = read_state(receipt_dir, headless_glob, now=now)
+    if activation_path is not None:
+        try:
+            state["armed"], marker = armed(activation_path)
+        except (OSError, ValueError) as exc:
+            state["armed"], marker = None, None
+            state["activation_error"] = str(exc)
+        if marker:
+            state["activated_at"] = marker.get("activated_at")
+    if state["reason"] in {"no_claude_window_reading", "reading_unreadable", "reading_stale"}:
+        return state
+    payload = {
+        "weekly_observed_at": state["weekly_observed_at"],
+        "line_percent": state["line_percent"],
+        "source_ref": state.get("weekly_source"),
+    }
+    ledger, rows = ledger_state()
+    state["ledger_state"] = ledger
+    state["ledgered"] = ledger == "ok" and _ledgered(payload, rows)
+    if not state["ledgered"]:
+        state["decision"] = "refuse"
+        state["reason"] = "pace_reading_not_ledgered"
+        return state
+    return state
+
+
+def _record(receipt_dir: Path, headless_glob: str, *, now: datetime, as_json: bool) -> int:
+    """Append the pacing reading to the sink. No provider call, fail closed on no ledger."""
+    state = read_state(receipt_dir, headless_glob, now=now)
+    if state["weekly_used_percent"] is None:
+        print(f"pace ledger refused: {state['reason']} — nothing to ledger", file=sys.stderr)
+        return EXIT_REFUSE_UNKNOWN
+    payload = {
+        "captured_at": state["now"],
+        "weekly_observed_at": state.get("weekly_observed_at"),
+        "weekly_used_percent": state["weekly_used_percent"],
+        "weekly_resets_at": state["weekly_resets_at"],
+        "five_hour_used_percent": state["five_hour_used_percent"],
+        "line_percent": state["line_percent"],
+        "reading_age_seconds": state["reading_age_seconds"],
+        "over_line": state["over_line"],
+        "source_ref": state.get("weekly_source"),
+    }
+    try:
+        DurableJsonlSink().append(
+            stream_id=STREAM_ID,
+            data_class=DATA_CLASS,
+            source_receipt_ref=f"claude-pool-pace:{state['weekly_observed_at']}",
+            payload=payload,
+            timestamp=state["now"],
+        )
+    except Exception as exc:  # noqa: BLE001 — any ledger failure refuses, none liberates
+        print(f"pace ledger refused: cannot write the {STREAM_ID} sink row: {exc}", file=sys.stderr)
+        return EXIT_REFUSE_UNKNOWN
+    if as_json:
+        print(json.dumps(payload, sort_keys=True, indent=2))
+    else:
+        print(
+            f"ledgered {payload['weekly_used_percent']}% weekly vs {payload['line_percent']}% line "
+            f"at {payload['weekly_observed_at']}"
+        )
+    return EXIT_ALLOW
+
+
+def release_plan(task_root: Path, *, limit: int | None = None) -> dict[str, Any]:
+    """Held work eligible for release, ordered by priority. Read-only; releasing is the seat's."""
+    import yaml  # local import: only this subcommand needs it
+
+    rows: list[dict[str, Any]] = []
+    unreadable: list[str] = []
+    active = Path(os.path.expanduser(str(task_root))) / "active"
+    for path in sorted(active.glob("*.md")) if active.is_dir() else []:
+        try:
+            frontmatter = yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1])
+        except Exception:  # noqa: BLE001 — an unparseable note is reported, never skipped silently
+            unreadable.append(path.name)
+            continue
+        if not isinstance(frontmatter, dict):
+            unreadable.append(path.name)
+            continue
+        if str(frontmatter.get("status") or "").strip() != "offered":
+            continue
+        if frontmatter.get("claimable") is False:
+            continue
+        priority = str(frontmatter.get("priority") or "p9").strip().lower()
+        rows.append(
+            {
+                "task_id": frontmatter.get("task_id") or path.stem,
+                "priority": priority,
+                "wsjf": frontmatter.get("wsjf"),
+                "kind": frontmatter.get("kind"),
+                "created_at": str(frontmatter.get("created_at") or ""),
+                "note": path.name,
+            }
+        )
+
+    def _order(row: dict[str, Any]) -> tuple[int, float, str]:
+        rank = (
+            RELEASE_PRIORITY_ORDER.index(row["priority"])
+            if row["priority"] in RELEASE_PRIORITY_ORDER
+            else len(RELEASE_PRIORITY_ORDER)
+        )
+        wsjf = row["wsjf"] if isinstance(row["wsjf"], (int, float)) else float("-inf")
+        return rank, -float(wsjf), row["created_at"]
+
+    rows.sort(key=_order)
+    if limit is not None:
+        rows = rows[:limit]
+    return {
+        "generated_at": _stamp(datetime.now(UTC)),
+        "source": f"{active}/*.md",
+        "eligible_status": "offered",
+        "ordering": "priority (p0→p3) then wsjf descending then created_at ascending",
+        "count": len(rows),
+        "unparseable_notes": unreadable,
+        "release_is_the_seats_act": True,
+        "lanes": rows,
+    }
+
+
+def _report(state: dict[str, Any], *, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(state, sort_keys=True, indent=2))
+    else:
+        print(f"{state['decision']}: {state['reason']}")
+    return (
+        EXIT_ALLOW
+        if state["decision"] == "allow"
+        else (
+            EXIT_REFUSE_OVER_PACE
+            if state["reason"] in {"pace_line_exceeded", "five_hour_ceiling_exceeded"}
+            else EXIT_REFUSE_UNKNOWN
+        )
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="hapax-claude-pool-pace")
+    parser.add_argument(
+        "command", choices=("record", "check", "status", "activate", "release-plan")
+    )
+    parser.add_argument("--now", help="ISO instant to evaluate at (default: now)")
+    parser.add_argument("--receipt-dir", default=str(DEFAULT_RECEIPT_DIR))
+    parser.add_argument("--headless-glob", default=DEFAULT_HEADLESS_GLOB)
+    parser.add_argument("--activation", default=str(DEFAULT_ACTIVATION_PATH))
+    parser.add_argument("--task-root", default=str(DEFAULT_TASK_ROOT))
+    parser.add_argument("--limit", type=int)
+    parser.add_argument("--reason", default="seat activation of the Claude pool pacing governor")
+    parser.add_argument("--by", default="seat")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    now = _now(args.now)
+    receipt_dir = Path(os.path.expanduser(args.receipt_dir))
+    activation_path = Path(os.path.expanduser(args.activation))
+    if args.command == "record":
+        return _record(receipt_dir, args.headless_glob, now=now, as_json=args.json)
+    if args.command == "activate":
+        return activate(activation_path, now=now, reason=args.reason, by=args.by)
+    if args.command == "release-plan":
+        plan = release_plan(Path(args.task_root), limit=args.limit)
+        if args.json:
+            print(json.dumps(plan, sort_keys=True, indent=2))
+        else:
+            for row in plan["lanes"]:
+                print(f"{row['priority']} {row['task_id']} wsjf={row['wsjf']}")
+            print(f"({plan['count']} held rows eligible; releasing is the seat's act)")
+        return EXIT_ALLOW
+    state = evaluate(receipt_dir, args.headless_glob, now=now, activation_path=activation_path)
+    return _report(state, as_json=args.json)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
