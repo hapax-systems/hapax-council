@@ -1264,3 +1264,33 @@ class TavilyClient:
         finally:
             if fd >= 0:
                 os.close(fd)
+
+
+def search_snippets(
+    query: str,
+    *,
+    lane: str,
+    max_results: int = 5,
+    search_depth: SearchDepth = "basic",
+    include_domains: list[str] | None = None,
+    time_range: SearchTimeRange | None = None,
+    client: TavilyClient | None = None,
+) -> str:
+    """One budgeted Tavily search, rendered as title, url, and snippet text."""
+
+    response = (client or TavilyClient()).search(
+        TavilySearchRequest(
+            query=query,
+            lane=lane,
+            max_results=max_results,
+            search_depth=search_depth,
+            include_answer=False,
+            include_domains=include_domains,
+            time_range=time_range,
+        )
+    )
+    blocks = [
+        "\n".join(part for part in (result.title, result.url, result.content) if part)
+        for result in response.results
+    ]
+    return "\n\n".join(block for block in blocks if block)

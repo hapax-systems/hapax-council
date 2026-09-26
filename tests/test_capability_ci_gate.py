@@ -151,7 +151,9 @@ class CapabilityCIGateTest(unittest.TestCase):
         baseline = CapabilityInventoryBaselineV2.model_validate(payload)
 
         self.assertEqual(baseline.schema_version, 2)
-        self.assertEqual(baseline.count, 192)
+        # inventory_baseline() after retiring the five Sonar supply ids.
+        self.assertEqual(baseline.count, len(baseline.records))
+        self.assertEqual(baseline.count, 187)
         evaluator = baseline.records["local_compute.agentic_trust_evaluator_surface"]
         self.assertEqual(evaluator.inventory_disposition.value, "evidence_only_non_supply")
 
@@ -168,14 +170,25 @@ class CapabilityCIGateTest(unittest.TestCase):
             descriptor.capability_id: descriptor_fingerprint(descriptor)
             for descriptor in snapshot.admitted_supply_descriptors()
         }
-        self.assertEqual(set(legacy["fingerprints"]), set(current_fingerprints))
-        # The v1 fixture is historical evidence. The Claude reviewer declaration
-        # has since changed; loading v1 must preserve and report that difference.
+        retired_supply = {
+            "litellm.web-deep",
+            "litellm.web-reason",
+            "litellm.web-research",
+            "litellm.web-scout",
+            "perplexity_search_or_sonar",
+        }
+        # The v1 fixture stays the historical supply set. The five Sonar ids
+        # are still in that file and are no longer in the live supply plane.
+        self.assertEqual(set(legacy["fingerprints"]) - set(current_fingerprints), retired_supply)
+        self.assertTrue(set(current_fingerprints) <= set(legacy["fingerprints"]))
+        # The Claude reviewer declaration has since changed; loading v1 must
+        # preserve and report that difference among the ids that remain.
         self.assertEqual(
             {
                 capability_id
                 for capability_id, fingerprint in legacy["fingerprints"].items()
-                if fingerprint != current_fingerprints[capability_id]
+                if capability_id in current_fingerprints
+                and fingerprint != current_fingerprints[capability_id]
             },
             {"claude.review.opus"},
         )
@@ -188,7 +201,7 @@ class CapabilityCIGateTest(unittest.TestCase):
             {descriptor.shape_id for descriptor in snapshot.evidence_only_non_supply_descriptors()},
         )
         self.assertEqual(delta.changed_capability_ids, ["claude.review.opus"])
-        self.assertEqual(delta.missing_capability_ids, [])
+        self.assertEqual(delta.missing_capability_ids, sorted(retired_supply))
 
     def test_v1_to_v2_wrapper_has_a_fixed_known_answer(self) -> None:
         legacy_hash = "623fdb606d2fa7c7f92b969e951a1367fe58d06a46c57c29ac91402457eeaa6b"
