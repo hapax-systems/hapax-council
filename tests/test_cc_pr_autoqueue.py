@@ -11411,20 +11411,92 @@ def _consent_egress_frontmatter() -> dict[str, Any]:
 
 
 def test_release_evidence_blockers_pass_deleted_files_to_the_gate() -> None:
-    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+    from shared.release_gate import (
+        LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK,
+        LIVE_EGRESS_MITIGATION_CHECKS,
+    )
 
-    def uncovered(deleted: tuple[str, ...] | None) -> bool:
+    def uncovered(deleted: tuple[str, ...] | None, *, executed: bool = True) -> bool:
+        checks = set(LIVE_EGRESS_MITIGATION_CHECKS)
+        if executed:
+            checks.add(LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK)
         blockers = autoqueue._release_auto_arm_current_evidence_blockers(
             _consent_egress_frontmatter(),
-            verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+            verified_checks=checks,
             changed_files=(_CONSENT_WRITER, _CONSENT_WRITER_SUITE),
             deleted_files=deleted,
         )
         return any(b.startswith("egress_evidence_uncovered_paths:") for b in blockers)
 
-    assert uncovered(()) is False  # suite carried (added or modified)
+    assert uncovered(()) is False  # suite carried and executed
+    assert uncovered((), executed=False) is True  # co-presence alone: held
     assert uncovered((_CONSENT_WRITER_SUITE,)) is True  # suite deleted: held
     assert uncovered(None) is True  # status unknown: held
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, ("x.py",)),  # nothing passed: the PR's own change status
+        ({"deleted_files": ("y.py",)}, ("y.py",)),  # explicit deletions are honoured
+        ({"changed_files": ("a.py",)}, None),  # files overridden without status: unknown
+        ({"changed_files": ("a.py",), "deleted_files": ("a.py",)}, ("a.py",)),
+    ],
+)
+def test_release_head_boundary_threads_deleted_files_to_the_evidence_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, Any],
+    expected: tuple[str, ...] | None,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def capture(_frontmatter: Any, **kwargs: Any) -> tuple[str, ...]:
+        seen.update(kwargs)
+        return ("captured",)
+
+    monkeypatch.setattr(autoqueue, "_decision_is_release_head_guard_subject", lambda _d: True)
+    monkeypatch.setattr(
+        autoqueue, "_release_auto_arm_current_admission_blockers", lambda *_a, **_k: ()
+    )
+    monkeypatch.setattr(
+        autoqueue, "_release_auto_arm_current_task_gate_blockers", lambda *_a, **_k: ()
+    )
+    monkeypatch.setattr(
+        autoqueue, "assess_release_auto_arm", lambda *_a, **_k: type("A", (), {"armed": True})()
+    )
+    monkeypatch.setattr(autoqueue, "_release_authorized_head_stamp_blocker", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        autoqueue, "fetch_pr_release_evidence", lambda *_a, **_k: (True, "sha-95", set())
+    )
+    monkeypatch.setattr(
+        autoqueue, "_release_mitigation_verified_checks", lambda checks, *_a, **_k: checks
+    )
+    monkeypatch.setattr(autoqueue, "_release_auto_arm_current_evidence_blockers", capture)
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="boundary-deleted-files", status="pr_open", pr=95)
+    task = autoqueue.load_task_notes(vault)[0]
+    pr = autoqueue._parse_pr(
+        {
+            **_pr(95),
+            "headRefOid": "sha-95",
+            "files": [
+                {"path": "x.py", "changeType": "DELETED"},
+                {"path": "a.py", "changeType": "MODIFIED"},
+            ],
+        }
+    )
+
+    reason = autoqueue._release_head_boundary_blocker(
+        autoqueue.Decision(pr=pr, task=task, action="queue"),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=None,
+        **overrides,
+    )
+
+    assert reason == "current_release_auto_arm_blocked:captured"
+    assert seen["deleted_files"] == expected
 
 
 def _call_keywords(function: Any, callee: str) -> list[set[str]]:

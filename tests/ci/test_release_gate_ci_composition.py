@@ -379,3 +379,46 @@ def test_arm_time_evidence_workflows_trigger_per_pr() -> None:
     assert "pull_request" in _on_block(authority)
     assert "secrets-scan" in _ci()["jobs"]
     assert "pull_request" in _on_block(_ci())
+
+
+def test_consent_coupled_suites_job_is_required_unskippable_and_names_itself() -> None:
+    # The release gate admits a coupled consent source only when this job's
+    # check passed at the head (LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK), so
+    # its produced check-run name must stay the gate's string, it must be in
+    # the required aggregate, and it must never be skippable wholesale.
+    from shared.release_gate import LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK
+
+    jobs = _ci()["jobs"]
+    assert LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK in jobs
+    job = jobs[LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK]
+    assert job.get("name", LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK) == (
+        LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK
+    )
+    assert "if" not in job, "the consent execution anchor must never be skippable at job level"
+    assert LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK in set(jobs["all-green"]["needs"])
+    assert "post_merge_duplicate_filter" in set(job["needs"])
+    for step in job["steps"]:
+        assert "docs_only" not in str(step.get("if", "")), (
+            f"step {step.get('name')!r} gained a docs-only bypass"
+        )
+    on = _on_block(_ci())
+    assert "pull_request" in on and "merge_group" in on
+
+
+def test_consent_coupled_suites_job_executes_the_selected_suites_fail_closed() -> None:
+    # Anchored shape: the pairs come from the gate module (one source of
+    # truth), every selected suite must exist at head, and the suites are
+    # executed by a uv-run pytest (exit 4 absent / 5 no tests are failures).
+    job = _ci()["jobs"]["consent-coupled-suites"]
+    steps = {step.get("id"): step for step in job["steps"] if step.get("id")}
+    select = str(steps["select"]["run"])
+    assert "coupled_consent_suites_for" in select
+    assert "absent at head" in select
+    assert "set -euo pipefail" in select
+    runs = [step for step in job["steps"] if re.search(r"\bpytest\b", str(step.get("run", "")))]
+    assert len(runs) == 1, "consent-coupled-suites must execute the selected suites exactly once"
+    execute = runs[0]
+    assert re.search(r"uv run\b[^\n]*\bpytest\b[^\n]*\$SUITES", str(execute["run"]))
+    assert "steps.select.outputs.suites" in str(execute["env"]["SUITES"])
+    # Runs whenever a suite was selected; never a docs-only or other bypass.
+    assert "steps.select.outputs.suites != ''" in str(execute["if"])

@@ -3478,7 +3478,11 @@ def _release_head_boundary_blocker(
         current_frontmatter,
         verified_checks=current_verified_checks,
         changed_files=decision.pr.files if changed_files is None else changed_files,
-        deleted_files=decision.pr.deleted_files if changed_files is None else deleted_files,
+        deleted_files=(
+            deleted_files
+            if changed_files is not None or deleted_files is not None
+            else decision.pr.deleted_files
+        ),
     )
     if evidence_blockers:
         return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)

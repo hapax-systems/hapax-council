@@ -23,9 +23,11 @@ import pytest
 from shared.release_gate import (
     LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES,
     LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS,
+    LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK,
     LIVE_EGRESS_MITIGATION_CHECKS,
     _path_in_consent_containment_lane,
     assess_release_auto_arm_estate,
+    coupled_consent_suites_for,
 )
 from shared.sdlc_lifecycle import (
     RELEASE_MITIGATION_CHECKS,
@@ -396,11 +398,17 @@ _COMPOSITOR_SOURCES = (
 
 
 def _egress_uncovered(
-    changed_files: list[str], deleted_files: tuple[str, ...] | None = ()
+    changed_files: list[str],
+    deleted_files: tuple[str, ...] | None = (),
+    *,
+    suites_executed: bool = True,
 ) -> set[str]:
+    checks = set(LIVE_EGRESS_MITIGATION_CHECKS)
+    if suites_executed:
+        checks.add(LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK)
     assessment = assess_release_auto_arm_estate(
         _egress_frontmatter(),
-        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        verified_checks=checks,
         changed_files=changed_files,
         deleted_files=deleted_files,
     )
@@ -492,8 +500,13 @@ def test_consent_coupled_admission_admits_only_the_named_suites() -> None:
 def test_consent_coupled_source_with_deleted_suite_fails_closed() -> None:
     # Unsafe case: the suite is in the changed files because the PR DELETES it.
     # A deleted suite is not carried: the source stays held, and so does the
-    # deletion itself (removing a named consent suite is never admitted).
-    assert _egress_uncovered([_WRITER, _WRITER_SUITE], deleted_files=(_WRITER_SUITE,)) == {_WRITER}
+    # deletion itself, even where a lane directory (tests/hapax_daimonion)
+    # would otherwise cover it.
+    assert _egress_uncovered([_WRITER, _WRITER_SUITE], deleted_files=(_WRITER_SUITE,)) == {
+        _WRITER,
+        _WRITER_SUITE,
+    }
+    assert _egress_uncovered([_WRITER_SUITE], deleted_files=(_WRITER_SUITE,)) == {_WRITER_SUITE}
     assert _egress_uncovered(
         [*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE], deleted_files=(_COMPOSITOR_SUITE,)
     ) == {*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE}
@@ -501,11 +514,41 @@ def test_consent_coupled_source_with_deleted_suite_fails_closed() -> None:
 
 def test_consent_coupled_unknown_change_status_fails_closed() -> None:
     # A caller that cannot say which files were deleted (deleted_files=None)
-    # gets no coupled admission at all; lane members are unaffected.
+    # gets no coupled admission, and a named suite is not covered through its
+    # lane directory either; other lane members are unaffected.
     assert _egress_uncovered(
         [_WRITER, *_COMPOSITOR_SOURCES, _WRITER_SUITE, _COMPOSITOR_SUITE], deleted_files=None
-    ) == {_WRITER, *_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE}
+    ) == {_WRITER, *_COMPOSITOR_SOURCES, _WRITER_SUITE, _COMPOSITOR_SUITE}
     assert not _egress_uncovered(["tests/test_consent_gate.py"], deleted_files=None)
+    assert not _egress_uncovered(["tests/hapax_daimonion/test_other.py"], deleted_files=None)
+
+
+def test_consent_coupled_admission_requires_the_executed_suites_check() -> None:
+    # Execution anchor: co-presence of the suite admits nothing. The coupled
+    # paths pass only when the consent-coupled-suites check PASSED at the head
+    # (a failed or absent check is simply not in verified_checks).
+    assert _egress_uncovered([_WRITER, _WRITER_SUITE], suites_executed=False) == {_WRITER}
+    assert _egress_uncovered([*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE], suites_executed=False) == {
+        *_COMPOSITOR_SOURCES,
+        _COMPOSITOR_SUITE,
+    }
+    assert not _egress_uncovered([*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE], suites_executed=True)
+    assert LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK == "consent-coupled-suites"
+
+
+def test_coupled_consent_suites_for_selects_by_source_or_suite() -> None:
+    # The CI job's selection: every suite whose coupled source or the suite
+    # itself is in the change set; nothing for an unrelated change set.
+    assert coupled_consent_suites_for(["shared/foo.py"]) == ()
+    assert coupled_consent_suites_for([_WRITER]) == (_WRITER_SUITE,)
+    assert coupled_consent_suites_for([_COMPOSITOR_SOURCES[1], _COMPOSITOR_SOURCES[2]]) == (
+        _COMPOSITOR_SUITE,
+    )
+    assert coupled_consent_suites_for([_COMPOSITOR_SUITE]) == (_COMPOSITOR_SUITE,)
+    assert coupled_consent_suites_for([f" {_WRITER} ", _COMPOSITOR_SOURCES[0]]) == (
+        _WRITER_SUITE,
+        _COMPOSITOR_SUITE,
+    )
 
 
 def test_consent_coupled_admission_ignores_unrelated_deletions() -> None:

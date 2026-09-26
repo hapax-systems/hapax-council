@@ -998,17 +998,39 @@ LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS: tuple[tuple[str, str], ...] = (
     ),
 )
 
+#: Execution anchor for the coupled admissions: the ci.yml job of this name
+#: runs every coupled suite whose source (or the suite itself) is in the change
+#: set, failing when a suite is absent at head, collects nothing, or fails. The
+#: gate admits a coupled path only when this check PASSED at the head, so the
+#: co-presence of a suite is never evidence on its own.
+LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK = "consent-coupled-suites"
+
 _LIVE_EGRESS_FLAG = "audio_or_live_egress_sensitive"
 
 
+def coupled_consent_suites_for(changed_files: Sequence[str]) -> tuple[str, ...]:
+    """The consent suites the execution-anchor job must run for this change set."""
+    changed = {path.strip() for path in changed_files if path.strip()}
+    return tuple(
+        sorted(
+            {
+                suite
+                for source, suite in LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS
+                if source in changed or suite in changed
+            }
+        )
+    )
+
+
 def _path_admitted_by_consent_coupling(
-    path: str, changed: frozenset[str], deleted: frozenset[str] | None
+    path: str, changed: frozenset[str], deleted: frozenset[str] | None, *, suites_executed: bool
 ) -> bool:
     """Exact-match admission for a named consent suite, or a coupled source with its suite.
 
-    A deleted suite is never carried, and an unknown change status admits nothing.
+    Admits nothing unless the execution-anchor check passed and the change
+    status is known; a deleted suite is never carried.
     """
-    if deleted is None:
+    if deleted is None or not suites_executed:
         return False
     token = path.strip()
     return any(
@@ -1032,7 +1054,10 @@ def _path_in_consent_containment_lane(path: str) -> bool:
 
 
 def _egress_uncovered_paths(
-    changed_files: Sequence[str], deleted_files: Collection[str] | None = None
+    changed_files: Sequence[str],
+    deleted_files: Collection[str] | None = None,
+    *,
+    suites_executed: bool = False,
 ) -> list[str]:
     def _is_doc(path: str) -> bool:
         lowered = path.strip().lower()
@@ -1044,16 +1069,22 @@ def _egress_uncovered_paths(
         if deleted_files is None
         else frozenset(path.strip() for path in deleted_files if path.strip())
     )
-    return sorted(
-        {
-            path
-            for path in changed
-            if not _is_doc(path)
-            and path not in LIVE_EGRESS_AUTO_ARM_COVERAGE
-            and not _path_in_consent_containment_lane(path)
-            and not _path_admitted_by_consent_coupling(path, changed, deleted)
-        }
-    )
+    named_suites = {suite for _source, suite in LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS}
+
+    def _covered(path: str) -> bool:
+        if path in named_suites and (deleted is None or path in deleted):
+            # A deleted or status-unknown named consent suite is never covered,
+            # not even through a lane directory (tests/hapax_daimonion).
+            return False
+        return (
+            path in LIVE_EGRESS_AUTO_ARM_COVERAGE
+            or _path_in_consent_containment_lane(path)
+            or _path_admitted_by_consent_coupling(
+                path, changed, deleted, suites_executed=suites_executed
+            )
+        )
+
+    return sorted({path for path in changed if not _is_doc(path) and not _covered(path)})
 
 
 def assess_release_auto_arm_estate(
@@ -1100,7 +1131,11 @@ def assess_release_auto_arm_estate(
             # hold closed rather than arm on unbounded behavioral evidence.
             blockers.append("egress_evidence_coverage_unevaluable:no_changed_files")
         else:
-            uncovered = _egress_uncovered_paths(changed_files, deleted_files)
+            uncovered = _egress_uncovered_paths(
+                changed_files,
+                deleted_files,
+                suites_executed=LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK in verified_checks,
+            )
             if uncovered:
                 blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))
     return _dataclass_replace(base, blockers=tuple(blockers), eligible=not blockers)
