@@ -279,15 +279,22 @@ def test_main_flagged_diff_exits_one(scanner: ModuleType, tmp_path: Path) -> Non
         ),  # billing-scan:allow: fixture data
         encoding="utf-8",
     )
-    # The allow marker passes the scan...
-    assert scanner.main(["--diff-file", str(path)]) == 0
+    # A marker on a NON-fixture path no longer passes the scan: this test used to pin the
+    # self-exemption hole as desired behaviour (rounds 1–2 inherited it from the original
+    # scanner). It now pins the closure of that hole: the marker is itself a finding.
+    assert scanner.main(["--diff-file", str(path)]) == 1
+    result = scanner.scan_unified_diff(path.read_text(encoding="utf-8"))
+    assert [f.kind for f in result.findings] == [
+        "billing-scan-allow-outside-fixtures",
+        "api-key-route",
+    ]
     path.write_text(
         _diff(
             "shared/foo.py", ["    client = OpenAI(api_key=read_key())"]
         ),  # billing-scan:allow: fixture data
         encoding="utf-8",
     )
-    # ...and without it the same content fails.
+    # Without the marker the same content fails on the route alone.
     assert scanner.main(["--diff-file", str(path)]) == 1
 
 
@@ -549,4 +556,214 @@ def test_key_bearing_unparseable_python_region_fails_closed(scanner: ModuleType)
     result = scanner.scan_unified_diff(probe_rule)
     assert any(f.kind == "billing-scan-unusable-input" for f in result.findings), (
         "an unparseable region whose line rules cannot match was read as clean"
+    )
+
+
+# ── round 3 (dev21's recommendation, 2026-09-26T22:59:52Z): the marker is not a ──
+# ── self-exemption hole. It is honoured only under an explicit path allowlist. ──
+
+
+def test_allow_marker_on_a_production_path_fails(scanner: ModuleType, tmp_path: Path) -> None:
+    """The hole itself: a marker on a production API-key route must not make the scan pass."""
+
+    path = tmp_path / "prod.diff"
+    path.write_text(
+        _diff(
+            "shared/foo_client.py",
+            [
+                "    client = OpenAI(api_key=key)  # billing-scan:allow: production, please ignore"
+            ],  # billing-scan:allow: fixture data
+        ),
+        encoding="utf-8",
+    )
+    assert scanner.main(["--diff-file", str(path)]) == 1
+    result = scanner.scan_unified_diff(path.read_text(encoding="utf-8"))
+    kinds = [f.kind for f in result.findings]
+    assert "billing-scan-allow-outside-fixtures" in kinds, (
+        "a marker outside the allowlist did not become a finding"
+    )
+    assert "api-key-route" in kinds, "the marker still exempted the underlying production route"
+    assert result.allowed == (), "a production path was still granted an exemption"
+
+
+def test_allow_marker_on_a_production_path_fails_even_without_a_route(
+    scanner: ModuleType,
+) -> None:
+    """The marker alone is the violation: intent to self-exempt is not a silent ignore."""
+
+    diff = _diff("shared/foo_client.py", ["    value = compute()  # billing-scan:allow"])
+    result = scanner.scan_unified_diff(diff)
+    assert [f.kind for f in result.findings] == ["billing-scan-allow-outside-fixtures"]
+
+
+def test_allow_marker_is_honoured_under_tests(scanner: ModuleType) -> None:
+    """The allowlist case that already existed — and must keep working."""
+
+    diff = _diff(
+        "tests/scripts/test_something.py",
+        ["client = OpenAI(api_key=key)  # billing-scan:allow (fixture data)"],
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == ()
+    assert any(f.kind == "api-key-route" for f in result.allowed)
+    assert all(f.path.startswith("tests/") for f in result.allowed)
+
+
+def test_allow_marker_is_honoured_in_the_scanner_itself(scanner: ModuleType) -> None:
+    """The scanner's own pattern source is the other allowlisted path."""
+
+    diff = _diff(
+        "scripts/check-billing-surface-diff.py",
+        [
+            "client = OpenAI(api_key=key)  # billing-scan:allow: pattern definition"
+        ],  # billing-scan:allow: fixture data
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == ()
+    assert result.allowed, "the scanner's own pattern source must still carry the marker"
+
+
+def test_allowed_lines_are_listed_with_their_paths(scanner: ModuleType, tmp_path: Path) -> None:
+    """dev21's point 3: the report shows every exemption the gate accepted, with its path."""
+
+    import contextlib
+    import io
+
+    path = tmp_path / "fixture.diff"
+    path.write_text(
+        _diff(
+            "tests/scripts/test_x.py", ["client = OpenAI(api_key=key)  # billing-scan:allow"]
+        ),  # billing-scan:allow: fixture data
+        encoding="utf-8",
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert scanner.main(["--diff-file", str(path)]) == 0
+    out = buf.getvalue()
+    assert "tests/scripts/test_x.py" in out and "billing-scan:allow" in out, (
+        "the scan summary did not list the exempted line with its path"
+    )
+    assert "exempt" in out.lower(), "the summary does not name the exemption"
+
+
+# ── round 3: the exemption CLASS. No exemption may be decided from line content. ──
+
+
+def test_mixed_line_protective_strip_does_not_hide_a_credential_read(
+    scanner: ModuleType,
+) -> None:
+    """codex-1's round-3 critical, verbatim: the strip must not exempt its neighbours."""
+
+    line = 'os.environ.pop("OLD_API_KEY", None); key = os.environ["OPENAI_API_KEY"]'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_launcher.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    kinds = [f.kind for f in result.findings]
+    assert "credential-env-read" in kinds, (
+        "a protective strip on the line exempted a credential read on the same line"
+    )
+    assert result.allowed == (), "the strip's own node is the only thing exempt, per node"
+
+
+def test_mixed_line_strip_then_read_in_a_non_python_file(scanner: ModuleType) -> None:
+    """The text-path analogue: exemptions there are per STATEMENT, never per line."""
+
+    line = (
+        'unset OLD_API_KEY; key = os.environ["OPENAI_API_KEY"]'  # billing-scan:allow: fixture data
+    )
+    diff = _diff("scripts/foo_launcher.sh", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert "credential-env-read" in [f.kind for f in result.findings], (
+        "a strip statement exempted a read statement on the same line"
+    )
+
+
+def test_mixed_line_strip_only_still_passes(scanner: ModuleType) -> None:
+    """Positive control: a line that is ONLY a strip stays clean."""
+
+    line = 'os.environ.pop("OLD_API_KEY", None)'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_launcher.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == ()
+
+
+def test_header_without_a_file_section_fails_closed(scanner: ModuleType) -> None:
+    """codex-1's round-3 major: the fourth fail-open arm — a header with no section."""
+
+    diff = "diff --git a/shared/ghost.py b/shared/ghost.py\n"
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "billing-scan-unusable-input" for f in result.findings), (
+        "a diff header with no file section was read as a clean scan"
+    )
+
+
+def test_no_exemption_is_decided_from_line_content(scanner: ModuleType) -> None:
+    """THE GUARD (seat's round-3 item 3): a fourth whole-line exemption cannot land.
+
+    It inspects this scanner's own source: every declared exemption site must exist,
+    the node-decided ones must take AST nodes rather than text, and none of them may
+    read a line-text carrier. Adding a line-level exemption breaks this test.
+    """
+
+    import ast as _ast
+
+    source = SCRIPT_PATH.read_text(encoding="utf-8")
+    tree = _ast.parse(source)
+    functions = {node.name: node for node in tree.body if isinstance(node, _ast.FunctionDef)}
+    declared = getattr(scanner, "EXEMPTION_SITES", None)
+    assert declared, "the scanner must declare its exemption sites in EXEMPTION_SITES"
+    assert set(declared) == {"proxy", "protective_strip", "allow_marker"}, (
+        "a new exemption site must be declared here and justified, not smuggled in"
+    )
+    for name in scanner.NODE_EXEMPTION_FUNCTIONS:
+        node = functions.get(name)
+        assert node is not None, f"declared exemption site {name} has no implementation"
+        params = [arg.arg for arg in node.args.args]
+        anns = [(_ast.unparse(arg.annotation) if arg.annotation else "") for arg in node.args.args]
+        assert all(a.startswith("ast.") for a in anns), (
+            f"{name} must take AST nodes, not text: annotations were {anns}"
+        )
+        assert not (set(params) & set(scanner._LINE_TEXT_NAMES)), (
+            f"{name} takes a line-text carrier ({set(params) & set(scanner._LINE_TEXT_NAMES)})"
+        )
+        used = {
+            n.id
+            for n in _ast.walk(node)
+            if isinstance(n, _ast.Name) and n.id in scanner._LINE_TEXT_NAMES
+        }
+        assert not used, f"{name} reads line text ({used}) — a whole-line exemption again"
+    marker_fn = functions.get("_marker_is_allowed_on")
+    assert marker_fn is not None, "the marker exemption must exist and be path-based"
+    marker_params = [a.arg for a in marker_fn.args.args]
+    assert "path" in marker_params, "the marker exemption must be decided from the PATH"
+    assert not (set(marker_params) & set(scanner._LINE_TEXT_NAMES)), (
+        "the marker exemption must not be decided from line content"
+    )
+
+
+def test_git_base_head_path_runs_as_the_production_entry_point(scanner: ModuleType) -> None:
+    """claude minor (round 3): `--base/--head` is the production entry point, so pin it.
+
+    The CI job and the autoqueue both invoke the scanner this way; only
+    `--diff-file` was covered. Skipped (with a declared precondition) where the
+    checkout has no parent commit to diff against.
+    """
+
+    import subprocess
+
+    repo = Path(__file__).resolve().parents[2]
+
+    def rev(expr: str) -> str | None:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", expr], capture_output=True, text=True
+        )
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    base = rev("HEAD~1")
+    if base is None:
+        pytest.skip("no parent commit available to diff against (shallow checkout)")
+    head = rev("HEAD")
+    assert head is not None
+    code = scanner.main(["--base", base, "--head", head])
+    assert code in (0, 1), (
+        f"the production --base/--head path must scan a real diff, not fail closed: exit was {code}"
     )

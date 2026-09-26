@@ -82,19 +82,124 @@ from pathlib import Path
 #: and pattern-definition source, never for production spend paths.
 ALLOW_MARKER = "billing-scan:allow"
 
+#: Paths on which the visible ``billing-scan:allow`` marker is HONOURED. Everywhere
+#: else the marker is itself a finding (``billing-scan-allow-outside-fixtures``).
+#:
+#: Why this exists (dev21's recommendation, 2026-09-26): the marker was a
+#: self-exemption hole — one added comment on a production API-key route made the
+#: scan pass, and the scan's pass is what the billing mitigation gate treats as
+#: evidence. Review is the wrong single control for a billing gate (today's own
+#: measurements: 12–22 % diff coverage on large diffs, refuted criticals re-fed,
+#: three rounds to catch the paren-window bypass). The gitleaks tradition works
+#: because secrets have a second net — rotation and monitoring; this gate's second
+#: net is PAYG spend. So the marker is honoured on fixture paths only, and the
+#: pattern-definition modules are named file by file rather than by glob.
+ALLOW_MARKER_PATH_ALLOWLIST = (
+    "tests/",
+    "scripts/check-billing-surface-diff.py",
+)
+#: Pattern-definition modules that legitimately carry the marker. Named one by one:
+#: a glob here would re-open the hole the allowlist exists to close. Empty today —
+#: the scanner's own path above is the named pattern source.
+ALLOW_MARKER_PATTERN_MODULES: tuple[str, ...] = ()
+
+
+def _marker_is_allowed_on(path: str) -> bool:
+    """True only on an allowlisted fixture or pattern-definition path."""
+
+    candidate = path.strip()
+    if candidate in ALLOW_MARKER_PATTERN_MODULES:
+        return True
+    return any(
+        candidate == entry
+        or candidate.startswith(entry)
+        or f"/{entry.strip('/')}/" in f"/{candidate}"
+        for entry in ALLOW_MARKER_PATH_ALLOWLIST
+    )
+
+
+def _marker_outside_fixtures_finding(path: str, line_no: int, text: str) -> Finding:
+    return Finding(
+        path=path,
+        line=line_no,
+        kind="billing-scan-allow-outside-fixtures",
+        text=(
+            f"{ALLOW_MARKER} on a non-fixture path cannot self-exempt: {text.strip()[:120]!r}. "
+            "Next action: remove the marker; a production spend path cannot suppress this "
+            "scan — route the client through the governed LiteLLM proxy, or get a seat "
+            "ruling recorded on the row."
+        ),
+    )
+
+
 #: Provider credential environment variable shapes the estate strips from
 #: governed lanes (scripts/hapax-codex, scripts/hapax-codex-headless).
 _CREDENTIAL_NAME = (
     r"[A-Z][A-Z0-9_]*_(?:API_KEY|API_TOKEN|AUTH_TOKEN|SECRET_KEY|ACCESS_TOKEN|SESSION_TOKEN)"
 )
 
-#: Protective credential strips are the governed pattern, not a surface.
-_PROTECTIVE_RES = (
-    re.compile(r"\bos\.environ\.pop\s*\("),
-    re.compile(r"\bdel\s+os\.environ\s*\["),
-    re.compile(r"\benv\.pop\s*\("),
-    re.compile(r"(?:^|[\s;])unset\s+"),
+#: NOTE: the protective strip is NO LONGER a line pattern. It was an exemption searched
+#: over the whole line, so `os.environ.pop("OLD_API_KEY", None); key = os.environ["OPENAI_API_KEY"]`
+#: passed (round-3 critical). It is now decided per node by `_node_is_protective_strip`,
+#: and only `os.environ.pop(<literal>[, default])` / `del os.environ[<literal>]` qualify —
+#: `env.pop(...)` and shell `unset` are not the governed launcher pattern and are not
+#: exempted anywhere. Deleting the constant is deliberate: a dead line-pattern here would
+#: invite the next reader to re-wire a whole-line exemption.
+
+#: The TEXT path (non-Python files, and Python text that could not be parsed) has no
+#: structure to bind an exemption to, so exemptions there are decided per STATEMENT and
+#: never per line: a statement that IS a strip and carries no credential read is exempt;
+#: every other statement's reads are counted. That kills the mixed-line hole
+#: (`pop(...); key = os.environ[...]` -> the read statement is counted) without flagging
+#: the estate's own sanctioned strip, which lives inside NON-Python launchers
+#: (scripts/hapax-codex* strip inherited credentials at startup, via embedded Python).
+#:
+#: Set this to False to refuse every text-path exemption (the strictest reading of the
+#: round-3 instruction, "for non-Python, grant no exemptions"). It is True by default
+#: and is a one-line switch, because a blanket refusal flags the convention the estate
+#: requires — see the round-3 report for the disclosure.
+TEXT_PATH_STATEMENT_EXEMPTIONS = True
+
+#: A strip STATEMENT on the text path: the statement must be EXACTLY a strip of a
+#: credential LITERAL — nothing else. Statement-granular, never line-granular, and
+#: anchored end-to-end so `del os.environ["X"]; use(os.environ["Y"])` cannot slip
+#: through as one "strip".
+_STRIP_STATEMENT_FULL_RES = (
+    re.compile(
+        rf'^\s*os\.environ\.pop\s*\(\s*["\']?{_CREDENTIAL_NAME}["\']?\s*(?:,\s*[^)]*)?\)\s*$'
+    ),
+    re.compile(rf'^\s*env\.pop\s*\(\s*["\']?{_CREDENTIAL_NAME}["\']?\s*(?:,\s*[^)]*)?\)\s*$'),
+    re.compile(rf'^\s*del\s+os\.environ\s*\[\s*["\']?{_CREDENTIAL_NAME}["\']?\s*\]\s*$'),
+    re.compile(rf'^\s*(?:unset|export\s+-n)\s+["\']?{_CREDENTIAL_NAME}["\']?\s*$'),
 )
+
+
+def _statement_is_pure_strip(statement: str) -> bool:
+    """True when this STATEMENT is exactly a credential strip and nothing else."""
+
+    return any(pattern.match(statement) for pattern in _STRIP_STATEMENT_FULL_RES)
+
+
+def _text_classes_by_statement(content: str) -> tuple[tuple[str, ...], bool]:
+    """Classify one line on the text path, statement by statement.
+
+    Returns ``(kinds, wholly_exempt)``. ``wholly_exempt`` is True only when every
+    statement on the line is a pure strip, so the line carries no read at all; the
+    kinds otherwise come from the statements that are not strips.
+    """
+
+    statements = [part for part in content.split(";") if part.strip()]
+    if not statements:
+        return (), False
+    kinds: list[str] = []
+    exempt_count = 0
+    for statement in statements:
+        if TEXT_PATH_STATEMENT_EXEMPTIONS and _statement_is_pure_strip(statement):
+            exempt_count += 1
+            continue
+        kinds.extend(_text_classes(statement))
+    return tuple(kinds), exempt_count == len(statements)
+
 
 _CREDENTIAL_ENV_READ_RES = (
     re.compile(rf"\bos\.environ\s*\[\s*[\"']?{_CREDENTIAL_NAME}"),
@@ -128,11 +233,11 @@ _BEARER_RES = (
 #: variable name or a neighbouring literal cannot bind the route. A target
 #: counts only when it is an argument of the call being constructed.
 _GOVERNED_PROXY_HOSTS = ("127.0.0.1", "localhost", "::1", "litellm")
-_ROUTE_TARGET_RE = re.compile(
-    r"\b(?:base_url|baseURL|api_base|apiBase|api_endpoint|endpoint|proxy)\b"
-    r"\s*[:=]\s*(?P<q>[\"'])(?P<target>[^\"']+)(?P=q)",
-    re.IGNORECASE,
-)
+# NOTE: an earlier round carried a `_ROUTE_TARGET_RE` line regex here. It is deleted:
+# the proxy binding is decided per `ast.Call` (see `_call_is_proxy_bound`), and a line
+# regex describing an exemption the live path does not implement is worse than dead
+# code — it invites the next reader to re-wire a whole-line exemption (round 3 review,
+# claude minor).
 
 #: The estate's paid provider API hosts (registry: config/platform-capability-
 #: registry.json; clients: shared/tavily_client.py, shared/runway_gen3_client.py,
@@ -217,6 +322,106 @@ _ROUTE_TARGET_ARG_NAMES = ("base_url", "api_base", "endpoint")
 _KEY_BEARING_PROBE = re.compile(r"api[_-]?key|apikey|\btoken\b|\bkey\b", re.IGNORECASE)
 
 
+#: EVERY exemption site in this scanner, declared in one place so a fourth whole-line
+#: exemption cannot land unnoticed (round 3: the same defect class appeared three times —
+#: a proxy substring, a paren window, a protective strip).
+#:
+#: Rule, from the round-3 review and adopted here as the scanner's contract:
+#: **an exemption must be decided per node for Python, and there are NO exemptions for
+#: non-Python files.** A line-level match may never suppress a finding produced by a
+#: different operation on the same line.
+#:
+#: Keys are the sites; values state what each is decided from.
+EXEMPTION_SITES: dict[str, str] = {
+    "proxy": "per ast.Call: that call's own literal base_url/api_base/endpoint target",
+    "protective_strip": "per ast node: os.environ.pop(<literal>[, default]) or del os.environ[<literal>]",
+    "allow_marker": "path-allowlisted comment (tests/**, the scanner's own source); applies to the marked line's nodes only",
+}
+#: The functions that implement the AST-decided sites. The guard test
+#: (`tests/scripts/test_check_billing_surface_diff.py::test_no_exemption_is_decided_from_line_content`)
+#: parses this scanner's own source and fails if any of them takes line text as an input.
+NODE_EXEMPTION_FUNCTIONS: tuple[str, ...] = ("_call_is_proxy_bound", "_node_is_protective_strip")
+#: “Line text” carriers the guard refuses to see inside an exemption function.
+_LINE_TEXT_NAMES = frozenset({"content", "line", "raw", "text", "source"})
+
+
+def _credential_name_matches(value: str) -> bool:
+    """True when a literal names a credential environment variable."""
+
+    return re.search(_CREDENTIAL_NAME, value) is not None
+
+
+def _is_os_environ(node: ast.AST) -> bool:
+    """True for ``os.environ`` (attribute) or a bare ``environ`` name."""
+
+    if isinstance(node, ast.Attribute):
+        return node.attr == "environ" and isinstance(node.value, ast.Name) and node.value.id == "os"
+    return isinstance(node, ast.Name) and node.id == "environ"
+
+
+def _literal_str(node: ast.AST) -> str | None:
+    """The value of a literal string node, else None (a dynamic value is not a literal)."""
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _node_is_protective_strip(node: ast.AST) -> bool:
+    """True for the SPECIFIC strip operation: ``os.environ.pop("X"[, default])`` / ``del os.environ["X"]``.
+
+    Only the strip's own node is exempt. `env.pop(...)` and shell ``unset`` are NOT
+    exempt: they are not the governed launcher pattern, and exempting them would
+    re-open the hole this function exists to close for any object named ``env``.
+    """
+
+    if isinstance(node, ast.Delete) and len(node.targets) == 1:
+        target = node.targets[0]
+        return (
+            isinstance(target, ast.Subscript)
+            and _is_os_environ(target.value)
+            and _literal_str(target.slice) is not None
+        )
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "pop"
+    ):
+        return (
+            _is_os_environ(node.func.value)
+            and bool(node.args)
+            and _literal_str(node.args[0]) is not None
+        )
+    return False
+
+
+def _node_credential_env_read(node: ast.AST) -> bool:
+    """True for a credential env READ or INJECTION, per node.
+
+    ``os.environ["X"]`` (read or assignment target), ``os.environ.get("X")``,
+    ``os.getenv("X")``, ``os.environ.setdefault("X", ...)`` — matched only on a
+    LITERAL credential name. Named non-literals are left to review; a literal that
+    is not a credential name is not this class.
+    """
+
+    if isinstance(node, ast.Subscript) and _is_os_environ(node.value):
+        name = _literal_str(node.slice)
+        return name is not None and _credential_name_matches(name)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        attr = node.func.attr
+        if attr in {"get", "setdefault"} and _is_os_environ(node.func.value):
+            name = _literal_str(node.args[0]) if node.args else None
+            return name is not None and _credential_name_matches(name)
+        if (
+            attr == "getenv"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+        ):
+            name = _literal_str(node.args[0]) if node.args else None
+            return name is not None and _credential_name_matches(name)
+    return False
+
+
 def _call_api_key_args(call: ast.Call) -> list[ast.keyword]:
     """The keyword arguments of ``call`` that name a credential."""
 
@@ -243,17 +448,22 @@ def _call_is_proxy_bound(call: ast.Call) -> bool:
     return False
 
 
-def _region_api_key_route_findings(
-    path: str,
-    region: list[tuple[int, str, bool]],
+def _node_findings_for_region(
+    path: str, region: list[tuple[int, str, bool]]
 ) -> tuple[list[Finding], bool]:
-    """AST findings for one hunk's post-image region.
+    """Per-node findings for one hunk's post-image region (Python).
 
     ``region`` is ``(new_line_no, text, is_added)`` in post-image order. Returns
-    ``(findings, parsed)``. A Call is reported only when it carries a credential
-    argument **and** no governed proxy target of its own **and** at least one
-    ADDED line falls inside it — a pre-existing call in the context lines is not
-    this change's billing surface.
+    ``(findings, parsed)``.
+
+    **Every exemption is decided on a NODE, never on a line** (round-3 contract):
+
+    - ``protective_strip`` exempts only the strip's own ``Call``/``Delete`` node, so a
+      credential read elsewhere on the same line is still counted — the case that broke
+      ``os.environ.pop("OLD_API_KEY", None); key = os.environ["OPENAI_API_KEY"]``;
+    - ``proxy`` exempts only a ``Call`` whose own route target is a governed proxy;
+    - a node is reported only when an ADDED line falls inside it, so pre-existing code in
+      the context lines is not this change's surface.
     """
 
     source = "\n".join(text for _, text, _ in region)
@@ -273,44 +483,85 @@ def _region_api_key_route_findings(
     added_lines = {line_no for line_no, _, is_added in region if is_added}
     first_line = region[0][0] if region else 0
     out: list[Finding] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _call_api_key_args(node):
-            continue
-        if _call_is_proxy_bound(node):
-            continue
+
+    def node_is_added(node: ast.AST) -> bool:
+        # ``ast.walk`` yields nodes with no position (Module, operator singletons, ...).
+        # They are not operations and cannot carry a surface.
+        if getattr(node, "lineno", None) is None:
+            return False
         start = first_line + (node.lineno or 1) - 1
         end = first_line + (getattr(node, "end_lineno", node.lineno) or node.lineno) - 1
-        if not any(start <= line_no <= end for line_no in added_lines):
-            continue
+        return any(start <= line_no <= end for line_no in added_lines)
+
+    def snippet(node: ast.AST) -> str:
         segment = ast.get_source_segment(source, node) or ""
-        text = (segment.splitlines() or [""])[0].strip()
-        out.append(Finding(path=path, line=start, kind="api-key-route", text=text[:200]))
+        return (segment.splitlines() or [""])[0].strip()[:200]
+
+    # The strip's own node AND everything inside it is the strip — `del os.environ["X"]`
+    # contains a Subscript that would otherwise read as a credential read. Nothing
+    # OUTSIDE the strip node is exempt, which is the round-3 fix.
+    strip_covered: set[int] = set()
+    for node in ast.walk(tree):
+        if node_is_added(node) and _node_is_protective_strip(node):
+            for inner in ast.walk(node):
+                strip_covered.add(id(inner))
+
+    for node in ast.walk(tree):
+        if not node_is_added(node):
+            continue
+        line_no = first_line + (node.lineno or 1) - 1
+        if isinstance(node, ast.Call) and _call_api_key_args(node):
+            if _call_is_proxy_bound(node):
+                continue  # exemption site 1, per call
+            out.append(Finding(path=path, line=line_no, kind="api-key-route", text=snippet(node)))
+        if _node_credential_env_read(node):
+            if id(node) in strip_covered:
+                continue
+            out.append(
+                Finding(path=path, line=line_no, kind="credential-env-read", text=snippet(node))
+            )
+    # The two pattern-only classes carry no exemption, so a line rule is safe here.
+    for line_no, content, is_added in region:
+        if not is_added:
+            continue
+        for kind in _pattern_only_classes(content):
+            out.append(Finding(path=path, line=line_no, kind=kind, text=content.strip()[:200]))
     return out, True
 
 
-def _classify_line(
-    content: str, *, api_key_args: bool = True, bearer: bool = True
-) -> tuple[str, ...]:
-    """The line-level classes. Grants NO proxy exemption — ever.
+def _pattern_only_classes(content: str) -> tuple[str, ...]:
+    """The two classes decided by patterns alone, in every file kind.
 
-    The governed-proxy exemption is structural and lives in the AST path. For a
-    non-Python file it does not exist at all (review round 2), and for a Python
-    line that could not be parsed there is no structure to bind a target to, so
-    the line rules apply with no exemption.
+    They carry **no exemption**, so a line rule cannot hide a different operation
+    on the same line — which is the whole round-3 lesson. (A provider host literal
+    or a PAYG rebinding has no legitimate per-node exemption to grant.)
     """
 
     kinds: list[str] = []
-    protective = any(pattern.search(content) for pattern in _PROTECTIVE_RES)
-    if not protective and any(pattern.search(content) for pattern in _CREDENTIAL_ENV_READ_RES):
-        kinds.append("credential-env-read")
     if _PROVIDER_HOST_RE.search(content) or _BARE_PROVIDER_SDK_RE.search(content):
         kinds.append("provider-api-endpoint")
-    if (api_key_args and any(p.search(content) for p in _API_KEY_ARG_RES)) or (
-        bearer and any(p.search(content) for p in _BEARER_RES)
-    ):
-        kinds.append("api-key-route")
     if _CAPACITY_POOL_PAYG_RE.search(content) or _PLAN_TYPE_API_RE.search(content):
         kinds.append("capacity-pool-payg")
+    return tuple(kinds)
+
+
+def _text_classes(content: str) -> tuple[str, ...]:
+    """The full line-class set, with **no exemptions of any kind**.
+
+    Used for non-Python files and for Python text that could not be parsed: without
+    structure there is nothing to bind an exemption to, so every pattern hit is a
+    finding. The header rules are here too — a Bearer header is not a Call, so it is
+    line-level in every file kind and is never exempted.
+    """
+
+    kinds: list[str] = []
+    if any(pattern.search(content) for pattern in _CREDENTIAL_ENV_READ_RES):
+        kinds.append("credential-env-read")
+    if any(pattern.search(content) for pattern in _API_KEY_ARG_RES) or any(
+        pattern.search(content) for pattern in _BEARER_RES
+    ):
+        kinds.append("api-key-route")
+    kinds.extend(_pattern_only_classes(content))
     return tuple(kinds)
 
 
@@ -324,6 +575,28 @@ def scan_unified_diff(text: str) -> ScanResult:
     region: list[tuple[int, str, bool]] = []
     saw_hunk = False
     binary_section = False
+    saw_header_only = False
+    previous_header_path: str | None = None
+    marked_lines_emitted: set[tuple[str, int]] = set()
+
+    def emit_line(kinds: tuple[str, ...], line_no: int, content: str) -> None:
+        """Record one added line's kinds, applying the marker decision.
+
+        The marker is honoured only on an allowlisted path. Anywhere else it does
+        NOT exempt the line (the underlying findings stand) and it is itself a
+        finding — never a silent ignore, which would hide the intent.
+        """
+
+        if not kinds and ALLOW_MARKER not in content:
+            return
+        marked = ALLOW_MARKER in content
+        marker_ok = marked and _marker_is_allowed_on(path)
+        if marked and not marker_ok and (path, line_no) not in marked_lines_emitted:
+            marked_lines_emitted.add((path, line_no))
+            findings.append(_marker_outside_fixtures_finding(path, line_no, content))
+        for kind in kinds:
+            finding = Finding(path=path, line=line_no, kind=kind, text=content.strip())
+            (allowed if marker_ok else findings).append(finding)
 
     def flush() -> None:
         """Analyse one hunk's post-image region, then clear it."""
@@ -334,38 +607,48 @@ def scan_unified_diff(text: str) -> ScanResult:
             return
         added = [(line_no, content) for line_no, content, is_added in region if is_added]
         if path.endswith(_PY_SUFFIXES):
-            ast_findings, parsed = _region_api_key_route_findings(path, region)
+            ast_findings, parsed = _node_findings_for_region(path, region)
         else:
             ast_findings, parsed = [], False
         if parsed:
             # Structure decided the api-key class; headers are still line rules.
             for finding in ast_findings:
                 line_content = next((c for n, c, _ in region if n == finding.line), finding.text)
-                if ALLOW_MARKER in line_content:
-                    allowed.append(finding)
-                else:
-                    findings.append(finding)
+                emit_line((finding.kind,), finding.line, line_content)
             for line_no, content in added:
-                for kind in _classify_line(content, api_key_args=False):
-                    finding = Finding(path=path, line=line_no, kind=kind, text=content.strip())
-                    (allowed if ALLOW_MARKER in content else findings).append(finding)
+                # Bearer headers are line-level by nature (a header is not a Call) and
+                # carry no exemption; the two pattern-only classes likewise.
+                line_kinds: tuple[str, ...] = _pattern_only_classes(content)
+                if any(p.search(content) for p in _BEARER_RES):
+                    line_kinds += ("api-key-route",)
+                emit_line(line_kinds, line_no, content)
         else:
             # Unparsed Python, or any non-Python file: line rules, and NO exemption.
             # A proxy argument of any spelling cannot exempt here, because there is no
             # structure to bind it to the call that carries the credential.
             flagged = 0
             for line_no, content in added:
-                for kind in _classify_line(content):
-                    finding = Finding(path=path, line=line_no, kind=kind, text=content.strip())
-                    if kind == "api-key-route":
-                        flagged += 1
-                    (allowed if ALLOW_MARKER in content else findings).append(finding)
+                kinds, wholly_exempt = _text_classes_by_statement(content)
+                if wholly_exempt:
+                    allowed.append(
+                        Finding(
+                            path=path,
+                            line=line_no,
+                            kind="protective-strip",
+                            text=content.strip()[:200],
+                        )
+                    )
+                    continue
+                if "api-key-route" in kinds:
+                    flagged += 1
+                emit_line(kinds, line_no, content)
             if (
                 path.endswith(_PY_SUFFIXES)
                 and not parsed
                 and flagged == 0
                 and any(
-                    _KEY_BEARING_PROBE.search(content) and ALLOW_MARKER not in content
+                    _KEY_BEARING_PROBE.search(content)
+                    and not (ALLOW_MARKER in content and _marker_is_allowed_on(path))
                     for _, content in added
                 )
             ):
@@ -411,18 +694,39 @@ def scan_unified_diff(text: str) -> ScanResult:
                         ),
                     )
                 )
+            elif saw_header_only:
+                # codex major, round 3: a `diff --git` header with NO file section at all
+                # (`---`/`+++`) is the fourth fail-open arm of this kind — nothing about the
+                # file was ever read, so it must not report success.
+                findings.append(
+                    Finding(
+                        path=previous_header_path or "(unknown path)",
+                        line=0,
+                        kind="billing-scan-unusable-input",
+                        text=(
+                            "a `diff --git` header arrived with no file section, so no added "
+                            "line could be read. Next action: regenerate the diff so each file "
+                            "carries its `---`/`+++` section and hunk."
+                        ),
+                    )
+                )
             path = None
             skip_file = True
             saw_hunk = False
             binary_section = False
+            previous_header_path = raw[len("diff --git ") :].split(" b/")[-1].strip()
+            saw_header_only = True
             continue
         if raw.startswith("Binary files ") or raw.startswith("GIT binary patch"):
             binary_section = True
+            saw_header_only = False  # a section DID arrive; it is simply binary
             continue
         if raw.startswith("index ") or raw.startswith("old mode") or raw.startswith("new mode"):
+            saw_header_only = False  # the section's preamble arrived
             continue
         if raw.startswith("+++ "):
             flush()
+            saw_header_only = False
             candidate = raw[4:].strip()
             if candidate == "/dev/null":
                 path = None
@@ -451,6 +755,18 @@ def scan_unified_diff(text: str) -> ScanResult:
         region.append((new_line, raw[1:] if raw.startswith(" ") else raw, False))
         new_line += 1  # context line
     flush()
+    if saw_header_only:
+        findings.append(
+            Finding(
+                path=previous_header_path or "(unknown path)",
+                line=0,
+                kind="billing-scan-unusable-input",
+                text=(
+                    "the diff ends with a `diff --git` header and no file section, so no "
+                    "added line could be read. Next action: regenerate the diff."
+                ),
+            )
+        )
     if path is not None and not skip_file and not saw_hunk and not binary_section:
         findings.append(
             Finding(
@@ -557,12 +873,23 @@ def main(argv: list[str] | None = None) -> int:
             f"{ALLOW_MARKER} so review sees the exemption. If a finding is wrong, fix "
             "the scan in the same PR rather than exempting the line."
         )
-        return 1
-    print(
-        "billing-surface-scan: OK: no billing-surface mutation in "
-        f"{len(result.scanned_files)} changed file(s)"
-    )
-    return 0
+        code = 1
+    else:
+        print(
+            "billing-surface-scan: OK: no billing-surface mutation in "
+            f"{len(result.scanned_files)} changed file(s)"
+        )
+        code = 0
+    if result.allowed:
+        # dev21's point 3: every exemption the gate accepted is named, with its path,
+        # so the dossier shows exactly what the scan let through and where.
+        print(
+            f"billing-surface-scan: exempted {len(result.allowed)} line(s) by the "
+            "fixture allowlist ("
+            + ", ".join(sorted({f"{f.path}:{f.line}" for f in result.allowed}))
+            + ")"
+        )
+    return code
 
 
 if __name__ == "__main__":
