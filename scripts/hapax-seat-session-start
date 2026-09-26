@@ -1,0 +1,12 @@
+#!/bin/bash
+# SessionStart entry. Prints one orientation line when the owed-set binary
+# is absent or fails. Never exits non-zero, and never stays silent.
+set -u
+bin="${HOME}/.local/bin/hapax-seat-owed-set"
+if [ -x "${bin}" ]; then
+  if "${bin}" --session-start; then
+    exit 0
+  fi
+fi
+printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Take the coordinator seat: read ~/Documents/Personal/30-areas/hapax/frame/COORDINATOR-SEAT.md. OWED BY THE SEAT (unavailable: binary not installed; next: hapax-seat-owed-set --text-block)."}}'
+exit 0
