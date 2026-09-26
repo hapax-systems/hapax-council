@@ -9,9 +9,10 @@ Prior art, measured 2026-09-26:
 - hapax-*-send delivers instructions into a lane session. It is not a
   clipboard.
 - Fleet hosts are named in frame/FLEET-INVENTORY-vram-and-appliances.md.
-  Windows: hapax-dextra accepts SSH and Set-Clipboard round-trips inside
-  that session. That was not shown to reach the interactive desktop, so
-  no Windows route is shipped.
+  Windows Set-Clipboard on hapax-dextra round-trips inside the SSH
+  session and was not shown to reach the desktop. The proven Windows
+  path is KDE Connect share-text from podium to WIN-C2ANEVBHN6Q, which
+  is paired and reachable. That is the same device route as steamdeck.
 """
 
 from __future__ import annotations
@@ -127,9 +128,9 @@ def append_receipt(
         "sha256": digest,
         "bytes": nbytes,
     }
+    # `content` is intentionally unused. The receipt is only the fields above.
+    del content
     line = json.dumps(record, sort_keys=True) + "\n"
-    if content and content.decode("utf-8", "replace") in line:
-        raise RuntimeError("receipt would contain the payload")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(line)
@@ -193,11 +194,11 @@ def _run(argv: list[str], text: str | None = None) -> subprocess.CompletedProces
     )
 
 
-def list_kde(host: str) -> str:
+def list_kde(host: str, run: Callable[..., subprocess.CompletedProcess[str]] = _run) -> str:
     if host == "local":
-        result = _run(["kdeconnect-cli", "-l"])
+        result = run(["kdeconnect-cli", "-l"])
     else:
-        result = _run(
+        result = run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, "kdeconnect-cli", "-l"]
         )
     if result.returncode != 0:
@@ -206,10 +207,12 @@ def list_kde(host: str) -> str:
 
 
 def kde_probe(
-    target: str, hosts: tuple[str, ...] = ("hapax-podium.local", "local")
+    target: str,
+    hosts: tuple[str, ...] = ("hapax-podium.local", "local"),
+    run: Callable[..., subprocess.CompletedProcess[str]] = _run,
 ) -> Route | None:
     for host in hosts:
-        for device in parse_kde_devices(list_kde(host)):
+        for device in parse_kde_devices(list_kde(host, run)):
             if not device["paired"] or not device["reachable"]:
                 continue
             if match_device(target, device):
@@ -217,12 +220,16 @@ def kde_probe(
     return None
 
 
-def push_kde(route: Route, pasted: str) -> None:
+def push_kde(
+    route: Route,
+    pasted: str,
+    run: Callable[..., subprocess.CompletedProcess[str]] = _run,
+) -> None:
     device_id = str(route.detail).split()[-1]
     command = ["kdeconnect-cli", "-d", device_id, "--share-text", pasted]
     if route.via != "local":
         command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", route.via, *command]
-    result = _run(command)
+    result = run(command)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise RouteUnavailable(
@@ -231,10 +238,12 @@ def push_kde(route: Route, pasted: str) -> None:
         )
 
 
-def linux_probe(target: str) -> Route | None:
+def linux_probe(
+    target: str, run: Callable[..., subprocess.CompletedProcess[str]] = _run
+) -> Route | None:
     if " " in target or not target:
         return None
-    probe = _run(
+    probe = run(
         [
             "ssh",
             "-o",
@@ -250,15 +259,21 @@ def linux_probe(target: str) -> Route | None:
     return Route("linux-clipboard", target, "ssh graphical clipboard")
 
 
-def push_linux(route: Route, pasted: str) -> None:
+def push_linux(
+    route: Route,
+    pasted: str,
+    run: Callable[..., subprocess.CompletedProcess[str]] = _run,
+) -> None:
     remote = (
         "runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; "
         'export XDG_RUNTIME_DIR="$runtime"; '
-        "if command -v wl-copy >/dev/null; then "
-        "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0} wl-copy; "
+        'sock=$(find "$runtime" -maxdepth 1 -name "wayland-*" -type s 2>/dev/null | head -1); '
+        'if [ -n "$sock" ]; then export WAYLAND_DISPLAY=$(basename "$sock"); '
+        "else export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}; fi; "
+        "if command -v wl-copy >/dev/null; then wl-copy; "
         "else xclip -selection clipboard; fi"
     )
-    result = _run(
+    result = run(
         ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", route.via, remote],
         text=pasted,
     )
