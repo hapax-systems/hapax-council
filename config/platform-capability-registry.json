@@ -4280,7 +4280,7 @@
             "required": false
           }
         ],
-        "memory_scope": "per-invocation temporary HOME/XDG/workspace; wrapper seeds only its OAuth binding and writes review-dossier.md. Native/provider memory behavior remains unobserved.",
+        "memory_scope": "per-invocation temporary HOME/XDG/workspace; wrapper seeds only its OAuth binding and supplies the dossier on native stream-json stdin. Native/provider memory behavior remains unobserved.",
         "plugins": null,
         "skills": null,
         "hooks": null,

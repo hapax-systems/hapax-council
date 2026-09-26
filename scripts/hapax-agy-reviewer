@@ -5,11 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
+import select
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+
+import yaml
 
 DEFAULT_MODEL = "gemini-3.1-pro-high"
 DEFAULT_PRINT_TIMEOUT = "20m0s"
@@ -28,9 +35,26 @@ PINNED_REVIEW_MODELS = frozenset({DEFAULT_MODEL, LEGACY_REVIEW_MODEL})
 GUARDED_SECRET_MIN_CHARS = 24
 TOKEN_ECHO_EXIT = 65
 
+# Qualified execution-host bindings, not a discovery rule. A missing dependency
+# refuses the invocation; never bind a parent directory or run without bwrap.
+BWRAP_BIN = "/usr/bin/bwrap"
+REVIEW_RUNTIME_FILES = (
+    "/usr/lib/ld-linux-x86-64.so.2",
+    "/usr/lib/libc.so.6",
+    "/usr/lib/libresolv.so.2",
+    "/usr/lib/libpthread.so.0",
+    "/usr/lib/libm.so.6",
+    "/usr/lib/libdl.so.2",
+    "/usr/lib/librt.so.1",
+    "/usr/lib/libreadline.so.8",
+    "/usr/lib/libncursesw.so.6",
+    "/usr/bin/bash",
+    "/etc/resolv.conf",
+    "/etc/ssl/cert.pem",
+)
+
 REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
-Review ONLY the dossier supplied in the review-dossier.md file in your current sandbox
-workspace. You have no repository access and must not assume facts not visible in the
+Review ONLY the dossier supplied below in this message. You have no repository access and must not assume facts not visible in the
 supplied dossier, unified diff, or gate summary.
 Do not inspect files, list directories, run commands, describe tool use, or narrate your process.
 Do all reasoning silently.
@@ -74,11 +98,6 @@ Spend the review on logic correctness, security, error handling, and interface o
 contract issues visible in the dossier/diff. Reply with exactly one fenced yaml code block
 and no prose.
 """
-
-PRINT_PROMPT = """Read ./review-dossier.md in the current sandbox workspace, then review ONLY that file.
-The file contains the complete reviewer instructions, dossier, unified diff, and gate summary.
-Do not inspect any other files, directories, commands, or external context.
-Return exactly one fenced yaml code block and no prose."""
 
 
 def _default_agy_bin() -> str:
@@ -181,6 +200,332 @@ def _review_env(workdir: Path) -> dict[str, str]:
     return env
 
 
+def _timeout_seconds(raw: str) -> float | None:
+    """Mirror positive Go duration units; zero retains agy's unlimited mode."""
+    if raw == "0":
+        return None
+    parts = re.findall(r"(\d+(?:\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)", raw)
+    if not parts or "".join(n + unit for n, unit in parts) != raw:
+        raise ValueError("invalid print timeout")
+    scales = {
+        "ns": 1e-9,
+        "us": 1e-6,
+        "µs": 1e-6,
+        "μs": 1e-6,
+        "ms": 1e-3,
+        "s": 1,
+        "m": 60,
+        "h": 3600,
+    }
+    seconds = sum(float(n) * scales[unit] for n, unit in parts)
+    if not math.isfinite(seconds):
+        raise ValueError("invalid print timeout")
+    return seconds or None
+
+
+def _contained_command(cmd: list[str], workdir: Path) -> list[str]:
+    """Expose only this invocation and explicitly qualified native dependencies.
+
+    PID isolation is load-bearing: host procfs could otherwise expose the host
+    root via another process. Keep network for the same subscription endpoint;
+    this boundary makes no network-egress or complete no-tool claim.
+    """
+    wrapped = [
+        BWRAP_BIN,
+        "--unshare-all",
+        "--unshare-user",
+        "--share-net",
+        "--die-with-parent",
+        "--disable-userns",
+        "--cap-drop",
+        "ALL",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib",
+        "/lib64",
+        "--symlink",
+        "lib",
+        "/usr/lib64",
+    ]
+    for name in REVIEW_RUNTIME_FILES:
+        wrapped.extend(["--ro-bind", str(Path(name).resolve(strict=True)), name])
+    wrapped.extend(
+        [
+            "--ro-bind",
+            str(Path(cmd[0]).resolve(strict=True)),
+            "/usr/bin/agy",
+            "--symlink",
+            "bash",
+            "/usr/bin/sh",
+            "--bind",
+            str(workdir),
+            str(workdir),
+            "--chdir",
+            str(workdir),
+            "--setenv",
+            "PATH",
+            "/usr/bin:/bin",
+            "--remount-ro",
+            "/",
+            "--",
+            "/usr/bin/agy",
+            *cmd[1:],
+        ]
+    )
+    return wrapped
+
+
+def _stop_owned_group(proc: subprocess.Popen) -> None:
+    # Never poll()/wait()/communicate() before this point. Even an exited leader
+    # remains our unreaped child, reserving its PID/PGID against reuse. setsid at
+    # launch creates the ownership boundary; no process-name or role lookup.
+    os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if os.getpgid(proc.pid) != proc.pid or os.getsid(proc.pid) != proc.pid:
+        raise RuntimeError("review process ownership unavailable; no group signal sent")
+    os.killpg(proc.pid, signal.SIGTERM)
+    time.sleep(0.15)
+    os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
+
+
+def _run_owned(
+    cmd: list[str], workdir: Path, prompt: str, timeout: float | None, lifetime: int
+) -> subprocess.CompletedProcess:
+    # Files prevent a surviving child holding stdout/stderr pipes open from
+    # blocking completion. The full single-turn input is neither argv nor a
+    # model-located file. Unlinked files vanish when this supervisor exits.
+    with (
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdin,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr,
+    ):
+        stdin.write(
+            json.dumps(
+                {"event": "user", "message": {"role": "user", "content": prompt}},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        stdin.seek(0)
+        proc = None
+        cancelled = False
+
+        def cancel(signum: int, frame: object) -> None:
+            nonlocal cancelled
+            cancelled = True
+
+        # A raising handler can lose the child before Popen returns its handle.
+        # Latch termination until ownership is stored; do not block signals,
+        # since a child would inherit the blocked mask across exec.
+        handlers = {sig: signal.signal(sig, cancel) for sig in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                cwd=workdir,
+                env=_review_env(workdir),
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            while True:
+                if cancelled:
+                    raise InterruptedError("review cancelled")
+                if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                    break
+                if select.select([lifetime], [], [], 0.05)[0]:
+                    raise InterruptedError("review caller exited")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+        finally:
+            # Repeated cancellation must not interrupt group cleanup.
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                signal.signal(sig, signal.SIG_IGN)
+            try:
+                if proc is not None:
+                    _stop_owned_group(proc)
+            finally:
+                for sig, handler in handlers.items():
+                    signal.signal(sig, handler)
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout.read(), stderr.read())
+
+
+def _reject_token_echo(raw: str, guarded: tuple[str, ...]) -> None:
+    """Screen literal and JSON-escaped text, including unstructured diagnostics.
+
+    Decode nested escape runs without requiring a valid JSON document: stderr
+    may have log prefixes, and malformed stdout must not bypass this check.
+    Only the comparison view is decoded; forwarded clean bytes stay intact.
+    """
+    if not guarded:
+        return
+    while True:
+        if any(secret in raw for secret in guarded):
+            raise PermissionError("seeded token echo")
+        decoded = re.sub(
+            r'(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))+',
+            lambda match: json.loads('"' + match.group() + '"'),
+            raw,
+        )
+        if decoded == raw:
+            return
+        # Every decoded escape shortens the comparison view. Check each layer
+        # so JSON-wrapped diagnostics cannot hide another escaped token.
+        raw = decoded
+
+
+def _reject_semantic_token_echo(response: str, guarded: tuple[str, ...]) -> None:
+    """Screen the YAML meaning the caller will consume, including mapping keys.
+
+    JSON unwrapping alone cannot account for YAML escapes, line continuations,
+    or binary scalars. Use the caller's SafeLoader, never a custom YAML decoder.
+    Reject malformed YAML here: an unexamined/repaired result cannot be forwarded.
+    Schema/checklist validation remains the caller's responsibility.
+    """
+    try:
+        stack = [yaml.safe_load(response.removeprefix("```yaml\n").rstrip()[:-3])]
+    except yaml.YAMLError as exc:
+        raise ValueError("unparseable review YAML") from exc
+    seen: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))  # SafeLoader aliases can share nodes or form cycles.
+        if isinstance(node, str):
+            _reject_token_echo(node, guarded)
+        elif isinstance(node, bytes):
+            if any(secret.encode("utf-8") in node for secret in guarded):
+                raise PermissionError("seeded token echo")
+        elif isinstance(node, dict):
+            stack.extend(node.keys())
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple, set)):
+            stack.extend(node)
+
+
+class UnsupportedReviewActivity(ValueError):
+    """The stream cannot qualify as a dossier-only review."""
+
+
+def _stream_response(raw: str) -> str:
+    """Accept only known non-tool steps, then unwrap the single final result.
+
+    This is an acceptance check on the buffered native stream, not prevention
+    of tool execution or proof that the native client reports every action.
+    """
+    events = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    if not events or any(not isinstance(event, dict) for event in events):
+        raise ValueError("malformed stream")
+    results = [event for event in events if event.get("event") == "result"]
+    if len(results) != 1 or events[-1] is not results[0]:
+        raise ValueError("expected one final result")
+    for event in events:
+        kind = event.get("event")
+        if kind not in ("init", "step_update", "result"):
+            raise UnsupportedReviewActivity("unknown event")
+        if kind != "step_update":
+            continue
+        step = event.get("step_update")
+        if set(event) - {"event", "step_update"} or not isinstance(step, dict):
+            raise UnsupportedReviewActivity("unknown step envelope")
+        # Presence (including null) of tool/subagent metadata must be refused,
+        # even if the event claims to be an otherwise supported response step.
+        if set(step) - {
+            "conversation_id",
+            "step_index",
+            "state",
+            "step_type",
+            "text_delta",
+            "duration_seconds",
+            "usage",
+        }:
+            raise UnsupportedReviewActivity("unknown step fields")
+        if (
+            step.get("step_type") not in ("user_input", "agent_response", "checkpoint")
+            or step.get("state") not in ("ACTIVE", "DONE")
+            or type(step.get("step_index")) is not int
+            or step["step_index"] < 0
+            or ("text_delta" in step and not isinstance(step["text_delta"], str))
+        ):
+            raise UnsupportedReviewActivity("unsupported step")
+    result = results[0].get("result")
+    if not isinstance(result, dict) or result.get("status") != "SUCCESS" or result.get("error"):
+        raise ValueError("unsuccessful result")
+    response = result.get("response")
+    if (
+        not isinstance(response, str)
+        or not response.startswith("```yaml\n")
+        or not response.rstrip().endswith("\n```")
+        or response.count("```") != 2
+    ):
+        raise ValueError("expected fenced YAML")
+    return response
+
+
+def _supervise(args: argparse.Namespace, dossier: str) -> int:
+    # This tiny supervisor survives the caller's subprocess.run timeout (which
+    # SIGKILLs only the wrapper). EOF on the private pipe cancels its owned agy
+    # group. No service, existing reviewer session, or foreign PID is touched.
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(write_fd)
+
+        def interrupted(signum: int, frame: object) -> None:
+            raise InterruptedError("review cancelled")
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, interrupted)
+        try:
+            code = _review(args, dossier, read_fd)
+        except Exception:
+            print(
+                "hapax-agy-reviewer: supervisor failed; review discarded; "
+                "run tests/scripts/test_hapax_agy_reviewer.py in the installed source "
+                "and inspect the owned-group observation before retrying.",
+                file=sys.stderr,
+            )
+            code = 2
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    os.close(read_fd)
+    cancelled = 0
+
+    def cancel(signum: int, frame: object) -> None:
+        nonlocal cancelled, write_fd
+        cancelled = signum
+        if write_fd != -1:
+            os.close(write_fd)
+            write_fd = -1
+
+    handlers = {sig: signal.signal(sig, cancel) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        _, status = os.waitpid(pid, 0)
+        code = os.waitstatus_to_exitcode(status)
+        return 128 + cancelled if cancelled else (code if code >= 0 else 128 - code)
+    finally:
+        if write_fd != -1:
+            os.close(write_fd)
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     agy_bin = Path(args.agy_bin)
@@ -195,17 +540,26 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 64
-    cli_model = PINNED_REVIEW_MODEL
+    try:
+        args.timeout_seconds = _timeout_seconds(args.print_timeout)
+    except ValueError:
+        print(
+            "hapax-agy-reviewer: invalid --print-timeout; use a Go duration such as 20m0s",
+            file=sys.stderr,
+        )
+        return 64
+    return _supervise(args, sys.stdin.read())
 
-    dossier = sys.stdin.read()
+
+def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
+    agy_bin = Path(args.agy_bin)
+    cli_model = PINNED_REVIEW_MODEL
     prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
     with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
         workdir = Path(tmp)
         sandbox_home = workdir / "home"
         sandbox_home.mkdir(parents=True, exist_ok=True)
         guarded = _seed_agy_oauth(sandbox_home)
-        prompt_path = workdir / "review-dossier.md"
-        prompt_path.write_text(prompt, encoding="utf-8")
         cmd = [
             str(agy_bin),
             "--print-timeout",
@@ -221,21 +575,34 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if cli_model:
             cmd.extend(["--model", cli_model])
-        cmd.extend(["--print", PRINT_PROMPT])
+        cmd.extend(
+            ["--input-format", "stream-json", "--output-format", "stream-json", "--print", ""]
+        )
 
         try:
-            result = subprocess.run(
-                cmd,
-                text=True,
-                check=False,
-                cwd=workdir,
-                capture_output=True,
-                env=_review_env(workdir),
+            result = _run_owned(
+                _contained_command(cmd, workdir), workdir, prompt, args.timeout_seconds, lifetime
             )
+        except subprocess.TimeoutExpired:
+            print(
+                "hapax-agy-reviewer: print timeout; owned group cleaned; review discarded; "
+                "check route admission and retry the same pinned review without changing its timeout.",
+                file=sys.stderr,
+            )
+            return 124
+        except InterruptedError:
+            print(
+                "hapax-agy-reviewer: caller cancelled; owned group cleaned; review discarded; "
+                "inspect the caller's cancellation or timeout before retrying the same pinned review.",
+                file=sys.stderr,
+            )
+            return 125
         except OSError as exc:
             print(
                 "hapax-agy-reviewer: failed to launch "
-                f"{agy_bin}: {exc}; install agy or pass --agy-bin /absolute/path/to/agy",
+                f"{agy_bin}: {exc}; install agy or pass --agy-bin /absolute/path/to/agy; "
+                "verify /usr/bin/bwrap and the declared runtime file bindings. "
+                "Do not retry without filesystem containment.",
                 file=sys.stderr,
             )
             return 2
@@ -244,7 +611,12 @@ def main(argv: list[str] | None = None) -> int:
         # before a caller ever sees the bytes. The precondition is the exact
         # token material read a moment ago, so the check is a comparison, not
         # a judgement about what the model was trying to do.
-        if any(secret in result.stdout or secret in result.stderr for secret in guarded):
+        try:
+            _reject_token_echo(result.stdout, guarded)
+            _reject_token_echo(result.stderr, guarded)
+            response = _stream_response(result.stdout)
+            _reject_semantic_token_echo(response, guarded)
+        except PermissionError:
             print(
                 "hapax-agy-reviewer: agy output echoed the seeded operator login "
                 "token; discarding the whole review rather than forwarding it. "
@@ -252,8 +624,32 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return TOKEN_ECHO_EXIT
-    sys.stdout.write(result.stdout)
+        except UnsupportedReviewActivity:
+            print(
+                "hapax-agy-reviewer: tool/subagent activity or unsupported stream shape; "
+                "review discarded; qualify a native no-tool configuration on the same admitted "
+                "route before retrying; retain the complete-trace limitation.",
+                file=sys.stderr,
+            )
+            return result.returncode or 65
+        except (ValueError, TypeError):
+            if result.returncode == 0:
+                print(
+                    "hapax-agy-reviewer: malformed or unsuccessful stream result; review discarded; "
+                    "check `agy --help` for stream-json support and retry the same pinned review.",
+                    file=sys.stderr,
+                )
+                return 65
+            response = ""
+    sys.stdout.write(response if result.returncode == 0 else "")
     sys.stderr.write(result.stderr)
+    if result.returncode:
+        print(
+            "hapax-agy-reviewer: contained reviewer failed; verify /usr/bin/bwrap, "
+            "namespace support and declared runtime file bindings before retrying. "
+            "Do not retry without filesystem containment.",
+            file=sys.stderr,
+        )
     return result.returncode
 
 

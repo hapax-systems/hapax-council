@@ -347,8 +347,9 @@ uv run --no-sync pytest tests/scripts/test_hapax_claude_reviewer.py -q
 
 The `agy.review.direct` wrapper also supplies blind-review context rather than
 worker instructions. It creates a temporary workspace and per-invocation
-HOME/XDG roots, writes `review-dossier.md` containing its fixed review prompt
-and the supplied packet, and asks the native client to read that file. Its load
+HOME/XDG roots and sends its fixed review prompt and complete supplied packet
+as one `event: user` message on native `--input-format stream-json` stdin.
+The packet is absent from argv and does not require a filesystem search. Its load
 declaration therefore does not require the operator's global `GEMINI.md` or a
 worker checkout's `AGENTS.md`. `source_refs` points to the wrapper that constructs
 the prompt. The optional configuration path is
@@ -503,3 +504,325 @@ extracted policy sources. An in-tree compatibility symlink is covered through
 its canonical target once. For an instruction symlink targeting outside that
 scan tree, pass the alias explicitly to `scripts/check-claude-md-rot.sh`; the
 workspace monthly audit follows named aliases and deduplicates resolved targets.
+
+
+### Recheck Agy dossier delivery and child cleanup
+
+Run `uv run --no-sync pytest tests/scripts/test_hapax_agy_reviewer.py -q` from
+the candidate source. Protocol/ownership doubles replace only the mount-command
+builder in a test harness so their original Python fixtures remain executable;
+the shipped wrapper has no bypass switch. Separate real-Bubblewrap tests exercise
+host-root marker hiding, host `/proc` hiding, read-only mounts, missing runtime or
+containment refusal, contained stdin/OAuth delivery, exit, tool refusal, timeout
+and caller lifetime cancellation. The protocol doubles exercise short and 2.5 MB
+Unicode dossiers,
+OAuth isolation and raw/nested-JSON-escaped echo suppression on both streams before
+parsing (including native failures), semantic YAML token checks, native final-result
+unwrapping, malformed output, timeout, caller cancellation and process ownership.
+The caller retains YAML schema/checklist validation after the wrapper extracts
+one successful native result's fenced response. Before forwarding that response,
+the wrapper uses the runtime's declared PyYAML dependency and the caller's
+SafeLoader to check all string keys/values and binary scalars for seeded secrets.
+YAML escapes and line continuations therefore cannot reconstruct a token after
+the guard. Malformed YAML is refused; the wrapper does not delegate an unexamined
+document to the caller's prose-repair path. Native errors retain nonzero
+status and screened stderr; partial model responses are not forwarded.
+
+Containment integration tests skip with the missing bindings listed on hosts
+without the qualified runtime files (including generic Ubuntu CI). Such a skip
+is unobserved containment, not a pass. Missing-Bubblewrap and missing-dependency
+refusal tests still run there. On the qualified host, a namespace setup failure
+fails the integration tests rather than skipping them.
+
+Before accepting a result, the wrapper also checks every native `step_update`.
+Only known `user_input`, `agent_response` and `checkpoint` steps are accepted.
+Tool/subagent steps, invocation metadata (even null), unknown fields/categories,
+and malformed step envelopes are refused with a next action. This also discards
+native stderr for that review; an existing nonzero native status is preserved.
+Raw secret screening still runs first, and owned-group cleanup precedes parsing.
+The native event contract is described in the
+[headless reference](https://antigravity.google/docs/cli/headless/).
+
+This is refusal of a completed stream, not prevention of tool execution. A valid
+fenced result, prompt prohibition, or stream without tool events does not prove
+complete no-search. Qualify any proposed isolated native no-tool configuration
+with a negative tool-attempt probe and compare observed client/model, credential
+binding, admission route, billing surface and timeout before adopting it. Keep
+tool-attempt reviews refused if that qualification is unavailable. CLI help and
+official permission/custom-agent documentation are candidate configuration
+evidence; neither replaces an observed enforcement boundary.
+
+The wrapper forks a small lifetime supervisor before launching Bubblewrap, which
+leads a new session/process group containing Agy. The supervisor observes exit
+with `waitid(WNOWAIT)`
+and checks the unreaped child's PGID/SID before signalling that group. Keeping
+the child unreaped reserves its identifier until TERM, a 150 ms cleanup grace,
+KILL and wait finish. The original print timeout and pinned model are unchanged.
+The private lifetime pipe closes if the caller kills the outer wrapper, including
+SIGKILL from `subprocess.run(timeout=...)`, so the supervisor can finish cleanup
+and remove the temporary credential workspace. Captured output uses unlinked
+files, avoiding a hang on pipe descriptors inherited by descendants.
+
+During native launch the supervisor latches SIGTERM/SIGINT without raising, so
+the child handle cannot be lost between spawn and assignment. Launch and timeout
+setup are inside the cleanup boundary; cancellation is raised after ownership
+is recorded. Cleanup still verifies PGID/SID, ignores repeated cancellation
+until reaping finishes, and restores the previous signal handlers. Focused
+`test_launch_window_signal_cleans_live_owned_group` cases inject both signals
+before `Popen` returns and during deadline setup, plus a direct setup exception.
+
+This is bounded process-group cleanup. At that boundary, a descendant which
+deliberately leaves
+the group/session is not proven owned by that boundary and is not killed. Killing
+the supervisor itself with SIGKILL, host failure, or external child reaping is
+outside the cleanup guarantee. Do not remedy those limits by killing role-wide
+matches or guessing ownership from command names. The tests retain an escaped
+child and an unrelated process deliberately, then dispose of their own fixtures.
+The additional PID namespace and `--die-with-parent` bound the contained process
+tree. This does not authorize signalling any unrelated host process.
+
+The mandatory `/usr/bin/bwrap` boundary constructs an empty filesystem with a
+private PID namespace and procfs, fresh devices and `/tmp`, disabled nested user
+namespaces, and dropped capabilities. It binds only the existing invocation's
+workspace (including its original seeded HOME) and individual read-only runtime
+files. `REVIEW_RUNTIME_FILES` declares the qualified x86-64 Linux loader and its
+native/shell libraries, bash, DNS configuration and CA bundle; the selected Agy
+binary is bound as `/usr/bin/agy`. The list is a runtime binding, not permission
+to discover and mount parent trees. No host home, repository, host `/proc`, system
+directory tree or host socket is mounted. Missing files, unavailable Bubblewrap
+or rejected namespace setup refuse execution; there is no uncontained retry.
+Requalify exact dependency bindings on a different host rather than widening
+mounts. See the [Bubblewrap options](https://github.com/containers/bubblewrap/blob/main/bwrap.xml).
+
+Network remains shared for the same subscription route. This filesystem boundary
+is not an egress filter or a no-search guarantee: a contained tool attempt still
+causes stream refusal, and the seeded credential remains readable to the native
+client. The existing token screens remain mandatory. Use a harmless host-only
+marker outside the bound workspace for a negative read/search probe and inspect
+the actual Agy executable hash, mount/PID namespaces, pinned model and native
+result. Keep that source-probe evidence separate from installed qualification.
+
+The qualified-host full-wrapper regression exercises both the wrapper's print
+timeout and the actual caller's `subprocess.run(timeout=...)` SIGKILL path with
+real Bubblewrap. It observes a live descendant in separate PID/mount namespaces,
+then checks the recorded process identities and removal of the seeded temporary
+workspace. It does not replace the wrapper's containment command. Reproduce it
+in the source checkout with:
+
+```bash
+uv run --no-sync pytest tests/scripts/test_hapax_agy_reviewer.py \
+  -k full_contained_wrapper_timeout -q -rs
+```
+
+A skip means the host lacks a declared runtime binding; it is unobserved evidence,
+not a containment pass. On the qualified host both cases must pass without skips.
+Generic CI and this synthetic-client regression do not qualify installed Agy.
+
+Before claiming activation, bind the installed wrapper path and SHA-256 to the
+accepted source, record local `agy --help` and binary identity, and observe an
+admitted exact-head review through the actual caller. Check that the final result
+parses, no dossier-search command is launched, and no members of that invocation's
+proven group remain after completion/timeout. Source doubles and native local
+`/help` parsing establish their respective boundaries only; they do not establish
+provider reasoning, signed acceptance, or the installed runtime postimage. Do not
+alter existing reviewer sessions or admission, model, billing or review-seat rules
+while making that observation.
+
+
+Runnable recheck (bash, on the bound runtime host). These commands record
+identities, hashes and process metadata, never token files, environment contents
+or process arguments. The review launch requires independent acceptance and
+separate release/runtime authorization; source authors must leave it unexecuted
+while release is held. Select an admitted PR/head under that authorization.
+
+```bash
+agy_recheck_root=$(systemctl --user show hapax-pr-review-dispatch.service \
+  --property=WorkingDirectory --value)
+test -n "$agy_recheck_root" && test -d "$agy_recheck_root" || exit 1
+agy_recheck_dir=$(mktemp -d)
+export AGY_RECHECK_ROOT="$agy_recheck_root" AGY_RECHECK_DIR="$agy_recheck_dir"
+python3 - <<'PY_IDENTITIES'
+import hashlib, json, os
+from pathlib import Path
+root = Path(os.environ["AGY_RECHECK_ROOT"])
+paths = [root / "scripts/hapax-agy-reviewer", root / "scripts/cc-pr-review-dispatch.py",
+         Path.home() / ".local/bin/hapax-agy-reviewer", Path("/usr/bin/agy")]
+rows = [{"path": str(p), "resolved": str(p.resolve(strict=True)),
+         "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+         "mode": oct(p.stat().st_mode & 0o777), "size": p.stat().st_size} for p in paths]
+Path(os.environ["AGY_RECHECK_DIR"], "identities.json").write_text(json.dumps(rows, indent=2))
+print(json.dumps(rows, indent=2))
+PY_IDENTITIES
+/usr/bin/agy --help > "$agy_recheck_dir/agy-help.txt"
+# Compare identities.json with the exact accepted source hashes before continuing.
+# Set AGY_RECHECK_PR to the separately authorized, admitted PR number.
+: "${AGY_RECHECK_PR:?set the authorized PR number}"
+gh pr view "$AGY_RECHECK_PR" --repo hapax-systems/hapax-council \
+  --json headRefOid > "$agy_recheck_dir/head-before.json"
+uv --directory "$agy_recheck_root" run python scripts/cc-pr-review-dispatch.py \
+  --pr "$AGY_RECHECK_PR" > "$agy_recheck_dir/admission-plan.json"
+```
+
+Inspect the plan's route, quality floor and admission before applying it. Do not
+use `--force`, change routes or renew receipts to bypass a refusal. The following
+observer launches the installed caller once and samples only its descendants.
+It records start times as well as PID/PGID/SID, preserving the observed ancestry
+for the Bubblewrap session leader and its Agy descendant. It never signals any
+process.
+
+```bash
+export AGY_RECHECK_PR
+uv --directory "$agy_recheck_root" run python - <<'PY_OBSERVE'
+import hashlib, json, os, subprocess, time
+from pathlib import Path
+root, evidence = Path(os.environ["AGY_RECHECK_ROOT"]), Path(os.environ["AGY_RECHECK_DIR"])
+agy = Path("/usr/bin/agy").resolve(strict=True)
+agy_sha256 = hashlib.sha256(agy.read_bytes()).hexdigest()
+def snapshot():
+    rows = {}
+    for path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            raw = path.read_text()
+            fields = raw.rsplit(")", 1)[1].split()
+            pid = int(path.parent.name)
+            rows[pid] = {"pid": pid, "ppid": int(fields[1]), "pgid": int(fields[2]),
+                         "sid": int(fields[3]), "start": fields[19], "state": fields[0],
+                         "name": raw.split("(", 1)[1].rsplit(")", 1)[0]}
+        except (OSError, ValueError, IndexError):
+            continue
+    return rows
+leaders, searches, clients = {}, [], {}
+with (evidence / "caller-output.json").open("x") as out, (evidence / "caller-stderr.txt").open("x") as err:
+    proc = subprocess.Popen(["uv", "--directory", str(root), "run", "python",
+                             "scripts/cc-pr-review-dispatch.py", "--pr",
+                             os.environ["AGY_RECHECK_PR"], "--apply"], stdout=out, stderr=err)
+    while proc.poll() is None:
+        rows = snapshot()
+        for pid, row in rows.items():
+            chain, parent = [row], row["ppid"]
+            while parent in rows and parent not in {item["pid"] for item in chain}:
+                chain.append(rows[parent])
+                if parent == proc.pid:
+                    try:
+                        executable = Path(f"/proc/{pid}/exe")
+                        if executable.resolve(strict=True) == Path("/usr/bin/bwrap"):
+                            if row["pid"] == row["pgid"] == row["sid"]:
+                                leaders[(pid, row["start"])] = chain
+                        if row["name"] == "agy" and (pid, row["start"]) not in clients:
+                            clients[(pid, row["start"])] = {
+                                "pid": pid, "pgid": row["pgid"], "ancestry": chain,
+                                "binary_hash_matches": hashlib.sha256(executable.read_bytes()).hexdigest() == agy_sha256,
+                                "private_mount_namespace": os.readlink(f"/proc/{pid}/ns/mnt") != os.readlink("/proc/self/ns/mnt"),
+                                "private_pid_namespace": os.readlink(f"/proc/{pid}/ns/pid") != os.readlink("/proc/self/ns/pid"),
+                            }
+                        if row["name"] == "find":
+                            searches.append(row)
+                    except OSError:
+                        pass
+                    break
+                parent = rows[parent]["ppid"]
+        time.sleep(0.02)
+    time.sleep(1)  # allow the lifetime supervisor's cleanup grace to finish
+    groups = {pid for pid, start in leaders}
+    survivors = [row for row in snapshot().values() if row["pgid"] in groups]
+    result = {"caller_exit": proc.returncode, "leader_ancestries": list(leaders.values()),
+              "native_clients": list(clients.values()),
+              "observed_find": searches, "group_members_after": survivors,
+              "coverage": "sampled /proc only; short-lived processes may be missed"}
+    (evidence / "owned-groups.json").write_text(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2))
+PY_OBSERVE
+gh pr view "$AGY_RECHECK_PR" --repo hapax-systems/hapax-council \
+  --json headRefOid > "$agy_recheck_dir/head-after.json"
+cmp "$agy_recheck_dir/head-before.json" "$agy_recheck_dir/head-after.json"
+```
+
+Re-run the installed caller's read-only plan to validate the stored exact-head
+dossier and report its admission blockers:
+
+```bash
+uv --directory "$agy_recheck_root" run python scripts/cc-pr-review-dispatch.py \
+  --pr "$AGY_RECHECK_PR" > "$agy_recheck_dir/post-review-validity.json"
+```
+
+Require independent signature verification under the existing FileStore signing
+binding, plus the dossier's exact head, Gemini verdict and `parse_path: fence`;
+disposition any route debt separately. An exit-zero caller alone is
+not a successful review: it can return a refusal or an already-reviewed result.
+Missing leader ancestry means the owned-group observation is **unobserved**.
+Require a native client with matching executable hash, separate mount/PID
+namespaces, and PGID matching a recorded leader; otherwise containment at the
+installed caller boundary is **unobserved**.
+Any remaining member, including a zombie, needs disposition; never kill it from
+this sample. Sampling cannot certify absence of short-lived dossier searches or
+escaped descendants. Record that limit; a complete no-search claim still needs
+an authorized execution trace or equivalent native tool-event observation with
+credential-safe capture. Do not dump native logs, token files or `/proc/*/cmdline`.
+The source timeout tests do not substitute for a separately authorized installed
+timeout observation. Preserve this record as pending if release, admission or
+observation coverage is missing.
+
+The independent runtime observer can verify a returned dossier without printing
+its findings or signing material. Set `AGY_RECHECK_DOSSIER` to the exact
+`dossier_path` returned by the caller, then run:
+
+```bash
+: "${AGY_RECHECK_DOSSIER:?set the caller-returned dossier path}"
+export AGY_RECHECK_DOSSIER
+uv --directory "$agy_recheck_root" run python - <<'PY_SIGNATURE'
+import hashlib, json, os, subprocess
+from pathlib import Path
+import yaml
+from shared.public_gate_receipts import _mapping_has_trusted_authority_signature
+evidence = Path(os.environ["AGY_RECHECK_DIR"])
+path = Path(os.environ["AGY_RECHECK_DOSSIER"])
+raw = path.read_bytes()
+dossier = yaml.safe_load(raw)
+key = subprocess.run([str(Path.home() / ".local/bin/hapax-secret"),
+                      "hapax-public-gate-authority-hmac-key"],
+                     capture_output=True, text=True, timeout=20)
+if key.returncode or not key.stdout.strip():
+    raise SystemExit("Signing binding unavailable; restore the declared FileStore credential.")
+verified = _mapping_has_trusted_authority_signature(dossier, key.stdout.strip())
+expected = json.loads((evidence / "head-before.json").read_text())["headRefOid"]
+row = {"dossier_path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+       "hmac_verified": verified, "head_matches": dossier.get("head_sha") == expected,
+       "pr_matches": dossier.get("pr") == int(os.environ["AGY_RECHECK_PR"]),
+       "team_verdict": dossier.get("review_team_verdict"),
+       "gemini": [{"verdict": seat.get("verdict"), "parse_path": seat.get("parse_path")}
+                  for seat in dossier.get("reviewers", []) if seat.get("family") == "gemini"],
+       "route_debt": dossier.get("post_route_receipt_rereview_required")}
+with (evidence / "signature-readback.json").open("x") as out:
+    json.dump(row, out, indent=2)
+print(json.dumps(row, indent=2))
+raise SystemExit(0 if verified and row["head_matches"] and row["pr_matches"] else 1)
+PY_SIGNATURE
+```
+
+This checks signature and identity, not acceptance. A signed blocked verdict is
+still blocked. Check the Gemini fence result and disposition route debt separately.
+The following executable readback reports the existing process sampler's search
+and cleanup observations, and fails closed on the complete no-search predicate:
+
+```bash
+python3 - <<'PY_SEARCH_READBACK'
+import json, os
+from pathlib import Path
+evidence = Path(os.environ["AGY_RECHECK_DIR"])
+sample = json.loads((evidence / "owned-groups.json").read_text())
+row = {"find_observed": bool(sample["observed_find"]),
+       "leader_observed": bool(sample["leader_ancestries"]),
+       "remaining_group_members": len(sample["group_members_after"]),
+       "complete_no_search": "unobserved: /proc sampling can miss short-lived tools",
+       "next_action": "runtime owner must supply an authorized complete execution/tool-event trace"}
+with (evidence / "search-readback.json").open("x") as out:
+    json.dump(row, out, indent=2)
+print(json.dumps(row, indent=2))
+raise SystemExit(1)
+PY_SEARCH_READBACK
+```
+
+No complete execution/tool-event trace collector is supplied by this source
+repair. That negative observation remains a runtime qualification blocker, even
+when the sampler saw no `find`. Do not turn this command's deliberate nonzero exit
+into a passing no-search claim or substitute source doubles for the missing trace.
