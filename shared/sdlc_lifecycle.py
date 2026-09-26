@@ -528,6 +528,27 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # CORRECTNESS of such a change is separately gated by the general test/review
     # checks every PR already carries.
     "privacy_or_secret_sensitive": ("secrets-scan",),
+    # A provider-billing-sensitive change auto-arms only when the PR head
+    # carries two proofs. (1) billing-surface-scan SUCCESS: the deterministic
+    # diff scan (scripts/check-billing-surface-diff.py, run by the ci.yml job
+    # of the same name) proving no ADDED line opens a billing surface — no new
+    # credential env read, no API-key client route, no bare provider SDK
+    # constructor or provider API endpoint literal, and no capacity_pool /
+    # plan_type rebinding to the api_paid_spend (PAYG) class. (2) The
+    # review-team quorum, because the scan is syntactic and semantic spend
+    # routing is the quorum's layer (the same trust split as the egress class).
+    # This operationalizes the no-implicit-API/PAYG rule (memory
+    # provider-spend-is-standing-authorized-not-api-spend): standing provider
+    # authorization covers subscription/provisioned capacity and never extends
+    # to API/PAYG spend by implication. The provider_spend MUTATION SURFACE
+    # stays auto-arm-ineligible (AUTO_ARM_INELIGIBLE_MUTATION_SURFACES) — this
+    # entry mitigates source changes that are merely billing-ADJACENT
+    # (keyword- or explicitly flagged), never a change whose surface is spend
+    # itself.
+    "provider_billing_sensitive": (
+        "billing-surface-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
 }
 
 #: Mutation surfaces too high-stakes for the system to auto-authorize release.

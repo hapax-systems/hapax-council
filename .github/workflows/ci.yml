@@ -1513,6 +1513,54 @@ jobs:
           fi
           echo "No high-severity security issues found"
 
+  billing-surface-scan:
+    # The provider_billing_sensitive release class's deterministic arm-time
+    # evidence (RELEASE_MITIGATION_CHECKS, shared/sdlc_lifecycle.py): proves
+    # from the PR diff that no added line opens an API/PAYG billing surface —
+    # no new credential env read, no API-key client route, no bare provider
+    # SDK constructor or provider API endpoint literal, no capacity_pool /
+    # plan_type rebinding to the api_paid_spend class. Like secrets-scan this
+    # is an evidence producer, NOT a member of the all-green aggregate: the
+    # autoqueue reads its SUCCESS as mitigation evidence for billing-sensitive
+    # classes; a finding fails only that evidence read. No job-level `if` and
+    # no docs-only sentinel — the class's evidence must EXECUTE on every diff
+    # (the scan is seconds); the duplicate-merge-group sentinel stays because
+    # it means the queue already validated the SHA (deferred evidence, never
+    # skipped evidence). Pinned by tests/ci/test_billing_surface_scan_ci.py.
+    needs: [post_merge_duplicate_filter]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; billing-surface-scan reports success."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          # The three-dot diff needs the PR base commit present.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Scan the diff for billing-surface mutations
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base="$PR_BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$PR_HEAD^"
+          fi
+          uv run --no-project python scripts/check-billing-surface-diff.py --base "$base" --head "$PR_HEAD"
+
   all-green:
     # Single aggregate required context (task reform-native-merge-queue). Collapses
     # the literal required checks into one job so the merge queue can't be
