@@ -36,6 +36,8 @@ from pathlib import Path
 OK = 0
 REFUSED = 2
 ERROR = 3
+# The stage was advanced and ledgered, but its coord event was not emitted (M78).
+EVENT_LOST = 5
 
 VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -110,12 +112,14 @@ def _emit_coord_event(
     parent_spec: str | None,
     no_go: dict[str, bool],
     now: str,
-) -> None:
+) -> bool:
     """Record the stage transition in the coord SSOT log (coordination reform §4.3).
 
     ``fail_open`` routes a daemon-down append to the spool for boot
-    reconciliation; a hard failure is warned, never fatal — the stage advance and
-    its advisory cache-ledger record have already succeeded.
+    reconciliation. A hard failure does not undo the advance (the note and its
+    cache-ledger record are already written), but it is an ERROR with its own exit
+    code, never a warning: the coord projection would otherwise miss the transition
+    silently (M78). Returns whether the event was emitted.
     """
     try:
         if str(REPO_ROOT) not in sys.path:
@@ -137,8 +141,16 @@ def _emit_coord_event(
             evidence_summary=f"{from_stage} -> {new_stage}",
             origin="cli",
         )
-    except Exception as exc:  # noqa: BLE001 — coord emit must not fail the advance.
-        print(f"cc-stage-advance: WARNING coord event emit failed: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 — the advance stands; the loss is reported.
+        print(
+            f"cc-stage-advance: ERROR stage advanced and ledgered, but the coord event NOT emitted "
+            f"({type(exc).__name__}: {exc}); next action: run this tool from a provisioned "
+            f"release (expected interpreter {REPO_ROOT / '.venv' / 'bin' / 'python'}), then "
+            "re-emit the transition through the coord projection",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
@@ -246,12 +258,30 @@ def _advance_locked(task_id: str, note: Path, new_stage: str, allow_backward: bo
         },
         sort_keys=True,
     )
-    _emit_coord_event(task_id, from_stage, new_stage, authority_case, parent_spec, no_go, now)
+    emitted = _emit_coord_event(
+        task_id, from_stage, new_stage, authority_case, parent_spec, no_go, now
+    )
     print(f"cc-stage-advance: {task_id} stage {from_stage} -> {new_stage} (ledgered)")
-    return OK
+    return OK if emitted else EVENT_LOST
+
+
+def _reexec_under_project_python(argv: list[str]) -> None:
+    """Run under the release's pinned interpreter, as cc-claim does (M78).
+
+    Invoked by its PATH name, the shebang picks the system python3, which lacks the
+    `hapax` package the coord emit imports. One re-exec, guarded by an env marker.
+    """
+    project_python = REPO_ROOT / ".venv" / "bin" / "python"
+    if os.environ.get("HAPAX_CC_STAGE_ADVANCE_REEXEC") == "1" or not project_python.is_file():
+        return
+    if Path(sys.executable) == project_python:
+        return
+    os.environ["HAPAX_CC_STAGE_ADVANCE_REEXEC"] = "1"
+    os.execv(str(project_python), [str(project_python), str(Path(__file__).resolve()), *argv[1:]])
 
 
 def main(argv: list[str]) -> int:
+    _reexec_under_project_python(argv)
     args = [a for a in argv[1:] if a != "--allow-backward"]
     allow_backward = "--allow-backward" in argv[1:]
     if len(args) != 2:

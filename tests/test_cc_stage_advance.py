@@ -114,3 +114,78 @@ class TestStageAdvance:
         )
         r = _run(tmp_path, "nope", "S7_RELEASE")
         assert r.returncode == 3
+
+
+# M78: run from the release by its PATH name, the script used the system python3,
+# which lacks the `hapax` package that coord_projection imports. The ledger was written,
+# the coord event was lost, and the loss was only a WARNING (dev7, dev12 2026-09-24).
+
+SYSTEM_PYTHON = "/usr/bin/python3"
+
+
+def _run_with(
+    home: Path, interpreter: str, script: Path, *args: str
+) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(home),
+            "HAPAX_AGENT_ROLE": "alpha",
+            "HAPAX_COORD_DIR": str(home / ".cache" / "hapax" / "coord"),
+        }
+    )
+    env.pop("PYTHONPATH", None)
+    env.pop("VIRTUAL_ENV", None)
+    return subprocess.run(
+        [interpreter, str(script), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+
+def _repo_layout(tmp_path: Path, *, with_venv: bool) -> Path:
+    """A release-shaped tree: scripts/cc-stage-advance plus shared/, and optionally the
+    pinned .venv/bin/python (a wrapper that records it ran, then runs the real venv python)."""
+    repo = tmp_path / "release"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "cc-stage-advance").write_bytes(SCRIPT.read_bytes())
+    (repo / "shared").symlink_to(SCRIPT.parent.parent / "shared", target_is_directory=True)
+    if with_venv:
+        venv_bin = repo / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        wrapper = venv_bin / "python"
+        wrapper.write_text(
+            f'#!/usr/bin/env bash\ntouch "{tmp_path}/venv-python-ran"\nexec {sys.executable} "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+    return repo
+
+
+def test_lost_coord_event_is_an_error_not_a_warning(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_task(home, "t1")
+    repo = _repo_layout(tmp_path, with_venv=False)
+
+    r = _run_with(home, SYSTEM_PYTHON, repo / "scripts" / "cc-stage-advance", "t1", "S7_RELEASE")
+
+    assert r.returncode == 5, r.stderr
+    assert "stage: S7_RELEASE" in _note(home, "t1").read_text()
+    assert "ERROR" in r.stderr and "coord event NOT emitted" in r.stderr
+    assert "next action" in r.stderr
+    assert "WARNING" not in r.stderr
+
+
+def test_runs_under_the_pinned_project_interpreter_and_emits(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _make_task(home, "t1")
+    repo = _repo_layout(tmp_path, with_venv=True)
+
+    r = _run_with(home, SYSTEM_PYTHON, repo / "scripts" / "cc-stage-advance", "t1", "S7_RELEASE")
+
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "venv-python-ran").exists()
+    assert "coord event" not in r.stderr
+    assert "stage: S7_RELEASE" in _note(home, "t1").read_text()
