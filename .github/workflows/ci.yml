@@ -550,6 +550,109 @@ jobs:
           tests/hapax_daimonion/test_conversational_policy.py
           packages/agentgov/tests/test_carrier.py -q --tb=short
 
+  consent-coupled-suites:
+    # Execution anchor for the coupled consent admissions
+    # (LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS, shared/release_gate.py). For
+    # every coupled production source (or named suite) in this change set, run
+    # its named consent suite; FAIL when a suite is absent at head, collects no
+    # tests (pytest exit 5), or any test fails. A change set with no coupled
+    # path has nothing to execute and passes. The gate admits a coupled path
+    # only when this check passed at the head
+    # (LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK), so a suite's co-presence is
+    # never evidence on its own. Not "when present" logic: a changed coupled
+    # source REQUIRES its suite, and a missing suite fails. Same shape as
+    # egress-boundary-pin: no job-level `if`, no docs-only bypass; the
+    # duplicate-merge-group sentinel means the queue already validated the SHA.
+    # Anchored by tests/ci/test_release_gate_ci_composition.py.
+    needs: [post_merge_duplicate_filter]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; consent-coupled-suites reports success."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Select the consent suites of coupled paths in this change set
+        id: select
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          changed_files="$(mktemp)"
+          if [ -n "$PR_BASE_SHA" ]; then
+            git fetch --quiet origin "$PR_BASE_SHA" || true
+            git diff --no-renames --name-only "$PR_BASE_SHA"...HEAD > "$changed_files"
+          elif [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
+            base="$(printf '%s\n' "$GITHUB_REF_NAME" | sed -n 's/.*-\([0-9a-f]\{40\}\)$/\1/p')"
+            if [ -z "$base" ]; then
+              echo "::error::consent-coupled-suites: no merge-group base SHA; refusing to pass unevaluated. Next action: re-enqueue the PR so the merge-group ref carries its base SHA."
+              exit 1
+            fi
+            git fetch --quiet origin "$base" || true
+            git diff --no-renames --name-only "$base"..HEAD > "$changed_files"
+          elif [ -n "$PUSH_BEFORE_SHA" ] && [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
+            git diff --no-renames --name-only "$PUSH_BEFORE_SHA" HEAD > "$changed_files"
+          else
+            echo "::error::consent-coupled-suites: no stable base SHA for $GITHUB_EVENT_NAME; refusing to pass unevaluated. Next action: evaluate the change on a pull_request or merge_group run (release evidence is read from PR check runs)."
+            exit 1
+          fi
+          suites="$(
+            uv run --no-project --with pyyaml --with pydantic \
+              python -m shared.release_gate --coupled-consent-suites "$changed_files"
+          )"
+          for suite in $suites; do
+            if [ ! -f "$suite" ]; then
+              echo "::error::coupled consent suite $suite is absent at head. Next action: add or restore $suite in this change set (a changed coupled source requires its consent suite), or revert the change to its coupled source."
+              exit 1
+            fi
+          done
+          if [ -z "$suites" ]; then
+            echo "No coupled consent path in this change set; nothing to execute."
+          else
+            echo "Coupled consent suites to execute: $suites"
+          fi
+          echo "suites=$suites" >> "$GITHUB_OUTPUT"
+      # The suites import the compositor (cairo, gi) and numpy, so they run in
+      # the same environment as the `test` job's full pytest, installed only
+      # when a coupled path is in the change set.
+      - name: Install system deps for the coupled consent suites
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && steps.select.outputs.suites != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libcairo2-dev libgirepository-2.0-dev gobject-introspection \
+            gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 \
+            gir1.2-pango-1.0
+      - name: Sync uv ci extras for the coupled consent suites
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && steps.select.outputs.suites != ''
+        run: uv sync --extra ci --frozen
+      - name: Execute the coupled consent suites
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && steps.select.outputs.suites != ''
+        env:
+          SUITES: ${{ steps.select.outputs.suites }}
+        run: |
+          set -euo pipefail
+          read -r -a suites <<< "$SUITES"
+          # Exit 4 (file absent) and 5 (no tests collected) fail the job too.
+          uv run --no-sync pytest --confcutdir=tests "${suites[@]}" -q --tb=short
+
 
   typecheck:
     needs: [docs_only_filter, post_merge_duplicate_filter]
@@ -1520,7 +1623,7 @@ jobs:
     # preserves the fast/slow split: `test-full-shard` is merge_group-only, so it
     # is `skipped` on pull_request events and all-green still passes there.
     name: all-green
-    needs: [lint, capability-surface-delta, egress-boundary-pin, typecheck, test, test-full-shard, web-build, vscode-build, public_surface_freshness]
+    needs: [lint, capability-surface-delta, egress-boundary-pin, consent-coupled-suites, typecheck, test, test-full-shard, web-build, vscode-build, public_surface_freshness]
     if: always()
     runs-on: ubuntu-latest
     steps:

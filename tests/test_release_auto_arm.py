@@ -22,10 +22,14 @@ import pytest
 
 from shared.release_gate import (
     LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES,
+    LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS,
+    LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK,
     LIVE_EGRESS_MITIGATION_CHECKS,
     _path_in_consent_containment_lane,
     assess_release_auto_arm_estate,
+    coupled_consent_suites_for,
 )
+from shared.release_gate import main as release_gate_main
 from shared.sdlc_lifecycle import (
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
@@ -321,6 +325,9 @@ def test_consent_containment_lane_boundary_is_anchored() -> None:
             "agents/_governance.py.bak",
             "packages/agentgov/src/agentgov/new_egress.py",
             "agents/_governance/new_surface.py",
+            "agents/studio_compositor/compositor.py",
+            "agents/studio_compositor/lifecycle.py.bak",
+            "agents/hapax_daimonion/_perception_state_writer.py.bak",
         ],
     )
     assert assessment.eligible is False
@@ -328,6 +335,9 @@ def test_consent_containment_lane_boundary_is_anchored() -> None:
     for held in (
         "agents/_governance.py.bak",
         "agents/_governance/new_surface.py",
+        "agents/hapax_daimonion/_perception_state_writer.py.bak",
+        "agents/studio_compositor/compositor.py",
+        "agents/studio_compositor/lifecycle.py.bak",
         "packages/agentgov/src/agentgov/new_egress.py",
         "shared/governance/other.py",
     ):
@@ -346,6 +356,26 @@ def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> N
     assert _path_in_consent_containment_lane(".github/workflows/ci.yml")
     assert _path_in_consent_containment_lane("tests/test_consent_gate.py")
     assert _path_in_consent_containment_lane("tests/test_consent_label.py")
+    # The coupled admissions are NOT lane members: they are admitted only with
+    # their consent suite in the same PR (LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS).
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/lifecycle.py")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/models.py")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/state.py")
+    assert not _path_in_consent_containment_lane(
+        "agents/hapax_daimonion/_perception_state_writer.py"
+    )
+    assert not _path_in_consent_containment_lane(
+        "tests/studio_compositor/test_recording_consent_fail_closed.py"
+    )
+    assert not _path_in_consent_containment_lane("tests/studio_compositor/test_other.py")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/compositor.py")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/lifecycle.py.bak")
+    assert not _path_in_consent_containment_lane("agents/studio_compositor/state/x.py")
+    assert not _path_in_consent_containment_lane(
+        "agents/hapax_daimonion/_perception_state_writer.py.bak"
+    )
+    assert not _path_in_consent_containment_lane("tests/studio_compositor_other/x.py")
     assert not _path_in_consent_containment_lane(".github/workflows/ci.yml.bak")
     assert not _path_in_consent_containment_lane(".github/workflows/other.yml")
     assert not _path_in_consent_containment_lane("tests/test_consent_gate.py.bak")
@@ -356,6 +386,272 @@ def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> N
     assert not _path_in_consent_containment_lane("   ")
     assert not _path_in_consent_containment_lane("./shared/governance/consent.py")
     assert not _path_in_consent_containment_lane("packages/agentgov/src/agentgov/other.py")
+
+
+_WRITER = "agents/hapax_daimonion/_perception_state_writer.py"
+_WRITER_SUITE = "tests/hapax_daimonion/test_perception_state_writer_consent.py"
+_COMPOSITOR_SUITE = "tests/studio_compositor/test_recording_consent_fail_closed.py"
+_COMPOSITOR_SOURCES = (
+    "agents/studio_compositor/lifecycle.py",
+    "agents/studio_compositor/models.py",
+    "agents/studio_compositor/state.py",
+)
+
+
+def _egress_uncovered(
+    changed_files: list[str],
+    deleted_files: tuple[str, ...] | None = (),
+    *,
+    suites_executed: bool = True,
+) -> set[str]:
+    checks = set(LIVE_EGRESS_MITIGATION_CHECKS)
+    if suites_executed:
+        checks.add(LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK)
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=checks,
+        changed_files=changed_files,
+        deleted_files=deleted_files,
+    )
+    prefix = "egress_evidence_uncovered_paths:"
+    return {
+        path
+        for blocker in assessment.blockers
+        if blocker.startswith(prefix)
+        for path in blocker[len(prefix) :].split(",")
+    }
+
+
+def test_consent_coupled_admissions_are_exact() -> None:
+    # Drift pin: each production source is admitted past the coverage bound
+    # ONLY together with its consent suite in the same PR — never alone, as a
+    # lane member would be. Changing a pairing is a ratification act.
+    assert LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS == (
+        (
+            "agents/hapax_daimonion/_perception_state_writer.py",
+            "tests/hapax_daimonion/test_perception_state_writer_consent.py",
+        ),
+        (
+            "agents/studio_compositor/lifecycle.py",
+            "tests/studio_compositor/test_recording_consent_fail_closed.py",
+        ),
+        (
+            "agents/studio_compositor/models.py",
+            "tests/studio_compositor/test_recording_consent_fail_closed.py",
+        ),
+        (
+            "agents/studio_compositor/state.py",
+            "tests/studio_compositor/test_recording_consent_fail_closed.py",
+        ),
+    )
+
+
+def test_consent_coupled_admission_admits_consent_fail_closed_live_perception_shape() -> None:
+    # The exact changed-file set of the compositor recording-consent and
+    # perception-writer fail-closed fix: four production sources, each with
+    # its consent suite in the same PR. Nothing is left outside the bound.
+    # The writer suite is covered by the pre-existing tests/hapax_daimonion
+    # directory entry, which this change does not touch; pin that premise.
+    assert "tests/hapax_daimonion" in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES
+    assert not _egress_uncovered([_WRITER, *_COMPOSITOR_SOURCES, _WRITER_SUITE, _COMPOSITOR_SUITE])
+
+
+def test_consent_coupled_writer_alone_fails_closed() -> None:
+    # Unsafe case: a PR touching the perception writer without its consent
+    # suite stays held, exactly as before the admission existed.
+    assert _egress_uncovered([_WRITER]) == {_WRITER}
+
+
+def test_consent_coupled_compositor_alone_fails_closed() -> None:
+    for source in _COMPOSITOR_SOURCES:
+        assert _egress_uncovered([source]) == {source}
+    assert _egress_uncovered(list(_COMPOSITOR_SOURCES)) == set(_COMPOSITOR_SOURCES)
+
+
+def test_consent_coupled_production_with_the_wrong_suite_fails_closed() -> None:
+    # A consent suite admits only its own production sources.
+    assert _egress_uncovered([_WRITER, _COMPOSITOR_SUITE]) == {_WRITER}
+    assert _egress_uncovered([*_COMPOSITOR_SOURCES, _WRITER_SUITE]) == set(_COMPOSITOR_SOURCES)
+    assert _egress_uncovered([_COMPOSITOR_SOURCES[0], "tests/studio_compositor/test_other.py"]) == {
+        _COMPOSITOR_SOURCES[0],
+        "tests/studio_compositor/test_other.py",
+    }
+
+
+def test_consent_coupled_admission_admits_only_the_named_suites() -> None:
+    # Narrowed option D: the named consent suites are admitted as exact files;
+    # the rest of tests/studio_compositor (ignored/deselected files included)
+    # and every sibling of a coupled source stay held.
+    assert not _egress_uncovered([_COMPOSITOR_SUITE])
+    assert _egress_uncovered(
+        [
+            "tests/studio_compositor/test_face_obscure_pipeline.py",
+            f"{_COMPOSITOR_SUITE}.bak",
+            "agents/studio_compositor/compositor.py",
+            f"{_WRITER}.bak",
+        ]
+    ) == {
+        "tests/studio_compositor/test_face_obscure_pipeline.py",
+        f"{_COMPOSITOR_SUITE}.bak",
+        "agents/studio_compositor/compositor.py",
+        f"{_WRITER}.bak",
+    }
+
+
+def test_consent_coupled_source_with_deleted_suite_fails_closed() -> None:
+    # Unsafe case: the suite is in the changed files because the PR DELETES it.
+    # A deleted suite is not carried: the source stays held, and so does the
+    # deletion itself, even where a lane directory (tests/hapax_daimonion)
+    # would otherwise cover it.
+    assert _egress_uncovered([_WRITER, _WRITER_SUITE], deleted_files=(_WRITER_SUITE,)) == {
+        _WRITER,
+        _WRITER_SUITE,
+    }
+    assert _egress_uncovered([_WRITER_SUITE], deleted_files=(_WRITER_SUITE,)) == {_WRITER_SUITE}
+    assert _egress_uncovered(
+        [*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE], deleted_files=(_COMPOSITOR_SUITE,)
+    ) == {*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE}
+
+
+def test_consent_coupled_unknown_change_status_fails_closed() -> None:
+    # A caller that cannot say which files were deleted (deleted_files=None)
+    # gets no coupled admission, and a named suite is not covered through its
+    # lane directory either; other lane members are unaffected.
+    assert _egress_uncovered(
+        [_WRITER, *_COMPOSITOR_SOURCES, _WRITER_SUITE, _COMPOSITOR_SUITE], deleted_files=None
+    ) == {_WRITER, *_COMPOSITOR_SOURCES, _WRITER_SUITE, _COMPOSITOR_SUITE}
+    assert not _egress_uncovered(["tests/test_consent_gate.py"], deleted_files=None)
+    assert not _egress_uncovered(["tests/hapax_daimonion/test_other.py"], deleted_files=None)
+
+
+def test_consent_coupled_admission_requires_the_executed_suites_check() -> None:
+    # Execution anchor: co-presence of the suite admits nothing. The coupled
+    # paths pass only when the consent-coupled-suites check PASSED at the head
+    # (a failed or absent check is simply not in verified_checks).
+    assert _egress_uncovered([_WRITER, _WRITER_SUITE], suites_executed=False) == {_WRITER}
+    assert _egress_uncovered([*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE], suites_executed=False) == {
+        *_COMPOSITOR_SOURCES,
+        _COMPOSITOR_SUITE,
+    }
+    assert not _egress_uncovered([*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE], suites_executed=True)
+    assert LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK == "consent-coupled-suites"
+
+
+def test_coupled_consent_suites_for_selects_by_source_or_suite() -> None:
+    # The CI job's selection: every suite whose coupled source or the suite
+    # itself is in the change set; nothing for an unrelated change set.
+    assert coupled_consent_suites_for(["shared/foo.py"]) == ()
+    assert coupled_consent_suites_for([_WRITER]) == (_WRITER_SUITE,)
+    assert coupled_consent_suites_for([_COMPOSITOR_SOURCES[1], _COMPOSITOR_SOURCES[2]]) == (
+        _COMPOSITOR_SUITE,
+    )
+    assert coupled_consent_suites_for([_COMPOSITOR_SUITE]) == (_COMPOSITOR_SUITE,)
+    assert coupled_consent_suites_for([f" {_WRITER} ", _COMPOSITOR_SOURCES[0]]) == (
+        _WRITER_SUITE,
+        _COMPOSITOR_SUITE,
+    )
+
+
+def test_consent_coupled_admission_ignores_unrelated_deletions() -> None:
+    # Deleting an unrelated file does not revoke a carried suite.
+    assert (
+        _egress_uncovered(
+            [_WRITER, _WRITER_SUITE, "tests/shared/test_old.py"],
+            deleted_files=("tests/shared/test_old.py",),
+        )
+        == set()
+    )
+
+
+def test_consent_coupled_admission_without_check_evidence_blocks_and_never_raises() -> None:
+    # verified_checks=None (no PR check evidence supplied) must never raise in
+    # gate code (a raise could take down an autoqueue pass instead of holding
+    # one PR). It holds the PR with the contract's named code for missing
+    # check evidence, and no coupled path is admitted.
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=None,
+        changed_files=[*_COMPOSITOR_SOURCES, _COMPOSITOR_SUITE, _WRITER, _WRITER_SUITE],
+        deleted_files=(),
+    )
+    assert assessment.eligible is False
+    assert "risk_flag:audio_or_live_egress_sensitive" in assessment.blockers
+
+
+def test_release_gate_cli_prints_the_coupled_consent_suites(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The consent-coupled-suites CI job's entrypoint: a change-set file in,
+    # the space-separated suites to execute out (empty for no coupled path).
+    changed = tmp_path / "changed.txt"
+    changed.write_text(f"{_COMPOSITOR_SOURCES[0]}\nshared/foo.py\n{_WRITER}\n", encoding="utf-8")
+    assert release_gate_main(["--coupled-consent-suites", str(changed)]) == 0
+    assert capsys.readouterr().out == f"{_WRITER_SUITE} {_COMPOSITOR_SUITE}\n"
+    changed.write_text("shared/foo.py\n", encoding="utf-8")
+    assert release_gate_main(["--coupled-consent-suites", str(changed)]) == 0
+    assert capsys.readouterr().out == "\n"
+
+
+def test_consent_coupled_production_sources_exist() -> None:
+    # The coupled production sources exist at this head. Their suites arrive
+    # with the fix PR itself; an absent suite can never satisfy the coupling,
+    # so absence fails closed rather than hollow.
+    repo_root = Path(__file__).resolve().parents[1]
+    missing = [
+        source
+        for source, _suite in LIVE_EGRESS_CONSENT_COUPLED_ADMISSIONS
+        if not (repo_root / source).is_file()
+    ]
+    assert not missing, (
+        f"coupled production sources absent from the tree: {missing}. Next action: "
+        f"re-point the coupling at the moved source, or remove the pairing by ratification."
+    )
+
+
+#: Directory entries the lane doctrine admits: axioms/contracts (person-named
+#: deletions) and the test trees. Every other entry is a production source and
+#: must be an exact file, so a future file beside it stays outside the lane.
+_LANE_DIRECTORY_ENTRIES_ADMITTED = frozenset(
+    {
+        "axioms/contracts",
+        "packages/agentgov/tests",
+        "tests/hapax_daimonion",
+        "tests/logos",
+        "tests/scripts",
+        "tests/shared",
+    }
+)
+
+
+def test_consent_containment_lane_production_entries_are_exact_files() -> None:
+    # Unsafe case: a production directory admitted where only exact files are
+    # ratified (e.g. agents/studio_compositor for its three consent-bearing
+    # modules) would silently admit compositor.py and every future sibling.
+    # Only the ratified directory entries may be directories on the tree.
+    # Every ratified directory is itself a lane entry, checked apart from the
+    # tree so a missing entry and a missing directory fail with distinct
+    # messages.
+    lane = set(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES)
+    assert not _LANE_DIRECTORY_ENTRIES_ADMITTED - lane, (
+        f"ratified directory entries missing from the lane: "
+        f"{sorted(_LANE_DIRECTORY_ENTRIES_ADMITTED - lane)}. Next action: restore "
+        f"the entry in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES, or, if the lane "
+        f"narrowing is ratified, remove it from _LANE_DIRECTORY_ENTRIES_ADMITTED."
+    )
+    repo_root = Path(__file__).resolve().parents[1]
+    directories = {entry for entry in lane if (repo_root / entry).is_dir()}
+    assert not directories - _LANE_DIRECTORY_ENTRIES_ADMITTED, (
+        f"production entries admitted as directories: "
+        f"{sorted(directories - _LANE_DIRECTORY_ENTRIES_ADMITTED)}. Next action: "
+        f"replace each with the exact consent-bearing files beneath it; add a "
+        f"test tree to _LANE_DIRECTORY_ENTRIES_ADMITTED only by ratification."
+    )
+    assert not _LANE_DIRECTORY_ENTRIES_ADMITTED - directories, (
+        f"ratified directory entries not directories on the tree: "
+        f"{sorted(_LANE_DIRECTORY_ENTRIES_ADMITTED - directories)}. Next action: "
+        f"run from a full checkout (sparse checkouts omit trees); if the tree was "
+        f"removed, drop it from the lane and _LANE_DIRECTORY_ENTRIES_ADMITTED together."
+    )
 
 
 def test_consent_containment_lane_entries_exist_with_evidence_substrate() -> None:

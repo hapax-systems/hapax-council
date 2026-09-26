@@ -307,6 +307,8 @@ class PullRequest:
     base_ref_detail_latest: str | None = None
     default_branch_detail: str | None = None
     reference_reasons: tuple[str, ...] = ()
+    # Paths the PR deletes; None when any file's change status is unknown.
+    deleted_files: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -1216,6 +1218,17 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         if isinstance(files_payload, list)
         else None
     )
+    file_entries = (
+        [entry for entry in files_payload if isinstance(entry, dict) and entry.get("path")]
+        if isinstance(files_payload, list)
+        else None
+    )
+    deleted_files = (
+        tuple(str(entry["path"]) for entry in file_entries if entry["changeType"] == "DELETED")
+        if file_entries is not None
+        and all(isinstance(entry.get("changeType"), str) for entry in file_entries)
+        else None
+    )
     try:
         changed_files_count = (
             int(item["changedFiles"]) if item.get("changedFiles") is not None else None
@@ -1244,6 +1257,7 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         base_ref_detail=read_ref_name(item.get("baseRefNameDetail")),
         base_ref_detail_latest=read_ref_name(item.get("baseRefNameDetailLatest")),
         reference_reasons=pr_reference_reasons(item),
+        deleted_files=deleted_files,
     )
 
 
@@ -3297,13 +3311,17 @@ def _release_auto_arm_current_evidence_blockers(
     *,
     verified_checks: set[str],
     changed_files: tuple[str, ...] | None = None,
+    deleted_files: tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
     if "release_authorized" not in frontmatter:
         return ()
     probe = dict(frontmatter)
     probe["release_authorized"] = False
     assessment = assess_release_auto_arm_estate(
-        probe, verified_checks=verified_checks, changed_files=changed_files
+        probe,
+        verified_checks=verified_checks,
+        changed_files=changed_files,
+        deleted_files=deleted_files,
     )
     blockers = assessment.blockers
     if assess_release_auto_arm(frontmatter, verified_checks=verified_checks).armed:
@@ -3371,6 +3389,7 @@ def _release_head_boundary_blocker(
     require_route_metadata: bool = True,
     changed_files: tuple[str, ...] | None = None,
     changed_file_count: int | None = None,
+    deleted_files: tuple[str, ...] | None = None,
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
@@ -3459,6 +3478,11 @@ def _release_head_boundary_blocker(
         current_frontmatter,
         verified_checks=current_verified_checks,
         changed_files=decision.pr.files if changed_files is None else changed_files,
+        deleted_files=(
+            deleted_files
+            if changed_files is not None or deleted_files is not None
+            else decision.pr.deleted_files
+        ),
     )
     if evidence_blockers:
         return "current_release_auto_arm_blocked:" + ",".join(evidence_blockers)
@@ -4905,6 +4929,7 @@ def run_reconciler(
                         require_route_metadata=require_route_metadata,
                         changed_files=decision.pr.files,
                         changed_file_count=decision.pr.changed_files_count,
+                        deleted_files=decision.pr.deleted_files,
                         repo=repo,
                         repo_root=repo_root,
                         runner=runner,

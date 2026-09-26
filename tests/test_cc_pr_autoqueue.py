@@ -11329,3 +11329,196 @@ def test_queued_pr_missing_note_only_holds_and_posts_pending(tmp_path: Path) -> 
     assert "state=pending" in posts[0]
     assert "state=failure" not in posts[0]
     assert any("vault task note" in part or "missing_cc_task_link" in part for part in posts[0])
+
+
+# ── coupled consent admission: the PR's deleted files reach the gate ──────
+
+_CONSENT_WRITER = "agents/hapax_daimonion/_perception_state_writer.py"
+_CONSENT_WRITER_SUITE = "tests/hapax_daimonion/test_perception_state_writer_consent.py"
+
+
+def test_parse_pr_derives_deleted_files_from_change_type() -> None:
+    pr = autoqueue._parse_pr(
+        {
+            **_pr(90),
+            "files": [
+                {"path": _CONSENT_WRITER, "changeType": "MODIFIED"},
+                {"path": _CONSENT_WRITER_SUITE, "changeType": "DELETED"},
+            ],
+        }
+    )
+    assert pr is not None
+    assert pr.files == (_CONSENT_WRITER, _CONSENT_WRITER_SUITE)
+    assert pr.deleted_files == (_CONSENT_WRITER_SUITE,)
+
+
+def test_parse_pr_deleted_files_unknown_when_any_change_type_is_missing() -> None:
+    # Unknown status must stay unknown (None), never read as "nothing deleted".
+    assert autoqueue._parse_pr(_pr(91, files=[_CONSENT_WRITER])).deleted_files is None
+    partial = autoqueue._parse_pr(
+        {
+            **_pr(92),
+            "files": [
+                {"path": _CONSENT_WRITER, "changeType": "MODIFIED"},
+                {"path": _CONSENT_WRITER_SUITE},
+            ],
+        }
+    )
+    assert partial.deleted_files is None
+    assert autoqueue._parse_pr({**_pr(93), "files": None}).deleted_files is None
+
+
+def test_rest_files_payload_keeps_change_status() -> None:
+    payload = github_pr_status._files_payload_from_rest(
+        [
+            {"filename": "a.py", "status": "removed"},
+            {"filename": "b.py", "status": "added"},
+            {"filename": "c.py", "status": "modified"},
+            {"filename": "d.py", "status": "renamed"},
+        ]
+    )
+    assert payload == [
+        {"path": "a.py", "changeType": "DELETED"},
+        {"path": "b.py", "changeType": "ADDED"},
+        {"path": "c.py", "changeType": "MODIFIED"},
+        {"path": "d.py", "changeType": "RENAMED"},
+    ]
+    assert autoqueue._parse_pr({**_pr(94), "files": payload}).deleted_files == ("a.py",)
+    # A REST row without a status stays status-less, so the PR's deletions stay unknown.
+    assert github_pr_status._files_payload_from_rest([{"filename": "e.py"}]) == [{"path": "e.py"}]
+
+
+def _consent_egress_frontmatter() -> dict[str, Any]:
+    return {
+        "type": "cc-task",
+        "task_id": "consent-coupled-admission-probe",
+        "title": "Probe",
+        "status": "pr_open",
+        "stage": "S6_IMPLEMENTATION",
+        "authority_case": "CASE-SDLC-REFORM-001",
+        "parent_spec": "probe",
+        "route_metadata_schema": 1,
+        "quality_floor": "frontier_required",
+        "authority_level": "authoritative",
+        "mutation_surface": "source",
+        "risk_tier": "T2",
+        "implementation_authorized": True,
+        "release_authorized": False,
+        "public_current": False,
+        "risk_flags": {"audio_or_live_egress_sensitive": True},
+        "tags": ["cc-task"],
+    }
+
+
+def test_release_evidence_blockers_pass_deleted_files_to_the_gate() -> None:
+    from shared.release_gate import (
+        LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK,
+        LIVE_EGRESS_MITIGATION_CHECKS,
+    )
+
+    def uncovered(deleted: tuple[str, ...] | None, *, executed: bool = True) -> bool:
+        checks = set(LIVE_EGRESS_MITIGATION_CHECKS)
+        if executed:
+            checks.add(LIVE_EGRESS_CONSENT_COUPLED_SUITES_CHECK)
+        blockers = autoqueue._release_auto_arm_current_evidence_blockers(
+            _consent_egress_frontmatter(),
+            verified_checks=checks,
+            changed_files=(_CONSENT_WRITER, _CONSENT_WRITER_SUITE),
+            deleted_files=deleted,
+        )
+        return any(b.startswith("egress_evidence_uncovered_paths:") for b in blockers)
+
+    assert uncovered(()) is False  # suite carried and executed
+    assert uncovered((), executed=False) is True  # co-presence alone: held
+    assert uncovered((_CONSENT_WRITER_SUITE,)) is True  # suite deleted: held
+    assert uncovered(None) is True  # status unknown: held
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, ("x.py",)),  # nothing passed: the PR's own change status
+        ({"deleted_files": ("y.py",)}, ("y.py",)),  # explicit deletions are honoured
+        ({"changed_files": ("a.py",)}, None),  # files overridden without status: unknown
+        ({"changed_files": ("a.py",), "deleted_files": ("a.py",)}, ("a.py",)),
+    ],
+)
+def test_release_head_boundary_threads_deleted_files_to_the_evidence_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, Any],
+    expected: tuple[str, ...] | None,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def capture(_frontmatter: Any, **kwargs: Any) -> tuple[str, ...]:
+        seen.update(kwargs)
+        return ("captured",)
+
+    monkeypatch.setattr(autoqueue, "_decision_is_release_head_guard_subject", lambda _d: True)
+    monkeypatch.setattr(
+        autoqueue, "_release_auto_arm_current_admission_blockers", lambda *_a, **_k: ()
+    )
+    monkeypatch.setattr(
+        autoqueue, "_release_auto_arm_current_task_gate_blockers", lambda *_a, **_k: ()
+    )
+    monkeypatch.setattr(
+        autoqueue, "assess_release_auto_arm", lambda *_a, **_k: type("A", (), {"armed": True})()
+    )
+    monkeypatch.setattr(autoqueue, "_release_authorized_head_stamp_blocker", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        autoqueue, "fetch_pr_release_evidence", lambda *_a, **_k: (True, "sha-95", set())
+    )
+    monkeypatch.setattr(
+        autoqueue, "_release_mitigation_verified_checks", lambda checks, *_a, **_k: checks
+    )
+    monkeypatch.setattr(autoqueue, "_release_auto_arm_current_evidence_blockers", capture)
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="boundary-deleted-files", status="pr_open", pr=95)
+    task = autoqueue.load_task_notes(vault)[0]
+    pr = autoqueue._parse_pr(
+        {
+            **_pr(95),
+            "headRefOid": "sha-95",
+            "files": [
+                {"path": "x.py", "changeType": "DELETED"},
+                {"path": "a.py", "changeType": "MODIFIED"},
+            ],
+        }
+    )
+
+    reason = autoqueue._release_head_boundary_blocker(
+        autoqueue.Decision(pr=pr, task=task, action="queue"),
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=None,
+        **overrides,
+    )
+
+    assert reason == "current_release_auto_arm_blocked:captured"
+    assert seen["deleted_files"] == expected
+
+
+def _call_keywords(function: Any, callee: str) -> list[set[str]]:
+    tree = ast.parse(inspect.getsource(function).lstrip())
+    return [
+        {kw.arg for kw in node.keywords if kw.arg}
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == callee
+    ]
+
+
+def test_release_head_revalidation_threads_deleted_files_to_the_gate() -> None:
+    # Structural pin for the pass-through edges: without deleted_files the gate
+    # holds every coupled consent source closed (fail-closed, but #4764 could
+    # never arm), so each edge must thread it.
+    evidence = _call_keywords(
+        autoqueue._release_auto_arm_current_evidence_blockers, "assess_release_auto_arm_estate"
+    )
+    assert evidence and all("deleted_files" in kws for kws in evidence)
+    boundary = _call_keywords(
+        autoqueue._release_head_boundary_blocker, "_release_auto_arm_current_evidence_blockers"
+    )
+    assert boundary and all("deleted_files" in kws for kws in boundary)
+    callers = _call_keywords(autoqueue.run_reconciler, "_release_head_boundary_blocker")
+    assert all("deleted_files" in kws for kws in callers if "changed_files" in kws)
