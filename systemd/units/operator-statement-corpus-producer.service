@@ -1,0 +1,8 @@
+[Unit]
+Description=Incremental operator statement corpus producer
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+ExecStart=/usr/bin/env python3 %h/projects/hapax-council/scripts/operator_statement_corpus.py
+
