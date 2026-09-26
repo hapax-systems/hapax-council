@@ -174,3 +174,60 @@ def test_widen_ledgers_the_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert ledger.exists()
     body = ledger.read_text(encoding="utf-8")
     assert "scope_widen" in body and "shared/coord_projection.py" in body
+
+
+# M112 / M108a: the gate resolves a relative scope ref against the personal vault root
+# as well as the repo, but cc-scope-widen checked surfaces under the repo only, so every
+# vault path was refused and a lane could not lawfully widen onto a row it had drafted.
+
+
+def _with_personal_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    personal = tmp_path / "Personal"
+    rows = personal / "20-projects" / "hapax-cc-tasks" / "active"
+    rows.mkdir(parents=True)
+    (rows / "drafted-row.md").write_text("---\ntask_id: drafted-row\n---\n", encoding="utf-8")
+    monkeypatch.setattr(cc_scope_widen, "PERSONAL_VAULT_ROOT", personal)
+    return personal
+
+
+def test_widen_refuses_paths_that_escape_both_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    note, _ = _setup(tmp_path, monkeypatch, "demo-task")
+    _with_personal_vault(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("x", encoding="utf-8")
+    before = note.read_text(encoding="utf-8")
+
+    for item in ("../outside/secret.txt", "../outside/", str(outside / "secret.txt")):
+        assert cc_scope_widen.widen("demo-task", [item]) == cc_scope_widen.REFUSED, item
+
+    assert note.read_text(encoding="utf-8") == before
+
+
+def test_widen_refuses_a_vault_typo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    note, _ = _setup(tmp_path, monkeypatch, "demo-task")
+    _with_personal_vault(tmp_path, monkeypatch)
+    before = note.read_text(encoding="utf-8")
+
+    rc = cc_scope_widen.widen("demo-task", ["20-projects/hapax-cc-taks/active/drafted-row.md"])
+
+    assert rc == cc_scope_widen.REFUSED
+    assert note.read_text(encoding="utf-8") == before
+
+
+def test_widen_accepts_a_vault_row_relative_or_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    note, _ = _setup(tmp_path, monkeypatch, "demo-task")
+    personal = _with_personal_vault(tmp_path, monkeypatch)
+    relative = "20-projects/hapax-cc-tasks/active/drafted-row.md"
+    absolute = str(personal / relative)
+
+    assert cc_scope_widen.widen("demo-task", [relative]) == cc_scope_widen.OK
+    assert cc_scope_widen.widen("demo-task", [absolute]) == cc_scope_widen.OK
+
+    scope = _scope_block(note.read_text(encoding="utf-8"))
+    assert relative in scope
+    assert absolute in scope
