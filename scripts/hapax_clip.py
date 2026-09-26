@@ -327,7 +327,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.file == "-":
         payload = sys.stdin.buffer.read()
     else:
-        payload = Path(args.file).read_bytes()
+        try:
+            payload = Path(args.file).read_bytes()
+        except OSError as exc:
+            print(
+                "Next action: pass a readable file, or '-' to read stdin. "
+                f"Could not read {args.file}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
     try:
         route = resolve_route(args.target, [kde_probe, linux_probe])
     except RouteUnavailable as exc:
@@ -336,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
     pasted = render(payload, chosen, newline_for(chosen, route))
     print(preview(payload, target=args.target, route=route.label(), mode=chosen, pasted=pasted))
     try:
-        deliver(route, pasted if chosen != "raw" else pasted)
+        deliver(route, pasted)
     except RouteUnavailable as exc:
         print(exc, file=sys.stderr)
         return 1

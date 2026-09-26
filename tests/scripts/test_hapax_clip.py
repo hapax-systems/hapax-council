@@ -132,6 +132,26 @@ def test_push_kde_failure_names_the_next_action() -> None:
         raise AssertionError("share failure returned")
 
 
+def test_unreadable_file_names_the_next_action(tmp_path: Path, capsys) -> None:
+    clip = load()
+    missing = tmp_path / "missing.txt"
+    directory = tmp_path / "adir"
+    directory.mkdir()
+    for target in (str(missing), str(directory)):
+        assert clip.main(["nowhere", target]) == 1
+        assert "Next action:" in capsys.readouterr().err
+
+
+def test_raw_windows_kde_device_uses_crlf() -> None:
+    clip = load()
+    windows = clip.Route("kdeconnect", "podium", "WIN-C2ANEVBHN6Q abc")
+    linux = clip.Route("kdeconnect", "podium", "steamdeck abc")
+    assert clip.newline_for("raw", windows) == b"\r\n"
+    assert clip.normalise_newlines(b"a\nb\n", b"\r\n") == b"a\r\nb\r\n"
+    assert clip.newline_for("raw", linux) == b"\n"
+    assert clip.newline_for("shell", windows) == b"\n"
+
+
 def test_help_labels_route_b_not_live_proven(capsys) -> None:
     clip = load()
     try:
