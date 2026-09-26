@@ -812,6 +812,102 @@ def test_nonsensitive_task_stays_eligible_with_verified_checks() -> None:
     assert assessment.eligible
 
 
+# ── provider_billing_sensitive evidence gate (cc-task 20260926) ────────
+#
+# The class's mitigation evidence: the deterministic diff scan
+# (billing-surface-scan, scripts/check-billing-surface-diff.py via the ci.yml
+# job of the same name) proves no added line opens an API/PAYG billing surface,
+# and the review-team quorum covers the semantic layer (same trust split as the
+# egress class). The provider_spend mutation surface stays auto-arm-ineligible.
+
+_BILLING = "provider_billing_sensitive"
+
+
+def _billing_frontmatter(**overrides: object) -> dict[str, object]:
+    return _eligible_frontmatter(risk_flags={_BILLING: True}, **overrides)
+
+
+def test_provider_billing_mitigation_contract_is_exact() -> None:
+    # Drift pin: this tuple IS what the release gate accepts as mitigation for a
+    # provider-billing-sensitive change. Extending or narrowing it changes what
+    # the system will release — a ratification act, never an edit.
+    assert RELEASE_MITIGATION_CHECKS[_BILLING] == (
+        "billing-surface-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    )
+
+
+def test_provider_billing_held_when_mitigation_evidence_missing() -> None:
+    assessment = assess_release_auto_arm(
+        _billing_frontmatter(), verified_checks={"test", "review"}
+    )
+    assert not assessment.eligible
+    assert assessment.blockers == (
+        f"needs_mitigation:{_BILLING}:billing-surface-scan",
+        f"needs_mitigation:{_BILLING}:review-team-quorum",
+    )
+
+
+def test_provider_billing_still_fails_closed_without_verified_checks() -> None:
+    # Pure-frontmatter assessment (legacy callers) keeps the hard veto.
+    assessment = assess_release_auto_arm(_billing_frontmatter())
+    assert not assessment.eligible
+    assert assessment.blockers == (f"risk_flag:{_BILLING}",)
+
+
+def test_provider_billing_auto_arms_when_mitigation_evidence_present() -> None:
+    assessment = assess_release_auto_arm(
+        _billing_frontmatter(),
+        verified_checks=set(RELEASE_MITIGATION_CHECKS[_BILLING]),
+    )
+    assert assessment.eligible
+    assert assessment.blockers == ()
+
+
+@pytest.mark.parametrize("missing", ["billing-surface-scan", REVIEW_TEAM_QUORUM_EVIDENCE])
+def test_provider_billing_held_per_missing_mitigation_check(missing: str) -> None:
+    # Each missing check is its own needs_mitigation blocker.
+    full = set(RELEASE_MITIGATION_CHECKS[_BILLING])
+    assessment = assess_release_auto_arm(_billing_frontmatter(), verified_checks=full - {missing})
+    assert not assessment.eligible
+    assert f"needs_mitigation:{_BILLING}:{missing}" in assessment.blockers
+
+
+def test_provider_billing_keyword_derived_flag_arms_with_evidence() -> None:
+    # #4784's shape: the flag is keyword-derived ("provider defaults" in the
+    # title), not explicit — the gate must not depend on declaration form.
+    fm = _eligible_frontmatter(title="Pin provider defaults for the capability registry")
+    assessment = assess_release_auto_arm(
+        fm, verified_checks=set(RELEASE_MITIGATION_CHECKS[_BILLING])
+    )
+    assert assessment.eligible
+    assert assessment.blockers == ()
+
+
+def test_provider_billing_mitigation_never_covers_provider_spend_surface() -> None:
+    # The provider_spend mutation surface stays auto-arm-ineligible even with
+    # the full mitigation set: this entry mitigates billing-ADJACENT source
+    # changes, never a change whose surface is spend itself.
+    fm = _billing_frontmatter(mutation_surface="provider_spend")
+    assessment = assess_release_auto_arm(
+        fm, verified_checks=set(RELEASE_MITIGATION_CHECKS[_BILLING])
+    )
+    assert not assessment.eligible
+    assert "mutation_surface:provider_spend" in assessment.blockers
+
+
+def test_declared_false_vetoes_the_keyword_derived_billing_class() -> None:
+    # M129: the route's authored false beats the keyword deriver — the escape a
+    # seat uses when "provider"/"billing" appears in a title without spend risk.
+    fm = _eligible_frontmatter(
+        title="Pin provider defaults for the capability registry",
+        risk_flags={_BILLING: False},
+    )
+    assessment = assess_release_auto_arm(fm, verified_checks=set())
+    assert assessment.eligible
+    assert assessment.blockers == ()
+
+
 # ── M129: a declared false takes precedence over the keyword deriver ───
 #
 # The title and tags are an upstream free variable. The keyword deriver may add
