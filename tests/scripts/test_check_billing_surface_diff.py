@@ -186,7 +186,10 @@ def test_removed_and_context_lines_are_ignored(scanner: ModuleType) -> None:
 
 
 def test_allow_marker_records_and_passes(scanner: ModuleType) -> None:
-    line = 'payload = "+client = OpenAI(api_key=key)"  # billing-scan:allow (fixture data)'
+    # The marker exempts a REAL call: under the structural (round-2) path a string
+    # literal that merely mentions ``api_key=`` is not a route at all, so the marker
+    # must be pinned on a line that would otherwise be a finding.
+    line = "client = OpenAI(api_key=key)  # billing-scan:allow (fixture data)"
     diff = _diff("tests/scripts/test_something.py", [line])
     result = scanner.scan_unified_diff(diff)
     assert result.findings == ()
@@ -343,4 +346,207 @@ def test_scanner_docs_state_only_what_success_proves(scanner: ModuleType) -> Non
     )
     assert "not proof" in doc or "does not prove" in doc, (
         "the scanner docs must say what success does not prove"
+    )
+
+
+# ── review round 2 (2026-09-26): the exemption must be structural, not textual ──
+#
+# All three families found the same residual bypass: the exemption window spanned
+# every call on the line, so a proxy target in a *neighbouring* call exempted a
+# direct API-key route. The fix parses the Python post-image with `ast` and
+# exempts a Call only when THAT Call carries both the credential and a literal
+# governed-proxy target. These cases pin the structure.
+
+
+def test_neighbouring_call_proxy_target_does_not_exempt(scanner: ModuleType) -> None:
+    """codex-1's round-2 critical: the proxy target belongs to the OTHER call."""
+
+    line = '    OpenAI(api_key=key); other(base_url="http://localhost")'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a proxy target in a neighbouring call exempted a direct API-key route"
+    )
+
+
+def test_earlier_statement_proxy_name_does_not_exempt(scanner: ModuleType) -> None:
+    """gemini-1's round-2 critical: the proxy name is in an EARLIER statement."""
+
+    line = (
+        "    print(base_url='litellm'); c = OpenAI(api_key=k)"  # billing-scan:allow: fixture data
+    )
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a proxy name in an earlier statement exempted a later API-key route"
+    )
+
+
+def test_chained_call_proxy_target_does_not_exempt(scanner: ModuleType) -> None:
+    """A chained call is a different node: its target cannot bind the inner call."""
+
+    line = '    OpenAI(api_key=k).configure(base_url="http://localhost")'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a proxy target on a chained call exempted the credential-bearing call"
+    )
+
+
+def test_dynamic_base_url_is_not_exempt(scanner: ModuleType) -> None:
+    """A non-literal target is not a governed-proxy binding (seat's round-2 spec)."""
+
+    line = '    client = OpenAI(api_key=k, base_url=os.environ["OPENAI_BASE_URL"])'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a dynamic base_url was read as a governed-proxy binding"
+    )
+
+
+def test_multiline_proxy_bound_call_is_exempt(scanner: ModuleType) -> None:
+    """Positive control for structure: the SAME call spans lines and is proxy-bound."""
+
+    diff = _diff(
+        "shared/foo_client.py",
+        [
+            "    client = OpenAI(",  # billing-scan:allow: fixture data
+            "        api_key=LITELLM_KEY,",  # billing-scan:allow: fixture data
+            '        base_url="http://127.0.0.1:4000/v1",',  # billing-scan:allow: fixture data
+            "    )",  # billing-scan:allow: fixture data
+        ],
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == (), "a multi-line call genuinely bound to the proxy must stay exempt"
+
+
+def test_multiline_call_without_proxy_target_fails(scanner: ModuleType) -> None:
+    """The same multi-line shape with no target at all is a direct route."""
+
+    diff = _diff(
+        "shared/foo_client.py",
+        [
+            "    client = OpenAI(",  # billing-scan:allow: fixture data
+            "        api_key=key,",  # billing-scan:allow: fixture data
+            "    )",  # billing-scan:allow: fixture data
+        ],
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a multi-line call with a credential and no proxy target was not flagged"
+    )
+
+
+def test_non_python_file_gets_no_proxy_exemption(scanner: ModuleType) -> None:
+    """Seat's round-2 spec: outside Python there is no structural binding, so no exemption."""
+
+    line = 'client = OpenAI(api_key=K, base_url="http://127.0.0.1:4000/v1")'  # billing-scan:allow: fixture data
+    diff = _diff("scripts/foo_client.sh", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a non-Python file was granted a proxy exemption it cannot have"
+    )
+
+
+def test_file_header_without_a_hunk_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    """codex-1's other major: a header with no hunk means the content was never read."""
+
+    path = tmp_path / "header-only.diff"
+    path.write_text(
+        "diff --git a/shared/foo.py b/shared/foo.py\n--- a/shared/foo.py\n+++ b/shared/foo.py\n",
+        encoding="utf-8",
+    )
+    assert scanner.main(["--diff-file", str(path)]) == 1
+
+
+def test_binary_file_section_is_not_unusable_input(scanner: ModuleType) -> None:
+    """A binary section has no added text to scan, so it is not unusable input."""
+
+    diff = (
+        "diff --git a/assets/logo.png b/assets/logo.png\n"
+        "index 1111111..2222222 100644\n"
+        "Binary files a/assets/logo.png and b/assets/logo.png differ\n"
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == ()
+
+
+def test_mid_diff_header_without_a_hunk_fails_closed(scanner: ModuleType) -> None:
+    """The mid-diff arm of the no-hunk guard: a header-only file, then another file.
+
+    The end-of-diff guard alone would miss this one, because the header-only section is
+    followed by a second file's section. Pinned separately so each arm is load-bearing.
+    """
+
+    diff = (
+        "diff --git a/shared/ghost.py b/shared/ghost.py\n"
+        "--- a/shared/ghost.py\n"
+        "+++ b/shared/ghost.py\n"
+        "diff --git a/shared/real.py b/shared/real.py\n"
+        "--- a/shared/real.py\n"
+        "+++ b/shared/real.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " x = 1\n"
+        "+y = 2\n"
+    )
+    result = scanner.scan_unified_diff(diff)
+    kinds = [f.kind for f in result.findings]
+    assert "billing-scan-unusable-input" in kinds, (
+        "a header-only file mid-diff was read as a clean scan"
+    )
+    assert all(
+        f.path == "shared/ghost.py"
+        for f in result.findings
+        if f.kind == "billing-scan-unusable-input"
+    )
+
+
+def test_pre_existing_call_in_context_lines_is_not_flagged(scanner: ModuleType) -> None:
+    """Attribution: only an ADDED line inside the call makes it this change's surface."""
+
+    diff = (
+        "diff --git a/shared/foo_client.py b/shared/foo_client.py\n"
+        "--- a/shared/foo_client.py\n"
+        "+++ b/shared/foo_client.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " client = OpenAI(api_key=pre_existing_key)\n"
+        ' LOGGER.info("unchanged")\n'
+        "+x = 1\n"
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == (), "a pre-existing credential call in the context lines was flagged"
+
+
+def test_key_bearing_unparseable_python_region_fails_closed(scanner: ModuleType) -> None:
+    """codex-1's major: unparseable credential-bearing text must never read as clean.
+
+    Two shapes, because the fail-closed path has two arms: an unparseable region whose
+    line rules DO match (flagged as api-key-route), and one whose line rules cannot
+    match because the value sits on the next line (flagged as unusable input).
+    """
+
+    line_rule = _diff(
+        "shared/foo_client.py",
+        [
+            "    client = OpenAI(",  # billing-scan:allow: fixture data
+            "        api_key=key",  # billing-scan:allow: fixture data
+            "    # missing closing paren — this region cannot parse",  # billing-scan:allow: fixture data
+        ],
+    )
+    result = scanner.scan_unified_diff(line_rule)
+    assert result.findings, "unparseable credential-bearing text was read as a clean scan"
+    assert any(f.kind == "api-key-route" for f in result.findings)
+
+    probe_rule = _diff(
+        "shared/foo_client.py",
+        [
+            "    client = OpenAI(",  # billing-scan:allow: fixture data
+            "        api_key =",  # billing-scan:allow: fixture data
+            "            load_key(),",  # billing-scan:allow: fixture data
+            "    # still no closing paren — unparseable, and the line rule cannot match",  # billing-scan:allow: fixture data
+        ],
+    )
+    result = scanner.scan_unified_diff(probe_rule)
+    assert any(f.kind == "billing-scan-unusable-input" for f in result.findings), (
+        "an unparseable region whose line rules cannot match was read as clean"
     )

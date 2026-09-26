@@ -8,14 +8,17 @@ counts its SUCCESS as one arm of that class's evidence (the no-implicit-API/PAYG
 rule; memory provider-spend-is-standing-authorized-not-api-spend).
 
 **What success proves, and what it does not.** Success proves exactly this: no
-ADDED line in the diff matched this scan's syntactic patterns. It is **not
-proof** that the change cannot enable API or PAYG spend — a syntactic scan
-cannot give that guarantee, and no reader should take it from this check. The
-semantic layer — whether the change routes spend or moves work to another
-billing surface in a way no pattern names — is the review-team quorum's, which
-is why the class requires both arms. Findings are likewise syntactic: a line
-that cannot be pattern-matched is a limitation of the scan, not a
-characterization of the change.
+ADDED line matched this scan's line patterns, and — for Python — every parsed
+``Call`` carrying a credential argument also binds its own route to a governed
+proxy target. It is **not proof** that the change cannot enable API or PAYG
+spend: a syntactic scan plus a per-call structural check cannot give that
+guarantee, and no reader should take it from this check. The semantic layer —
+whether the change routes spend or moves work to another billing surface in a
+way neither the patterns nor the calls name — is the review-team quorum's, which
+is why the class requires both arms. Findings are likewise a lower bound on
+what the diff may do: text that cannot be matched, or a Python region that
+cannot be parsed, is a limitation of the scan and, where it is
+credential-bearing, a finding rather than a pass.
 
 The scan reads a unified diff and flags any ADDED line that:
 
@@ -29,16 +32,36 @@ The scan reads a unified diff and flags any ADDED line that:
 - rebinds a capacity pool or plan type to the api_paid_spend (PAYG) class
   (``capacity-pool-payg``).
 
-Only added lines of non-doc files are scanned. The following never fail the
-scan, and each is printed as ``allowed`` so review sees every one: protective
-credential strips (the governed launchers' ``os.environ.pop`` / ``del`` /
-``unset`` of inherited keys); a call whose OWN route target (``base_url`` /
-``api_base`` / ``endpoint``) binds it to the governed LiteLLM proxy host — the
-estate's quota-ledgered billing path; and lines carrying the visible
-``billing-scan:allow`` marker. **A proxy name elsewhere on the line never
-exempts it**: a comment, a variable name or a neighbouring literal cannot bind a
-route. The scan is syntactic; the semantic layer is the review-team quorum (the
-same trust split as the egress class).
+Only added lines of non-doc files are scanned, and the two file kinds are
+decided differently:
+
+- **Python** — each hunk's post-image region is parsed with ``ast``, and an
+  ``api-key-route`` is reported per ``Call`` node: a call carrying an
+  ``api_key``/``key``/``token`` argument with no governed proxy target of its
+  own. The exemption requires that **same** Call to pass ``base_url`` /
+  ``api_base`` / ``endpoint`` as a *literal* string resolving to a governed
+  proxy host (``127.0.0.1``, ``localhost``, ``::1``, ``litellm``). A dynamic
+  value is not a binding, and neither is a target belonging to a neighbouring,
+  earlier or chained call. A call is reported only when an ADDED line falls
+  inside it, so a pre-existing call in the context lines is not this change's
+  surface.
+- **Non-Python** — the line patterns apply and there is **no proxy exemption at
+  all**: no structure can bind a target to the call that carries the credential,
+  so an ``api_key`` route in such a file is always a finding.
+
+These never fail the scan, and each is printed as ``allowed`` so review sees
+every one: protective credential strips (the governed launchers'
+``os.environ.pop`` / ``del`` / ``unset`` of inherited keys), a Python call
+genuinely bound to the governed proxy as above, and lines carrying the visible
+``billing-scan:allow`` marker. **A proxy name anywhere else never exempts a
+line.**
+
+Fail-closed paths, so the absence of a finding is never an accident: a Python
+region that does not parse is never exempt (the line rules apply), and if it is
+credential-bearing while those rules cannot match, it becomes a
+``billing-scan-unusable-input`` finding. A file whose header arrives with no
+hunk and no binary note is the same kind of finding, because its content was
+never read.
 
 Exit codes: 0 clean, 1 findings, 2 fail-closed (no usable diff input).
 """
@@ -46,9 +69,11 @@ Exit codes: 0 clean, 1 findings, 2 fail-closed (no usable diff input).
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,13 +105,15 @@ _CREDENTIAL_ENV_READ_RES = (
     re.compile(rf"^\s*-?\s*[\"']?{_CREDENTIAL_NAME}[\"']?\s*:"),
 )
 
-_API_KEY_ROUTE_RES = (
+#: Credential *argument* text (``api_key=...``, ``apiKey: ...``). Used for non-Python
+#: files and as the fail-closed fallback for Python text that could not be parsed.
+_API_KEY_ARG_RES = (
     re.compile(r"\bapi_key\s*=\s*[^\s,)]"),
     re.compile(r"\bapiKey\s*[:=]\s*[^\s,)}]"),
-    # A header assignment, in plain, subscript and f-string forms. The optional
-    # ``\]?`` covers ``headers["Authorization"] = ...``; the optional
-    # ``(?:f|rf|br|rb)?`` prefix covers ``f"Bearer {token}"``, which a
-    # plain-quote-only pattern misses (gemini, review round 1, 2026-09-26).
+)
+#: Authorization-header text, in plain, subscript and f-string forms. A header is not
+#: a Call, so this stays a line rule in every file type and is never exempted.
+_BEARER_RES = (
     re.compile(r"[\"']?Authorization[\"']?\]?\s*[:=]\s*[\"']?\s*Bearer\b"),
     re.compile(r"[\"']?Authorization[\"']?\]?\s*[:=]\s*(?:f|rf|br|rb)[\"']\s*Bearer\b"),
 )
@@ -142,6 +169,7 @@ _CAPACITY_POOL_PAYG_RE = re.compile(
 )
 _PLAN_TYPE_API_RE = re.compile(r"\bplan_type[\"']?\s*[:=]\s*[\"']api[\"']")
 
+_PY_SUFFIXES = (".py",)
 _DOC_SUFFIXES = (".md", ".rst", ".txt")
 _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -180,35 +208,105 @@ def _host_of(target: str) -> str:
     return value.split(":", 1)[0].strip().lower()
 
 
-def _route_target_is_governed_proxy(content: str) -> bool:
-    """True only when a call's own route target binds it to a governed proxy.
+#: Argument names that make a ``Call`` an API-key route.
+_API_KEY_ARG_NAMES = frozenset({"api_key", "key", "token"})
+#: Argument names that can bind a ``Call``'s route to a governed proxy.
+_ROUTE_TARGET_ARG_NAMES = ("base_url", "api_base", "endpoint")
+#: A loose probe for "this text may carry a credential binding", used only to decide
+#: whether an UNPARSEABLE region must fail closed.
+_KEY_BEARING_PROBE = re.compile(r"api[_-]?key|apikey|\btoken\b|\bkey\b", re.IGNORECASE)
 
-    Deliberately strict, per the review's critical: a target counts only when it
-    is an argument inside the call's parentheses. A standalone assignment, a
-    comment, or a neighbouring literal cannot exempt the line.
+
+def _call_api_key_args(call: ast.Call) -> list[ast.keyword]:
+    """The keyword arguments of ``call`` that name a credential."""
+
+    return [kw for kw in call.keywords if kw.arg in _API_KEY_ARG_NAMES]
+
+
+def _call_is_proxy_bound(call: ast.Call) -> bool:
+    """True only when THIS Call binds its own route to a governed proxy.
+
+    Structure, not text (review round 2, 2026-09-26): the target must be a
+    *literal string* argument of the same Call node. A dynamic value — a name, an
+    attribute, a subscript, a call, an f-string — is **not** exempt, and neither
+    is a proxy target belonging to a neighbouring or chained Call.
     """
 
-    open_at = content.find("(")
-    close_at = content.rfind(")")
-    if open_at == -1 or close_at == -1 or close_at < open_at:
-        return False
-    for match in _ROUTE_TARGET_RE.finditer(content):
-        if not (open_at < match.start() < close_at):
+    for kw in call.keywords:
+        if kw.arg not in _ROUTE_TARGET_ARG_NAMES:
             continue
-        if _host_of(match.group("target")) in _GOVERNED_PROXY_HOSTS:
+        value = kw.value
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        if _host_of(value.value) in _GOVERNED_PROXY_HOSTS:
             return True
     return False
 
 
-def _classify_line(content: str) -> tuple[str, ...]:
+def _region_api_key_route_findings(
+    path: str,
+    region: list[tuple[int, str, bool]],
+) -> tuple[list[Finding], bool]:
+    """AST findings for one hunk's post-image region.
+
+    ``region`` is ``(new_line_no, text, is_added)`` in post-image order. Returns
+    ``(findings, parsed)``. A Call is reported only when it carries a credential
+    argument **and** no governed proxy target of its own **and** at least one
+    ADDED line falls inside it — a pre-existing call in the context lines is not
+    this change's billing surface.
+    """
+
+    source = "\n".join(text for _, text, _ in region)
+    tree: ast.Module | None = None
+    # A hunk's post-image is a fragment, not a module: an indented statement (or a
+    # dedented block) must still be readable structurally, or the legitimate proxy
+    # exemption would be lost for ordinary indented code. Try as-is, then dedented.
+    for candidate in (source, textwrap.dedent(source)):
+        try:
+            tree = ast.parse(candidate)
+            source = candidate
+            break
+        except (SyntaxError, ValueError):
+            continue
+    if tree is None:
+        return [], False
+    added_lines = {line_no for line_no, _, is_added in region if is_added}
+    first_line = region[0][0] if region else 0
+    out: list[Finding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _call_api_key_args(node):
+            continue
+        if _call_is_proxy_bound(node):
+            continue
+        start = first_line + (node.lineno or 1) - 1
+        end = first_line + (getattr(node, "end_lineno", node.lineno) or node.lineno) - 1
+        if not any(start <= line_no <= end for line_no in added_lines):
+            continue
+        segment = ast.get_source_segment(source, node) or ""
+        text = (segment.splitlines() or [""])[0].strip()
+        out.append(Finding(path=path, line=start, kind="api-key-route", text=text[:200]))
+    return out, True
+
+
+def _classify_line(
+    content: str, *, api_key_args: bool = True, bearer: bool = True
+) -> tuple[str, ...]:
+    """The line-level classes. Grants NO proxy exemption — ever.
+
+    The governed-proxy exemption is structural and lives in the AST path. For a
+    non-Python file it does not exist at all (review round 2), and for a Python
+    line that could not be parsed there is no structure to bind a target to, so
+    the line rules apply with no exemption.
+    """
+
     kinds: list[str] = []
     protective = any(pattern.search(content) for pattern in _PROTECTIVE_RES)
     if not protective and any(pattern.search(content) for pattern in _CREDENTIAL_ENV_READ_RES):
         kinds.append("credential-env-read")
     if _PROVIDER_HOST_RE.search(content) or _BARE_PROVIDER_SDK_RE.search(content):
         kinds.append("provider-api-endpoint")
-    if not _route_target_is_governed_proxy(content) and any(
-        pattern.search(content) for pattern in _API_KEY_ROUTE_RES
+    if (api_key_args and any(p.search(content) for p in _API_KEY_ARG_RES)) or (
+        bearer and any(p.search(content) for p in _BEARER_RES)
     ):
         kinds.append("api-key-route")
     if _CAPACITY_POOL_PAYG_RE.search(content) or _PLAN_TYPE_API_RE.search(content):
@@ -223,12 +321,108 @@ def scan_unified_diff(text: str) -> ScanResult:
     path: str | None = None
     skip_file = True
     new_line = 0
+    region: list[tuple[int, str, bool]] = []
+    saw_hunk = False
+    binary_section = False
+
+    def flush() -> None:
+        """Analyse one hunk's post-image region, then clear it."""
+
+        nonlocal region, saw_hunk
+        if not region or path is None:
+            region = []
+            return
+        added = [(line_no, content) for line_no, content, is_added in region if is_added]
+        if path.endswith(_PY_SUFFIXES):
+            ast_findings, parsed = _region_api_key_route_findings(path, region)
+        else:
+            ast_findings, parsed = [], False
+        if parsed:
+            # Structure decided the api-key class; headers are still line rules.
+            for finding in ast_findings:
+                line_content = next((c for n, c, _ in region if n == finding.line), finding.text)
+                if ALLOW_MARKER in line_content:
+                    allowed.append(finding)
+                else:
+                    findings.append(finding)
+            for line_no, content in added:
+                for kind in _classify_line(content, api_key_args=False):
+                    finding = Finding(path=path, line=line_no, kind=kind, text=content.strip())
+                    (allowed if ALLOW_MARKER in content else findings).append(finding)
+        else:
+            # Unparsed Python, or any non-Python file: line rules, and NO exemption.
+            # A proxy argument of any spelling cannot exempt here, because there is no
+            # structure to bind it to the call that carries the credential.
+            flagged = 0
+            for line_no, content in added:
+                for kind in _classify_line(content):
+                    finding = Finding(path=path, line=line_no, kind=kind, text=content.strip())
+                    if kind == "api-key-route":
+                        flagged += 1
+                    (allowed if ALLOW_MARKER in content else findings).append(finding)
+            if (
+                path.endswith(_PY_SUFFIXES)
+                and not parsed
+                and flagged == 0
+                and any(
+                    _KEY_BEARING_PROBE.search(content) and ALLOW_MARKER not in content
+                    for _, content in added
+                )
+            ):
+                # codex major, round 2: a post-image that cannot be parsed must not be
+                # read as clean when it may carry a credential binding. This fires only
+                # for key-bearing unparseable text, so an ordinary unparseable hunk (most
+                # hunks) is not a finding: flagging every one would make this class
+                # unarmable, which is the defect this entry exists to fix.
+                first = added[0]
+                findings.append(
+                    Finding(
+                        path=path,
+                        line=first[0],
+                        kind="billing-scan-unusable-input",
+                        text=(
+                            "this Python post-image region does not parse, and it carries "
+                            f"credential-bearing text: {first[1].strip()[:120]!r}. "
+                            "Next action: make the region parse (or scan the file at its "
+                            "full head revision) so the structural check can decide; "
+                            "unparseable credential-bearing text is never exempt."
+                        ),
+                    )
+                )
+        region = []
+
     for raw in text.splitlines():
         if raw.startswith("diff --git "):
+            flush()
+            if path is not None and not skip_file and not saw_hunk and not binary_section:
+                # codex major, round 2: a file header with no usable hunk and no binary
+                # note means the file's content was never read — unusable input, not a
+                # clean scan.
+                findings.append(
+                    Finding(
+                        path=path,
+                        line=0,
+                        kind="billing-scan-unusable-input",
+                        text=(
+                            "the diff carries this file's header but no hunk and no binary "
+                            "note, so no added line could be read. Next action: regenerate "
+                            "the diff (the file's content must be present) or confirm the "
+                            "change is binary."
+                        ),
+                    )
+                )
             path = None
             skip_file = True
+            saw_hunk = False
+            binary_section = False
+            continue
+        if raw.startswith("Binary files ") or raw.startswith("GIT binary patch"):
+            binary_section = True
+            continue
+        if raw.startswith("index ") or raw.startswith("old mode") or raw.startswith("new mode"):
             continue
         if raw.startswith("+++ "):
+            flush()
             candidate = raw[4:].strip()
             if candidate == "/dev/null":
                 path = None
@@ -236,6 +430,7 @@ def scan_unified_diff(text: str) -> ScanResult:
                 continue
             path = candidate[2:] if candidate.startswith("b/") else candidate
             skip_file = _is_doc_path(path)
+            saw_hunk = False
             if not skip_file:
                 scanned.append(path)
             continue
@@ -243,22 +438,32 @@ def scan_unified_diff(text: str) -> ScanResult:
             continue
         header = _HUNK_HEADER_RE.match(raw)
         if header:
+            flush()
+            saw_hunk = True
             new_line = int(header.group(1))
             continue
         if raw.startswith("-"):
             continue
         if raw.startswith("+"):
-            content = raw[1:]
-            line_no = new_line
+            region.append((new_line, raw[1:], True))
             new_line += 1
-            for kind in _classify_line(content):
-                finding = Finding(path=path, line=line_no, kind=kind, text=content.strip())
-                if ALLOW_MARKER in content:
-                    allowed.append(finding)
-                else:
-                    findings.append(finding)
             continue
+        region.append((new_line, raw[1:] if raw.startswith(" ") else raw, False))
         new_line += 1  # context line
+    flush()
+    if path is not None and not skip_file and not saw_hunk and not binary_section:
+        findings.append(
+            Finding(
+                path=path,
+                line=0,
+                kind="billing-scan-unusable-input",
+                text=(
+                    "the diff ends with this file's header but no hunk and no binary "
+                    "note, so no added line could be read. Next action: regenerate the "
+                    "diff or confirm the change is binary."
+                ),
+            )
+        )
     return ScanResult(
         findings=tuple(findings),
         allowed=tuple(allowed),
