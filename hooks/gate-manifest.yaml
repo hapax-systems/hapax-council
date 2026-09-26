@@ -231,6 +231,7 @@ runtimes:
       - lint
       - capability-surface-delta
       - egress-boundary-pin
+      - capability-envelope-containment
       - typecheck
       - test-full-shard
       - test-title-cards
