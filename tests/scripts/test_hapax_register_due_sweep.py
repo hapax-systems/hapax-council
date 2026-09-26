@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
 import sys
 import urllib.error
 from datetime import UTC, datetime, timedelta
@@ -367,8 +368,8 @@ def test_due_soon_writes_one_owner_demand_into_the_request_intake(tmp_path: Path
     )
     assert rc == 0
     notes = _written(requests_dir)
-    assert list(notes) == ["REQ-REGISTER-DUE-com-2026-0004-20261001"]
-    note = notes["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+    assert list(notes) == ["REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"]
+    note = notes["REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"]
     assert note["type"] == "hapax-request"
     assert note["status"] == "captured"
     assert note["requester"] == "register-due-sweep"
@@ -385,14 +386,14 @@ def test_slipped_writes_a_candidate_for_e3_carrying_its_evidence_of_absence(tmp_
     notes = _written(requests_dir)
     # The owner demand is written too (codex-1's finding on 268c45e24).
     assert sorted(notes) == [
-        "REQ-REGISTER-DUE-com-2026-0004-20261001",
-        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001",
+        "REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z",
+        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z",
     ]
-    note = notes["REQ-REGISTER-SLIPPED-com-2026-0004-20261001"]
+    note = notes["REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z"]
     assert note["candidate_kind"] == "slipped"
     assert note["intake_owner"] == "E3 Ledger"
     assert note["latest_attestation"] is None
-    body = (requests_dir / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001.md").read_text()
+    body = (requests_dir / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z.md").read_text()
     # It asserts only absence of discharge in a named snapshot; it runs no check of its own.
     assert "no discharging attestation" in body
     assert SNAPSHOT in body
@@ -402,13 +403,13 @@ def test_rerunning_writes_nothing_new_and_never_overwrites(tmp_path: Path) -> No
     web = FakeWeb(_register(_commitment()))
     _run(tmp_path, web, "2026-10-02T00:30:00Z")
     requests_dir = tmp_path / "hapax-requests" / "active"
-    path = requests_dir / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001.md"
+    path = requests_dir / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z.md"
     path.write_text(path.read_text() + "\nedited by E3\n", encoding="utf-8")
     rc, _, state = _run(tmp_path, web, "2026-10-03T00:30:00Z")
     assert rc == 0
     assert path.read_text().endswith("edited by E3\n")
     assert json.loads(state.read_text())["skipped_existing"] == [
-        "REQ-REGISTER-DUE-com-2026-0004-20261001",
+        "REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z",
         path.stem,
     ]
 
@@ -419,11 +420,11 @@ def test_a_demand_already_moved_to_closed_is_not_rewritten(tmp_path: Path) -> No
     active = tmp_path / "hapax-requests" / "active"
     closed = tmp_path / "hapax-requests" / "closed"
     closed.mkdir()
-    (active / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001.md").rename(
-        closed / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001.md"
+    (active / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z.md").rename(
+        closed / "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z.md"
     )
     _run(tmp_path, web, "2026-10-03T00:30:00Z")
-    assert "REQ-REGISTER-SLIPPED-com-2026-0004-20261001" not in _written(active)
+    assert "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z" not in _written(active)
 
 
 def test_dry_run_writes_nothing(tmp_path: Path) -> None:
@@ -500,6 +501,9 @@ def test_an_unsafe_commitment_id_is_refused_by_name_and_writes_nothing(
     assert [p for p in tmp_path.rglob("*") if p.is_file() and p != state] == []
     reason = json.loads(state.read_text())["reason"]
     assert reason.startswith("register_invalid:unsafe_commitment_id")
+    # The refusal states the grammar the code enforces, length bound included.
+    assert "[A-Za-z0-9][A-Za-z0-9._-]{0,127}" in reason
+    assert "at most 128 characters" in reason
 
 
 def test_a_commitment_first_seen_overdue_also_gets_its_owner_demand(tmp_path: Path) -> None:
@@ -507,10 +511,10 @@ def test_a_commitment_first_seen_overdue_also_gets_its_owner_demand(tmp_path: Pa
     assert rc == 0
     notes = _written(requests_dir)
     assert sorted(notes) == [
-        "REQ-REGISTER-DUE-com-2026-0004-20261001",
-        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001",
+        "REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z",
+        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z",
     ]
-    owner = notes["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+    owner = notes["REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"]
     assert owner["intake_owner"] == "E1 Identity"
     assert "was due" in owner["title"]
 
@@ -521,12 +525,12 @@ def test_an_owner_demand_written_before_the_due_point_is_not_duplicated(tmp_path
     rc, requests_dir, state = _run(tmp_path, web, "2026-10-02T00:30:00Z")
     assert rc == 0
     assert sorted(_written(requests_dir)) == [
-        "REQ-REGISTER-DUE-com-2026-0004-20261001",
-        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001",
+        "REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z",
+        "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z",
     ]
     recorded = json.loads(state.read_text())
-    assert recorded["created"] == ["REQ-REGISTER-SLIPPED-com-2026-0004-20261001"]
-    assert recorded["skipped_existing"] == ["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+    assert recorded["created"] == ["REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z"]
+    assert recorded["skipped_existing"] == ["REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"]
 
 
 def test_a_missing_intake_directory_fails_instead_of_being_created(tmp_path: Path) -> None:
@@ -612,7 +616,7 @@ def test_the_installer_enables_new_timers_which_is_why_the_flag_gates_the_servic
 def test_a_note_is_created_exclusively_and_never_replaced(tmp_path: Path) -> None:
     # Two runs racing on one name: the first creates it, the second must not replace it,
     # and no temporary file is left behind.
-    path = tmp_path / "REQ-REGISTER-DUE-com-2026-0004-20261001.md"
+    path = tmp_path / "REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z.md"
     assert sweep.create_note(path, "first\n") is True
     path.write_text("edited by E3\n", encoding="utf-8")
     assert sweep.create_note(path, "second\n") is False
@@ -626,11 +630,11 @@ def test_a_write_failure_midway_leaves_only_complete_notes_and_the_rerun_finishe
     real_create = sweep.create_note
     calls = {"n": 0}
 
-    def fail_second(path, content):
+    def fail_second(path, content, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
             raise OSError("disk full")
-        return real_create(path, content)
+        return real_create(path, content, **kwargs)
 
     web = FakeWeb(_register(_commitment()))
     monkeypatch.setattr(sweep, "create_note", fail_second)
@@ -638,14 +642,14 @@ def test_a_write_failure_midway_leaves_only_complete_notes_and_the_rerun_finishe
     assert rc == sweep.EXIT_SWEEP_FAILED
     assert json.loads(state.read_text())["reason"].startswith("write_failed")
     # The note written before the failure is whole, and nothing partial is left.
-    assert sorted(_written(requests_dir)) == ["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+    assert sorted(_written(requests_dir)) == ["REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"]
     assert [p.name for p in requests_dir.iterdir() if p.suffix != ".md"] == []
     monkeypatch.setattr(sweep, "create_note", real_create)
     rc, _, state = _run(tmp_path, web, "2026-10-02T00:30:00Z")
     assert rc == 0
     recorded = json.loads(state.read_text())
-    assert recorded["created"] == ["REQ-REGISTER-SLIPPED-com-2026-0004-20261001"]
-    assert recorded["skipped_existing"] == ["REQ-REGISTER-DUE-com-2026-0004-20261001"]
+    assert recorded["created"] == ["REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z"]
+    assert recorded["skipped_existing"] == ["REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"]
 
 
 def test_a_non_200_response_fails_the_sweep(tmp_path: Path) -> None:
@@ -683,3 +687,224 @@ def test_activation_is_not_folded_into_the_preset() -> None:
 
 def test_the_window_is_seventy_two_hours() -> None:
     assert timedelta(hours=72) == sweep.DEMAND_WINDOW
+
+
+# ── follow-ups from the #4798 reviews ────────────────────────────────────────
+# public-loop-register-due-sweeper-followups-20260926
+
+
+def _standing(review_every: str) -> dict:
+    return _commitment(
+        cid="com-2026-0011",
+        deadline="2026-10-05T00:00:00Z",
+        standing=True,
+        review_every=review_every,
+    )
+
+
+def test_the_request_identity_is_the_due_instant_in_utc() -> None:
+    register = sweep.parse_register(_register(_commitment(deadline="2026-10-02T01:30:00+02:00")))
+    [finding] = sweep.classify(register, sweep.parse_instant("2026-09-30T12:00:00Z"))
+    assert sweep.request_id_for(finding) == "REQ-REGISTER-DUE-com-2026-0004-20261001T233000Z"
+    assert (
+        sweep.request_id_for(finding, sweep.SLIPPED_CANDIDATE)
+        == "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T233000Z"
+    )
+
+
+@pytest.mark.parametrize(
+    ("review_every", "checks", "runs", "expected"),
+    [
+        # A sub-day interval: passes at 00:00 and 06:00 put due points at 06:00 and 12:00.
+        (
+            "PT6H",
+            ["2026-10-01T00:00:00Z", "2026-10-01T06:00:00Z"],
+            ["2026-10-01T01:00:00Z", "2026-10-01T07:00:00Z"],
+            ["20261001T060000Z", "20261001T120000Z"],
+        ),
+        # A daily interval with two passing checks on one day: due points at 01:00 and 20:00.
+        (
+            "P1D",
+            ["2026-09-30T01:00:00Z", "2026-09-30T20:00:00Z"],
+            ["2026-09-30T02:00:00Z", "2026-09-30T21:00:00Z"],
+            ["20261001T010000Z", "20261001T200000Z"],
+        ),
+    ],
+    ids=["sub-day-interval", "two-passes-in-one-day"],
+)
+def test_each_same_day_due_point_of_a_standing_commitment_gets_its_own_demand(
+    tmp_path: Path, review_every: str, checks: list[str], runs: list[str], expected: list[str]
+) -> None:
+    records = [_standing(review_every)]
+    for n, (checked_at, now) in enumerate(zip(checks, runs, strict=True), start=1):
+        records.append(_attestation(f"att-{n}", "com-2026-0011", "check", True, checked_at))
+        rc, requests_dir, state = _run(tmp_path, FakeWeb(_register(*records)), now)
+        assert rc == 0
+        assert json.loads(state.read_text())["created"] == [
+            f"REQ-REGISTER-DUE-com-2026-0011-{expected[n - 1]}"
+        ]
+    assert sorted(_written(requests_dir)) == [
+        f"REQ-REGISTER-DUE-com-2026-0011-{stamp}" for stamp in expected
+    ]
+
+
+def test_a_second_slip_on_the_same_day_gets_its_own_candidate(tmp_path: Path) -> None:
+    standing = _standing("PT6H")
+    first = _attestation("att-1", "com-2026-0011", "check", True, "2026-10-01T00:00:00Z")
+    late = _attestation("att-2", "com-2026-0011", "check", True, "2026-10-01T08:00:00Z")
+    # 06:00 slips; a late pass at 08:00 moves the due point to 14:00, and that slips too.
+    _run(tmp_path, FakeWeb(_register(standing, first)), "2026-10-01T07:00:00Z")
+    rc, requests_dir, state = _run(
+        tmp_path, FakeWeb(_register(standing, first, late)), "2026-10-01T15:00:00Z"
+    )
+    assert rc == 0
+    assert json.loads(state.read_text())["created"] == [
+        "REQ-REGISTER-DUE-com-2026-0011-20261001T140000Z",
+        "REQ-REGISTER-SLIPPED-com-2026-0011-20261001T140000Z",
+    ]
+    assert sorted(_written(requests_dir)) == [
+        "REQ-REGISTER-DUE-com-2026-0011-20261001T060000Z",
+        "REQ-REGISTER-DUE-com-2026-0011-20261001T140000Z",
+        "REQ-REGISTER-SLIPPED-com-2026-0011-20261001T060000Z",
+        "REQ-REGISTER-SLIPPED-com-2026-0011-20261001T140000Z",
+    ]
+
+
+def _date_only_note(directory: Path, name: str, due_literal: str) -> Path:
+    # The shape #4798 wrote before the full-instant identity; E3 may have re-quoted it.
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.md"
+    path.write_text(
+        f'---\ntype: "hapax-request"\nrequest_id: "{name}"\ndue: {due_literal}\n---\n\n# before\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.parametrize("where", ["active", "closed"])
+@pytest.mark.parametrize(
+    "due_literal",
+    ['"2026-10-01T23:59:59Z"', "'2026-10-01T23:59:59Z'", "2026-10-01T23:59:59+00:00"],
+    ids=["as-written", "single-quoted", "offset-form"],
+)
+def test_a_date_only_note_for_the_same_due_instant_is_the_same_note(
+    tmp_path: Path, where: str, due_literal: str
+) -> None:
+    # Podium ran the date-only identity from 2026-09-26T23:47Z; its 09-29 run may write this.
+    legacy = _date_only_note(
+        tmp_path / "hapax-requests" / where,
+        "REQ-REGISTER-DUE-com-2026-0004-20261001",
+        due_literal,
+    )
+    rc, requests_dir, state = _run(
+        tmp_path, FakeWeb(_register(_commitment())), "2026-09-30T06:10:00Z"
+    )
+    assert rc == 0
+    recorded = json.loads(state.read_text())
+    assert recorded["created"] == []
+    assert recorded["skipped_existing"] == [legacy.stem]
+    assert sorted(p.name for p in requests_dir.iterdir()) == (
+        [legacy.name] if where == "active" else []
+    )
+
+
+def test_a_date_only_note_for_another_due_point_that_day_does_not_suppress(
+    tmp_path: Path,
+) -> None:
+    _date_only_note(
+        tmp_path / "hapax-requests" / "active",
+        "REQ-REGISTER-DUE-com-2026-0004-20261001",
+        '"2026-10-01T06:00:00Z"',
+    )
+    rc, _, state = _run(tmp_path, FakeWeb(_register(_commitment())), "2026-09-30T06:10:00Z")
+    assert rc == 0
+    assert json.loads(state.read_text())["created"] == [
+        "REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"
+    ]
+
+
+def test_a_failed_content_write_leaves_no_temporary_file(tmp_path: Path) -> None:
+    # A lone surrogate escape in a register title cannot be encoded, so the write fails
+    # inside handle.write, after the temporary file exists.
+    bad = _commitment(title="Identity \ud800 check")
+    rc, requests_dir, state = _run(tmp_path, FakeWeb(_register(bad)), "2026-09-30T12:00:00Z")
+    assert rc == sweep.EXIT_SWEEP_FAILED
+    assert json.loads(state.read_text())["reason"].startswith("write_failed:UnicodeEncodeError")
+    assert list(requests_dir.iterdir()) == []
+
+
+SLIPPED_NOTE = "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z.md"
+
+
+def _close_during_link(active: Path, closed: Path, *, reopen: bool = False):
+    real_link = os.link
+
+    def link(src, dst, *args, **kwargs):
+        # E3 closes the note after the run's closed check and before its link.
+        if Path(dst).name == SLIPPED_NOTE and (active / SLIPPED_NOTE).exists():
+            (active / SLIPPED_NOTE).rename(closed / SLIPPED_NOTE)
+            result = real_link(src, dst, *args, **kwargs)
+            if reopen:
+                # ...and something else takes the name over before the run looks again.
+                (active / SLIPPED_NOTE).unlink()
+                (active / SLIPPED_NOTE).write_text("reopened by E3\n", encoding="utf-8")
+            return result
+        return real_link(src, dst, *args, **kwargs)
+
+    return link
+
+
+def test_a_note_closed_while_the_run_creates_it_is_not_reopened(
+    tmp_path: Path, monkeypatch
+) -> None:
+    web = FakeWeb(_register(_commitment()))
+    _run(tmp_path, web, "2026-10-02T00:30:00Z")
+    active = tmp_path / "hapax-requests" / "active"
+    closed = tmp_path / "hapax-requests" / "closed"
+    closed.mkdir()
+    monkeypatch.setattr(os, "link", _close_during_link(active, closed))
+    rc, _, state = _run(tmp_path, web, "2026-10-03T00:30:00Z")
+    assert rc == 0
+    assert not (active / SLIPPED_NOTE).exists()
+    assert (closed / SLIPPED_NOTE).exists()
+    recorded = json.loads(state.read_text())
+    assert recorded["created"] == []
+    assert Path(SLIPPED_NOTE).stem in recorded["skipped_existing"]
+    assert sorted(p.name for p in active.iterdir()) == [
+        "REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z.md"
+    ]
+
+
+def test_a_note_already_closed_is_never_relinked_even_briefly(tmp_path: Path, monkeypatch) -> None:
+    # The intake is watched: a closed demand must not reappear in active/ even for the instant
+    # between a link and the re-check. Only a close that races the run can cost that instant.
+    web = FakeWeb(_register(_commitment()))
+    _run(tmp_path, web, "2026-10-02T00:30:00Z")
+    active = tmp_path / "hapax-requests" / "active"
+    closed = tmp_path / "hapax-requests" / "closed"
+    closed.mkdir()
+    (active / SLIPPED_NOTE).rename(closed / SLIPPED_NOTE)
+    real_link = os.link
+    linked: list[str] = []
+
+    def recording_link(src, dst, *args, **kwargs):
+        linked.append(Path(dst).name)
+        return real_link(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "link", recording_link)
+    rc, _, _ = _run(tmp_path, web, "2026-10-03T00:30:00Z")
+    assert rc == 0
+    assert SLIPPED_NOTE not in linked
+
+
+def test_the_race_check_removes_only_the_runs_own_note(tmp_path: Path, monkeypatch) -> None:
+    web = FakeWeb(_register(_commitment()))
+    _run(tmp_path, web, "2026-10-02T00:30:00Z")
+    active = tmp_path / "hapax-requests" / "active"
+    closed = tmp_path / "hapax-requests" / "closed"
+    closed.mkdir()
+    monkeypatch.setattr(os, "link", _close_during_link(active, closed, reopen=True))
+    rc, _, state = _run(tmp_path, web, "2026-10-03T00:30:00Z")
+    assert rc == 0
+    assert (active / SLIPPED_NOTE).read_text(encoding="utf-8") == "reopened by E3\n"
+    assert json.loads(state.read_text())["created"] == []

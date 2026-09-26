@@ -26,6 +26,9 @@ A failure while writing notes also exits with EXIT_SWEEP_FAILED (write_failed). 
 written before it is complete, because each is created whole and atomically, and the next run
 writes the rest. Notes are created exclusively: an existing note is never replaced, even by a
 concurrent run.
+
+Each note is named for one due point: the commitment id and the due instant in UTC. A note
+moved to closed/ is never re-created, even when it closes while a run is creating it.
 """
 
 from __future__ import annotations
@@ -200,7 +203,8 @@ def parse_register(body: bytes) -> Register:
             if not isinstance(cid, str) or not _SAFE_ID_RE.fullmatch(cid):
                 raise SweepFailed(
                     f"register_invalid:unsafe_commitment_id:{cid!r} (an id becomes a file name and "
-                    "must match [A-Za-z0-9][A-Za-z0-9._-]*; correct the register record)"
+                    f"must match {_SAFE_ID_RE.pattern}, at most 128 characters; correct the "
+                    "register record)"
                 )
             _require_offset(record, "deadline")
             commitments.append(record)
@@ -302,8 +306,39 @@ def notes_for(finding: Finding) -> list[str]:
 
 
 def request_id_for(finding: Finding, note: str = OWNER_DEMAND) -> str:
+    """One identity per due point: the full due instant in UTC, so several due points of a
+    standing commitment on one day each get their own notes."""
+
     kind = "SLIPPED" if note == SLIPPED_CANDIDATE else "DUE"
-    return f"REQ-REGISTER-{kind}-{finding.commitment_id}-{finding.due.strftime('%Y%m%d')}"
+    due = finding.due.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"REQ-REGISTER-{kind}-{finding.commitment_id}-{due}"
+
+
+def date_only_request_id_for(finding: Finding, note: str = OWNER_DEMAND) -> str:
+    """The identity #4798 shipped with (the due date only). Podium wrote notes under it from
+    2026-09-26; one that names the same due instant is the same note."""
+
+    kind = "SLIPPED" if note == SLIPPED_CANDIDATE else "DUE"
+    due = finding.due.astimezone(UTC).strftime("%Y%m%d")
+    return f"REQ-REGISTER-{kind}-{finding.commitment_id}-{due}"
+
+
+def _names_due_point(path: Path, due: datetime) -> bool:
+    """Whether the note at ``path`` exists and its frontmatter ``due`` is this instant. A note
+    whose due cannot be read is not the same note: a second demand is the safe error."""
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    frontmatter = text.split("\n---", 1)[0]
+    for line in frontmatter.splitlines():
+        if line.startswith("due:"):
+            try:
+                return parse_instant(line[4:].strip().strip("\"'")) == due
+            except ValueError:
+                return False
+    return False
 
 
 def _scalar(value: Any) -> str:
@@ -409,8 +444,12 @@ def _write_temp_beside(path: Path, content: str) -> Path:
     missing directory is an error, never created here)."""
 
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(content)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
     return Path(name)
 
 
@@ -424,12 +463,16 @@ def write_atomic(path: Path, content: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def create_note(path: Path, content: str) -> bool:
+def create_note(path: Path, content: str, *, closed_path: Path | None = None) -> bool:
     """Create ``path`` only if the name is free; return whether it was created.
 
     The content is written whole to a unique temporary file, then hard-linked into place.
     The link is atomic and fails if the name exists, so a concurrent run can never replace a
     note, and no reader ever sees a partial one.
+
+    ``closed_path`` is where the note goes when it is closed. If it exists once the link is
+    made, the note was closed while this run created it, so the run removes its own link
+    again (and only its own: a file someone else put at ``path`` since is left alone).
     """
 
     tmp = _write_temp_beside(path, content)
@@ -438,9 +481,31 @@ def create_note(path: Path, content: str) -> bool:
             os.link(tmp, path)
         except FileExistsError:
             return False
+        if closed_path is not None and closed_path.exists():
+            if os.path.samefile(tmp, path):
+                path.unlink()
+            return False
         return True
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _existing_note(finding: Finding, note: str, *, active: Path, closed: Path) -> str | None:
+    """The request ID of a note that already holds this due point, if any: the full-instant
+    note once closed (an active one is caught by the exclusive create), or a date-only note,
+    active or closed, naming the same instant.
+
+    Checking closed/ here, before any link, keeps a closed note from reappearing in the
+    watched intake even briefly; create_note's re-check covers only a close that races it."""
+
+    request_id = request_id_for(finding, note)
+    if (closed / f"{request_id}.md").exists():
+        return request_id
+    date_only = date_only_request_id_for(finding, note)
+    for directory in (active, closed):
+        if _names_due_point(directory / f"{date_only}.md", finding.due):
+            return date_only
+    return None
 
 
 def write_requests(
@@ -457,15 +522,16 @@ def write_requests(
     skipped: list[str] = []
     for finding in findings:
         for note in notes_for(finding):
+            existing = _existing_note(finding, note, active=requests_dir, closed=closed)
+            if existing is not None:
+                skipped.append(existing)
+                continue
             request_id = request_id_for(finding, note)
             name = f"{request_id}.md"
-            if (closed / name).exists():
-                skipped.append(request_id)
-                continue
             content = render_request(
                 finding, generated_at=generated_at, register_url=register_url, note=note
             )
-            if create_note(requests_dir / name, content):
+            if create_note(requests_dir / name, content, closed_path=closed / name):
                 created.append(request_id)
             else:
                 skipped.append(request_id)
