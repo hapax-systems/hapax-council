@@ -391,6 +391,23 @@ def test_a_declared_home_file_is_readable_and_read_only(tmp_path: Path):
     assert note.read_text() == "declared content\n"
 
 
+@needs_bwrap
+def test_a_declared_home_directory_is_readable_and_read_only(tmp_path: Path):
+    """A harness that runs helpers from its own directory under $HOME (agy) needs that directory
+    declared into the job home, read-only."""
+    tools = tmp_path / "host" / "tools"
+    _write(tools / "helper.txt", "helper content\n")
+    decl = _sh(
+        'cat "$HOME/.tool/bin/helper.txt"; '
+        '(echo x > "$HOME/.tool/bin/new.txt") 2>/dev/null && echo WROTE || echo READONLY',
+        home_files=(DeclaredFile(source=tools, target=".tool/bin"),),
+    )
+    result = execute(render(decl, run_root=tmp_path / "run"), timeout=60)
+    assert "helper content" in result.stdout, result.stderr
+    assert "READONLY" in result.stdout
+    assert not (tools / "new.txt").exists()
+
+
 # ---------------------------------------------------------------- symlinks in the checkout
 
 

@@ -72,26 +72,34 @@ and it sees opens through bind mounts. What the model says it saw is complementa
 
 `scripts/capability-envelope-import-audit` is the rerunnable witness.
 - It builds a sentinel world.
-- It launches the harness the way its reviewer wrapper does, against a mirror of the home (the operator's own files
-  are neither read nor changed), and then again inside the envelope.
-- It exits 0 when the enveloped run imported nothing and 1 on a leak.
-- Vibe runs only on the Team allowance.
+- It launches the harness the way its reviewer wrapper or panel leg does, against a mirror of the home (the
+  operator's own files are neither read nor changed), and then again inside the envelope.
+- It exits 0 when the enveloped run imported nothing, 1 on a leak, 2 when the enveloped run did not complete, and 64
+  when it refuses.
+- It refuses when a binary or credential is missing, and never copies a credential or a config that carries one:
+  opencode's declared config drops secret-named fields, and kimi's is rebuilt from an allowlist.
+- Vibe runs only on the Team allowance; GLM is not offered while its dispatch is on hold.
 
 ```bash
 TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json
+# harnesses: agy claude codex grok kimi muse opencode vibe
 ```
 
-Last run: 2026-09-25 ~10:50Z on appendix. The reports are in the vault at
-`frame/harness-import-scrub-20260925/measure/audit-*.json`.
+Last runs: 2026-09-25 ~10:50Z (claude, vibe, muse) and 2026-09-26 ~00:55Z (the rest) on appendix. The reports are
+in the vault at `frame/harness-import-scrub-20260925/measure/audit-*.json`.
 
-| harness | baseline launch (origin/main wrapper argv) imported | enveloped |
+| harness | baseline launch imported (by the audit's inotify watch) | enveloped |
 |---|---|---|
 | Claude Code 2.1.281 (`-p`, tools off) | ancestor and checkout `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, user `CLAUDE.md` and rules, a skill, both settings files, user and project hooks **run**, user and project MCP servers **started** | nothing: `clean` |
 | Mistral Vibe (the `hapax-vibe-reviewer` argv) | `~/.vibe/AGENTS.md`, and it reached the model | nothing: `clean` |
 | Meta Muse 1.4.0 (the `hapax-muse-reviewer` argv) | `~/.config/muse/AGENTS.md`, and it reached the model | nothing: `clean` |
+| opencode (local model, $0) | `~/.config/opencode/AGENTS.md`, ancestor and checkout `AGENTS.md`, checkout `CLAUDE.md` and `CLAUDE.local.md` | nothing: `clean` |
+| grok CLI (`--single`) | `~/.grok/AGENTS.md` | nothing: `clean` |
+| agy (Gemini, `-p`) | `~/.gemini/GEMINI.md`, checkout `AGENTS.md` | nothing: `clean` |
+| kimi (K3, `-p`) | `~/.kimi-code/AGENTS.md`, a user skill, checkout `AGENTS.md` | nothing: `clean` |
+| codex (`exec`) | `~/.codex/AGENTS.md`, checkout `AGENTS.md` | nothing imported, but `inconclusive`: the subscription was walled until 2026-09-30; rerun after |
 
-Codex, agy, grok and kimi are inventoried in ENCOUNTERED-MACHINERY M153; opencode is not yet measured. The full
-table is in the vault at `frame/harness-import-scrub-20260925/HARNESS-IMPORTS.md`.
+The full table is in the vault at `frame/harness-import-scrub-20260925/HARNESS-IMPORTS.md`.
 
 ## Not covered here
 
@@ -112,3 +120,13 @@ The runtime tests need bubblewrap with unprivileged user namespaces. The require
 - runs the suite with `HAPAX_ENVELOPE_REQUIRE_BWRAP=1`.
 
 So CI cannot pass by skipping. `tests/ci/test_capability_envelope_ci.py` pins that job.
+
+**Mutation check:** the same job runs `scripts/capability-envelope-mutation-check`.
+- It breaks each envelope invariant in a temporary copy of the package: a mask, a refusal, a read-only bind, the
+  cleared environment, and so on.
+- It fails unless every mutation turns `tests/capability_envelope` red and the unmutated copy stays green.
+- `tests/scripts/test_capability_envelope_mutation_check.py` checks, in every suite, that each mutation still applies.
+
+```bash
+HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run python scripts/capability-envelope-mutation-check   # prints "ALL KILLED"
+```
