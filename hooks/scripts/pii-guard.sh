@@ -59,6 +59,23 @@ esac
 new_content="$(printf '%s' "$input" | jq -r '.tool_input.new_string // .tool_input.content // empty' 2>/dev/null || true)"
 [ -n "$new_content" ] || exit 0
 
+REGISTERED_PRINCIPAL_IDS=(principal-c1 principal-c2 principal-a1)
+for principal_id in "${REGISTERED_PRINCIPAL_IDS[@]}"; do
+  if [[ ! "$principal_id" =~ ^principal-[a-z][0-9]+$ ]]; then
+    echo "pii-guard: BLOCKED — invalid registered principal ID: $principal_id" >&2
+    exit 2
+  fi
+done
+
+# These definitions and tests are the sanctioned places where opaque IDs are
+# necessarily declared. All other tracked content is checked for ID leaks.
+allow_principal_ids=0
+case "$file_path" in
+  */shared/governance/consent.py|*/agents/_governance/consent.py|*/agents/_governance.py|*/logos/_governance.py|*/axioms/contracts/*|*/hooks/scripts/pii-guard.sh|*/tests/hapax_daimonion/test_conversational_policy.py|*/tests/hooks/test_pii_guard.py)
+    allow_principal_ids=1
+    ;;
+esac
+
 # --- PII Pattern Checks ---
 # Each pattern must be HIGH confidence (no false positives on code/docs)
 
@@ -67,6 +84,19 @@ blocked=()
 # Operator full name (exact match only)
 if echo "$new_content" | grep -qiP 'Ryan\s+Kleeberger'; then
   blocked+=("Operator full name detected")
+fi
+
+# Family surname and registered opaque principal IDs are both sensitive
+# identifiers outside their sanctioned definitions.
+if echo "$new_content" | grep -qiP 'Kleeberger'; then
+  blocked+=("Family surname detected")
+fi
+if [ "$allow_principal_ids" -eq 0 ]; then
+  for principal_id in "${REGISTERED_PRINCIPAL_IDS[@]}"; do
+    if echo "$new_content" | grep -qF "$principal_id"; then
+      blocked+=("Registered principal ID detected: $principal_id")
+    fi
+  done
 fi
 
 # Location data
