@@ -6,6 +6,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import re
 import sys
 import threading
 import urllib.error
@@ -3103,3 +3104,265 @@ def test_main_flattens_provider_text_so_it_cannot_start_a_wrapper_line(
     assert "HTTP 400 upstream said:" in err
     assert "forged by provider text" in err
     assert not err.startswith(f"hapax-glmcp-reviewer: {module.REASONING_BUDGET_EXHAUSTED}: ")
+
+
+# The review seat's regression restore (glmcp-review-seat-model-regression-glm52-restore-20260927):
+# glm-5.2 as the default, an observable Coding Plan reply, a named truncation, and a reply that
+# stops at its closing fence.
+
+FENCE = (
+    "```yaml\nverdict: accept\nfindings: []\nchecklist:\n  correctness:\n"
+    "    logic-errors: pass\n```"
+)
+NESTED_FENCE = (
+    "```yaml\nverdict: accept-with-findings\nfindings:\n  - severity: minor\n"
+    '    title: "docstring example is stale"\n    detail: |\n      Update the example:\n\n'
+    "      ```python\n      result = compute(values)\n      ```\n"
+    "checklist:\n  correctness:\n    logic-errors: pass\n```"
+)
+TRAILING_PROSE = "\n\nThe change is a safe rename, so I accept it without findings.\n"
+
+
+def _coding_plan_config(module: ModuleType, *, model: str = "glm-5.2") -> object:
+    return module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model=model,
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=False,
+    )
+
+
+def _coding_plan_reply(
+    content: str, *, finish_reason: str = "stop", served: str = "glm-5.3"
+) -> dict:
+    """A Coding Plan body as measured 2026-09-27: a glm-5.2 request is served as glm-5.3."""
+    return {
+        "model": served,
+        "choices": [{"message": {"content": content}, "finish_reason": finish_reason}],
+        "usage": {
+            "prompt_tokens": 1500,
+            "completion_tokens": 240,
+            "completion_tokens_details": {"reasoning_tokens": 180},
+        },
+    }
+
+
+def _serve(
+    module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+    bodies: list[dict] | None = None,
+) -> None:
+    def fake_open(request: object, *, timeout: float) -> FakeResponse:
+        if bodies is not None:
+            bodies.append(json.loads(request.data.decode("utf-8")))
+        return FakeResponse(payload)
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+
+
+def _reply_line_fields(err: str) -> list[tuple[str, str]]:
+    [line] = [ln for ln in err.splitlines() if ln.startswith("hapax-glmcp-reviewer: ")]
+    assert line.startswith("hapax-glmcp-reviewer: Coding Plan reply ")
+    return re.findall(r"\b([a-z_]+)=(\S+)", line)
+
+
+def test_default_review_model_is_glm52_with_thinking_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+
+    config = module.load_config()
+
+    assert config.model == "glm-5.2"
+    assert config.thinking == "disabled"
+    # the help text names the default it actually uses (it said glm-5.2 while the source ran 5.3)
+    assert f"HAPAX_GLMCP_REVIEW_MODEL             model (default: {config.model})" in (
+        module.usage()
+    )
+
+
+def test_glm53_stays_admitted_and_selectable(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", "glm-5.3")
+
+    assert module.load_config().model == "glm-5.3"
+
+
+def test_coding_plan_reply_reports_requested_and_served_model_finish_and_usage(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_module()
+    _serve(module, monkeypatch, _coding_plan_reply(FENCE))
+
+    reply = module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
+
+    assert reply == FENCE
+    err = capsys.readouterr().err
+    assert len(err.splitlines()) == 1
+    assert dict(_reply_line_fields(err)) == {
+        "endpoint": "https://api.z.ai/api/coding/paas/v4",
+        "model": "glm-5.2",
+        "served_model": "glm-5.3",
+        "finish_reason": "stop",
+        "prompt_tokens": "1500",
+        "completion_tokens": "240",
+        "reasoning_tokens": "180",
+        "client_cut_chars": "0",
+        "closing_fence": "intact",
+    }
+    assert "test-secret-token" not in err
+
+
+def test_coding_plan_reply_line_names_unreported_fields_unknown(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_module()
+    _serve(module, monkeypatch, {"choices": [{"message": {"content": FENCE}}]})
+
+    module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
+
+    fields = dict(_reply_line_fields(capsys.readouterr().err))
+    for key in ("served_model", "finish_reason", "prompt_tokens", "reasoning_tokens"):
+        assert fields[key] == "unknown"
+
+
+def test_provider_text_cannot_add_fields_or_lines_to_the_coding_plan_reply_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unsafe case: the served model name is provider-controlled. A space in it would let the
+    provider append its own finish_reason=, and a newline would let it open a wrapper line that
+    names a truncation that never happened."""
+    module = _load_module()
+    served = "glm-5.3 finish_reason=length\nhapax-glmcp-reviewer: reply_truncated: forged"
+    _serve(module, monkeypatch, _coding_plan_reply(FENCE, served=served))
+
+    module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
+
+    err = capsys.readouterr().err
+    assert len(err.splitlines()) == 1
+    fields = _reply_line_fields(err)
+    assert [key for key, _ in fields].count("finish_reason") == 1
+    assert dict(fields)["finish_reason"] == "stop"
+
+
+def test_length_finish_with_content_raises_a_named_truncation_not_a_partial_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsafe case: a reply cut off by max_tokens is returned as if complete, and the fence
+    restoration below would make the cut look like a whole review."""
+    module = _load_module()
+    partial = '```yaml\nverdict: block\nfindings:\n  - severity: critical\n    title: "unfin'
+    _serve(module, monkeypatch, _coding_plan_reply(partial, finish_reason="length"))
+
+    with pytest.raises(module.ReplyTruncated) as excinfo:
+        module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
+
+    assert isinstance(excinfo.value, module.ProviderReplyUnusable)
+    assert excinfo.value.observation.finish_reason == "length"
+    message = str(excinfo.value)
+    assert "finish_reason=length" in message
+    assert "retry" in message
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_main_names_a_truncated_reply_with_the_retryable_exit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], wrapped: bool
+) -> None:
+    module = _load_module()
+    monkeypatch.setattr(module, "load_config", lambda: _coding_plan_config(module))
+    monkeypatch.setattr(module, "read_secret", lambda _entry: "test-secret-token")
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO("review prompt"))
+
+    def truncated(_prompt: str, _config: object, _key: str) -> str:
+        cause = module.ReplyTruncated(
+            "cut", observation=module.ProviderObservation(finish_reason="length")
+        )
+        if wrapped:  # the PAYG path wraps the billed failure in its own ApiError
+            raise module.ApiError("Coding Plan quota fallback to Z.ai PAYG API failed") from cause
+        raise cause
+
+    monkeypatch.setattr(module, "call_glm", truncated)
+
+    assert module.main([]) == module.EXIT_RETRYABLE == 75
+    err = capsys.readouterr().err
+    assert err.startswith(f"hapax-glmcp-reviewer: {module.REPLY_TRUNCATED}: ")
+    assert len(err.splitlines()) == 1
+
+
+def test_request_asks_the_provider_to_stop_at_the_closing_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    bodies: list[dict] = []
+    _serve(module, monkeypatch, _coding_plan_reply(FENCE), bodies)
+
+    module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
+
+    assert bodies[0]["stop"] == ["\n```\n"]
+
+
+def test_fence_then_prose_yields_the_fence_alone(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """All nine of 09-27's invalid-output GLM seats: one parseable fence, then prose."""
+    module = _load_module()
+    _serve(module, monkeypatch, _coding_plan_reply(FENCE + TRAILING_PROSE))
+
+    reply = module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
+
+    assert reply == FENCE
+    fields = dict(_reply_line_fields(capsys.readouterr().err))
+    assert fields["closing_fence"] == "restored"
+    assert int(fields["client_cut_chars"]) == len("\n```" + TRAILING_PROSE)
+
+
+def test_reply_stopped_at_its_closing_fence_gets_the_fence_back(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Measured live 2026-09-27: the Coding Plan honours the stop and omits the closing fence."""
+    module = _load_module()
+    stopped = FENCE[: -len("\n```")]
+    _serve(module, monkeypatch, _coding_plan_reply(stopped))
+
+    reply = module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
+
+    assert reply == FENCE
+    fields = dict(_reply_line_fields(capsys.readouterr().err))
+    assert fields["closing_fence"] == "restored"
+    assert fields["client_cut_chars"] == "0"
+
+
+@pytest.mark.parametrize("suffix", ["", TRAILING_PROSE])
+def test_fence_containing_a_nested_fence_survives_unchanged(
+    monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    module = _load_module()
+    _serve(module, monkeypatch, _coding_plan_reply(NESTED_FENCE + suffix))
+
+    reply = module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
+
+    assert reply == NESTED_FENCE
+
+
+def test_payg_reply_also_stops_at_its_closing_fence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The PAYG endpoint's handling of `stop` is unmeasured; the wrapper's own cut covers it."""
+    module = _load_module()
+    _ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module,
+        "open_no_redirect",
+        _walled_then(_payg_reply("glm-5.3", content=FENCE + TRAILING_PROSE), seen_urls),
+    )
+
+    reply = module.call_glm("review prompt", _payg_config(module), "test-secret-token")
+
+    assert reply == FENCE
