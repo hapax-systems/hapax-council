@@ -4618,11 +4618,12 @@ def test_release_refuses_a_held_publication_whose_admission_proof_drifted(
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
 
 
+@pytest.mark.parametrize("content", ["task-alpha\n", "junk\ntask-alpha\n"], ids=["first", "later"])
 def test_release_refuses_a_held_publication_while_another_session_holds_the_task(
-    tmp_path: Path,
+    tmp_path: Path, content: str
 ) -> None:
     fixture, _journal, _projections = _held_publication(tmp_path)
-    (fixture.cache / "cc-active-task-cx-red-session-xyz").write_text("task-alpha\n")
+    (fixture.cache / "cc-active-task-cx-red-session-xyz").write_text(content)
     before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
 
     with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
@@ -4851,3 +4852,343 @@ def test_release_refuses_when_the_quarantine_name_is_taken(tmp_path: Path) -> No
 
     assert "claim_residue_quarantine_exists" in raised.value.message
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+# ── #4801 round-3 residuals (claim-plane-self-resume-own-lapsed-row-20260927 (5), (6)) ──
+
+
+def test_a_rerun_finishes_the_archive_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # (5): a crash between the staging rename and the lineage copy leaves the moved original
+    # only in the cache staging directory; the rerun recognises it and completes the archive.
+    fixture, journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+    assert not first.path.exists()
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+    assert (released.archive_dir / first.path.name).read_bytes() == first.after
+
+
+def test_a_file_archived_earlier_counts_after_its_staged_copy_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lineage copy alone proves an earlier release, once the cache staging is cleaned.
+    fixture, journal, projections = _held_publication(tmp_path)
+    real_archive = sdlc_claim._archive_verified
+    calls = {"n": 0}
+
+    def killed_after_first(*args: object, **kwargs: object) -> Path:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise _Killed
+        return real_archive(*args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", killed_after_first)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+    for staged in (fixture.cache / "claim-residue-release").rglob("cc-claim-*"):
+        staged.rename(tmp_path / f"cleaned-{staged.name}")  # the cache staging was cleaned
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+
+
+def test_an_earlier_archive_of_another_publication_does_not_count(tmp_path: Path) -> None:
+    # (6): the same file name and bytes under another publication's release prove nothing.
+    fixture, _journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    first.path.unlink()
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    other = lineage / "claim-residue-release-20260101T000000Z-cx-red"
+    other.mkdir(parents=True)
+    (other / first.path.name).write_bytes(first.after)
+    (other / "README.md").write_text(f"publication_id: claim-pub-{'0' * 64}\n", encoding="utf-8")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_a_same_stamp_rerun_keeps_its_own_earlier_readme(tmp_path: Path) -> None:
+    # Neither overwritten nor duplicated: a same-stamp rerun reuses its own journal's README.
+    fixture, journal, _projections = _held_publication(tmp_path)
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    archive = lineage / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+    archive.mkdir(parents=True)
+    earlier = f"an earlier run\npublication_id: {journal.name}\n"
+    (archive / "README.md").write_text(earlier, encoding="utf-8")
+
+    _release_held(fixture)
+
+    assert (archive / "README.md").read_text(encoding="utf-8") == earlier
+
+
+@pytest.mark.parametrize(
+    "readme",
+    [f"publication_id: claim-pub-{'0' * 64}\n", "an earlier run with no publication_id\n"],
+    ids=["another-publication", "no-publication"],
+)
+def test_a_same_stamp_rerun_refuses_a_readme_of_another_or_no_publication(
+    tmp_path: Path, readme: str
+) -> None:
+    # #4804 round 2 (codex critical): never archive under a receipt that is not this journal's.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    archive = lineage / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+    archive.mkdir(parents=True)
+    (archive / "README.md").write_text(readme, encoding="utf-8")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def _applied_publication(tmp_path: Path) -> ClaimFixture:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    return fixture
+
+
+@pytest.mark.parametrize(
+    ("assignment", "reassigned"),
+    [
+        (None, False),
+        ("assigned_to:", False),
+        ("assigned_to: cx-red  # still mine", False),
+        ("assigned_to: cx-other", True),
+        ("assigned_to: unassigned", True),
+    ],
+    ids=["absent", "empty", "own-role-with-comment", "other-role", "unassigned"],
+)
+def test_only_an_explicit_other_assignment_releases_live_markers(
+    tmp_path: Path, assignment: str | None, reassigned: bool
+) -> None:
+    # #4804 round 4 (codex critical): an absent, empty or commented own assignment is no proof.
+    fixture = _applied_publication(tmp_path)
+    note = fixture.intent.note_path
+    lines = [line for line in note.read_text().splitlines() if not line.startswith("assigned_to:")]
+    if assignment is not None:
+        lines.insert(3, assignment)
+    note.write_text("\n".join(lines) + "\n")
+    if reassigned:
+        assert _release_held(fixture).shape == "reassigned_task"
+        return
+    before = _tree_snapshot(fixture.cache)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+    assert "claim_residue_live_marker" in raised.value.message
+    assert _tree_snapshot(fixture.cache) == before
+
+
+def test_a_same_stamp_rerun_finishes_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #4804 round 4 (codex): the crashed run's staged original does not collide with its rerun.
+    fixture, journal, projections = _held_publication(tmp_path)
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+
+    assert _release_held(fixture).shape == "held_publication"
+    assert not journal.exists()
+
+
+def test_the_applied_path_refuses_another_journals_staged_copy(tmp_path: Path) -> None:
+    # #4804 round 4 (glm, claude): the applied path's staged rejection, pinned on its own.
+    fixture = _applied_publication(tmp_path)
+    for marker in fixture.cache.glob("cc-active-task-cx-red*"):
+        marker.unlink()
+    epoch = next(fixture.cache.glob("cc-claim-epoch-cx-red"))
+    content, mode = epoch.read_bytes(), stat.S_IMODE(epoch.stat().st_mode)
+    epoch.unlink()
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / "20260101T000000Z-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"claim-pub-{'0' * 64}\n", encoding="ascii")
+    (staging / epoch.name).write_bytes(content)
+    os.chmod(staging / epoch.name, mode)
+    before = _tree_snapshot(fixture.cache)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert _tree_snapshot(fixture.cache) == before
+
+
+@pytest.mark.parametrize("damaged", ["README", "PUBLICATION"])
+def test_an_unreadable_binding_is_a_collision_not_a_crash(tmp_path: Path, damaged: str) -> None:
+    # #4804 round 3 (codex): a damaged README or staging binding holds with the named reason.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    if damaged == "README":
+        target = (
+            fixture.vault
+            / "_lineage"
+            / "task-alpha"
+            / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+            / "README.md"
+        )
+    else:
+        target = (
+            fixture.cache
+            / "claim-residue-release"
+            / "task-alpha"
+            / f"{_RELEASE_STAMP}-cx-red"
+            / "PUBLICATION"
+        )
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xff\xfe undecodable")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_a_staging_directory_bound_to_another_publication_holds_before_any_move(
+    tmp_path: Path,
+) -> None:
+    # #4804 round 2 (claude): the staging-binding collision, pinned.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / f"{_RELEASE_STAMP}-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"claim-pub-{'0' * 64}\n", encoding="ascii")
+    trees = (fixture.cache, fixture.transactions, fixture.vault / "_lineage")
+    before = tuple(_tree_snapshot(tree) for tree in trees)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert tuple(_tree_snapshot(tree) for tree in trees) == before
+
+
+def _staged_copy(
+    fixture: ClaimFixture, publication_id: str, projection: object, content: bytes
+) -> None:
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / "20260101T000000Z-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"{publication_id}\n", encoding="utf-8")
+    staged = staging / projection.path.name
+    staged.write_bytes(content)
+    os.chmod(staged, projection.after_mode)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["another-journal-same-bytes", "this-journal-other-bytes"],
+    ids=["revert-of-another-journal", "rejection-path"],
+)
+def test_a_staged_file_of_another_journal_or_with_other_bytes_is_not_recovered(
+    tmp_path: Path, case: str
+) -> None:
+    # #4804 round 1 (codex critical; gemini): a staged original must be this journal's own.
+    # Another journal's staging with byte-identical content (a revert) proves nothing.
+    fixture, journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    first.path.unlink()
+    if case == "another-journal-same-bytes":
+        _staged_copy(fixture, f"claim-pub-{'0' * 64}", first, first.after)
+    else:
+        _staged_copy(fixture, journal.name, first, first.after + b" ")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_an_applied_release_finishes_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #4804 round 1 (claude, codex): the applied (lapsed-lease) path's crash-window recovery.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    for marker in fixture.cache.glob("cc-active-task-cx-red*"):
+        marker.unlink()  # the lease lapsed
+    root = fixture.cache / "claim-residue-release" / "task-alpha"
+    (root / "19990101T000000Z-cx-red").mkdir(parents=True)  # a stale, empty staging directory
+    (root / "stray-file").write_text("not a directory\n", encoding="utf-8")
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "lapsed_lease"
+    assert not any(fixture.cache.glob("cc-claim-*-cx-red*"))
+    assert len(released.archived) == 4
