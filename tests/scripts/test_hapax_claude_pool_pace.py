@@ -7,6 +7,7 @@ failure refuses rather than releases (fail narrow); no probe runs without a ledg
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
@@ -149,6 +150,85 @@ def _base_args(tmp_path: Path, receipts: Path) -> list[str]:
         "--headless-glob",
         str(tmp_path / "no-headless" / "*" / "output.jsonl"),
     ]
+
+
+def test_the_ledger_is_a_reading_source_so_a_held_governor_sees_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """codex critical, round 2: the probe ledgers its reading, so the governor must READ it.
+
+    While the gate holds the probe's admission mint there is no new receipt; if the governor's
+    readings came only from receipts and traces, a held governor could never see the pool recover.
+    """
+    _sink_root(tmp_path, monkeypatch)
+    receipts = _window_receipts(tmp_path, weekly_used=40.0, weekly_reset=WEEKLY_RESET)
+    pace = _pace()
+    # The probe ledgers the over-line reading, and the governor holds on it.
+    pace.append_observed_reading(
+        observed_at=NOW,
+        weekly_used_percent=40.0,
+        weekly_resets_at=WEEKLY_RESET,
+        five_hour_used_percent=1.0,
+        five_hour_resets_at=NOW + timedelta(hours=3),
+        source_ref="probe",
+        now=NOW,
+    )
+    capsys.readouterr()
+    assert _run(["check", *_base_args(tmp_path, receipts)]) == pace.EXIT_REFUSE_OVER_PACE
+    capsys.readouterr()
+
+    # The probe (which cannot mint while held) ledgers a later reading under the line.
+    recovery = NOW + timedelta(minutes=10)
+    pace.append_observed_reading(
+        observed_at=recovery,
+        weekly_used_percent=4.0,
+        weekly_resets_at=WEEKLY_RESET,
+        five_hour_used_percent=1.0,
+        five_hour_resets_at=recovery + timedelta(hours=3),
+        source_ref="probe",
+        now=recovery,
+    )
+
+    rc = _run(
+        [
+            "check",
+            *_base_args(tmp_path, receipts),
+            "--now",
+            recovery.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["decision"] == "allow"
+    assert payload["weekly_used_percent"] == pytest.approx(4.0)
+
+
+def test_a_ledger_row_without_a_receipt_is_still_a_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """A reading whose only durable home is the governor's own ledger is still a reading."""
+    _sink_root(tmp_path, monkeypatch)
+    pace = _pace()
+    empty = tmp_path / "no-receipts"
+    empty.mkdir()
+    pace.append_observed_reading(
+        observed_at=NOW,
+        weekly_used_percent=4.0,
+        weekly_resets_at=WEEKLY_RESET,
+        five_hour_used_percent=1.0,
+        five_hour_resets_at=NOW + timedelta(hours=3),
+        source_ref="probe",
+        now=NOW,
+    )
+    capsys.readouterr()
+
+    rc = _run(["check", *_base_args(tmp_path, empty), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["weekly_used_percent"] == pytest.approx(4.0)
 
 
 def test_a_launch_mint_over_the_line_is_still_refused(
@@ -673,10 +753,40 @@ def test_deactivate_reports_an_absent_marker_and_refuses_a_malformed_one(
     assert _run(["deactivate", "--activation", str(marker), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "not_activated"
 
+    # A marker that PARSES but is not this marker (claude, round 2): the malformed branch, distinct
+    # from the unreadable one the invalid-JSON case below trips.
+    marker.write_text(json.dumps({"note": "not a marker"}) + "\n", encoding="utf-8")
+    assert _run(["deactivate", "--activation", str(marker), "--json"]) == pace.EXIT_REFUSE_UNKNOWN
+    capsys.readouterr()
+    assert marker.exists() is True
+
     marker.write_text("not: [a, marker]\n", encoding="utf-8")
     assert _run(["deactivate", "--activation", str(marker), "--json"]) == pace.EXIT_REFUSE_UNKNOWN
     capsys.readouterr()
     assert marker.exists() is True
+
+
+def test_deactivate_creates_the_archive_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """codex round 2: the archive is created with O_EXCL, not by checking then writing.
+
+    A check-then-write left a race another deactivation could win. Patching the exclusive open to
+    fail reaches only a create-once implementation, and the live marker must survive it.
+    """
+    marker = _marker(tmp_path)
+    pace = _pace()
+
+    def _exists(*_args: Any, **_kwargs: Any) -> int:
+        raise FileExistsError("already created")
+
+    monkeypatch.setattr(os, "open", _exists)
+    rc = _run(["deactivate", "--activation", str(marker), "--json"])
+    capsys.readouterr()
+
+    assert rc == pace.EXIT_REFUSE_UNKNOWN
+    assert marker.exists() is True
+    assert pace.armed(marker)[0] is True
 
 
 def test_an_observed_reading_ledgers_the_governors_own_payload_shape(
@@ -691,6 +801,7 @@ def test_an_observed_reading_ledgers_the_governors_own_payload_shape(
         weekly_used_percent=7.0,
         weekly_resets_at=WEEKLY_RESET,
         five_hour_used_percent=2.0,
+        five_hour_resets_at=NOW + timedelta(hours=3),
         source_ref="probe",
         now=NOW,
     )
@@ -701,6 +812,8 @@ def test_an_observed_reading_ledgers_the_governors_own_payload_shape(
     assert payload["weekly_observed_at"] == "2026-09-25T23:00:00Z"
     assert payload["line_percent"] == pytest.approx(LINE_AT_NOW, abs=0.01)
     assert payload["over_line"] is False
+    # The AGE of the reading, not the window's elapsed time: the two differ by the whole window.
+    assert payload["reading_age_seconds"] == 0
 
 
 def test_activate_writes_the_marker_create_once(

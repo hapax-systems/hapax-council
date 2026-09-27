@@ -776,6 +776,7 @@ def ledger_probe_reading(evidence: Observation, *, now: datetime) -> dict | None
         weekly_used_percent=float(weekly[0]),
         weekly_resets_at=weekly[1],
         five_hour_used_percent=None if five_hour is None else float(five_hour[0]),
+        five_hour_resets_at=None if five_hour is None else five_hour[1],
         source_ref=evidence.source,
         now=now,
     )

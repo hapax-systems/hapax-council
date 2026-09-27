@@ -21,13 +21,29 @@ launches while the pool is over that line.
 The probe mints a reading every ten minutes (`PROBE_CADENCE`); `record` runs on its own slower
 timer. Two consequences, both fixed in the same change:
 
-- a reading is admissible when a ledger row names it **within one cadence**, so the slower tick no
-  longer refuses a reading the governor has just measured (the measured 10:04Z-refuse / 10:06Z-allow
-  lag);
+- a reading is admissible when its OWN ledger row exists, with one cadence of tolerance on capture
+  lag, so the slower tick no longer refuses a reading the governor has just measured (the measured
+  10:04Z-refuse / 10:06Z-allow lag);
 - the **probe ledgers its own reading** through `hapax-claude-pool-pace`'s payload builder, so no
   lane waits on the pace tick at all.
 
-An exact-timestamp requirement, a row more than one cadence away, or no row at all still refuses.
+The check binds to the reading's IDENTITY: the ledger row must name this very reading, so an earlier probe's row
+cannot admit a later probe's mint. The cadence is only the tolerance on capture lag. A row naming a different reading,
+a row past that tolerance, or no row at all still refuses; a failed ledger append admits nothing, and the
+probe exits nonzero without minting.
+
+The governor also READS its own ledger (`ledger_readings`), so a reading the probe ledgered is a reading `check`
+evaluates. Without that, a held governor could not see the pool recover: while the gate holds the probe's admission
+mint there is no new receipt, and receipts plus headless traces were the only sources.
+
+Recheck the claims above:
+
+```bash
+uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic --with prometheus-client --with httpx \
+  pytest tests/scripts/test_hapax_claude_pool_pace.py tests/scripts/test_hapax_claude_account_live_observe.py
+scripts/hapax-claude-pool-pace deactivate --reason "<why>" --by seat   # archive is create-once, marker retired
+scripts/hapax-claude-pool-pace status --json                          # armed + decision consistent with the line
+```
 
 ## Disarming, and the interim drop-in
 
