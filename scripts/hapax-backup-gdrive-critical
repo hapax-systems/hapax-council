@@ -144,7 +144,8 @@ materialize_validated_dump() {
         echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
         exit 1
     }
-    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long "$snap_id" 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    # The file's listing line only (mode starts with "-"), never the "snapshot … of [paths]" header.
+    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long "$snap_id" 2>/dev/null | grep -E '^-.* /[^ ]*/postgres-all\.sql$' | head -1)" || true
     [[ -n "$listing" ]] || {
         echo "ERROR: Tier-1 snapshot $snap_id contains no postgres-all.sql" >&2
         echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2

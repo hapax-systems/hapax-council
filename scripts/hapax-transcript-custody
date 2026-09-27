@@ -175,7 +175,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
     targets = list(cur.get("paths") or [])
     prev_targets = list((prev or {}).get("paths") or [])
     paths = sorted(set(targets) | set(prev_targets) | {p.real for p in res.paths})
-    current = tc.count_snapshot(_nodes(env, cur["id"]), paths)
+    nodes = list(_nodes(env, cur["id"]))
+    current = tc.count_snapshot(nodes, paths)
     previous = tc.count_snapshot(_nodes(env, prev["id"]), paths) if prev else None
     failures = tc.verify(
         res.paths,
@@ -183,6 +184,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         snapshot_targets=targets,
         previous=previous,
         previous_targets=prev_targets,
+        snapshot_credentials=tc.credential_nodes(nodes),
     ) + list(res.problems)
     print(
         json.dumps(

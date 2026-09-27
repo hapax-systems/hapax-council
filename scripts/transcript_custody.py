@@ -240,6 +240,24 @@ def count_snapshot(nodes: Iterable[Mapping], paths: Sequence[str]) -> dict[str, 
     return counts
 
 
+def credential_nodes(nodes: Iterable[Mapping]) -> list[str]:
+    """Every credential file anywhere in a ``restic ls --json`` node stream, not only under the expected paths: a
+    snapshot with an extra target (an ``auth.json`` passed by hand, say) must fail too."""
+
+    found = []
+    for node in nodes:
+        if not isinstance(node, Mapping) or node.get("struct_type", "node") != "node":
+            continue
+        npath = node.get("path")
+        if (
+            node.get("type") == "file"
+            and isinstance(npath, str)
+            and is_credential(os.path.basename(npath))
+        ):
+            found.append(npath)
+    return found
+
+
 def verify(
     expected: Sequence[ResolvedPath],
     current: Mapping[str, PathCount],
@@ -248,10 +266,18 @@ def verify(
     previous: Mapping[str, PathCount] | None = None,
     previous_targets: Sequence[str] = (),
     max_drop: float = MAX_DROP,
+    snapshot_credentials: Sequence[str] = (),
 ) -> list[str]:
-    """Every failure of the snapshot against what the host holds now and what the previous snapshot held."""
+    """Every failure of the snapshot against what the host holds now and what the previous snapshot held.
+
+    ``snapshot_credentials`` is :func:`credential_nodes` over the whole snapshot; any credential there fails the
+    snapshot, wherever it sits."""
 
     failures: list[str] = []
+    reported = {f for c in current.values() for f in c.credential_files}
+    stray = sorted(set(snapshot_credentials) - reported)
+    if stray:
+        failures.append(f"credential: the snapshot holds credential file(s) {stray[:3]}")
     symlinked: set[str] = set()
     for rp in expected:
         c = current.get(rp.real)

@@ -263,6 +263,49 @@ def test_cli_backup_then_verify_end_to_end(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
+def test_cli_verify_fails_a_snapshot_with_a_stray_credential_target(tmp_path: Path) -> None:
+    """Every transcript path present and healthy, plus one extra target that is a credential file: verify must
+    fail, because the predicate is "no credential in the snapshot", not "none under the expected paths"."""
+
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    home = _home(tmp_path)
+    env = _cli_env(tmp_path, home)
+    subprocess.run(["restic", "init"], env=env, capture_output=True, check=True, timeout=120)
+    stray = tmp_path / "elsewhere" / "auth.json"
+    stray.parent.mkdir()
+    stray.write_text('{"token":"not-a-real-secret"}')
+    real_paths = [p.real for p in tc.resolve_paths(home).paths]
+    # The same tag and host as the unit's snapshots, with the credential passed as an extra target (no excludes).
+    subprocess.run(
+        ["restic", "backup", "--tag", tc.SNAPSHOT_TAG, *real_paths, str(stray)],
+        env=env,
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+    result = _cli(env, "verify")
+    assert result.returncode == 1
+    assert "credential: the snapshot holds" in result.stderr and "auth.json" in result.stderr
+
+
+def test_cli_inventory_json_and_problem_exit(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    env = _cli_env(tmp_path, home)
+    ok = _cli(env, "inventory", "--json")
+    assert ok.returncode == 0, ok.stderr
+    rows = {r["real"]: r for r in json.loads(ok.stdout)["paths"]}
+    codex = str(tmp_path / "data2/agent-state/codex/sessions")
+    assert rows[codex]["files"] == 1 and rows[codex]["via_symlink"] is True
+    assert rows[str(home / ".claude/projects")]["files"] == 2
+    # a dangling symlink is a problem: exit 1, reported
+    shutil.rmtree(tmp_path / "data2")
+    bad = _cli(env, "inventory", "--json")
+    assert bad.returncode == 1
+    assert any("dangling" in p for p in json.loads(bad.stdout)["problems"])
+
+
+@pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
 def test_cli_refuses_a_missing_repository(tmp_path: Path) -> None:
     env = _cli_env(tmp_path, _home(tmp_path))  # no `restic init`: an unmounted NAS looks like this
     result = _cli(env, "backup")

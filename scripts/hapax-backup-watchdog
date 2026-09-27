@@ -160,7 +160,10 @@ check_postgres_dump_in_snapshot() {
         return
     }
     local listing
-    listing="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic ls --long "$snap_id" 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    # Match the file's listing line (a regular file: the mode starts with "-"), never the "snapshot … of [paths]"
+    # header, which names postgres-all.sql when the dump is itself a backup target (the R2 repository). The header
+    # made "could not parse dump size" a standing false failure (09-25, 09-26).
+    listing="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic ls --long "$snap_id" 2>/dev/null | grep -E '^-.* /[^ ]*/postgres-all\.sql$' | head -1)" || true
     [[ -z "$listing" ]] && { FAILURES+=("$label: snapshot $snap_id contains NO postgres-all.sql"); return; }
     local size
     size="$(echo "$listing" | tr -s " " | cut -d" " -f4)"
