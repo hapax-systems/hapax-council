@@ -6042,7 +6042,14 @@ def test_head_locked_provider_spend_release_still_blocks_revalidation(
     )
     _write_governance_review_dossier(vault, "already-armed-provider-spend-surface", 770)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(770, branch="feat/770")]
+    # The task id keyword-derives provider_billing_sensitive, and the classify
+    # verdict now replays the mitigation-evidence read before the boundary is
+    # reached (2026-09-26 fix). The billing-surface-scan SUCCESS supplies that
+    # evidence so this test still exercises the boundary — which must block on
+    # the provider_spend surface, the blocker no evidence waives.
+    runner.open_prs = [
+        _pr(770, branch="feat/770", checks=[*_governance_mitigation_checks(), _check("billing-surface-scan")])
+    ]
 
     report = autoqueue.run_reconciler(
         repo="owner/repo",
@@ -8215,8 +8222,14 @@ def test_release_head_boundary_revalidates_current_task_gate_before_queue(
             "stage": "S7_RELEASE",
         },
     )
+    # The task id keyword-derives governance_sensitive, and the classify
+    # verdict now replays the mitigation-evidence read before the boundary is
+    # reached (2026-09-26 fix). The dossier and authority-case-check supply
+    # that evidence so this test still exercises the boundary — which must
+    # revalidate the CURRENT task gate (authority revoked mid-flight).
+    _write_governance_review_dossier(vault, "already-armed-governance-revoked-before-boundary", 740)
     runner = _FakeRunner()
-    runner.open_prs = [_pr(740)]
+    runner.open_prs = [_pr(740, checks=_governance_mitigation_checks())]
     original_boundary = autoqueue._release_head_boundary_blocker
 
     def remove_authority_before_boundary(decision: Any, **kwargs: Any) -> str | None:
@@ -11379,3 +11392,118 @@ def test_queued_pr_missing_note_only_holds_and_posts_pending(tmp_path: Path) -> 
     assert "state=pending" in posts[0]
     assert "state=failure" not in posts[0]
     assert any("vault task note" in part or "missing_cc_task_link" in part for part in posts[0])
+
+
+# --- Armed-task mitigation-evidence recheck at classify time (2026-09-26) ---
+#
+# #4784 on 2026-09-26: an ARMED task whose sensitive class had no mitigation
+# gate classified as `queue` with blockers [] — the auto-arm block only fires
+# for tasks needing arming — while the release-head boundary replayed the same
+# evidence at apply time and re-blocked it (release_head_revalidation_failed:
+# current_release_auto_arm_blocked:unmitigable_risk_flag:provider_billing_
+# sensitive). The seat read the classify verdict as admissible. The classify
+# read must surface the same mitigation-evidence blockers the boundary replays.
+
+
+def _write_armed_billing_task(vault: Path, task_id: str, pr: int) -> Path:
+    return _write_task(
+        vault,
+        task_id=task_id,
+        status="pr_open",
+        pr=pr,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": f"sha-{pr}",
+            "release_authorized_head_ref": f"feat/{pr}",
+            "risk_flags": {"provider_billing_sensitive": True},
+        },
+    )
+
+
+def test_armed_billing_task_without_scan_evidence_is_held_at_classify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    vault = _make_vault(tmp_path)
+    _write_armed_billing_task(vault, "armed-billing-no-scan", 733)
+    _write_review_dossier(vault, "armed-billing-no-scan", head_sha="sha-733", pr=733)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(733)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    decision = next(d for d in report["decisions"] if d["pr"] == 733)
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == [
+        "release_auto_arm_evidence_recheck:"
+        "needs_mitigation:provider_billing_sensitive:billing-surface-scan"
+    ]
+
+
+def test_armed_billing_task_with_scan_evidence_keeps_queue_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    vault = _make_vault(tmp_path)
+    _write_armed_billing_task(vault, "armed-billing-with-scan", 734)
+    _write_review_dossier(vault, "armed-billing-with-scan", head_sha="sha-734", pr=734)
+    runner = _FakeRunner()
+    runner.open_prs = [
+        _pr(734, checks=[*_governance_mitigation_checks(), _check("billing-surface-scan")])
+    ]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    decision = next(d for d in report["decisions"] if d["pr"] == 734)
+    assert decision["action"] == "queue"
+    assert not any(
+        reason.startswith("release_auto_arm_evidence_recheck")
+        for reason in decision.get("reasons", [])
+    )
+
+
+def test_unarmed_task_classify_is_not_recchecked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The recheck exists for armed tasks only; an unarmed billing-flagged task
+    # already reports its blockers through release_auto_arm_ineligible.
+    monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="unarmed-billing",
+        status="pr_open",
+        pr=735,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {"provider_billing_sensitive": True},
+        },
+    )
+    _write_review_dossier(vault, "unarmed-billing", head_sha="sha-735", pr=735)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(735)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    decision = next(d for d in report["decisions"] if d["pr"] == 735)
+    assert decision["action"] == "blocked"
+    assert decision["reasons"] == [
+        "release_auto_arm_ineligible:"
+        "needs_mitigation:provider_billing_sensitive:billing-surface-scan"
+    ]
