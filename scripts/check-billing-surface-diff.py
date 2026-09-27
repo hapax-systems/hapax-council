@@ -45,10 +45,11 @@ decided differently:
   earlier or chained call. A call is reported only when an ADDED line falls
   inside it, so a pre-existing call in the context lines is not this change's
   surface.
-- **Non-Python** — the line patterns apply and there is **no exemption of any
-  kind**: nothing there can bind an exemption to the operation that carries the
-  credential, so every pattern hit in such a file is a finding, per line and per
-  statement alike.
+- **Non-Python** — the line patterns apply and there is **no structural
+  exemption**: nothing there can bind an exemption to the operation that carries
+  the credential, so every pattern hit in such a file is a finding, per line and
+  per statement alike. The visible marker on an **allowlisted path** is the only
+  exemption a non-Python file can carry, and it is shared with every file kind.
 
 Every exemption the scan grants is printed as ``allowed`` with its path and line,
 so review sees each one: a Python ``Call`` genuinely bound to the governed proxy,
@@ -57,14 +58,17 @@ the **target node alone** of a Python protective strip
 read elsewhere on the line, and never the strip's own default argument), and a line
 carrying the visible ``billing-scan:allow`` marker on an allowlisted path. **A proxy
 name anywhere else never exempts a line, a strip's other children are scanned as
-ordinary code, and a non-Python file is granted no exemption at all.**
+ordinary code, and no non-Python file is granted a structural exemption — the
+marker on an allowlisted fixture path is the only kind it can carry.**
 
 Fail-closed paths, so the absence of a finding is never an accident: a Python
 region that does not parse is never exempt (the line rules apply), and if it is
 credential-bearing while those rules cannot match, it becomes a
-``billing-scan-unusable-input`` finding. A file whose header arrives with no
-hunk and no binary note is the same kind of finding, because its content was
-never read.
+``billing-scan-unusable-input`` finding. An **incomplete section** is the same kind
+of finding, because its content was never read, and completeness is judged from the
+input rather than from the file's class: a section is whole when it shows a hunk, a
+binary note, a mode-only change, a pure rename, or an empty-file ``index``. An
+``index``-only header is a truncated content change, never a clean scan.
 
 Exit codes: 0 clean, 1 findings, 2 fail-closed (no usable diff input).
 """
@@ -108,17 +112,27 @@ ALLOW_MARKER_PATTERN_MODULES: tuple[str, ...] = ()
 
 
 def _marker_is_allowed_on(path: str) -> bool:
-    """True only on an allowlisted fixture or pattern-definition path."""
+    """True only on an allowlisted fixture or pattern-definition path.
+
+    **A path entry that names a FILE matches that file exactly; only an entry that ends in
+    ``/`` is a directory prefix.** The old ``startswith`` over both kinds admitted
+    ``scripts/check-billing-surface-diff.py_helper.py`` — a production file that merely
+    begins with an allowlisted file's name bought the self-exemption the allowlist exists to
+    deny (codex major, round 5).
+    """
 
     candidate = path.strip()
     if candidate in ALLOW_MARKER_PATTERN_MODULES:
         return True
-    return any(
-        candidate == entry
-        or candidate.startswith(entry)
-        or f"/{entry.strip('/')}/" in f"/{candidate}"
-        for entry in ALLOW_MARKER_PATH_ALLOWLIST
-    )
+    for entry in ALLOW_MARKER_PATH_ALLOWLIST:
+        if entry.endswith("/"):
+            # A directory entry matches at the repo root only: `tests/x.py` yes,
+            # `notests/x.py` no (the entry keeps its trailing slash), `pkg/tests/x.py` no.
+            if candidate.startswith(entry):
+                return True
+        elif candidate == entry:
+            return True
+    return False
 
 
 def _marker_outside_fixtures_finding(path: str, line_no: int, text: str) -> Finding:
@@ -275,6 +289,64 @@ def _is_doc_path(path: str) -> bool:
     return lowered.endswith(_DOC_SUFFIXES) or lowered.startswith("docs/")
 
 
+#: The short form of git's empty blob (``e69de29bb2d1d6434b8b29ae775ad8c2e48c5391``). An
+#: ``index`` line that names it on one side and the all-zero object on the other is how git
+#: describes a file that is empty on one side — a COMPLETE section with no content, not a
+#: truncated one.
+_EMPTY_BLOB_SHORT = "e69de29"
+
+
+def _section_marks() -> dict[str, bool]:
+    """A fresh mark set for one ``diff --git`` section."""
+
+    return {
+        "preamble": False,  # any `index`/mode/rename line arrived
+        "hunk": False,
+        "binary": False,
+        "file_section": False,  # `---` arrived, so `+++` follows
+        "old_mode": False,
+        "new_mode": False,
+        "rename_from": False,
+        "rename_to": False,
+        "empty_blob": False,
+    }
+
+
+def _fold_index_marks(marks: dict[str, bool], raw: str) -> None:
+    """Record what an ``index <old>..<new> [mode]`` line proves about the section."""
+
+    body = raw[len("index ") :].split()
+    if not body:
+        return
+    old, _, new = body[0].partition("..")
+    marks["preamble"] = True
+    marks["empty_blob"] = (old == "0000000" and new.startswith(_EMPTY_BLOB_SHORT)) or (
+        new == "0000000" and old.startswith(_EMPTY_BLOB_SHORT)
+    )
+
+
+def _section_is_complete(marks: dict[str, bool]) -> bool:
+    """True only when the input shows a whole section — contentless forms included.
+
+    Complete means one of: a hunk, a binary note, a **mode-only** change
+    (``old mode`` + ``new mode``), a **pure rename** (``rename from`` + ``rename to``, or
+    the ``copy`` pair), or an **empty file** creation/deletion (the empty-blob ``index``).
+    Those last three legitimately carry no ``---``/``+++`` and no hunk.
+
+    Anything else is an **incomplete** section, and an incomplete section must never read as
+    a clean scan (codex critical, round 5): an ``index``-only header is a truncated content
+    change, and it used to clear the old ``saw_header_only`` flag and escape every check.
+    """
+
+    return bool(
+        marks["hunk"]
+        or marks["binary"]
+        or marks["empty_blob"]
+        or (marks["old_mode"] and marks["new_mode"])
+        or (marks["rename_from"] and marks["rename_to"])
+    )
+
+
 def _host_of(target: str) -> str:
     """Reduce a route target to its host, for governed-proxy comparison."""
 
@@ -316,7 +388,7 @@ EXEMPTION_SITES: dict[str, str] = {
     "proxy": "per ast.Call: that call's own literal base_url/api_base/endpoint target",
     "protective_strip": "per ast node: ONLY the target node of os.environ.pop(<literal>[, default]) or del os.environ[<literal>]; every other child, the default argument included, is scanned",
     "allow_marker": "path-allowlisted comment (tests/**, the scanner's own source); applies to the marked line's nodes only",
-    "text_path_non_python": "none: non-Python files, and Python text that did not parse, grant no exemption of any kind",
+    "text_path_non_python": "none: non-Python files, and Python text that did not parse, grant no structural exemption (the marker site is the only one they can carry)",
 }
 #: The functions that implement the AST-decided sites. The guard test
 #: (`tests/scripts/test_check_billing_surface_diff.py::test_no_exemption_is_decided_from_line_content`)
@@ -589,10 +661,33 @@ def scan_unified_diff(text: str) -> ScanResult:
     new_line = 0
     region: list[tuple[int, str, bool]] = []
     saw_hunk = False
-    binary_section = False
-    saw_header_only = False
     previous_header_path: str | None = None
+    marks = _section_marks()
     marked_lines_emitted: set[tuple[str, int]] = set()
+
+    def emit_incomplete(blocking_path: str, where: str) -> None:
+        """One finding per section the input never finished delivering.
+
+        The completeness of a section is a property of the INPUT, not of the file's class,
+        so this fires for doc files too: a truncated diff is unusable whatever got cut.
+        `blocking_path` is the file the section belongs to (or the `diff --git` target when
+        no file section arrived), and `where` says which end of the diff cut it.
+        """
+
+        findings.append(
+            Finding(
+                path=blocking_path or "(unknown path)",
+                line=0,
+                kind="billing-scan-unusable-input",
+                text=(
+                    f"the diff ends {where} with an INCOMPLETE section for this file: no "
+                    "hunk, no binary note, and none of the contentless forms git emits "
+                    "whole (mode-only change, pure rename, empty file). An `index`-only "
+                    "header is a truncated content change. Next action: regenerate the "
+                    "diff so every section is complete."
+                ),
+            )
+        )
 
     def emit_line(kinds: tuple[str, ...], line_no: int, content: str) -> None:
         """Record one added line's kinds, applying the marker decision.
@@ -686,56 +781,55 @@ def scan_unified_diff(text: str) -> ScanResult:
     for raw in text.splitlines():
         if raw.startswith("diff --git "):
             flush()
-            if path is not None and not skip_file and not saw_hunk and not binary_section:
-                # codex major, round 2: a file header with no usable hunk and no binary
-                # note means the file's content was never read — unusable input, not a
-                # clean scan.
-                findings.append(
-                    Finding(
-                        path=path,
-                        line=0,
-                        kind="billing-scan-unusable-input",
-                        text=(
-                            "the diff carries this file's header but no hunk and no binary "
-                            "note, so no added line could be read. Next action: regenerate "
-                            "the diff (the file's content must be present) or confirm the "
-                            "change is binary."
-                        ),
-                    )
-                )
-            elif saw_header_only:
-                # codex major, round 3: a `diff --git` header with NO file section at all
-                # (`---`/`+++`) is the fourth fail-open arm of this kind — nothing about the
-                # file was ever read, so it must not report success.
-                findings.append(
-                    Finding(
-                        path=previous_header_path or "(unknown path)",
-                        line=0,
-                        kind="billing-scan-unusable-input",
-                        text=(
-                            "a `diff --git` header arrived with no file section, so no added "
-                            "line could be read. Next action: regenerate the diff so each file "
-                            "carries its `---`/`+++` section and hunk."
-                        ),
-                    )
+            # The section that just ended must have arrived WHOLE (round 2's no-hunk arm,
+            # round 3's no-file-section arm and round 5's index-only-header arm are all the
+            # same defect: a section the input never finished delivering reading as clean).
+            # The first header opens the diff, so there is no previous section to judge.
+            if previous_header_path is not None and not _section_is_complete(marks):
+                emit_incomplete(
+                    path or previous_header_path or "", where="before the next file header"
                 )
             path = None
             skip_file = True
             saw_hunk = False
-            binary_section = False
             previous_header_path = raw[len("diff --git ") :].split(" b/")[-1].strip()
-            saw_header_only = True
+            marks = _section_marks()
             continue
         if raw.startswith("Binary files ") or raw.startswith("GIT binary patch"):
-            binary_section = True
-            saw_header_only = False  # a section DID arrive; it is simply binary
+            marks["binary"] = True  # a section DID arrive; it is simply binary
             continue
-        if raw.startswith("index ") or raw.startswith("old mode") or raw.startswith("new mode"):
-            saw_header_only = False  # the section's preamble arrived
+        if raw.startswith("index "):
+            _fold_index_marks(marks, raw)
             continue
-        if raw.startswith("+++ "):
+        if raw.startswith("old mode"):
+            marks["old_mode"] = True
+            marks["preamble"] = True
+            continue
+        if raw.startswith("new mode"):
+            marks["new_mode"] = True
+            marks["preamble"] = True
+            continue
+        if raw.startswith(("new file mode", "deleted file mode")):
+            marks["preamble"] = True
+            continue
+        if raw.startswith(("rename from", "copy from")):
+            marks["rename_from"] = True
+            marks["preamble"] = True
+            continue
+        if raw.startswith(("rename to", "copy to")):
+            marks["rename_to"] = True
+            marks["preamble"] = True
+            continue
+        if raw.startswith(("similarity index", "dissimilarity index")):
+            marks["preamble"] = True
+            continue
+        if raw.startswith("--- ") and not marks["hunk"]:
+            marks["file_section"] = True
+            marks["preamble"] = True
+            continue
+        if raw.startswith("+++ ") and not marks["hunk"]:
             flush()
-            saw_header_only = False
+            marks["preamble"] = True
             candidate = raw[4:].strip()
             if candidate == "/dev/null":
                 path = None
@@ -747,13 +841,17 @@ def scan_unified_diff(text: str) -> ScanResult:
             if not skip_file:
                 scanned.append(path)
             continue
-        if skip_file or path is None:
-            continue
+        # Hunk headers are counted for EVERY section, doc files included: whether the input
+        # arrived whole is a property of the diff, not of the file's class (a truncated diff
+        # is unusable whatever got cut), so the mark must be set before the scan-skip test.
         header = _HUNK_HEADER_RE.match(raw)
         if header:
             flush()
             saw_hunk = True
+            marks["hunk"] = True
             new_line = int(header.group(1))
+            continue
+        if skip_file or path is None:
             continue
         if raw.startswith("-"):
             continue
@@ -764,31 +862,10 @@ def scan_unified_diff(text: str) -> ScanResult:
         region.append((new_line, raw[1:] if raw.startswith(" ") else raw, False))
         new_line += 1  # context line
     flush()
-    if saw_header_only:
-        findings.append(
-            Finding(
-                path=previous_header_path or "(unknown path)",
-                line=0,
-                kind="billing-scan-unusable-input",
-                text=(
-                    "the diff ends with a `diff --git` header and no file section, so no "
-                    "added line could be read. Next action: regenerate the diff."
-                ),
-            )
-        )
-    if path is not None and not skip_file and not saw_hunk and not binary_section:
-        findings.append(
-            Finding(
-                path=path,
-                line=0,
-                kind="billing-scan-unusable-input",
-                text=(
-                    "the diff ends with this file's header but no hunk and no binary "
-                    "note, so no added line could be read. Next action: regenerate the "
-                    "diff or confirm the change is binary."
-                ),
-            )
-        )
+    # Only a section that was actually OPENED can be incomplete: an empty input has no
+    # section to be whole, and `main()` already fails that closed on its own terms.
+    if previous_header_path is not None and not _section_is_complete(marks):
+        emit_incomplete(path or previous_header_path or "", where="at the end of the diff")
     return ScanResult(
         findings=tuple(findings),
         allowed=tuple(allowed),
