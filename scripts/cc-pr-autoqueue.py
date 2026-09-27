@@ -3025,6 +3025,29 @@ def classify_pr(
                 auto_arm_verified_checks = tuple(sorted(verified_checks))
             else:
                 reasons.append("release_auto_arm_ineligible:" + ",".join(arm.blockers))
+        elif arm.armed:
+            # An armed task carries no needs_arming read, so the block above
+            # never re-checks it — yet the release-head boundary replays the
+            # same evidence at apply time and re-blocks on it (#4784, 2026-09-26:
+            # the verdict read `queue` with no blockers while the revalidation
+            # failed closed on unmitigable_risk_flag:provider_billing_sensitive,
+            # which misled the seat into reading the PR as admissible). Surface
+            # the sensitive-class mitigation-evidence blockers here so the
+            # verdict agrees with the boundary. Deliberately narrow: the other
+            # blocker classes (implementation authorization, route metadata,
+            # AVSDLC) have their own classify-time reads; only the
+            # mitigation-evidence blockers were invisible here.
+            recheck = tuple(
+                blocker
+                for blocker in _release_auto_arm_current_evidence_blockers(
+                    task.frontmatter,
+                    verified_checks=verified_checks,
+                    changed_files=pr.files,
+                )
+                if blocker.startswith(("unmitigable_risk_flag:", "needs_mitigation:"))
+            )
+            if recheck:
+                reasons.append("release_auto_arm_evidence_recheck:" + ",".join(recheck))
 
     expected_method = _normalize_merge_method(expected_auto_merge_method)
     expected_method_unverified = expected_method is None
