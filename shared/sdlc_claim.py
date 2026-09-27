@@ -21,7 +21,7 @@ import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6241,6 +6241,11 @@ def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Pa
     return None
 
 
+def _frontmatter_value(note: Path, key: str) -> str:
+    match = re.search(rf"^{key}:[ \t]*(.*)$", note.read_text(encoding="utf-8"), re.MULTILINE)
+    return match.group(1).strip().strip("\"'") if match else ""
+
+
 def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
     task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
     if task_path is None:
@@ -6364,7 +6369,7 @@ def archive_dispatch_only_claim_residue(
 class ClaimResidueRelease:
     """What one governed release of a role's claim residue did."""
 
-    shape: Literal["held_publication", "lapsed_lease", "closed_task"]
+    shape: Literal["held_publication", "lapsed_lease", "closed_task", "reassigned_task"]
     publication_id: str
     archive_dir: Path
     archived: tuple[Path, ...]
@@ -6513,7 +6518,9 @@ def _copy_verified(content: bytes, mode: int, target: Path) -> None:
 
 def _staged_original(projection: FileProjection, journal: _RoleTaskJournal) -> Path | None:
     """An earlier run's moved original of this file, if a crash left it staged in the cache
-    before its lineage copy: exactly the journal's after-image, under this role and task."""
+    before its lineage copy: in a staging directory bound to THIS journal's publication_id,
+    and exactly its after-image. Another journal's staging proves nothing, even with the same
+    bytes (a revert)."""
 
     root = (
         _normalized(journal.intent.cache_dir)
@@ -6523,12 +6530,16 @@ def _staged_original(projection: FileProjection, journal: _RoleTaskJournal) -> P
     suffix = f"-{_safe_lineage_component(journal.intent.role)}"
     for directory in sorted(root.iterdir()) if root.is_dir() else ():
         candidate = directory / projection.path.name
-        if not directory.name.endswith(suffix) or candidate.is_symlink():
+        if not (directory.is_dir() and directory.name.endswith(suffix)) or candidate.is_symlink():
             continue
         try:
-            if _file_state(candidate) == (projection.after, projection.after_mode):
+            bound = (directory / "PUBLICATION").read_text(encoding="ascii").strip()
+            if bound == journal.publication_id and _file_state(candidate) == (
+                projection.after,
+                projection.after_mode,
+            ):
                 return candidate
-        except LifecycleTransitionError:
+        except (LifecycleTransitionError, OSError, UnicodeError):
             continue
     return None
 
@@ -6663,6 +6674,17 @@ def _archive_residue(
         )
     archive_dir.mkdir(parents=True, exist_ok=True)
     os.makedirs(staging_dir, mode=0o700, exist_ok=True)
+    # Bind the staging to this journal: a crashed run's staged originals are recovered only by
+    # a rerun for the same publication (see _staged_original).
+    with suppress(FileExistsError):
+        with (staging_dir / "PUBLICATION").open("x", encoding="ascii") as bound:
+            bound.write(f"{journal.publication_id}\n")
+    if (staging_dir / "PUBLICATION").read_text(encoding="ascii").strip() != journal.publication_id:
+        raise _release_hold(
+            "claim_residue_archive_collision",
+            f"{staging_dir} is bound to another publication",
+            "preserve it and inspect the staging directory",
+        )
     lines = [
         "Governed release of claim residue (cc-claim --release-claim-residue).",
         f"shape: {shape}",
@@ -6678,8 +6700,9 @@ def _archive_residue(
             for projection in present
         ),
     ]
-    with (archive_dir / "README.md").open("a", encoding="utf-8") as readme:  # never overwritten
-        readme.write("\n".join(lines) + "\n")
+    with suppress(FileExistsError):  # created once: never overwritten or duplicated
+        with (archive_dir / "README.md").open("x", encoding="utf-8") as readme:
+            readme.write("\n".join(lines) + "\n")
     archived = tuple(
         _archive_verified(projection, archive_dir, staging_dir, staged.get(projection.path))
         for projection in present
@@ -6851,16 +6874,23 @@ def _release_applied_residue(
             f"{others[0]} names {task_id} or cannot be read",
             f"inspect the marker at {others[0]}; until then treat the claim as live",
         )
-    shape: Literal["lapsed_lease", "closed_task"] = "lapsed_lease"
+    shape: Literal["lapsed_lease", "closed_task", "reassigned_task"] = "lapsed_lease"
     if any(_is_claim_activation_projection(projection) for projection in present):
         status = _task_status_for_any_state(vault_root, task_id)
-        if status not in TASK_TERMINAL_STATUSES or _task_in_active(vault_root, task_id):
+        note = _task_note_path_for_any_state(vault_root, task_id)
+        assignee = _frontmatter_value(note, "assigned_to") if note is not None else None
+        if status in TASK_TERMINAL_STATUSES and not _task_in_active(vault_root, task_id):
+            shape = "closed_task"
+        elif note is not None and note.parent.name == "active" and assignee != journal.intent.role:
+            # Re-offered or reassigned: the note no longer names this role. Publication writes
+            # the note before the markers, so these markers cannot be a live claim.
+            shape = "reassigned_task"
+        else:
             raise _release_hold(
                 "claim_residue_live_marker",
-                f"a marker names {task_id}, which is {status}",
+                f"a marker names {task_id}, which is {status} and assigned to this role",
                 "treat the claim as live: finish it and run cc-close",
             )
-        shape = "closed_task"
     archive_dir, archived = _archive_residue(
         present,
         journal=journal,
@@ -6897,6 +6927,8 @@ def release_claim_residue(
     - ``lapsed_lease``: markers absent; the residue matches an applied journal.
     - ``closed_task``: markers present, but the task is terminal and absent from ``active/``
       (it was closed from another process).
+    - ``reassigned_task``: markers present, but the active note no longer names this role (it
+      was re-offered or reassigned); publication writes the note before the markers.
 
     Anything else raises :class:`ClaimResidueArchiveHold` before the first mutation, except
     ``claim_residue_live_differed``, which stops mid-run keeping every byte moved.

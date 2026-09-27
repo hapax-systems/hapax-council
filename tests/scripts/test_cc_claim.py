@@ -2050,6 +2050,73 @@ def test_own_row_is_not_resumed_while_another_claim_marker_names_it(
     assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
 
 
+_OTHER_ROLE = {"HAPAX_AGENT_ROLE": "cx-other", "HAPAX_AGENT_NAME": "cx-other"}
+
+
+def test_an_unassigned_offered_row_is_not_claimed_while_a_foreign_marker_names_it(
+    tmp_path: Path,
+) -> None:
+    # #4804 round 1 (gemini; seat 04:05Z): the check holds for every claim, not only own rows.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "offered-row")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    live = cache / "cc-active-task-cx-other"
+    live.write_text("offered-row\n", encoding="utf-8")
+    before = note.read_bytes()
+
+    result = _claim(home, "offered-row")
+
+    assert result.returncode == 4
+    assert str(live) in result.stderr
+    assert note.read_bytes() == before
+
+
+def test_a_ready_state_resume_refuses_while_a_foreign_marker_names_the_row(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "review-row", status="pr_open", assigned_to="cx-test")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    live = cache / "cc-active-task-cx-other"
+    live.write_text("review-row\n", encoding="utf-8")
+    before = note.read_bytes()
+
+    result = _claim(home, "review-row")
+
+    assert result.returncode == 4
+    assert str(live) in result.stderr
+    assert note.read_bytes() == before
+
+
+def test_a_row_reoffered_over_a_stale_marker_is_unwedged_by_the_governed_release(
+    tmp_path: Path,
+) -> None:
+    # The seat re-offers a lapsed row by hand; the old claimant's markers stay. The new claim
+    # refuses on them, and the old claimant releases them: the note no longer names it, so they
+    # cannot be a live claim (publication writes the note before the markers).
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "reoffered-row")
+    assert _claim(home, "reoffered-row", extra_env=_OTHER_ROLE).returncode == 0
+    text = note.read_text(encoding="utf-8")
+    note.write_text(
+        text.replace("status: claimed", "status: offered", 1).replace(
+            "assigned_to: cx-other", "assigned_to: unassigned", 1
+        ),
+        encoding="utf-8",
+    )
+    refused = _claim(home, "reoffered-row")
+    assert refused.returncode == 4
+    assert "cc-active-task-cx-other" in refused.stderr
+
+    released = _release(home, "reoffered-row", extra_env=_OTHER_ROLE)
+
+    assert released.returncode == 0, released.stderr
+    assert "reassigned_task" in released.stdout
+    claimed = _claim(home, "reoffered-row")
+    assert claimed.returncode == 0, claimed.stderr
+    assert "assigned_to: cx-test" in note.read_text(encoding="utf-8")
+
+
 def test_an_own_offered_row_is_not_claimed_while_another_claim_marker_names_it(
     tmp_path: Path,
 ) -> None:

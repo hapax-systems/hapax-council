@@ -4943,6 +4943,7 @@ def test_an_earlier_archive_of_another_publication_does_not_count(tmp_path: Path
 
 
 def test_a_same_stamp_rerun_keeps_the_earlier_readme(tmp_path: Path) -> None:
+    # Neither overwritten nor duplicated: the README is created once per release directory.
     fixture, _journal, _projections = _held_publication(tmp_path)
     lineage = fixture.vault / "_lineage" / "task-alpha"
     archive = lineage / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
@@ -4951,4 +4952,84 @@ def test_a_same_stamp_rerun_keeps_the_earlier_readme(tmp_path: Path) -> None:
 
     _release_held(fixture)
 
-    assert (archive / "README.md").read_text(encoding="utf-8").startswith("an earlier run\n")
+    assert (archive / "README.md").read_text(encoding="utf-8") == "an earlier run\n"
+
+
+def _staged_copy(
+    fixture: ClaimFixture, publication_id: str, projection: object, content: bytes
+) -> None:
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / "20260101T000000Z-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"{publication_id}\n", encoding="utf-8")
+    staged = staging / projection.path.name
+    staged.write_bytes(content)
+    os.chmod(staged, projection.after_mode)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["another-journal-same-bytes", "this-journal-other-bytes"],
+    ids=["revert-of-another-journal", "rejection-path"],
+)
+def test_a_staged_file_of_another_journal_or_with_other_bytes_is_not_recovered(
+    tmp_path: Path, case: str
+) -> None:
+    # #4804 round 1 (codex critical; gemini): a staged original must be this journal's own.
+    # Another journal's staging with byte-identical content (a revert) proves nothing.
+    fixture, journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    first.path.unlink()
+    if case == "another-journal-same-bytes":
+        _staged_copy(fixture, f"claim-pub-{'0' * 64}", first, first.after)
+    else:
+        _staged_copy(fixture, journal.name, first, first.after + b" ")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_an_applied_release_finishes_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #4804 round 1 (claude, codex): the applied (lapsed-lease) path's crash-window recovery.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    for marker in fixture.cache.glob("cc-active-task-cx-red*"):
+        marker.unlink()  # the lease lapsed
+    root = fixture.cache / "claim-residue-release" / "task-alpha"
+    (root / "19990101T000000Z-cx-red").mkdir(parents=True)  # a stale, empty staging directory
+    (root / "stray-file").write_text("not a directory\n", encoding="utf-8")
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "lapsed_lease"
+    assert not any(fixture.cache.glob("cc-claim-*-cx-red*"))
+    assert len(released.archived) == 4

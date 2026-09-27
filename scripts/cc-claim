@@ -854,8 +854,9 @@ def _refuse_while_another_claim_holds(verb: str) -> None:
             f"cc-claim: refusing to {verb} '{task_id}' — another claim marker names it or cannot "
             "be read: "
             + ", ".join(str(path) for path in others)
-            + ". Next action: inspect it; a live claim is handed off to its lane, and this role's "
-            f"own lapsed residue is released with `cc-claim --release-claim-residue {task_id}`.",
+            + ". Next action: inspect it. A live claim is handed off to its lane. Residue the note "
+            "no longer names (a re-offered row) is released by the lane that owns the marker, "
+            f"with `cc-claim --release-claim-residue {task_id}`.",
             file=sys.stderr,
         )
         sys.exit(4)
@@ -877,7 +878,6 @@ if status in TASK_CLAIMABLE_STATUSES:
                 file=sys.stderr,
             )
             sys.exit(4)
-        _refuse_while_another_claim_holds("claim")
     claim_mode = "claim"
 elif status in READY_STATUSES or status in OWN_WORKING_STATUSES:
     state_label = "ready-state" if status in READY_STATUSES else "working"
@@ -897,8 +897,6 @@ elif status in READY_STATUSES or status in OWN_WORKING_STATUSES:
             file=sys.stderr,
         )
         sys.exit(4)
-    if status in OWN_WORKING_STATUSES:
-        _refuse_while_another_claim_holds("resume")
     claim_mode = "resume"
 else:
     detail = ""
@@ -917,6 +915,10 @@ else:
         file=sys.stderr,
     )
     sys.exit(4)
+
+# Every claim and every resume refuses while any other claim marker names the task (seat,
+# 2026-09-27T04:05Z). A stale one left on a re-offered row is released by the lane that owns it.
+_refuse_while_another_claim_holds(claim_mode)
 
 
 def _frontmatter_lines(note_text: str) -> list[str]:

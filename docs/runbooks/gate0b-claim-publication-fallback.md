@@ -183,6 +183,7 @@ anything, and never touches the task note. It covers three shapes:
 | `held_publication` (M166, M167) | A `recovery_required` journal whose note has moved past both of its images, so recovery holds on a projection conflict. Epoch and dispatch sidecars exist; the markers were never written. | Archives the sidecars, then quarantines the journal in place as `claim-pub-<sha>.quarantined-<stamp>`. |
 | `lapsed_lease` (M168) | Epoch and dispatch sidecars with no `cc-active-task-*` marker; the next claim holds on `claim_cache_missing`. | Archives the sidecars. |
 | `closed_task` (M173) | Markers, epochs and dispatch naming a row that another process closed (it is terminal and absent from `active/`); the next claim holds on `claim_task_mismatch`. | Archives all six sidecars. |
+| `reassigned_task` | Markers naming an active row whose note no longer names this role (re-offered or reassigned). Every other role's claim or resume of it refuses on them. | Archives all six sidecars, run by the lane that owns them. |
 
 It refuses, with exit 8 and a named `claim_residue_*` reason, before the first mutation (except
 `live-differed`, below):
