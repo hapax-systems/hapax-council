@@ -429,7 +429,11 @@ def unmet_runtime_witnesses(text: str) -> tuple[str, ...]:
     if not isinstance(fields, dict):
         return ("the task's frontmatter cannot be read (not a mapping)",)
     # route_metadata_payload_from_frontmatter drops a container that is not a mapping, which
-    # would read as "declares none" and close the row done (codex on #4828).
+    # would read as "declares none" and close the row done (codex on #4828). The exempt values
+    # are the estate's null spellings (shared.sdlc_lifecycle._FRONTMATTER_NULL_SCALARS: "", "[]",
+    # and YAML null), plus an empty mapping: each means "no route metadata", so declares nothing.
+    # A top-level `verification_surface: []` is not dropped by the extractor; it fails
+    # VerificationSurface below and owes a witness (dev21's measurement, #4828 round 2).
     for name in ("route_metadata", "verification_surface"):
         container = fields.get(name)
         if container not in (None, "", [], {}) and not isinstance(container, dict):
@@ -539,7 +543,13 @@ def settle_merged_task(
         decided = task.note_path.read_bytes()
         owed = unmet_runtime_witnesses(decided.decode("utf-8"))
     except (OSError, UnicodeDecodeError) as exc:
-        LOG.error("task %s: cannot read %s: %s", task.task_id, task.note_path, exc)
+        LOG.error(
+            "task %s: cannot read %s: %s. Next action: restore the note as UTF-8 at that path "
+            "(or repair it by hand); the next cycle retries, and nothing is closed until then",
+            task.task_id,
+            task.note_path,
+            exc,
+        )
         return None
     if owed:
         return "awaiting" if await_runtime_witnesses(task, dry_run=dry_run) else None

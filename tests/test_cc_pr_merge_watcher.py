@@ -1469,3 +1469,57 @@ class TestRuntimeWitnessRows:
         assert settled is None
         assert note.is_file() and not (vault / "closed" / note.name).exists()
         assert _status_of(note) == "pr_open"
+
+    @pytest.mark.parametrize(
+        ("front", "settles"),
+        [
+            ("verification_surface: []", "awaiting"),
+            ("route_metadata:\n  verification_surface: []", "awaiting"),
+            ("route_metadata: []", "closed"),
+            ("route_metadata: {}", "closed"),
+        ],
+        ids=[
+            "top_level_surface_list",
+            "nested_surface_list",
+            "metadata_null_list",
+            "metadata_empty",
+        ],
+    )
+    def test_empty_containers_follow_the_null_convention(
+        self, tmp_path: Path, monkeypatch: Any, front: str, settles: str
+    ) -> None:
+        # codex's round-2 critical, refuted by dev21's measurement: an empty surface fails closed
+        # to awaiting, while `route_metadata: []` or `{}` is the estate's null spelling of "no route
+        # metadata" (shared.sdlc_lifecycle._FRONTMATTER_NULL_SCALARS) and declares no witnesses.
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = vault / "active" / "task-Z-test.md"
+        note.write_text(
+            f"---\ntype: cc-task\ntask_id: task-Z\ntitle: x\nstatus: pr_open\n"
+            f"pr_repo: {FIXTURE_PR_REPO}\npr: 100\n{front}\n---\n\n## Session log\n- fixture\n"
+        )
+
+        counters, runner, _cursor = _merged_cursor_run(tmp_path, vault)
+
+        if settles == "awaiting":
+            assert runner.cc_close_invocations == []
+            assert _status_of(note) == "merged_awaiting_runtime_witness"
+            assert (counters["awaiting"], counters["closed"]) == (1, 0)
+        else:
+            assert [cmd[1] for cmd in runner.cc_close_invocations] == ["task-Z"]
+            assert (counters["awaiting"], counters["closed"]) == (0, 1)
+
+    def test_an_unreadable_note_names_a_next_action_and_holds(
+        self, tmp_path: Path, monkeypatch: Any, caplog: Any
+    ) -> None:
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-U", pr=100, surface=_WITNESSES)
+        note.write_bytes(note.read_bytes() + b"\xff\xfe not utf-8\n")
+        task = watcher.LinkedTask(task_id="task-U", note_path=note, pr_number=100)
+
+        with caplog.at_level("ERROR"):
+            settled = watcher.settle_merged_task(task, repo_root=tmp_path)
+
+        assert settled is None
+        assert "Next action: restore the note as UTF-8" in caplog.text
