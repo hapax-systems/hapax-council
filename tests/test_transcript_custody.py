@@ -805,6 +805,77 @@ def test_windows_harness_path_that_vanishes_fails_verify(tmp_path: Path) -> None
     assert "win-a: harness path dropped: /.grok/sessions" in result.stderr
 
 
+@_needs_restic
+def test_every_host_checks_windows_freshness_so_a_silent_puller_fails(tmp_path: Path) -> None:
+    """If the puller silently pulls nothing (its hostname differs from the unit's puller name), the other hosts'
+    verify still fails: every host checks that each Windows host has a present, fresh snapshot."""
+
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, _ = _windows_env(tmp_path)
+    env["HAPAX_TRANSCRIPT_WINDOWS_PULLER"] = "the-puller-is-elsewhere"
+    assert _cli(env, "backup").returncode == 0  # local only: this host does not pull
+    missing = _cli(env, "verify")
+    assert missing.returncode == 1
+    assert "no tier1-transcripts snapshot for Windows host win-a" in missing.stderr
+
+    import socket
+
+    env["HAPAX_TRANSCRIPT_WINDOWS_PULLER"] = socket.gethostname()
+    assert _cli(env, "backup").returncode == 0  # now the pull happens
+    env["HAPAX_TRANSCRIPT_WINDOWS_PULLER"] = "the-puller-is-elsewhere"
+    fresh = _cli(env, "verify")
+    assert fresh.returncode == 0, fresh.stderr
+    assert "win-a has a fresh tier1-transcripts snapshot" in fresh.stdout
+    assert not any(
+        "win-a:~" in line for line in fresh.stdout.splitlines()
+    )  # contents only on the puller
+
+
+def test_windows_unreadable_tar_is_a_reported_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A tar that cannot be listed from its snapshot fails with a next action, not a traceback."""
+
+    from datetime import UTC, datetime
+
+    cli = _cli_module()
+    snap = {
+        "id": "abc",
+        "short_id": "abc",
+        "time": datetime.now(UTC).isoformat(),
+        "paths": ["/win-a-transcripts.tar"],
+    }
+    monkeypatch.setattr(cli, "_restic_json", lambda _env, *_cmd: json.dumps([snap]))
+
+    def broken(_env: dict, _snapshot: dict) -> list:
+        raise subprocess.CalledProcessError(1, ["restic", "dump"])
+
+    monkeypatch.setattr(cli, "_tar_listing", broken)
+    assert cli._verify_windows({}, "win-a", 26.0) == 1
+    err = capsys.readouterr().err
+    assert "FAIL win-a: unreadable: the tar in snapshot abc could not be listed" in err
+    assert "restic check" in err and "next action" in err
+
+
+@_needs_restic
+def test_inventory_asks_named_windows_hosts(tmp_path: Path) -> None:
+    env, _ = _windows_env(tmp_path)
+    env["HAPAX_TRANSCRIPT_WINDOWS_PULLER"] = ""
+    result = _cli(env, "inventory", "--json", "--windows", "win-a")
+    assert result.returncode == 0, result.stderr
+    declared = sorted(w["declared"] for w in json.loads(result.stdout)["windows"])
+    assert declared == [
+        "win-a:~/.claude/history.jsonl",
+        "win-a:~/.claude/projects",
+        "win-a:~/.grok/sessions",
+    ]
+    env["FAKE_SSH_MODE_win_a"] = "unreachable"
+    asleep = _cli(env, "inventory", "--json", "--windows", "win-a")
+    assert asleep.returncode == 1
+    assert "unreachable: win-a" in " ".join(json.loads(asleep.stdout)["problems"])
+
+
 def test_windows_pull_runs_only_on_the_named_puller(tmp_path: Path) -> None:
     env, _ = _windows_env_without_restic(tmp_path)
     env["HAPAX_TRANSCRIPT_WINDOWS_PULLER"] = "some-other-host"

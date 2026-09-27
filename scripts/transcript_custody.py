@@ -358,9 +358,10 @@ SSH_REFUSAL_MARKERS: tuple[str, ...] = (
 )
 
 WINDOWS_REMEDY = (
-    "next action: from the puller, run `ssh <host> echo ok` (a refusal means the key or host key needs repair on "
-    "that host); run `hapax-transcript-custody inventory` there over SSH to see its paths; then rerun "
-    "`systemctl --user start hapax-backup-transcripts.service` and read its journal"
+    "next action: on the puller (HAPAX_TRANSCRIPT_WINDOWS_PULLER), run `ssh <host> echo ok` (a refusal means the key "
+    "or host key needs repair on that host); run `hapax-transcript-custody inventory --windows <host>` to see the "
+    "paths the pull would take; check that the puller's `hostname` equals the unit's puller name; then rerun "
+    "`systemctl --user start hapax-backup-transcripts.service` there and read its journal"
 )
 
 

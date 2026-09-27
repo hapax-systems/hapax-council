@@ -27,6 +27,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -143,17 +144,46 @@ def cmd_inventory(args: argparse.Namespace) -> int:
                 "nested_symlinks": len(links),
             }
         )
+    # Windows hosts, asked over SSH: those named with --windows, or the unit's pull list on the puller.
+    windows = []
+    for host in args.windows or _windows_hosts():
+        inv = _windows_inventory(host)
+        if inv is None:
+            problems.append(f"unreachable: {host} did not answer over SSH")
+            continue
+        problems += inv.problems
+        windows += [
+            {"host": host, "harness": p.harness, "declared": p.declared, "kind": p.kind}
+            for p in inv.paths
+        ]
     if args.json:
-        print(json.dumps({"host": socket.gethostname(), "paths": rows, "problems": problems}))
+        print(
+            json.dumps(
+                {
+                    "host": socket.gethostname(),
+                    "paths": rows,
+                    "windows": windows,
+                    "problems": problems,
+                }
+            )
+        )
     else:
         for r in rows:
             link = " (via symlink)" if r["via_symlink"] else ""
             print(
                 f"{r['harness']:<12} {r['files']:>9} files {r['bytes'] / 1e6:>10.1f} MB  {r['real']}{link}"
             )
+        for w in windows:
+            print(f"{w['harness']:<12} {w['kind']:>15}  {w['declared']}")
         for problem in problems:
             print(f"PROBLEM {problem}", file=sys.stderr)
     return 1 if problems else 0
+
+
+def _windows_all_hosts() -> list[str]:
+    """Every Windows host the unit covers (HAPAX_TRANSCRIPT_WINDOWS_HOSTS), on whichever host runs it."""
+
+    return os.environ.get("HAPAX_TRANSCRIPT_WINDOWS_HOSTS", "").split()
 
 
 def _windows_hosts() -> list[str]:
@@ -163,7 +193,7 @@ def _windows_hosts() -> list[str]:
     puller = os.environ.get("HAPAX_TRANSCRIPT_WINDOWS_PULLER", "")
     if not puller or puller != socket.gethostname():
         return []
-    return os.environ.get("HAPAX_TRANSCRIPT_WINDOWS_HOSTS", "").split()
+    return _windows_all_hosts()
 
 
 def _windows_inventory(host: str) -> tc.Resolution | None:
@@ -325,7 +355,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     for p, c in sorted(current.items()):
         print(f"  {c.files:>9} files  {c.node_type or 'ABSENT':<8} {p}")
-    windows_failed = sum(_verify_windows(env, h, args.max_age_hours) for h in _windows_hosts())
+    # Every host checks that each Windows host has a present, fresh snapshot, so a puller that silently pulls nothing
+    # (its hostname differs from the unit's puller name, say) still fails somewhere. The puller also checks contents.
+    pulled = set(_windows_hosts())
+    windows_failed = sum(
+        _verify_windows(env, h, args.max_age_hours, contents=h in pulled)
+        for h in _windows_all_hosts()
+    )
     if failures:
         for failure in failures:
             print(f"FAIL {failure}", file=sys.stderr)
@@ -343,8 +379,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 def _tar_listing(env: dict[str, str], snapshot: dict) -> list[dict]:
     """The node stream of a Windows snapshot: its one stdin file is a tar, read from ``restic dump`` as a stream."""
-
-    import tarfile
 
     (path,) = snapshot.get("paths") or ["?"]
     proc = subprocess.Popen(
@@ -366,11 +400,13 @@ def _tar_listing(env: dict[str, str], snapshot: dict) -> list[dict]:
     return nodes
 
 
-def _verify_windows(env: dict[str, str], host: str, fresh_hours: float) -> int:
-    """Verify a Windows host's newest snapshot; 1 on failure. It fails when there is no snapshot, when the newest is
-    older than the staleness bound, or on the same floor, drop, symlink and credential checks as a local snapshot.
-    The expected paths are the host's live inventory when the snapshot is from this run and the host answers;
-    otherwise they are read from the snapshot's own listing."""
+def _verify_windows(
+    env: dict[str, str], host: str, fresh_hours: float, *, contents: bool = True
+) -> int:
+    """Verify a Windows host's newest snapshot; 1 on failure. It fails when there is no snapshot, or when the newest
+    is older than the staleness bound. With ``contents`` (on the puller) it also applies the same floor, drop,
+    symlink and credential checks as a local snapshot. The expected paths are the host's live inventory when the
+    snapshot is from this run and the host answers; otherwise they are read from the snapshot's own listing."""
 
     snapshots = sorted(
         json.loads(_restic_json(env, "snapshots", "--tag", tc.SNAPSHOT_TAG, "--host", host)) or [],
@@ -390,8 +426,25 @@ def _verify_windows(env: dict[str, str], host: str, fresh_hours: float) -> int:
             f"stale: {host}'s newest {tc.SNAPSHOT_TAG} snapshot {cur.get('short_id')} is {age_hours:.1f}h old "
             f"(max {tc.WINDOWS_MAX_AGE_HOURS:g}h): the host has not been reachable at backup time"
         )
-    nodes = _tar_listing(env, cur)
-    prev_nodes = _tar_listing(env, prev) if prev else []
+    if not contents:
+        for failure in failures:
+            print(f"FAIL {host}: {failure}; {tc.WINDOWS_REMEDY}", file=sys.stderr)
+        if not failures:
+            print(
+                f"hapax-transcript-custody: {host} has a fresh {tc.SNAPSHOT_TAG} snapshot {cur.get('short_id')} "
+                f"({age_hours:.1f}h old); its contents are verified on the puller"
+            )
+        return 1 if failures else 0
+    try:
+        nodes = _tar_listing(env, cur)
+        prev_nodes = _tar_listing(env, prev) if prev else []
+    except (subprocess.CalledProcessError, tarfile.TarError, OSError) as exc:
+        print(
+            f"FAIL {host}: unreadable: the tar in snapshot {cur.get('short_id')} could not be listed ({exc}); "
+            f"run `restic check` on the repository, then {tc.WINDOWS_REMEDY}",
+            file=sys.stderr,
+        )
+        return 1
     inv = _windows_inventory(host) if age_hours <= fresh_hours else None
     if inv is None:
         expected = tc.listing_expected(host, nodes)
@@ -444,6 +497,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     inv = sub.add_parser("inventory")
     inv.add_argument("--json", action="store_true")
+    inv.add_argument(
+        "--windows",
+        nargs="+",
+        metavar="HOST",
+        help="also ask these Windows hosts over SSH (default on the puller: HAPAX_TRANSCRIPT_WINDOWS_HOSTS)",
+    )
     bak = sub.add_parser("backup")
     bak.add_argument("--dry-run", action="store_true")
     ver = sub.add_parser("verify")
