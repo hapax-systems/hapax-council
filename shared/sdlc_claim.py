@@ -115,6 +115,17 @@ _INSPECTION_CHURN_REASON = "fs_snapshot_concurrent_change"
 INSPECTION_CHURN_MAX_ATTEMPTS = 4
 INSPECTION_CHURN_DEADLINE_SECONDS = 30.0
 INSPECTION_CHURN_JITTER_SECONDS = (0.25, 1.5)
+# A write to any other task row while a resolution indexes the whole task store
+# refuses that resolution (M95). Resolution is a pure read too, and its repair is a
+# distinct resolution once the frontier is stable, so these three refusals are retaken
+# under the same bound; every other refusal is final.
+_TASK_FRONTIER_CHURN_REASONS = frozenset(
+    {
+        "task_store_frontier_changed_during_index_build",
+        "task_store_frontier_changed_since_index",
+        "task_store_frontier_changed_during_resolution",
+    }
+)
 _churn_sleep = time.sleep
 _churn_clock = time.monotonic
 
@@ -3441,16 +3452,40 @@ def _load_any_claim_publication_receipt(
     )
 
 
+def resolve_task_note_through_churn(vault_root: Path, task_id: str) -> TaskNoteSnapshot:
+    """Resolve one active task note, retaking a resolution that raced task-store churn.
+
+    Resolution indexes every task row (about 9 s over 5,767 rows on 2026-09-27), and a
+    write to any other row in that window refuses it (M95). A frontier-churn refusal is
+    retaken as a fresh, complete resolution, with jitter, at most
+    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times inside ``INSPECTION_CHURN_DEADLINE_SECONDS``
+    (M101's bound); the last refusal is raised. Only a resolution over a stable frontier
+    returns, and every other refusal is raised at once. Under the publication lock, a
+    retake lengthens the hold, so a peer waiting on the same lock may time out and refuse.
+    """
+
+    deadline = _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    attempt = 1
+    while True:
+        try:
+            return resolve_task_note(
+                vault_root, task_id, state="active", require_no_other_state=True
+            )
+        except TaskStoreError as exc:
+            if exc.reason_code not in _TASK_FRONTIER_CHURN_REASONS:
+                raise
+            delay = random.uniform(*INSPECTION_CHURN_JITTER_SECONDS)
+            if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or _churn_clock() + delay > deadline:
+                raise
+            _churn_sleep(delay)
+            attempt += 1
+
+
 def _locked_preflight(
     intent: ClaimPublicationIntent, projections: Sequence[FileProjection]
 ) -> None:
     try:
-        task = resolve_task_note(
-            intent.note_path.parent.parent,
-            intent.task_id,
-            state="active",
-            require_no_other_state=True,
-        )
+        task = resolve_task_note_through_churn(intent.note_path.parent.parent, intent.task_id)
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_resolution_refused",
@@ -3479,12 +3514,7 @@ def _locked_preflight(
 
 def _require_exact_task_postimage(intent: ClaimPublicationIntent) -> None:
     try:
-        task = resolve_task_note(
-            intent.note_path.parent.parent,
-            intent.task_id,
-            state="active",
-            require_no_other_state=True,
-        )
+        task = resolve_task_note_through_churn(intent.note_path.parent.parent, intent.task_id)
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_projection_invalid",
@@ -7178,6 +7208,7 @@ __all__ = [
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
     "resolve_claim_publication_admission_provenance",
+    "resolve_task_note_through_churn",
     "require_applied_admitted_claim_publication",
     "require_applied_claim_publication",
 ]

@@ -8,6 +8,7 @@ import os
 import queue
 import stat
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,7 @@ from hapax.context_canon import CommittedOutcomeReceiptLike, canonical_json_byte
 from hapax.context_canon import contract as context_contract
 
 import shared.sdlc_claim as sdlc_claim
+import shared.sdlc_task_store as sdlc_task_store
 from shared.dispatcher_policy import DispatchAction, RouteDecision
 from shared.execution_admission import (
     ACTION_INTENT_SCHEMA,
@@ -111,6 +113,7 @@ from shared.sdlc_claim import (
 )
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
+    TaskStoreError,
     resolve_task_note,
 )
 
@@ -4468,6 +4471,195 @@ def test_inspection_recovers_from_a_transient_concurrent_change(
     assert results == ()
     assert captures == [1, 2]
     assert len(sleeps) == 1
+
+
+# ── task resolution retaken through task-store frontier churn (M95) ──────────
+# claim-publication-frontier-churn-bounded-retry-m95-20260927
+
+_CHURN_POINTS = {
+    # where a peer lane's write lands inside one resolve_task_note -> the reason it raises
+    "index_build": "task_store_frontier_changed_during_index_build",
+    "since_index": "task_store_frontier_changed_since_index",
+    "during_resolution": "task_store_frontier_changed_during_resolution",
+}
+
+
+def _churning_task_store(
+    vault: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    point: str = "index_build",
+    churn_on: Callable[[int], bool] = lambda _resolution: True,
+) -> list[int]:
+    """Make a peer lane append a session-log line to its own row inside a resolution.
+
+    The line lands at ``point``, so the task store's own frontier check sees a real
+    change. ``churn_on(n)`` decides per resolution attempt; the list counts attempts.
+    """
+
+    peer = vault / "active" / "peer-row.md"
+    if not peer.exists():
+        peer.write_bytes(
+            _note(
+                task_id="peer-row",
+                status="in_progress",
+                assigned_to="cx-blue",
+                claimed_at="2026-07-11T11:00:00Z",
+            )
+        )
+    attempts: list[int] = []
+
+    def peer_writes() -> None:
+        if churn_on(len(attempts)):
+            with peer.open("ab") as handle:
+                handle.write(f"- peer log line {len(attempts)}\n".encode())
+
+    original_entry = sdlc_task_store._index_entry
+    original_validate = sdlc_task_store.validate_task_identity_index
+    original_snapshot = sdlc_task_store._snapshot
+
+    def index_entry(path: Path, **kwargs: object) -> object:
+        if path.name == "peer-row.md":  # once per index build, so once per attempt
+            attempts.append(len(attempts) + 1)
+            if point == "index_build":
+                peer_writes()
+        return original_entry(path, **kwargs)  # type: ignore[arg-type]
+
+    def validate(index: object) -> None:
+        if point == "since_index":
+            peer_writes()
+        original_validate(index)  # type: ignore[arg-type]
+
+    def snapshot(path: Path, **kwargs: object) -> object:
+        if point == "during_resolution":
+            peer_writes()
+        return original_snapshot(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sdlc_task_store, "_index_entry", index_entry)
+    monkeypatch.setattr(sdlc_task_store, "validate_task_identity_index", validate)
+    monkeypatch.setattr(sdlc_task_store, "_snapshot", snapshot)
+    return attempts
+
+
+@pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
+def test_task_resolution_is_retaken_through_transient_frontier_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(
+        fixture.vault, monkeypatch, point=point, churn_on=lambda n: n == 1
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    task = sdlc_claim.resolve_task_note_through_churn(fixture.vault, "task-alpha")
+
+    assert task.path == fixture.intent.note_path
+    assert task.content == fixture.intent.note_before
+    assert attempts == [1, 2]
+    low, high = sdlc_claim.INSPECTION_CHURN_JITTER_SECONDS
+    assert len(sleeps) == 1 and low <= sleeps[0] <= high
+
+
+@pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
+def test_task_resolution_churn_retake_is_bounded_and_raises_the_last_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch, point=point)
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    with pytest.raises(TaskStoreError) as raised:
+        sdlc_claim.resolve_task_note_through_churn(fixture.vault, "task-alpha")
+
+    assert raised.value.reason_code == _CHURN_POINTS[point]
+    assert len(attempts) == sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+    assert len(sleeps) == sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS - 1
+
+
+def test_task_resolution_churn_retake_stops_at_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch)
+    now = [0.0]
+
+    def clock() -> float:
+        now[0] += 20.0
+        return now[0]
+
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", clock)
+
+    with pytest.raises(TaskStoreError) as raised:
+        sdlc_claim.resolve_task_note_through_churn(fixture.vault, "task-alpha")
+
+    assert raised.value.reason_code == "task_store_frontier_changed_during_index_build"
+    assert 1 <= len(attempts) < sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+
+
+def test_task_resolution_retake_is_only_for_frontier_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path)
+    # A closed duplicate is a real refusal, not churn: it is raised at once, never retaken.
+    closed_copy = fixture.vault / "closed" / "task-alpha.md"
+    closed_copy.write_bytes(fixture.intent.note_before)
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    with pytest.raises(TaskStoreError) as raised:
+        sdlc_claim.resolve_task_note_through_churn(fixture.vault, "task-alpha")
+
+    assert raised.value.reason_code == "task_note_cross_state_duplicate"
+    assert sleeps == []
+
+
+def test_locked_preflight_and_postimage_retake_frontier_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The two resolutions under the publication lock (15:14Z and 09-26 21:12Z specimens):
+    # the postimage one, after the writes, left a recovery_required journal.
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch, churn_on=lambda n: n % 2 == 1)
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+
+    sdlc_claim._locked_preflight(fixture.intent, ())
+    fixture.intent.note_path.write_bytes(fixture.intent.note_after)
+    sdlc_claim._require_exact_task_postimage(fixture.intent)
+
+    assert attempts == [1, 2, 3, 4]
+
+
+def test_a_claim_publishes_through_churn_at_every_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every resolution's first attempt races a peer's write; each is retaken, the claim
+    # applies, and no journal is left for recovery.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    attempts = _churning_task_store(fixture.vault, monkeypatch, churn_on=lambda n: n % 2 == 1)
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
+    # two locked preflights and two postimage checks, each churned once, then retaken
+    assert attempts == list(range(1, 9))
+    states = [
+        json.loads((journal / "manifest.json").read_text(encoding="utf-8"))["state"]
+        for journal in fixture.transactions.iterdir()
+        if (journal / "manifest.json").exists()
+    ]
+    assert states == ["applied"]
 
 
 # ── governed release of a held claim publication (M166, M167) ────────────────
