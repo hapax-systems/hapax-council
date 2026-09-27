@@ -275,11 +275,50 @@ class TestChildPolicy:
 
 class TestChildConsent:
     def test_registered_children(self):
-        """Simon and Agatha are registered child principals."""
+        """Registered child principals use the shared opaque-ID vocabulary."""
         from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
 
-        assert "simon" in REGISTERED_CHILD_PRINCIPALS
-        assert "agatha" in REGISTERED_CHILD_PRINCIPALS
+        assert {"principal-c1", "principal-c2"} == REGISTERED_CHILD_PRINCIPALS
+
+    def test_registered_principal_ids_are_opaque(self):
+        """A dictionary given name must never become a principal identifier."""
+        import re
+
+        from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
+
+        opaque_id = re.compile(r"^principal-[a-z][0-9]+$")
+        assert all(opaque_id.fullmatch(principal) for principal in REGISTERED_CHILD_PRINCIPALS)
+
+    def test_every_contract_keys_on_an_opaque_principal_or_a_role(self):
+        """Adult principals too: every contract file and party is an opaque ID or a role.
+
+        A dictionary given name introduced as a contract filename, contract id or
+        party (for an adult as much as a child) fails here.
+        """
+        import re
+        from pathlib import Path
+
+        import yaml
+
+        principal = r"principal-[a-z][0-9]+"
+        roles = {"operator", "guest"}
+        filename = re.compile(
+            rf"^contract-(?:{principal}|guest)(?:-enroll)?(?:-\d{{4}}-\d{{2}}-\d{{2}})?\.yaml$"
+        )
+        contracts_dir = Path(__file__).resolve().parents[2] / "axioms" / "contracts"
+        contracts = sorted(contracts_dir.glob("*.yaml"))
+        assert contracts
+        # The family surname identifies a household member as surely as a given
+        # name; no contract may carry it (built at runtime: no literal here).
+        surname = "Klee" + "berger"
+        for path in contracts:
+            assert filename.fullmatch(path.name), path.name
+            text = path.read_text(encoding="utf-8")
+            assert surname.lower() not in text.lower(), path.name
+            data = yaml.safe_load(text)
+            assert data["id"] == path.stem, path.name
+            for party in data["parties"]:
+                assert party in roles or re.fullmatch(principal, party), (path.name, party)
 
     def test_only_two_registered(self):
         """No other children should be registered."""
@@ -288,36 +327,36 @@ class TestChildConsent:
         assert len(REGISTERED_CHILD_PRINCIPALS) == 2
 
     def test_contracts_exist_on_disk(self):
-        """Consent contracts for Simon and Agatha exist as YAML files."""
+        """Consent contracts for the registered child IDs exist as YAML files."""
         from pathlib import Path
 
         contracts_dir = Path("axioms/contracts")
-        assert (contracts_dir / "contract-simon.yaml").exists()
-        assert (contracts_dir / "contract-agatha.yaml").exists()
+        assert (contracts_dir / "contract-principal-c2.yaml").exists()
+        assert (contracts_dir / "contract-principal-c1.yaml").exists()
 
     def test_contracts_loadable(self):
         """Contracts can be loaded by the ConsentRegistry."""
         from shared.governance.consent import load_contracts
 
         registry = load_contracts()
-        simon = registry.get_contract_for("simon")
-        agatha = registry.get_contract_for("agatha")
-        assert simon is not None
-        assert agatha is not None
-        assert simon.active
-        assert agatha.active
+        principal_c2 = registry.get_contract_for("principal-c2")
+        principal_c1 = registry.get_contract_for("principal-c1")
+        assert principal_c2 is not None
+        assert principal_c1 is not None
+        assert principal_c2.active
+        assert principal_c1.active
 
     def test_children_have_full_perception_scope(self):
         """Children have audio, presence, transcription, video scope."""
         from shared.governance.consent import load_contracts
 
         registry = load_contracts()
-        simon = registry.get_contract_for("simon")
-        assert simon is not None
-        assert "audio" in simon.scope
-        assert "presence" in simon.scope
-        assert "transcription" in simon.scope
-        assert "video" in simon.scope
+        principal_c2 = registry.get_contract_for("principal-c2")
+        assert principal_c2 is not None
+        assert "audio" in principal_c2.scope
+        assert "presence" in principal_c2.scope
+        assert "transcription" in principal_c2.scope
+        assert "video" in principal_c2.scope
 
 
 # ── Defensive _load_operator_profile_summary ────────────────────────

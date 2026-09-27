@@ -13,6 +13,9 @@ wheels/
 .env
 .envrc
 
+# Local human-readable principal mapping; never publish this registry.
+.principal-name-map.yaml
+
 # Profile outputs (generated, may contain personal data)
 # Use ** to match subdirectories (engine-audit/, deliberations/, etc.)
 profiles/**/*.json

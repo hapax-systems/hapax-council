@@ -40,6 +40,10 @@ set -euo pipefail
 LEGAL_NAME_PATTERNS=(
     'Ryan[[:space:]]+Kleeberger'
     'Ryan[[:space:]]+Lee[[:space:]]+Kleeberger'
+    # The family surname alone names every household member, registered as a
+    # principal or not. Opaque principal IDs (principal-<letter><digit>) are
+    # deliberately NOT patterns: they are the vocabulary that replaces names.
+    'Kleeberger'
 )
 
 # Whitelisted paths — leaks here are not flagged. Match by glob.
@@ -58,7 +62,9 @@ WHITELIST_GLOBS=(
     'docs/governance/operator-*'
     'profiles/*'
     'scripts/check-legal-name-leaks.sh'
+    'hooks/scripts/pii-guard.sh'
     'tests/scripts/test_check_legal_name_leaks.py'
+    'tests/hooks/test_pii_guard.py'
 )
 
 is_whitelisted() {
@@ -103,14 +109,42 @@ for f in "${FILES[@]}"; do
     for pat in "${LEGAL_NAME_PATTERNS[@]}"; do
         # -E for ERE, -i case-insensitive, -n line numbers, -H file name.
         # Suppress non-zero exit when no match (set -e propagation).
-        if matches="$(grep -EHin "$pat" "$f" 2>/dev/null || true)" && [ -n "$matches" ]; then
-            echo "LEGAL-NAME LEAK in $f:" >&2
-            echo "$matches" >&2
+        # File and line numbers only, never the line content: a matched line can
+        # carry another household token, and CI logs on a public repo are public.
+        if matches="$(grep -Ein "$pat" "$f" 2>/dev/null | cut -d: -f1 | paste -sd, - || true)" && [ -n "$matches" ]; then
+            echo "LEGAL-NAME LEAK in $f:$matches (content withheld)" >&2
             echo "" >&2
             LEAKS=$((LEAKS + 1))
         fi
     done
 done
+
+# Registered principals' given names, read from the gitignored local registry
+# (hooks/scripts/principal-name-map.sh). It is absent in CI, where the surname
+# above is the check. A match reports file and line numbers only; the name and
+# the line content are never printed.
+# shellcheck source=hooks/scripts/principal-name-map.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hooks/scripts/principal-name-map.sh"
+names_status=0
+registry_names="$(principal_names)" || names_status=$?
+if [ "$names_status" -ne 0 ]; then
+    echo "check-legal-name-leaks: the principal-name-map registry at $(principal_name_map_path) cannot be used (see above)." >&2
+    echo "Repair it (a readable file of valid entries) or remove it. Failing closed." >&2
+    exit 2
+fi
+if [ -n "$registry_names" ]; then
+    for f in "${FILES[@]}"; do
+        [ -f "$f" ] || continue
+        if is_whitelisted "$f"; then
+            continue
+        fi
+        lines="$(grep -niwF -f <(printf '%s\n' "$registry_names") -- "$f" 2>/dev/null | cut -d: -f1 | paste -sd, - || true)"
+        if [ -n "$lines" ]; then
+            echo "REGISTERED-PRINCIPAL NAME in $f:$lines (name withheld)" >&2
+            LEAKS=$((LEAKS + 1))
+        fi
+    done
+fi
 
 if [ "$LEAKS" -gt 0 ]; then
     cat >&2 <<'EOF'
