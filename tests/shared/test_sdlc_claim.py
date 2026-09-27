@@ -4667,6 +4667,60 @@ def test_a_claim_publishes_through_churn_at_every_resolution(
     assert states == ["applied"]
 
 
+@pytest.mark.parametrize("holder", ["publication", "recovery"])
+def test_each_lock_holder_gives_every_locked_resolution_one_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, holder: str
+) -> None:
+    # codex on #4829 round 3: the occupancy tests pass one deadline by hand, so they would miss
+    # a lock holder that gave each phase a fresh one. This drives the real holders.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    seen: list[float | None] = []
+    original = sdlc_claim.resolve_task_note_through_churn
+
+    def recording(vault_root: Path, task_id: str, *, deadline_at: float | None = None) -> object:
+        seen.append(deadline_at)
+        return original(vault_root, task_id, deadline_at=deadline_at)
+
+    def transaction() -> None:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    if holder == "recovery":
+        # Leave the publication recovery_required at the receipt, as the recovery tests do.
+        original_persist = sdlc_claim._persist_admitted_receipt
+
+        def fail_receipt(*_args: object, **_kwargs: object) -> None:
+            raise ClaimPublicationError("receipt_simulated", "retry", fixture.intent.task_id)
+
+        monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", fail_receipt)
+        with pytest.raises(ClaimPublicationError):
+            transaction()
+        monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", original_persist)
+        monkeypatch.setattr(sdlc_claim, "resolve_task_note_through_churn", recording)
+        recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            task_id=fixture.intent.task_id,
+        )
+    else:
+        monkeypatch.setattr(sdlc_claim, "resolve_task_note_through_churn", recording)
+        transaction()
+        assert len(seen) == 4  # two locked preflights, two postimage checks
+
+    assert seen and None not in seen  # every locked resolution got the holder's deadline
+    assert len(set(seen)) == 1  # and it is one deadline, taken once per lock hold
+
+
 # ── the cc-claim preflight, extracted and tested through churn (#4827 follow-up) ─
 # claim-preflight-extract-churn-tested-20260927
 
