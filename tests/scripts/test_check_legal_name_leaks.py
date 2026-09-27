@@ -89,6 +89,16 @@ def test_unreadable_registry_fails_closed(fixture_dir: Path) -> None:
     assert "principal-name-map" in result.stderr
 
 
+def test_dangling_registry_symlink_fails_closed(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.symlink_to(fixture_dir / "gone.yaml")
+    f = fixture_dir / "doc.md"
+    f.write_text("clean\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 2
+    assert "principal-name-map" in result.stderr
+
+
 def test_surname_match_never_prints_the_line(fixture_dir: Path) -> None:
     # A line holding the surname AND a registered given name must not print the
     # given name through the surname path: every match reports file:line only.

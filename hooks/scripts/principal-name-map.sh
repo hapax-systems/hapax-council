@@ -31,9 +31,11 @@ principal_name_map_path() {
 principal_names() {
     local map line name lineno=0 names=()
     map="$(principal_name_map_path)"
-    [ -e "$map" ] || return 0
+    # Absent means neither a file nor a symlink. A dangling symlink is a configured
+    # registry that cannot be read, never "absent": it fails closed below.
+    [ -e "$map" ] || [ -L "$map" ] || return 0
     if [ ! -f "$map" ] || [ ! -r "$map" ]; then
-        echo "principal-name-map: $map exists but is not a readable file; fix its permissions or remove it." >&2
+        echo "principal-name-map: $map is configured but is not a readable file (dangling symlink, directory or permissions); repair it or remove it." >&2
         return 2
     fi
     while IFS= read -r line || [ -n "$line" ]; do

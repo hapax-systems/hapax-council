@@ -218,6 +218,18 @@ class TestBlocksRegisteredIdentityForms:
         assert "line 2" in result.stderr
         assert ".*zq" not in result.stderr and self.SYNTHETIC not in result.stderr
 
+    def test_dangling_registry_symlink_fails_closed(self, tmp_path: Path) -> None:
+        # A configured registry whose symlink target is gone is not "absent":
+        # treating it so would silently drop every registered given name.
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        registry = tmp_path / "principal-name-map.yaml"
+        registry.symlink_to(tmp_path / "gone.yaml")
+        env = {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)}
+        result = _run(_edit(str(repo / "agents/x.py"), "x = 1\n"), cwd=repo, env=env)
+        assert result.returncode == 2
+        assert "principal-name-map" in result.stderr
+
     def test_unreadable_registry_fails_closed(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         (repo / ".git").mkdir(parents=True)
