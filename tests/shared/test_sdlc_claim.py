@@ -4979,6 +4979,37 @@ def test_a_same_stamp_rerun_refuses_a_readme_of_another_or_no_publication(
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
 
 
+@pytest.mark.parametrize("damaged", ["README", "PUBLICATION"])
+def test_an_unreadable_binding_is_a_collision_not_a_crash(tmp_path: Path, damaged: str) -> None:
+    # #4804 round 3 (codex): a damaged README or staging binding holds with the named reason.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    if damaged == "README":
+        target = (
+            fixture.vault
+            / "_lineage"
+            / "task-alpha"
+            / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+            / "README.md"
+        )
+    else:
+        target = (
+            fixture.cache
+            / "claim-residue-release"
+            / "task-alpha"
+            / f"{_RELEASE_STAMP}-cx-red"
+            / "PUBLICATION"
+        )
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xff\xfe undecodable")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
 def test_a_staging_directory_bound_to_another_publication_holds_before_any_move(
     tmp_path: Path,
 ) -> None:

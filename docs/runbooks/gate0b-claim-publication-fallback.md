@@ -176,7 +176,7 @@ after-image of a claim-publication journal of that role and task, and must be on
 journal's own session sidecars. It holds the role's publication lock. It moves each file out of
 its live name, and copies the moved bytes, verified, into
 `_lineage/<task-id>/claim-residue-release-<stamp>-<role>/` (with a README). It never unlinks
-anything, and never touches the task note. It covers three shapes:
+anything, and never touches the task note. It covers four shapes:
 
 | Shape | What is left | What the release does |
 |-------|--------------|-----------------------|
@@ -221,7 +221,7 @@ run with operator approval and recorded in the row's lineage.
 
 Use this manual procedure only with operator approval, and only for the shape the governed release
 refuses: an **expired** claim HOLD (exit 7) that names an exact `cc-active-task-*` path whose task
-is still live. For the three shapes above, use `cc-claim --release-claim-residue` instead.
+is still live. For the four shapes above, use `cc-claim --release-claim-residue` instead.
 
 ```bash
 set -euo pipefail

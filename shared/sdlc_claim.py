@@ -6516,6 +6516,16 @@ def _copy_verified(content: bytes, mode: int, target: Path) -> None:
         )
 
 
+def _binding_names(path: Path, line: str) -> bool:
+    """Whether a release binding (lineage README, staging PUBLICATION) carries ``line``. One that
+    cannot be read or decoded carries nothing: the caller holds, never crashes."""
+
+    try:
+        return line in path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+
+
 def _staged_original(projection: FileProjection, journal: _RoleTaskJournal) -> Path | None:
     """An earlier run's moved original of this file, if a crash left it staged in the cache
     before its lineage copy: in a staging directory bound to THIS journal's publication_id,
@@ -6669,14 +6679,12 @@ def _archive_residue(
     # A same-stamp rerun may reuse the lineage README and the staging binding, but only this
     # journal's: archiving under another publication's receipt would be untraceable.
     readme, bound = archive_dir / "README.md", staging_dir / "PUBLICATION"
-    if (
-        readme.exists()
-        and f"publication_id: {journal.publication_id}"
-        not in readme.read_text(encoding="utf-8").splitlines()
+    for existing, line in (
+        (readme, f"publication_id: {journal.publication_id}"),
+        (bound, journal.publication_id),
     ):
-        taken.append(readme)
-    if bound.exists() and bound.read_text(encoding="ascii").strip() != journal.publication_id:
-        taken.append(bound)
+        if (existing.exists() or existing.is_symlink()) and not _binding_names(existing, line):
+            taken.append(existing)
     if taken:
         raise _release_hold(
             "claim_residue_archive_collision",
