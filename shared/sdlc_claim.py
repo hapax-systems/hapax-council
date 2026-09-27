@@ -7012,10 +7012,11 @@ def release_claim_residue(
 _SESSION_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
-def _marker_task(cache_dir: Path, role: str) -> str | None:
-    """The task this role's claim marker names: the bare key first, then a session key. A
-    suffix that is not a session UUID belongs to another role (``cx-red`` vs
-    ``cx-red-operator-email``)."""
+def _marker_tasks(cache_dir: Path, role: str) -> list[str]:
+    """Every task this role's claim markers name, each once: the bare key, then each session
+    key. A suffix that is not a session UUID belongs to another role (``cx-red`` vs
+    ``cx-red-operator-email``). Every marker counts: a lingering session-keyed one can name a
+    different row from the bare key (codex on #4826)."""
 
     prefix = f"cc-active-task-{role}-"
     markers = [cache_dir / f"cc-active-task-{role}"] + sorted(
@@ -7023,14 +7024,15 @@ def _marker_task(cache_dir: Path, role: str) -> str | None:
         for path in cache_dir.glob(f"{prefix}*")
         if _SESSION_KEY_RE.fullmatch(path.name[len(prefix) :])
     )
+    tasks: list[str] = []
     for marker in markers:
         try:
             words = marker.read_text(encoding="utf-8").split()
         except OSError:
             continue
-        if words:
-            return words[0]
-    return None
+        if words and words[0] not in tasks:
+            tasks.append(words[0])
+    return tasks
 
 
 def release_pipeline_held_residue(
@@ -7042,30 +7044,30 @@ def release_pipeline_held_residue(
     role: str,
     current_task_id: str,
     observed_at: str,
-) -> ClaimResidueRelease | None:
-    """Before a new claim, free this role's slot of a row the pipeline now holds.
+) -> list[ClaimResidueRelease]:
+    """Before a new claim, free this role's slot of every row the pipeline now holds.
 
     The seat's 2026-09-27 ruling: a pipeline-held row (``TASK_PIPELINE_HELD_STATUSES``) does
-    not count against the role's one-active-task slot. If this role's marker names such a row,
-    other than the one being claimed, its residue is released as ``pipeline_held`` (archived,
-    never unlinked). The row keeps this role as its named resumer. Anything else is left to the
-    claim path, which decides as before.
+    not count against the role's one-active-task slot. For each such row any of this role's
+    markers names, other than the one being claimed, its residue is released as
+    ``pipeline_held`` (archived, never unlinked). Each row keeps this role as its named resumer.
+    Anything else is left to the claim path, which decides as before.
     """
 
-    held = _marker_task(cache_dir, role)
-    if held is None or held == current_task_id:
-        return None
-    if _task_status_for_any_state(vault_root, held) not in TASK_PIPELINE_HELD_STATUSES:
-        return None
-    return release_claim_residue(
-        vault_root=vault_root,
-        cache_dir=cache_dir,
-        transaction_root=transaction_root,
-        lock_root=lock_root,
-        role=role,
-        task_id=held,
-        observed_at=observed_at,
-    )
+    return [
+        release_claim_residue(
+            vault_root=vault_root,
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            lock_root=lock_root,
+            role=role,
+            task_id=held,
+            observed_at=observed_at,
+        )
+        for held in _marker_tasks(cache_dir, role)
+        if held != current_task_id
+        and _task_status_for_any_state(vault_root, held) in TASK_PIPELINE_HELD_STATUSES
+    ]
 
 
 def _returned_note_text(text: str, *, role: str, observed_at: str) -> str:

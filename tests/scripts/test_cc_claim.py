@@ -2230,6 +2230,41 @@ def test_a_pipeline_held_row_frees_the_slot_and_keeps_its_named_resumer(tmp_path
     assert marker.read_text(encoding="utf-8").split()[0] == "next-row"
 
 
+def test_every_marker_is_checked_so_a_second_held_row_is_released_too(tmp_path: Path) -> None:
+    # codex on #4826: only the first readable marker was checked. A pipeline-held row named by a
+    # lingering session-keyed marker stayed held although the lease scan counted it free.
+    home = tmp_path / "home"
+    first_session, second_session, third_session = (
+        _SESSION_ID,
+        "1f9f9f9f-1111-2222-3333-444455556666",
+        "2f9f9f9f-1111-2222-3333-444455556666",
+    )
+    older = _write_task(home, "active", "older-row")
+    newer = _write_task(home, "active", "newer-row")
+    _write_task(home, "active", "next-row")
+    assert _claim(home, "older-row", session_id=first_session).returncode == 0
+    _set_status(older, "claimed", "pr_open")
+    assert _claim(home, "newer-row", session_id=second_session).returncode == 0
+    _set_status(newer, "claimed", "pr_open")
+    # older-row's session-keyed files linger (as sessions from before this change can leave them).
+    cache = home / ".cache" / "hapax"
+    (staged,) = (cache / "claim-residue-release" / "older-row").iterdir()
+    for kept in staged.iterdir():
+        if first_session in kept.name:
+            (cache / kept.name).write_bytes(kept.read_bytes())
+            os.chmod(
+                cache / kept.name, kept.stat().st_mode & 0o777
+            )  # the residue check reads modes
+    assert (cache / f"cc-active-task-cx-test-{first_session}").exists()
+
+    taken = _claim(home, "next-row", session_id=third_session)
+
+    assert taken.returncode == 0, taken.stderr
+    assert _lineage_shapes(home, "older-row") == ["pipeline_held", "pipeline_held"]
+    assert _lineage_shapes(home, "newer-row") == ["pipeline_held"]
+    assert not (cache / f"cc-active-task-cx-test-{first_session}").exists()
+
+
 def test_resuming_a_pipeline_held_row_still_needs_a_free_slot(tmp_path: Path) -> None:
     home = tmp_path / "home"
     parked = _write_task(home, "active", "parked-row")

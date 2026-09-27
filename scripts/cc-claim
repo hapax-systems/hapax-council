@@ -752,10 +752,10 @@ if canon_enforced:
     except ClaimResidueArchiveHold as exc:
         print(f"cc-claim: {exc.message}", file=sys.stderr)
         sys.exit(8)
-    if freed is not None:
+    for released in freed:
         print(
             f"cc-claim: the pipeline holds this role's previous row; its claim files were archived "
-            f"to {freed.archive_dir} (it stays assigned to {role}, to resume later)",
+            f"to {released.archive_dir} (it stays assigned to {role}, to resume later)",
             file=sys.stderr,
         )
     # A unit recorded under a live charter keeps the charter's sidecars; they
