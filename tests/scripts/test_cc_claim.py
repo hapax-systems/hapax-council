@@ -2324,6 +2324,7 @@ def test_the_lease_check_reads_a_malformed_note_as_holding_the_slot(
 
     assert held.returncode == 7, held.stderr
     assert "already has active task 'parked-row' (status: unreadable)" in held.stderr
+    assert "repair that row's frontmatter by hand" in held.stderr  # codex on #4826 round 6
     assert _bytes_of(_role_sidecars(home)["marker"]) == markers
     assert _lineage_shapes(home, "parked-row") == []
 
@@ -2456,7 +2457,6 @@ def test_a_worker_held_row_still_holds_the_slot(tmp_path: Path) -> None:
 
     assert refused.returncode == 7
     assert "already has active task 'working-row'" in refused.stderr
-    assert "cc-claim --return-claim working-row" in refused.stderr  # codex on #4826 round 3
 
 
 def test_the_lease_checks_release_vocabulary_is_the_ssot() -> None:
@@ -2477,143 +2477,6 @@ def test_the_lease_checks_release_vocabulary_is_the_ssot() -> None:
         f"{sorted(set(TASK_ROLE_RELEASING_STATUSES) - listed)}, extra "
         f"{sorted(listed - set(TASK_ROLE_RELEASING_STATUSES))}"
     )
-
-
-def _return(home: Path, task_id: str, *, extra_env: dict[str, str] | None = None):
-    return _claim(
-        home,
-        task_id,
-        dispatch=False,
-        install_gate0b=False,
-        extra_env=extra_env,
-        extra_args=["--return-claim"],
-    )
-
-
-def test_the_holder_returns_an_unstarted_claim_to_offered(tmp_path: Path) -> None:
-    # (a): dev22 held tier1-backup-scripts-into-council-reland-20260927 with no work under it.
-    home = tmp_path / "home"
-    note = _write_task(home, "active", "unstarted-row")
-    assert _claim(home, "unstarted-row").returncode == 0
-
-    returned = _return(home, "unstarted-row")
-
-    assert returned.returncode == 0, returned.stderr
-    text = note.read_text(encoding="utf-8")
-    assert "status: offered" in text and "assigned_to: unassigned" in text
-    assert re.search(r"^claimed_at: null$", text, flags=re.MULTILINE)
-    assert "returned the claim unstarted" in text
-    assert not any(path.exists() for paths in _role_sidecars(home).values() for path in paths)
-    assert _lineage_shapes(home, "unstarted-row") == ["returned_claim"]
-    taken = _claim(home, "unstarted-row", extra_env=_OTHER_ROLE)
-    assert taken.returncode == 0, taken.stderr
-
-
-@pytest.mark.parametrize(
-    ("field", "old", "new", "code"),
-    [
-        ("pr", "status: claimed", "status: claimed\npr: 4999", "claim_return_started"),
-        (
-            "branch",
-            "status: claimed",
-            "status: claimed\nbranch: feat/started",
-            "claim_return_started",
-        ),
-        ("status", "status: claimed", "status: pr_open", "claim_return_started"),
-        ("assigned", "assigned_to: cx-test", "assigned_to: cx-other", "claim_return_not_holder"),
-    ],
-)
-def test_started_work_is_never_returned(
-    tmp_path: Path, field: str, old: str, new: str, code: str
-) -> None:
-    home = tmp_path / "home"
-    note = _write_task(home, "active", "started-row")
-    assert _claim(home, "started-row").returncode == 0
-    note.write_text(note.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
-    before = note.read_bytes()
-    sidecars = _bytes_of(_role_sidecars(home)["marker"])
-
-    refused = _return(home, "started-row")
-
-    assert refused.returncode == 8
-    assert f"HOLD - {code}:" in refused.stderr
-    assert note.read_bytes() == before
-    assert _bytes_of(_role_sidecars(home)["marker"]) == sidecars
-
-
-@pytest.mark.parametrize(
-    ("old", "new"),
-    [
-        ("status: claimed", "status: claimed\nstatus: claimed"),
-        ("status: claimed", "status: claimed\nbranch: feat/started\nbranch: null"),
-        ("status: claimed", "status: claimed\npr: 4999\npr: null"),
-        ("status: claimed", "status: claimed\nbroken: ["),
-        ("status: claimed", 'status: claimed\n"status": claimed'),
-        ("status: claimed", 'status: claimed\nbranch: feat/started\n"branch": null'),
-        ("assigned_to: cx-test", '"assigned_to": cx-test'),
-        ("status: claimed", 'status: claimed\npr: 4999\n"pr": null'),
-        ("status: claimed", 'status: claimed\nroute: {a: 1, "a": 2}'),
-    ],
-    ids=[
-        "duplicated_status",
-        "branch_hidden_by_a_later_null",
-        "duplicated_pr",
-        "unparseable",
-        "quoted_duplicate_status",
-        "branch_hidden_by_a_quoted_null",
-        "quoted_only_assigned",
-        "pr_hidden_by_a_quoted_null",
-        "flow_style_duplicate",
-    ],
-)
-def test_a_note_with_duplicated_keys_is_never_returned(tmp_path: Path, old: str, new: str) -> None:
-    # codex on #4826 round 4: PyYAML keeps the last of duplicate keys. Two `status: claimed`
-    # passed the check while only the first was rewritten, and a later `branch: null` hid a
-    # branch with work on it. A note with any duplicated key is refused, unchanged.
-    home = tmp_path / "home"
-    note = _write_task(home, "active", "doubled-row")
-    assert _claim(home, "doubled-row").returncode == 0
-    note.write_text(note.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
-    before = note.read_bytes()
-    markers = _bytes_of(_role_sidecars(home)["marker"])
-
-    refused = _return(home, "doubled-row")
-
-    assert refused.returncode == 8
-    assert "HOLD - claim_return_note_malformed:" in refused.stderr
-    assert note.read_bytes() == before
-    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
-
-
-def test_only_the_holder_returns_a_claim(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    note = _write_task(home, "active", "held-row")
-    assert _claim(home, "held-row").returncode == 0
-    before = note.read_bytes()
-
-    refused = _return(home, "held-row", extra_env=_OTHER_ROLE)
-
-    assert refused.returncode == 8
-    assert "HOLD - claim_return_not_holder:" in refused.stderr
-    assert note.read_bytes() == before
-
-
-def test_a_lapsed_claim_is_not_returned_but_pointed_at_the_residue_release(
-    tmp_path: Path,
-) -> None:
-    home = tmp_path / "home"
-    note = _write_task(home, "active", "lapsed-row")
-    assert _claim(home, "lapsed-row").returncode == 0
-    for marker in _role_sidecars(home)["marker"]:
-        marker.rename(marker.with_name(marker.name + ".moved-by-test"))
-    before = note.read_bytes()
-
-    refused = _return(home, "lapsed-row")
-
-    assert refused.returncode == 8
-    assert "HOLD - claim_return_not_live:" in refused.stderr
-    assert "--release-claim-residue lapsed-row" in refused.stderr
-    assert note.read_bytes() == before
 
 
 def _expire(home: Path, *, hours: int = 7) -> None:
@@ -2651,38 +2514,3 @@ def test_an_expired_lease_on_a_worker_held_row_still_holds(tmp_path: Path) -> No
 
     assert refused.returncode == 7
     assert "expired claim" in refused.stderr
-
-
-def test_a_crash_between_the_note_and_the_archive_is_released_as_reassigned(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The seat's 16:00:23Z ruling: the crash window's state must be one existing tooling resolves.
-    import shared.sdlc_claim as sdlc_claim
-
-    home = tmp_path / "home"
-    note = _write_task(home, "active", "crashed-row")
-    assert _claim(home, "crashed-row").returncode == 0
-    roots = default_claim_publication_roots(home=home)
-
-    def crash(*_args, **_kwargs):
-        raise KeyboardInterrupt("killed after the note write")
-
-    monkeypatch.setattr(sdlc_claim, "_archive_residue", crash)
-    with pytest.raises(KeyboardInterrupt):
-        sdlc_claim.return_claim(
-            vault_root=_task_root(home),
-            cache_dir=Path(roots.claim_cache_dir),
-            transaction_root=Path(roots.claim_transaction_root),
-            lock_root=Path(roots.claim_lock_root),
-            role="cx-test",
-            task_id="crashed-row",
-            observed_at="20260927T160000Z",
-        )
-    monkeypatch.undo()
-    assert "status: offered" in note.read_text(encoding="utf-8")
-    assert _role_sidecars(home)["marker"][0].exists()
-
-    released = _release(home, "crashed-row")
-
-    assert released.returncode == 0, released.stderr
-    assert "reassigned_task" in released.stdout
