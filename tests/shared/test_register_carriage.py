@@ -199,6 +199,42 @@ def test_keep_dispositions_cover_the_amendments_not_forbidden_list() -> None:
         assert any(fragment in reason for reason in reasons), fragment
 
 
+def test_named_bugfix_the_ported_finite_verb_proxy_swallowed_these_fragments() -> None:
+    """Red-first witness for the one correctness fix the PR body names.
+
+    The port's cheap ``\\w+(ed|es)\\b`` finite-verb proxy fired on the -ed/-es surface of an
+    imperative ("Proceed") or a hyphenated participle ("agent-staffed"), so these real fragments
+    were read as verbful and dropped. Revert the fix — put ``_REGISTER_FINITE`` back as the
+    fragment test — and both units go silent; this is the red half the earlier packet lacked,
+    which cited only an incidental import-collection failure.
+    """
+    for unit in ("Proceed under measurement", "An agent-staffed R&D laboratory."):
+        findings = check_register_carriage_text(unit, file_label="<fixture>")
+        assert 1 in _devices(unit), (
+            f"the fix regressed: {unit!r} was read as verbful; findings={[f.message for f in findings]}"
+        )
+
+
+def test_plain_prose_is_not_a_fragment() -> None:
+    """The same fix must not over-correct: ordinary operational prose stays quiet for device 1."""
+    for prose in (
+        "The artifact proposes a source-bound claim.",
+        "The catalogue lists these records and their sources.",
+    ):
+        assert 1 not in _devices(prose), f"{prose!r} was read as a fragment"
+
+
+def test_a_comma_enumeration_carries_the_literal_enumeration_keep() -> None:
+    """codex: a comma-separated list of real items flagged device 2 with no keep disposition."""
+    text = "Apples, oranges, and pears."
+    findings = check_register_carriage_text(text, file_label="<fixture>")
+    assert findings, "the device should fire (over-inclusive by design)"
+    assert any(
+        "Keep disposition available: literal enumeration of real items." in f.message
+        for f in findings
+    ), [f.message for f in findings]
+
+
 def test_a_built_page_is_linted_by_its_block_units() -> None:
     """Tag-stripped text merges blocks and invents units; block units are the built-page input."""
     page = (

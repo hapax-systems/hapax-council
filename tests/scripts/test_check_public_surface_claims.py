@@ -544,7 +544,12 @@ def test_public_surface_claim_gate_passes_scoped_claim(tmp_path: Path) -> None:
     result = _run_gate(doc, token_report, source_reconciliation)
 
     assert result.returncode == 0
-    assert result.stdout == ""
+    # R8's register carriage lint runs over every scanned file and is over-inclusive by design, so
+    # a scoped claim fixture may carry a `Hapax.RegisterCarriage` warning. What must not appear is
+    # a claim finding: this asserts the claim gates stay quiet on a scoped claim.
+    assert [
+        line for line in result.stdout.splitlines() if "Hapax.RegisterCarriage" not in line
+    ] == []
 
 
 def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> None:
@@ -557,6 +562,40 @@ def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> No
 
     assert result.returncode == 1
     assert "Hapax.PublicClaimOverreach" in result.stdout
+
+
+def test_public_surface_gate_runs_the_register_carriage_lint(tmp_path: Path) -> None:
+    """R8 is wired into the gate itself, not only into ``lint_file``.
+
+    The gate's file scan must publish the register carriage findings (``Hapax.RegisterCarriage``)
+    for a scanned emission, so Edition 2's drafts are actually checked for the six devices. This
+    drives the real gate over a register-positive document; revert the wiring and no such finding
+    is emitted.
+    """
+    doc = tmp_path / "register.md"
+    doc.write_text("A proposition. A deadline. A result to answer to.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    rules = {finding["rule"] for finding in json.loads(result.stdout)}
+    assert "Hapax.RegisterCarriage" in rules, rules
+
+
+def test_public_surface_gate_register_carriage_escalates_under_warnings_fail(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "register-warn.md"
+    doc.write_text("A proposition. A deadline. A result to answer to.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--warnings-fail")
+
+    assert result.returncode == 1
+    assert "Hapax.RegisterCarriage" in result.stdout
 
 
 def test_public_surface_gate_offline_mode_cannot_authorize_release(
@@ -732,7 +771,11 @@ def test_public_surface_gate_allows_api_only_receipt_disposition(tmp_path: Path)
     result = _run_gate(doc, token_report, source_reconciliation)
 
     assert result.returncode == 0
-    assert result.stdout == ""
+    # R8's register carriage lint is over-inclusive by design; the assertion is that no claim
+    # finding (the thing this test guards) is emitted for an api-only receipt disposition.
+    assert [
+        line for line in result.stdout.splitlines() if "Hapax.RegisterCarriage" not in line
+    ] == []
 
 
 def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path) -> None:

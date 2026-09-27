@@ -1151,6 +1151,31 @@ def _malformed_freshness_timestamp_finding(state_path: Path, label: str) -> Lint
     )
 
 
+def scan_public_surface_paths(
+    paths: list[Path],
+    *,
+    token_claim_patterns: list[tuple[str, re.Pattern[str], str]],
+    github_material_envelope: GitHubMaterialEvidenceEnvelope | None,
+) -> list[LintFinding]:
+    """The gate's per-file hardening scan, one scanned file at a time.
+
+    R8's register carriage lint (``Hapax.RegisterCarriage``, the six devices of the HACA-C
+    §Register amendment) is wired in through ``lint_file``: ``check_register_carriage_text`` runs
+    for every file this loop reads, beside ``Hapax.FormalRegister``. This is the gate's single
+    file-scan surface, so an emission scanned here — including built ``.html`` pages — is checked
+    for the six devices. It is a named function so a test can drive exactly what the gate runs on
+    an emission, rather than asserting the wiring from ``lint_file`` alone; naming the rule at the
+    gate is what makes the wiring legible to a reviewer reading this file.
+    """
+    findings: list[LintFinding] = []
+    for path in iter_files(paths):
+        findings.extend(lint_file(path))
+        findings.extend(check_token_claim_ceiling(path, token_claim_patterns))
+        if github_material_envelope is not None:
+            findings.extend(check_github_material_claims(path, github_material_envelope))
+    return findings
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path, help="files or directories to scan")
@@ -1339,11 +1364,13 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         )
-    for path in iter_files(paths):
-        findings.extend(lint_file(path))
-        findings.extend(check_token_claim_ceiling(path, token_claim_patterns))
-        if github_material_envelope is not None:
-            findings.extend(check_github_material_claims(path, github_material_envelope))
+    findings.extend(
+        scan_public_surface_paths(
+            paths,
+            token_claim_patterns=token_claim_patterns,
+            github_material_envelope=github_material_envelope,
+        )
+    )
 
     if args.json:
         print(json.dumps([finding_to_dict(f) for f in findings], indent=2, sort_keys=True))

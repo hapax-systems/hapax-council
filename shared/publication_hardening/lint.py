@@ -393,12 +393,6 @@ REGISTER_KEEP_DISPOSITIONS: tuple[tuple[str, str], ...] = (
     ("scope_negation", "scope statement whose negation carries a limit"),
 )
 
-_REGISTER_FINITE = re.compile(
-    r"\b(is|are|was|were|be|been|being|am|has|have|had|do|does|did|can|could|will|would|shall|"
-    r"should|may|might|must|isn't|aren't|wasn't|don't|doesn't|didn't|won't|cannot|can't)\b"
-    r"|\b\w+(ed|es)\b|\b(it|this|that|they|we|he|she|who|which) \w+s\b",
-    re.IGNORECASE,
-)
 _REGISTER_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\u201c\"'(])")
 # A finite-verb test for the FRAGMENT device that stays quiet on plain prose. The port's cheap
 # `\w+(ed|es)\b` proxy fires on participles and imperatives ("Proceed", "agent-staffed") and
@@ -438,6 +432,14 @@ _REGISTER_SCOPE_NEGATION = re.compile(
     re.IGNORECASE,
 )
 _REGISTER_ENUMERATION = re.compile(r"\s·\s|\s\((?:\d+|[a-z])\)\s|\A\s*\d+\.\s")
+#: Literal enumerations are not always middot- or number-prefixed. A comma series — "Apples,
+#: oranges, and pears." — is the commonest literal enumeration, and codex found device 2 firing on
+#: it with no keep disposition available. Two or more commas in one short, clause-unbroken line is
+#: an enumeration shape, not a tricolon held for rhythm. Kept deliberately narrow: a mid-line
+#: clause boundary (``;:``) or an over-long unit keeps an ordinary multi-clause sentence out, so
+#: the hint cannot wave a real flag away. The word ceiling is applied at the use site.
+_REGISTER_COMMA_SERIES = re.compile(r"\A[^.;:!?\n]*,[^,.;:!?\n]*,[^,.;:!?\n]*[.!?]?\Z")
+_REGISTER_COMMA_SERIES_MAX_WORDS = 16
 
 
 def _register_words(text: str) -> int:
@@ -472,7 +474,14 @@ def _register_keep_hint(unit: str, sentences: list[str]) -> str | None:
     stripped = unit.strip()
     if stripped.endswith("?") and re.match(r"\A\s*(?:\d+\.|\(\d+\))\s", stripped):
         return "answered_question"
-    if _REGISTER_ENUMERATION.match(stripped) or "\u00b7" in stripped:
+    if (
+        _REGISTER_ENUMERATION.match(stripped)
+        or "\u00b7" in stripped
+        or (
+            _REGISTER_COMMA_SERIES.match(stripped)
+            and _register_words(stripped) <= _REGISTER_COMMA_SERIES_MAX_WORDS
+        )
+    ):
         return "literal_enumeration"
     if _REGISTER_SCOPE_NEGATION.search(stripped):
         return "scope_negation"
@@ -494,7 +503,7 @@ def _register_keep_hint(unit: str, sentences: list[str]) -> str | None:
 #: Block-level tags whose inner text is one register unit on a built page. A built page must be
 #: linted by its block units, not by tag-stripped text: stripping merges navigation chrome and
 #: adjacent blocks into one pseudo-unit and invents findings (measured on the correction edition).
-_REGISTER_BLOCK_TAGS = "p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption|figcaption"
+_REGISTER_BLOCK_TAGS = "p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption"
 
 
 def _register_html_units(text: str) -> list[tuple[int, str]]:
