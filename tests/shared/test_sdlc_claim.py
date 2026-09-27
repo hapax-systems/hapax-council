@@ -4718,16 +4718,121 @@ def test_release_refuses_a_stamp_outside_the_quarantine_grammar(tmp_path: Path) 
 
 
 def test_release_of_a_held_publication_finishes_after_an_interrupted_archive(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A rerun after a crash mid-archive: residue already archived is absent, the rest is
-    # archived, and the journal is quarantined.
+    # A crash after the first file is archived; the rerun counts it as released, because the
+    # lineage holds exactly its after-image, archives the rest, and quarantines the journal.
     fixture, journal, projections = _held_publication(tmp_path)
-    first = _residue_projections(projections)[0]
-    first.path.unlink()
+    real_archive = sdlc_claim._archive_verified
+    calls = {"n": 0}
 
-    released = _release_held(fixture)
+    def killed_after_first(*args: object, **kwargs: object) -> Path:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise _Killed
+        return real_archive(*args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", killed_after_first)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", real_archive)
+    assert journal.exists()
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
 
     assert released.shape == "held_publication"
     assert not journal.exists()
     assert not any(item.path.exists() for item in _residue_projections(projections))
+
+
+def test_release_refuses_a_held_publication_missing_a_residue_file_never_archived(
+    tmp_path: Path,
+) -> None:
+    # codex, #4801 round 1: absent is not "at the after-image". Only an earlier release's
+    # archive of exactly those bytes makes an absent file count as released.
+    fixture, _journal, projections = _held_publication(tmp_path)
+    _residue_projections(projections)[0].path.unlink()
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_a_sidecar_rewritten_during_the_release_is_never_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # codex, #4801 round 1: a rewrite between the check and the removal must not be lost.
+    fixture, journal, projections = _held_publication(tmp_path)
+    target = _residue_projections(projections)[0].path
+    real_rename = os.rename
+
+    def rewrite_then_rename(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        if Path(src) == target:
+            target.write_bytes(b"rewritten by a concurrent claim\n")
+        real_rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", rewrite_then_rename)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+    monkeypatch.setattr(os, "rename", real_rename)
+
+    # Nothing is lost and nothing is unlinked: the rewritten bytes are the moved original in
+    # the cache staging directory and the lineage keeps a verified copy flagged as differing.
+    rewritten = b"rewritten by a concurrent claim\n"
+    assert "claim_residue_live_differed" in raised.value.message
+    staged = (
+        fixture.cache / "claim-residue-release" / "task-alpha" / f"{_RELEASE_STAMP}-cx-red"
+    ) / target.name
+    archive = (
+        fixture.vault / "_lineage" / "task-alpha" / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+    )
+    assert staged.read_bytes() == rewritten
+    assert (archive / f"{target.name}.live-differed-from-journal").read_bytes() == rewritten
+    assert "live differed from journal" in (archive / "README.md").read_text(encoding="utf-8")
+    assert not (archive / target.name).exists()  # the journal's image is never archived for it
+    assert journal.exists()  # the release stopped before the quarantine
+
+
+def test_release_refuses_an_archive_name_already_taken(tmp_path: Path) -> None:
+    fixture, _journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    taken = (
+        fixture.vault
+        / "_lineage"
+        / "task-alpha"
+        / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+        / first.path.name
+    )
+    taken.parent.mkdir(parents=True)
+    taken.write_bytes(b"an earlier file\n")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert taken.read_bytes() == b"an earlier file\n"
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_when_the_quarantine_name_is_taken(tmp_path: Path) -> None:
+    fixture, journal, _projections = _held_publication(tmp_path)
+    journal.with_name(f"{journal.name}.quarantined-{_RELEASE_STAMP}").mkdir()
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_quarantine_exists" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before

@@ -6479,47 +6479,107 @@ def _task_in_active(vault_root: Path, task_id: str) -> bool:
     )
 
 
-def _archive_verified(projection: FileProjection, archive_dir: Path) -> Path:
-    """Copy one residue file into ``archive_dir``, verify the copy against the journal's
-    after-image, and only then remove the original."""
+def _copy_verified(content: bytes, mode: int, target: Path) -> None:
+    """Create ``target`` exclusively with ``content``, fsync it, and verify it. It never
+    replaces a file: an existing target is a collision."""
 
-    destination = archive_dir / projection.path.name
-    scratch = archive_dir / f".copying-{projection.path.name}"
-    if destination.exists() or destination.is_symlink() or scratch.exists():
+    try:
+        fd = os.open(
+            target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+    except FileExistsError as exc:
         raise _release_hold(
             "claim_residue_archive_collision",
-            f"{destination} already exists",
-            "preserve both files and inspect the lineage directory before retrying",
-        )
-    if _residue_state(projection) != "after":
-        raise _release_hold(
-            "claim_residue_hash_mismatch",
-            f"{projection.path} changed during the release",
-            "preserve the sidecar and rerun the release once it is stable",
-        )
-    if projection.after is None or projection.after_mode is None:
-        raise _release_hold(
-            "claim_residue_hash_mismatch",
-            f"{projection.path} has no after-image in its journal",
-            "preserve the sidecar and inspect the journal",
-        )
-    fd = os.open(
-        scratch, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
-    )
+            f"{target} already exists",
+            "preserve both files and inspect the lineage directory",
+        ) from exc
     with os.fdopen(fd, "wb") as handle:
-        handle.write(projection.after)
+        handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())
-    os.chmod(scratch, projection.after_mode)
-    os.rename(scratch, destination)
-    if destination.read_bytes() != projection.after:
+    os.chmod(target, mode)
+    if target.read_bytes() != content:
         raise _release_hold(
             "claim_residue_archive_unverified",
-            f"{destination} does not equal the journal's after-image",
-            "preserve both files; the original sidecar was not removed",
+            f"{target} does not equal the bytes moved out of the cache",
+            "inspect it; the moved original is kept in the cache staging directory",
         )
-    projection.path.unlink()
+
+
+def _archive_verified(projection: FileProjection, archive_dir: Path, staging_dir: Path) -> Path:
+    """Move one residue file out of its live name, then archive exactly the bytes moved.
+
+    The live file is renamed into ``staging_dir``, inside the cache's own filesystem, so the
+    move is atomic even where the vault is another filesystem (on appendix it is an NFS
+    mount). A rewrite before the rename is what gets compared; one after it creates a new
+    file this release never touches. The moved bytes, never the journal's image, are copied
+    verified into the lineage. Nothing is unlinked: the moved original stays staged.
+    On a mismatch the moved bytes are kept as ``<name>.live-differed-from-journal`` and the
+    release refuses.
+    """
+
+    staged = staging_dir / projection.path.name
+    destination = archive_dir / projection.path.name
+    differed = archive_dir / f"{projection.path.name}.live-differed-from-journal"
+    try:
+        os.rename(projection.path, staged)
+    except FileNotFoundError as exc:
+        raise _release_hold(
+            "claim_residue_hash_mismatch",
+            f"{projection.path} vanished during the release",
+            "inspect the cache, then rerun the release",
+        ) from exc
+    try:
+        moved_content, moved_mode = _file_state(staged)
+    except LifecycleTransitionError as exc:
+        raise _release_hold(
+            "claim_residue_live_differed",
+            f"{projection.path} was not a regular file; it is kept at {staged}",
+            "inspect it; nothing was deleted",
+        ) from exc
+    if moved_content is None or moved_mode is None:
+        raise _release_hold(
+            "claim_residue_hash_mismatch",
+            f"{staged} vanished after the move",
+            "inspect the staging directory",
+        )
+    if (moved_content, moved_mode) != (projection.after, projection.after_mode):
+        _copy_verified(moved_content, moved_mode, differed)
+        with (archive_dir / "README.md").open("a", encoding="utf-8") as readme:
+            readme.write(
+                f"live differed from journal: {projection.path} "
+                f"sha256:{_sha256(moved_content)}; kept at {staged} and {differed}\n"
+            )
+        raise _release_hold(
+            "claim_residue_live_differed",
+            f"{projection.path} changed during the release; the bytes moved are kept at "
+            f"{staged} and {differed}",
+            "inspect them; nothing was deleted, and the release stopped before the journal",
+        )
+    _copy_verified(moved_content, moved_mode, destination)
     return destination
+
+
+def _previously_archived(
+    projection: FileProjection, journal: _RoleTaskJournal, vault_root: Path
+) -> bool:
+    """Whether an earlier release of this role for this task archived exactly this file's
+    after-image: the only way an absent residue file counts as released."""
+
+    lineage = vault_root / "_lineage" / _safe_lineage_component(journal.intent.task_id)
+    suffix = f"-{_safe_lineage_component(journal.intent.role)}"
+    if not lineage.is_dir():
+        return False
+    for directory in sorted(lineage.glob("claim-residue-release-*")):
+        candidate = directory / projection.path.name
+        if not directory.name.endswith(suffix) or candidate.is_symlink():
+            continue
+        try:
+            if candidate.is_file() and candidate.read_bytes() == projection.after:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _archive_residue(
@@ -6537,8 +6597,32 @@ def _archive_residue(
         / _safe_lineage_component(intent.task_id)
         / f"claim-residue-release-{observed_at}-{_safe_lineage_component(intent.role)}"
     )
+    staging_dir = (
+        _normalized(journal.intent.cache_dir)
+        / "claim-residue-release"
+        / _safe_lineage_component(intent.task_id)
+        / f"{observed_at}-{_safe_lineage_component(intent.role)}"
+    )
+    # Every name this release will create must be free before anything is created: a rename
+    # onto a taken name would replace it silently.
+    taken = [
+        path
+        for projection in present
+        for path in (
+            staging_dir / projection.path.name,
+            archive_dir / projection.path.name,
+            archive_dir / f"{projection.path.name}.live-differed-from-journal",
+        )
+        if path.exists() or path.is_symlink()
+    ]
+    if taken:
+        raise _release_hold(
+            "claim_residue_archive_collision",
+            f"{taken[0]} already exists",
+            "preserve every file and inspect the lineage and staging directories",
+        )
     archive_dir.mkdir(parents=True, exist_ok=True)
-    archived = tuple(_archive_verified(projection, archive_dir) for projection in present)
+    os.makedirs(staging_dir, mode=0o700, exist_ok=True)
     lines = [
         "Governed release of claim residue (cc-claim --release-claim-residue).",
         f"shape: {shape}",
@@ -6547,13 +6631,17 @@ def _archive_residue(
         f"session_id: {intent.session_id}",
         f"publication_id: {journal.publication_id}",
         f"released_at: {observed_at}",
-        "archived (sha256 equals the journal's after-image):",
+        f"moved originals (kept, never unlinked): {staging_dir}",
+        "to archive (each must equal the journal's after-image, sha256 below):",
         *(
             f"  - {projection.path} sha256:{_sha256(projection.after or b'')}"
             for projection in present
         ),
     ]
     (archive_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    archived = tuple(
+        _archive_verified(projection, archive_dir, staging_dir) for projection in present
+    )
     return archive_dir, archived
 
 
@@ -6600,6 +6688,15 @@ def _release_held_publication(
             )
         elif state == "after":
             present.append(projection)
+        elif not _previously_archived(projection, journal, vault_root):
+            # Absent counts only as already released: an earlier run of this release, cut
+            # off mid-archive, holds exactly this after-image in the lineage.
+            raise _release_hold(
+                "claim_residue_projection_missing",
+                f"{projection.path} is absent and no earlier release archived its after-image",
+                "preserve the journal and inspect it; every non-note projection must be at its "
+                "after-image or already archived",
+            )
     drifted = [
         str(item.path) for item in journal.projections[7:] if _residue_state(item) != "after"
     ]
@@ -6713,8 +6810,9 @@ def release_claim_residue(
 
     It acts only on files a journal of (``role``, ``task_id``) projected, only when each equals
     that journal's after-image, and only under the role's publication lock. It never touches
-    the task note, never deletes (each file is archived by verified copy into
-    ``_lineage/<task>/``), and never touches another role's or session's files. Shapes:
+    the task note, never unlinks anything, and never touches another role's or session's files.
+    Each file is moved into a staging directory in the cache, and the moved bytes are copied,
+    verified, into ``_lineage/<task>/`` (see :func:`_archive_verified`). Shapes:
 
     - ``held_publication``: a ``recovery_required`` journal whose note has moved past both of
       its images. Its markers are absent and its admission evidence is intact. The residue is

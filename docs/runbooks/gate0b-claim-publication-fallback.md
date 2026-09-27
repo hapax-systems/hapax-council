@@ -173,9 +173,10 @@ cc-claim --release-claim-residue <task-id>
 Name the task the residue names; the claim HOLD prints the exact command. The release acts
 only on the calling role's residue for that task. Every file it touches must equal the
 after-image of a claim-publication journal of that role and task, and must be one of that
-journal's own session sidecars. It holds the role's publication lock, archives each file by
-verified copy into `_lineage/<task-id>/claim-residue-release-<stamp>-<role>/` (with a README),
-never deletes, and never touches the task note. It covers three shapes:
+journal's own session sidecars. It holds the role's publication lock. It moves each file out of
+its live name, and copies the moved bytes, verified, into
+`_lineage/<task-id>/claim-residue-release-<stamp>-<role>/` (with a README). It never unlinks
+anything, and never touches the task note. It covers three shapes:
 
 | Shape | What is left | What the release does |
 |-------|--------------|-----------------------|
@@ -191,6 +192,28 @@ It refuses, with exit 8 and a named `claim_residue_*` reason, before the first m
 
 A released row whose note still reads `claimed` by the role stays that way; the release never
 edits it.
+
+Recheck after a release (the output decides the next step):
+
+```bash
+role="${HAPAX_AGENT_ROLE:?}"
+ls -la ~/.cache/hapax/ | grep -E "cc-(active-task|claim-epoch|claim-dispatch)-${role}(-|\.json|$)" || echo "no sidecars left for ${role}"
+ls ~/Documents/Personal/20-projects/hapax-cc-tasks/_lineage/<task-id>/ | grep claim-residue-release-
+cc-claim --recover-claim-publications <task-id>   # expect no hold; a quarantined journal is skipped
+cc-claim <next-task-id>                           # expect the claim to publish
+```
+
+Nothing is ever unlinked. Each sidecar is moved, atomically and inside the cache's own filesystem,
+into `~/.cache/hapax/claim-residue-release/<task-id>/<stamp>-<role>/`. The bytes actually moved are
+what is compared with the journal and what is copied, verified, into the lineage. The vault can be
+a different filesystem (on appendix it is an NFS mount), so it is never the rename target. A
+`<name>.live-differed-from-journal` file in the lineage means a sidecar changed during the
+release. The moved bytes are kept in both places, the README records it, and the release stopped
+before the journal; inspect them before rerunning.
+
+**Emergency path.** The release has no override flag and no bypass. If it refuses and the operator
+decides the residue must go anyway, the Manual Stale-Lease Release below is the emergency path,
+run with operator approval and recorded in the row's lineage.
 
 ## Manual Stale-Lease Release
 

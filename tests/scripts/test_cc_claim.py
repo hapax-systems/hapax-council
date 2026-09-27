@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import textwrap
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1864,6 +1865,50 @@ def test_release_refuses_while_another_session_of_the_role_holds_the_task(
     assert released.returncode == 8
     assert "claim_residue_live_marker" in released.stderr
     assert _bytes_of(residue) == before
+
+
+def test_release_reports_when_nothing_remains(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "gone-row")
+    assert _claim(home, "gone-row").returncode == 0
+    for group in _role_sidecars(home).values():
+        for path in group:
+            path.unlink()
+
+    released = _release(home, "gone-row")
+
+    assert released.returncode == 8
+    assert "claim_residue_none" in released.stderr
+    assert _release_archives(home, "gone-row") == []
+
+
+def test_release_refuses_residue_two_journals_both_explain(tmp_path: Path) -> None:
+    # A claim and a later ready-state resume leave two applied journals; markers alone are
+    # byte-identical across them, so the release cannot tell whose they are.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "twice-row")
+    assert _claim(home, "twice-row").returncode == 0
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open", 1),
+        encoding="utf-8",
+    )
+    sidecars = _role_sidecars(home)
+    for group in sidecars.values():
+        for path in group:
+            path.unlink()
+    first_second = int(time.time())
+    while int(time.time()) == first_second:  # a fresh claim epoch for the second journal
+        time.sleep(0.05)
+    assert _claim(home, "twice-row").returncode == 0
+    for path in (*sidecars["epoch"], *sidecars["dispatch"]):
+        path.unlink()
+    before = _bytes_of(sidecars["marker"])
+
+    released = _release(home, "twice-row")
+
+    assert released.returncode == 8
+    assert "claim_residue_ambiguous" in released.stderr
+    assert _bytes_of(sidecars["marker"]) == before
 
 
 def test_release_touches_no_other_role_or_session(tmp_path: Path) -> None:
