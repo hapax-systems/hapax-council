@@ -612,21 +612,21 @@ log "=== Phase 12: Start Docker stack + restore databases ==="
 
 # Where the producers write their dumps: /store/llm-data/backup-dumps-{remote,local} since ca32d43 (2026-09-02;
 # disk, not tmpfs), /tmp before it. The old search looked only in /tmp, so a restore from any newer snapshot silently
-# skipped PostgreSQL and Qdrant and still reported completion (#4623 review round 1 critical 1; #4813). No dump is a
-# refusal, never a skip.
+# skipped PostgreSQL and Qdrant and still reported completion (#4623 review round 1 critical 1; #4813). A candidate
+# counts only when it holds postgres-all.sql: an empty dump directory is not a dump. No dump is a refusal, never a skip.
 DUMP=""
 for _candidate in \
     "$RESTORE_DIR/store/llm-data/backup-dumps-remote" \
     "$RESTORE_DIR/store/llm-data/backup-dumps-local" \
     "$RESTORE_DIR/tmp/hapax-backup-dumps-remote" \
     "$RESTORE_DIR/tmp/hapax-backup-dumps"; do
-    if [[ -d "$_candidate" ]]; then
+    if [[ -f "$_candidate/postgres-all.sql" ]]; then
         DUMP="$_candidate"
         break
     fi
 done
 if [[ -z "$DUMP" ]]; then
-    fail "No database dump in the restored snapshot. Searched:"
+    fail "No database dump (postgres-all.sql) in the restored snapshot. Searched:"
     fail "  $RESTORE_DIR/store/llm-data/backup-dumps-remote"
     fail "  $RESTORE_DIR/store/llm-data/backup-dumps-local"
     fail "  $RESTORE_DIR/tmp/hapax-backup-dumps-remote"

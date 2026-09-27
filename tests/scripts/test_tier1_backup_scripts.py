@@ -25,7 +25,7 @@ ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 # The DR script is podium's ~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, sha256
 # fa0dafc7…), changed in exactly two hunks by the seat's exception (2026-09-27 10:29Z): the bootstrap clone (lines
 # 22–23) and Phase 12's dump search (lines 613ff). Any other change belongs to the follow-up row, never to a silent edit.
-DR_SCRIPT_SHA256 = "cba66be560ea5b04ad7f684c163b9272e79b8d77e7062bfa7a955619f8483480"
+DR_SCRIPT_SHA256 = "195e0769d7015f61b86592a98b05d4c8f2749ec011336d4f32cebb23c9391b7b"
 
 
 @pytest.mark.parametrize("name", ["hapax-backup-local.service", "hapax-backup-remote.service"])
@@ -231,6 +231,25 @@ def test_dr_phase12_prefers_the_current_dump_location(tmp_path: Path) -> None:
         tmp_path, ["tmp/hapax-backup-dumps-remote", "store/llm-data/backup-dumps-remote"]
     )
     assert f"DUMP={tmp_path / 'restore' / 'store/llm-data/backup-dumps-remote'}\n" in result.stdout
+
+
+def test_dr_phase12_requires_the_dump_file_not_just_its_directory(tmp_path: Path) -> None:
+    """An empty dump directory is not a dump (#4813 review round 2 critical): skip it for a later candidate that
+    holds postgres-all.sql, and refuse when none does."""
+
+    empty = tmp_path / "a" / "restore" / "store/llm-data/backup-dumps-remote"
+    empty.mkdir(parents=True)
+    fallback = _phase12_dump(tmp_path / "a", ["tmp/hapax-backup-dumps-remote"])
+    assert (
+        f"DUMP={tmp_path / 'a' / 'restore' / 'tmp/hapax-backup-dumps-remote'}\n" in fallback.stdout
+    )
+
+    only_empty = tmp_path / "b" / "restore" / "store/llm-data/backup-dumps-local"
+    only_empty.mkdir(parents=True)
+    refused = _phase12_dump(tmp_path / "b", [])
+    assert refused.returncode != 0
+    assert "DUMP=" not in refused.stdout
+    assert "postgres-all.sql" in refused.stdout
 
 
 def test_dr_phase12_refuses_loudly_when_no_dump_exists(tmp_path: Path) -> None:
