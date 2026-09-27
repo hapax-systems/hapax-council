@@ -304,8 +304,16 @@ def _make_orchestrator(
 class _LintGate:
     """A hardening gate whose only child is the lint child, built from (rule, level) pairs."""
 
-    def __init__(self, findings: tuple[tuple[str, str], ...]) -> None:
+    def __init__(
+        self,
+        findings: tuple[tuple[str, str], ...],
+        *,
+        extra_children: tuple[PublicationGateChildResult, ...] = (),
+        raw_findings: tuple[str, ...] = (),
+    ) -> None:
         self._findings = findings
+        self._extra_children = extra_children
+        self._raw_findings = raw_findings
 
     def evaluate(self, _artifact: PreprintArtifact) -> PublicationGateResult:
         rendered = tuple(
@@ -313,23 +321,32 @@ class _LintGate:
             f"effect): 'A proposition.'. Rewrite as a plain statement."
             for rule, level in self._findings
         )
+        rendered = (*rendered, *self._raw_findings)
         if any(level == "error" for _rule, level in self._findings):
             decision = PublicationGateDecision.REJECT
         elif self._findings:
             decision = PublicationGateDecision.HOLD
         else:
             decision = PublicationGateDecision.PASS
+        children = (
+            PublicationGateChildResult(name="lint", decision=decision, findings=rendered),
+            *self._extra_children,
+        )
+        if any(child.decision == PublicationGateDecision.REJECT for child in children):
+            decision = PublicationGateDecision.REJECT
+        elif any(child.decision == PublicationGateDecision.HOLD for child in children):
+            decision = PublicationGateDecision.HOLD
+        flagged_issues = tuple(
+            f"{child.name}: {finding}"
+            for child in children
+            if child.decision != PublicationGateDecision.PASS
+            for finding in child.findings
+        )
         return PublicationGateResult(
             decision=decision,
             generated_at="2026-05-13T00:00:00+00:00",
-            child_results=(
-                PublicationGateChildResult(name="lint", decision=decision, findings=rendered),
-            ),
-            flagged_issues=(
-                tuple(f"lint: {finding}" for finding in rendered)
-                if decision != PublicationGateDecision.PASS
-                else ()
-            ),
+            child_results=children,
+            flagged_issues=flagged_issues,
             review_report={
                 "schema_version": 1,
                 "reviewer_model": "test-reviewer",
@@ -446,6 +463,80 @@ class TestRegisterCarriageSurfacing:
         )
         assert gate_log["result"] == "rejected"
         assert gate_log["publication_gate_decision"] == "reject"
+
+    def test_an_unreadable_finding_blocks_the_exemption(self, tmp_path, monkeypatch):
+        """Fail-closed: a finding this code cannot read holds, and it blocks the exemption.
+
+        The artifact carries a register warning (exemptible) AND an unparseable lint finding, so
+        the exemption must not release it.
+        """
+        _drop_artifact(tmp_path, slug="unreadable-finding", surfaces=["fake"])
+        orch, fake_module = _publishing_orchestrator(
+            tmp_path,
+            monkeypatch,
+            _LintGate(
+                (("Hapax.RegisterCarriage", "warning"),),
+                raw_findings=("a lint finding with no parsable shape",),
+            ),
+        )
+
+        orch.run_once()
+
+        fake_module.publish_artifact.assert_not_called()
+        assert not (tmp_path / "publish/published/unreadable-finding.json").exists()
+        draft = json.loads((tmp_path / "publish/draft/unreadable-finding.json").read_text())
+        assert draft["approval"] == "withheld"
+        gate_log = json.loads(
+            (
+                tmp_path / "publish/log/unreadable-finding.publication-hardening-gate.json"
+            ).read_text()
+        )
+        assert gate_log["result"] in {"operator_hold", "rejected"}
+        assert gate_log["register_carriage_dispositions"] == []
+
+    def test_another_holding_child_blocks_the_exemption(self, tmp_path, monkeypatch):
+        """Fail-closed: another holding child releases nothing, even with only register warnings."""
+        _drop_artifact(tmp_path, slug="other-child-holds", surfaces=["fake"])
+        orch, fake_module = _publishing_orchestrator(
+            tmp_path,
+            monkeypatch,
+            _LintGate(
+                (("Hapax.RegisterCarriage", "warning"),),
+                extra_children=(
+                    PublicationGateChildResult(
+                        name="codebase",
+                        decision=PublicationGateDecision.HOLD,
+                        findings=("numeric expectation unmet",),
+                    ),
+                ),
+            ),
+        )
+
+        orch.run_once()
+
+        fake_module.publish_artifact.assert_not_called()
+        assert not (tmp_path / "publish/published/other-child-holds.json").exists()
+        draft = json.loads((tmp_path / "publish/draft/other-child-holds.json").read_text())
+        assert draft["approval"] == "withheld"
+        assert draft["publication_gate_result"]["decision"] == "hold"
+        gate_log = json.loads(
+            (tmp_path / "publish/log/other-child-holds.publication-hardening-gate.json").read_text()
+        )
+        assert gate_log["register_carriage_dispositions"] == []
+        assert any("codebase" in issue for issue in gate_log["flagged_issues"])
+
+
+def test_the_lint_child_rule_reapplied_to_a_narrowed_set() -> None:
+    """The re-applied rule itself: error rejects, unreadable rejects, others hold, none passes."""
+    decide = orchestrator_module._lint_child_decision
+    assert decide(()) is PublicationGateDecision.PASS
+    assert decide(("artifact:x:1:Hapax.PublicClaimOverreach:warning:msg",)) is (
+        PublicationGateDecision.HOLD
+    )
+    assert decide(("artifact:x:1:Hapax.RegisterCarriage:error:msg",)) is (
+        PublicationGateDecision.REJECT
+    )
+    assert decide(("no parsable shape",)) is PublicationGateDecision.REJECT
 
 
 # ── Empty inbox ─────────────────────────────────────────────────────

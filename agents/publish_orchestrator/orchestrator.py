@@ -1434,7 +1434,12 @@ def _lint_finding_rule_and_level(finding: str) -> tuple[str, str] | None:
 
 
 def _lint_child_decision(findings: Sequence[str]) -> PublicationGateDecision:
-    """The gate's own lint rule, re-applied to a narrowed finding set: error rejects, else hold."""
+    """The gate's own lint rule, re-applied to a narrowed finding set.
+
+    An error rejects; a finding that does not parse is treated as unsafe and also rejects, so the
+    exemption can never release on a finding this code cannot read; any other finding holds; an
+    empty set passes. The caller only releases when this returns PASS.
+    """
     if any(
         parsed is None or parsed[1] == "error"
         for parsed in (_lint_finding_rule_and_level(finding) for finding in findings)
