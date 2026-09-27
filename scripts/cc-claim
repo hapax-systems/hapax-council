@@ -599,15 +599,15 @@ if canon_enforced:
     )
     from shared.sdlc_claim import (  # noqa: E402
         ClaimPublicationError,
-        ClaimPublicationIntent,
         ClaimResidueArchiveHold,
         archive_dispatch_only_claim_residue,
         inspect_claim_publications,
         recover_claim_publications,
         release_pipeline_held_residue,
         resolve_applied_claim_publication,
+        claim_publication_hold_message,
+        prepare_claim_publication_intent,
         resolve_applied_claim_publication_for_task,
-        resolve_task_note_through_churn,
     )
     from shared.sdlc_task_store import (  # noqa: E402
         ClaimDispatchBinding,
@@ -1457,15 +1457,6 @@ if not canon_enforced:
     sys.exit(0)
 
 try:
-    # Task-store churn from any other row is retaken, bounded (M95); the exact-bytes
-    # check below still refuses if this task's own note moved.
-    snapshot = resolve_task_note_through_churn(path.parent.parent, task_id)
-    if snapshot.path != path.resolve() or snapshot.content != note_before:
-        raise TaskStoreError(
-            "claim_publication_task_changed_during_preflight",
-            "reload the exact active task and repeat claim eligibility checks",
-            task_id,
-        )
     binding = ClaimDispatchBinding.create(
         task_id=task_id,
         lane=role,
@@ -1479,11 +1470,11 @@ try:
         binding_hash=dispatch_binding_hash,
         coord_dispatch_idempotency_key=dispatch_idempotency_key or None,
     )
-    intent = ClaimPublicationIntent.create(
-        task=snapshot,
-        cache_dir=cache_dir,
-        note_after=text.encode("utf-8"),
-        binding=binding,
+    # The preflight (a churn-retaking resolve, the exact-bytes check, the intent) is
+    # shared.sdlc_claim's, tested in-process there; this script runs isolated (-I).
+    intent = prepare_claim_publication_intent(
+        note_path=path, note_before=note_before, note_after=text.encode("utf-8"),
+        cache_dir=cache_dir, binding=binding,
     )
 except (ClaimPublicationError, TaskStoreError) as exc:
     print(
@@ -1638,13 +1629,7 @@ try:
         )
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
 except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
-    print(
-        f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
-        "claim-publication composition receipt for this HOME through the governed "
-        "install step, then rerun cc-claim; do not use HAPAX_GATE0B_CLAIM_PUBLICATION_OFF "
-        f"unless the operator authorizes emergency fallback; prepared_intent={intent.intent_ref}",
-        file=sys.stderr,
-    )
+    print(claim_publication_hold_message(exc, intent_ref=intent.intent_ref), file=sys.stderr)
     sys.exit(8)
 
 print(result_message)

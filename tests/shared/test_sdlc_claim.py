@@ -4541,6 +4541,11 @@ def _churning_task_store(
     return attempts
 
 
+def _open_deadline() -> float:
+    """An under-lock deadline far enough out that only the attempt bound applies."""
+    return sdlc_claim._churn_clock() + 3600.0
+
+
 @pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
 def test_task_resolution_is_retaken_through_transient_frontier_churn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
@@ -4625,9 +4630,9 @@ def test_locked_preflight_and_postimage_retake_frontier_churn(
     attempts = _churning_task_store(fixture.vault, monkeypatch, churn_on=lambda n: n % 2 == 1)
     monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
 
-    sdlc_claim._locked_preflight(fixture.intent, ())
+    sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=_open_deadline())
     fixture.intent.note_path.write_bytes(fixture.intent.note_after)
-    sdlc_claim._require_exact_task_postimage(fixture.intent)
+    sdlc_claim._require_exact_task_postimage(fixture.intent, deadline_at=_open_deadline())
 
     assert attempts == [1, 2, 3, 4]
 
@@ -4660,6 +4665,289 @@ def test_a_claim_publishes_through_churn_at_every_resolution(
         if (journal / "manifest.json").exists()
     ]
     assert states == ["applied"]
+
+
+@pytest.mark.parametrize("holder", ["publication", "recovery"])
+def test_each_lock_holder_gives_every_locked_resolution_one_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, holder: str
+) -> None:
+    # codex on #4829 round 3: the occupancy tests pass one deadline by hand, so they would miss
+    # a lock holder that gave each phase a fresh one. This drives the real holders.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    seen: list[float | None] = []
+    original = sdlc_claim.resolve_task_note_through_churn
+
+    def recording(vault_root: Path, task_id: str, *, deadline_at: float | None = None) -> object:
+        seen.append(deadline_at)
+        return original(vault_root, task_id, deadline_at=deadline_at)
+
+    def transaction() -> None:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    if holder == "recovery":
+        # Leave the publication recovery_required at the receipt, as the recovery tests do.
+        original_persist = sdlc_claim._persist_admitted_receipt
+
+        def fail_receipt(*_args: object, **_kwargs: object) -> None:
+            raise ClaimPublicationError("receipt_simulated", "retry", fixture.intent.task_id)
+
+        monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", fail_receipt)
+        with pytest.raises(ClaimPublicationError):
+            transaction()
+        monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", original_persist)
+        monkeypatch.setattr(sdlc_claim, "resolve_task_note_through_churn", recording)
+        recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            task_id=fixture.intent.task_id,
+        )
+    else:
+        monkeypatch.setattr(sdlc_claim, "resolve_task_note_through_churn", recording)
+        transaction()
+
+    # publication: two locked preflights and two postimage checks; recovery: its two postimage
+    # checks (glm on #4829 round 4: a dropped locked resolution must turn this red)
+    assert len(seen) == {"publication": 4, "recovery": 2}[holder]
+    assert None not in seen  # every locked resolution got the holder's deadline
+    assert len(set(seen)) == 1  # and it is one deadline, taken once per lock hold
+
+
+# ── the cc-claim preflight, extracted and tested through churn (#4827 follow-up) ─
+# claim-preflight-extract-churn-tested-20260927
+
+
+def _prepare(fixture: ClaimFixture, *, note_before: bytes | None = None) -> ClaimPublicationIntent:
+    return sdlc_claim.prepare_claim_publication_intent(
+        note_path=fixture.intent.note_path,
+        note_before=fixture.intent.note_before if note_before is None else note_before,
+        note_after=fixture.intent.note_after,
+        cache_dir=fixture.cache,
+        binding=fixture.intent.binding,
+    )
+
+
+@pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
+def test_the_claim_preflight_retakes_transient_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    # Discriminating where tests/scripts/test_cc_claim.py can only pin text: a preflight that
+    # resolved bare would raise on the first attempt's churn.
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(
+        fixture.vault, monkeypatch, point=point, churn_on=lambda n: n == 1
+    )
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+
+    intent = _prepare(fixture)
+
+    assert intent.intent_ref == fixture.intent.intent_ref
+    assert attempts == [1, 2]
+
+
+@pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
+def test_exhausted_churn_in_the_claim_preflight_names_the_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    _churning_task_store(fixture.vault, monkeypatch, point=point)
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        _prepare(fixture)
+
+    assert raised.value.reason_code == _CHURN_POINTS[point]
+    assert raised.value.repair_action == sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION
+
+
+def test_the_claim_preflight_still_refuses_a_changed_note(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+
+    with pytest.raises(TaskStoreError) as raised:
+        _prepare(fixture, note_before=fixture.intent.note_before + b"\n")
+
+    assert raised.value.reason_code == "claim_publication_task_changed_during_preflight"
+
+
+@pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
+@pytest.mark.parametrize(
+    ("site", "reason"),
+    [
+        ("locked_preflight", "claim_publication_task_resolution_refused"),
+        ("postimage", "claim_publication_task_projection_invalid"),
+    ],
+)
+def test_exhausted_churn_under_the_lock_names_the_retry_not_a_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str, site: str, reason: str
+) -> None:
+    # M180 class: the 19:52:40Z HOLD said "restore exactly one active task note" and then named
+    # the Gate-0B composition receipt; churn is transient, so the action is a retry.
+    fixture = _fixture(tmp_path)
+    if site == "postimage":
+        fixture.intent.note_path.write_bytes(fixture.intent.note_after)
+    _churning_task_store(fixture.vault, monkeypatch, point=point)
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        if site == "postimage":
+            sdlc_claim._require_exact_task_postimage(fixture.intent, deadline_at=_open_deadline())
+        else:
+            sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=_open_deadline())
+
+    assert (raised.value.reason_code, raised.value.detail) == (reason, _CHURN_POINTS[point])
+    assert raised.value.repair_action == sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION
+    message = sdlc_claim.claim_publication_hold_message(raised.value, intent_ref="intent-x")
+    assert sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION in message
+    assert "Gate-0B" not in message
+    assert "restore exactly one" not in message
+
+
+def test_a_hold_that_is_not_churn_keeps_the_install_action() -> None:
+    exc = ClaimPublicationError(
+        "claim_publication_task_resolution_refused",
+        "restore exactly one active task note and no closed duplicate",
+        "task_note_cross_state_duplicate",
+    )
+
+    message = sdlc_claim.claim_publication_hold_message(exc, intent_ref="intent-x")
+
+    assert "Gate-0B claim-publication composition receipt" in message
+    assert sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION not in message
+
+
+def test_retakes_under_one_lock_hold_share_one_budget_and_never_overrun_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # codex on #4829: per-site deadlines let each phase retake for the full budget, and a retake
+    # could start just inside a deadline and run past it. Now one deadline per lock hold is
+    # shared by every resolution under it, and a retake starts only if it can finish inside it.
+    from shared.task_note_lock import DEFAULT_TIMEOUT_SECONDS
+
+    budget = sdlc_claim._UNDER_LOCK_CHURN_BUDGET_SECONDS
+    assert budget < sdlc_claim._CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS
+    assert budget < DEFAULT_TIMEOUT_SECONDS
+
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch)  # churn never settles
+    now = [0.0]
+    resolution_seconds = 9.0  # measured 2026-09-27: 9.0-9.7 s over 5,767 rows
+    original = sdlc_claim.resolve_task_note
+
+    def timed_resolution(*args: object, **kwargs: object) -> object:
+        now[0] += resolution_seconds
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(sdlc_claim, "resolve_task_note", timed_resolution)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", lambda: now[0])
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleep)
+    deadline = now[0] + budget  # taken once, as the lock holder does
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=deadline)
+    preflight_attempts = len(attempts)
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._require_exact_task_postimage(fixture.intent, deadline_at=deadline)
+
+    assert preflight_attempts == 2  # 9 s + pause + 9 s fits 25 s; a third would not
+    assert len(attempts) == 3  # the postimage phase finds the shared budget spent: no retake
+    baseline = 2 * resolution_seconds  # each phase's first resolution is not a retake
+    assert now[0] - baseline <= budget  # retakes add at most the budget, pauses included
+
+
+def test_a_slower_retake_overruns_by_at_most_its_excess_and_no_retake_follows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # codex on #4829 round 2: the fit check judges a retake by the attempt before it, and a
+    # running resolution is not interrupted. The claim is narrowed to what holds: a slower
+    # retake ends past the deadline by at most its excess, and no retake starts after it.
+    budget = sdlc_claim._UNDER_LOCK_CHURN_BUDGET_SECONDS
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch)  # churn never settles
+    durations = iter([9.0, 20.0, 20.0, 20.0])  # the retake runs 11 s longer than it was judged
+    now = [0.0]
+    original = sdlc_claim.resolve_task_note
+
+    def timed_resolution(*args: object, **kwargs: object) -> object:
+        now[0] += next(durations)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(sdlc_claim, "resolve_task_note", timed_resolution)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", lambda: now[0])
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleep)
+    deadline = now[0] + budget
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=deadline)
+
+    assert len(attempts) == 2  # the retake started (9 + pause + 9 fits); nothing after it
+    assert now[0] > deadline  # the slower retake did end past the deadline
+    assert (
+        now[0] - deadline <= 20.0 - 9.0
+    )  # by at most its excess over the attempt it was judged by
+
+
+def test_an_oversleep_never_starts_a_retake_past_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # codex on #4829 round 5: the fit check ran before the backoff sleep only, so a sleep or a
+    # scheduler that overshot its delay started a full resolution past the deadline.
+    budget = sdlc_claim._UNDER_LOCK_CHURN_BUDGET_SECONDS
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch)  # churn never settles
+    now = [0.0]
+    original = sdlc_claim.resolve_task_note
+
+    def timed_resolution(*args: object, **kwargs: object) -> object:
+        now[0] += 9.0
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    def oversleep(seconds: float) -> None:
+        now[0] += seconds + 10.0  # the sleep returns 10 s late
+
+    monkeypatch.setattr(sdlc_claim, "resolve_task_note", timed_resolution)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", lambda: now[0])
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", oversleep)
+    deadline = now[0] + budget
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=deadline)
+
+    assert len(attempts) == 1  # the retake fit before the sleep, but not after it
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TaskStoreError("task_store_frontier_changed_during_index_build", "retry", "delta"),
+        ClaimPublicationError(
+            "task_store_frontier_changed_since_index", sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION
+        ),
+    ],
+    ids=["raw_task_store_error", "preflight_publication_error"],
+)
+def test_churn_carried_only_in_reason_code_names_the_retry(exc: Exception) -> None:
+    # codex on #4829 round 5: the locked sites carry churn in `detail`, and those are tested;
+    # a raw TaskStoreError, and the preflight's ClaimPublicationError, carry it in `reason_code`.
+    message = sdlc_claim.claim_publication_hold_message(exc, intent_ref="intent-x")
+
+    assert sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION in message
+    assert "Gate-0B" not in message
 
 
 # ── governed release of a held claim publication (M166, M167) ────────────────

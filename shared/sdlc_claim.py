@@ -126,6 +126,22 @@ _TASK_FRONTIER_CHURN_REASONS = frozenset(
         "task_store_frontier_changed_during_resolution",
     }
 )
+#: The next action when task-store churn outlasts the retake bound (M95, M180 class). The refusal
+#: is transient, so the action is a retry, never a repair of the note or of the Gate-0B install.
+TASK_FRONTIER_CHURN_NEXT_ACTION = (
+    "retry after the task-store frontier settles (another task row was written during every "
+    "retake): rerun cc-claim, and if it reports an unresolved claim publication, run "
+    "cc-claim --recover-claim-publications <task_id> first"
+)
+#: One budget for every retake under one publication lock hold, taken once when the lock is
+#: acquired and shared by all the resolutions under it, strictly below the 30 s a peer waits for
+#: the same lock. It bounds the time retakes ADD; the hold's baseline (each phase's first
+#: resolution, about 9-10 s apiece over 5,767 rows) is not the retake's to bound. At that
+#: resolution time it admits one retake across the locked phases (codex on #4829). A running
+#: resolution is not interrupted, so a retake slower than the attempt it was judged by can end
+#: past the deadline: retakes add at most the budget plus the excess of that one slower
+#: resolution, and none starts after it (codex on #4829 round 2).
+_UNDER_LOCK_CHURN_BUDGET_SECONDS = 25.0
 _churn_sleep = time.sleep
 _churn_clock = time.monotonic
 
@@ -3452,21 +3468,34 @@ def _load_any_claim_publication_receipt(
     )
 
 
-def resolve_task_note_through_churn(vault_root: Path, task_id: str) -> TaskNoteSnapshot:
+def resolve_task_note_through_churn(
+    vault_root: Path,
+    task_id: str,
+    *,
+    deadline_at: float | None = None,
+) -> TaskNoteSnapshot:
     """Resolve one active task note, retaking a resolution that raced task-store churn.
 
     Resolution indexes every task row (about 9 s over 5,767 rows on 2026-09-27), and a
     write to any other row in that window refuses it (M95). A frontier-churn refusal is
     retaken as a fresh, complete resolution, with jitter, at most
-    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times inside ``INSPECTION_CHURN_DEADLINE_SECONDS``
-    (M101's bound); the last refusal is raised. Only a resolution over a stable frontier
-    returns, and every other refusal is raised at once. Under the publication lock, a
-    retake lengthens the hold, so a peer waiting on the same lock may time out and refuse.
+    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times before ``deadline_at`` (by default M101's
+    ``INSPECTION_CHURN_DEADLINE_SECONDS`` from now); the last refusal is raised. A retake
+    starts only when an attempt as long as the last one fits before the deadline; a running
+    resolution is not interrupted, so a slower retake can end past it by its excess, and no
+    retake starts after that. Only a resolution over a stable frontier returns, and every other
+    refusal is raised at once. Under the publication lock, the lock holder passes one
+    ``deadline_at`` to every resolution under it (``_UNDER_LOCK_CHURN_BUDGET_SECONDS``).
     """
 
-    deadline = _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    deadline = (
+        deadline_at
+        if deadline_at is not None
+        else _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    )
     attempt = 1
     while True:
+        started = _churn_clock()
         try:
             return resolve_task_note(
                 vault_root, task_id, state="active", require_no_other_state=True
@@ -3474,22 +3503,97 @@ def resolve_task_note_through_churn(vault_root: Path, task_id: str) -> TaskNoteS
         except TaskStoreError as exc:
             if exc.reason_code not in _TASK_FRONTIER_CHURN_REASONS:
                 raise
+            now = _churn_clock()
             delay = random.uniform(*INSPECTION_CHURN_JITTER_SECONDS)
-            if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or _churn_clock() + delay > deadline:
+            if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or now + delay + (now - started) > deadline:
                 raise
             _churn_sleep(delay)
+            if _churn_clock() + (now - started) > deadline:
+                # An oversleep would start the retake past the deadline (codex on #4829 r5).
+                raise
             attempt += 1
 
 
+def prepare_claim_publication_intent(
+    *,
+    note_path: Path,
+    note_before: bytes,
+    note_after: bytes,
+    cache_dir: Path,
+    binding: ClaimDispatchBinding,
+) -> ClaimPublicationIntent:
+    """The ``cc-claim`` preflight: resolve the task through churn, require it unchanged, bind it.
+
+    ``cc-claim`` runs this isolated (``-I``), where no test can race churn into it, so the
+    preflight lives here and is tested in-process (#4827's follow-up). Churn that outlasts the
+    retake bound refuses with ``TASK_FRONTIER_CHURN_NEXT_ACTION``; a task whose note is not the
+    exact bytes the claim was computed from refuses, as before.
+    """
+
+    try:
+        snapshot = resolve_task_note_through_churn(note_path.parent.parent, binding.task_id)
+    except TaskStoreError as exc:
+        if exc.reason_code not in _TASK_FRONTIER_CHURN_REASONS:
+            raise
+        raise ClaimPublicationError(
+            exc.reason_code, TASK_FRONTIER_CHURN_NEXT_ACTION, exc.detail
+        ) from exc
+    if snapshot.path != note_path.resolve() or snapshot.content != note_before:
+        raise TaskStoreError(
+            "claim_publication_task_changed_during_preflight",
+            "reload the exact active task and repeat claim eligibility checks",
+            binding.task_id,
+        )
+    return ClaimPublicationIntent.create(
+        task=snapshot, cache_dir=cache_dir, note_after=note_after, binding=binding
+    )
+
+
+def claim_publication_hold_message(exc: BaseException, *, intent_ref: str) -> str:
+    """The HOLD line ``cc-claim`` prints when the admitted publication refuses.
+
+    Task-store churn that outlasted the retake bound is transient, so its next action is a
+    retry (M180 class); every other refusal keeps the Gate-0B install action.
+    """
+
+    # Both attributes are load-bearing (glm on #4829 round 4): the locked sites wrap the store's
+    # refusal, so the churn reason is the ClaimPublicationError's `detail` (its reason_code is
+    # claim_publication_task_resolution_refused or _projection_invalid); the preflight and a raw
+    # TaskStoreError carry it as `reason_code`.
+    churned = getattr(exc, "detail", None) in _TASK_FRONTIER_CHURN_REASONS or (
+        getattr(exc, "reason_code", None) in _TASK_FRONTIER_CHURN_REASONS
+    )
+    if churned:
+        return (
+            f"cc-claim: HOLD — task-store churn outlasted the retake bound ({exc}). "
+            f"Next action: {TASK_FRONTIER_CHURN_NEXT_ACTION}; prepared_intent={intent_ref}"
+        )
+    return (
+        f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
+        "claim-publication composition receipt for this HOME through the governed "
+        "install step, then rerun cc-claim; do not use HAPAX_GATE0B_CLAIM_PUBLICATION_OFF "
+        f"unless the operator authorizes emergency fallback; prepared_intent={intent_ref}"
+    )
+
+
 def _locked_preflight(
-    intent: ClaimPublicationIntent, projections: Sequence[FileProjection]
+    intent: ClaimPublicationIntent,
+    projections: Sequence[FileProjection],
+    *,
+    deadline_at: float,
 ) -> None:
     try:
-        task = resolve_task_note_through_churn(intent.note_path.parent.parent, intent.task_id)
+        task = resolve_task_note_through_churn(
+            intent.note_path.parent.parent,
+            intent.task_id,
+            deadline_at=deadline_at,
+        )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_resolution_refused",
-            "restore exactly one active task note and no closed duplicate",
+            TASK_FRONTIER_CHURN_NEXT_ACTION
+            if exc.reason_code in _TASK_FRONTIER_CHURN_REASONS
+            else "restore exactly one active task note and no closed duplicate",
             exc.reason_code,
         ) from exc
     if (
@@ -3512,13 +3616,19 @@ def _locked_preflight(
         ) from exc
 
 
-def _require_exact_task_postimage(intent: ClaimPublicationIntent) -> None:
+def _require_exact_task_postimage(intent: ClaimPublicationIntent, *, deadline_at: float) -> None:
     try:
-        task = resolve_task_note_through_churn(intent.note_path.parent.parent, intent.task_id)
+        task = resolve_task_note_through_churn(
+            intent.note_path.parent.parent,
+            intent.task_id,
+            deadline_at=deadline_at,
+        )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_projection_invalid",
-            "hold the claim until exactly one active receipt-bound task note remains",
+            TASK_FRONTIER_CHURN_NEXT_ACTION
+            if exc.reason_code in _TASK_FRONTIER_CHURN_REASONS
+            else "hold the claim until exactly one active receipt-bound task note remains",
             exc.reason_code,
         ) from exc
     if (
@@ -3827,6 +3937,7 @@ def _apply_admitted_claim_publication_transaction(
     )
 
     with _claim_publication_lock(intent, lock_root=lock_root):
+        churn_deadline = _churn_clock() + _UNDER_LOCK_CHURN_BUDGET_SECONDS
         if (
             transaction_directory.exists()
             or transaction_directory.is_symlink()
@@ -3848,7 +3959,7 @@ def _apply_admitted_claim_publication_transaction(
                     f"{publication_id}:{exc.reason_code}",
                 ) from exc
 
-        _locked_preflight(intent, projections)
+        _locked_preflight(intent, projections, deadline_at=churn_deadline)
         consumption.require_source_proofs(intent)
 
         transaction_directory = _create_claim_transaction_directory(root, publication_id)
@@ -3866,7 +3977,7 @@ def _apply_admitted_claim_publication_transaction(
 
         try:
             phase = "pre_projection_preflight"
-            _locked_preflight(intent, projections)
+            _locked_preflight(intent, projections, deadline_at=churn_deadline)
             phase = "journal_projecting"
             _persist_admitted_manifest_state(
                 manifest_path,
@@ -3881,7 +3992,7 @@ def _apply_admitted_claim_publication_transaction(
             phase = "pre_activation_scratch_finalize"
             _finalize_applied_scratches(pre_receipt_projections, pre_receipt_scratches)
             phase = "pre_activation_postimage_validation"
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             phase = "journal_postimage_complete"
@@ -3910,7 +4021,7 @@ def _apply_admitted_claim_publication_transaction(
             phase = "activation_scratch_finalize"
             _finalize_applied_scratches(activation_projections, activation_scratches)
             phase = "postimage_validation"
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             phase = "journal_applied"
@@ -4823,6 +4934,7 @@ def _recover_one(
         )
 
     with _claim_publication_lock(intent, lock_root=lock_root):
+        churn_deadline = _churn_clock() + _UNDER_LOCK_CHURN_BUDGET_SECONDS
         intent, projections, publication_id, state, consumption = _load_any_manifest(manifest_path)
         if manifest_path.parent.name != publication_id:
             raise ClaimPublicationError(
@@ -4901,7 +5013,7 @@ def _recover_one(
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             apply_missing_postimages(pre_receipt_projections, pre_receipt_scratches)
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
@@ -4940,7 +5052,7 @@ def _recover_one(
             )
         try:
             apply_missing_postimages(activation_projections, activation_scratches)
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
