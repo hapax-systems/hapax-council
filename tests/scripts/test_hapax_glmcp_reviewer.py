@@ -275,7 +275,7 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
                 {},
                 io.BytesIO(json.dumps(body).encode("utf-8")),
             )
-        return FakeResponse(_payg_reply("glm-5.2"))
+        return FakeResponse(_payg_reply("glm-5.3"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
     monkeypatch.setattr(
@@ -848,7 +848,7 @@ def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
                 {},
                 io.BytesIO(json.dumps(body).encode("utf-8")),
             )
-        return FakeResponse(_payg_reply("glm-5.2"))
+        return FakeResponse(_payg_reply("glm-5.3"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
 
@@ -939,7 +939,7 @@ def test_call_glm_real_gate_blocks_second_payg_when_per_task_cap_used(
                 {},
                 io.BytesIO(json.dumps(body).encode("utf-8")),
             )
-        return FakeResponse(_payg_reply("glm-5.2"))
+        return FakeResponse(_payg_reply("glm-5.3"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
 
@@ -1149,7 +1149,7 @@ def test_call_glm_repeated_successful_payg_uses_new_reconciled_spend_receipt(
                 {},
                 io.BytesIO(json.dumps(body).encode("utf-8")),
             )
-        return FakeResponse(_payg_reply("glm-5.2"))
+        return FakeResponse(_payg_reply("glm-5.3"))
 
     monkeypatch.setattr(module, "open_no_redirect", fake_open)
     config = module.ReviewConfig(
@@ -1189,7 +1189,7 @@ def test_call_glm_repeated_successful_payg_uses_new_reconciled_spend_receipt(
     bodies = [p.read_text(encoding="utf-8") for p in receipt_dir.glob("glmcp-payg-spend-*.yaml")]
     assert len(bodies) == 2
     for body in bodies:
-        assert "served_model: glm-5.2" in body
+        assert "served_model: glm-5.3" in body
         assert "usage_prompt_tokens: 1200" in body
         assert "usage_cached_tokens: 200" in body
         assert "usage_completion_tokens: 300" in body
@@ -1461,9 +1461,11 @@ def test_call_glm_payg_refuses_unpriced_model_before_http(
     module = _load_module()
     _ledger_path, receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
     monkeypatch.setattr(module, "open_no_redirect", _walled_then(_payg_reply("glm-4.6"), seen_urls))
+    # the seat's model never reaches PAYG; the pinned id does, and the price gate still holds it
+    monkeypatch.setattr(module, "PAYG_MODEL", "glm-4.6")
 
     with pytest.raises(module.ApiError, match="no Z.ai PAYG list price for model 'glm-4.6'"):
-        module.call_glm("review prompt", _payg_config(module, model="glm-4.6"), "k")
+        module.call_glm("review prompt", _payg_config(module, model="glm-5.2"), "k")
 
     assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
     assert list(receipt_dir.glob("glmcp-payg-spend-*.yaml")) == []
@@ -3349,6 +3351,33 @@ def test_fence_containing_a_nested_fence_survives_unchanged(
     reply = module.call_glm("review prompt", _coding_plan_config(module), "test-secret-token")
 
     assert reply == NESTED_FENCE
+
+
+@pytest.mark.parametrize("configured", ["glm-5.2", "glm-5.3"])
+def test_payg_fallback_always_requests_glm53_whatever_the_seat_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, configured: str
+) -> None:
+    """Unsafe case: the Coding Plan serves a glm-5.2 request as glm-5.3. If PAYG remaps the same
+    way, a glm-5.2 fallback is billed and then refused by the served-model identity check."""
+    module = _load_module()
+    ledger_path, _receipt_dir, _urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    bodies: list[dict] = []
+    walled = _walled_then(_payg_reply("glm-5.3"), [])
+
+    def recording_open(request: object, *, timeout: float) -> FakeResponse:
+        bodies.append({"url": request.full_url, **json.loads(request.data.decode("utf-8"))})
+        return walled(request, timeout=timeout)
+
+    monkeypatch.setattr(module, "open_no_redirect", recording_open)
+
+    module.call_glm("review prompt", _payg_config(module, model=configured), "test-secret-token")
+
+    coding_plan, payg = bodies[0], bodies[-1]
+    assert coding_plan["model"] == configured
+    assert payg["url"] == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert payg["model"] == "glm-5.3"
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.model_or_engine == "glm-5.3"
 
 
 def test_payg_reply_also_stops_at_its_closing_fence(

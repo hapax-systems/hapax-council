@@ -86,6 +86,12 @@ TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 # thinking is enabled with adequate max_tokens (probed live 2026-09-17); the fallback path
 # translates the thinking contract on 1210 rather than pinning a model per endpoint.
 CODING_PLAN_MODELS = frozenset({DEFAULT_MODEL, "glm-5.3"})
+# The PAYG fallback always requests glm-5.3, whatever the seat's model: it is the id PAYG
+# serves as itself, so the served-model identity check holds. A glm-5.2 request may be remapped
+# forward as on the Coding Plan, which would bill a reply the check then refuses. PAYG is
+# break-glass, so this is pinned in code rather than measured with a paid probe (seat ruling
+# 2026-09-27T22:49:59Z).
+PAYG_MODEL = "glm-5.3"
 # Z.ai PAYG rejects thinking=disabled for models that always think (HTTP 400,
 # code 1210). The PAYG fallback retries once with thinking enabled instead of
 # forcing a lower model.
@@ -888,6 +894,8 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             raise ApiError(
                 f"{exc}; retry later or check the Z.ai Coding Plan endpoint/status"
             ) from exc
+        # every PAYG use below (reservation, request, identity check, receipts) is the pinned id
+        config = replace(config, model=PAYG_MODEL)
         gate: PaygSpendGate | None = None
         reservation: PaygSpendReservation | None = None
         try:
