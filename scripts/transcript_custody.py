@@ -348,6 +348,21 @@ WINDOWS_SSH_OPTIONS: tuple[str, ...] = (
 #: (seat ruling 2026-09-27).
 WINDOWS_MAX_AGE_HOURS = 72.0
 
+#: ssh exits 255 both for a host that is asleep and for one that refuses us. A refusal is not sleep: it will not heal
+#: on its own, so it is a failure, not a quiet night.
+SSH_REFUSAL_MARKERS: tuple[str, ...] = (
+    "Permission denied",
+    "Host key verification failed",
+    "REMOTE HOST IDENTIFICATION HAS CHANGED",
+    "Too many authentication failures",
+)
+
+WINDOWS_REMEDY = (
+    "next action: from the puller, run `ssh <host> echo ok` (a refusal means the key or host key needs repair on "
+    "that host); run `hapax-transcript-custody inventory` there over SSH to see its paths; then rerun "
+    "`systemctl --user start hapax-backup-transcripts.service` and read its journal"
+)
+
 
 def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"

@@ -179,7 +179,10 @@ def _windows_inventory(host: str) -> tc.Resolution | None:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
     except subprocess.TimeoutExpired:
         return None
-    if proc.returncode == 255:  # ssh's own failure: no connection
+    if proc.returncode == 255:  # ssh's own failure: asleep and unreachable, or refused
+        refusal = [m for m in tc.SSH_REFUSAL_MARKERS if m in proc.stderr]
+        if refusal:
+            return tc.Resolution(problems=[f"ssh: {host} refused the connection ({refusal[0]})"])
         return None
     if proc.returncode != 0:
         tail = proc.stderr.strip().splitlines()[-1:] or [""]
@@ -208,11 +211,19 @@ def _backup_windows(dry_run: bool) -> int:
             )
             continue
         for problem in inv.problems:
-            print(f"hapax-transcript-custody: {problem}; {tc.REMEDY}", file=sys.stderr)
+            print(f"hapax-transcript-custody: {problem}; {tc.WINDOWS_REMEDY}", file=sys.stderr)
             failed += 1
         rels = [p.real.lstrip("/") for p in inv.paths]
         if not rels:
-            print(f"hapax-transcript-custody: {host} holds no transcript path", file=sys.stderr)
+            if not inv.problems:
+                # Reachable, and every transcript path is gone: no snapshot would be taken, and verify would keep
+                # passing on the last one. That is a custody event, so it fails now.
+                print(
+                    f"hapax-transcript-custody: {host} is reachable but holds no transcript path; "
+                    f"{tc.WINDOWS_REMEDY}",
+                    file=sys.stderr,
+                )
+                failed += 1
             continue
         restic_args = tc.windows_backup_args(host, rels)
         if dry_run:
@@ -223,7 +234,7 @@ def _backup_windows(dry_run: bool) -> int:
         if proc.returncode != 0:
             # --stdin-from-command: a failed or cut SSH stream fails the backup, never a short snapshot.
             print(
-                f"hapax-transcript-custody: restic backup of {host} exited {proc.returncode}; {tc.REMEDY}",
+                f"hapax-transcript-custody: restic backup of {host} exited {proc.returncode}; {tc.WINDOWS_REMEDY}",
                 file=sys.stderr,
             )
             failed += 1
@@ -342,6 +353,10 @@ def _tar_listing(env: dict[str, str], snapshot: dict) -> list[dict]:
     assert proc.stdout is not None
     try:
         nodes = tc.tar_nodes(tarfile.open(fileobj=proc.stdout, mode="r|"))
+        # tarfile stops at the end-of-archive marker; a tar is padded past it to its record size. Drain the rest, so
+        # restic finishes its write instead of dying of SIGPIPE, which would fail verify spuriously.
+        while proc.stdout.read(1 << 16):
+            pass
     finally:
         proc.stdout.close()
     if proc.wait() != 0:
@@ -363,7 +378,8 @@ def _verify_windows(env: dict[str, str], host: str, fresh_hours: float) -> int:
     )
     if not snapshots:
         print(
-            f"FAIL missing: no {tc.SNAPSHOT_TAG} snapshot for Windows host {host}", file=sys.stderr
+            f"FAIL missing: no {tc.SNAPSHOT_TAG} snapshot for Windows host {host}; {tc.WINDOWS_REMEDY}",
+            file=sys.stderr,
         )
         return 1
     cur, prev = snapshots[-1], (snapshots[-2] if len(snapshots) > 1 else None)
@@ -409,6 +425,10 @@ def _verify_windows(env: dict[str, str], host: str, fresh_hours: float) -> int:
     if failures:
         for failure in failures:
             print(f"FAIL {host}: {failure}", file=sys.stderr)
+        print(
+            f"hapax-transcript-custody: {len(failures)} failure(s) for {host}; {tc.WINDOWS_REMEDY}",
+            file=sys.stderr,
+        )
         return 1
     print(
         f"hapax-transcript-custody: {host} snapshot {cur.get('short_id')} ({age_hours:.1f}h old; expected paths "

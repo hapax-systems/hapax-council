@@ -600,6 +600,9 @@ with open(os.environ["FAKE_SSH_LOG"], "a") as log:
     log.write(host + "\n")
 if mode == "unreachable":
     sys.exit(255)
+if mode == "denied":
+    sys.stderr.write(host + ": Permission denied (publickey).\n")
+    sys.exit(255)
 script = base64.b64decode(rest[rest.index("-EncodedCommand") + 1]).decode("utf-16-le")
 profile = os.environ["FAKE_PROFILE_" + key]
 quoted = lambda text: [q.replace("''", "'") for q in re.findall(r"'((?:[^']|'')*)'", text)]
@@ -763,6 +766,45 @@ def test_windows_nested_symlink_and_drop_fail_verify(tmp_path: Path) -> None:
     assert "win-a: dropped:" in result.stderr and "win-a: nested symlink:" in result.stderr
 
 
+@_needs_restic
+def test_windows_refused_ssh_is_a_failure_not_a_quiet_night(tmp_path: Path) -> None:
+    """ssh exits 255 for a sleeping host and for a refused key alike; a refusal will not heal, so it fails now."""
+
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, _ = _windows_env(tmp_path, win_a="denied")
+    result = _cli(env, "backup")
+    assert result.returncode == 1
+    assert "win-a refused the connection (Permission denied)" in result.stderr
+    assert "next action" in result.stderr
+
+
+@_needs_restic
+def test_windows_reachable_host_with_no_transcripts_fails_backup(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, profile = _windows_env(tmp_path)
+    assert _cli(env, "backup").returncode == 0
+    shutil.rmtree(profile / ".claude")
+    shutil.rmtree(profile / ".grok")
+    result = _cli(env, "backup")
+    assert result.returncode == 1
+    assert "win-a is reachable but holds no transcript path" in result.stderr
+
+
+@_needs_restic
+def test_windows_harness_path_that_vanishes_fails_verify(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, profile = _windows_env(tmp_path)
+    assert _cli(env, "backup").returncode == 0
+    shutil.rmtree(profile / ".grok")
+    assert _cli(env, "backup").returncode == 0
+    result = _cli(env, "verify")
+    assert result.returncode == 1
+    assert "win-a: harness path dropped: /.grok/sessions" in result.stderr
+
+
 def test_windows_pull_runs_only_on_the_named_puller(tmp_path: Path) -> None:
     env, _ = _windows_env_without_restic(tmp_path)
     env["HAPAX_TRANSCRIPT_WINDOWS_PULLER"] = "some-other-host"
@@ -841,6 +883,43 @@ def test_windows_scripts_and_tar_nodes() -> None:
         ("/d/l", "symlink"),
         ("/d/h", "file"),
     ]
+
+
+@pytest.mark.skipif(shutil.which("bsdtar") is None, reason="bsdtar (libarchive) is not installed")
+def test_real_bsdtar_honours_the_generated_excludes_at_any_depth(tmp_path: Path) -> None:
+    """Windows' tar.exe is libarchive's bsdtar. Run the same engine with exactly the --exclude arguments that
+    windows_tar_script generates, over credentials nested inside streamed paths: none may reach the stream."""
+
+    import re
+    import tarfile
+
+    profile = tmp_path / "profile"
+    (profile / ".grok/sessions/g1/deep").mkdir(parents=True)
+    (profile / ".grok/sessions/g1/updates.jsonl").write_text("{}\n")
+    for name in (
+        "auth.json",
+        "deep/.credentials.json",
+        "deep/server.pem",
+        "deep/api.token",
+        "deep/.env",
+    ):
+        (profile / ".grok/sessions/g1" / name).write_text("not-a-real-secret")
+    (profile / ".claude/projects").mkdir(parents=True)
+    (profile / ".claude/projects/s.jsonl").write_text("{}\n")
+    script = tc.windows_tar_script([".grok/sessions", ".claude/projects"])
+    excludes = [p.replace("''", "'") for p in re.findall(r"--exclude '((?:[^']|'')*)'", script)]
+    assert excludes == list(tc.CREDENTIAL_PATTERNS)
+    cmd = ["bsdtar", "-cf", "-"]
+    for pattern in excludes:
+        cmd += ["--exclude", pattern]
+    cmd += ["-C", str(profile), ".grok/sessions", ".claude/projects"]
+    stream = subprocess.run(cmd, capture_output=True, check=True, timeout=60).stdout
+    import io
+
+    nodes = tc.tar_nodes(tarfile.open(fileobj=io.BytesIO(stream), mode="r"))
+    assert tc.credential_nodes(nodes) == []
+    files = sorted(n["path"] for n in nodes if n["type"] == "file")
+    assert files == ["/.claude/projects/s.jsonl", "/.grok/sessions/g1/updates.jsonl"]
 
 
 def test_the_unit_names_the_windows_puller_and_hosts() -> None:
