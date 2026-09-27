@@ -1855,7 +1855,36 @@ if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origi
     exit 0
 fi
 
+# Post-deploy governed re-provision of the Gate-0B claim-publication install (row
+# gate0b-post-deploy-governed-reprovision-20260927). A merge that changed the executor-bound shared/
+# modules correctly invalidates the install receipt; re-provision it through the governed install
+# step, with the merges as its recorded basis, instead of leaving every lane's next claim to hold
+# until the seat quarantines by hand. It refuses anything no merge explains. A hold is reported
+# loudly and never fails the activation: the release itself is fine.
+reprovision_claim_publication_install() {
+    local command=("${HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD:-}")
+    if [[ -z "${command[0]}" ]]; then
+        local python="$ACTIVE_WORKTREE/.venv/bin/python"
+        if [[ ! -x "$python" || ! -f "$ACTIVE_WORKTREE/shared/gate0b_claim_publication_install.py" ]]; then
+            return 0  # no project runtime in this release: nothing to re-provision
+        fi
+        command=("$python" -m shared.gate0b_claim_publication_install)
+    fi
+    local outcome rc
+    set +e
+    outcome="$(cd "$ACTIVE_WORKTREE" && "${command[@]}" reprovision --repo "$ACTIVE_WORKTREE" --head "$origin_sha" 2>&1)"
+    rc=$?
+    set -e
+    printf '%s\n' "$outcome" > "$STATE_DIR/gate0b-reprovision-last.json"
+    if [[ "$rc" -eq 0 ]]; then
+        echo "hapax-source-activate: gate0b re-provision: $outcome"
+    else
+        echo "hapax-source-activate: gate0b re-provision HELD (claims hold on install mismatch until it is resolved): $outcome. Next action: resolve the named reason (see $STATE_DIR/gate0b-reprovision-last.json); quarantine the receipt by hand only on an operator decision." >&2
+    fi
+}
+
 if [[ "$SKIP_DEPLOY" == "1" ]]; then
+    reprovision_claim_publication_install
     discard_launcher_snapshot
     write_receipt "completed_skip_deploy" "skipped_by_flag" "0" "activation worktree refreshed; deploy skipped by flag"
     echo "hapax-source-activate: refreshed active source at ${origin_sha:0:8}; deploy skipped"
@@ -1907,6 +1936,7 @@ if [[ "$deploy_rc" -ne 0 ]]; then
     exit "$deploy_rc"
 fi
 
+reprovision_claim_publication_install
 discard_launcher_snapshot
 printf '%s\n' "$origin_sha" > "$LAST_SUCCESS_SHA"
 refresh_active_source_fields
