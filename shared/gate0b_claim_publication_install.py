@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -959,9 +960,11 @@ def reprovision_claim_publication_install(
     ``gate0b_reprovision_quarantine_exists`` (a quarantine name is taken) and
     ``gate0b_reprovision_git_unavailable`` (``repo`` carries no history). The basis is recorded
     (``reprovision-basis-<stamp>.pending.json``) before anything moves. If the fresh install
-    then fails, the receipt is absent, and cc-claim's first-use install applies. If a basis
-    record cannot be written, ``gate0b_reprovision_basis_unrecorded`` holds, and a fresh install
-    whose complete record failed is set aside as ``*.unrecorded-<stamp>``.
+    fails (``gate0b_reprovision_install_failed``) or its basis cannot be recorded
+    (``gate0b_reprovision_basis_unrecorded``), any fresh file is set aside as
+    ``*.unrecorded-<stamp>``, the quarantined pair is put back, and it holds. Claims then hold on
+    the old receipt, never on a first-use install without a basis, and the next activation retries.
+    ``<stamp>`` carries microseconds, so a rerun within the same second never collides.
     """
 
     checked_roots = roots or default_claim_publication_roots()
@@ -1027,7 +1030,8 @@ def reprovision_claim_publication_install(
             receipt.receipt_ref,
         )
 
-    stamp = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
+    moment = now or datetime.now(UTC)
+    stamp = moment.strftime("%Y%m%dT%H%M%S.%fZ")  # microseconds: a same-second rerun never collides
     moves = [
         (store / name, store / f"{name}.quarantined-{stamp}")
         for name in (INSTALL_RECEIPT_FILENAME, "composition-manifest.json")
@@ -1057,10 +1061,23 @@ def reprovision_claim_publication_install(
         except (OSError, ExecutionAdmissionError) as exc:
             raise ExecutionAdmissionError(
                 "gate0b_reprovision_basis_unrecorded",
-                "restore a writable install directory; the next cc-claim's first-use install "
-                "then applies",
+                "restore a writable install directory; the old receipt is kept, claims hold on "
+                "it, and the next activation retries",
                 name,
             ) from exc
+
+    def roll_back() -> None:
+        # No usable install without its complete basis, and no receipt-less gap for cc-claim's
+        # first-use install to fill without one: set any fresh file aside, put the quarantined
+        # pair back, and record the roll-back if the directory still takes it.
+        for source_path, target in moves:
+            if source_path.exists():
+                os.rename(source_path, store / f"{source_path.name}.unrecorded-{stamp}")
+            if target.exists():
+                os.rename(target, source_path)
+        record.update(status="rolled_back", new_receipt_ref=None)
+        with contextlib.suppress(ExecutionAdmissionError):
+            record_basis(f"reprovision-basis-{stamp}.json")
 
     # The authority basis is recorded before anything moves, so an install never exists
     # without it; the complete record, naming the new receipt, follows the install.
@@ -1068,20 +1085,26 @@ def reprovision_claim_publication_install(
     for source_path, target in moves:
         if source_path.exists():
             os.rename(source_path, target)
-    installed = install_claim_publication_composition(
-        roots=checked_roots,
-        installed_at=now or datetime.now(UTC),
-        install_task_ref=f"gate0b-post-deploy-reprovision:{head}",
-        module_sha256=live,  # the release's own verified modules, which cc-claim will load
-    )
+    try:
+        installed = install_claim_publication_composition(
+            roots=checked_roots,
+            installed_at=moment,
+            install_task_ref=f"gate0b-post-deploy-reprovision:{head}",
+            module_sha256=live,  # the release's own verified modules, which cc-claim will load
+        )
+    except (OSError, ExecutionAdmissionError) as exc:
+        roll_back()
+        raise ExecutionAdmissionError(
+            "gate0b_reprovision_install_failed",
+            "the old receipt is restored and claims hold on it; repair the cause, and the next "
+            "activation retries",
+            getattr(exc, "reason_code", type(exc).__name__),
+        ) from exc
     record |= {"status": "complete", "new_receipt_ref": installed.receipt.receipt_ref}
     try:
         record_basis(f"reprovision-basis-{stamp}.json")
     except ExecutionAdmissionError:
-        # No usable install without its complete basis: set the fresh one aside and hold.
-        for source_path, _target in moves:
-            if source_path.exists():
-                os.rename(source_path, store / f"{source_path.name}.unrecorded-{stamp}")
+        roll_back()
         raise
     return ClaimPublicationReprovision(
         "reprovisioned", head, source, basis, installed.receipt.receipt_ref
