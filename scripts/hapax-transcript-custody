@@ -46,7 +46,10 @@ def _mount_point(path: str) -> str:
 def _require_repository(repo: str) -> None:
     """A local repository must exist and sit on its own mount: an unmounted NAS path falls through to the root
     filesystem, where restic would find no repository or a stale one. The unit's RequiresMountsFor= gives only
-    After= on the NAS mount in the user manager, with no Requires=, so this check is the guard."""
+    After= on the NAS mount in the user manager, with no Requires=, so this check is the guard.
+
+    HAPAX_TRANSCRIPT_REPOSITORY_MOUNT (the unit sets /mnt/nas/backups) names the mount the repository must sit on:
+    with the NAS absent, a repository under another mount (/mnt, say) would otherwise pass."""
 
     if ":" in repo.split("/", 1)[0]:  # rclone:, sftp:, s3: ... a remote repository
         return
@@ -54,9 +57,16 @@ def _require_repository(repo: str) -> None:
         raise SystemExit(
             f"hapax-transcript-custody: no restic repository at {repo} (is the NAS mounted?); {tc.REMEDY}"
         )
-    if _mount_point(repo) == "/":
+    mount = _mount_point(repo)
+    if mount == "/":
         raise SystemExit(
             f"hapax-transcript-custody: {repo} is on the root filesystem, not a mount; refusing; {tc.REMEDY}"
+        )
+    required = os.environ.get("HAPAX_TRANSCRIPT_REPOSITORY_MOUNT")
+    if required and mount != os.path.abspath(required):
+        raise SystemExit(
+            f"hapax-transcript-custody: {repo} is on {mount}, not on the required mount {required} (is the NAS "
+            f"mounted? check `findmnt {required}`); refusing; {tc.REMEDY}"
         )
 
 

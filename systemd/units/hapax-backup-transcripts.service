@@ -13,7 +13,7 @@ OnFailure=notify-failure@%n.service
 # scripts/transcript_custody.py in the activation worktree below. In the user manager, RequiresMountsFor= gives only
 # After=mnt-nas-backups.mount, with no Requires= (measured with a transient unit, 2026-09-27): it orders the run
 # after a mount in progress, but does not stop the run when the NAS is absent. The CLI is that guard: it refuses a
-# repository that is missing or on the root filesystem.
+# repository that is missing, or that is not on HAPAX_TRANSCRIPT_REPOSITORY_MOUNT.
 
 [Service]
 Type=oneshot
@@ -21,6 +21,7 @@ ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-transcript-custody verify
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RESTIC_REPOSITORY=/mnt/nas/backups/restic
+Environment=HAPAX_TRANSCRIPT_REPOSITORY_MOUNT=/mnt/nas/backups
 Environment=RESTIC_CACHE_DIR=%h/.cache/restic
 Nice=10
 IOSchedulingClass=idle

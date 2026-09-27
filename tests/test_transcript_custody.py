@@ -162,29 +162,50 @@ def test_forget_protection_rule() -> None:
 
 
 _REPO = Path(__file__).resolve().parents[1]
-# restic (or the run_restic wrapper), any global options such as ``-r "$repo"``, then the forget subcommand: shell
-# lines and Python argv lists alike.
-_FORGET = __import__("re").compile(r"""\b(?:restic|run_restic)\b['"]?[^#\n]*?['"]?\bforget\b""")
+# restic (or the run_restic wrapper), then its statement; a statement holding the forget subcommand is a forget.
+_RESTIC = __import__("re").compile(r"\b(?:restic|run_restic)\b")
+_FORGET = __import__("re").compile(r"\bforget\b")
+
+
+def _statement(text: str, start: int) -> str:
+    """The command that starts at ``start``: it runs on across a newline while a bracket opened after ``start`` is
+    still open, or the line ends in a backslash, a comma or an opening bracket (a multi-line argv list). A closing
+    bracket that ``start`` did not open ends it (the enclosing list or call closed)."""
+
+    depth = 0
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+            if depth < 0:
+                break
+        elif ch == "\n" and depth == 0:
+            if not text[start:i].rstrip().endswith(("\\", ",", "(", "[", "{")):
+                break
+        i += 1
+    return text[start:i]
 
 
 def _forget_commands(text: str) -> list[tuple[int, list[str]]]:
-    """Every ``restic … forget`` command in ``text``, as (1-based line, argument tokens), with backslash
-    continuation lines joined and quotes, commas and brackets stripped from the tokens."""
+    """Every ``restic … forget`` command in ``text``, as (1-based line, argument tokens): global options between
+    restic and forget, backslash continuations and multi-line Python argv lists included, comments excluded. Quotes,
+    commas and brackets are stripped from the tokens."""
 
-    lines = text.splitlines()
     found = []
-    i = 0
-    while i < len(lines):
-        start, parts = i, [lines[i].rstrip("\\").strip()]
-        while lines[i].rstrip().endswith("\\") and i + 1 < len(lines):
-            i += 1
-            parts.append(lines[i].rstrip("\\").strip())
-        i += 1
-        logical = " ".join(parts)
-        if logical.lstrip().startswith("#") or not _FORGET.search(logical):
+    for match in _RESTIC.finditer(text):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        if "#" in text[line_start : match.start()]:
+            continue  # a comment (or text after one)
+        statement = _statement(text, match.start())
+        if not _FORGET.search(statement):
             continue
-        tokens = [t.strip("\"',[]()") for t in logical.split()]
-        found.append((start + 1, [t for t in tokens if t]))
+        tokens = [t.strip("\"',[]()") for t in statement.replace("\\\n", " ").split()]
+        found.append(
+            (text.count("\n", 0, match.start()) + 1, [t for t in tokens if t and t != "\\"])
+        )
     return found
 
 
@@ -230,8 +251,8 @@ def _forget_invocations() -> list[tuple[str, list[str]]]:
 
 
 def test_the_forget_scan_sees_every_command_form() -> None:
-    """The scan must see global options between restic and forget, the run_restic wrapper, continuation lines and
-    Python argv lists, and must not match comments."""
+    """The scan must see global options between restic and forget, the run_restic wrapper, continuation lines, Python
+    argv lists on one line or many, and restic and forget on separate lines; it must not match comments."""
 
     sample = "\n".join(
         [
@@ -241,11 +262,28 @@ def test_the_forget_scan_sees_every_command_form() -> None:
             'subprocess.run(["restic", "--repo", repo, "forget", "--keep-daily", "7"])',  # 4: Python argv
             "# restic forget --prune",  # 5: a comment
             "restic snapshots --json",  # 6: not a forget
+            "cmd = [",  # 7-12: a multi-line Python argv list, restic and forget on separate lines
+            '    "restic",',
+            '    "--repo", repo,',
+            '    "forget",',
+            '    "--prune",',
+            "]",
+            "restic \\",  # 13-15: a shell command, restic and forget on separate lines
+            '    -r "$repo" \\',
+            "    forget --keep-tag=tier1-transcripts --prune",
+            'subprocess.run(["restic", "snapshots"], check=True)',  # 16: not a forget
+            'print("forget it")',  # 17: forget without restic
         ]
     )
     commands = _forget_commands(sample)
-    assert [line for line, _ in commands] == [1, 2, 4]
-    assert [tc.forget_protects_transcripts(args) for _, args in commands] == [False, True, False]
+    assert [line for line, _ in commands] == [1, 2, 4, 8, 13]
+    assert [tc.forget_protects_transcripts(args) for _, args in commands] == [
+        False,
+        True,
+        False,
+        False,
+        True,
+    ]
 
 
 def test_no_forget_in_the_tree_can_prune_transcript_snapshots() -> None:
@@ -444,8 +482,32 @@ def test_cli_refuses_a_repository_on_the_root_filesystem(
     with pytest.raises(SystemExit, match="is on the root filesystem"):
         cli._require_repository(str(repo))
     monkeypatch.setattr(cli, "_mount_point", lambda _path: str(tmp_path))
+    monkeypatch.delenv("HAPAX_TRANSCRIPT_REPOSITORY_MOUNT", raising=False)
     cli._require_repository(str(repo))  # on its own mount: accepted
     cli._require_repository("rclone:gdrive:somewhere")  # a remote repository is not a local path
+
+
+def test_cli_refuses_a_repository_off_the_required_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the NAS absent, a repository under another mount (/mnt, say) must not pass: the unit names the mount."""
+
+    cli = _cli_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "config").write_text("")
+    monkeypatch.setattr(cli, "_mount_point", lambda _path: "/mnt")
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_REPOSITORY_MOUNT", "/mnt/nas/backups")
+    with pytest.raises(SystemExit, match="not on the required mount /mnt/nas/backups"):
+        cli._require_repository(str(repo))
+    monkeypatch.setattr(cli, "_mount_point", lambda _path: "/mnt/nas/backups")
+    cli._require_repository(str(repo))  # on the named mount: accepted
+
+
+def test_the_unit_names_the_repository_mount() -> None:
+    unit = (_REPO / "systemd/units/hapax-backup-transcripts.service").read_text(encoding="utf-8")
+    assert "Environment=HAPAX_TRANSCRIPT_REPOSITORY_MOUNT=/mnt/nas/backups\n" in unit
+    assert "Environment=RESTIC_REPOSITORY=/mnt/nas/backups/restic\n" in unit
 
 
 @pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
