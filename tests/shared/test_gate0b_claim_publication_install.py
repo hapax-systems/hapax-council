@@ -327,6 +327,37 @@ def test_a_second_reprovision_refuses_on_the_marker_and_changes_nothing(release)
     assert _snapshot(roots) == before
 
 
+@pytest.mark.parametrize("moved", ["activation-receipt.json", "composition-manifest.json"])
+def test_a_reprovision_that_starts_inside_the_loader_still_holds_it(
+    release, monkeypatch: pytest.MonkeyPatch, moved: str
+) -> None:
+    # codex on #4822: the loader checked the marker, then read the pair. A re-provision that
+    # created the marker and moved a file in between made the read say "missing", which is the
+    # one result cc-claim answers with a first-use install. The loader re-checks after a miss.
+    _repo, roots, _commits, a_hashes = release
+    _install_from(roots, a_hashes)
+    store = _store(roots)
+    reader = (
+        "_load_install_receipt"
+        if moved == "activation-receipt.json"
+        else "_read_private_install_file"
+    )
+    real_read = getattr(install, reader)
+
+    def reprovision_starts_first(path, *args, **kwargs):
+        if Path(path).name == moved and not (store / _MARKER).exists():
+            (store / _MARKER).write_text('{"stamp": "racing run"}\n', encoding="utf-8")
+            (store / moved).rename(store / f"{moved}.quarantined-racing")
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(install, reader, reprovision_starts_first)
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        install.load_claim_publication_composition(store)
+
+    assert raised.value.reason_code == "gate0b_install_reprovision_in_flight"
+
+
 def test_a_run_that_starts_between_the_check_and_the_marker_loses_the_race(
     release, monkeypatch: pytest.MonkeyPatch
 ) -> None:
