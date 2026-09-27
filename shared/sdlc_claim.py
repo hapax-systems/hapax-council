@@ -20,12 +20,14 @@ import secrets
 import shutil
 import stat
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+
+import yaml
 
 from shared.coord_projection import (
     CapturedFile,
@@ -58,6 +60,7 @@ from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.sdlc_lifecycle import (
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    TASK_PIPELINE_HELD_STATUSES,
     TASK_RESUMABLE_STATUSES,
     TASK_TERMINAL_STATUSES,
 )
@@ -6242,22 +6245,87 @@ def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Pa
 
 
 def _assigned_elsewhere(note: Path, role: str) -> bool:
-    """Whether the note's parsed frontmatter explicitly assigns the task away from ``role``:
-    to ``unassigned`` or to another named role. An absent, empty or unparseable assignment is
-    no proof, so the caller holds."""
+    """Whether the note's release-grade frontmatter explicitly assigns the task away from
+    ``role``: to ``unassigned`` or to another named role. An absent, empty, unparseable or
+    duplicated assignment is no proof, so the caller holds (#4826 round 5)."""
 
-    frontmatter = parse_frontmatter_with_diagnostics(note).frontmatter
-    value = frontmatter.get("assigned_to") if isinstance(frontmatter, dict) else None
+    frontmatter = _release_frontmatter(note)
+    value = frontmatter.get("assigned_to") if frontmatter is not None else None
     return isinstance(value, str) and bool(value.strip()) and value.strip() != role
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """A SafeLoader that refuses any mapping stating one key twice, by YAML key identity, so
+    ``status:`` and ``"status":`` are the same key; PyYAML otherwise keeps the last silently."""
+
+
+def _construct_unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict:
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if not isinstance(key, Hashable):  # a YAMLError, so the caller holds (glm, #4826 r7)
+            raise yaml.constructor.ConstructorError(
+                None, None, f"found unhashable key {key!r}", key_node.start_mark
+            )
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        mapping[key] = loader.construct_object(value_node, deep=True)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
+def _release_frontmatter(note: Path) -> dict | None:
+    """The note's frontmatter when it can ground a release decision, else None.
+
+    A release archives live claim files, and a return rewrites the note, on the strength of
+    its fields, so they must come from frontmatter that parses, states no key twice by YAML
+    key identity (a quoted and a plain spelling are one key; codex on #4826 rounds 4-5), and
+    spells ``status`` plainly exactly once, so that the value read is the line a rewrite
+    changes. A ``status:`` line in the body never counts. Anything else means hold, never
+    release (the seat's 17:05Z and 17:25Z rulings)."""
+
+    parsed = parse_frontmatter_with_diagnostics(note)
+    if not parsed.ok or parsed.frontmatter is None:
+        return None
+    text = note.read_text(encoding="utf-8")
+    block = text[3 : text.find("\n---", 3)]
+    try:
+        fields = yaml.load(block, Loader=_UniqueKeyLoader)  # noqa: S506 - a SafeLoader subclass
+    except yaml.YAMLError:
+        return None
+    if not isinstance(fields, dict) or len(re.findall(r"(?m)^status[ \t]*:", block)) != 1:
+        return None
+    return fields
+
+
+def _pipeline_held_for(note: Path, role: str) -> bool:
+    """Whether the note's release-grade frontmatter says the pipeline holds it for ``role``."""
+
+    fields = _release_frontmatter(note)
+    return (
+        fields is not None
+        and str(fields.get("status") or "").strip() in TASK_PIPELINE_HELD_STATUSES
+        and str(fields.get("assigned_to") or "").strip() == role
+    )
+
+
 def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
+    """The row's status for a release decision: ``missing`` with no note, ``unreadable`` when
+    its frontmatter cannot ground a release (:func:`_release_frontmatter`). Neither releases."""
+
     task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
     if task_path is None:
         return "missing"
-    text = task_path.read_text(encoding="utf-8")
-    match = re.search(r"^status:[ \t]*(.*)$", text, re.MULTILINE)
-    return (match.group(1).strip() if match else "") or "unknown"
+    fields = _release_frontmatter(task_path)
+    if fields is None:
+        return "unreadable"
+    return str(fields.get("status") or "").strip() or "unknown"
 
 
 def archive_dispatch_only_claim_residue(
@@ -6374,7 +6442,13 @@ def archive_dispatch_only_claim_residue(
 class ClaimResidueRelease:
     """What one governed release of a role's claim residue did."""
 
-    shape: Literal["held_publication", "lapsed_lease", "closed_task", "reassigned_task"]
+    shape: Literal[
+        "held_publication",
+        "lapsed_lease",
+        "closed_task",
+        "reassigned_task",
+        "pipeline_held",
+    ]
     publication_id: str
     archive_dir: Path
     archived: tuple[Path, ...]
@@ -6892,7 +6966,9 @@ def _release_applied_residue(
             f"{others[0]} names {task_id} or cannot be read",
             f"inspect the marker at {others[0]}; until then treat the claim as live",
         )
-    shape: Literal["lapsed_lease", "closed_task", "reassigned_task"] = "lapsed_lease"
+    shape: Literal["lapsed_lease", "closed_task", "reassigned_task", "pipeline_held"] = (
+        "lapsed_lease"
+    )
     if any(_is_claim_activation_projection(projection) for projection in present):
         status = _task_status_for_any_state(vault_root, task_id)
         note = _task_note_path_for_any_state(vault_root, task_id)
@@ -6906,6 +6982,15 @@ def _release_applied_residue(
             # Re-offered or reassigned: the note no longer names this role. Publication writes
             # the note before the markers, so these markers cannot be a live claim.
             shape = "reassigned_task"
+        elif (
+            note is not None
+            and note.parent.name == "active"
+            and _pipeline_held_for(note, journal.intent.role)
+        ):
+            # Pipeline-held (the seat's 2026-09-27 ruling): the work is done and the pipeline
+            # owes a verdict, so the markers hold no worker. The note keeps this role as its
+            # named resumer; resuming it later publishes fresh markers.
+            shape = "pipeline_held"
         else:
             raise _release_hold(
                 "claim_residue_live_marker",
@@ -6990,6 +7075,73 @@ def release_claim_residue(
         )
 
 
+_SESSION_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _marker_tasks(cache_dir: Path, role: str) -> list[str]:
+    """Every task this role's claim markers name, each once: the bare key, then each session
+    key. A suffix that is not a session UUID belongs to another role (``cx-red`` vs
+    ``cx-red-operator-email``). Every marker counts: a lingering session-keyed one can name a
+    different row from the bare key (codex on #4826). An unreadable marker is skipped here, as
+    scripts/cc-claim's lease loop skips it; :func:`_other_live_markers` then treats it as live
+    and the release holds, so the pair fails closed."""
+
+    prefix = f"cc-active-task-{role}-"
+    markers = [cache_dir / f"cc-active-task-{role}"] + sorted(
+        path
+        for path in cache_dir.glob(f"{prefix}*")
+        if _SESSION_KEY_RE.fullmatch(path.name[len(prefix) :])
+    )
+    tasks: list[str] = []
+    for marker in markers:
+        try:
+            words = marker.read_text(encoding="utf-8").split()
+        except OSError:
+            continue
+        if words and words[0] not in tasks:
+            tasks.append(words[0])
+    return tasks
+
+
+def release_pipeline_held_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    role: str,
+    current_task_id: str,
+    observed_at: str,
+) -> list[ClaimResidueRelease]:
+    """Before a new claim, free this role's slot of every row the pipeline now holds.
+
+    The seat's 2026-09-27 ruling: a pipeline-held row (``TASK_PIPELINE_HELD_STATUSES``) does
+    not count against the role's one-active-task slot. For each such row any of this role's
+    markers names, other than the one being claimed, its residue is released as
+    ``pipeline_held`` (archived, never unlinked). Each row keeps this role as its named resumer.
+    Anything else is left to the claim path, which decides as before.
+
+    Called by scripts/cc-claim before the new claim publishes. The status filter here is a
+    pre-check read outside any lock: :func:`release_claim_residue` re-derives the shape under
+    the role's publication lock from release-grade frontmatter, and holds on any surprise.
+    """
+
+    return [
+        release_claim_residue(
+            vault_root=vault_root,
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            lock_root=lock_root,
+            role=role,
+            task_id=held,
+            observed_at=observed_at,
+        )
+        for held in _marker_tasks(cache_dir, role)
+        if held != current_task_id
+        and _task_status_for_any_state(vault_root, held) in TASK_PIPELINE_HELD_STATUSES
+    ]
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -7022,6 +7174,7 @@ __all__ = [
     "recover_claim_publications",
     "rehydrate_applied_activation_projections",
     "release_claim_residue",
+    "release_pipeline_held_residue",
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
     "resolve_claim_publication_admission_provenance",

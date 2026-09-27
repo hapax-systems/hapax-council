@@ -339,6 +339,36 @@ PYEOF
 fi
 now_epoch="$(date +%s 2>/dev/null || echo 0)"
 legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+# Whether a role's current task leaves its one-active-task slot free: terminal, or pipeline-held
+# (its work is done and the pipeline owes a verdict; `assigned_to` stays the named resumer).
+# MUST match shared/sdlc_lifecycle.TASK_ROLE_RELEASING_STATUSES (pinned by
+# tests/scripts/test_cc_claim.py). The seat's 2026-09-27 ruling, re-landing #4611's intent: the
+# old list released only five terminal statuses, so finished work held lanes (L-109).
+_cc_role_release_status() {
+  case "$1" in
+    # terminal
+    done|completed|complete|closed|fulfilled|resolved) return 0 ;;
+    withdrawn|withdrawn_stale|superseded|closed_superseded|rejected|refused) return 0 ;;
+    not_applicable|deferred|closed_poisoned) return 0 ;;
+    # pipeline-held
+    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) return 0 ;;
+    merged_awaiting_runtime_witness) return 0 ;;
+  esac
+  return 1
+}
+# A row's status for that decision, read the way the Python release reads it: from frontmatter
+# that parses and states each key once (shared.sdlc_claim._release_frontmatter), never a body
+# line or the last of duplicate keys; otherwise "unreadable", which frees nothing (#4826 r5).
+_cc_release_status() {
+  NOTE="$1" CC_REPO="$SCRIPT_DIR/.." "$python_runner" -I -c '
+import os, sys
+sys.path.insert(0, os.environ["CC_REPO"])
+from pathlib import Path
+from shared.sdlc_claim import _release_frontmatter
+fields = _release_frontmatter(Path(os.environ["NOTE"]))
+print("unreadable" if fields is None else (str(fields.get("status") or "").strip() or "unknown"))
+' 2>/dev/null || echo unreadable
+}
 # Only this run's lease scan may set the charter-keep grant; a value inherited
 # from the caller's environment would force the charter branch without the
 # child-may-mint check having run for this claim.
@@ -346,6 +376,9 @@ unset HAPAX_CHARTER_KEEP_TASK || true
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
+  # An unreadable marker reads as empty here and is skipped, while the Python release
+  # (shared.sdlc_claim._other_live_markers) treats one as live and holds, so the pair fails
+  # closed. Keep them paired; aligning this side changes the rule for every claim (#4826).
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
@@ -353,6 +386,21 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
       session_existing_task="$(head -n1 "$session_claim_file" | tr -d '[:space:]' || true)"
       session_cf_mtime="$(stat -c %Y "$session_claim_file" 2>/dev/null || echo 0)"
       if [[ -n "$existing_task" && "$session_existing_task" == "$existing_task" ]] && (( now_epoch - session_cf_mtime <= lease_ttl )); then
+        continue
+      fi
+    fi
+    # Release is a property of the row, not of the lease's age. Pipeline-held rows sit past the
+    # TTL as a matter of course, so an expired marker naming a row whose status releases the role
+    # frees the slot like an unexpired one, and the governed release below archives its files
+    # (#4826 round 2, the ordering #4611 had found). A worker-held row's expired lease still holds.
+    if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
+      expired_note=""
+      for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md" \
+        "$vault_root_check/closed/$existing_task-"*.md "$vault_root_check/closed/$existing_task.md"; do
+        [[ -f "$c" ]] && expired_note="$c" && break
+      done
+      if [[ -n "$expired_note" ]] && \
+        _cc_role_release_status "$(_cc_release_status "$expired_note")"; then
         continue
       fi
     fi
@@ -382,10 +430,8 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     [[ -f "$c" ]] && existing_note="$c" && break
   done
   [[ -n "$existing_note" ]] || continue
-  existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
-  case "$existing_status" in
-    done|completed|closed|withdrawn|superseded) continue ;;
-  esac
+  existing_status="$(_cc_release_status "$existing_note")"
+  _cc_role_release_status "$existing_status" && continue
   child_note=""
   for c in "$vault_root_check/active/$task_id-"*.md "$vault_root_check/active/$task_id.md"; do
     [[ -f "$c" ]] && child_note="$c" && break
@@ -408,7 +454,11 @@ sys.exit(0 if ok else 1)
   if grep -q '^claim_form:[[:space:]]*charter[[:space:]]*$' "$existing_note" 2>/dev/null; then
     echo "  The unit was not recorded. Next action: on the '$task_id' note, set parent_charter: '$existing_task' and keep every mutation_scope_ref inside that charter's charter_scope, then rerun cc-claim; or close the charter with cc-close $existing_task if it is terminal." >&2
   else
-    echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+    if [[ "$existing_status" == "unreadable" ]]; then
+      echo "  '$existing_task' cannot be read for a release: its frontmatter does not parse, states a key twice, or does not spell status plainly once, so its slot stays held and nothing was released. Next action: repair that row's frontmatter by hand (one plain status line, no duplicate keys), then rerun cc-claim." >&2
+    else
+      echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+    fi
   fi
   if [[ "$canon_enforced" == "0" ]]; then
     echo "  Legacy fallback only: cc-claim --force $task_id" >&2
@@ -554,6 +604,7 @@ if canon_enforced:
         archive_dispatch_only_claim_residue,
         inspect_claim_publications,
         recover_claim_publications,
+        release_pipeline_held_residue,
         resolve_applied_claim_publication,
         resolve_applied_claim_publication_for_task,
     )
@@ -707,6 +758,28 @@ if canon_enforced:
         current_task_id=task_id,
         observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
     )
+    # A pipeline-held row does not hold the role's slot (the seat's 2026-09-27 ruling); the
+    # lease check above let this claim through, and its markers are released here, archived,
+    # before this claim publishes. The row keeps this role as its named resumer.
+    try:
+        freed = release_pipeline_held_residue(
+            vault_root=path.parent.parent,
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            lock_root=lock_root,
+            role=role,
+            current_task_id=task_id,
+            observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        )
+    except ClaimResidueArchiveHold as exc:
+        print(f"cc-claim: {exc.message}", file=sys.stderr)
+        sys.exit(8)
+    for released in freed:
+        print(
+            f"cc-claim: the pipeline holds this role's previous row; its claim files were archived "
+            f"to {released.archive_dir} (it stays assigned to {role}, to resume later)",
+            file=sys.stderr,
+        )
     # A unit recorded under a live charter keeps the charter's sidecars; they
     # belong to the parent, not to this task, and must not read as this
     # task's applied publication.
