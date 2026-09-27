@@ -1879,7 +1879,7 @@ reprovision_claim_publication_install() {
     if [[ "$rc" -eq 0 ]]; then
         echo "hapax-source-activate: gate0b re-provision: $outcome"
     else
-        echo "hapax-source-activate: gate0b re-provision HELD (claims hold on install mismatch until it is resolved): $outcome" >&2
+        echo "hapax-source-activate: gate0b re-provision HELD (claims hold on install mismatch until it is resolved): $outcome. Next action: resolve the named reason (see $STATE_DIR/gate0b-reprovision-last.json); quarantine the receipt by hand only on an operator decision." >&2
     fi
 }
 

@@ -953,10 +953,15 @@ def reprovision_claim_publication_install(
     ruling, REPROVISION_AUTHORITY). The receipt and manifest are then quarantined in place,
     never deleted; a fresh install is made; and the basis is recorded beside it.
 
-    Anything unexplained raises ExecutionAdmissionError and changes nothing: live files that
-    differ from ``head`` (``gate0b_reprovision_live_drift``), or a receipt that no recent state
-    of main reproduces (``gate0b_reprovision_unexplained``). If the fresh install itself fails
-    after the quarantine, the receipt is absent, and cc-claim's first-use install applies.
+    Anything unexplained raises ExecutionAdmissionError and changes nothing:
+    ``gate0b_reprovision_live_drift`` (live files differ from ``head``),
+    ``gate0b_reprovision_unexplained`` (no recent state of main reproduces the receipt),
+    ``gate0b_reprovision_quarantine_exists`` (a quarantine name is taken) and
+    ``gate0b_reprovision_git_unavailable`` (``repo`` carries no history). The basis is recorded
+    (``reprovision-basis-<stamp>.pending.json``) before anything moves. If the fresh install
+    then fails, the receipt is absent, and cc-claim's first-use install applies. If a basis
+    record cannot be written, ``gate0b_reprovision_basis_unrecorded`` holds, and a fresh install
+    whose complete record failed is set aside as ``*.unrecorded-<stamp>``.
     """
 
     checked_roots = roots or default_claim_publication_roots()
@@ -1033,7 +1038,33 @@ def reprovision_claim_publication_install(
             "preserve both files and inspect the install directory",
             stamp,
         )
-    old_sha256 = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    record = {
+        "schema": "hapax.gate0b-claim-publication-reprovision-basis.v1",
+        "status": "pending",
+        "head": head,
+        "source_commit": source,
+        "basis_commits": list(basis),
+        "quarantined_receipt_ref": receipt.receipt_ref,
+        "quarantined_receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+        "new_receipt_ref": None,
+        "authority": REPROVISION_AUTHORITY,
+        "reprovisioned_at": stamp,
+    }
+
+    def record_basis(name: str) -> None:
+        try:
+            _write_private_file(store / name, _canonical(record))
+        except (OSError, ExecutionAdmissionError) as exc:
+            raise ExecutionAdmissionError(
+                "gate0b_reprovision_basis_unrecorded",
+                "restore a writable install directory; the next cc-claim's first-use install "
+                "then applies",
+                name,
+            ) from exc
+
+    # The authority basis is recorded before anything moves, so an install never exists
+    # without it; the complete record, naming the new receipt, follows the install.
+    record_basis(f"reprovision-basis-{stamp}.pending.json")
     for source_path, target in moves:
         if source_path.exists():
             os.rename(source_path, target)
@@ -1043,18 +1074,15 @@ def reprovision_claim_publication_install(
         install_task_ref=f"gate0b-post-deploy-reprovision:{head}",
         module_sha256=live,  # the release's own verified modules, which cc-claim will load
     )
-    record = {
-        "schema": "hapax.gate0b-claim-publication-reprovision-basis.v1",
-        "head": head,
-        "source_commit": source,
-        "basis_commits": list(basis),
-        "quarantined_receipt_ref": receipt.receipt_ref,
-        "quarantined_receipt_sha256": old_sha256,
-        "new_receipt_ref": installed.receipt.receipt_ref,
-        "authority": REPROVISION_AUTHORITY,
-        "reprovisioned_at": stamp,
-    }
-    _write_private_file(store / f"reprovision-basis-{stamp}.json", _canonical(record))
+    record |= {"status": "complete", "new_receipt_ref": installed.receipt.receipt_ref}
+    try:
+        record_basis(f"reprovision-basis-{stamp}.json")
+    except ExecutionAdmissionError:
+        # No usable install without its complete basis: set the fresh one aside and hold.
+        for source_path, _target in moves:
+            if source_path.exists():
+                os.rename(source_path, store / f"{source_path.name}.unrecorded-{stamp}")
+        raise
     return ClaimPublicationReprovision(
         "reprovisioned", head, source, basis, installed.receipt.receipt_ref
     )

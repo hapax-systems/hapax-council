@@ -4655,7 +4655,24 @@ def test_a_held_reprovision_is_reported_and_never_fails_the_activation(tmp_path:
     assert result.returncode == 0, result.stderr
     assert "gate0b re-provision HELD" in result.stderr
     assert "gate0b_reprovision_unexplained" in result.stderr
+    assert "Next action:" in result.stderr
     assert _current_receipt(tmp_path)["status"] == "completed"
+
+
+def test_a_skip_deploy_activation_also_reprovisions(tmp_path: Path) -> None:
+    # The release is switched either way, so the install is checked either way.
+    canonical, _origin, sha = _make_repos(tmp_path)
+    fake, record = _fake_reprovision(tmp_path, exit_code=0, outcome='{"action": "current"}')
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        extra_args=["--skip-deploy"],
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert record.read_text(encoding="utf-8").split()[-1] == sha
 
 
 def test_a_failed_deploy_never_reprovisions(tmp_path: Path) -> None:
