@@ -90,7 +90,10 @@ inside the encrypted restic repositories, like `~/.password-store/` and
   `--host <host>`, then verifies the new snapshot by path listing (the `.key`,
   and at least as many `.bin` entries as the store). Retention is podium's
   tier-1 forget (`--group-by host,tags`).
-- Recheck, names only:
+- Recheck, names only: on the host, `scripts/hapax-backup-filestore --verify`
+  (from the activation worktree, with `RESTIC_REPOSITORY` set) re-checks its
+  latest `tier1-filestore` snapshot against the store by name and writes
+  nothing. By hand:
   `restic snapshots --tag tier1-filestore --host <host>` and
   `restic ls <snapshot-id> | grep -c '/\.config/reins/secrets/.*\.bin$'`.
 

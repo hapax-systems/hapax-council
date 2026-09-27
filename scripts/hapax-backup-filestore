@@ -33,7 +33,7 @@ die() {
 [[ -f "$STORE/.key" ]] || die "no FileStore at $STORE (no .key)"
 [[ -f "$REPO/config" ]] || die "no restic repository at $REPO (is the NAS mounted?)"
 # An unmounted NAS path falls through to another filesystem; the repository must sit on the named mount.
-mount="$(findmnt -n -o TARGET --target "$REPO" 2>/dev/null | tail -1)"
+mount="$(findmnt -n -o TARGET --target "$REPO" 2>/dev/null | sed -n '$p')"
 [[ "$mount" == "$REQUIRED_MOUNT" ]] || die "$REPO is on '${mount:-?}', not on the required mount $REQUIRED_MOUNT"
 
 RESTIC_PASSWORD="$(hapax_secret_read "$PASSWORD_ENTRY")" || die "cannot read the restic password '$PASSWORD_ENTRY' from the FileStore"
@@ -43,10 +43,19 @@ export RESTIC_PASSWORD RESTIC_REPOSITORY="$REPO"
 expected_names="$(find "$STORE" -maxdepth 1 -type f -name '*.bin' -printf '%f\n' | sort)"
 expected="$(grep -c . <<<"$expected_names" || true)"
 
-snapshot="$(restic backup --json --tag "$TAG" --host "$HOST" "$STORE" \
-    | jq -r 'select(.message_type == "summary") | .snapshot_id')" \
-    || die "restic backup of $STORE failed"
-[[ -n "$snapshot" ]] || die "restic backup of $STORE reported no snapshot"
+if [[ "${1:-}" == "--verify" ]]; then
+    # Re-check only: this host's latest snapshot against the store, by name, writing nothing. Any witness of this
+    # unit is reproducible with `hapax-backup-filestore --verify` (#4824 review).
+    snapshot="$(restic snapshots --json --no-lock --tag "$TAG" --host "$HOST" \
+        | jq -r 'max_by(.time).id // empty')" \
+        || die "cannot list the $TAG snapshots for host $HOST"
+    [[ -n "$snapshot" ]] || die "no $TAG snapshot for host $HOST; run the backup first"
+else
+    snapshot="$(restic backup --json --tag "$TAG" --host "$HOST" "$STORE" \
+        | jq -r 'select(.message_type == "summary") | .snapshot_id')" \
+        || die "restic backup of $STORE failed"
+    [[ -n "$snapshot" ]] || die "restic backup of $STORE reported no snapshot"
+fi
 
 # The verify reads the snapshot's path listing only.
 listing="$(restic ls --json "$snapshot" | jq -r 'select(.struct_type == "node" and .type == "file") | .path')" \
@@ -61,7 +70,7 @@ if [[ "$has_key" -ne 1 ]]; then
     die "snapshot ${snapshot:0:8} does not hold $STORE/.key"
 fi
 if [[ -n "$missing" ]]; then
-    count="$(grep -c . <<<"$missing")"
-    die "$count of the store's $expected entries missing from snapshot ${snapshot:0:8}: $(head -3 <<<"$missing" | tr '\n' ' ')"
+    mapfile -t missing_list <<<"$missing"
+    die "${#missing_list[@]} of the store's $expected entries missing from snapshot ${snapshot:0:8}: ${missing_list[*]:0:3} (next: rerun the backup; if an entry stays missing, check that file's mode and owner with ls -l, names only)"
 fi
 echo "hapax-backup-filestore: snapshot ${snapshot:0:8} ($TAG, host $HOST) holds $STORE/.key and all $expected entries by name (names only)"
