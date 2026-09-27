@@ -1401,13 +1401,22 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         )
-    findings.extend(
-        scan_public_surface_paths(
-            paths,
-            token_claim_patterns=token_claim_patterns,
-            github_material_envelope=github_material_envelope,
+    try:
+        findings.extend(
+            scan_public_surface_paths(
+                paths,
+                token_claim_patterns=token_claim_patterns,
+                github_material_envelope=github_material_envelope,
+            )
         )
-    )
+    except FileNotFoundError as exc:
+        print(
+            f"error: {exc}. Next action: name an existing path, or drop --built-site-dir and "
+            f"unset {PUBLIC_SITE_DIST_ENV} if the built output is not present on this host. A "
+            "named built output that is missing is a loud failure, never a silent pass.",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.json:
         print(json.dumps([finding_to_dict(f) for f in findings], indent=2, sort_keys=True))

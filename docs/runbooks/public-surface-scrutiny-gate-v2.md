@@ -95,3 +95,15 @@ The parser is chosen by file extension (`.html`/`.htm` are HTML; everything else
 is text). It is deliberately *not* chosen by content: a Markdown draft that
 mentions `<p>` must still be read as text, or its paragraphs are skipped and the
 gate passes it silently.
+
+### Recheck
+
+```bash
+uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic pytest \
+  tests/shared/test_register_carriage.py tests/scripts/test_check_public_surface_claims.py
+```
+
+Covers the parser mode, the built-site directory wiring (including the loud
+missing-directory failure), the nested-block units, the residue fallback for
+wrapper text, the boilerplate exclusion, and the register carriage emission from
+the gate itself.

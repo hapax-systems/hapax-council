@@ -504,25 +504,55 @@ def _register_keep_hint(unit: str, sentences: list[str]) -> str | None:
 #: linted by its block units, not by tag-stripped text: stripping merges navigation chrome and
 #: adjacent blocks into one pseudo-unit and invents findings (measured on the correction edition).
 _REGISTER_BLOCK_TAGS = "p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption"
+#: Non-content regions of a built page: their text is never a register unit.
+_REGISTER_HTML_BOILERPLATE = "nav|script|style|head|noscript|template|svg"
 
 
 def _register_html_units(text: str) -> list[tuple[int, str]]:
-    """Leaf block units from built HTML, with the 1-based line of each opening tag.
+    """Leaf block units from built HTML, plus a residue fallback, with 1-based line numbers.
 
     A body that itself contains a block element is not a unit: an outer ``<li>`` or
     ``<blockquote>`` holding ``<p>``s must yield the ``<p>``s, not one merged unit (codex: the
     outer tag swallowed its nested paragraphs). The body is tempered against any block open/close
     tag so the innermost blocks win, and inline tags (``<em>``, ``<a>``) stay inside their unit.
+
+    Copy that sits outside the selected block tags — a ``<div>``, ``<main>`` or ``<section>``
+    wrapper, or text directly under ``<body>`` — is linted by a residue pass (codex: those
+    wrappers yielded no units, so the built-page gate could pass without scanning the copy).
+    Boilerplate regions (``<nav>``, ``<script>``, ``<style>``, ``<head>`` …) are masked first, so
+    navigation chrome is still never a unit; without that the residue pass would re-invent the
+    nav-chrome findings block units exist to avoid.
     """
+    boilerplate = re.compile(
+        rf"<({_REGISTER_HTML_BOILERPLATE})\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL
+    )
+    masked = _register_blank_spans(text, [(m.start(), m.end()) for m in boilerplate.finditer(text)])
     block = _REGISTER_BLOCK_TAGS
     body = rf"(?:(?!<\s*/?\s*(?:{block})\b).)*"
     units: list[tuple[int, str]] = []
-    for match in re.finditer(rf"<({block})\b[^>]*>({body})</\1>", text, re.IGNORECASE | re.DOTALL):
+    block_spans: list[tuple[int, int]] = []
+    for match in re.finditer(
+        rf"<({block})\b[^>]*>({body})</\1>", masked, re.IGNORECASE | re.DOTALL
+    ):
+        block_spans.append((match.start(), match.end()))
         inner = re.sub(r"<[^>]+>", " ", match.group(2))
         inner = re.sub(r"\s+", " ", inner).strip()
         if inner:
             units.append((text[: match.start()].count("\n") + 1, inner))
+    residue = re.sub(r"<[^>]+>", " ", _register_blank_spans(masked, block_spans))
+    units.extend(_register_units(residue))
+    units.sort(key=lambda unit: unit[0])
     return units
+
+
+def _register_blank_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    """Blank each span, preserving newlines so every later line number stays true."""
+    characters = list(text)
+    for start, end in spans:
+        for index in range(start, end):
+            if characters[index] != "\n":
+                characters[index] = " "
+    return "".join(characters)
 
 
 #: File extensions linted as built HTML. Chosen by extension, never by content.

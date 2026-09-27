@@ -667,6 +667,26 @@ def test_public_surface_gate_scans_the_built_site_env_default(
     )
 
 
+def test_an_explicit_missing_built_site_dir_fails_loudly(tmp_path: Path) -> None:
+    """claude: the "fails loudly" guarantee of ``built_site_dirs`` had no test.
+
+    A named built output that is missing must exit non-zero with a next action, never pass by
+    scanning nothing.
+    """
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    absent = tmp_path / "dist-absent"
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--built-site-dir", str(absent))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(absent) in combined
+    assert "Next action" in combined
+
+
 def test_public_surface_gate_offline_mode_cannot_authorize_release(
     tmp_path: Path,
 ) -> None:

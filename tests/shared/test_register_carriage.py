@@ -260,6 +260,33 @@ def test_nested_blocks_do_not_merge_units() -> None:
     )
 
 
+def test_html_copy_outside_the_block_tags_is_still_linted() -> None:
+    """codex: copy inside ``<div>``/``<main>``/``<section>`` yielded no units at all.
+
+    Red before the residue fallback: a built page whose copy sits in a wrapper produced nothing,
+    so the built-page gate passed it without scanning it.
+    """
+    for page in (
+        "<html><body><main><div>One front door. Many working parts.</div></main></body></html>",
+        "<section>One front door. Many working parts.</section>",
+    ):
+        messages = [f.message for f in check_register_carriage_text(page, file_label="page.html")]
+        assert any("One front door" in m for m in messages), (page, messages)
+
+
+def test_html_boilerplate_is_never_a_unit_even_with_the_residue_fallback() -> None:
+    """The residue pass must not re-invent the nav-chrome units block units exist to avoid."""
+    page = (
+        "<html><body><nav><a href='/'>Research</a><a href='/r'>Register</a></nav>"
+        "<script>var title = 'Proceed under measurement';</script>"
+        "<div>One front door. Many working parts.</div></body></html>"
+    )
+    messages = [f.message for f in check_register_carriage_text(page, file_label="page.html")]
+    assert any("One front door" in m for m in messages), messages
+    assert not any("Research Register" in m for m in messages), messages
+    assert not any("Proceed under measurement" in m for m in messages), messages
+
+
 def test_a_built_page_is_linted_by_its_block_units() -> None:
     """Tag-stripped text merges blocks and invents units; block units are the built-page input."""
     page = (
