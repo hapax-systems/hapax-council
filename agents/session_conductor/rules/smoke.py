@@ -58,18 +58,22 @@ class SmokeRule(RuleBase):
             rewrite=rewritten,
         )
 
-    def on_post_tool_use(self, event: HookEvent) -> HookResponse | None:
-        # Activate on user message containing "smoke test"
+    def on_user_prompt(self, event: HookEvent) -> HookResponse | None:
+        # Activate on the operator's own turn containing "smoke test". This is
+        # operator prose, so it belongs to the operator turn — reading it from a
+        # post-tool event meant reading the tool's stdout (M103).
         if event.user_message and is_smoke_test_trigger(event.user_message):
             if not self._state.smoke_test_active:
                 log.info("SmokeRule: activating smoke test mode (user message trigger)")
                 self._state.smoke_test_active = True
                 self._state.smoke_test_activated_at = datetime.now()
             return None
+        return None
 
+    def on_post_tool_use(self, event: HookEvent) -> HookResponse | None:
         # Activate on PR creation in Bash output
         if event.tool_name == "Bash":
-            output: str = event.user_message or ""
+            output: str = event.tool_output or ""
             pr_event = detect_pr_event(output)
             if pr_event and pr_event["type"] == "create":
                 if not self._state.smoke_test_active:

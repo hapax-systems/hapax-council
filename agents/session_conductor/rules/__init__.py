@@ -19,7 +19,11 @@ class HookEvent:
     tool_name: str
     tool_input: dict[str, object]
     session_id: str
+    # The operator's own words. Sent only by the operator-turn path
+    # (event_type "user_prompt"). A tool's stdout is `tool_output` (M103).
     user_message: str | None = None
+    # A tool's stdout/stderr. Never an operator turn.
+    tool_output: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> HookEvent:
@@ -29,6 +33,7 @@ class HookEvent:
             tool_input=d.get("tool_input", {}),
             session_id=d.get("session_id", ""),
             user_message=d.get("user_message"),
+            tool_output=d.get("tool_output"),
         )
 
 
@@ -72,6 +77,14 @@ class RuleBase(ABC):
     def on_post_tool_use(self, event: HookEvent) -> HookResponse | None:
         """Called after a tool is used. Return None to pass through."""
         ...
+
+    def on_user_prompt(self, event: HookEvent) -> HookResponse | None:
+        """Called on the operator's own turn (UserPromptSubmit). Default: no opinion.
+
+        Deliberately not abstract: this hook is newer than the rules, and a rule
+        that has nothing to say about an operator turn should not have to say so.
+        """
+        return None
 
 
 class RuleRegistry:
@@ -121,6 +134,21 @@ class RuleRegistry:
             except Exception:
                 log.exception(
                     "Rule %s.on_post_tool_use crashed — skipping (fail-open)", type(rule).__name__
+                )
+                continue
+            if resp is not None:
+                results.append(resp)
+        return results
+
+    def process_user_prompt(self, event: HookEvent) -> list[HookResponse]:
+        """Collect all non-None responses from operator-turn handlers. Fail-open on exceptions."""
+        results = []
+        for rule in self._rules:
+            try:
+                resp = rule.on_user_prompt(event)
+            except Exception:
+                log.exception(
+                    "Rule %s.on_user_prompt crashed — skipping (fail-open)", type(rule).__name__
                 )
                 continue
             if resp is not None:

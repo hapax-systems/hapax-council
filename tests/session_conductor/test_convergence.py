@@ -31,7 +31,7 @@ def _make_agent_post_event(prompt: str, output: str, session_id: str = "sess-1")
         tool_name="Agent",
         tool_input={"prompt": prompt},
         session_id=session_id,
-        user_message=output,
+        tool_output=output,
     )
 
 

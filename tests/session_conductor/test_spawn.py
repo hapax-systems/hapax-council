@@ -76,6 +76,17 @@ def test_tool_output_never_mints_a_manifest(tmp_path: Path):
 
     rule.on_post_tool_use(_make_user_msg_event("27:    re.compile(r'spawn a (child|session)')"))
     rule.on_post_tool_use(_make_user_msg_event("let's break this out into a new session"))
+    # The corrected hook carries the same text in `tool_output` instead. Neither
+    # field is an operator turn, so neither may mint.
+    rule.on_post_tool_use(
+        HookEvent(
+            event_type="post_tool_use",
+            tool_name="Bash",
+            tool_input={"command": "cat notes.md"},
+            session_id="sess-alpha",
+            tool_output="let's break this out into a new session",
+        )
+    )
 
     assert list(tmp_path.glob("*.yaml")) == []
     assert state.children == []
@@ -92,7 +103,9 @@ def test_operator_prompt_event_writes_manifest(tmp_path: Path):
         user_message="let's break this out into a new session for the relay work",
     )
 
-    rule.on_post_tool_use(event)
+    # The operator turn is dispatched to on_user_prompt, not through the
+    # post-tool path — a post-tool event is never an operator turn (M103).
+    rule.on_user_prompt(event)
 
     manifests = list(tmp_path.glob("*.yaml"))
     assert len(manifests) == 1

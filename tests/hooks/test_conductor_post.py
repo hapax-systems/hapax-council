@@ -35,6 +35,19 @@ def _run(
     role: str = "test-alpha-post",
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
+    # Role resolution (agent-role.sh:hapax_agent_identity) prefers HAPAX_AGENT_NAME,
+    # then CODEX_*, then HAPAX_AGENT_ROLE. An ambient HAPAX_AGENT_NAME would silently
+    # win and point the hook at another role's socket, so the test would pass or fail
+    # on the tester's environment rather than on the hook's behaviour.
+    for leaked in (
+        "HAPAX_AGENT_NAME",
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION_NAME",
+        "CODEX_SESSION",
+        "CODEX_ROLE",
+        "CLAUDE_ROLE",
+    ):
+        env.pop(leaked, None)
     env["HAPAX_AGENT_ROLE"] = role
     return subprocess.run(
         ["bash", str(HOOK)],
@@ -51,8 +64,12 @@ def _socket_path(role: str) -> Path:
 
 
 @contextmanager
-def _uds_server(role: str, response: dict) -> Iterator[Path]:
-    """Spin a single-shot UDS listener that replies with ``response`` JSON."""
+def _uds_server(role: str, response: dict, captured: list[str] | None = None) -> Iterator[Path]:
+    """Spin a single-shot UDS listener that replies with ``response`` JSON.
+
+    When ``captured`` is given, the raw request line the hook sent is appended
+    to it, so a test can assert what the hook actually put in the event.
+    """
     path = _socket_path(role)
     if path.exists():
         path.unlink()
@@ -64,7 +81,9 @@ def _uds_server(role: str, response: dict) -> Iterator[Path]:
         try:
             conn, _ = server.accept()
             with conn:
-                conn.recv(8192)
+                request = conn.recv(8192)
+                if captured is not None:
+                    captured.append(request.decode("utf-8", errors="replace"))
                 conn.sendall(json.dumps(response).encode() + b"\n")
         except OSError:
             pass
@@ -161,7 +180,7 @@ class TestSocketProtocol:
         assert result.returncode == 0
 
     def test_response_includes_tool_output_in_event(self) -> None:
-        """Hook forwards tool_output via the user_message field."""
+        """Hook forwards a tool's stdout via the `tool_output` field."""
         role = "test-post-toutput-004"
         with _uds_server(role, {"message": "got it"}):
             result = _run(
@@ -175,3 +194,32 @@ class TestSocketProtocol:
             )
         assert result.returncode == 0
         assert "got it" in result.stderr
+
+    def test_tool_output_is_not_the_operator_message(self) -> None:
+        """M103: a tool's stdout must never travel in `user_message`.
+
+        `user_message` means the operator's own words. This hook used to carry a
+        Bash tool's stdout in it, so any source file or log that merely
+        *contained* a spawn phrase minted a manifest another lane adopted.
+        Tool output travels as `tool_output`.
+        """
+        role = "test-post-fieldsep-005"
+        captured: list[str] = []
+        with _uds_server(role, {"message": "ok"}, captured):
+            result = _run(
+                {
+                    "session_id": "sZ",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "cat notes.md"},
+                    "tool_response": {"stdout": "we should hand off the relay work\n"},
+                },
+                role=role,
+            )
+        assert result.returncode == 0
+        assert captured, "the hook sent no event to the conductor socket"
+        event = json.loads(captured[0])
+        assert event.get("user_message", "") == "", (
+            "tool output reached the conductor's operator-message field"
+        )
+        # `jq -r` drops the trailing newline the tool emitted.
+        assert event.get("tool_output") == "we should hand off the relay work"
