@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -32,7 +32,7 @@ _GIT_ENV = {
     "GIT_COMMITTER_EMAIL": "t@example.invalid",
 }
 NOW = datetime(2026, 9, 27, 7, 0, tzinfo=UTC)
-STAMP = "20260927T070000Z"
+STAMP = "20260927T070000.000000Z"
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -158,24 +158,81 @@ def test_the_basis_is_recorded_before_anything_is_quarantined_or_installed(
     assert seen == {"pending": True, "quarantined": True}
 
 
-def test_a_failed_fresh_install_leaves_the_basis_and_the_quarantine_and_no_receipt(
-    release, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # cc-claim's first-use install then applies, as it does today after a hand quarantine.
-    repo, roots, commits, a_hashes = release
-    _install_from(roots, a_hashes)
+_PAIR = ("activation-receipt.json", "composition-manifest.json")
 
+
+def _fail_the_install(monkeypatch: pytest.MonkeyPatch, store: Path, *, partial: bool) -> None:
     def failing_install(**_kwargs):
+        if partial:  # the install writes the receipt first, then the manifest
+            (store / "activation-receipt.json").write_bytes(b"a partial fresh receipt\n")
         raise ExecutionAdmissionError("gate0b_install_directory_unavailable", "simulated")
 
     monkeypatch.setattr(install, "install_claim_publication_composition", failing_install)
-    with pytest.raises(ExecutionAdmissionError):
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_a_failed_fresh_install_restores_the_old_pair_and_holds(
+    release, monkeypatch: pytest.MonkeyPatch, partial: bool
+) -> None:
+    # codex (1) on #4809: a failed install left no receipt, so the next cc-claim's first-use
+    # install ran with no basis. Now the quarantined pair comes back, and it holds.
+    repo, roots, commits, a_hashes = release
+    _install_from(roots, a_hashes)
+    store = _store(roots)
+    old = {name: (store / name).read_bytes() for name in _PAIR}
+    _fail_the_install(monkeypatch, store, partial=partial)
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
         _reprovision(repo, roots, commits["C"])
 
+    assert raised.value.reason_code == "gate0b_reprovision_install_failed"
+    assert {name: (store / name).read_bytes() for name in _PAIR} == old
+    assert not list(store.glob("*.quarantined-*"))
+    final = json.loads((store / f"reprovision-basis-{STAMP}.json").read_text())
+    assert (final["status"], final["new_receipt_ref"]) == ("rolled_back", None)
+    set_aside = store / f"activation-receipt.json.unrecorded-{STAMP}"
+    assert set_aside.exists() == partial
+
+    monkeypatch.undo()  # the cause is repaired: the next activation tick retries
+    retry = install.reprovision_claim_publication_install(
+        repo=repo, head=commits["C"], roots=roots, now=NOW + timedelta(minutes=2)
+    )
+    assert retry.action == "reprovisioned"
+
+
+def test_after_a_failed_install_a_following_cc_claim_holds_rather_than_installing(
+    release, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, roots, commits, a_hashes = release
+    home = tmp_path / "home"
+    _install_from(roots, a_hashes)
+    _fail_the_install(monkeypatch, _store(roots), partial=False)
+    with pytest.raises(ExecutionAdmissionError):
+        _reprovision(repo, roots, commits["C"])
+    _write_task(home, "active", "after-failed-install")
+
+    held = _claim(home, "after-failed-install", install_gate0b=False)
+
+    assert held.returncode == 8
+    assert "gate0b_install_executor_descriptor_mismatch" in held.stderr
+
+
+def test_two_reprovisions_in_the_same_second_do_not_collide(release) -> None:
+    # glm on #4809: second-resolution names made a same-second rerun hold on quarantine_exists.
+    repo, roots, commits, a_hashes = release
     store = _store(roots)
-    assert not (store / "activation-receipt.json").exists()
-    assert (store / f"activation-receipt.json.quarantined-{STAMP}").exists()
-    assert (store / f"reprovision-basis-{STAMP}.pending.json").exists()
+    _install_from(roots, a_hashes)
+    _reprovision(repo, roots, commits["C"])
+    for name in _PAIR:  # the receipt goes stale again within the same second
+        (store / name).rename(store / f"{name}.set-aside-by-test")
+    _install_from(roots, a_hashes)
+
+    later = install.reprovision_claim_publication_install(
+        repo=repo, head=commits["C"], roots=roots, now=NOW + timedelta(milliseconds=500)
+    )
+
+    assert later.action == "reprovisioned"
+    assert len(list(store.glob("activation-receipt.json.quarantined-*"))) == 2
 
 
 @pytest.mark.parametrize("record", ["pending", "complete"])
@@ -205,10 +262,14 @@ def test_a_basis_that_cannot_be_recorded_holds_with_no_usable_install(
     if record == "pending":
         assert _snapshot(roots) == before  # nothing moved
     else:
-        assert not (store / "activation-receipt.json").exists()
+        # The fresh install is set aside, and the old pair is back (recovery-paths item 2).
+        assert {name: (store / name).read_bytes() for name in _PAIR} == {
+            name: before[name] for name in _PAIR
+        }
         assert (store / f"activation-receipt.json.unrecorded-{STAMP}").exists()
         assert (store / f"composition-manifest.json.unrecorded-{STAMP}").exists()
         assert (store / f"reprovision-basis-{STAMP}.pending.json").exists()
+        assert not list(store.glob("*.quarantined-*"))
 
 
 def test_a_rerun_after_reprovision_is_current_and_changes_nothing(release) -> None:

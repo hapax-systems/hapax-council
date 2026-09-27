@@ -3,6 +3,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -4638,15 +4639,22 @@ def test_cumulative_since_passed_when_previous_success_is_ancestor(tmp_path: Pat
 # gate0b-post-deploy-governed-reprovision-20260927
 
 
-def _fake_reprovision(tmp_path: Path, *, exit_code: int, outcome: str) -> tuple[Path, Path]:
+def _fake_reprovision(
+    tmp_path: Path, *, exit_code: int, outcome: str, noise: str = ""
+) -> tuple[Path, Path]:
     record = tmp_path / "reprovision-args.txt"
     fake = tmp_path / "fake-reprovision"
     fake.write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {record}\necho '{outcome}'\nexit {exit_code}\n",
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {record}\n"
+        + (f"echo '{noise}' >&2\n" if noise else "")
+        + f"echo '{outcome}'\nexit {exit_code}\n",
         encoding="utf-8",
     )
     fake.chmod(0o755)
     return fake, record
+
+
+_HELD = '{"action": "held", "reason_code": "gate0b_reprovision_basis_unrecorded"}'
 
 
 def test_a_successful_activation_reprovisions_the_claim_install(tmp_path: Path) -> None:
@@ -4718,3 +4726,115 @@ def test_a_failed_deploy_never_reprovisions(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert not record.exists()
+
+
+# gate0b-reprovision-recovery-paths-20260927
+
+
+def test_a_held_reprovision_is_retried_by_a_plain_rerun_at_the_same_commit(tmp_path: Path) -> None:
+    # codex (2) on #4809: the already-activated short circuit ran before the hook, so a HELD
+    # re-provision whose cause was repaired stayed held until the next merge.
+    canonical, _origin, sha = _make_repos(tmp_path)
+    held, _record = _fake_reprovision(tmp_path, exit_code=3, outcome=_HELD)
+    env = {"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(held)}
+    assert _run_activate(tmp_path, canonical, env_overrides=env).returncode == 0
+
+    _repaired, record = _fake_reprovision(
+        tmp_path, exit_code=0, outcome='{"action": "reprovisioned"}'
+    )
+    rerun = _run_activate(tmp_path, canonical, env_overrides=env)
+
+    assert rerun.returncode == 0, rerun.stderr
+    assert _current_receipt(tmp_path)["status"] == "no_op"  # the already-active path
+    assert [line.split()[-1] for line in record.read_text(encoding="utf-8").splitlines()] == [
+        sha,
+        sha,
+    ]
+    last = tmp_path / "state" / "gate0b-reprovision-last.json"
+    assert json.loads(last.read_text(encoding="utf-8")) == {"action": "reprovisioned"}
+    assert "gate0b re-provision:" in rerun.stdout
+
+
+def test_an_unchanged_outcome_at_the_same_commit_is_reported_once(tmp_path: Path) -> None:
+    # The timer runs every 2 minutes; a standing hold is reported when it appears, not every tick.
+    canonical, _origin, _sha = _make_repos(tmp_path)
+    fake, record = _fake_reprovision(tmp_path, exit_code=3, outcome=_HELD)
+    env = {"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)}
+
+    first = _run_activate(tmp_path, canonical, env_overrides=env)
+    second = _run_activate(tmp_path, canonical, env_overrides=env)
+
+    assert "gate0b re-provision HELD" in first.stderr
+    assert "gate0b re-provision" not in second.stdout + second.stderr
+    assert len(record.read_text(encoding="utf-8").splitlines()) == 2  # it still ran
+
+
+def test_the_reprovision_state_file_holds_only_the_command_json(tmp_path: Path) -> None:
+    # glm on #4809: 2>&1 mixed stderr into gate0b-reprovision-last.json.
+    canonical, _origin, _sha = _make_repos(tmp_path)
+    fake, _record = _fake_reprovision(
+        tmp_path, exit_code=3, outcome=_HELD, noise="UserWarning: a library warning"
+    )
+
+    result = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)}
+    )
+
+    last = tmp_path / "state" / "gate0b-reprovision-last.json"
+    assert json.loads(last.read_text(encoding="utf-8")) == json.loads(_HELD)
+    assert "UserWarning: a library warning" in result.stderr
+
+
+_STUB_INSTALL_MODULE = """\
+import json, os, sys
+with open(os.environ["HAPAX_TEST_REPROVISION_RECORD"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd()}) + "\\n")
+print(json.dumps({"action": "current"}))
+"""
+
+
+def _commit_reprovision_runtime(tmp_path: Path, *, venv: bool) -> str:
+    """origin's next head carries a stub install module and, optionally, a release venv whose
+    python is this interpreter (committed as a symlink, since a release gets .venv from uv sync)."""
+    seed = tmp_path / "seed"
+    _write(seed / "shared" / "__init__.py", "")
+    _write(seed / "shared" / "gate0b_claim_publication_install.py", _STUB_INSTALL_MODULE)
+    if venv:
+        (seed / ".venv" / "bin").mkdir(parents=True)
+        (seed / ".venv" / "bin" / "python").symlink_to(sys.executable)
+    _git(seed, "add", "-f", "-A")
+    _git(seed, "commit", "-m", "reprovision runtime")
+    _git(seed, "push", "origin", "main")
+    return _git(seed, "rev-parse", "HEAD")
+
+
+def test_the_hook_runs_the_release_python_and_module_by_default(tmp_path: Path) -> None:
+    canonical, _origin, _sha = _make_repos(tmp_path)
+    sha = _commit_reprovision_runtime(tmp_path, venv=True)
+    record = tmp_path / "stub-record.jsonl"
+
+    result = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_TEST_REPROVISION_RECORD": str(record)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    (call,) = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
+    active = str(tmp_path / "active-source")
+    assert call["argv"] == ["reprovision", "--repo", active, "--head", sha]
+    assert Path(call["cwd"]).resolve() == Path(active).resolve()
+    last = tmp_path / "state" / "gate0b-reprovision-last.json"
+    assert json.loads(last.read_text(encoding="utf-8")) == {"action": "current"}
+
+
+def test_a_release_without_a_venv_skips_the_reprovision(tmp_path: Path) -> None:
+    canonical, _origin, _sha = _make_repos(tmp_path)
+    _commit_reprovision_runtime(tmp_path, venv=False)
+    record = tmp_path / "stub-record.jsonl"
+
+    result = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_TEST_REPROVISION_RECORD": str(record)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not record.exists()
+    assert not (tmp_path / "state" / "gate0b-reprovision-last.json").exists()

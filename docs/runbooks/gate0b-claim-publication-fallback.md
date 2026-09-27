@@ -162,6 +162,53 @@ Record why the fallback was used in the task session log or relay status. The
 verification proves only a legacy claim write; it is not admitted-publication
 evidence.
 
+## Install Re-Provision After A Bound-Module Merge
+
+The executor descriptor binds seven `shared/` modules by content (`BOUND_EXECUTOR_MODULES` in
+`shared/gate0b_claim_publication_install.py`). A merge that changes one of them correctly makes
+every claim hold on `gate0b_install_executor_descriptor_mismatch` until the install receipt is
+replaced. The install re-provision replaces it. `hapax-source-activate` runs it after every
+activation, and again on each already-activated timer tick, so a hold is retried once its cause
+is repaired. It never fails an activation. By hand, from the active release:
+
+```bash
+release="$HOME/.cache/hapax/source-activation/worktree"
+( cd "$release" && .venv/bin/python -m shared.gate0b_claim_publication_install \
+    reprovision --repo "$release" --head "$(git -C "$release" rev-parse HEAD)" )
+```
+
+It prints one JSON object. It exits 0 for `absent` (no receipt yet; cc-claim's first-use install
+applies), `current` (nothing to do) or `reprovisioned`. It exits 3 for `held`, with a
+`reason_code`. The activation keeps the last outcome in
+`~/.cache/hapax/source-activation/gate0b-reprovision-last.json`.
+
+**What a re-provision does.** It re-provisions only when the bound-file state just before one of
+main's recent bound-file commits reproduces the receipt's descriptor. Those later commits are the
+reviewed authority basis.
+
+1. It writes `reprovision-basis-<stamp>.pending.json`.
+2. It quarantines `activation-receipt.json` and `composition-manifest.json` in place as
+   `*.quarantined-<stamp>`.
+3. It installs fresh from the release's own modules.
+4. It completes `reprovision-basis-<stamp>.json`.
+
+All of these are in the install directory. `<stamp>` is `YYYYMMDDTHHMMSS.ffffffZ`. Nothing is
+deleted.
+
+| `reason_code` | Meaning | Next action |
+|---------------|---------|-------------|
+| `gate0b_reprovision_live_drift` | The release's bound modules differ from the commit it activated | Never edit a release in place; rerun governed source activation |
+| `gate0b_reprovision_unexplained` | No recent state of main reproduces the receipt | Inspect the receipt; quarantine it by hand only on an operator decision |
+| `gate0b_reprovision_quarantine_exists` | A quarantine name for this stamp is taken (a concurrent run) | Preserve both files, inspect, rerun |
+| `gate0b_reprovision_git_unavailable` | The repo given carries no history | Run it from the activated release worktree |
+| `gate0b_reprovision_basis_unrecorded` | A basis record could not be written | Restore a writable install directory; the next tick retries |
+| `gate0b_reprovision_install_failed` | The fresh install failed | Repair the cause named in the detail; the next tick retries |
+
+After `basis_unrecorded` or `install_failed`, any fresh file is set aside as
+`*.unrecorded-<stamp>` and the quarantined pair is put back. So claims keep holding on the old
+receipt: a first-use install never runs without a recorded basis. The basis record then reads
+`rolled_back`.
+
 ## Governed Release Of Claim Residue
 
 A role wedged by its own claim residue releases it itself, without operator scripts:
