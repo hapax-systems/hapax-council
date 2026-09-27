@@ -66,9 +66,10 @@ REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.durable_jsonl_sink import DurableJsonlSink  # noqa: E402
+from shared.durable_jsonl_sink import DEFAULT_ROOT_ENV, DurableJsonlSink  # noqa: E402
 from shared.quota_headroom import (  # noqa: E402
     TraceReadError,
+    claude_window_rows,
     read_claude_probe_receipts,
     read_claude_stream_windows,
 )
@@ -93,6 +94,19 @@ WEEKLY_LINE_PERCENT_PER_HOUR: Final = 0.6
 FIVE_HOUR_CEILING_PERCENT: Final = 90.0
 #: Two observe-probe periods. Older than this the reading is unknown, never permissive.
 READING_MAX_AGE: Final = timedelta(minutes=60)
+#: The account-live probe's cadence. ``record`` runs on its own timer while the probe mints a fresh
+#: reading every PROBE_CADENCE, so requiring an exact ledger timestamp for the newest reading
+#: refused a reading the governor had just measured (measured 2026-09-26: 10:04Z refuse, 10:06Z
+#: allow). A ledger row within one cadence of the reading is durable evidence for it; an older row,
+#: or none, is not — stale and unknown readings still refuse.
+PROBE_CADENCE: Final = timedelta(minutes=10)
+#: The producer identity the LEDGER-AS-READING-SOURCE rule keys on. A ledger row is a reading
+#: source only when the account-live probe's own path wrote it (the seat's ruling of
+#: 2026-09-27T07:55Z): the probe is the measurement's producer, while ``record``'s rows are derived
+#: from the receipts that are already a source, and an unmarked row is not evidence for anything.
+PROBE_LEDGER_PRODUCER: Final = "claude-account-live-observe"
+#: The governor's own producer identity for rows its ``record`` command writes.
+GOVERNOR_LEDGER_PRODUCER: Final = "hapax-claude-pool-pace"
 
 EXIT_ALLOW: Final = 0
 EXIT_REFUSE_OVER_PACE: Final = 3
@@ -175,13 +189,125 @@ def activate(activation_path: Path, *, now: datetime, reason: str, by: str) -> i
     return EXIT_ALLOW
 
 
+def deactivate(activation_path: Path, *, now: datetime, reason: str, by: str) -> int:
+    """Archive the activation marker create-once with a reason and actor, and retire it.
+
+    The governor's armed state IS the marker's existence, so disarming is removing it — the act the
+    seat had to perform by hand as a shell ``mv`` (2026-09-26T15:05Z,
+    ``activation.json.deactivated-20260926T1505Z``). This writes ``<marker>.deactivated-<UTC>``
+    carrying the marker's own fields plus ``deactivated_at``/``by``/``reason``, then unlinks the
+    live marker. Create-once per instant: an existing archive for the same stamp is refused, never
+    overwritten. A marker that is absent is not an error — it is already disarmed.
+    """
+    if not activation_path.exists():
+        print(
+            json.dumps(
+                {"marker": str(activation_path), "state": "not_activated"},
+                sort_keys=True,
+                indent=2,
+            )
+        )
+        return EXIT_ALLOW
+    try:
+        original = json.loads(activation_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(
+            f"pace deactivate refused: the marker is unreadable: {exc}. Next action: repair or "
+            f"archive {activation_path} by hand, then rerun",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSE_UNKNOWN
+    if not isinstance(original, dict) or not original.get("activated_at"):
+        print(
+            f"pace deactivate refused: the marker is malformed: {activation_path}. Next action: "
+            "rewrite it as JSON with an activated_at field, or delete it if the governor should be "
+            "disarmed anyway, then rerun",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSE_UNKNOWN
+    stamp = now.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    archive = activation_path.with_name(f"{activation_path.name}.deactivated-{stamp}")
+    payload = {**original, "deactivated_at": _stamp(now), "by": by, "reason": reason}
+    try:
+        # Create-once ATOMICALLY: mode "x" is O_EXCL, so a concurrent deactivation cannot be
+        # overwritten, which an exists()-then-write_text left open (codex, twice; the seat's ruling
+        # names `open(path, "x")`). The live marker is retired only after the archive exists.
+        with open(archive, "x", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+    except FileExistsError:
+        print(
+            f"pace deactivate refused: {archive} already exists (create-once); the live marker is "
+            "untouched. Next action: choose another instant with --now, or archive the marker by hand",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSE_UNKNOWN
+    except OSError as exc:
+        print(
+            f"pace deactivate refused: cannot write the archive {archive}: {exc}. Next action: check "
+            "that directory's permissions and free space, then rerun",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSE_UNKNOWN
+    activation_path.unlink()
+    print(
+        json.dumps(
+            {
+                "marker": str(activation_path),
+                "archive": str(archive),
+                "state": "deactivated",
+                **payload,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+    )
+    return EXIT_ALLOW
+
+
 def read_windows(receipt_dir: Path, headless_glob: str, *, now: datetime) -> list[Any]:
-    """Every Claude window reading the ledger's own readers can see (both sources)."""
+    """Every Claude window reading this governor can see: receipts, traces, and its OWN ledger."""
     rows = read_claude_probe_receipts(receipt_dir, now=now)
     pattern = Path(os.path.expanduser(headless_glob))
     if pattern.parts[-2:] == ("*", "output.jsonl"):
         rows += read_claude_stream_windows(pattern.parent.parent, now=now)
+    rows += ledger_readings(now=now)
     return rows
+
+
+def ledger_readings(*, now: datetime) -> list[Any]:
+    """Window readings this governor's OWN ledger records, as readings.
+
+    The probe ledgers the reading it just measured; without this the governor's readings came only
+    from admission receipts and headless traces, so while the gate held the probe's receipt mint no
+    new reading could appear and a held governor could not see its own recovery **at all** (codex,
+    critical, round 2 of the fix PR). A ledger row carries the same numbers from the same producer.
+    Staleness is unchanged: a reading past its own reset is not current, and the caller still
+    refuses an old one.
+
+    Only PROBE-ORIGIN rows count (the seat's ruling 2026-09-27T07:55Z): the probe is the
+    measurement's producer, so its rows are readings, while another producer's rows — ``record``'s
+    are derived from the receipts that are already a source — and unmarked rows are ignored.
+    """
+    state_name, rows = ledger_state()
+    if state_name != "ok":
+        return []
+    readings: list[Any] = []
+    for row in rows:
+        payload = row.get("payload", {})
+        if payload.get("producer") != PROBE_LEDGER_PRODUCER:
+            continue
+        at = _stamp_instant(payload.get("weekly_observed_at"))
+        weekly_reset = _stamp_instant(payload.get("weekly_resets_at"))
+        used = payload.get("weekly_used_percent")
+        if at is None or weekly_reset is None or not isinstance(used, (int, float)):
+            continue
+        windows: dict[str, tuple[float, datetime]] = {"seven_day": (float(used), weekly_reset)}
+        five_used = payload.get("five_hour_used_percent")
+        five_reset = _stamp_instant(payload.get("five_hour_resets_at"))
+        if isinstance(five_used, (int, float)) and five_reset is not None:
+            windows["five_hour"] = (float(five_used), five_reset)
+        readings += claude_window_rows(windows, at=at, source="pace_ledger")
+    return readings
 
 
 def newest_reading(rows: list[Any], capacity_id: str, *, now: datetime) -> Any | None:
@@ -227,10 +353,40 @@ def ledger_state() -> tuple[str, list[dict[str, Any]]]:
 
 
 def _ledgered(payload: dict[str, Any], rows: list[dict[str, Any]]) -> bool:
-    return any(
-        row.get("payload", {}).get("weekly_observed_at") == payload["weekly_observed_at"]
-        for row in rows
-    )
+    """Whether the sink holds THIS reading, written within one probe cadence of it.
+
+    Identity, not merely proximity: a row naming a DIFFERENT (earlier) reading does not admit this
+    one, however close its timestamp. A one-cadence proximity rule was a hole — the probe mints a
+    reading every ``PROBE_CADENCE``, so an earlier probe's row was always within tolerance and
+    satisfied the check even when THIS reading's own ledger append had failed, admitting a launch on
+    a reading that was never ledgered. The cadence stays as the tolerance on capture lag: a row that
+    names this reading may be written up to one cadence after it (``record`` runs on its own slower
+    timer than the probe's cadence) and still counts.
+    """
+    observed = _stamp_instant(payload.get("weekly_observed_at"))
+    if observed is None:
+        return False
+    for row in rows:
+        row_payload = row.get("payload", {})
+        if row_payload.get("weekly_observed_at") != payload.get("weekly_observed_at"):
+            continue
+        captured = _stamp_instant(row_payload.get("captured_at")) or _stamp_instant(
+            row.get("timestamp")
+        )
+        if captured is not None and abs(captured - observed) <= PROBE_CADENCE:
+            return True
+    return False
+
+
+def _stamp_instant(value: Any) -> datetime | None:
+    """A ledger stamp as an aware instant, or None when it is absent or unparseable."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def read_state(receipt_dir: Path, headless_glob: str, *, now: datetime) -> dict[str, Any]:
@@ -241,6 +397,7 @@ def read_state(receipt_dir: Path, headless_glob: str, *, now: datetime) -> dict[
         "weekly_used_percent": None,
         "weekly_resets_at": None,
         "five_hour_used_percent": None,
+        "five_hour_resets_at": None,
         "reading_age_seconds": None,
         "ledgered": False,
         "over_line": None,
@@ -266,6 +423,7 @@ def read_state(receipt_dir: Path, headless_glob: str, *, now: datetime) -> dict[
         weekly_observed_at=_stamp(weekly.observed_at),
         weekly_source=weekly.source,
         five_hour_used_percent=None if five_hour is None else five_hour.quantity,
+        five_hour_resets_at=None if five_hour is None else _stamp(five_hour.resets_at),
         reading_age_seconds=int(age.total_seconds()),
         line_percent=round(weekly_line_percent(weekly), 6),
     )
@@ -316,33 +474,97 @@ def evaluate(
     return state
 
 
+def sink_root_env() -> str:
+    """The environment variable naming the durable sink root, for error next actions."""
+    return DEFAULT_ROOT_ENV
+
+
+def reading_payload(state: dict[str, Any]) -> dict[str, Any]:
+    """The sink row's payload from a pace state — the one shape ``record`` and the probe both use."""
+    return {
+        "producer": GOVERNOR_LEDGER_PRODUCER,
+        "captured_at": state["now"],
+        "weekly_observed_at": state.get("weekly_observed_at"),
+        "weekly_used_percent": state["weekly_used_percent"],
+        "weekly_resets_at": state["weekly_resets_at"],
+        "five_hour_used_percent": state["five_hour_used_percent"],
+        "five_hour_resets_at": state.get("five_hour_resets_at"),
+        "line_percent": state["line_percent"],
+        "reading_age_seconds": state["reading_age_seconds"],
+        "over_line": state["over_line"],
+        "source_ref": state.get("weekly_source"),
+    }
+
+
+def append_observed_reading(
+    *,
+    observed_at: datetime,
+    weekly_used_percent: float,
+    weekly_resets_at: datetime,
+    five_hour_used_percent: float | None,
+    five_hour_resets_at: datetime | None,
+    source_ref: str,
+    now: datetime,
+) -> dict[str, Any]:
+    """Ledger a reading a producer observed, computing the line and over-line flag HERE.
+
+    The producer (the account-live probe) holds the numbers; this owns the payload shape, so a row
+    the probe ledgers cannot diverge from ``record``'s. Returns the payload for the caller to
+    report. Raises on sink failure: the caller must not report an unledgered reading.
+    """
+    window_start = weekly_resets_at - timedelta(hours=WEEKLY_WINDOW_HOURS)
+    elapsed_hours = max(0.0, (observed_at - window_start).total_seconds() / 3600.0)
+    line = min(100.0, WEEKLY_LINE_START_PERCENT + WEEKLY_LINE_PERCENT_PER_HOUR * elapsed_hours)
+    payload = {
+        "captured_at": _stamp(now),
+        "weekly_observed_at": _stamp(observed_at),
+        "weekly_used_percent": weekly_used_percent,
+        "weekly_resets_at": _stamp(weekly_resets_at),
+        "five_hour_used_percent": five_hour_used_percent,
+        "five_hour_resets_at": None if five_hour_resets_at is None else _stamp(five_hour_resets_at),
+        "line_percent": round(line, 6),
+        "reading_age_seconds": int((now - observed_at).total_seconds()),
+        "over_line": float(weekly_used_percent) > line,
+        "source_ref": source_ref,
+        "producer": PROBE_LEDGER_PRODUCER,
+    }
+    append_reading(payload, now=now)
+    return payload
+
+
+def append_reading(payload: dict[str, Any], *, now: datetime) -> None:
+    """Durably append one pace-ledger row a caller already measured, or raise.
+
+    The account-live probe produces a reading every ``PROBE_CADENCE`` while ``record`` runs on its
+    own slower timer, so between the two the governor saw a reading with no ledger line and refused
+    (the cadence lag). The probe calls this with the windows it saw, so the reading is ledgered
+    atomically by its producer. It raises on any sink failure, so a caller can never report a
+    reading as ledgered when it is not.
+    """
+    DurableJsonlSink().append(
+        stream_id=STREAM_ID,
+        data_class=DATA_CLASS,
+        source_receipt_ref=f"claude-pool-pace:{payload['weekly_observed_at']}",
+        payload=payload,
+        timestamp=_stamp(now),
+    )
+
+
 def _record(receipt_dir: Path, headless_glob: str, *, now: datetime, as_json: bool) -> int:
     """Append the pacing reading to the sink. No provider call, fail closed on no ledger."""
     state = read_state(receipt_dir, headless_glob, now=now)
     if state["weekly_used_percent"] is None:
         print(f"pace ledger refused: {state['reason']} — nothing to ledger", file=sys.stderr)
         return EXIT_REFUSE_UNKNOWN
-    payload = {
-        "captured_at": state["now"],
-        "weekly_observed_at": state.get("weekly_observed_at"),
-        "weekly_used_percent": state["weekly_used_percent"],
-        "weekly_resets_at": state["weekly_resets_at"],
-        "five_hour_used_percent": state["five_hour_used_percent"],
-        "line_percent": state["line_percent"],
-        "reading_age_seconds": state["reading_age_seconds"],
-        "over_line": state["over_line"],
-        "source_ref": state.get("weekly_source"),
-    }
+    payload = reading_payload(state)
     try:
-        DurableJsonlSink().append(
-            stream_id=STREAM_ID,
-            data_class=DATA_CLASS,
-            source_receipt_ref=f"claude-pool-pace:{state['weekly_observed_at']}",
-            payload=payload,
-            timestamp=state["now"],
-        )
+        append_reading(payload, now=now)
     except Exception as exc:  # noqa: BLE001 — any ledger failure refuses, none liberates
-        print(f"pace ledger refused: cannot write the {STREAM_ID} sink row: {exc}", file=sys.stderr)
+        print(
+            f"pace ledger refused: cannot write the {STREAM_ID} sink row: {exc}. Next action: check "
+            f"{sink_root_env()} points at writable persistent storage with free space, then rerun",
+            file=sys.stderr,
+        )
         return EXIT_REFUSE_UNKNOWN
     if as_json:
         print(json.dumps(payload, sort_keys=True, indent=2))
@@ -429,7 +651,8 @@ def _report(state: dict[str, Any], *, as_json: bool) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hapax-claude-pool-pace")
     parser.add_argument(
-        "command", choices=("record", "check", "status", "activate", "release-plan")
+        "command",
+        choices=("record", "check", "status", "activate", "deactivate", "release-plan"),
     )
     parser.add_argument("--now", help="ISO instant to evaluate at (default: now)")
     parser.add_argument("--receipt-dir", default=str(DEFAULT_RECEIPT_DIR))
@@ -449,6 +672,8 @@ def main(argv: list[str] | None = None) -> int:
         return _record(receipt_dir, args.headless_glob, now=now, as_json=args.json)
     if args.command == "activate":
         return activate(activation_path, now=now, reason=args.reason, by=args.by)
+    if args.command == "deactivate":
+        return deactivate(activation_path, now=now, reason=args.reason, by=args.by)
     if args.command == "release-plan":
         plan = release_plan(Path(args.task_root), limit=args.limit)
         if args.json:

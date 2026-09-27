@@ -61,11 +61,14 @@ import subprocess
 import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 from typing import Final
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
+PACE_SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-pool-pace"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -650,6 +653,7 @@ def mint(
     receipt_dir: Path | None,
     dry_run: bool,
     evidence_by_route: Mapping[str, Observation | None] | None = None,
+    pace_args: tuple[str, ...] = (),
 ) -> list[dict]:
     """Hand the observation to the existing admission writer — never bypass its validation.
 
@@ -715,6 +719,7 @@ def mint(
         ]
         if receipt_dir is not None:
             argv += ["--receipt-dir", str(receipt_dir)]
+        argv += list(pace_args)
         if route_evidence.scrubbed_env:
             argv.append("--probe-environment-scrubbed")
         if route_evidence.subscription_served:
@@ -752,6 +757,42 @@ def mint(
     return results
 
 
+def ledger_probe_reading(evidence: Observation, *, now: datetime) -> dict | None:
+    """Ledger the reading this probe just made, through the pace module's own payload builder.
+
+    The probe produces a reading every ten minutes while ``hapax-claude-pool-pace record`` runs on
+    its own slower timer, so between the two the armed governor saw a reading with no ledger line
+    and refused it (the measured 10:04Z-refuse / 10:06Z-allow lag). Ledgering here makes the reading
+    durable by its producer, so no lane launch waits on the pace tick. The numbers come from the
+    probe's own scrubbed reply; nothing else is invented, and a window already reset is dropped.
+    """
+    weekly = evidence.windows.get("seven_day")
+    if weekly is None or weekly[1] <= evidence.at:
+        return None
+    five_hour = evidence.windows.get("five_hour")
+    module = _pace_gate_module()
+    return module.append_observed_reading(
+        observed_at=evidence.at.replace(microsecond=0),
+        weekly_used_percent=float(weekly[0]),
+        weekly_resets_at=weekly[1],
+        five_hour_used_percent=None if five_hour is None else float(five_hour[0]),
+        five_hour_resets_at=None if five_hour is None else five_hour[1],
+        source_ref=evidence.source,
+        now=now,
+    )
+
+
+def _pace_gate_module() -> object:
+    """The pacing governor module, loaded by path (``scripts/`` carries no package)."""
+    loader = SourceFileLoader("hapax_claude_pool_pace_probe_ledger", str(PACE_SCRIPT))
+    spec = spec_from_loader(loader.name, loader)
+    if spec is None:  # pragma: no cover - the loader always provides a spec here
+        raise RuntimeError("the pacing governor module could not be loaded")
+    module = module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 def newest_window_reading(
     now: datetime, *, receipt_dir: Path, headless_glob: str
 ) -> datetime | None:
@@ -775,6 +816,17 @@ def newest_window_reading(
         and row.resets_at > now
     ]
     return max(times, default=None)
+
+
+def pace_held(receipts: list[dict]) -> bool:
+    """True when every attempted route was refused by the pool pacing governor.
+
+    ``scripts/hapax-claude-subscription-quota-admission`` returns 3 for exactly one case — it
+    raised ``PaceRefused`` — so exit 3 is the governor's own contract, not a guess from stderr.
+    A route the family filter skipped (``returncode`` None) is not an attempt.
+    """
+    attempted = [row for row in receipts if row.get("returncode") is not None]
+    return bool(attempted) and all(row.get("returncode") == 3 for row in attempted)
 
 
 def mint_failed(receipts: list[dict]) -> bool:
@@ -812,6 +864,20 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_QUANTITY_MAX_AGE_SECONDS,
         help="Probe when the newest subscription window reading is older than this, even if "
         "every route has passive evidence; never when it is newer.",
+    )
+    parser.add_argument(
+        "--pace-receipt-dir",
+        type=Path,
+        help="forwarded to the admission writer's pace gate (the readings source)",
+    )
+    parser.add_argument(
+        "--pace-headless-glob",
+        help="forwarded to the admission writer's pace gate (passive stream-json readings)",
+    )
+    parser.add_argument(
+        "--pace-activation",
+        type=Path,
+        help="forwarded to the admission writer's pace gate (the governor's armed marker)",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -915,7 +981,40 @@ def main(argv: list[str] | None = None) -> int:
     if probe_report is not None:
         payload["probe"] = probe_report
 
+    pace_args = tuple(
+        item
+        for flag, value in (
+            ("--pace-receipt-dir", args.pace_receipt_dir),
+            ("--pace-headless-glob", args.pace_headless_glob),
+            ("--pace-activation", args.pace_activation),
+        )
+        if value is not None
+        for item in (flag, str(value))
+    )
     if verdict == "served":
+        if not args.dry_run:
+            try:
+                led = ledger_probe_reading(evidence, now=now)
+            except Exception as exc:  # noqa: BLE001 — a ledger failure is reported, never hidden
+                payload["pace_ledger"] = {"error": f"{type(exc).__name__}: {exc}"}
+                payload["hint"] = (
+                    "the pacing reading could not be ledgered, so NOTHING is admitted: a measurement "
+                    "that could not be ledgered admits nothing, and minting here would let an earlier "
+                    "probe's ledger row satisfy the governor's check for THIS reading. Next action: "
+                    "check HAPAX_DURABLE_SINK_ROOT points at writable persistent storage, then rerun "
+                    "`scripts/hapax-claude-pool-pace record`."
+                )
+                if args.json:
+                    print(json.dumps(payload, indent=1))
+                else:
+                    print(f"account-live: {verdict}")
+                    print(f"  {payload['hint']}", file=sys.stderr)
+                return 5
+            else:
+                payload["pace_ledger"] = {
+                    "ledgered": led is not None,
+                    "weekly_observed_at": (led or {}).get("weekly_observed_at"),
+                }
         payload["receipts"] = mint(
             evidence,
             now=now,
@@ -924,18 +1023,33 @@ def main(argv: list[str] | None = None) -> int:
             receipt_dir=args.receipt_dir,
             dry_run=args.dry_run,
             evidence_by_route=by_route,
+            pace_args=pace_args,
         )
         payload["observed_model"] = evidence.model
         payload["observed_model_by_route"] = {
             route_id: (o.model if o else None) for route_id, o in by_route.items()
         }
         if not args.dry_run and mint_failed(payload["receipts"]):
-            payload["hint"] = (
-                "observation succeeded but at least one receipt write FAILED — the route is "
-                "not vouched for. Exit 5 is deliberately outside SuccessExitStatus so this "
-                "surfaces instead of leaving systemd green with no receipts."
-            )
-            rc = 5
+            ledgered = payload.get("pace_ledger", {}).get("ledgered") is True
+            if pace_held(payload["receipts"]) and ledgered:
+                # The governor holding Claude lanes is the instrument WORKING, not breaking: the
+                # probe's own reading is ledgered, so the governor can still measure and re-open
+                # when the line is met, and no admission receipt is minted. Treating this as a
+                # probe failure was the self-lock — the gate refusing the probe it feeds.
+                payload["verdict"] = "pace_held"
+                payload["hint"] = (
+                    "the pool pacing governor holds Claude lanes: every route was refused (writer "
+                    "exit 3) and this probe's reading is ledgered, so the governor can still measure "
+                    "and re-open. Exit 0: the governor working, not a broken probe."
+                )
+                rc = 0
+            else:
+                payload["hint"] = (
+                    "observation succeeded but at least one receipt write FAILED — the route is "
+                    "not vouched for. Exit 5 is deliberately outside SuccessExitStatus so this "
+                    "surfaces instead of leaving systemd green with no receipts."
+                )
+                rc = 5
         elif not args.dry_run and not any(r.get("returncode") == 0 for r in payload["receipts"]):
             payload["hint"] = "every route was skipped; no receipt was written"
             rc = 5

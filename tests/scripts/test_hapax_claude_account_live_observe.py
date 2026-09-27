@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+import shared.durable_jsonl_sink as sink_mod
 from shared.quota_headroom import read_claude_wall_and_spend
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -90,6 +91,22 @@ def fake_run(stdout: str):
 
 
 @pytest.fixture(autouse=True)
+def _durable_sink_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Bind a durable sink root under ``tmp_path`` for every test in this module.
+
+    The probe ledgers its own reading (the governor's cadence fix), so a served run now needs a
+    writable durable-sink root. CI has none (the default ``~/.cache/hapax/stage0-durable-sink`` is
+    absent), which dequeued #4811: the probe exited 5 in a test that expected 0. The host's storage
+    must not decide what these tests assert, so each binds its own root; the no-writable-root case
+    keeps its own test below.
+    """
+    root = tmp_path / "durable-sink"
+    root.mkdir()
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(root))
+    return root
+
+
+@pytest.fixture(autouse=True)
 def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(obs.PROBE_ENV_SCRUBBED) + ["ANTHROPIC_MODEL"]:
         monkeypatch.delenv(name, raising=False)
@@ -98,6 +115,145 @@ def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
 def probe_stream(monkeypatch, *records):
     monkeypatch.setattr(obs.subprocess, "run", fake_run(stream(*records)))
     return obs.probe(NOW)
+
+
+def test_a_probe_without_a_writable_sink_root_mints_nothing(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:  # noqa: ANN001
+    """Fail closed where no sink is writable — the CI condition that dequeued #4811.
+
+    The probe's ledger append fails (the root is absent, so the sink refuses it), so nothing is
+    minted and the exit code is 5 with a next action. This is the fail-closed path kept under its
+    own test, as the seat's ruling requires.
+    """
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(tmp_path / "absent-durable-sink"))
+    observation = obs.Observation(
+        kind="served",
+        at=obs._parse_ts("2026-09-24T18:06:36Z"),
+        source="claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
+        windows={
+            "seven_day": (9.0, obs._parse_ts("2026-09-25T22:00:00Z")),
+            "five_hour": (8.0, obs._parse_ts("2026-09-24T21:30:00Z")),
+        },
+        subscription_served=True,
+    )
+
+    rc, payload, _calls = run_main(monkeypatch, tmp_path, capsys, probe_result=observation)
+
+    assert rc == 5
+    assert "error" in payload["pace_ledger"]
+    assert "admits nothing" in payload["hint"]
+    assert not list((tmp_path / "receipts").glob("*.yaml"))
+
+
+def test_a_failed_ledger_append_admits_nothing(monkeypatch, tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    """Fail closed (seat ruling 07:31Z): a measurement that could not be ledgered admits nothing.
+
+    Minting anyway would let an earlier probe's ledger row satisfy the governor's check for THIS
+    reading, admitting a launch on a reading that was never ledgered.
+    """
+    sink_root = tmp_path / "durable"
+    sink_root.mkdir()
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(sink_root))
+    pace_receipts = tmp_path / "pace-receipts"
+    pace_receipts.mkdir()
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(pace_receipts))
+    marker = tmp_path / "activation.json"
+    marker.write_text(
+        json.dumps({"activated_at": "2026-09-24T18:00:00Z", "by": "seat", "reason": "t"}) + "\n",
+        encoding="utf-8",
+    )
+    observation = obs.Observation(
+        kind="served",
+        at=obs._parse_ts("2026-09-24T18:06:36Z"),
+        source="claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
+        windows={
+            "seven_day": (9.0, obs._parse_ts("2026-09-25T22:00:00Z")),
+            "five_hour": (8.0, obs._parse_ts("2026-09-24T21:30:00Z")),
+        },
+        subscription_served=True,
+    )
+
+    def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("sink unavailable")
+
+    monkeypatch.setattr(sink_mod.DurableJsonlSink, "append", _boom)
+
+    rc, payload, _calls = run_main(monkeypatch, tmp_path, capsys, probe_result=observation)
+
+    assert rc == 5
+    assert "pace_ledger" in payload
+    assert "error" in payload["pace_ledger"]
+    assert "admits nothing" in payload["hint"]
+    assert not list((tmp_path / "receipts").glob("*.yaml"))
+
+
+def test_a_pace_hold_is_not_a_probe_failure(monkeypatch, tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    """The self-lock half: over the line the governor refuses the admission mint while the probe's
+    own reading is ledgered, so the probe reports ``pace_held`` and exits 0.
+
+    Exit 5 here (the old behaviour) made the governor blind to its own recovery — the gate refusing
+    the probe that feeds it, 23 probe failures measured 2026-09-26.
+    """
+    sink_root = tmp_path / "durable"
+    sink_root.mkdir()
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(sink_root))
+    pace_receipts = tmp_path / "pace-receipts"
+    pace_receipts.mkdir()
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(pace_receipts))
+    # The reading source first, with the governor still disarmed (an armed gate would refuse to
+    # mint the very receipt this test needs): 90 % against a ~86 % line at this instant.
+    over = run_writer(
+        pace_receipts,
+        "--probe-environment-scrubbed",
+        "--seven-day-used-percent",
+        "90",
+        "--seven-day-resets-at",
+        "2026-09-25T22:00:00Z",
+    )
+    assert over.returncode == 0, over.stderr
+    marker = tmp_path / "activation.json"
+    marker.write_text(
+        json.dumps({"activated_at": "2026-09-24T18:00:00Z", "by": "seat", "reason": "t"}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HAPAX_CLAUDE_POOL_PACE_ACTIVATION", str(marker))
+    # Built directly: ``probe_stream`` stubs ``obs.subprocess.run``, which would also stub the
+    # writer call this test needs to reach the real governor.
+    observation = obs.Observation(
+        kind="served",
+        at=obs._parse_ts("2026-09-24T18:06:36Z"),
+        source="claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
+        windows={
+            "seven_day": (90.0, obs._parse_ts("2026-09-25T22:00:00Z")),
+            "five_hour": (8.0, obs._parse_ts("2026-09-24T21:30:00Z")),
+        },
+        subscription_served=True,
+    )
+
+    rc, payload, _calls = run_main(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        "--pace-receipt-dir",
+        str(pace_receipts),
+        "--pace-headless-glob",
+        str(tmp_path / "no-headless" / "*" / "output.jsonl"),
+        "--pace-activation",
+        str(marker),
+        probe_result=observation,
+    )
+
+    assert rc == 0
+    assert payload["verdict"] == "pace_held"
+    assert payload["pace_ledger"]["ledgered"] is True
+    assert not list((tmp_path / "receipts").glob("*.yaml"))
 
 
 def test_probe_asks_for_the_stream_that_carries_the_windows() -> None:
