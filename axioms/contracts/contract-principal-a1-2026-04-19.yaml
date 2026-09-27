@@ -10,7 +10,7 @@ scope:
 direction: one_way
 visibility_mechanism: on_request
 created_at: '2026-04-19T03:25:00'
-# Guest consent: principal-a1 Kleeberger (operator's younger brother).
+# Guest consent: principal-a1.
 # Active for the duration of this visit.
 # Permits the system to perceive and interact with principal-a1 during livestream.
 # Does NOT permit profiling, behavioral modeling, or persistent data accumulation

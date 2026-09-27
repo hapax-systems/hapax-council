@@ -100,27 +100,58 @@ class TestBlocksRegisteredIdentityForms:
         "tests/scripts/test_check_legal_name_leaks.py",
     )
 
+    @staticmethod
+    def _git_repo(path: Path) -> Path:
+        # The exemption is decided relative to the real git toplevel, so these
+        # tests need a real repository, not a bare .git directory.
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        return path
+
     def test_guard_machinery_may_carry_the_name_patterns(self, tmp_path: Path) -> None:
-        repo = tmp_path
-        (repo / ".git").mkdir()
+        repo = self._git_repo(tmp_path / "repo")
         for rel in self.GUARD_MACHINERY:
             for content in (f"PATTERN='{OPERATOR_LAST}'\n", f"PATTERN='{OPERATOR_FULLNAME}'\n"):
                 result = _run(_edit(str(repo / rel), content), cwd=repo)
                 assert result.returncode == 0, (rel, result.stderr)
 
     def test_surname_still_blocked_beside_the_machinery(self, tmp_path: Path) -> None:
-        # Same content, any other path (siblings and lookalikes included): blocked.
-        repo = tmp_path
-        (repo / ".git").mkdir()
+        # Same content, any other path: siblings, lookalikes, and a nested
+        # duplicate of a machinery file at a deeper depth. All are blocked.
+        repo = self._git_repo(tmp_path / "repo")
         for rel in (
             "hooks/scripts/other-guard.sh",
             "scripts/x.sh",
             "tests/hooks/test_other.py",
             "hooks/scripts/pii-guard.sh.bak",
-            "vendor/hooks/scripts/pii-guard.shx",
+            "vendor/hooks/scripts/pii-guard.sh",
+            "worktrees/copy/scripts/check-legal-name-leaks.sh",
         ):
             result = _run(_edit(str(repo / rel), f"PATTERN='{OPERATOR_LAST}'\n"), cwd=repo)
             assert result.returncode == 2, rel
+
+    def test_machinery_path_outside_any_repository_is_not_exempt(self, tmp_path: Path) -> None:
+        # No resolvable repository root: no exemption (fail closed).
+        loose = tmp_path / "loose"
+        result = _run(
+            _edit(str(loose / "hooks/scripts/pii-guard.sh"), f"PATTERN='{OPERATOR_LAST}'\n"),
+            cwd=tmp_path,
+        )
+        assert result.returncode == 2
+
+    def test_exempt_machinery_is_editable_with_an_unreadable_registry(self, tmp_path: Path) -> None:
+        # The exempt files never consume registry names, so a broken registry
+        # does not lock the operator out of repairing the guards.
+        repo = self._git_repo(tmp_path / "repo")
+        registry = tmp_path / "principal-name-map.yaml"
+        registry.mkdir()
+        env = {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)}
+        result = _run(
+            _edit(str(repo / "hooks/scripts/pii-guard.sh"), f"PATTERN='{OPERATOR_LAST}'\n"),
+            cwd=repo,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
 
     def test_hook_exemptions_are_exactly_the_machinery_and_within_the_scanner_whitelist(
         self,
@@ -175,14 +206,17 @@ class TestBlocksRegisteredIdentityForms:
             result = _run(_edit(str(repo / "agents/x.py"), content), cwd=repo, env=env)
             assert result.returncode == 0, content
 
-    def test_registry_rejects_regex_shaped_entries(self, tmp_path: Path) -> None:
-        # An entry that is not a plain name is skipped, never compiled as a
-        # pattern: '.*' must not turn the hook into "block everything".
+    def test_invalid_registry_entry_fails_closed_naming_the_line(self, tmp_path: Path) -> None:
+        # An entry that is not a plain name would silently drop that principal
+        # from the gate. It fails closed instead, naming the line number and
+        # never echoing the entry. It is never compiled as a pattern.
         repo = tmp_path / "repo"
         (repo / ".git").mkdir(parents=True)
-        env = self._map(tmp_path, "principal-a3: .*\n")
+        env = self._map(tmp_path, f"principal-a2: {self.SYNTHETIC}\nprincipal-a3: .*zq\n")
         result = _run(_edit(str(repo / "agents/x.py"), "x = 1\n"), cwd=repo, env=env)
-        assert result.returncode == 0
+        assert result.returncode == 2
+        assert "line 2" in result.stderr
+        assert ".*zq" not in result.stderr and self.SYNTHETIC not in result.stderr
 
     def test_unreadable_registry_fails_closed(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"

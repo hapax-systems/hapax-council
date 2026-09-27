@@ -74,27 +74,42 @@ LEGAL_NAME_EXEMPT_PATHS=(
   'tests/hooks/test_pii_guard.py'
   'tests/scripts/test_check_legal_name_leaks.py'
 )
+# Exemption is decided on the path relative to the file's own git toplevel, by
+# exact equality: another worktree of the repo matches, but a nested copy
+# (vendor/hooks/scripts/pii-guard.sh) does not. No resolvable root: no exemption.
 name_checks_exempt=0
-for exempt_path in "${LEGAL_NAME_EXEMPT_PATHS[@]}"; do
-  case "$file_path" in
-    "$exempt_path"|*/"$exempt_path") name_checks_exempt=1 ;;
-  esac
+abs_path="$(realpath -m -- "$file_path" 2>/dev/null || printf '%s' "$file_path")"
+probe_dir="$(dirname "$abs_path")"
+while [ ! -d "$probe_dir" ] && [ "$probe_dir" != "/" ]; do
+  probe_dir="$(dirname "$probe_dir")"
 done
-
-# Registered principals' given names, read from the gitignored local registry
-# (hooks/scripts/principal-name-map.sh). Absent registry: no names, surname only.
-# An unreadable registry fails closed. A matched name is never printed.
-# shellcheck source=hooks/scripts/principal-name-map.sh
-source "$(dirname "${BASH_SOURCE[0]}")/principal-name-map.sh"
-names_status=0
-registry_names="$(principal_names)" || names_status=$?
-if [ "$names_status" -ne 0 ]; then
-  echo "pii-guard: BLOCKED — the principal-name-map registry at $(principal_name_map_path) exists but cannot be read." >&2
-  echo "Fix its permissions or remove it (it must be a readable file). This gate fails closed." >&2
-  exit 2
+if toplevel="$(git -C "$probe_dir" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$toplevel" ]; then
+  toplevel="$(realpath -m -- "$toplevel")"
+  case "$abs_path" in
+    "$toplevel"/*)
+      rel_path="${abs_path#"$toplevel"/}"
+      for exempt_path in "${LEGAL_NAME_EXEMPT_PATHS[@]}"; do
+        [ "$rel_path" = "$exempt_path" ] && name_checks_exempt=1
+      done
+      ;;
+  esac
 fi
 
 if [ "$name_checks_exempt" -eq 0 ]; then
+  # Registered principals' given names, read from the gitignored local registry
+  # (hooks/scripts/principal-name-map.sh). Absent registry: no names, surname
+  # only. An unreadable or invalid registry fails closed. A matched name is never
+  # printed. The exempt machinery never reads it.
+  # shellcheck source=hooks/scripts/principal-name-map.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/principal-name-map.sh"
+  names_status=0
+  registry_names="$(principal_names)" || names_status=$?
+  if [ "$names_status" -ne 0 ]; then
+    echo "pii-guard: BLOCKED — the principal-name-map registry at $(principal_name_map_path) cannot be used (see above)." >&2
+    echo "Repair it (a readable file of valid entries) or remove it. This gate fails closed." >&2
+    exit 2
+  fi
+
   # Operator full name (exact match only)
   if echo "$new_content" | grep -qiP 'Ryan\s+Kleeberger'; then
     blocked+=("Operator full name detected")

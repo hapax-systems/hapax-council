@@ -109,9 +109,10 @@ for f in "${FILES[@]}"; do
     for pat in "${LEGAL_NAME_PATTERNS[@]}"; do
         # -E for ERE, -i case-insensitive, -n line numbers, -H file name.
         # Suppress non-zero exit when no match (set -e propagation).
-        if matches="$(grep -EHin "$pat" "$f" 2>/dev/null || true)" && [ -n "$matches" ]; then
-            echo "LEGAL-NAME LEAK in $f:" >&2
-            echo "$matches" >&2
+        # File and line numbers only, never the line content: a matched line can
+        # carry another household token, and CI logs on a public repo are public.
+        if matches="$(grep -Ein "$pat" "$f" 2>/dev/null | cut -d: -f1 | paste -sd, - || true)" && [ -n "$matches" ]; then
+            echo "LEGAL-NAME LEAK in $f:$matches (content withheld)" >&2
             echo "" >&2
             LEAKS=$((LEAKS + 1))
         fi
@@ -127,8 +128,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hooks/scripts/principal
 names_status=0
 registry_names="$(principal_names)" || names_status=$?
 if [ "$names_status" -ne 0 ]; then
-    echo "check-legal-name-leaks: the principal-name-map registry at $(principal_name_map_path) exists but cannot be read." >&2
-    echo "Fix its permissions or remove it (it must be a readable file). Failing closed." >&2
+    echo "check-legal-name-leaks: the principal-name-map registry at $(principal_name_map_path) cannot be used (see above)." >&2
+    echo "Repair it (a readable file of valid entries) or remove it. Failing closed." >&2
     exit 2
 fi
 if [ -n "$registry_names" ]; then

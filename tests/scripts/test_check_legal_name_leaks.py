@@ -89,6 +89,32 @@ def test_unreadable_registry_fails_closed(fixture_dir: Path) -> None:
     assert "principal-name-map" in result.stderr
 
 
+def test_surname_match_never_prints_the_line(fixture_dir: Path) -> None:
+    # A line holding the surname AND a registered given name must not print the
+    # given name through the surname path: every match reports file:line only.
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    f = fixture_dir / "doc.md"
+    f.write_text(f"{_SYNTHETIC} {_LAST} visited\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 1
+    assert f"{f}:1" in result.stderr
+    out = (result.stderr + result.stdout).lower()
+    assert _SYNTHETIC.lower() not in out
+    assert "visited" not in out
+
+
+def test_invalid_registry_entry_fails_closed_naming_the_line(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\nprincipal-a3: .*zq\n", encoding="utf-8")
+    f = fixture_dir / "doc.md"
+    f.write_text("clean\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 2
+    assert "line 2" in result.stderr
+    assert ".*zq" not in result.stderr and _SYNTHETIC not in result.stderr
+
+
 def test_clean_file_passes(fixture_dir: Path) -> None:
     f = fixture_dir / "clean.md"
     f.write_text("Operator: Oudepode\n", encoding="utf-8")

@@ -289,6 +289,37 @@ class TestChildConsent:
         opaque_id = re.compile(r"^principal-[a-z][0-9]+$")
         assert all(opaque_id.fullmatch(principal) for principal in REGISTERED_CHILD_PRINCIPALS)
 
+    def test_every_contract_keys_on_an_opaque_principal_or_a_role(self):
+        """Adult principals too: every contract file and party is an opaque ID or a role.
+
+        A dictionary given name introduced as a contract filename, contract id or
+        party (for an adult as much as a child) fails here.
+        """
+        import re
+        from pathlib import Path
+
+        import yaml
+
+        principal = r"principal-[a-z][0-9]+"
+        roles = {"operator", "guest"}
+        filename = re.compile(
+            rf"^contract-(?:{principal}|guest)(?:-enroll)?(?:-\d{{4}}-\d{{2}}-\d{{2}})?\.yaml$"
+        )
+        contracts_dir = Path(__file__).resolve().parents[2] / "axioms" / "contracts"
+        contracts = sorted(contracts_dir.glob("*.yaml"))
+        assert contracts
+        # The family surname identifies a household member as surely as a given
+        # name; no contract may carry it (built at runtime: no literal here).
+        surname = "Klee" + "berger"
+        for path in contracts:
+            assert filename.fullmatch(path.name), path.name
+            text = path.read_text(encoding="utf-8")
+            assert surname.lower() not in text.lower(), path.name
+            data = yaml.safe_load(text)
+            assert data["id"] == path.stem, path.name
+            for party in data["parties"]:
+                assert party in roles or re.fullmatch(principal, party), (path.name, party)
+
     def test_only_two_registered(self):
         """No other children should be registered."""
         from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
