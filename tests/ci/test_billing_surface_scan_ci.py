@@ -73,14 +73,121 @@ def test_billing_surface_scan_is_unskippable_and_names_itself() -> None:
     assert job.get("name", BILLING_SCAN_CHECK) == BILLING_SCAN_CHECK
 
 
-def test_billing_surface_scan_executes_the_scanner() -> None:
-    # Anchored command shape: the run step must be a uv-run python invocation
-    # over the scanner script.
+def test_billing_surface_scan_names_the_scanner_in_a_uv_run_step() -> None:
+    """A SHAPE pin: the run step is a uv-run python invocation over the scanner script.
+
+    It deliberately does NOT claim the scanner executes — that is
+    `test_the_scanner_the_step_names_executes_and_gates` below. Named for what it proves,
+    because "executes the scanner" is what this test used to be called while only grepping
+    YAML (codex-1's round-6 major on #4805).
+    """
+
     run_steps = [str(step.get("run", "")) for step in _job()["steps"]]
     joined = "\n".join(run_steps)
     assert re.search(r"uv run\b.*\bpython\b.*scripts/check-billing-surface-diff\.py", joined), (
         "billing-surface-scan no longer executes the diff scanner"
     )
+
+
+def _run_step_shell() -> str:
+    return "\n".join(str(step.get("run", "")) for step in _job()["steps"])
+
+
+def test_the_scanner_the_step_names_executes_and_gates(tmp_path: Path) -> None:
+    """codex-1's round-6 major on #4805, closed: show the scanner RUNS and gates.
+
+    Every other test in this file pins the job's *shape*. This one executes the very tool the
+    run step names — the path is taken from the step, not from this file's constants — over a
+    clean diff and over the same diff with a planted credential read, and requires the exit
+    codes the gate actually depends on (0 clean, 1 on a planted finding). A step naming a
+    script that never ran, or a scanner that never failed, would pass every shape pin here and
+    fail this one.
+    """
+
+    import subprocess
+    import sys
+
+    step = _run_step_shell()
+    named = str(SCANNER.relative_to(REPO_ROOT))
+    assert named in step, f"the run step does not name {named}"
+    assert "uv run" in step and "--base" in step and "--head" in step, (
+        "the run step no longer invokes the scanner's production entry point"
+    )
+
+    header = (
+        "diff --git a/shared/foo.py b/shared/foo.py\n"
+        "--- a/shared/foo.py\n"
+        "+++ b/shared/foo.py\n"
+        "@@ -1,0 +1,1 @@\n"
+    )
+    clean = tmp_path / "clean.diff"
+    clean.write_text(f"{header}+x = 1\n", encoding="utf-8")
+    planted = tmp_path / "planted.diff"
+    planted.write_text(f'{header}+key = os.environ["OPENAI_API_KEY"]\n', encoding="utf-8")
+
+    clean_run = subprocess.run(
+        [sys.executable, str(SCANNER), "--diff-file", str(clean)],
+        capture_output=True,
+        text=True,
+    )
+    assert clean_run.returncode == 0, (
+        f"the named scanner failed a clean diff: rc={clean_run.returncode} "
+        f"{clean_run.stdout}{clean_run.stderr}"
+    )
+    planted_run = subprocess.run(
+        [sys.executable, str(SCANNER), "--diff-file", str(planted)],
+        capture_output=True,
+        text=True,
+    )
+    assert planted_run.returncode == 1, (
+        f"a planted billing surface did not fail the scan: rc={planted_run.returncode} "
+        f"{planted_run.stdout}{planted_run.stderr}"
+    )
+    assert "credential-env-read" in planted_run.stdout, (
+        f"the planted finding was not reported: {planted_run.stdout!r}"
+    )
+
+
+def test_duplicate_merge_group_success_path_is_pinned() -> None:
+    """gemini's and claude's long-standing minor: the sentinel path is now pinned.
+
+    A SHAPE pin, and named as one: it proves the sentinel step exists, is gated on the
+    duplicate-merge-group output, reports the job's success, and that every other step of the
+    job is skipped when that output is true — deferred evidence, never skipped evidence. It
+    does not simulate the merge-group event.
+    """
+
+    steps = _job()["steps"]
+    sentinel = [step for step in steps if "duplicate" in str(step.get("name", "")).lower()]
+    assert len(sentinel) == 1, f"expected exactly one sentinel step, found {len(sentinel)}"
+    step = sentinel[0]
+    assert step.get("if") == (
+        "needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'"
+    ), f"the sentinel step is not gated on the duplicate-merge-group output: {step.get('if')!r}"
+    assert "success" in str(step.get("run", "")).lower(), (
+        "the sentinel step does not report the job's success"
+    )
+    for other in steps:
+        if other is step:
+            continue
+        assert str(other.get("if", "")).endswith("!= 'true'"), (
+            f"step {other.get('name') or other.get('uses')!r} would run on a duplicate merge group"
+        )
+
+
+def test_the_base_sha_fallback_is_pinned() -> None:
+    """claude's round-6 minor: the empty/zero base fallback is pinned as a SHAPE.
+
+    The step falls back to `PR_HEAD^` when the event carries no usable base. This pins the
+    shell's shape only; the shell itself is not executed here, and the test says so rather than
+    leaving a reader to assume otherwise.
+    """
+
+    step = _run_step_shell()
+    assert 'base="$PR_BASE"' in step, "the run step no longer reads the event base"
+    assert 'if [ -z "$base" ]' in step, "the empty-base test is gone"
+    assert f'"{"0" * 40}"' in step, "the all-zero base test is gone"
+    assert 'base="$PR_HEAD^"' in step, "the fallback to the parent commit is gone"
 
 
 def test_billing_surface_scan_never_reports_success_without_running() -> None:

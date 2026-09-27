@@ -1392,30 +1392,49 @@ def test_no_exemption_is_decided_from_line_content(scanner: ModuleType) -> None:
     )
 
 
-def test_git_base_head_path_runs_as_the_production_entry_point(scanner: ModuleType) -> None:
+def test_git_base_head_path_runs_as_the_production_entry_point(
+    scanner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """claude minor (round 3): `--base/--head` is the production entry point, so pin it.
 
-    The CI job and the autoqueue both invoke the scanner this way; only
-    `--diff-file` was covered. Skipped (with a declared precondition) where the
-    checkout has no parent commit to diff against.
+    The CI job and the autoqueue both invoke the scanner this way; only `--diff-file` was
+    covered. The diff is built in a scratch repo of the test's own making (codex-1's round-6
+    minor on #4805: the old version diffed this checkout's `HEAD~1..HEAD`, so its verdict
+    depended on commit content that has nothing to do with the scanner) and the assertion is
+    now positive — a planted credential read in the head must come back as exit 1.
     """
 
     import subprocess
 
-    repo = Path(__file__).resolve().parents[2]
+    repo = tmp_path / "repo"
+    repo.mkdir()
 
-    def rev(expr: str) -> str | None:
+    def git(*args: str) -> str:
         proc = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", expr], capture_output=True, text=True
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
         )
-        return proc.stdout.strip() if proc.returncode == 0 else None
+        return proc.stdout.strip()
 
-    base = rev("HEAD~1")
-    if base is None:
-        pytest.skip("no parent commit available to diff against (shallow checkout)")
-    head = rev("HEAD")
-    assert head is not None
-    code = scanner.main(["--base", base, "--head", head])
-    assert code in (0, 1), (
-        f"the production --base/--head path must scan a real diff, not fail closed: exit was {code}"
+    git("init", "-q", ".")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (repo / "shared").mkdir()
+    (repo / "shared" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    (repo / "shared" / "foo.py").write_text(
+        'x = 1\nkey = os.environ["OPENAI_API_KEY"]\n', encoding="utf-8"
     )
+    git("add", "-A")
+    git("commit", "-qm", "planted")
+
+    base, head = git("rev-parse", "HEAD~1"), git("rev-parse", "HEAD")
+    # The production path runs `git diff` in the process's cwd, exactly as the CI job does from
+    # the repo root, so the scan must be taken from inside the scratch repo.
+    monkeypatch.chdir(repo)
+    assert scanner.main(["--base", base, "--head", head]) == 1, (
+        "the production --base/--head path did not flag a planted credential read"
+    )
+    # And the same entry point on an EMPTY range fails CLOSED (exit 2), never clean: an empty
+    # diff is not evidence that the change is clean, which is the round-1 contract.
+    assert scanner.main(["--base", head, "--head", head]) == 2
