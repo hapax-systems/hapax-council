@@ -3508,6 +3508,9 @@ def resolve_task_note_through_churn(
             if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or now + delay + (now - started) > deadline:
                 raise
             _churn_sleep(delay)
+            if _churn_clock() + (now - started) > deadline:
+                # An oversleep would start the retake past the deadline (codex on #4829 r5).
+                raise
             attempt += 1
 
 

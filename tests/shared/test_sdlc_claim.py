@@ -4902,6 +4902,54 @@ def test_a_slower_retake_overruns_by_at_most_its_excess_and_no_retake_follows(
     )  # by at most its excess over the attempt it was judged by
 
 
+def test_an_oversleep_never_starts_a_retake_past_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # codex on #4829 round 5: the fit check ran before the backoff sleep only, so a sleep or a
+    # scheduler that overshot its delay started a full resolution past the deadline.
+    budget = sdlc_claim._UNDER_LOCK_CHURN_BUDGET_SECONDS
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch)  # churn never settles
+    now = [0.0]
+    original = sdlc_claim.resolve_task_note
+
+    def timed_resolution(*args: object, **kwargs: object) -> object:
+        now[0] += 9.0
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    def oversleep(seconds: float) -> None:
+        now[0] += seconds + 10.0  # the sleep returns 10 s late
+
+    monkeypatch.setattr(sdlc_claim, "resolve_task_note", timed_resolution)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", lambda: now[0])
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", oversleep)
+    deadline = now[0] + budget
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=deadline)
+
+    assert len(attempts) == 1  # the retake fit before the sleep, but not after it
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        TaskStoreError("task_store_frontier_changed_during_index_build", "retry", "delta"),
+        ClaimPublicationError(
+            "task_store_frontier_changed_since_index", sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION
+        ),
+    ],
+    ids=["raw_task_store_error", "preflight_publication_error"],
+)
+def test_churn_carried_only_in_reason_code_names_the_retry(exc: Exception) -> None:
+    # codex on #4829 round 5: the locked sites carry churn in `detail`, and those are tested;
+    # a raw TaskStoreError, and the preflight's ClaimPublicationError, carry it in `reason_code`.
+    message = sdlc_claim.claim_publication_hold_message(exc, intent_ref="intent-x")
+
+    assert sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION in message
+    assert "Gate-0B" not in message
+
+
 # ── governed release of a held claim publication (M166, M167) ────────────────
 # claim-cache-missing-governed-release-20260926
 
