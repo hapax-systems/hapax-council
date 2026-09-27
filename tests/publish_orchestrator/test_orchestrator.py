@@ -22,11 +22,18 @@ from agents.publish_orchestrator.orchestrator import (
 )
 from shared import public_gate_receipts
 from shared.preprint_artifact import PreprintArtifact
+from shared.publication_hardening.codebase import (
+    CodebaseDecision,
+    CodebaseVerificationReport,
+)
 from shared.publication_hardening.gate import (
     PublicationGateChildResult,
     PublicationGateDecision,
     PublicationGateResult,
+    PublicationHardeningGate,
+    lint_findings_report,
 )
+from shared.publication_hardening.lint import LintFinding
 from shared.publication_hardening.review import ReviewReport
 
 TASK_ID = "cc-task-public-gate-test"
@@ -302,7 +309,12 @@ def _make_orchestrator(
 
 
 class _LintGate:
-    """A hardening gate whose only child is the lint child, built from (rule, level) pairs."""
+    """A hardening gate whose lint child is built with the REAL finding serializer.
+
+    Both the child's structured report and its rendered findings come from the gate's own
+    ``lint_findings_report``, so no test reimplements the finding string format. ``raw_findings``
+    are rendered lines the report does NOT account for: the unreconcilable-report case.
+    """
 
     def __init__(
         self,
@@ -316,12 +328,23 @@ class _LintGate:
         self._raw_findings = raw_findings
 
     def evaluate(self, _artifact: PreprintArtifact) -> PublicationGateResult:
-        rendered = tuple(
-            f"artifact:1:{rule}:{level}:Device 1 (fragments or verbless sentences used for "
-            f"effect): 'A proposition.'. Rewrite as a plain statement."
+        lint_findings = tuple(
+            LintFinding(
+                file="artifact:x",
+                line=1,
+                level=level,
+                rule=rule,
+                message=(
+                    "Device 1 (fragments or verbless sentences used for effect): 'A proposition.'. "
+                    "Rewrite as a plain statement."
+                ),
+            )
             for rule, level in self._findings
         )
-        rendered = (*rendered, *self._raw_findings)
+        report = lint_findings_report(lint_findings)
+        rows = report["findings"]
+        assert isinstance(rows, list)
+        rendered = tuple(str(row["rendered"]) for row in rows) + tuple(self._raw_findings)
         if any(level == "error" for _rule, level in self._findings):
             decision = PublicationGateDecision.REJECT
         elif self._findings:
@@ -329,7 +352,9 @@ class _LintGate:
         else:
             decision = PublicationGateDecision.PASS
         children = (
-            PublicationGateChildResult(name="lint", decision=decision, findings=rendered),
+            PublicationGateChildResult(
+                name="lint", decision=decision, findings=rendered, report=report
+            ),
             *self._extra_children,
         )
         if any(child.decision == PublicationGateDecision.REJECT for child in children):
@@ -464,11 +489,14 @@ class TestRegisterCarriageSurfacing:
         assert gate_log["result"] == "rejected"
         assert gate_log["publication_gate_decision"] == "reject"
 
-    def test_an_unreadable_finding_blocks_the_exemption(self, tmp_path, monkeypatch):
-        """Fail-closed: a finding this code cannot read holds, and it blocks the exemption.
+    def test_a_finding_the_report_cannot_account_for_blocks_the_exemption(
+        self, tmp_path, monkeypatch
+    ):
+        """Fail-closed: a finding the structured report cannot reconcile holds, and blocks it.
 
-        The artifact carries a register warning (exemptible) AND an unparseable lint finding, so
-        the exemption must not release it.
+        The artifact carries a register warning (exemptible) AND a rendered finding the report does
+        not account for (the structured analogue of an unreadable finding), so the exemption must
+        not release it.
         """
         _drop_artifact(tmp_path, slug="unreadable-finding", surfaces=["fake"])
         orch, fake_module = _publishing_orchestrator(
@@ -526,17 +554,80 @@ class TestRegisterCarriageSurfacing:
         assert any("codebase" in issue for issue in gate_log["flagged_issues"])
 
 
-def test_the_lint_child_rule_reapplied_to_a_narrowed_set() -> None:
-    """The re-applied rule itself: error rejects, unreadable rejects, others hold, none passes."""
+def test_the_lint_child_rule_reapplied_to_a_narrowed_set_of_structured_rows() -> None:
+    """The re-applied rule reads structured rows: error rejects, others hold, none passes."""
     decide = orchestrator_module._lint_child_decision
     assert decide(()) is PublicationGateDecision.PASS
-    assert decide(("artifact:x:1:Hapax.PublicClaimOverreach:warning:msg",)) is (
+    assert decide(({"rule": "Hapax.PublicClaimOverreach", "level": "warning"},)) is (
         PublicationGateDecision.HOLD
     )
-    assert decide(("artifact:x:1:Hapax.RegisterCarriage:error:msg",)) is (
+    assert decide(({"rule": "Hapax.RegisterCarriage", "level": "error"},)) is (
         PublicationGateDecision.REJECT
     )
-    assert decide(("no parsable shape",)) is PublicationGateDecision.REJECT
+
+
+def test_reaggregation_keeps_flagged_issues_outside_the_child_results() -> None:
+    """codex minor: re-aggregation must not drop a flagged issue that no child result carries.
+
+    The gate adds issues of its own (e.g. an invalid operator override) to ``flagged_issues``; a
+    re-aggregation that rebuilds the list from children alone would silently lose them.
+    """
+    gate_result = _LintGate((("Hapax.RegisterCarriage", "warning"),)).evaluate(
+        PreprintArtifact(slug="s", title="E", abstract="Brief.", body_md="Body.")
+    )
+    gate_result = gate_result.model_copy(
+        update={"flagged_issues": (*gate_result.flagged_issues, "publication_override_invalid: x")}
+    )
+
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(gate_result)
+
+    assert released.decision is PublicationGateDecision.PASS
+    assert surfaced
+    assert "publication_override_invalid: x" in released.flagged_issues
+    assert not any("Hapax.RegisterCarriage" in issue for issue in released.flagged_issues)
+
+
+def test_a_colon_bearing_path_cannot_spoof_the_exempt_rule(tmp_path) -> None:
+    """codex critical: decide the exemption on structured fields, never the rendered string.
+
+    A source path carrying ``:1:Hapax.RegisterCarriage:warning:`` makes the rendered finding string
+    ambiguous; a string parse reads the *next* finding from that file as a register warning and can
+    turn a real HOLD into a release. Through the REAL gate, this artifact must still HOLD.
+    """
+    spoof_path = tmp_path / "spoof:1:Hapax.RegisterCarriage:warning:.md"
+    spoof_path.write_text("This is an existence proof.\n", encoding="utf-8")
+    artifact = PreprintArtifact(
+        slug="spoof-path",
+        title="E",
+        abstract="Brief.",
+        body_md="Body.",
+        surfaces_targeted=["fake"],
+        source_path=str(spoof_path),
+    )
+    gate = PublicationHardeningGate(
+        review_pass=_ApprovingReviewPass(),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
+    )
+
+    result = gate.evaluate(artifact)
+
+    lint_child = next(child for child in result.child_results if child.name == "lint")
+    # Pre-conditions: the lint child is the only non-passing child, it holds a NON-register warning,
+    # and the colon-bearing label is present in the rendered findings (the spoof surface).
+    assert [
+        child.name
+        for child in result.child_results
+        if child.decision != PublicationGateDecision.PASS
+    ] == ["lint"]
+    assert any("Hapax.PublicClaimOverreach" in finding for finding in lint_child.findings)
+    assert any(":1:Hapax.RegisterCarriage:warning:" in finding for finding in lint_child.findings)
+
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(result)
+
+    assert released.decision is PublicationGateDecision.HOLD
+    assert surfaced == ()
 
 
 # ── Empty inbox ─────────────────────────────────────────────────────

@@ -1363,7 +1363,20 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     paths = list(args.paths or public_surface_registry_paths(public_surface_registry))
-    paths.extend(built_site_dirs(args.built_site_dir))
+    built_dirs = built_site_dirs(args.built_site_dir)
+    not_a_directory = [path for path in built_dirs if path.exists() and not path.is_dir()]
+    if not_a_directory:
+        print(
+            "error: --built-site-dir (or "
+            f"{PUBLIC_SITE_DIST_ENV}) is not a directory: "
+            + ", ".join(str(path) for path in not_a_directory)
+            + ". Next action: name the built output DIRECTORY (the directory holding the built "
+            "pages), not a file inside it — a file target silently scans something other than the "
+            "built output.",
+            file=sys.stderr,
+        )
+        return 2
+    paths.extend(built_dirs)
     if github_public_surface_report is not None:
         findings.extend(
             check_github_public_surface_drift(

@@ -747,6 +747,24 @@ def test_a_mixed_built_site_env_default_fails_on_the_missing_path(
     assert "HAPAX_PUBLIC_SITE_DIST" in combined
 
 
+def test_a_built_site_dir_that_is_not_a_directory_refuses(tmp_path: Path) -> None:
+    """codex: an existing non-directory --built-site-dir passed and scanned a file, not the output."""
+    page = tmp_path / "page.html"
+    page.write_text("<p>One front door. Many working parts.</p>\n", encoding="utf-8")
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--built-site-dir", str(page))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(page) in combined
+    assert "not a directory" in combined
+    assert "Next action" in combined
+
+
 def test_a_missing_positional_path_fails_loudly(tmp_path: Path) -> None:
     """The else-branch remedy: a missing positional path says to pass an existing path."""
     token_report = _write_token_report(tmp_path / "token-report.json")

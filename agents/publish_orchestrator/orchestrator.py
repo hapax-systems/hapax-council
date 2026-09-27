@@ -43,6 +43,7 @@ solve).
 
 from __future__ import annotations
 
+import collections
 import importlib
 import json
 import logging
@@ -82,6 +83,7 @@ from shared.publication_hardening.egress_safety import (
     EgressSafetyEnvelope,
 )
 from shared.publication_hardening.gate import (
+    LINT_FINDINGS_REPORT_SCHEMA,
     PublicationGateChildResult,
     PublicationGateDecision,
     PublicationGateResult,
@@ -1409,43 +1411,43 @@ class Orchestrator:
 #: a human to disposition (fix / keep-with-reason / carry) per the adopted amendment.
 REGISTER_CARRIAGE_DISPOSITION = "surface_for_human_disposition"
 
-#: A gate lint finding string: ``file:line:rule:level:message``. Anchored on the line digits and the
-#: ``error|warning`` level so a label with a colon in it (``artifact:<slug>``) still parses.
-_LINT_FINDING_RE = re.compile(
-    r"\A(?P<file>.+?):(?P<line>\d+):(?P<rule>[A-Za-z0-9_.]+):(?P<level>error|warning):(?P<message>.*)\Z"
-)
 
+def _lint_child_rows(
+    lint_child: PublicationGateChildResult,
+) -> tuple[Mapping[str, object], ...] | None:
+    """The lint child's STRUCTURED findings, or ``None`` when they are absent or malformed.
 
-def _lint_finding_rule_and_level(finding: str) -> tuple[str, str] | None:
-    """``(rule, level)`` from a gate lint finding string, or ``None`` when it does not parse.
-
-    The hardening gate's lint child renders findings as ``file:line:rule:level:message``
-    (:func:`shared.publication_hardening.gate._lint_finding_text`). Parsing is anchored on the line
-    digits and the ``error|warning`` level rather than split from the left: the ``file`` field is a
-    label that can itself contain colons (``lint_text`` labels an artifact ``artifact:<slug>``), and
-    the message can contain them too. Only the rule and level are read here; the message stays in
-    the receipt. A string that does not match is never exempted — an unreadable finding holds, which
-    is the fail-narrow direction.
+    Read from the child's report (:func:`shared.publication_hardening.gate.lint_findings_report`),
+    never by re-parsing the rendered ``file:line:rule:level:message`` strings: the ``file`` label is
+    free text, so a colon-bearing source path (``…:1:Hapax.RegisterCarriage:warning:…``) makes a
+    string parse ambiguous and can spoof the exempt rule. Any shape that does not carry the
+    documented fields returns ``None``, and the caller then never exempts — fail narrow.
     """
-    match = _LINT_FINDING_RE.match(finding)
-    if match is None:
+    report = lint_child.report
+    if not isinstance(report, Mapping) or report.get("schema") != LINT_FINDINGS_REPORT_SCHEMA:
         return None
-    return match.group("rule"), match.group("level")
+    rows = report.get("findings")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return None
+    parsed: list[Mapping[str, object]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return None
+        if not all(isinstance(row.get(field), str) for field in ("rule", "level", "rendered")):
+            return None
+        parsed.append(row)
+    return tuple(parsed)
 
 
-def _lint_child_decision(findings: Sequence[str]) -> PublicationGateDecision:
-    """The gate's own lint rule, re-applied to a narrowed finding set.
+def _lint_child_decision(rows: Sequence[Mapping[str, object]]) -> PublicationGateDecision:
+    """The gate's own lint rule, re-applied to a narrowed set of STRUCTURED findings.
 
-    An error rejects; a finding that does not parse is treated as unsafe and also rejects, so the
-    exemption can never release on a finding this code cannot read; any other finding holds; an
-    empty set passes. The caller only releases when this returns PASS.
+    An ``error`` row rejects; any other row holds; no rows pass. The caller only releases when this
+    returns PASS.
     """
-    if any(
-        parsed is None or parsed[1] == "error"
-        for parsed in (_lint_finding_rule_and_level(finding) for finding in findings)
-    ):
+    if any(row["level"] == "error" for row in rows):
         return PublicationGateDecision.REJECT
-    return PublicationGateDecision.HOLD if findings else PublicationGateDecision.PASS
+    return PublicationGateDecision.HOLD if rows else PublicationGateDecision.PASS
 
 
 def _surface_register_carriage_warnings(
@@ -1460,32 +1462,43 @@ def _surface_register_carriage_warnings(
     exactly as before — a register *error* still rejects, any other warning or error still holds,
     an unreadable finding holds, and if another child holds or rejects nothing is released.
 
+    The decision reads the lint child's STRUCTURED findings (rule, level), never the rendered
+    ``file:line:rule:level:message`` strings: the file label is free text, so a colon-bearing source
+    path could otherwise spoof a different warning into the exempt rule. If the structured report is
+    missing, malformed, or does not account for exactly the child's rendered findings, nothing is
+    exempted.
+
     The surfaced findings stay in the lint child's findings, so the artifact's gate receipt carries
     the rule, level, and text; the caller records them in the publish log too.
     """
     if gate_result.decision != PublicationGateDecision.HOLD:
         return gate_result, ()
     lint_child = next((child for child in gate_result.child_results if child.name == "lint"), None)
-    if lint_child is None or not lint_child.findings:
+    if lint_child is None:
         return gate_result, ()
-    surfaced = tuple(
-        finding
-        for finding in lint_child.findings
-        if _lint_finding_rule_and_level(finding) == (REGISTER_CARRIAGE_RULE, "warning")
-    )
-    if not surfaced:
+    rows = _lint_child_rows(lint_child)
+    if rows is None:
         return gate_result, ()
-    remaining = tuple(
-        finding
-        for finding in lint_child.findings
-        if _lint_finding_rule_and_level(finding) != (REGISTER_CARRIAGE_RULE, "warning")
+    surfaced_rows = tuple(
+        row for row in rows if row["rule"] == REGISTER_CARRIAGE_RULE and row["level"] == "warning"
     )
+    if not surfaced_rows:
+        return gate_result, ()
+    remaining_rows = tuple(row for row in rows if row not in surfaced_rows)
+    surfaced_rendered = [str(row["rendered"]) for row in surfaced_rows]
+    remaining_rendered = [str(row["rendered"]) for row in remaining_rows]
+    accounted = collections.Counter(surfaced_rendered)
+    accounted.update(remaining_rendered)
+    if accounted != collections.Counter(lint_child.findings):
+        # The structured rows and the child's own findings disagree: never exempt on a report this
+        # code cannot reconcile with what the receipt will show.
+        return gate_result, ()
     rewired_lint = lint_child.model_copy(
         update={
-            "decision": _lint_child_decision(remaining),
+            "decision": _lint_child_decision(remaining_rows),
             "findings": (
                 *lint_child.findings,
-                f"{len(surfaced)} {REGISTER_CARRIAGE_RULE} warning(s) surfaced for human "
+                f"{len(surfaced_rows)} {REGISTER_CARRIAGE_RULE} warning(s) surfaced for human "
                 "disposition (over-inclusive by design; not a hold)",
             ),
         }
@@ -1499,12 +1512,20 @@ def _surface_register_carriage_warnings(
     if PublicationGateDecision.HOLD in decisions:
         # Another child is holding: the register warnings are not what holds this artifact.
         return gate_result, ()
-    flagged = tuple(
+    # Re-aggregation must not silently drop flagged issues that do not come from a child result
+    # (the gate adds e.g. operator-override errors): keep the original entries, minus the surfaced
+    # lint lines, and union in the re-aggregated child lines.
+    surfaced_flagged = {f"lint: {rendered}" for rendered in surfaced_rendered}
+    kept_flagged = tuple(
+        issue for issue in gate_result.flagged_issues if issue not in surfaced_flagged
+    )
+    child_flagged = tuple(
         f"{child.name}: {finding}"
         for child in children
         if child.decision != PublicationGateDecision.PASS
         for finding in child.findings
     )
+    flagged = tuple(dict.fromkeys((*kept_flagged, *child_flagged)))
     return (
         PublicationGateResult(
             decision=PublicationGateDecision.PASS,
@@ -1514,7 +1535,7 @@ def _surface_register_carriage_warnings(
             override=None,
             review_report=gate_result.review_report,
         ),
-        surfaced,
+        tuple(surfaced_rendered),
     )
 
 
