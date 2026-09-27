@@ -39,6 +39,8 @@ ERROR = 3
 
 VAULT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# cc-task-gate resolves a relative scope ref against this root too (M112 / M108a).
+PERSONAL_VAULT_ROOT = Path.home() / "Documents" / "Personal"
 LEDGER = Path(
     os.environ.get(
         "HAPAX_AUTHORITY_CASE_LEDGER",
@@ -88,10 +90,18 @@ def _surface_ok(item: str) -> bool:
     """
     if item.startswith(("cc-task:", "request:")):
         return True
-    target = REPO_ROOT / item.rstrip("/")
-    if item.endswith("/"):
-        return target.is_dir()
-    return target.exists() or target.parent.is_dir()
+    # The gate anchors a relative ref at the repo and at the personal vault, so either
+    # may hold the surface; neither may be escaped (`../`, or an absolute path elsewhere).
+    for root in (REPO_ROOT, PERSONAL_VAULT_ROOT):
+        base = root.resolve()
+        target = (base / Path(item.rstrip("/")).expanduser()).resolve()
+        if not target.is_relative_to(base):
+            continue
+        if item.endswith("/") and target.is_dir():
+            return True
+        if not item.endswith("/") and (target.exists() or target.parent.is_dir()):
+            return True
+    return False
 
 
 def widen(task_id: str, additions: list[str], removals: list[str] | None = None) -> int:
@@ -104,7 +114,10 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
     additions = [a.strip() for a in additions if a.strip()]
     for item in additions:
         if not _surface_ok(item):
-            return _refuse(f"path '{item}' has no existing surface under {REPO_ROOT}")
+            return _refuse(
+                f"path '{item}' has no existing surface under {REPO_ROOT} "
+                f"or {PERSONAL_VAULT_ROOT}"
+            )
 
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
