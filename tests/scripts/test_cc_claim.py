@@ -2276,6 +2276,7 @@ _MALFORMED = [
     "duplicated_assigned",
     "quoted_duplicate_assigned",
     "quoted_duplicate_status",
+    "unhashable_key",
     "body_only",
 ]
 
@@ -2297,6 +2298,8 @@ def _malform(text: str, how: str) -> str:
         return text.replace("status: pr_open", "status: claimed\nstatus: pr_open", 1)
     if how == "duplicated_pr":
         return text.replace("status: pr_open", "status: pr_open\npr: 4999\npr: null", 1)
+    if how == "unhashable_key":  # a complex key constructs to a list (glm on #4826 round 7)
+        return text.replace("status: pr_open", "status: pr_open\n? [a, b]\n: v", 1)
     # "body_only": no status in the frontmatter, and a pr_open line in the body
     return text.replace("status: pr_open\n", "", 1) + "\nstatus: pr_open\n"
 
@@ -2386,6 +2389,9 @@ def test_neither_release_path_releases_a_malformed_note(tmp_path: Path, how: str
         ('status: pr_open\nbranch: feat/started\n"branch": null', "unreadable"),
         ('status: pr_open\nroute: {a: 1, "a": 2}', "unreadable"),  # flow style, nested
         ("status: pr_open\nroute: {a: 1, b: 2}", "pr_open"),  # a flow mapping as such is fine
+        ("status: pr_open\n? [a, b]\n: v", "unreadable"),  # an unhashable key holds, no traceback
+        ("status: pr_open\nroute: {[a]: 1}", "unreadable"),  # the same, flow style and nested
+        ("status: pr_open\nroute:\n  ? {x: 1}\n  : 2", "unreadable"),  # a mapping as a key
     ],
 )
 def test_a_release_reads_status_only_from_release_grade_frontmatter(
@@ -2400,6 +2406,19 @@ def test_a_release_reads_status_only_from_release_grade_frontmatter(
     )
 
     assert _task_status_for_any_state(root, "row") == expected
+
+
+@pytest.mark.parametrize("block", ["? [a, b]\n: v", "route: {[a]: 1}", "route:\n  ? {x: 1}\n  : 2"])
+def test_the_unique_key_loader_refuses_an_unhashable_key_as_yaml(block: str) -> None:
+    # glm on #4826 round 7: `key in mapping` raised TypeError, which is not a YAMLError, so a
+    # release read would traceback instead of holding. The plain parse that runs first also
+    # refuses these notes (the cases above), so this pins the loader on its own.
+    import yaml
+
+    from shared.sdlc_claim import _UniqueKeyLoader
+
+    with pytest.raises(yaml.YAMLError, match="unhashable"):
+        yaml.load(block, Loader=_UniqueKeyLoader)  # noqa: S506 - a SafeLoader subclass
 
 
 def test_release_pipeline_held_residue_directly(tmp_path: Path) -> None:

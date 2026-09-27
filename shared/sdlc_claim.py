@@ -20,7 +20,7 @@ import secrets
 import shutil
 import stat
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -6263,6 +6263,10 @@ def _construct_unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) 
     mapping: dict = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=True)
+        if not isinstance(key, Hashable):  # a YAMLError, so the caller holds (glm, #4826 r7)
+            raise yaml.constructor.ConstructorError(
+                None, None, f"found unhashable key {key!r}", key_node.start_mark
+            )
         if key in mapping:
             raise yaml.constructor.ConstructorError(
                 None, None, f"duplicate key {key!r}", key_node.start_mark
