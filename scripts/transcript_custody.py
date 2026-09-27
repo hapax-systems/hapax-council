@@ -33,6 +33,34 @@ MAX_DROP = 0.5
 SNAPSHOT_TAG = "tier1-transcripts"
 
 
+#: Seat ruling 2026-09-27: tier1-transcripts snapshots are NEVER pruned. A transcript deleted on the host (Claude's
+#: cleanup period, say) must stay recoverable from older snapshots, and dedup keeps the cost low. Every
+#: ``restic forget`` in the estate carries this keep rule, or a ``--tag`` filter that excludes the tag.
+KEEP_TRANSCRIPTS_ARGS: tuple[str, str] = ("--keep-tag", SNAPSHOT_TAG)
+
+
+def forget_protects_transcripts(args: Sequence[str]) -> bool:
+    """True when a ``restic forget`` argument list cannot remove a tier1-transcripts snapshot.
+
+    Either it keeps the tag (``--keep-tag tier1-transcripts``), or every ``--tag`` filter it applies names other tags
+    only. ``--tag a,b`` selects snapshots carrying both a and b; repeated ``--tag`` options are alternatives.
+    """
+
+    def values(flag: str) -> list[str]:
+        out = []
+        for i, a in enumerate(args):
+            if a == flag and i + 1 < len(args):
+                out.append(args[i + 1])
+            elif a.startswith(flag + "="):
+                out.append(a.split("=", 1)[1])
+        return out
+
+    if any(SNAPSHOT_TAG in v.split(",") for v in values("--keep-tag")):
+        return True
+    filters = values("--tag")
+    return bool(filters) and all(SNAPSHOT_TAG not in f.split(",") for f in filters)
+
+
 @dataclass(frozen=True)
 class TranscriptPath:
     """One harness transcript subpath, relative to $HOME. The last component may be a glob."""

@@ -139,6 +139,68 @@ def test_a_clean_snapshot_passes() -> None:
     assert tc.verify([rp], current, snapshot_targets=[rp.real]) == []
 
 
+def test_forget_protection_rule() -> None:
+    policy = [
+        "forget",
+        "--group-by",
+        "host,tags",
+        "--keep-within",
+        "120d",
+        "--keep-daily",
+        "7",
+        "--prune",
+    ]
+    assert not tc.forget_protects_transcripts(policy)
+    assert tc.forget_protects_transcripts([*policy, *tc.KEEP_TRANSCRIPTS_ARGS])
+    assert tc.forget_protects_transcripts([*policy, "--keep-tag=tier1-transcripts"])
+    assert tc.forget_protects_transcripts([*policy, "--tag", "tier1-local"])
+    assert not tc.forget_protects_transcripts([*policy, "--tag", "tier1-transcripts"])
+    assert not tc.forget_protects_transcripts(
+        [*policy, "--tag", "tier1-local", "--tag", "tier1-transcripts"]
+    )
+
+
+_REPO = Path(__file__).resolve().parents[1]
+_FORGET = __import__("re").compile(r"\b(?:restic|run_restic)\s+forget\b")
+
+
+def _forget_invocations() -> list[tuple[str, list[str]]]:
+    """Every ``restic forget`` command in the tree's scripts and units, with its continuation lines joined."""
+
+    found = []
+    for base in ("scripts", "systemd", "agents", "shared"):
+        for path in sorted((_REPO / base).rglob("*")):
+            if (
+                not path.is_file()
+                or path.suffix in {".pyc", ".md"}
+                or path.name == "transcript_custody.py"
+            ):
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for i, line in enumerate(lines):
+                if not _FORGET.search(line) or line.lstrip().startswith("#"):
+                    continue
+                command = [line.rstrip("\\").strip()]
+                j = i
+                while lines[j].rstrip().endswith("\\") and j + 1 < len(lines):
+                    j += 1
+                    command.append(lines[j].rstrip("\\").strip())
+                found.append((f"{path.relative_to(_REPO)}:{i + 1}", " ".join(command).split()))
+    return found
+
+
+def test_no_forget_in_the_tree_can_prune_transcript_snapshots() -> None:
+    # Seat ruling 2026-09-27: tier1-transcripts is never pruned. This fails the moment any forget policy in the
+    # tree could match the tag.
+    invocations = _forget_invocations()
+    assert invocations, "the scan found no forget invocations; the scan itself is broken"
+    unsafe = [where for where, args in invocations if not tc.forget_protects_transcripts(args)]
+    assert unsafe == [], f"forget policies that could prune {tc.SNAPSHOT_TAG}: {unsafe}"
+
+
 def test_backup_refuses_an_empty_path_list() -> None:
     with pytest.raises(ValueError):
         tc.backup_args([])

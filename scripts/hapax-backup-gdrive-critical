@@ -283,8 +283,11 @@ verify_only() {
 retention_dry_run() {
     require_non_root_workdir
     log "Running retention dry-run only; no prune/delete"
+    # --keep-tag tier1-transcripts: transcript snapshots are never pruned (seat ruling 2026-09-27). The guard is
+    # on every forget in the estate; tests/test_transcript_custody.py fails if one lacks it.
     run_restic forget \
         --no-lock \
+        --keep-tag tier1-transcripts \
         --keep-daily 7 \
         --keep-weekly 4 \
         --keep-monthly 2 \
