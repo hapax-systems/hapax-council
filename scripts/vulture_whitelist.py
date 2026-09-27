@@ -5356,3 +5356,20 @@ _ = (
     _ed_docker_findings,
     _ed_journal_findings,
 )
+
+# The cc-claim preflight and publish HOLD (cc-task claim-preflight-extract-churn-tested-20260927):
+# the only production caller is the inline-python heredoc in extensionless bash scripts/cc-claim.
+# DETECTOR BLIND SPOT, not dead code: vulture never parses that heredoc. Exercised in-process
+# through task-store churn by tests/shared/test_sdlc_claim.py; the delegation is pinned by
+# tests/scripts/test_cc_claim.py::test_the_claim_preflight_and_hold_are_shared_sdlc_claims.
+from shared.sdlc_claim import (  # noqa: E402
+    claim_publication_hold_message as _claim_publication_hold_message,
+)
+from shared.sdlc_claim import (  # noqa: E402
+    prepare_claim_publication_intent as _prepare_claim_publication_intent,
+)
+
+_ = (
+    _claim_publication_hold_message,
+    _prepare_claim_publication_intent,
+)
