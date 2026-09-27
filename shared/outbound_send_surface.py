@@ -180,7 +180,7 @@ class SendSurfaceVerdict:
 
 
 def assess_diff(
-    changed: Mapping[str, tuple[str | None, bytes | None, bytes | None, bool]],
+    changed: Mapping[str, tuple[str | None, bytes | None, bytes | None, bool, bool]],
     *,
     base_registry: frozenset[str],
     head_registry: frozenset[str],
@@ -188,22 +188,25 @@ def assess_diff(
     """Classify each changed path's send surface.
 
     ``changed`` maps the head path to ``(base_path, base_bytes, head_bytes,
-    head_executable)``. A missing side is ``None``: an added or a deleted file.
+    base_executable, head_executable)``. Each image is classified with its own
+    side's executable bit. A missing side is ``None`` ONLY for an added or deleted
+    file. A caller that cannot read a side the diff says exists must refuse, never
+    pass ``None``: absence reads as "no send surface".
     Only a surface that still exists at head can be unreviewed. A new send path
     must be registered at head. The registry diff is named, and the review
     quorum the class requires judges it.
     """
     changes: list[SurfaceChange] = []
     unparseable: list[str] = []
-    for path, (base_path, base_bytes, head_bytes, executable) in sorted(changed.items()):
+    for path, (base_path, base_bytes, head_bytes, base_exec, head_exec) in sorted(changed.items()):
         try:
             base = (
-                send_vectors(base_path or path, base_bytes, executable=executable)
+                send_vectors(base_path or path, base_bytes, executable=base_exec)
                 if base_bytes is not None
                 else frozenset()
             )
             head = (
-                send_vectors(path, head_bytes, executable=executable)
+                send_vectors(path, head_bytes, executable=head_exec)
                 if head_bytes is not None
                 else frozenset()
             )
