@@ -4541,6 +4541,11 @@ def _churning_task_store(
     return attempts
 
 
+def _open_deadline() -> float:
+    """An under-lock deadline far enough out that only the attempt bound applies."""
+    return sdlc_claim._churn_clock() + 3600.0
+
+
 @pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
 def test_task_resolution_is_retaken_through_transient_frontier_churn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
@@ -4625,9 +4630,9 @@ def test_locked_preflight_and_postimage_retake_frontier_churn(
     attempts = _churning_task_store(fixture.vault, monkeypatch, churn_on=lambda n: n % 2 == 1)
     monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
 
-    sdlc_claim._locked_preflight(fixture.intent, ())
+    sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=_open_deadline())
     fixture.intent.note_path.write_bytes(fixture.intent.note_after)
-    sdlc_claim._require_exact_task_postimage(fixture.intent)
+    sdlc_claim._require_exact_task_postimage(fixture.intent, deadline_at=_open_deadline())
 
     assert attempts == [1, 2, 3, 4]
 
@@ -4739,9 +4744,9 @@ def test_exhausted_churn_under_the_lock_names_the_retry_not_a_repair(
 
     with pytest.raises(ClaimPublicationError) as raised:
         if site == "postimage":
-            sdlc_claim._require_exact_task_postimage(fixture.intent)
+            sdlc_claim._require_exact_task_postimage(fixture.intent, deadline_at=_open_deadline())
         else:
-            sdlc_claim._locked_preflight(fixture.intent, ())
+            sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=_open_deadline())
 
     assert (raised.value.reason_code, raised.value.detail) == (reason, _CHURN_POINTS[point])
     assert raised.value.repair_action == sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION
@@ -4764,38 +4769,46 @@ def test_a_hold_that_is_not_churn_keeps_the_install_action() -> None:
     assert sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION not in message
 
 
-def test_the_under_lock_retake_budget_stays_inside_the_peer_lock_wait(
+def test_retakes_under_one_lock_hold_share_one_budget_and_never_overrun_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # dev21's hardening on #4827: a retake under the publication lock must not be what times a
-    # peer out, so its budget sits strictly below both 30 s waits, and the locked sites use it.
+    # codex on #4829: per-site deadlines let each phase retake for the full budget, and a retake
+    # could start just inside a deadline and run past it. Now one deadline per lock hold is
+    # shared by every resolution under it, and a retake starts only if it can finish inside it.
     from shared.task_note_lock import DEFAULT_TIMEOUT_SECONDS
 
-    budget = sdlc_claim._UNDER_LOCK_CHURN_DEADLINE_SECONDS
+    budget = sdlc_claim._UNDER_LOCK_CHURN_BUDGET_SECONDS
     assert budget < sdlc_claim._CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS
     assert budget < DEFAULT_TIMEOUT_SECONDS
-    assert budget < sdlc_claim.INSPECTION_CHURN_DEADLINE_SECONDS
 
     fixture = _fixture(tmp_path)
-    attempts = _churning_task_store(fixture.vault, monkeypatch)
+    attempts = _churning_task_store(fixture.vault, monkeypatch)  # churn never settles
     now = [0.0]
+    resolution_seconds = 9.0  # measured 2026-09-27: 9.0-9.7 s over 5,767 rows
+    original = sdlc_claim.resolve_task_note
 
-    def clock() -> float:
-        now[0] += 8.0
-        return now[0]
+    def timed_resolution(*args: object, **kwargs: object) -> object:
+        now[0] += resolution_seconds
+        return original(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
-    monkeypatch.setattr(sdlc_claim, "_churn_clock", clock)
-    with pytest.raises(TaskStoreError):
-        sdlc_claim.resolve_task_note_through_churn(fixture.vault, "task-alpha")
-    unlocked = len(attempts)
-    attempts.clear()
-    now[0] = 0.0
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(sdlc_claim, "resolve_task_note", timed_resolution)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", lambda: now[0])
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleep)
+    deadline = now[0] + budget  # taken once, as the lock holder does
+
     with pytest.raises(ClaimPublicationError):
-        sdlc_claim._locked_preflight(fixture.intent, ())
+        sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=deadline)
+    preflight_attempts = len(attempts)
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._require_exact_task_postimage(fixture.intent, deadline_at=deadline)
 
-    assert unlocked == sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
-    assert len(attempts) == 2  # 8 s steps inside a 15 s budget: one retake, then the bound
+    assert preflight_attempts == 2  # 9 s + pause + 9 s fits 25 s; a third would not
+    assert len(attempts) == 3  # the postimage phase finds the shared budget spent: no retake
+    baseline = 2 * resolution_seconds  # each phase's first resolution is not a retake
+    assert now[0] - baseline <= budget  # retakes add at most the budget, pauses included
 
 
 # ── governed release of a held claim publication (M166, M167) ────────────────

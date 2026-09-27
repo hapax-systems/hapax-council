@@ -133,9 +133,12 @@ TASK_FRONTIER_CHURN_NEXT_ACTION = (
     "retake): rerun cc-claim, and if it reports an unresolved claim publication, run "
     "cc-claim --recover-claim-publications <task_id> first"
 )
-#: A retake under the publication lock lengthens the hold; this budget keeps it well inside the
-#: 30 s a peer waits for the same lock, so the retake cannot be what times the peer out.
-_UNDER_LOCK_CHURN_DEADLINE_SECONDS = 15.0
+#: One budget for every retake under one publication lock hold, taken once when the lock is
+#: acquired and shared by all the resolutions under it, strictly below the 30 s a peer waits for
+#: the same lock. It bounds the time retakes ADD; the hold's baseline (each phase's first
+#: resolution, about 9-10 s apiece over 5,767 rows) is not the retake's to bound. At that
+#: resolution time it admits one retake across the locked phases (codex on #4829).
+_UNDER_LOCK_CHURN_BUDGET_SECONDS = 25.0
 _churn_sleep = time.sleep
 _churn_clock = time.monotonic
 
@@ -3466,22 +3469,29 @@ def resolve_task_note_through_churn(
     vault_root: Path,
     task_id: str,
     *,
-    deadline_seconds: float = INSPECTION_CHURN_DEADLINE_SECONDS,
+    deadline_at: float | None = None,
 ) -> TaskNoteSnapshot:
     """Resolve one active task note, retaking a resolution that raced task-store churn.
 
     Resolution indexes every task row (about 9 s over 5,767 rows on 2026-09-27), and a
     write to any other row in that window refuses it (M95). A frontier-churn refusal is
     retaken as a fresh, complete resolution, with jitter, at most
-    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times inside ``deadline_seconds`` (M101's bound by
-    default); the last refusal is raised. Only a resolution over a stable frontier returns,
-    and every other refusal is raised at once. Under the publication lock, callers pass
-    ``_UNDER_LOCK_CHURN_DEADLINE_SECONDS`` so a retake stays inside a peer's lock wait.
+    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times before ``deadline_at`` (by default M101's
+    ``INSPECTION_CHURN_DEADLINE_SECONDS`` from now); the last refusal is raised. A retake
+    starts only if, judged by the attempt just made, it can finish before the deadline, so no
+    retake runs past it. Only a resolution over a stable frontier returns, and every other
+    refusal is raised at once. Under the publication lock, the lock holder passes one
+    ``deadline_at`` to every resolution under it (``_UNDER_LOCK_CHURN_BUDGET_SECONDS``).
     """
 
-    deadline = _churn_clock() + deadline_seconds
+    deadline = (
+        deadline_at
+        if deadline_at is not None
+        else _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    )
     attempt = 1
     while True:
+        started = _churn_clock()
         try:
             return resolve_task_note(
                 vault_root, task_id, state="active", require_no_other_state=True
@@ -3489,8 +3499,9 @@ def resolve_task_note_through_churn(
         except TaskStoreError as exc:
             if exc.reason_code not in _TASK_FRONTIER_CHURN_REASONS:
                 raise
+            now = _churn_clock()
             delay = random.uniform(*INSPECTION_CHURN_JITTER_SECONDS)
-            if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or _churn_clock() + delay > deadline:
+            if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or now + delay + (now - started) > deadline:
                 raise
             _churn_sleep(delay)
             attempt += 1
@@ -3555,13 +3566,16 @@ def claim_publication_hold_message(exc: BaseException, *, intent_ref: str) -> st
 
 
 def _locked_preflight(
-    intent: ClaimPublicationIntent, projections: Sequence[FileProjection]
+    intent: ClaimPublicationIntent,
+    projections: Sequence[FileProjection],
+    *,
+    deadline_at: float,
 ) -> None:
     try:
         task = resolve_task_note_through_churn(
             intent.note_path.parent.parent,
             intent.task_id,
-            deadline_seconds=_UNDER_LOCK_CHURN_DEADLINE_SECONDS,
+            deadline_at=deadline_at,
         )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
@@ -3591,12 +3605,12 @@ def _locked_preflight(
         ) from exc
 
 
-def _require_exact_task_postimage(intent: ClaimPublicationIntent) -> None:
+def _require_exact_task_postimage(intent: ClaimPublicationIntent, *, deadline_at: float) -> None:
     try:
         task = resolve_task_note_through_churn(
             intent.note_path.parent.parent,
             intent.task_id,
-            deadline_seconds=_UNDER_LOCK_CHURN_DEADLINE_SECONDS,
+            deadline_at=deadline_at,
         )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
@@ -3912,6 +3926,7 @@ def _apply_admitted_claim_publication_transaction(
     )
 
     with _claim_publication_lock(intent, lock_root=lock_root):
+        churn_deadline = _churn_clock() + _UNDER_LOCK_CHURN_BUDGET_SECONDS
         if (
             transaction_directory.exists()
             or transaction_directory.is_symlink()
@@ -3933,7 +3948,7 @@ def _apply_admitted_claim_publication_transaction(
                     f"{publication_id}:{exc.reason_code}",
                 ) from exc
 
-        _locked_preflight(intent, projections)
+        _locked_preflight(intent, projections, deadline_at=churn_deadline)
         consumption.require_source_proofs(intent)
 
         transaction_directory = _create_claim_transaction_directory(root, publication_id)
@@ -3951,7 +3966,7 @@ def _apply_admitted_claim_publication_transaction(
 
         try:
             phase = "pre_projection_preflight"
-            _locked_preflight(intent, projections)
+            _locked_preflight(intent, projections, deadline_at=churn_deadline)
             phase = "journal_projecting"
             _persist_admitted_manifest_state(
                 manifest_path,
@@ -3966,7 +3981,7 @@ def _apply_admitted_claim_publication_transaction(
             phase = "pre_activation_scratch_finalize"
             _finalize_applied_scratches(pre_receipt_projections, pre_receipt_scratches)
             phase = "pre_activation_postimage_validation"
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             phase = "journal_postimage_complete"
@@ -3995,7 +4010,7 @@ def _apply_admitted_claim_publication_transaction(
             phase = "activation_scratch_finalize"
             _finalize_applied_scratches(activation_projections, activation_scratches)
             phase = "postimage_validation"
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             phase = "journal_applied"
@@ -4908,6 +4923,7 @@ def _recover_one(
         )
 
     with _claim_publication_lock(intent, lock_root=lock_root):
+        churn_deadline = _churn_clock() + _UNDER_LOCK_CHURN_BUDGET_SECONDS
         intent, projections, publication_id, state, consumption = _load_any_manifest(manifest_path)
         if manifest_path.parent.name != publication_id:
             raise ClaimPublicationError(
@@ -4986,7 +5002,7 @@ def _recover_one(
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             apply_missing_postimages(pre_receipt_projections, pre_receipt_scratches)
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
@@ -5025,7 +5041,7 @@ def _recover_one(
             )
         try:
             apply_missing_postimages(activation_projections, activation_scratches)
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
