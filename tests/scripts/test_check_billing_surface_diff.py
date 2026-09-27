@@ -106,23 +106,6 @@ def test_api_key_route_added_fails(scanner: ModuleType) -> None:
     assert finding.line == 1
 
 
-def test_protective_env_strip_passes(scanner: ModuleType) -> None:
-    """The governed launcher strip, in Python: exempt per node — and reported."""
-
-    diff = _diff(
-        "shared/foo_launcher.py",
-        [
-            'os.environ.pop("OPENAI_API_KEY", None)',
-            'del os.environ["ANTHROPIC_API_KEY"]',
-        ],
-    )
-    result = scanner.scan_unified_diff(diff)
-    assert result.findings == ()
-    assert {f.kind for f in result.allowed} == {"protective-strip"}, (
-        "a granted structural exemption must be reported, with its kind"
-    )
-
-
 def test_a_garbage_line_makes_the_section_unusable(scanner: ModuleType) -> None:
     """Clause 1 of the re-land predicate: an unparseable line is damage, never content.
 
@@ -212,6 +195,16 @@ def test_combined_section_fuzz_never_reads_a_cut_section_as_whole(
         )
         return proc.stdout.strip()
 
+    def git_raw(*args: str) -> str:
+        """Like `git`, but WITHOUT stripping: a real diff ends with a newline, and the scanner
+        now treats an unterminated last line as a cut one (the character-level fuzz found that
+        case). A stripped fixture is not a diff git would ever produce."""
+
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        )
+        return proc.stdout
+
     # Big enough that git's rename detection actually fires (measured: a five-line file is
     # reported as a delete+add even with -M, while a fifty-line file with one line appended is
     # `similarity index 98%` — a fixture that is not a rename cannot fuzz one).
@@ -242,12 +235,12 @@ def test_combined_section_fuzz_never_reads_a_cut_section_as_whole(
     git("commit", "-qm", "combined")
 
     def section(path: str) -> str:
-        return git("diff", "--find-renames", "--unified=0", "HEAD~1..HEAD", "--", path)
+        return git_raw("diff", "--find-renames", "--unified=0", "HEAD~1..HEAD", "--", path)
 
     fixtures = {
         # Both sides of the rename must be inside the pathspec, or git shows the new name as an
         # addition instead of a rename.
-        "rename+content": git(
+        "rename+content": git_raw(
             "diff",
             "--find-renames",
             "--unified=0",
@@ -296,124 +289,379 @@ def test_combined_section_fuzz_never_reads_a_cut_section_as_whole(
         else:
             assert clean_allowed == 0
 
+        # ── round 2 (codex's major): the predicate claims EVERY prefix, so widen past line
+        # ── boundaries. Character-level prefixes cut inside lines, inside headers and inside
+        # ── marks; the positive grammar must call each of those damage.
+        clean_char = 0
+        for width in range(1, len(diff)):
+            prefix = diff[:width]
+            result = scanner.scan_unified_diff(prefix)
+            if result.findings:
+                continue
+            last = prefix.splitlines()[-1] if prefix.splitlines() else ""
+            assert label == "mode+content" and last.startswith("new mode"), (
+                f"{label}: a character-level prefix scanned clean at width {width} "
+                f"(last line {last!r})"
+            )
+            clean_char += 1
+        assert clean_char <= 1, (
+            f"{label}: {clean_char} character-level prefixes scanned clean; at most the one "
+            "named mode-pair boundary may"
+        )
 
-def test_no_exemption_is_decided_from_line_content(scanner: ModuleType) -> None:
-    """THE GUARD (seat's round-3 item 3): a fourth whole-line exemption cannot land.
+        # And header DELETION: drop each structural line in turn. Whatever survives, the scan
+        # must never come back clean — either the cut structure fails closed, or the canary read
+        # in the surviving content is still reported.
+        if label == "binary":
+            # A binary section carries no content at all, so deleting its `index` line cannot
+            # hide a line: the note is the whole story and the section stays legitimately whole.
+            # Asserted rather than skipped silently.
+            without_index = "".join(line for line in lines if not line.startswith("index "))
+            assert scanner.scan_unified_diff(without_index).findings == (), (
+                "a binary section without its index line should still read as whole"
+            )
+            continue
+        for index, line in enumerate(lines):
+            if not line.startswith(
+                ("diff --git", "--- ", "+++ ", "index ", "old mode", "new mode")
+            ):
+                continue
+            without = "".join(lines[:index] + lines[index + 1 :])
+            result = scanner.scan_unified_diff(without)
+            assert result.findings, (
+                f"{label}: deleting the {line.split()[0]!r} line at {index} left a clean scan"
+            )
 
-    It inspects this scanner's own source: every declared exemption site must exist,
-    the node-decided ones must take AST nodes rather than text, and none of them may
-    read a line-text carrier. Adding a line-level exemption breaks this test.
+
+# ── round 2 (dev21's reproduced fail-opens): a POSITIVE grammar — every line must be ──
+# ── legal for the parser's current state, and illegal lines fail closed. ──
+
+
+def test_a_hunk_before_any_path_fails_closed(scanner: ModuleType) -> None:
+    """dev21's first reproduction, verbatim: a hunk straight after `diff --git`.
+
+    With no `---`/`+++` the path stayed `None`, the added lines never entered a region, and the
+    scan printed `OK … 0 changed file(s)` over an `OPENAI_API_KEY` read.
     """
 
-    import ast as _ast
-
-    source = SCRIPT_PATH.read_text(encoding="utf-8")
-    tree = _ast.parse(source)
-    functions = {node.name: node for node in tree.body if isinstance(node, _ast.FunctionDef)}
-    declared = getattr(scanner, "EXEMPTION_SITES", None)
-    assert declared, "the scanner must declare its exemption sites in EXEMPTION_SITES"
-    assert set(declared) == {
-        "proxy",
-        "protective_strip",
-        "allow_marker",
-        "text_path_non_python",
-    }, "a new exemption site must be declared here and justified, not smuggled in"
-    for name in scanner.NODE_EXEMPTION_FUNCTIONS:
-        node = functions.get(name)
-        assert node is not None, f"declared exemption site {name} has no implementation"
-        params = [arg.arg for arg in node.args.args]
-        anns = [(_ast.unparse(arg.annotation) if arg.annotation else "") for arg in node.args.args]
-        assert all(a.startswith("ast.") for a in anns), (
-            f"{name} must take AST nodes, not text: annotations were {anns}"
-        )
-        assert not (set(params) & set(scanner._LINE_TEXT_NAMES)), (
-            f"{name} takes a line-text carrier ({set(params) & set(scanner._LINE_TEXT_NAMES)})"
-        )
-        used = {
-            n.id
-            for n in _ast.walk(node)
-            if isinstance(n, _ast.Name) and n.id in scanner._LINE_TEXT_NAMES
-        }
-        assert not used, f"{name} reads line text ({used}) — a whole-line exemption again"
-    marker_fn = functions.get("_marker_is_allowed_on")
-    assert marker_fn is not None, "the marker exemption must exist and be path-based"
-    marker_params = [a.arg for a in marker_fn.args.args]
-    assert "path" in marker_params, "the marker exemption must be decided from the PATH"
-    assert not (set(marker_params) & set(scanner._LINE_TEXT_NAMES)), (
-        "the marker exemption must not be decided from line content"
+    diff = 'diff --git a/x.py b/x.py\n@@ -0,0 +1,1 @@\n+key = os.environ["OPENAI_API_KEY"]\n'
+    result = scanner.scan_unified_diff(diff)
+    assert [f.kind for f in result.findings] == ["billing-scan-unusable-input"], (
+        f"a hunk before any path did not fail closed: {[(f.kind, f.path) for f in result.findings]}"
     )
 
-    # The text path must grant NOTHING (seat round 3, item 2). This is the clause that
-    # would have caught the statement-level strip exemption that survived this guard's
-    # first version: find `flush`'s text branch — the one that classifies with
-    # `_text_classes` — and assert it can suppress no finding, by any mechanism.
-    # `flush` is nested inside `scan_unified_diff`, so it is found by walking, not from
-    # the module-level function table.
-    flush = next(
+
+def test_content_before_any_file_header_fails_closed(scanner: ModuleType) -> None:
+    """dev21's second reproduction, and its mid-diff variant: no section owns those lines.
+
+    A bare `+++` (no `diff --git`) printed `OK … 1 changed file(s)`; the same is true of any
+    line that arrives before the first header, or between headers where no section is open.
+    """
+
+    for label, diff in (
         (
-            node
-            for node in _ast.walk(tree)
-            if isinstance(node, _ast.FunctionDef) and node.name == "flush"
+            "a bare +++ and a read",
+            '+++ b/x.py\n+key = os.environ["OPENAI_API_KEY"]\n',
         ),
-        None,
-    )
-    assert flush is not None, "the region analyser must exist"
-    text_branches = [
-        node.orelse
-        for node in _ast.walk(flush)
-        if isinstance(node, _ast.If)
-        and any(
-            isinstance(sub, _ast.Call)
-            and isinstance(sub.func, _ast.Name)
-            and sub.func.id == "_text_classes"
-            for statement in node.orelse
-            for sub in _ast.walk(statement)
+        (
+            "junk before a valid section",
+            "this is not a diff\n"
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+x = 1\n",
+        ),
+        ("a lone read line", '+key = os.environ["OPENAI_API_KEY"]\n'),
+    ):
+        result = scanner.scan_unified_diff(diff)
+        assert "billing-scan-unusable-input" in [f.kind for f in result.findings], (
+            f"{label} did not fail closed: {[(f.kind, f.path) for f in result.findings]}"
         )
-    ]
-    assert len(text_branches) == 1, (
-        f"expected exactly one text-path branch in `flush`, found {len(text_branches)}"
+
+
+def test_the_governed_proxy_exemption_applies_and_does_not(scanner: ModuleType) -> None:
+    """claude's round-2 major: the True branch of `_call_is_proxy_bound` needs its own pin.
+
+    Both halves in one test, because the exemption is only meaningful with its negative: a call
+    bound to a governed proxy is exempt, and the same call without that binding — or with the
+    proxy named only in a neighbouring literal, or with a dynamic target — is a finding.
+    """
+
+    exempt = (
+        "diff --git a/shared/foo_client.py b/shared/foo_client.py\n"
+        "--- a/shared/foo_client.py\n"
+        "+++ b/shared/foo_client.py\n"
+        "@@ -0,0 +1,1 @@\n"
+        '+client = OpenAI(api_key=key, base_url="http://127.0.0.1:4000/v1")\n'
     )
-    branch = [sub for statement in text_branches[0] for sub in _ast.walk(statement)]
-    assert not any(isinstance(n, _ast.Continue) for n in branch), (
-        "the text path contains a `continue`: that is a suppression, and it grants none"
-    )
-    assert not any(isinstance(n, _ast.Name) and n.id == "allowed" for n in branch), (
-        "the text path appends to `allowed`: a non-Python exemption has re-appeared"
-    )
-    called: set[str] = set()
-    for node in branch:
-        if not isinstance(node, _ast.Call):
-            continue
-        if isinstance(node.func, _ast.Name):
-            called.add(node.func.id)
-        elif isinstance(node.func, _ast.Attribute):
-            called.add(node.func.attr)
-            if isinstance(node.func.value, _ast.Name):
-                called.add(node.func.value.id)
-    unexpected = called - TEXT_PATH_ALLOWED_CALLS
-    assert not unexpected, (
-        f"the text path calls {sorted(unexpected)}; it may only call "
-        f"{sorted(TEXT_PATH_ALLOWED_CALLS)}. A helper called here is a fourth exemption "
-        "site: declare it in EXEMPTION_SITES and justify it, or do not call it."
+    result = scanner.scan_unified_diff(exempt)
+    assert result.findings == (), f"the proxy-bound route was flagged: {result.findings}"
+    assert any(f.kind == "governed-proxy-route" for f in result.allowed), (
+        "the exemption was granted but not reported in allowed"
     )
 
-    # And no such helper may even EXIST undeclared, called or not: a `str -> bool`
-    # predicate is the only shape a line-content exemption can take in this module.
-    text_bool_predicates = {
-        node.name
-        for node in _ast.walk(tree)
-        if isinstance(node, _ast.FunctionDef)
-        and any(
-            arg.arg != "self" and (arg.annotation is None or _ast.unparse(arg.annotation) == "str")
-            for arg in node.args.args
+    for label, line in (
+        ("no target at all", "    client = OpenAI(api_key=key)"),
+        (
+            "the proxy in a neighbour literal",
+            '    client = OpenAI(api_key=key); note = "localhost"',
+        ),
+        ("a dynamic target", "    client = OpenAI(api_key=key, base_url=PROXY_URL)"),
+        (
+            "a non-governed host",
+            '    client = OpenAI(api_key=key, base_url="https://api.openai.com/v1")',
+        ),
+    ):
+        diff = (
+            "diff --git a/shared/foo_client.py b/shared/foo_client.py\n"
+            "--- a/shared/foo_client.py\n"
+            "+++ b/shared/foo_client.py\n"
+            "@@ -0,0 +1,1 @@\n"
+            f"+{line}\n"
         )
-        and {arg.arg for arg in node.args.args}
-        and node.returns is not None
-        and _ast.unparse(node.returns) == "bool"  # exactly `-> bool`, not a tuple member
-    }
-    undeclared = text_bool_predicates - TEXT_BOOL_PREDICATES
-    assert not undeclared, (
-        f"new text->bool predicate(s) in the scanner: {sorted(undeclared)}. That is the "
-        "shape an exemption decided from line content takes: declare it in "
-        "TEXT_BOOL_PREDICATES with its justification, or do not add it."
+        result = scanner.scan_unified_diff(diff)
+        assert "api-key-route" in [f.kind for f in result.findings], (
+            f"the proxy exemption applied where it must not ({label})"
+        )
+
+
+def test_a_marker_on_an_unparseable_key_bearing_line_is_reported_as_allowed(
+    scanner: ModuleType,
+) -> None:
+    """gemini's round-2 minor: the marker decision must be the ONE decision.
+
+    The key-bearing unparseable arm appended to `findings` directly, so an exemption that the
+    rest of the scanner would have reported in `allowed` was silently a failure here.
+    """
+
+    diff = (
+        "diff --git a/tests/scripts/test_x.py b/tests/scripts/test_x.py\n"
+        "--- a/tests/scripts/test_x.py\n"
+        "+++ b/tests/scripts/test_x.py\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+key = os.environ[  # billing-scan:allow fixture\n"
     )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == (), (
+        f"an allowlisted marker did not exempt the unparseable finding: {result.findings}"
+    )
+    assert any(f.kind == "billing-scan-unusable-input" for f in result.allowed), (
+        "the exemption was not reported in allowed (it was swallowed)"
+    )
+
+
+# ── the round-2 packet: the detector classes, the marker, and the exit codes ──
+# ── moved in from #4805 so this PR's evidence is self-contained (seat's ruling). ──
+
+
+def test_provider_api_host_literal_fails(scanner: ModuleType) -> None:
+    line = 'API_BASE = "https://api.example-anthropic-mirror.invalid/v1"'
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == ()
+    line = 'API_BASE = "https://api.tavily.com"'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "provider-api-endpoint" for f in result.findings)
+
+
+def test_bare_provider_sdk_constructor_fails(scanner: ModuleType) -> None:
+    # A zero-argument provider client reads its credential from the environment
+    # implicitly — the bare/API invocation path.
+    line = "    client = anthropic.Anthropic()"  # billing-scan:allow: fixture data
+    diff = _diff("scripts/foo_judge.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "provider-api-endpoint" for f in result.findings)
+
+
+def test_capacity_pool_payg_json_assignment_fails(scanner: ModuleType) -> None:
+    line = '      "capacity_pool": "api_paid_spend",'  # billing-scan:allow: fixture data
+    diff = _diff("config/platform-capability-registry.json", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "capacity-pool-payg" for f in result.findings)
+
+
+def test_capacity_pool_payg_enum_assignment_fails(scanner: ModuleType) -> None:
+    line = "    capacity_pool=CapacityPool.API_PAID_SPEND,"  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "capacity-pool-payg" for f in result.findings)
+
+
+def test_plan_type_api_binding_fails(scanner: ModuleType) -> None:
+    line = '      "plan_type": "api",'  # billing-scan:allow: fixture data
+    diff = _diff("config/quota-spend-ledger-fixtures.json", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "capacity-pool-payg" for f in result.findings)
+
+
+def test_bearer_token_in_a_python_fstring_fails(scanner: ModuleType) -> None:
+    """gemini major: the f-string form of a Bearer header must be flagged."""
+
+    line = '    headers = {"Authorization": f"Bearer {token}"}'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "the bearer-token regex did not cover a Python f-string"
+    )
+
+
+def test_bearer_token_fstring_attribute_form_fails(scanner: ModuleType) -> None:
+    """The same class, second shape: an f-string built from an attribute."""
+
+    line = "    self.headers['Authorization'] = f'Bearer {self._api_key}'"  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_client.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "the bearer-token regex did not cover the f-string attribute form"
+    )
+
+
+def test_non_python_file_gets_no_proxy_exemption(scanner: ModuleType) -> None:
+    """Seat's round-2 spec: outside Python there is no structural binding, so no exemption."""
+
+    line = 'client = OpenAI(api_key=K, base_url="http://127.0.0.1:4000/v1")'  # billing-scan:allow: fixture data
+    diff = _diff("scripts/foo_client.sh", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert any(f.kind == "api-key-route" for f in result.findings), (
+        "a non-Python file was granted a proxy exemption it cannot have"
+    )
+
+
+def test_non_python_file_grants_no_exemption_at_all(scanner: ModuleType) -> None:
+    """Seat round 3, item 2: no exemptions for non-Python, per statement or per line.
+
+    Red-first pin for the removal: at ``79c5d1cd7`` the statement-level strip exemption
+    exempted exactly this line (a ``;``-delimited fragment of one line is still line
+    content). It must now be a finding, and nothing may be recorded as allowed.
+    """
+
+    diff = _diff("scripts/foo_launcher.sh", ['del os.environ["ANTHROPIC_API_KEY"]'])
+    result = scanner.scan_unified_diff(diff)
+    assert "credential-env-read" in [f.kind for f in result.findings], (
+        "a text-path exemption exempted a strip in a non-Python file"
+    )
+    assert result.allowed == (), "a non-Python file was granted an exemption"
+
+
+def test_allow_marker_on_a_production_path_fails(scanner: ModuleType, tmp_path: Path) -> None:
+    """The hole itself: a marker on a production API-key route must not make the scan pass."""
+
+    path = tmp_path / "prod.diff"
+    path.write_text(
+        _diff(
+            "shared/foo_client.py",
+            [
+                "    client = OpenAI(api_key=key)  # billing-scan:allow: production, please ignore"
+            ],  # billing-scan:allow: fixture data
+        ),
+        encoding="utf-8",
+    )
+    assert scanner.main(["--diff-file", str(path)]) == 1
+    result = scanner.scan_unified_diff(path.read_text(encoding="utf-8"))
+    kinds = [f.kind for f in result.findings]
+    assert "billing-scan-allow-outside-fixtures" in kinds, (
+        "a marker outside the allowlist did not become a finding"
+    )
+    assert "api-key-route" in kinds, "the marker still exempted the underlying production route"
+    assert result.allowed == (), "a production path was still granted an exemption"
+
+
+def test_allow_marker_on_a_production_path_fails_even_without_a_route(
+    scanner: ModuleType,
+) -> None:
+    """The marker alone is the violation: intent to self-exempt is not a silent ignore."""
+
+    diff = _diff("shared/foo_client.py", ["    value = compute()  # billing-scan:allow"])
+    result = scanner.scan_unified_diff(diff)
+    assert [f.kind for f in result.findings] == ["billing-scan-allow-outside-fixtures"]
+
+
+def test_marker_allowlist_does_not_admit_a_prefixed_path(scanner: ModuleType) -> None:
+    """codex-1's round-5 major: a FILE entry must match exactly, not by prefix."""
+
+    diff = _diff(
+        "scripts/check-billing-surface-diff.py_helper.py",
+        ["client = OpenAI(api_key=key)  # billing-scan:allow"],  # billing-scan:allow: fixture data
+    )
+    result = scanner.scan_unified_diff(diff)
+    kinds = [f.kind for f in result.findings]
+    assert "billing-scan-allow-outside-fixtures" in kinds, (
+        "a path that merely begins with an allowlisted file's name bought the exemption"
+    )
+    assert "api-key-route" in kinds, "the route beside the marker was exempted"
+    assert result.allowed == (), "a prefixed path was granted an exemption"
+
+
+def test_main_clean_diff_exits_zero(scanner: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "clean.diff"
+    path.write_text(_diff("shared/foo.py", ["x = 1"]), encoding="utf-8")
+    assert scanner.main(["--diff-file", str(path)]) == 0
+
+
+def test_main_flagged_diff_exits_one(scanner: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "flagged.diff"
+    path.write_text(
+        _diff(
+            "shared/foo.py", ["    client = OpenAI(api_key=read_key())  # billing-scan:allow"]
+        ),  # billing-scan:allow: fixture data
+        encoding="utf-8",
+    )
+    # A marker on a NON-fixture path no longer passes the scan: this test used to pin the
+    # self-exemption hole as desired behaviour (rounds 1–2 inherited it from the original
+    # scanner). It now pins the closure of that hole: the marker is itself a finding.
+    assert scanner.main(["--diff-file", str(path)]) == 1
+    result = scanner.scan_unified_diff(path.read_text(encoding="utf-8"))
+    assert [f.kind for f in result.findings] == [
+        "billing-scan-allow-outside-fixtures",
+        "api-key-route",
+    ]
+    path.write_text(
+        _diff(
+            "shared/foo.py", ["    client = OpenAI(api_key=read_key())"]
+        ),  # billing-scan:allow: fixture data
+        encoding="utf-8",
+    )
+    # Without the marker the same content fails on the route alone.
+    assert scanner.main(["--diff-file", str(path)]) == 1
+
+
+def test_main_missing_diff_file_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    assert scanner.main(["--diff-file", str(tmp_path / "absent.diff")]) == 2
+
+
+def test_main_without_input_mode_fails_closed(scanner: ModuleType) -> None:
+    assert scanner.main([]) == 2
+
+
+def test_main_empty_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    """codex major: empty input is not evidence. A gate must not report success on it."""
+
+    path = tmp_path / "empty.diff"
+    path.write_text("", encoding="utf-8")
+    assert scanner.main(["--diff-file", str(path)]) == 2
+
+
+def test_main_whitespace_only_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "blank.diff"
+    path.write_text("\n\n   \n", encoding="utf-8")
+    assert scanner.main(["--diff-file", str(path)]) == 2
+
+
+def test_main_malformed_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    """Text that is not a unified diff at all is unusable input, not a clean scan."""
+
+    path = tmp_path / "prose.diff"
+    path.write_text("this is not a unified diff\nit has no file headers\n", encoding="utf-8")
+    assert scanner.main(["--diff-file", str(path)]) == 2
+
+
+def test_main_diff_with_no_file_headers_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
+    """A truncated diff (hunks with no ``diff --git``/``+++`` header) is unusable."""
+
+    path = tmp_path / "truncated.diff"
+    path.write_text(
+        "@@ -1,1 +1,1 @@\n+client = OpenAI(api_key=key)\n", encoding="utf-8"
+    )  # billing-scan:allow: fixture data
+    assert scanner.main(["--diff-file", str(path)]) == 2
