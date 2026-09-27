@@ -40,19 +40,11 @@ set -euo pipefail
 LEGAL_NAME_PATTERNS=(
     'Ryan[[:space:]]+Kleeberger'
     'Ryan[[:space:]]+Lee[[:space:]]+Kleeberger'
+    # The family surname alone names every household member, registered as a
+    # principal or not. Opaque principal IDs (principal-<letter><digit>) are
+    # deliberately NOT patterns: they are the vocabulary that replaces names.
     'Kleeberger'
-    'principal-c1'
-    'principal-c2'
-    'principal-a1'
 )
-
-REGISTERED_PRINCIPAL_IDS=(principal-c1 principal-c2 principal-a1)
-for principal_id in "${REGISTERED_PRINCIPAL_IDS[@]}"; do
-    if [[ ! "$principal_id" =~ ^principal-[a-z][0-9]+$ ]]; then
-        echo "check-legal-name-leaks: invalid registered principal ID: $principal_id" >&2
-        exit 2
-    fi
-done
 
 # Whitelisted paths — leaks here are not flagged. Match by glob.
 # Legal name is allowed in:
@@ -73,11 +65,6 @@ WHITELIST_GLOBS=(
     'hooks/scripts/pii-guard.sh'
     'tests/scripts/test_check_legal_name_leaks.py'
     'tests/hooks/test_pii_guard.py'
-    'shared/governance/consent.py'
-    'agents/_governance/consent.py'
-    'agents/_governance.py'
-    'logos/_governance.py'
-    'tests/hapax_daimonion/test_conversational_policy.py'
 )
 
 is_whitelisted() {

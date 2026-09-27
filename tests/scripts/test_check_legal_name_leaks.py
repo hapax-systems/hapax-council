@@ -68,13 +68,22 @@ def test_case_insensitive_match(fixture_dir: Path) -> None:
     assert _run([str(f)]) == 1
 
 
-@pytest.mark.parametrize(
-    "identifier", ["Kleeberger", "principal-c1", "principal-c2", "principal-a1"]
-)
-def test_registered_identity_forms_fail(fixture_dir: Path, identifier: str) -> None:
+def test_family_surname_alone_fails(fixture_dir: Path) -> None:
+    # The surname alone names every household member, registered or not.
     f = fixture_dir / "registered-identity-leak.md"
-    f.write_text(f"subject: {identifier}\n", encoding="utf-8")
+    f.write_text("subject: Kleeberger\n", encoding="utf-8")
     assert _run([str(f)]) == 1
+
+
+@pytest.mark.parametrize(
+    "identifier", ["principal-c1", "principal-c2", "principal-a1", "principal-a2"]
+)
+def test_opaque_principal_ids_pass(fixture_dir: Path, identifier: str) -> None:
+    # The opaque IDs replace the names and must stay usable in any file: the
+    # follow-on PRs (#4717, #4558) use them outside the scanner's whitelist.
+    f = fixture_dir / "opaque-principal.md"
+    f.write_text(f"subject: {identifier}\n", encoding="utf-8")
+    assert _run([str(f)]) == 0
 
 
 def test_email_is_not_gated(fixture_dir: Path) -> None:

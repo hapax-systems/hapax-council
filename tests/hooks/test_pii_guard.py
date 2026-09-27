@@ -78,14 +78,16 @@ class TestBlocksRegisteredIdentityForms:
         result = _run(_edit(str(repo / "agents/x.py"), "subject = 'Kleeberger'\n"), cwd=repo)
         assert result.returncode == 2
 
-    def test_blocks_each_registered_principal_id(self, tmp_path: Path) -> None:
+    def test_opaque_principal_ids_are_never_blocked(self, tmp_path: Path) -> None:
+        # The opaque IDs are the vocabulary that replaces the names. Blocking
+        # them would fail every follow-on PR that uses them (#4717, #4558).
         repo = tmp_path
         (repo / ".git").mkdir()
-        for principal_id in ("principal-c1", "principal-c2", "principal-a1"):
+        for principal_id in ("principal-c1", "principal-c2", "principal-a1", "principal-a2"):
             result = _run(
                 _edit(str(repo / "agents/x.py"), f"subject = '{principal_id}'\n"), cwd=repo
             )
-            assert result.returncode == 2
+            assert result.returncode == 0, (principal_id, result.stderr)
 
     def test_blocks_operator_name_case_insensitive(self, tmp_path: Path) -> None:
         repo = tmp_path

@@ -15,6 +15,10 @@ from typing import Any
 
 import yaml
 
+# Registered child principals (opaque IDs, single-sourced in shared.governance) —
+# ONLY these children may have consent contracts. All other children are
+# categorically excluded from system participation. Guardian-granted consent:
+# operator is legal guardian.
 from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
 
 log = logging.getLogger(__name__)
@@ -22,9 +26,6 @@ log = logging.getLogger(__name__)
 _CONTRACTS_DIR = Path(__file__).parent.parent.parent / "axioms" / "contracts"
 
 
-# Registered child principals — ONLY these children may have consent contracts.
-# All other children are categorically excluded from system participation.
-# Guardian-granted consent: operator is legal guardian.
 @dataclass(frozen=True)
 class ConsentContract:
     """A bilateral consent agreement between operator and subject.
