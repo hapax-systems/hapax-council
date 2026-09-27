@@ -207,6 +207,69 @@ def test_backup_refuses_an_empty_path_list() -> None:
         tc.backup_args([])
 
 
+CLI = _REPO / "scripts" / "hapax-transcript-custody"
+
+
+def _on_own_mount(path: Path) -> bool:
+    cur = path.resolve()
+    while not os.path.ismount(cur):
+        cur = cur.parent
+    return str(cur) != "/"
+
+
+def _cli_env(tmp_path: Path, home: Path) -> dict[str, str]:
+    return dict(
+        os.environ,
+        HOME=str(home),
+        RESTIC_REPOSITORY=str(tmp_path / "repo"),
+        RESTIC_PASSWORD="test-only",
+        RESTIC_CACHE_DIR=str(tmp_path / "cache"),
+        PYTHONPATH=str(_REPO),
+    )
+
+
+def _cli(env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
+    import sys
+
+    return subprocess.run(
+        [sys.executable, str(CLI), *args], env=env, capture_output=True, text=True, timeout=300
+    )
+
+
+@pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
+def test_cli_backup_then_verify_end_to_end(tmp_path: Path) -> None:
+    """The unit's two commands, through the CLI: a clean snapshot verifies (exit 0); a later snapshot that lost
+    most of a path's files fails verify (exit 1) with the drop named."""
+
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    home = _home(tmp_path)
+    for i in range(3, 9):
+        (home / f".claude/projects/p1/s{i}.jsonl").write_text('{"type":"user"}\n')
+    env = _cli_env(tmp_path, home)
+    subprocess.run(["restic", "init"], env=env, capture_output=True, check=True, timeout=120)
+
+    assert _cli(env, "backup").returncode == 0
+    ok = _cli(env, "verify")
+    assert ok.returncode == 0, ok.stderr
+    assert "holds every transcript path" in ok.stdout
+
+    for i in range(2, 9):  # 8 files -> 1: more than half lost
+        (home / f".claude/projects/p1/s{i}.jsonl").unlink()
+    assert _cli(env, "backup").returncode == 0
+    bad = _cli(env, "verify")
+    assert bad.returncode == 1
+    assert "dropped:" in bad.stderr and ".claude/projects" in bad.stderr
+
+
+@pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
+def test_cli_refuses_a_missing_repository(tmp_path: Path) -> None:
+    env = _cli_env(tmp_path, _home(tmp_path))  # no `restic init`: an unmounted NAS looks like this
+    result = _cli(env, "backup")
+    assert result.returncode != 0
+    assert "no restic repository" in result.stderr
+
+
 @pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
 def test_real_restic_round_trip(tmp_path: Path) -> None:
     """Back up a fake home into a throwaway repository, then verify the snapshot with the real listing.

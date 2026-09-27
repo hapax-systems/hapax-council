@@ -35,9 +35,44 @@ def test_no_tier1_reader_uses_a_bare_latest() -> None:
     assert offenders == [], f"bare `latest` against a shared repository: {offenders}"
 
 
-def test_watchdog_freshness_is_filtered_to_tier1() -> None:
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")
+def test_watchdog_age_check_ignores_a_fresh_non_tier1_snapshot(tmp_path: Path) -> None:
+    """A stalled tier-1 job with a fresh transcript snapshot beside it: the tier-1 age check must still fail.
+
+    The fake restic answers a --tag-filtered query with a tier-1 snapshot three days old, and an unfiltered query
+    with a snapshot from now (the transcript job). The watchdog's own functions run against it.
+    """
+
     text = (REPO / "scripts/hapax-backup-watchdog").read_text(encoding="utf-8")
-    assert "tier1_latest_snapshot_time" in text
+    start = text.index("restic_password() {")
+    end = text.index("check_qdrant_snapshots() {", start)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "hapax-secret").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+    (bin_dir / "restic").write_text(
+        "#!/usr/bin/env bash\n"
+        'old="$(date -u -d "3 days ago" +%Y-%m-%dT%H:%M:%SZ)"; now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"\n'
+        'if [[ " $* " == *" --tag "* ]]; then echo "[{\\"id\\":\\"t1\\",\\"time\\":\\"$old\\"}]";\n'
+        'else echo "[{\\"id\\":\\"tx\\",\\"time\\":\\"$now\\"}]"; fi\n',
+        encoding="utf-8",
+    )
+    for tool in ("hapax-secret", "restic"):
+        (bin_dir / tool).chmod(0o755)
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        f'. "{REPO}/scripts/lib/secret.sh"\n. "{LIB}"\n'
+        "FAILURES=()\nlog() { :; }\n"
+        + text[start:end]
+        + "check_snapshot_age repo Tier1-NAS 36 entry tier1\n"
+        + 'printf "%s\\n" "${FAILURES[@]}"\n',
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+    result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "Tier1-NAS: latest snapshot is" in result.stdout and "h old" in result.stdout
 
 
 @pytest.mark.skipif(

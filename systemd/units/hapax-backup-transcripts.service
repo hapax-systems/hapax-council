@@ -1,6 +1,5 @@
 [Unit]
 Description=Hapax transcript backup: every harness transcript store by its real path, then a recursive post-backup check
-Documentation=file:///home/hapax/projects/hapax-council/scripts/transcript_custody.py
 After=network-online.target
 Wants=network-online.target
 RequiresMountsFor=/mnt/nas/backups
@@ -10,7 +9,9 @@ OnFailure=notify-failure@%n.service
 # ~/.claude for months). Backup, then verify, in the same unit: the verify step opens the new snapshot and counts the
 # files under every transcript path. A missing, symlinked, empty or dropped path, or a credential file, fails the
 # unit, and OnFailure notifies with the remedy from the journal. The repository is the existing tier-1 NAS
-# repository; the tag tier1-transcripts keeps these snapshots in their own retention group.
+# repository; the tag tier1-transcripts keeps these snapshots in their own retention group. The code is
+# scripts/transcript_custody.py in the activation worktree below. RequiresMountsFor= cannot order a user unit against
+# the system NAS mount, so the CLI itself refuses a repository that is missing or on the root filesystem.
 
 [Service]
 Type=oneshot

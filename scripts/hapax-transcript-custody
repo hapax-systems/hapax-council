@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -34,16 +35,48 @@ from scripts import transcript_custody as tc  # noqa: E402
 DEFAULT_REPOSITORY = "/mnt/nas/backups/restic"
 
 
+def _mount_point(path: str) -> str:
+    cur = os.path.abspath(path)
+    while not os.path.ismount(cur):
+        cur = os.path.dirname(cur)
+    return cur
+
+
+def _require_repository(repo: str) -> None:
+    """A local repository must exist and sit on its own mount: an unmounted NAS path falls through to the root
+    filesystem, where restic would find no repository or a stale one (the unit's RequiresMountsFor= cannot order
+    a user unit against the system NAS mount)."""
+
+    if ":" in repo.split("/", 1)[0]:  # rclone:, sftp:, s3: ... a remote repository
+        return
+    if not os.path.isfile(os.path.join(repo, "config")):
+        raise SystemExit(
+            f"hapax-transcript-custody: no restic repository at {repo} (is the NAS mounted?); {tc.REMEDY}"
+        )
+    if _mount_point(repo) == "/":
+        raise SystemExit(
+            f"hapax-transcript-custody: {repo} is on the root filesystem, not a mount; refusing; {tc.REMEDY}"
+        )
+
+
 def _restic_env() -> dict[str, str]:
     from shared.secrets import get_secret
 
+    if shutil.which("restic") is None:
+        raise SystemExit(
+            "hapax-transcript-custody: restic is not installed on this host; install the packaged binary "
+            "(pacman -S restic), then rerun"
+        )
     env = dict(os.environ)
     env.setdefault("RESTIC_REPOSITORY", DEFAULT_REPOSITORY)
+    _require_repository(env["RESTIC_REPOSITORY"])
     entry = os.environ.get("HAPAX_TRANSCRIPT_RESTIC_PASSWORD_ENTRY", "backups/restic-password")
-    env["RESTIC_PASSWORD"] = get_secret(entry) or ""
+    # RESTIC_PASSWORD in the environment is used first (a manual run or a test); the unit sets none, so the
+    # FileStore entry is the production path.
+    env["RESTIC_PASSWORD"] = get_secret(entry, env="RESTIC_PASSWORD", required=False) or ""
     if not env["RESTIC_PASSWORD"]:
         raise SystemExit(
-            f"hapax-transcript-custody: the restic password '{entry}' is empty; put it with hapax-secret"
+            f"hapax-transcript-custody: the restic password '{entry}' is empty or missing; put it with hapax-secret"
         )
     return env
 
