@@ -151,6 +151,30 @@ def _base_args(tmp_path: Path, receipts: Path) -> list[str]:
     ]
 
 
+def test_a_launch_mint_over_the_line_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """The unsafe case, admission half: even with the probe's own reading ledgered, a launch mint
+    over the line is refused (writer exit 3) and no admission receipt is written.
+
+    This is what design A buys: nothing is exempted, so the refusal a lane launch meets is exactly
+    the refusal the probe's own admission meets.
+    """
+    _sink_root(tmp_path, monkeypatch)
+    receipts = _window_receipts(tmp_path, weekly_used=40.0, weekly_reset=WEEKLY_RESET)
+    pace = _pace()
+    marker = _marker(tmp_path)
+    state = pace.read_state(receipts, str(tmp_path / "no-headless" / "*" / "output.jsonl"), now=NOW)
+    pace.append_reading(pace.reading_payload(state), now=NOW)
+    capsys.readouterr()
+    admitted = tmp_path / "admission-receipts"
+
+    rc = _writer_call(tmp_path, receipts, marker, admitted)
+
+    assert rc == 3
+    assert not admitted.exists() or not list(admitted.glob("*.yaml"))
+
+
 def test_overshoot_refuses_a_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:  # noqa: ANN001
@@ -460,6 +484,202 @@ def test_cadence_lag_is_not_a_false_refusal(
     assert rc == 0
     assert payload["ledgered"] is True
     assert payload["reading_age_seconds"] == int(timedelta(minutes=25).total_seconds())
+
+
+def test_a_reading_ledgered_within_one_probe_cadence_is_admissible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """The 10:04Z-refuse / 10:06Z-allow shape: ``record`` lags the probe by one tick.
+
+    A receipt observed at NOW is the newest reading; the sink's newest row names the PREVIOUS
+    reading, eight minutes older — one probe cadence, not an exact match. Exact-timestamp equality
+    refused this (measured 10:04Z refuse, 10:06Z allow); within one cadence it is durable evidence.
+    """
+    _sink_root(tmp_path, monkeypatch)
+    receipts = _window_receipts(tmp_path, weekly_used=5.0, weekly_reset=WEEKLY_RESET)
+    pace = _pace()
+    previous = NOW - timedelta(minutes=8)
+    pace.append_reading(
+        {
+            "captured_at": previous.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "weekly_observed_at": previous.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "weekly_used_percent": 4.0,
+            "weekly_resets_at": WEEKLY_RESET.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "five_hour_used_percent": 1.0,
+            "line_percent": LINE_AT_NOW,
+            "reading_age_seconds": 480,
+            "over_line": False,
+            "source_ref": "test",
+        },
+        now=previous,
+    )
+    capsys.readouterr()
+
+    rc = _run(["check", *_base_args(tmp_path, receipts), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["decision"] == "allow"
+    assert payload["ledgered"] is True
+
+
+def test_a_reading_ledgered_beyond_one_cadence_still_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """A row describing a different, older reading is not evidence for this one."""
+    _sink_root(tmp_path, monkeypatch)
+    receipts = _window_receipts(tmp_path, weekly_used=5.0, weekly_reset=WEEKLY_RESET)
+    pace = _pace()
+    stale = NOW - timedelta(minutes=30)
+    pace.append_reading(
+        {
+            "captured_at": stale.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "weekly_observed_at": stale.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "weekly_used_percent": 3.0,
+            "weekly_resets_at": WEEKLY_RESET.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "five_hour_used_percent": 1.0,
+            "line_percent": LINE_AT_NOW,
+            "reading_age_seconds": 1800,
+            "over_line": False,
+            "source_ref": "test",
+        },
+        now=stale,
+    )
+    capsys.readouterr()
+
+    rc = _run(["check", *_base_args(tmp_path, receipts), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == _pace().EXIT_REFUSE_UNKNOWN
+    assert payload["reason"] == "pace_reading_not_ledgered"
+
+
+def test_the_probe_ledgers_its_own_reading_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """A probe that ledgers the reading it just measured needs no ``record`` tick at all."""
+    _sink_root(tmp_path, monkeypatch)
+    receipts = _window_receipts(tmp_path, weekly_used=6.0, weekly_reset=WEEKLY_RESET)
+    pace = _pace()
+    state = pace.read_state(receipts, str(tmp_path / "no-headless" / "*" / "output.jsonl"), now=NOW)
+    pace.append_reading(pace.reading_payload(state), now=NOW)
+    capsys.readouterr()
+
+    rc = _run(["check", *_base_args(tmp_path, receipts), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0
+    assert payload["ledgered"] is True
+
+
+def test_append_reading_raises_when_the_sink_cannot_take_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # noqa: ANN001
+    """Fail closed: a caller must never be able to report an unledgered reading as ledgered."""
+    _sink_root(tmp_path, monkeypatch)
+    pace = _pace()
+
+    def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("sink unavailable")
+
+    monkeypatch.setattr(sink_mod.DurableJsonlSink, "append", _boom)
+    with pytest.raises(OSError):
+        pace.append_reading({"weekly_observed_at": "2026-09-25T23:00:00Z"}, now=NOW)
+
+
+def test_deactivate_archives_the_marker_create_once_with_reason_and_actor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """The governed disarm: an archive carrying the reason and actor, then the marker is retired."""
+    marker = _marker(tmp_path)
+    pace = _pace()
+    assert pace.armed(marker)[0] is True
+
+    rc = _run(
+        [
+            "deactivate",
+            "--activation",
+            str(marker),
+            "--now",
+            NOW.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--reason",
+            "seat deactivation test",
+            "--by",
+            "seat",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    archive = marker.with_name(f"{marker.name}.deactivated-20260925T230000Z")
+
+    assert rc == 0
+    assert payload["state"] == "deactivated"
+    assert archive.exists()
+    assert marker.exists() is False
+    assert pace.armed(marker)[0] is False
+    archived = json.loads(archive.read_text(encoding="utf-8"))
+    assert archived["reason"] == "seat deactivation test"
+    assert archived["by"] == "seat"
+    assert archived["deactivated_at"] == "2026-09-25T23:00:00Z"
+    assert archived["activated_at"] == "2026-09-25T23:00:00Z"
+
+    # Create-once: a second disarm at the same instant refuses and leaves the live marker alone.
+    _marker(tmp_path)
+    rc = _run(
+        [
+            "deactivate",
+            "--activation",
+            str(marker),
+            "--now",
+            NOW.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "--json",
+        ]
+    )
+    stale_archive = archive.read_text(encoding="utf-8")
+    capsys.readouterr()
+
+    assert rc == pace.EXIT_REFUSE_UNKNOWN
+    assert marker.exists() is True
+    assert archive.read_text(encoding="utf-8") == stale_archive
+
+
+def test_deactivate_reports_an_absent_marker_and_refuses_a_malformed_one(
+    tmp_path: Path, capsys
+) -> None:  # noqa: ANN001
+    marker = tmp_path / "activation.json"
+    pace = _pace()
+
+    assert _run(["deactivate", "--activation", str(marker), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "not_activated"
+
+    marker.write_text("not: [a, marker]\n", encoding="utf-8")
+    assert _run(["deactivate", "--activation", str(marker), "--json"]) == pace.EXIT_REFUSE_UNKNOWN
+    capsys.readouterr()
+    assert marker.exists() is True
+
+
+def test_an_observed_reading_ledgers_the_governors_own_payload_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:  # noqa: ANN001
+    """A producer (the probe) ledgers through the governor's builder, so the shapes cannot diverge."""
+    _sink_root(tmp_path, monkeypatch)
+    pace = _pace()
+
+    payload = pace.append_observed_reading(
+        observed_at=NOW,
+        weekly_used_percent=7.0,
+        weekly_resets_at=WEEKLY_RESET,
+        five_hour_used_percent=2.0,
+        source_ref="probe",
+        now=NOW,
+    )
+
+    state, rows = pace.ledger_state()
+    assert state == "ok"
+    assert rows[-1]["payload"] == payload
+    assert payload["weekly_observed_at"] == "2026-09-25T23:00:00Z"
+    assert payload["line_percent"] == pytest.approx(LINE_AT_NOW, abs=0.01)
+    assert payload["over_line"] is False
 
 
 def test_activate_writes_the_marker_create_once(
