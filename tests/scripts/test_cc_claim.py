@@ -2498,16 +2498,17 @@ def test_the_lease_checks_release_vocabulary_is_the_ssot() -> None:
     )
 
 
-def test_the_claim_preflight_resolves_through_the_churn_retake() -> None:
-    # M95: the preflight's embedded Python runs isolated (-I), so no test can race churn
-    # into it; the retake itself is tested in tests/shared/test_sdlc_claim.py. This pins
-    # that the preflight uses it, and that no bare resolve_task_note is left in cc-claim.
+def test_the_claim_preflight_and_hold_are_shared_sdlc_claims() -> None:
+    # The preflight's embedded Python runs isolated (-I), so no test can race churn into it.
+    # Its logic is shared.sdlc_claim.prepare_claim_publication_intent, tested there through
+    # churn; this pins only the delegation, and that no bare resolve is left here (M95, M180).
     source = SCRIPT.read_text(encoding="utf-8")
 
-    assert "snapshot = resolve_task_note_through_churn(path.parent.parent, task_id)" in source
-    assert "resolve_task_note(" not in source, (
-        "scripts/cc-claim must resolve through resolve_task_note_through_churn, "
-        "or task-store churn from any other row holds the claim (M95)"
+    assert "intent = prepare_claim_publication_intent(" in source
+    assert "claim_publication_hold_message(exc, intent_ref=intent.intent_ref)" in source
+    assert "resolve_task_note(" not in source
+    assert "resolve_task_note_through_churn(" not in source, (
+        "scripts/cc-claim must delegate its preflight to prepare_claim_publication_intent"
     )
 
 

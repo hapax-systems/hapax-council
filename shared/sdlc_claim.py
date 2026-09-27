@@ -126,6 +126,16 @@ _TASK_FRONTIER_CHURN_REASONS = frozenset(
         "task_store_frontier_changed_during_resolution",
     }
 )
+#: The next action when task-store churn outlasts the retake bound (M95, M180 class). The refusal
+#: is transient, so the action is a retry, never a repair of the note or of the Gate-0B install.
+TASK_FRONTIER_CHURN_NEXT_ACTION = (
+    "retry after the task-store frontier settles (another task row was written during every "
+    "retake): rerun cc-claim, and if it reports an unresolved claim publication, run "
+    "cc-claim --recover-claim-publications <task_id> first"
+)
+#: A retake under the publication lock lengthens the hold; this budget keeps it well inside the
+#: 30 s a peer waits for the same lock, so the retake cannot be what times the peer out.
+_UNDER_LOCK_CHURN_DEADLINE_SECONDS = 15.0
 _churn_sleep = time.sleep
 _churn_clock = time.monotonic
 
@@ -3452,19 +3462,24 @@ def _load_any_claim_publication_receipt(
     )
 
 
-def resolve_task_note_through_churn(vault_root: Path, task_id: str) -> TaskNoteSnapshot:
+def resolve_task_note_through_churn(
+    vault_root: Path,
+    task_id: str,
+    *,
+    deadline_seconds: float = INSPECTION_CHURN_DEADLINE_SECONDS,
+) -> TaskNoteSnapshot:
     """Resolve one active task note, retaking a resolution that raced task-store churn.
 
     Resolution indexes every task row (about 9 s over 5,767 rows on 2026-09-27), and a
     write to any other row in that window refuses it (M95). A frontier-churn refusal is
     retaken as a fresh, complete resolution, with jitter, at most
-    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times inside ``INSPECTION_CHURN_DEADLINE_SECONDS``
-    (M101's bound); the last refusal is raised. Only a resolution over a stable frontier
-    returns, and every other refusal is raised at once. Under the publication lock, a
-    retake lengthens the hold, so a peer waiting on the same lock may time out and refuse.
+    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times inside ``deadline_seconds`` (M101's bound by
+    default); the last refusal is raised. Only a resolution over a stable frontier returns,
+    and every other refusal is raised at once. Under the publication lock, callers pass
+    ``_UNDER_LOCK_CHURN_DEADLINE_SECONDS`` so a retake stays inside a peer's lock wait.
     """
 
-    deadline = _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    deadline = _churn_clock() + deadline_seconds
     attempt = 1
     while True:
         try:
@@ -3481,15 +3496,79 @@ def resolve_task_note_through_churn(vault_root: Path, task_id: str) -> TaskNoteS
             attempt += 1
 
 
+def prepare_claim_publication_intent(
+    *,
+    note_path: Path,
+    note_before: bytes,
+    note_after: bytes,
+    cache_dir: Path,
+    binding: ClaimDispatchBinding,
+) -> ClaimPublicationIntent:
+    """The ``cc-claim`` preflight: resolve the task through churn, require it unchanged, bind it.
+
+    ``cc-claim`` runs this isolated (``-I``), where no test can race churn into it, so the
+    preflight lives here and is tested in-process (#4827's follow-up). Churn that outlasts the
+    retake bound refuses with ``TASK_FRONTIER_CHURN_NEXT_ACTION``; a task whose note is not the
+    exact bytes the claim was computed from refuses, as before.
+    """
+
+    try:
+        snapshot = resolve_task_note_through_churn(note_path.parent.parent, binding.task_id)
+    except TaskStoreError as exc:
+        if exc.reason_code not in _TASK_FRONTIER_CHURN_REASONS:
+            raise
+        raise ClaimPublicationError(
+            exc.reason_code, TASK_FRONTIER_CHURN_NEXT_ACTION, exc.detail
+        ) from exc
+    if snapshot.path != note_path.resolve() or snapshot.content != note_before:
+        raise TaskStoreError(
+            "claim_publication_task_changed_during_preflight",
+            "reload the exact active task and repeat claim eligibility checks",
+            binding.task_id,
+        )
+    return ClaimPublicationIntent.create(
+        task=snapshot, cache_dir=cache_dir, note_after=note_after, binding=binding
+    )
+
+
+def claim_publication_hold_message(exc: BaseException, *, intent_ref: str) -> str:
+    """The HOLD line ``cc-claim`` prints when the admitted publication refuses.
+
+    Task-store churn that outlasted the retake bound is transient, so its next action is a
+    retry (M180 class); every other refusal keeps the Gate-0B install action.
+    """
+
+    churned = getattr(exc, "detail", None) in _TASK_FRONTIER_CHURN_REASONS or (
+        getattr(exc, "reason_code", None) in _TASK_FRONTIER_CHURN_REASONS
+    )
+    if churned:
+        return (
+            f"cc-claim: HOLD — task-store churn outlasted the retake bound ({exc}). "
+            f"Next action: {TASK_FRONTIER_CHURN_NEXT_ACTION}; prepared_intent={intent_ref}"
+        )
+    return (
+        f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
+        "claim-publication composition receipt for this HOME through the governed "
+        "install step, then rerun cc-claim; do not use HAPAX_GATE0B_CLAIM_PUBLICATION_OFF "
+        f"unless the operator authorizes emergency fallback; prepared_intent={intent_ref}"
+    )
+
+
 def _locked_preflight(
     intent: ClaimPublicationIntent, projections: Sequence[FileProjection]
 ) -> None:
     try:
-        task = resolve_task_note_through_churn(intent.note_path.parent.parent, intent.task_id)
+        task = resolve_task_note_through_churn(
+            intent.note_path.parent.parent,
+            intent.task_id,
+            deadline_seconds=_UNDER_LOCK_CHURN_DEADLINE_SECONDS,
+        )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_resolution_refused",
-            "restore exactly one active task note and no closed duplicate",
+            TASK_FRONTIER_CHURN_NEXT_ACTION
+            if exc.reason_code in _TASK_FRONTIER_CHURN_REASONS
+            else "restore exactly one active task note and no closed duplicate",
             exc.reason_code,
         ) from exc
     if (
@@ -3514,11 +3593,17 @@ def _locked_preflight(
 
 def _require_exact_task_postimage(intent: ClaimPublicationIntent) -> None:
     try:
-        task = resolve_task_note_through_churn(intent.note_path.parent.parent, intent.task_id)
+        task = resolve_task_note_through_churn(
+            intent.note_path.parent.parent,
+            intent.task_id,
+            deadline_seconds=_UNDER_LOCK_CHURN_DEADLINE_SECONDS,
+        )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_projection_invalid",
-            "hold the claim until exactly one active receipt-bound task note remains",
+            TASK_FRONTIER_CHURN_NEXT_ACTION
+            if exc.reason_code in _TASK_FRONTIER_CHURN_REASONS
+            else "hold the claim until exactly one active receipt-bound task note remains",
             exc.reason_code,
         ) from exc
     if (

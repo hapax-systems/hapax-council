@@ -4662,6 +4662,142 @@ def test_a_claim_publishes_through_churn_at_every_resolution(
     assert states == ["applied"]
 
 
+# ── the cc-claim preflight, extracted and tested through churn (#4827 follow-up) ─
+# claim-preflight-extract-churn-tested-20260927
+
+
+def _prepare(fixture: ClaimFixture, *, note_before: bytes | None = None) -> ClaimPublicationIntent:
+    return sdlc_claim.prepare_claim_publication_intent(
+        note_path=fixture.intent.note_path,
+        note_before=fixture.intent.note_before if note_before is None else note_before,
+        note_after=fixture.intent.note_after,
+        cache_dir=fixture.cache,
+        binding=fixture.intent.binding,
+    )
+
+
+@pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
+def test_the_claim_preflight_retakes_transient_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    # Discriminating where tests/scripts/test_cc_claim.py can only pin text: a preflight that
+    # resolved bare would raise on the first attempt's churn.
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(
+        fixture.vault, monkeypatch, point=point, churn_on=lambda n: n == 1
+    )
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+
+    intent = _prepare(fixture)
+
+    assert intent.intent_ref == fixture.intent.intent_ref
+    assert attempts == [1, 2]
+
+
+@pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
+def test_exhausted_churn_in_the_claim_preflight_names_the_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    _churning_task_store(fixture.vault, monkeypatch, point=point)
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        _prepare(fixture)
+
+    assert raised.value.reason_code == _CHURN_POINTS[point]
+    assert raised.value.repair_action == sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION
+
+
+def test_the_claim_preflight_still_refuses_a_changed_note(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+
+    with pytest.raises(TaskStoreError) as raised:
+        _prepare(fixture, note_before=fixture.intent.note_before + b"\n")
+
+    assert raised.value.reason_code == "claim_publication_task_changed_during_preflight"
+
+
+@pytest.mark.parametrize("point", sorted(_CHURN_POINTS))
+@pytest.mark.parametrize(
+    ("site", "reason"),
+    [
+        ("locked_preflight", "claim_publication_task_resolution_refused"),
+        ("postimage", "claim_publication_task_projection_invalid"),
+    ],
+)
+def test_exhausted_churn_under_the_lock_names_the_retry_not_a_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, point: str, site: str, reason: str
+) -> None:
+    # M180 class: the 19:52:40Z HOLD said "restore exactly one active task note" and then named
+    # the Gate-0B composition receipt; churn is transient, so the action is a retry.
+    fixture = _fixture(tmp_path)
+    if site == "postimage":
+        fixture.intent.note_path.write_bytes(fixture.intent.note_after)
+    _churning_task_store(fixture.vault, monkeypatch, point=point)
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        if site == "postimage":
+            sdlc_claim._require_exact_task_postimage(fixture.intent)
+        else:
+            sdlc_claim._locked_preflight(fixture.intent, ())
+
+    assert (raised.value.reason_code, raised.value.detail) == (reason, _CHURN_POINTS[point])
+    assert raised.value.repair_action == sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION
+    message = sdlc_claim.claim_publication_hold_message(raised.value, intent_ref="intent-x")
+    assert sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION in message
+    assert "Gate-0B" not in message
+    assert "restore exactly one" not in message
+
+
+def test_a_hold_that_is_not_churn_keeps_the_install_action() -> None:
+    exc = ClaimPublicationError(
+        "claim_publication_task_resolution_refused",
+        "restore exactly one active task note and no closed duplicate",
+        "task_note_cross_state_duplicate",
+    )
+
+    message = sdlc_claim.claim_publication_hold_message(exc, intent_ref="intent-x")
+
+    assert "Gate-0B claim-publication composition receipt" in message
+    assert sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION not in message
+
+
+def test_the_under_lock_retake_budget_stays_inside_the_peer_lock_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # dev21's hardening on #4827: a retake under the publication lock must not be what times a
+    # peer out, so its budget sits strictly below both 30 s waits, and the locked sites use it.
+    from shared.task_note_lock import DEFAULT_TIMEOUT_SECONDS
+
+    budget = sdlc_claim._UNDER_LOCK_CHURN_DEADLINE_SECONDS
+    assert budget < sdlc_claim._CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS
+    assert budget < DEFAULT_TIMEOUT_SECONDS
+    assert budget < sdlc_claim.INSPECTION_CHURN_DEADLINE_SECONDS
+
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch)
+    now = [0.0]
+
+    def clock() -> float:
+        now[0] += 8.0
+        return now[0]
+
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", clock)
+    with pytest.raises(TaskStoreError):
+        sdlc_claim.resolve_task_note_through_churn(fixture.vault, "task-alpha")
+    unlocked = len(attempts)
+    attempts.clear()
+    now[0] = 0.0
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._locked_preflight(fixture.intent, ())
+
+    assert unlocked == sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+    assert len(attempts) == 2  # 8 s steps inside a 15 s budget: one retake, then the bound
+
+
 # ── governed release of a held claim publication (M166, M167) ────────────────
 # claim-cache-missing-governed-release-20260926
 
