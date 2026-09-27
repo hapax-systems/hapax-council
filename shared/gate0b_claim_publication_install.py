@@ -46,6 +46,10 @@ from shared.execution_admission import (
 
 INSTALL_RECEIPT_SCHEMA = "hapax.gate0b-claim-publication-install-receipt.v1"
 INSTALL_RECEIPT_FILENAME = "activation-receipt.json"
+#: Created exclusively before a re-provision moves anything, and retired by rename (never deleted)
+#: once the install is consistent again. While it exists, cc-claim holds instead of making a
+#: first-use install without a basis (gate0b-reprovision-inflight-hold-marker-20260927).
+REPROVISION_IN_FLIGHT_FILENAME = "reprovision-in-flight.json"
 GATE0B_CLAIM_PUBLICATION_OPERATION = "claim.publish"
 GATE0B_CLAIM_PUBLICATION_CAPABILITY_ROLE = "claim_publisher"
 GATE0B_CLAIM_PUBLICATION_EXECUTION_HOST = "appendix"
@@ -792,10 +796,24 @@ def install_claim_publication_composition(
     return install
 
 
+def _in_flight(marker: Path, reason: str, detail: str | None = None) -> ExecutionAdmissionError:
+    return ExecutionAdmissionError(
+        reason,
+        f"a re-provision did not finish: read {marker}, put the *.quarantined-<stamp> pair it "
+        "names back in place if the live pair is not whole, then retire the marker by renaming "
+        "it to *.resolved-<stamp> (never delete it); see the fallback runbook's re-provision section",
+        detail or str(marker),
+    )
+
+
 def load_claim_publication_composition(
     invocation_store_root: Path,
 ) -> ClaimPublicationCompositionInstall:
     root_path = _absolute(invocation_store_root, label="claim-publication invocation store root")
+    marker = root_path / REPROVISION_IN_FLIGHT_FILENAME
+    if marker.exists() or marker.is_symlink():
+        # Checked first: a missing receipt mid-re-provision must hold, never first-use install.
+        raise _in_flight(marker, "gate0b_install_reprovision_in_flight")
     receipt = _load_install_receipt(root_path / INSTALL_RECEIPT_FILENAME)
     try:
         manifest_payload = _read_private_install_file(root_path / "composition-manifest.json")
@@ -961,14 +979,23 @@ def reprovision_claim_publication_install(
     ``gate0b_reprovision_git_unavailable`` (``repo`` carries no history). The basis is recorded
     (``reprovision-basis-<stamp>.pending.json``) before anything moves. If the fresh install
     fails (``gate0b_reprovision_install_failed``) or its basis cannot be recorded
-    (``gate0b_reprovision_basis_unrecorded``), any fresh file is set aside as
+    (``gate0b_reprovision_basis_unrecorded``), or the quarantine itself fails part-way
+    (``gate0b_reprovision_quarantine_failed``), any fresh file is set aside as
     ``*.unrecorded-<stamp>``, the quarantined pair is put back, and it holds. Claims then hold on
     the old receipt, never on a first-use install without a basis, and the next activation retries.
-    ``<stamp>`` carries microseconds, so a rerun within the same second never collides.
+
+    The whole run is fenced by ``REPROVISION_IN_FLIGHT_FILENAME``, created exclusively before
+    anything moves and retired by rename once the install is consistent again. A second run
+    refuses on it (``gate0b_reprovision_in_flight``), and cc-claim's loader holds on it
+    (``gate0b_install_reprovision_in_flight``). If putting the pair back itself fails
+    (``gate0b_reprovision_rollback_failed``), the marker stays, so claims hold until a person
+    restores the pair and retires it. ``<stamp>`` carries microseconds.
     """
 
     checked_roots = roots or default_claim_publication_roots()
     store = Path(checked_roots.invocation_store_root)
+    if (store / REPROVISION_IN_FLIGHT_FILENAME).exists():
+        raise _in_flight(store / REPROVISION_IN_FLIGHT_FILENAME, "gate0b_reprovision_in_flight")
     receipt_path = store / INSTALL_RECEIPT_FILENAME
     if not receipt_path.exists():
         return ClaimPublicationReprovision("absent", head)
@@ -1042,6 +1069,28 @@ def reprovision_claim_publication_install(
             "preserve both files and inspect the install directory",
             stamp,
         )
+    # Exclusive: one re-provision at a time, so the names above stay free until they are used.
+    marker = store / REPROVISION_IN_FLIGHT_FILENAME
+    try:
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise _in_flight(marker, "gate0b_reprovision_in_flight") from exc
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(
+            _canonical(
+                {
+                    "schema": "hapax.gate0b-claim-publication-reprovision-in-flight.v1",
+                    "stamp": stamp,
+                    "head": head,
+                    "quarantined_receipt_ref": receipt.receipt_ref,
+                    "pair": [str(target) for _source, target in moves],
+                }
+            )
+        )
+
+    def retire() -> None:
+        os.rename(marker, store / f"{REPROVISION_IN_FLIGHT_FILENAME}.resolved-{stamp}")
+
     record = {
         "schema": "hapax.gate0b-claim-publication-reprovision-basis.v1",
         "status": "pending",
@@ -1066,25 +1115,52 @@ def reprovision_claim_publication_install(
                 name,
             ) from exc
 
-    def roll_back() -> None:
+    moved: list[tuple[Path, Path]] = []  # the pairs this run actually quarantined
+
+    def roll_back(*, installed: bool) -> None:
         # No usable install without its complete basis, and no receipt-less gap for cc-claim's
-        # first-use install to fill without one: set any fresh file aside, put the quarantined
-        # pair back, and record the roll-back if the directory still takes it.
+        # first-use install to fill without one: once the install has run, set any fresh file
+        # aside; put back only what this run moved (an unmoved live file is the original); and
+        # record the roll-back if the directory still takes it.
         for source_path, target in moves:
-            if source_path.exists():
+            if installed and source_path.exists():
                 os.rename(source_path, store / f"{source_path.name}.unrecorded-{stamp}")
-            if target.exists():
+            if (source_path, target) in moved:
                 os.rename(target, source_path)
         record.update(status="rolled_back", new_receipt_ref=None)
         with contextlib.suppress(ExecutionAdmissionError):
             record_basis(f"reprovision-basis-{stamp}.json")
 
+    def fail(reason: str, action: str, detail: str, *, installed: bool) -> ExecutionAdmissionError:
+        # Put the old pair back, then retire the marker. If putting it back fails, the marker
+        # stays, so claims hold rather than make a first-use install without a basis.
+        try:
+            roll_back(installed=installed)
+        except OSError as exc:
+            return _in_flight(marker, "gate0b_reprovision_rollback_failed", f"{reason}: {exc}")
+        retire()
+        return ExecutionAdmissionError(reason, action, detail)
+
     # The authority basis is recorded before anything moves, so an install never exists
     # without it; the complete record, naming the new receipt, follows the install.
-    record_basis(f"reprovision-basis-{stamp}.pending.json")
-    for source_path, target in moves:
-        if source_path.exists():
-            os.rename(source_path, target)
+    try:
+        record_basis(f"reprovision-basis-{stamp}.pending.json")
+    except ExecutionAdmissionError:
+        retire()  # nothing has moved
+        raise
+    retry = "the old receipt is back and claims hold on it; repair the cause, and the next "
+    try:
+        for source_path, target in moves:
+            if source_path.exists():
+                os.rename(source_path, target)
+                moved.append((source_path, target))
+    except OSError as exc:
+        raise fail(
+            "gate0b_reprovision_quarantine_failed",
+            retry + "activation retries",
+            str(exc),
+            installed=False,
+        ) from exc
     try:
         installed = install_claim_publication_composition(
             roots=checked_roots,
@@ -1093,19 +1169,18 @@ def reprovision_claim_publication_install(
             module_sha256=live,  # the release's own verified modules, which cc-claim will load
         )
     except (OSError, ExecutionAdmissionError) as exc:
-        roll_back()
-        raise ExecutionAdmissionError(
+        raise fail(
             "gate0b_reprovision_install_failed",
-            "the old receipt is restored and claims hold on it; repair the cause, and the next "
-            "activation retries",
+            retry + "activation retries",
             getattr(exc, "reason_code", type(exc).__name__),
+            installed=True,
         ) from exc
     record |= {"status": "complete", "new_receipt_ref": installed.receipt.receipt_ref}
     try:
         record_basis(f"reprovision-basis-{stamp}.json")
-    except ExecutionAdmissionError:
-        roll_back()
-        raise
+    except ExecutionAdmissionError as exc:
+        raise fail(exc.reason_code, retry + "activation retries", str(exc), installed=True) from exc
+    retire()
     return ClaimPublicationReprovision(
         "reprovisioned", head, source, basis, installed.receipt.receipt_ref
     )
@@ -1133,6 +1208,7 @@ def _main(argv: list[str] | None = None) -> int:
 __all__ = [
     "BOUND_EXECUTOR_MODULES",
     "REPROVISION_AUTHORITY",
+    "REPROVISION_IN_FLIGHT_FILENAME",
     "ClaimPublicationReprovision",
     "GATE0B_CLAIM_PUBLICATION_CAPABILITY_ROLE",
     "GATE0B_CLAIM_PUBLICATION_OPERATION",

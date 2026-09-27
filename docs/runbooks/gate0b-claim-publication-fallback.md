@@ -186,14 +186,17 @@ applies), `current` (nothing to do) or `reprovisioned`. It exits 3 for `held`, w
 main's recent bound-file commits reproduces the receipt's descriptor. Those later commits are the
 reviewed authority basis.
 
-1. It writes `reprovision-basis-<stamp>.pending.json`.
-2. It quarantines `activation-receipt.json` and `composition-manifest.json` in place as
+1. It creates `reprovision-in-flight.json` exclusively. A second run refuses on it.
+2. It writes `reprovision-basis-<stamp>.pending.json`.
+3. It quarantines `activation-receipt.json` and `composition-manifest.json` in place as
    `*.quarantined-<stamp>`.
-3. It installs fresh from the release's own modules.
-4. It completes `reprovision-basis-<stamp>.json`.
+4. It installs fresh from the release's own modules.
+5. It completes `reprovision-basis-<stamp>.json`.
+6. It retires the marker by renaming it to `reprovision-in-flight.json.resolved-<stamp>`.
 
 All of these are in the install directory. `<stamp>` is `YYYYMMDDTHHMMSS.ffffffZ`. Nothing is
-deleted.
+deleted. While the marker exists, `cc-claim` holds on `gate0b_install_reprovision_in_flight`,
+even with no receipt: a first-use install never fills a re-provision's gap.
 
 | `reason_code` | Meaning | Next action |
 |---------------|---------|-------------|
@@ -202,12 +205,36 @@ deleted.
 | `gate0b_reprovision_quarantine_exists` | A quarantine name for this stamp is taken (a concurrent run) | Preserve both files, inspect, rerun |
 | `gate0b_reprovision_git_unavailable` | The repo given carries no history | Run it from the activated release worktree |
 | `gate0b_reprovision_basis_unrecorded` | A basis record could not be written | Restore a writable install directory; the next tick retries |
+| `gate0b_reprovision_quarantine_failed` | Moving the pair aside failed part-way | Repair the install directory; the next tick retries |
 | `gate0b_reprovision_install_failed` | The fresh install failed | Repair the cause named in the detail; the next tick retries |
+| `gate0b_reprovision_in_flight` | The marker exists: another run, or an unfinished one | Wait one tick. If it stays, follow "An unfinished re-provision" below |
+| `gate0b_reprovision_rollback_failed` | Putting the old pair back failed; the marker stays | Follow "An unfinished re-provision" below |
 
-After `basis_unrecorded` or `install_failed`, any fresh file is set aside as
-`*.unrecorded-<stamp>` and the quarantined pair is put back. So claims keep holding on the old
-receipt: a first-use install never runs without a recorded basis. The basis record then reads
-`rolled_back`.
+After `basis_unrecorded`, `quarantine_failed` or `install_failed`:
+- the pair this run moved is put back, and the marker is retired;
+- once the install has run, any fresh file is also set aside as `*.unrecorded-<stamp>`.
+
+So claims keep holding on the old receipt. The final basis record reads `rolled_back` if the
+directory still accepts a write; after a `basis_unrecorded`, it may not, and then only the
+`.pending.json` record exists.
+
+**An unfinished re-provision.** The marker names its stamp and the quarantined pair. Recheck:
+
+```bash
+store="$HOME/.local/share/hapax/execution-invocations/gate0b-claim-publish-v1"
+cat "$store/reprovision-in-flight.json"            # the stamp, head and quarantined pair
+ls -la "$store" | grep -E "activation-receipt|composition-manifest|reprovision-"
+```
+
+If the live pair is whole and matches the `reprovision-basis-<stamp>.json` record, or the
+quarantined pair is back under its live names, retire the marker. Never delete it:
+
+```bash
+mv -n "$store/reprovision-in-flight.json" "$store/reprovision-in-flight.json.resolved-<stamp>"
+```
+
+Otherwise, first put the `*.quarantined-<stamp>` pair back under its live names, then retire the
+marker. Rerun `cc-claim`; it should no longer hold on `gate0b_install_reprovision_in_flight`.
 
 ## Governed Release Of Claim Residue
 
