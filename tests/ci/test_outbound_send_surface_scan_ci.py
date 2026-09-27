@@ -55,6 +55,23 @@ def test_scan_job_runs_the_scanner_over_the_pr_diff() -> None:
     assert checkout.get("with", {}).get("fetch-depth") == 0, "the three-dot diff needs the base"
 
 
+def test_scan_job_verifies_the_fallback_base_exists() -> None:
+    # Follow-up item (4): with no PR base (all-zero or empty) the job falls
+    # back to PR_HEAD^. That fallback must be verified as a commit before use,
+    # and a missing one fails the job rather than diffing against nothing.
+    job = _load(CI_YML)["jobs"][SCAN_JOB]
+    run = next(
+        str(s["run"])
+        for s in job["steps"]
+        if "check-outbound-send-surface-diff" in str(s.get("run"))
+    )
+    fallback = run.index('base="$PR_HEAD^"')
+    verify = run.index('git cat-file -e "${base}^{commit}"')
+    scan = run.index("check-outbound-send-surface-diff.py")
+    assert fallback < verify < scan
+    assert "exit 1" in run[verify:scan]
+
+
 def test_scan_job_is_unskippable_and_names_itself() -> None:
     # all-green treats `skipped` as acceptable and this job is not in its needs,
     # so a skipped job would read as absent evidence. It must always execute: no
@@ -81,6 +98,26 @@ def test_audio_routing_surfaces_mirror_the_audio_workflow_filter() -> None:
     assert tuple(on["pull_request"]["paths"]) == AUDIO_ROUTING_SURFACES
     assert tuple(on["push"]["paths"]) == AUDIO_ROUTING_SURFACES
     assert "merge_group" in on
+
+
+#: Audio key files (docs/audio-topology-reference.md §8) the passive validator
+#: exercises through their own unit suites. Follow-up item (5): a path joins
+#: AUDIO_ROUTING_SURFACES only if the job actually executes its behaviour.
+AUDIO_KEY_FILE_SUITES = {
+    "shared/s4_scenes.py": "tests/shared/test_s4_scenes.py",
+    "agents/faderfox_bridge.py": "tests/agents/test_faderfox_bridge.py",
+}
+
+
+def test_audio_key_files_are_surfaces_only_because_the_job_runs_their_suites() -> None:
+    job = _load(AUDIO_YML)["jobs"][AUDIO_ROUTING_EVIDENCE]
+    runs = "\n".join(str(step.get("run", "")) for step in job["steps"])
+    for source, suite in AUDIO_KEY_FILE_SUITES.items():
+        assert source in AUDIO_ROUTING_SURFACES, source
+        assert suite in AUDIO_ROUTING_SURFACES, suite
+        assert re.search(rf"uv run pytest\b[^\n]*(\\\n[^\n]*)*{re.escape(suite)}", runs), (
+            f"passive-validator must execute {suite} to be evidence for {source}"
+        )
 
 
 def test_audio_evidence_names_a_unique_unskippable_job() -> None:

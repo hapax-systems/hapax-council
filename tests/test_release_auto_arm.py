@@ -225,6 +225,35 @@ def test_audio_surfaces_named_by_the_topology_reference_never_arm_without_audio_
         assert assessment.eligible is False, path
 
 
+def test_audio_key_files_with_executed_suites_release_on_audio_evidence() -> None:
+    # Follow-up item (5): the S-4 scene library and the Faderfox bridge are
+    # exercised by passive-validator (pinned in tests/ci), so audio evidence
+    # releases them.
+    assessment = assess_release_auto_arm_estate(
+        _audio_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS) | {AUDIO_ROUTING_EVIDENCE},
+        changed_files=["shared/s4_scenes.py", "agents/faderfox_bridge.py"],
+    )
+    assert assessment.blockers == ()
+
+
+def test_faderfox_controls_yaml_stays_held_even_with_audio_evidence() -> None:
+    # Documented hold (follow-up item 5): no suite loads the real
+    # config/equipment/faderfox-mx12-controls.yaml (the bridge tests use a
+    # tmp_path config), so audio evidence would not cover it. It stays behind
+    # the coverage bound until a suite exercises the real file.
+    assessment = assess_release_auto_arm_estate(
+        _audio_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS) | {AUDIO_ROUTING_EVIDENCE},
+        changed_files=["config/equipment/faderfox-mx12-controls.yaml"],
+    )
+    assert assessment.eligible is False
+    assert (
+        "egress_evidence_uncovered_paths:config/equipment/faderfox-mx12-controls.yaml"
+        in assessment.blockers
+    )
+
+
 @pytest.mark.parametrize(
     ("path", "surface"),
     [
@@ -237,7 +266,9 @@ def test_audio_surfaces_named_by_the_topology_reference_never_arm_without_audio_
         ("hooks/scripts/pre-audio-guard.sh", True),
         ("shared/audio_topology/sub.py", False),  # `*` never crosses `/`
         ("scripts/hapax-audiox", False),
-        ("shared/s4_scenes.py", False),
+        ("shared/s4_scenes.py", True),
+        ("agents/faderfox_bridge.py", True),
+        ("config/equipment/faderfox-mx12-controls.yaml", False),
         ("config/hapax/audio-link-map.conf.bak", False),
     ],
 )

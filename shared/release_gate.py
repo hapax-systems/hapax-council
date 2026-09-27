@@ -893,6 +893,13 @@ AUDIO_ROUTING_SURFACES: tuple[str, ...] = (
     "docs/audio/**",
     "hooks/scripts/*audio*",
     ".github/workflows/audio-graph-validate.yml",
+    # Audio key files (docs/audio-topology-reference.md §8) whose own suites the
+    # job executes. config/equipment/faderfox-mx12-controls.yaml is deliberately
+    # absent: no suite loads the real file, so it stays behind the coverage bound.
+    "shared/s4_scenes.py",
+    "tests/shared/test_s4_scenes.py",
+    "agents/faderfox_bridge.py",
+    "tests/agents/test_faderfox_bridge.py",
 )
 
 

@@ -305,6 +305,28 @@ def test_risk_flag_derivation_audio_marker_is_never_carved_out_by_comms_sense() 
     assert flags.audio_or_live_egress_sensitive is True
 
 
+def test_outbound_message_class_keeps_the_egress_routing_floor() -> None:
+    # The split must not lower routing for rows that used to derive audio/live:
+    # the outbound class gets the same DEEP hardening and failure_cost 5.
+    frontmatter = {
+        "type": "cc-task",
+        "task_id": "comms-routing-floor",
+        "title": "Communication pathway slice: retire a send path",
+        "kind": "implementation",
+        "risk_tier": "T1",
+        "authority_case": "CASE-TEST-001",
+        "parent_spec": "/tmp/spec.md",
+        "tags": ["communication", "egress"],
+    }
+    metadata = assess_route_metadata(frontmatter).metadata
+    assert metadata is not None
+    assert metadata.risk_flags.outbound_message_egress_sensitive is True
+    assert metadata.risk_flags.audio_or_live_egress_sensitive is False
+    demand = build_demand_vector(frontmatter)
+    assert demand.route_envelope.hardening_allocation.hardening_intensity == HardeningIntensity.DEEP
+    assert demand.task_demand.failure_cost == 5
+
+
 def test_outbound_message_egress_flag_is_an_authorable_risk_flag() -> None:
     metadata = _explicit_metadata()
     metadata["risk_flags"] = {

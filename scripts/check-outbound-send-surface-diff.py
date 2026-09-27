@@ -33,27 +33,26 @@ def _git(*args: str) -> bytes:
     return subprocess.run(["git", "-C", str(_repo), *args], capture_output=True, check=True).stdout
 
 
-def _show(rev: str, path: str) -> bytes | None:
-    try:
-        return _git("show", f"{rev}:{path}")
-    except subprocess.CalledProcessError:
-        return None
+def _show(rev: str, path: str) -> bytes:
+    """A blob the diff says exists. An unreadable blob raises; it is never absence."""
+    return _git("show", f"{rev}:{path}")
+
+
+def _tree_entry(rev: str, path: str) -> str:
+    """The tree entry for ``path`` at ``rev`` ("" when absent), read without the blob."""
+    return _git("ls-tree", rev, "--", path).decode()
 
 
 def _executable(rev: str, path: str) -> bool:
-    try:
-        entry = _git("ls-tree", rev, "--", path).decode()
-    except subprocess.CalledProcessError:
-        return False
-    return entry.startswith("100755")
+    return _tree_entry(rev, path).startswith("100755")
 
 
 def _changed(
     base: str, head: str
-) -> dict[str, tuple[str | None, bytes | None, bytes | None, bool]]:
+) -> dict[str, tuple[str | None, bytes | None, bytes | None, bool, bool]]:
     raw = _git("diff", "--name-status", "-M", "-z", f"{base}...{head}").decode()
     fields = raw.split("\0")
-    changed: dict[str, tuple[str | None, bytes | None, bytes | None, bool]] = {}
+    changed: dict[str, tuple[str | None, bytes | None, bytes | None, bool, bool]] = {}
     index = 0
     while index < len(fields) and fields[index]:
         status = fields[index]
@@ -63,10 +62,26 @@ def _changed(
         else:
             old = new = fields[index + 1]
             index += 2
-        base_bytes = None if status.startswith("A") else _show(base, old)
-        head_bytes = None if status.startswith("D") else _show(head, new)
-        changed[new] = (old, base_bytes, head_bytes, _executable(head, new))
+        in_base = not status.startswith("A")
+        in_head = not status.startswith("D")
+        changed[new] = (
+            old,
+            _show(base, old) if in_base else None,
+            _show(head, new) if in_head else None,
+            _executable(base, old) if in_base else False,
+            _executable(head, new) if in_head else False,
+        )
     return changed
+
+
+def _registry(rev: str, *, required: bool) -> str | None:
+    if not _tree_entry(rev, REGISTRY_PATH):
+        if required:
+            raise ValueError(
+                f"{REGISTRY_PATH} is missing at {rev}; a reviewed registry is required"
+            )
+        return None
+    return _show(rev, REGISTRY_PATH).decode("utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,10 +94,16 @@ def main(argv: list[str] | None = None) -> int:
     _repo = args.repo
     try:
         changed = _changed(args.base, args.head)
-        base_registry = parse_registry(_decode(_show(args.base, REGISTRY_PATH)))
-        head_registry = parse_registry(_decode(_show(args.head, REGISTRY_PATH)))
+        # The base may predate the registry. The head never may.
+        base_registry = parse_registry(_registry(args.base, required=False))
+        head_registry = parse_registry(_registry(args.head, required=True))
     except (subprocess.CalledProcessError, ValueError) as exc:
-        print(f"outbound-send-surface-scan: ERROR {exc}", file=sys.stderr)
+        detail = (
+            exc.stderr.decode("utf-8", "replace").strip()
+            if isinstance(exc, subprocess.CalledProcessError)
+            else str(exc)
+        )
+        print(f"outbound-send-surface-scan: ERROR (refusing) {detail or exc}", file=sys.stderr)
         return 2
     verdict = assess_diff(changed, base_registry=base_registry, head_registry=head_registry)
     print(f"outbound-send-surface-scan {args.base}...{args.head}: {len(changed)} changed file(s)")
@@ -108,10 +129,6 @@ def main(argv: list[str] | None = None) -> int:
         f"{REGISTRY_PATH} (reviewed with this diff) or remove it; fix unparseable files"
     )
     return 1
-
-
-def _decode(data: bytes | None) -> str | None:
-    return None if data is None else data.decode("utf-8")
 
 
 if __name__ == "__main__":

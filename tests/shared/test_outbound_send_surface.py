@@ -70,7 +70,7 @@ def test_unparseable_python_fails_loudly() -> None:
 
 
 def _one(path: str, base: bytes | None, head: bytes | None) -> dict:
-    return {path: (path, base, head, False)}
+    return {path: (path, base, head, False, False)}
 
 
 def test_a_new_unregistered_send_path_is_unreviewed() -> None:
@@ -209,6 +209,51 @@ def test_cli_passes_a_diff_with_no_send_surface(repo: Path) -> None:
     result = _scan(repo, base, "HEAD")
     assert result.returncode == 0, result.stdout
     assert "no send surface added, removed or changed" in result.stdout
+
+
+def test_cli_refuses_when_an_added_blob_cannot_be_read(repo: Path) -> None:
+    # Fail-open fix (release-gate-scanner-fail-closed-followup-20260927 item 1):
+    # the diff says the file exists at head, but its blob is unreadable. The scan
+    # must refuse (exit 2), never read the side as absent and skip the file.
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "shared/mailer.py").write_bytes(GMAIL_SEND)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "add a sender")
+    blob = _git(repo, "rev-parse", "HEAD:shared/mailer.py")
+    (repo / ".git/objects" / blob[:2] / blob[2:]).unlink()
+    result = _scan(repo, base, "HEAD")
+    assert result.returncode == 2, result.stdout
+    assert "PASS" not in result.stdout
+
+
+def test_cli_refuses_when_the_registry_is_missing_at_head(repo: Path) -> None:
+    # Item 2: deleting the registry is a loud error, never an empty registry.
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "rm", "-q", "config/outbound-send-surfaces.yaml")
+    _git(repo, "commit", "-q", "-m", "drop the registry")
+    result = _scan(repo, base, "HEAD")
+    assert result.returncode == 2, result.stdout
+    assert "registry" in result.stderr
+
+
+def test_cli_names_a_deleted_extensionless_script_sender_as_removed(repo: Path) -> None:
+    # Item 3: the base image is classified with the BASE executable bit. A
+    # deleted extensionless script has no head bit to borrow.
+    script = repo / "scripts/hapax-mailer"
+    script.parent.mkdir()
+    script.write_text('#!/usr/bin/env bash\nsendmail -t < "$1"\n')
+    script.chmod(0o755)
+    (repo / "config/outbound-send-surfaces.yaml").write_text(
+        "surfaces:\n  - path: scripts/hapax-mailer\n    reason: reviewed\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "a registered script sender")
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "rm", "-q", "scripts/hapax-mailer")
+    _git(repo, "commit", "-q", "-m", "retire it")
+    result = _scan(repo, base, "HEAD")
+    assert result.returncode == 0, result.stdout
+    assert "removed  scripts/hapax-mailer" in result.stdout
 
 
 def test_cli_errors_on_a_malformed_registry(repo: Path) -> None:

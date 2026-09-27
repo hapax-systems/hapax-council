@@ -1558,6 +1558,11 @@ jobs:
           base="$PR_BASE"
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             base="$PR_HEAD^"
+            # A root commit has no parent: refuse rather than diff against nothing.
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "::error::outbound-send-surface-scan: no PR base and no parent of $PR_HEAD"
+              exit 1
+            fi
           fi
           uv run --no-project --with pyyaml==6.0.3 python scripts/check-outbound-send-surface-diff.py --base "$base" --head "$PR_HEAD"
 
