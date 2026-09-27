@@ -8,9 +8,11 @@ set -euo pipefail
 #
 # Moved 2026-09-27 from podium's ~/projects/distro-work/hapax-backup-remote.sh at 4e0087f (the archived distro-work
 # repository's last live copy), so the unit runs it from the activation worktree, never from a mutable checkout
-# (row tier1-backup-scripts-into-council-reland-r2-20260927). A faithful move with two changes: the restic password
-# comes from the FileStore (operator ruling 2026-09-16), and the DR restore script is uploaded from beside this
-# script (scripts/hapax-cachyos-restore.sh), under the same B2 object name as before.
+# (row tier1-backup-scripts-into-council-reland-r2-20260927). A faithful move with these changes: the restic password
+# comes from the FileStore (operator ruling 2026-09-16); the FileStore itself (~/.config/reins/secrets/) is backed up,
+# since it had been in no backup since that migration (seat exception 2026-09-27 11:55Z); the DR restore script is
+# uploaded from beside this script (scripts/hapax-cachyos-restore.sh), under the same B2 object name as before; and an
+# upload failure names its next action.
 
 # The installed entry points may be ~/.local/bin symlinks into the release tree, so the lib is resolved beside the
 # target, as in scripts/hapax-backup-watchdog.
@@ -150,6 +152,7 @@ restic backup \
     "$HOME/models/" \
     "$HOME/.gnupg/" \
     "$HOME/.password-store/" \
+    "$HOME/.config/reins/secrets/" \
     "$HOME/.ssh/" \
     "$HOME/.local/share/fonts/" \
     "$HOME/llm-stack/" \

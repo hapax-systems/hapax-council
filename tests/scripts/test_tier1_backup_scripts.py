@@ -22,9 +22,10 @@ UNITS = REPO / "systemd" / "units"
 BACKUP_SCRIPTS = ("hapax-backup-local", "hapax-backup-remote")
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
-# The DR script is podium's ~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, sha256
-# fa0dafc7…), changed in exactly two hunks by the seat's exception (2026-09-27 10:29Z): the bootstrap clone (lines
-# 22–23) and Phase 12's dump search (lines 613ff). Any other change belongs to the follow-up row, never to a silent edit.
+# The DR script is podium's ~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, whose own
+# sha256 is fa0dafc7…), changed in exactly two hunks by the seat's exception (2026-09-27 10:29Z): the bootstrap clone
+# (lines 22–23) and Phase 12's dump search (lines 613ff). DR_SCRIPT_SHA256 below is the digest of that result, not of
+# the live blob. Any other change belongs to the follow-up row, never to a silent edit.
 DR_SCRIPT_SHA256 = "195e0769d7015f61b86592a98b05d4c8f2749ec011336d4f32cebb23c9391b7b"
 
 
@@ -286,6 +287,26 @@ def test_dr_upload_failure_names_a_next_action(tmp_path: Path) -> None:
 def test_the_dr_script_is_the_live_one_plus_the_two_granted_hunks() -> None:
     digest = hashlib.sha256((SCRIPTS / "hapax-cachyos-restore.sh").read_bytes()).hexdigest()
     assert digest == DR_SCRIPT_SHA256
+
+
+def _restic_backup_paths(script: str) -> list[str]:
+    """The quoted path arguments of the script's `restic backup` command (continuation lines joined)."""
+
+    text = (SCRIPTS / script).read_text(encoding="utf-8")
+    start = text.index("restic backup \\")
+    end = text.index("\n\n", start)
+    return re.findall(r'^\s*"([^"]+)" \\$', text[start:end], re.M)
+
+
+@pytest.mark.parametrize("script", BACKUP_SCRIPTS)
+def test_the_filestore_is_backed_up_with_the_other_secret_stores(script: str) -> None:
+    """The FileStore holds the estate's secrets since the 09-16 migration, including the restic passwords these
+    scripts read; it was in no backup (seat exception 2026-09-27 11:55Z). It travels inside the encrypted repository,
+    beside ~/.password-store/ and ~/.gnupg/."""
+
+    paths = _restic_backup_paths(script)
+    assert "$HOME/.config/reins/secrets/" in paths
+    assert "$HOME/.password-store/" in paths and "$HOME/.gnupg/" in paths
 
 
 def test_remote_unit_carries_the_live_memory_policy() -> None:
