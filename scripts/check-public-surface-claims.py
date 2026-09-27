@@ -55,7 +55,28 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "agents" / "omg_web_builder" / "static" / "index.html",
     REPO_ROOT / "docs" / "publication-drafts",
 )
-SCANNABLE_SUFFIXES = {".cff", ".html", ".j2", ".json", ".md", ".py", ".yaml", ".yml"}
+#: Built public-site output is a SEPARATE surface from the registry's sources (R8's spec call-out
+#: is the site's `verify-dist`, which the registry does not name). `--built-site-dir` names one
+#: (repeatable); this env default lets a host holding the site checkout scan its built pages.
+PUBLIC_SITE_DIST_ENV = "HAPAX_PUBLIC_SITE_DIST"
+
+
+def built_site_dirs(explicit: list[Path]) -> list[Path]:
+    """Built-site directories: every explicit flag, else every path the env default names.
+
+    Every named path is returned whether or not it exists, so ``iter_files`` fails loudly on any
+    that is missing. A host without the site checkout leaves the variable unset.
+    """
+    if explicit:
+        return list(explicit)
+    env_value = os.environ.get(PUBLIC_SITE_DIST_ENV, "").strip()
+    if not env_value:
+        return []
+    return [Path(part) for part in env_value.split(os.pathsep) if part]
+
+
+#: `.htm` is scanned for the same reason `.html` is: leaving it out silently skipped `.htm` copy.
+SCANNABLE_SUFFIXES = {".cff", ".htm", ".html", ".j2", ".json", ".md", ".py", ".yaml", ".yml"}
 TOKEN_CLAIM_RULE = "Hapax.TokenCapitalClaimCeiling"
 SOURCE_DISPOSITION_RULE = "Hapax.PublicSurfaceSourceDisposition"
 GITHUB_PUBLIC_CLAIM_RULE = "Hapax.GitHubPublicClaimEvidenceGate"
@@ -1151,6 +1172,27 @@ def _malformed_freshness_timestamp_finding(state_path: Path, label: str) -> Lint
     )
 
 
+def scan_public_surface_paths(
+    paths: list[Path],
+    *,
+    token_claim_patterns: list[tuple[str, re.Pattern[str], str]],
+    github_material_envelope: GitHubMaterialEvidenceEnvelope | None,
+) -> list[LintFinding]:
+    """The gate's per-file hardening scan, one scanned file at a time.
+
+    R8's register carriage lint (``Hapax.RegisterCarriage``) is wired in through ``lint_file`` for
+    every file this loop reads, including built ``.html``/``.htm`` pages. Named so a test can drive
+    exactly what the gate runs on an emission.
+    """
+    findings: list[LintFinding] = []
+    for path in iter_files(paths):
+        findings.extend(lint_file(path))
+        findings.extend(check_token_claim_ceiling(path, token_claim_patterns))
+        if github_material_envelope is not None:
+            findings.extend(check_github_material_claims(path, github_material_envelope))
+    return findings
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path, help="files or directories to scan")
@@ -1182,6 +1224,17 @@ def main(argv: list[str] | None = None) -> int:
         "--warnings-fail",
         action="store_true",
         help="treat warnings as failures, not only errors",
+    )
+    parser.add_argument(
+        "--built-site-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "a built public-site output directory to scan by block units (repeatable); every named "
+            f"path must be a directory that exists. Unset, {PUBLIC_SITE_DIST_ENV} is used. The "
+            "canonical invocation is in docs/runbooks/public-surface-scrutiny-gate-v2.md"
+        ),
     )
     parser.add_argument(
         "--github-material-envelope",
@@ -1300,7 +1353,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    paths = args.paths or public_surface_registry_paths(public_surface_registry)
+    paths = list(args.paths or public_surface_registry_paths(public_surface_registry))
+    built_dirs = built_site_dirs(args.built_site_dir)
+    not_a_directory = [path for path in built_dirs if path.exists() and not path.is_dir()]
+    if not_a_directory:
+        print(
+            f"error: --built-site-dir (or {PUBLIC_SITE_DIST_ENV}) is not a directory: "
+            + ", ".join(str(path) for path in not_a_directory)
+            + ". Next action: name the built output DIRECTORY, not a file inside it.",
+            file=sys.stderr,
+        )
+        return 2
+    paths.extend(built_dirs)
     if github_public_surface_report is not None:
         findings.extend(
             check_github_public_surface_drift(
@@ -1339,11 +1403,33 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
         )
-    for path in iter_files(paths):
-        findings.extend(lint_file(path))
-        findings.extend(check_token_claim_ceiling(path, token_claim_patterns))
-        if github_material_envelope is not None:
-            findings.extend(check_github_material_claims(path, github_material_envelope))
+    try:
+        findings.extend(
+            scan_public_surface_paths(
+                paths,
+                token_claim_patterns=token_claim_patterns,
+                github_material_envelope=github_material_envelope,
+            )
+        )
+    except FileNotFoundError as exc:
+        missing = exc.filename or str(exc)
+        env_paths = {
+            str(Path(part))
+            for part in os.environ.get(PUBLIC_SITE_DIST_ENV, "").split(os.pathsep)
+            if part
+        }
+        if any(str(path) == str(missing) for path in args.built_site_dir):
+            remedy = "drop --built-site-dir for it"
+        elif str(missing) in env_paths:
+            remedy = f"unset or correct {PUBLIC_SITE_DIST_ENV}"
+        else:
+            remedy = "pass an existing path"
+        print(
+            f"error: scanned path not found: {missing}. Next action: {remedy}. A named built "
+            "output that is missing fails loudly, never silently.",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.json:
         print(json.dumps([finding_to_dict(f) for f in findings], indent=2, sort_keys=True))

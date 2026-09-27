@@ -377,6 +377,8 @@ def rewrite_note(
     task_id: str,
     dry_run: bool,
     vault_root: Path,
+    log_event: str = "promoted ready -> offered by cc-task-offer-ready",
+    require_unset_claimable: bool = False,
 ) -> int:
     from shared.task_note_lock import TaskNoteLockError
 
@@ -392,6 +394,8 @@ def rewrite_note(
             task_id=task_id,
             dry_run=dry_run,
             vault_root=vault_root,
+            log_event=log_event,
+            require_unset_claimable=require_unset_claimable,
         )
     except TaskNoteLockError as exc:
         # An operator-facing refusal, not a crash: executive_function requires the message
@@ -409,6 +413,8 @@ def _promote_under_lock(
     task_id: str,
     dry_run: bool,
     vault_root: Path,
+    log_event: str,
+    require_unset_claimable: bool = False,
 ) -> int:
     from shared.task_note_lock import projected_path_lock
 
@@ -456,6 +462,17 @@ def _promote_under_lock(
                 file=sys.stderr,
             )
             return 4
+        # An explicit `claimable` is somebody's decision. The offered -> claimable path checked
+        # for one before this lock existed; a hold written in that window must stop it here.
+        claimable_now = _explicit_claimable(current)
+        if require_unset_claimable and claimable_now is not None:
+            print(
+                f"cc-task-offer-ready: '{task_id}' gained an explicit `claimable: "
+                f"{claimable_now}` while acquiring its lock — not marking it; clear the hold "
+                "through its owner",
+                file=sys.stderr,
+            )
+            return 4
         try:
             _rewrite_note_locked(
                 path=path,
@@ -463,6 +480,7 @@ def _promote_under_lock(
                 route_changes=route_changes,
                 timestamp=timestamp,
                 dry_run=dry_run,
+                log_event=log_event,
             )
         except FileNotFoundError:
             print(
@@ -474,6 +492,18 @@ def _promote_under_lock(
         return 0
 
 
+def _explicit_claimable(text: str) -> str | None:
+    """The note's explicit frontmatter `claimable` value, or None when absent or null."""
+
+    lines, _suffix = split_frontmatter(text)
+    for line in lines:
+        match = re.match(r"^claimable:\s*(.*?)\s*$", line)
+        if match:
+            value = match.group(1).strip("'\"")
+            return None if value in ("", "null", "~") else value
+    return None
+
+
 def _rewrite_note_locked(
     *,
     path: Path,
@@ -481,12 +511,18 @@ def _rewrite_note_locked(
     route_changes: dict[str, str],
     timestamp: str,
     dry_run: bool,
+    log_event: str,
 ) -> None:
     """The read-modify-write itself. Called only with the projection lock held."""
 
     text = path.read_text(encoding="utf-8")
     lines, suffix = split_frontmatter(text)
     replace_or_insert_scalar(lines, "status", status)
+    # cc-claim requires an explicit `claimable: true`; this promotion is the
+    # lifecycle projection that grants it (M77: nothing else ever wrote it). It
+    # only fills an absent value: an explicit one, `false` above all, is a hold.
+    if _explicit_claimable(text) is None:
+        replace_or_insert_scalar(lines, "claimable", "true")
     replace_or_insert_scalar(lines, "assigned_to", "unassigned")
     replace_or_insert_scalar(lines, "updated_at", timestamp)
     replace_or_insert_scalar(lines, "claimed_at", "null")
@@ -494,7 +530,7 @@ def _rewrite_note_locked(
         replace_or_insert_scalar(lines, key, value)
 
     next_text = "---\n" + "\n".join(lines).rstrip() + "\n" + suffix
-    log_line = f"- {timestamp} promoted ready -> offered by cc-task-offer-ready"
+    log_line = f"- {timestamp} {log_event}"
     if "## Session log\n" in next_text:
         next_text = next_text.replace("## Session log\n", f"## Session log\n{log_line}\n", 1)
     else:
@@ -507,26 +543,9 @@ def _rewrite_note_locked(
     tmp.replace(path)
 
 
-def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
-    task_path = locate_task(vault_root, task_id)
-    if task_path is None or task_path.parent.name != "active":
-        print(
-            f"cc-task-offer-ready: task '{task_id}' not found in {vault_root / 'active'}",
-            file=sys.stderr,
-        )
-        return 2
+def offer_blocker(task_id: str, fields: dict[str, Any], *, vault_root: Path) -> int:
+    """Return the refusal code for an unofferable task, or 0; print the refusal."""
 
-    fields = parse_fields(task_path)
-    status = strip_scalar(fields.get("status", ""))
-    if status == "offered":
-        print(f"cc-task-offer-ready: task '{task_id}' is already offered")
-        return 0
-    if status != "ready":
-        print(
-            f"cc-task-offer-ready: refusing task '{task_id}' with status {status!r}; expected 'ready'",
-            file=sys.stderr,
-        )
-        return 4
     if not is_claimable_assignee(fields.get("assigned_to")):
         print(
             f"cc-task-offer-ready: refusing task '{task_id}' assigned to "
@@ -554,6 +573,80 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
         for blocker in blockers:
             print(f"  - {blocker}", file=sys.stderr)
         return 5
+    return 0
+
+
+def mark_offered_claimable(
+    task_id: str,
+    task_path: Path,
+    fields: dict[str, Any],
+    *,
+    vault_root: Path,
+    dry_run: bool,
+) -> int:
+    """Grant `claimable: true` to a row minted straight to `offered` without it (M77).
+
+    The row's own offering already happened, so route metadata is not re-judged
+    here; assignee, authority and dependencies are. An explicit value is never
+    overridden: `claimable: false` is somebody's hold.
+    """
+
+    claimable = fields.get("claimable")
+    if claimable is True:
+        print(f"cc-task-offer-ready: task '{task_id}' is already offered and claimable")
+        return 0
+    if claimable is not None:
+        print(
+            f"cc-task-offer-ready: refusing task '{task_id}': claimable is explicitly "
+            f"{claimable!r}; clear the hold through its owner, not this tool",
+            file=sys.stderr,
+        )
+        return 4
+    rc = offer_blocker(task_id, fields, vault_root=vault_root)
+    if rc:
+        return rc
+    rc = rewrite_note(
+        path=task_path,
+        status="offered",
+        route_changes={},
+        timestamp=now_utc(),
+        task_id=task_id,
+        dry_run=dry_run,
+        vault_root=vault_root,
+        log_event="marked claimable by cc-task-offer-ready (offered row lacked claimable: true)",
+        require_unset_claimable=True,
+    )
+    if rc != 0:
+        return rc
+    mode = "dry-run would mark" if dry_run else "marked"
+    print(f"cc-task-offer-ready: {mode} offered task '{task_id}' claimable")
+    return 0
+
+
+def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
+    task_path = locate_task(vault_root, task_id)
+    if task_path is None or task_path.parent.name != "active":
+        print(
+            f"cc-task-offer-ready: task '{task_id}' not found in {vault_root / 'active'}",
+            file=sys.stderr,
+        )
+        return 2
+
+    fields = parse_fields(task_path)
+    status = strip_scalar(fields.get("status", ""))
+    if status == "offered":
+        return mark_offered_claimable(
+            task_id, task_path, fields, vault_root=vault_root, dry_run=dry_run
+        )
+    if status != "ready":
+        print(
+            f"cc-task-offer-ready: refusing task '{task_id}' with status {status!r}; expected 'ready'",
+            file=sys.stderr,
+        )
+        return 4
+    rc = offer_blocker(task_id, fields, vault_root=vault_root)
+    if rc:
+        return rc
 
     normalized_fields, route_changes = normalized_route_fields(fields)
     candidate_fields = {

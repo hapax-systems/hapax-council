@@ -10,6 +10,17 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-source-activate"
+# M79: the cc-* tools the runbooks tell lanes to run, published on PATH from the release.
+MANAGED_CC_TOOLS = (
+    "cc-cascade-unblock",
+    "cc-claim",
+    "cc-close",
+    "cc-scope-widen",
+    "cc-stage-advance",
+    "cc-task-lint",
+    "cc-task-offer-ready",
+    "cc-task-repair",
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -99,8 +110,8 @@ def _make_repos(tmp_path: Path) -> tuple[Path, Path, str]:
         ),
         executable=True,
     )
-    _write(seed / "scripts" / "cc-claim", "#!/usr/bin/env bash\nexit 0\n", executable=True)
-    _write(seed / "scripts" / "cc-close", "#!/usr/bin/env bash\nexit 0\n", executable=True)
+    for tool in MANAGED_CC_TOOLS:
+        _write(seed / "scripts" / tool, "#!/usr/bin/env bash\nexit 0\n", executable=True)
     _git(seed, "add", ".")
     _git(seed, "commit", "-m", "base")
     _git(seed, "remote", "add", "origin", str(origin))
@@ -4359,8 +4370,27 @@ def test_activation_sweeps_cc_task_tools_into_local_bin(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     local_bin = tmp_path / "home" / ".local" / "bin"
     active_source = tmp_path / "active-source"
-    assert os.readlink(local_bin / "cc-claim") == str(active_source / "scripts" / "cc-claim")
-    assert os.readlink(local_bin / "cc-close") == str(active_source / "scripts" / "cc-close")
+    for tool in MANAGED_CC_TOOLS:
+        assert os.readlink(local_bin / tool) == str(active_source / "scripts" / tool), tool
+
+
+def test_every_cc_tool_a_runbook_names_is_published_on_path() -> None:
+    """M79: runbooks told lanes to run cc-scope-widen, cc-stage-advance and others, but
+    activation linked only cc-claim and cc-close, so the wrong copy (or none) ran."""
+    import re
+
+    published = re.search(r"^MANAGED_CC_TOOLS=\(([^)]*)\)", SCRIPT.read_text(), re.MULTILINE)
+    assert published is not None
+    assert tuple(published.group(1).split()) == MANAGED_CC_TOOLS
+
+    named = set()
+    for runbook in (REPO_ROOT / "docs" / "runbooks").glob("*.md"):
+        named.update(re.findall(r"\bcc-[a-z][a-z0-9-]*\b", runbook.read_text(encoding="utf-8")))
+    tools = {n for n in named if (REPO_ROOT / "scripts" / n).is_file()}
+    tools = {n for n in tools if os.access(REPO_ROOT / "scripts" / n, os.X_OK)}
+
+    assert tools, "the scan found no runbook-named cc-* tools"
+    assert tools <= set(MANAGED_CC_TOOLS), sorted(tools - set(MANAGED_CC_TOOLS))
 
 
 def test_activation_preserves_release_pinned_regular_launcher(tmp_path: Path) -> None:
@@ -4602,3 +4632,89 @@ def test_cumulative_since_passed_when_previous_success_is_ancestor(tmp_path: Pat
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "completed"
     assert receipt["origin_main_sha"] == sha2
+
+
+# ── post-deploy governed re-provision of the Gate-0B install ─────────────────
+# gate0b-post-deploy-governed-reprovision-20260927
+
+
+def _fake_reprovision(tmp_path: Path, *, exit_code: int, outcome: str) -> tuple[Path, Path]:
+    record = tmp_path / "reprovision-args.txt"
+    fake = tmp_path / "fake-reprovision"
+    fake.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {record}\necho '{outcome}'\nexit {exit_code}\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake, record
+
+
+def test_a_successful_activation_reprovisions_the_claim_install(tmp_path: Path) -> None:
+    canonical, _origin, sha = _make_repos(tmp_path)
+    fake, record = _fake_reprovision(tmp_path, exit_code=0, outcome='{"action": "reprovisioned"}')
+
+    result = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert record.read_text(encoding="utf-8").split() == [
+        "reprovision",
+        "--repo",
+        str(tmp_path / "active-source"),
+        "--head",
+        sha,
+    ]
+    last = tmp_path / "state" / "gate0b-reprovision-last.json"
+    assert '"reprovisioned"' in last.read_text(encoding="utf-8")
+    assert _current_receipt(tmp_path)["status"] == "completed"
+
+
+def test_a_held_reprovision_is_reported_and_never_fails_the_activation(tmp_path: Path) -> None:
+    canonical, _origin, _sha = _make_repos(tmp_path)
+    fake, _record = _fake_reprovision(
+        tmp_path,
+        exit_code=3,
+        outcome='{"action": "held", "reason_code": "gate0b_reprovision_unexplained"}',
+    )
+
+    result = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "gate0b re-provision HELD" in result.stderr
+    assert "gate0b_reprovision_unexplained" in result.stderr
+    assert "Next action:" in result.stderr
+    assert _current_receipt(tmp_path)["status"] == "completed"
+
+
+def test_a_skip_deploy_activation_also_reprovisions(tmp_path: Path) -> None:
+    # The release is switched either way, so the install is checked either way.
+    canonical, _origin, sha = _make_repos(tmp_path)
+    fake, record = _fake_reprovision(tmp_path, exit_code=0, outcome='{"action": "current"}')
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        extra_args=["--skip-deploy"],
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert record.read_text(encoding="utf-8").split()[-1] == sha
+
+
+def test_a_failed_deploy_never_reprovisions(tmp_path: Path) -> None:
+    canonical, _origin, _sha = _make_repos(tmp_path)
+    fake, record = _fake_reprovision(tmp_path, exit_code=0, outcome='{"action": "current"}')
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        deploy_exit=1,
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)},
+    )
+
+    assert result.returncode != 0
+    assert not record.exists()

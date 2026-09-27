@@ -376,3 +376,84 @@ def test_storm_mode_still_holds_a_fresh_evidence_pr(
         reason.startswith("storm_admission_hold:") for reason in decisions[13].get("reasons", [])
     )
     assert not any(call[:4] == ["gh", "pr", "merge", "13"] for call in runner.calls)
+
+
+# ── (e) a seat release stamp is fresh evidence ─────────────────────────────
+# admission-encode-seat-t2-release-rule-20260925: #4759 was stamped at 08:07Z, 32 min after its
+# 07:35Z examination, and sat at rotation rank 62/130 (~3 h) because a stamp is a note edit,
+# not a receipt or dossier.
+
+
+def _stamp(
+    vault: Path, number: int, *, mtime: datetime, head: str | None = None, authorized: bool = True
+) -> Path:
+    extra: dict[str, object] = {"release_authorized": authorized}
+    if head is not None:
+        extra["release_authorized_head_sha"] = head
+    path = _write_task(vault, task_id=f"task-{number}", pr=number, extra_frontmatter=extra)
+    _set_mtime(path, mtime)
+    return path
+
+
+def _examined_estate(tmp_path: Path) -> tuple[RotationRunner, Path, datetime]:
+    runner, vault = _estate(tmp_path, count=25, linked=[13])
+    _set_mtime(vault / "active" / "task-13.md", datetime.now(UTC) - timedelta(hours=1))
+    for _ in range(3):
+        tick(tmp_path, runner, vault)
+    _age_rotation_state(tmp_path, 120)
+    return runner, vault, _examined_at(tmp_path, 13)
+
+
+@pytest.mark.parametrize(
+    ("head", "authorized", "offset_s"),
+    [
+        (None, True, 21),  # a note edit that stamps no head
+        ("sha-old", True, 21),  # a stamp for a head the PR no longer has
+        ("sha-13", False, 21),  # the head is named, but release is not authorized
+        ("sha-13", True, -21),  # a stamp the last examination already saw
+    ],
+)
+def test_a_note_edit_that_is_not_a_current_head_stamp_keeps_the_rotation(
+    tmp_path: Path, head: str | None, authorized: bool, offset_s: int
+) -> None:
+    runner, vault, last_exam = _examined_estate(tmp_path)
+    _stamp(
+        vault, 13, head=head, authorized=authorized, mtime=last_exam + timedelta(seconds=offset_s)
+    )
+    report = tick(tmp_path, runner, vault)
+    assert examined(report) == [16, 17, 18, 19, 20]
+    assert report["must_include"]["fresh_evidence"] == []
+
+
+def test_an_unreadable_stamped_note_is_not_evidence(tmp_path: Path) -> None:
+    # The stamp probe's fallback narrows: a note that cannot be stat'ed is not fresh.
+    vault = _make_vault(tmp_path)
+    path = _stamp(vault, 13, head="sha-13", mtime=datetime.now(UTC) - timedelta(minutes=1))
+    task = autoqueue.load_task_notes(vault)[0]
+    since = datetime.now(UTC) - timedelta(hours=1)
+    assert autoqueue._release_stamp_newer_than(task, "sha-13", since, now=datetime.now(UTC))
+    path.unlink()
+    assert not autoqueue._release_stamp_newer_than(task, "sha-13", since, now=datetime.now(UTC))
+
+
+def test_a_future_dated_stamp_never_jumps_the_rotation(tmp_path: Path) -> None:
+    runner, vault, _ = _examined_estate(tmp_path)
+    _stamp(vault, 13, head="sha-13", mtime=datetime.now(UTC) + timedelta(days=365))
+    report = tick(tmp_path, runner, vault)
+    assert examined(report) == [16, 17, 18, 19, 20]
+    assert report["must_include"]["fresh_evidence"] == []
+
+
+def test_a_seat_release_stamp_at_the_current_head_is_examined_next_tick(tmp_path: Path) -> None:
+    runner, vault, last_exam = _examined_estate(tmp_path)
+    after = last_exam + timedelta(seconds=21)
+    _stamp(vault, 13, head="sha-13", mtime=after)
+    runner.calls.clear()
+    report = tick(tmp_path, runner, vault)
+    assert 13 in examined(report)
+    assert 13 in runner.hydrated_numbers()  # a full exam, not the refresh path
+    assert report["must_include"]["fresh_evidence"] == [13]
+    assert _examined_at(tmp_path, 13) > after
+    report = tick(tmp_path, runner, vault)
+    assert 13 not in examined(report)  # one-shot
+    assert report["must_include"]["fresh_evidence"] == []

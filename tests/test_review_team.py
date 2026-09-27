@@ -975,20 +975,294 @@ class TestDistinctFamilyFloor:
         assert blocker in blockers
 
 
+class TestSeatT2FamilyFloorRelease:
+    """admission-encode-seat-t2-release-rule-20260925, the seat's 00:24Z rule: for a T2 row
+    reviewed as t2_standard, the accept quorum with at least one accept from a family other
+    than the writer's satisfies the every-seat-voted floor, and nothing else. A T1 row or a
+    t1_critical team keeps its floor, an accept from the writer's family never counts, and a
+    dossier that met the floor takes the path it always did."""
+
+    FLOOR = "review_dossier_below_family_floor:voting=2/seated=3"
+    NO_QUORUM = "review_team_verdict_not_quorum_accept:no-quorum"
+
+    def _frontmatter(self, risk_tier: str = "T2", assigned_to: str = "zeta") -> dict:
+        return {"task_id": "task-x", "risk_tier": risk_tier, "assigned_to": assigned_to}
+
+    def _writer_seat_dead(self, rt, **kwargs) -> dict:
+        # #4778's seats: gemini and local accept, the writer's family (claude) is invalid-output.
+        return _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "accept"),
+                _review("local-1", "local", "accept"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            writer_family="claude",
+            **kwargs,
+        )
+
+    def _blockers(self, rt, dossier, frontmatter, *, registry=None, sink=None) -> tuple:
+        return rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=registry or rt.load_lens_registry(),
+            frontmatter=frontmatter,
+            route_blocked_families={},
+            floor_release_out=sink,
+        )
+
+    # -- unsafe cases first ----------------------------------------------------------------
+
+    @pytest.mark.parametrize("risk_tier", ["T1", "T3", ""])
+    def test_a_row_that_is_not_t2_keeps_its_floor(self, risk_tier: str) -> None:
+        rt = _load_review_team_module()
+        sink: dict = {}
+        blockers = self._blockers(
+            rt, self._writer_seat_dead(rt), self._frontmatter(risk_tier), sink=sink
+        )
+        assert self.FLOOR in blockers
+        assert self.NO_QUORUM in blockers
+        assert sink == {}
+
+    def test_a_t1_critical_team_keeps_its_floor_on_a_t2_row(self) -> None:
+        # A T2 row whose diff touches a declared T1 surface is reviewed t1_critical; the
+        # quorum count is met here, so only the tier stops the rule.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+                _review("local-1", "local", "accept"),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            team_class="t1_critical",
+            writer_family="claude",
+        )
+        sink: dict = {}
+        blockers = self._blockers(rt, dossier, self._frontmatter(), sink=sink)
+        assert "review_dossier_below_family_floor:voting=3/seated=4" in blockers
+        assert sink == {}
+
+    def test_an_accept_from_the_writers_family_does_not_count(self) -> None:
+        # With a registry whose t2 quorum is one accept, only the rule's own distinct-family
+        # clause can refuse a quorum the writer's family met alone.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reg["sizing"]["t2_standard"] = {
+            **reg["sizing"]["t2_standard"],
+            "quorum_accept": 1,
+            "min_families": 1,
+        }
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "invalid-output"),
+                _review("local-1", "local", "invalid-output"),
+            ],
+            writer_family="claude",
+        )
+        sink: dict = {}
+        blockers = self._blockers(rt, dossier, self._frontmatter(), registry=reg, sink=sink)
+        assert "review_dossier_below_family_floor:voting=1/seated=3" in blockers
+        assert sink == {}
+
+    def test_the_rows_writer_family_counts_as_the_writers_too(self) -> None:
+        # The dossier recorded claude; the row now names a codex lane. Neither family's accept
+        # is distinct from the writer's, so the floor stands.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "invalid-output"),
+            ],
+            writer_family="claude",
+        )
+        sink: dict = {}
+        blockers = self._blockers(rt, dossier, self._frontmatter(assigned_to="cx-blue"), sink=sink)
+        assert self.FLOOR in blockers
+        assert sink == {}
+
+    def test_a_short_quorum_is_not_rescued(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "accept"),
+                _review("local-1", "local", "invalid-output"),
+                _review("codex-1", "codex", "invalid-output"),
+            ],
+            writer_family="claude",
+        )
+        sink: dict = {}
+        blockers = self._blockers(rt, dossier, self._frontmatter(), sink=sink)
+        assert "review_dossier_below_family_floor:voting=1/seated=3" in blockers
+        assert "review_dossier_quorum_not_met:1/2" in blockers
+        assert sink == {}
+
+    def test_a_reseat_is_not_rescued(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "accept"),
+                _review("local-1", "local", "accept"),
+                _review("gemini-2", "gemini", "invalid-output"),
+            ],
+            writer_family="claude",
+        )
+        sink: dict = {}
+        blockers = self._blockers(rt, dossier, self._frontmatter(), sink=sink)
+        assert "review_dossier_same_family_reseat:gemini" in blockers
+        assert self.NO_QUORUM in blockers
+        assert sink == {}
+
+    def test_a_blocked_verdict_is_never_excused(self) -> None:
+        rt = _load_review_team_module()
+        dossier = self._writer_seat_dead(rt)
+        dossier["review_team_verdict"] = "blocked"
+        blockers = self._blockers(rt, dossier, self._frontmatter())
+        assert "review_team_verdict_not_quorum_accept:blocked" in blockers
+
+    def test_a_named_critical_still_blocks_under_the_rule(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("gemini-1", "gemini", "accept"),
+                _review("local-1", "local", "accept"),
+                _review("codex-1", "codex", "block", findings=[_critical()]),
+                _review("claude-1", "claude", "invalid-output"),
+            ],
+            writer_family="claude",
+        )
+        blockers = self._blockers(rt, dossier, self._frontmatter())
+        assert "review_dossier_unresolved_critical:1" in blockers
+
+    def test_an_unresolvable_writer_or_quorum_refuses_the_rule(self) -> None:
+        # The rule's fallback narrows: a retired writer lane, or a registry without the t2
+        # quorum, returns no release rather than raising or guessing.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = self._writer_seat_dead(rt)
+        accepts = [r for r in dossier["reviewers"] if r["verdict"] == "accept"]
+        assert rt.t2_family_floor_release(
+            dossier, frontmatter=self._frontmatter(), registry=reg, accepts=accepts
+        )
+        assert (
+            rt.t2_family_floor_release(
+                dossier,
+                frontmatter=self._frontmatter(assigned_to="agy-1"),
+                registry=reg,
+                accepts=accepts,
+            )
+            is None
+        )
+        no_quorum = {**reg, "sizing": {**reg["sizing"], "t2_standard": {}}}
+        assert (
+            rt.t2_family_floor_release(
+                dossier, frontmatter=self._frontmatter(), registry=no_quorum, accepts=accepts
+            )
+            is None
+        )
+
+    # -- the floor-met path is unchanged ---------------------------------------------------
+
+    def test_a_dossier_that_met_the_floor_never_consults_the_rule(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("muse-1", "muse", "accept-with-findings"),
+            ],
+            writer_family="claude",
+        )
+        sink: dict = {}
+        assert self._blockers(rt, dossier, self._frontmatter(), sink=sink) == ()
+        assert sink == {}
+
+    def test_a_recorded_no_quorum_that_met_the_floor_still_blocks(self) -> None:
+        # The recorded no-quorum is excused by the rule alone, never on its own.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),
+            ],
+            writer_family="claude",
+        )
+        dossier["review_team_verdict"] = "no-quorum"
+        blockers = self._blockers(rt, dossier, self._frontmatter())
+        assert blockers == (self.NO_QUORUM,)
+
+    # -- the rule ---------------------------------------------------------------------------
+
+    def test_a_t2_row_releases_on_a_distinct_family_accept_quorum(self) -> None:
+        rt = _load_review_team_module()
+        dossier = self._writer_seat_dead(rt)
+        assert dossier["review_team_verdict"] == "no-quorum"  # recorded as it always was
+        sink: dict = {}
+        assert self._blockers(rt, dossier, self._frontmatter(), sink=sink) == ()
+        assert sink["rule"] == rt.T2_FAMILY_FLOOR_RELEASE_RULE
+        assert sink["authority"] == rt.T2_FAMILY_FLOOR_RELEASE_AUTHORITY
+        assert sink["tier"] == {"row_risk_tier": "T2", "team_class": "t2_standard"}
+        assert sink["writer_families"] == ["claude"]
+        assert (sink["accept_count"], sink["quorum_required"]) == (2, 2)
+        assert sink["distinct_family_accepts"] == [
+            {"id": "gemini-1", "family": "gemini"},
+            {"id": "local-1", "family": "local"},
+        ]
+        assert sink["seated_families"] == ["claude", "gemini", "local"]
+        assert sink["voting_families"] == ["gemini", "local"]
+        assert sink["non_voting_seats"] == [
+            {"id": "claude-1", "family": "claude", "verdict": "invalid-output"}
+        ]
+
+    def test_the_admission_gate_reads_the_rule(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._writer_seat_dead(rt))
+        frontmatter = self._frontmatter()
+        assert rt.review_team_verdict_blockers(frontmatter, note, pr_head_sha="a" * 40) == ()
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter("T1"), note, pr_head_sha="a" * 40
+        )
+        assert self.FLOOR in blockers
+
+
 def _review(
     reviewer_id: str,
     family: str,
     verdict: str = "accept",
     findings: list[dict] | None = None,
     checklist: dict | None = None,
+    *,
+    diff_full_bytes: int | None = 1000,
+    diff_delivered_bytes: int | None = None,
+    diff_full_fetch_witnessed: bool = False,
 ) -> dict:
-    return {
+    record = {
         "id": reviewer_id,
         "family": family,
         "verdict": verdict,
         "findings": findings or [],
         "checklist": (checklist if checklist is not None else ALWAYS_ON_CHECKLIST),
     }
+    # The dispatcher stamps per-seat diff coverage on every review record;
+    # diff_full_bytes=None builds a pre-coverage (legacy) record shape.
+    if diff_full_bytes is not None:
+        record["diff_full_bytes"] = diff_full_bytes
+        record["diff_delivered_bytes"] = (
+            diff_full_bytes if diff_delivered_bytes is None else diff_delivered_bytes
+        )
+        record["diff_full_fetch_witnessed"] = diff_full_fetch_witnessed
+    return record
 
 
 def _critical(title: str = "named critical", resolved: bool = False) -> dict:
@@ -1195,6 +1469,252 @@ def _write_dossier(tmp_path: Path, task_id: str, dossier: dict) -> Path:
     dossier_path = tmp_path / f"{task_id}.review-dossier.yaml"
     dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
     return note
+
+
+class TestDiffCoverageQuorum:
+    """M142 corollary: a seat that reviewed a truncated diff may stop a merge but
+    never certify one — partial evidence does not count toward quorum."""
+
+    def _frontmatter(self, task_id: str = "task-x") -> dict:
+        return {"task_id": task_id}
+
+    def _precoverage_dossier(self, rt) -> dict:
+        """The shape a pre-coverage dispatcher wrote: no coverage stamps, and the
+        verdict/accept_count the old rule recorded (it counted every accept)."""
+
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", diff_full_bytes=None),
+                _review("gemini-1", "gemini", "accept", diff_full_bytes=None),
+                _review("claude-1", "claude", "accept", diff_full_bytes=None),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        dossier["accept_count"] = 3
+        dossier["escalations"] = []
+        return dossier
+
+    def test_truncated_diff_accept_does_not_reach_quorum(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept", diff_delivered_bytes=220),
+                _review("claude-1", "claude", "accept", diff_delivered_bytes=220),
+            ],
+        )
+        assert dossier["accept_count"] == 1
+        assert dossier["review_team_verdict"] == "no-quorum"
+        partial = [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+        assert {e["reviewer"] for e in partial} == {"gemini-1", "claude-1"}
+        by_id = {r["id"]: r for r in dossier["reviewers"]}
+        assert by_id["gemini-1"]["diff_full_bytes"] == 1000
+        assert by_id["gemini-1"]["diff_delivered_bytes"] == 220
+        assert by_id["gemini-1"]["diff_full_fetch_witnessed"] is False
+
+    def test_full_fetch_witnessed_accept_reaches_quorum(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review(
+                    "gemini-1",
+                    "gemini",
+                    "accept",
+                    diff_delivered_bytes=220,
+                    diff_full_fetch_witnessed=True,
+                ),
+                _review(
+                    "claude-1",
+                    "claude",
+                    "accept",
+                    diff_delivered_bytes=220,
+                    diff_full_fetch_witnessed=True,
+                ),
+            ],
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert not [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+
+    def test_partial_seat_critical_still_blocks(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("claude-1", "claude", "block", [_critical()], diff_delivered_bytes=220),
+            ],
+        )
+        assert dossier["review_team_verdict"] == "blocked"
+        assert any(e["kind"] == "unresolved-critical" for e in dossier["escalations"])
+
+    def test_small_pr_full_coverage_unchanged(self) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", diff_full_bytes=300),
+                _review("gemini-1", "gemini", "accept", diff_full_bytes=300),
+                _review("claude-1", "claude", "accept", diff_full_bytes=300),
+            ],
+        )
+        assert dossier["accept_count"] == 3
+        assert dossier["review_team_verdict"] == "quorum-accept"
+        assert not [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+
+    def test_unrecorded_coverage_accept_does_not_certify(self) -> None:
+        # Pre-coverage dossiers carry no proof the seat saw the whole diff; fail closed.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", diff_full_bytes=None),
+                _review("gemini-1", "gemini", "accept", diff_full_bytes=None),
+                _review("claude-1", "claude", "accept", diff_full_bytes=None),
+            ],
+        )
+        assert dossier["accept_count"] == 0
+        assert dossier["review_team_verdict"] == "no-quorum"
+        partial = [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
+        assert len(partial) == 3
+
+    def test_partial_accept_names_seat_and_oversize_remedy_in_blockers(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept", diff_delivered_bytes=220),
+                _review("claude-1", "claude", "accept", diff_delivered_bytes=220),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_seat_partial_coverage:gemini-1" in blockers
+        assert "review_seat_partial_coverage:claude-1" in blockers
+        assert "review_diff_truncated_split_or_full_fetch:220/1000" in blockers
+        assert "review_dossier_quorum_not_met:1/2" in blockers
+
+    def test_full_fetch_witnessed_dossier_passes_gate(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review(
+                    "gemini-1",
+                    "gemini",
+                    "accept",
+                    diff_delivered_bytes=220,
+                    diff_full_fetch_witnessed=True,
+                ),
+                _review(
+                    "claude-1",
+                    "claude",
+                    "accept",
+                    diff_delivered_bytes=220,
+                    diff_full_fetch_witnessed=True,
+                ),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert not [b for b in blockers if "partial_coverage" in b or "split_or_full_fetch" in b]
+
+    def test_unrecorded_coverage_blocks_without_oversize_remedy(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept", diff_full_bytes=None),
+                _review("gemini-1", "gemini", "accept", diff_full_bytes=None),
+                _review("claude-1", "claude", "accept", diff_full_bytes=None),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
+        assert "review_seat_partial_coverage:codex-1" in blockers
+        assert not [b for b in blockers if "split_or_full_fetch" in b]
+
+    def test_precoverage_dossier_on_small_diff_keeps_certification(self, tmp_path: Path) -> None:
+        # Seat ruling 2026-09-26: an unstamped dossier derives coverage from the
+        # dispatcher-measured full diff size at the dossier head; at or under the
+        # dispatcher's truncation threshold the seats saw the whole diff.
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._precoverage_dossier(rt))
+        calls: list[tuple[int, str]] = []
+
+        def measurer(pr_number: int, head_sha: str) -> int:
+            calls.append((pr_number, head_sha))
+            return 48_000
+
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(), note, pr_head_sha="a" * 40, diff_size_measurer=measurer
+        )
+        assert blockers == ()
+        assert calls and calls[0][1] == "a" * 40
+
+    def test_precoverage_dossier_on_oversize_diff_loses_certification(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._precoverage_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            diff_size_measurer=lambda _pr, _sha: 235_477,
+        )
+        assert "review_seat_partial_coverage:codex-1" in blockers
+        assert "review_seat_partial_coverage:gemini-1" in blockers
+        assert "review_seat_partial_coverage:claude-1" in blockers
+        assert "review_diff_truncated_split_or_full_fetch:80000/235477" in blockers
+        assert "review_dossier_quorum_not_met:0/2" in blockers
+        # The recorded verdict was honestly quorum-accept under the old rule; the gate
+        # blocks on the recomputed quorum, not on a verdict-field mismatch.
+        assert "review_team_verdict_not_quorum_accept:quorum-accept" not in blockers
+
+    def test_precoverage_dossier_unmeasurable_fails_closed(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._precoverage_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            diff_size_measurer=lambda _pr, _sha: None,
+        )
+        assert "review_seat_partial_coverage:codex-1" in blockers
+        assert "review_seat_partial_coverage:gemini-1" in blockers
+        assert "review_seat_partial_coverage:claude-1" in blockers
+        assert not [b for b in blockers if "split_or_full_fetch" in b]
+
+    def test_stamped_partial_dossier_does_not_call_the_measurer(self, tmp_path: Path) -> None:
+        # The stamp is authoritative: a recorded partial stays partial, and no
+        # measurement is even attempted when every accept carries a stamp.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept", diff_delivered_bytes=220),
+                _review("claude-1", "claude", "accept", diff_delivered_bytes=220),
+            ],
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        calls: list[tuple[int, str]] = []
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            diff_size_measurer=lambda pr, sha: calls.append((pr, sha)) or 48_000,
+        )
+        assert "review_seat_partial_coverage:gemini-1" in blockers
+        assert calls == []
 
 
 class TestVerdictBlockers:

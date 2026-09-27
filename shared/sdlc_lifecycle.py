@@ -387,12 +387,24 @@ def _route_metadata_validation_blockers(frontmatter: Mapping[str, Any]) -> tuple
     return tuple(f"route_metadata:{reason}" for reason in assessment.validation_errors)
 
 
+def _accepted_before_close(
+    frontmatter: Mapping[str, Any], status: str, note_path: Path | None
+) -> bool:
+    if note_path is None or not status or status in TASK_TERMINAL_STATUSES:
+        return False
+    task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
+    if not task_id:
+        return False
+    return not _acceptance_receipt_validity_blockers(acceptance_receipt_path(note_path, task_id))
+
+
 def task_closure_validity(
     text: str,
     *,
     pr_state_lookup: PrStateLookup | None = None,
     require_route_metadata: bool = False,
     require_route_metadata_validity: bool = False,
+    note_path: Path | None = None,
 ) -> TaskClosureValidity:
     """Validate that a cc-task closure may satisfy downstream work.
 
@@ -400,6 +412,12 @@ def task_closure_validity(
     terminal status, no unchecked Acceptance criteria boxes, a merged declared
     PR when a PR can be checked, and valid route metadata when that surface is
     required by the caller.
+
+    Given ``note_path``, a still-active task whose valid acceptance receipt sits
+    beside it (the same receipt authority the close gate reads) satisfies the
+    status requirement: accepted work stops blocking its successor before it is
+    closed (M102). A terminal non-fulfilling status is never revived, and every
+    other requirement still applies.
     """
 
     frontmatter = frontmatter_from_text(text)
@@ -408,7 +426,9 @@ def task_closure_validity(
 
     if status == "blocked":
         blockers.extend(active_blocked_task_blockers(frontmatter))
-    elif status not in TASK_FULFILLING_CLOSED_STATUSES:
+    elif status not in TASK_FULFILLING_CLOSED_STATUSES and not _accepted_before_close(
+        frontmatter, status, note_path
+    ):
         blockers.append(f"status_not_fulfilling:{status or 'missing'}")
 
     ac_state = acceptance_criteria_state(text)
@@ -457,6 +477,7 @@ SENSITIVE_RISK_FLAGS = (
     "governance_sensitive",
     "public_claim_sensitive",
     "audio_or_live_egress_sensitive",
+    "outbound_message_egress_sensitive",
     "privacy_or_secret_sensitive",
     "provider_billing_sensitive",
 )
@@ -508,6 +529,36 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # CORRECTNESS of such a change is separately gated by the general test/review
     # checks every PR already carries.
     "privacy_or_secret_sensitive": ("secrets-scan",),
+    # An audio/live-egress change (audio routing, live broadcast, the session-send
+    # relay boundary) needs three layers of evidence. First, the behavioural
+    # egress pins (egress-boundary-pin). Second, the authority binding,
+    # capability-surface declaration and secret scan. Third, quorum-accept at the
+    # current head. This folds the estate extension's tuple into the canon map
+    # (shared/release_gate.py kept it outside while the map was treated as frozen).
+    # The map alone is NOT the whole gate for this class. The estate assessment
+    # (release_gate.assess_release_auto_arm_estate, which every autoqueue arm read
+    # uses) adds the PR's changed files. A touched audio-routing surface
+    # additionally needs the passive audio-graph validator, and any other path
+    # the pins do not cover holds the release closed.
+    "audio_or_live_egress_sensitive": (
+        "egress-boundary-pin",
+        "authority-case-check",
+        "capability-surface-delta",
+        "secrets-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
+    # An outbound-message change (mail and messages leaving for people; the
+    # communication pathway's sense of "egress") auto-arms only when the diff scan
+    # (scripts/check-outbound-send-surface-diff.py, CI job of the same name) passes
+    # AND the review team has quorum-accepted the current head. The scan names
+    # every send surface the diff adds, removes or changes, and fails on a new
+    # send path that the reviewed registry (config/outbound-send-surfaces.yaml)
+    # does not name. The scan is a lower bound over the vectors it can parse. The
+    # quorum is the semantic layer, and the same trust split as the billing class.
+    "outbound_message_egress_sensitive": (
+        "outbound-send-surface-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
 }
 
 #: Mutation surfaces too high-stakes for the system to auto-authorize release.
@@ -1567,7 +1618,7 @@ def assess_release_auto_arm(
     reform-era model marker); legacy tasks without it are not subject and keep
     their prior autoqueue behavior. A subject task that is not yet armed
     ``needs_arming``; it is ``eligible`` only when it carries no governance,
-    public, audio/live-egress, privacy, or provider-billing veto, its release
+    public, audio/live-egress, outbound-message, privacy, or provider-billing veto, its release
     was authorized-in-principle (``implementation_authorized``), and its AVSDLC
     quality axes permit.
 

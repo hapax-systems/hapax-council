@@ -10,6 +10,7 @@ set -euo pipefail
 # without coreutils on the direct-invocation behaviour rather than dying here.
 _hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
 . "${_hapax_self%/*}/lib/secret.sh"
+. "${_hapax_self%/*}/lib/tier1-snapshot.sh"
 
 # Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
 # This script does not create live database dumps, create Qdrant snapshots,
@@ -130,17 +131,30 @@ materialize_validated_dump() {
         echo "ERROR: Tier-1 restic password is empty" >&2
         exit 1
     }
-    local listing snap_path
-    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long latest 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    # The NAS repository also holds tier1-transcripts and monocle snapshots, so the tier-1 snapshot is named by
+    # host and tag (scripts/lib/tier1-snapshot.sh), once, and listed and dumped by that id.
+    local listing snap_path snap_id
+    snap_id="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" tier1_latest_snapshot_id)" || {
+        echo "ERROR: cannot list Tier-1 snapshots in $TIER1_REPO (restic or jq failed)" >&2
+        echo "Next: check the NAS mount and \`restic snapshots\` against $TIER1_REPO, then re-run" >&2
+        exit 1
+    }
+    [[ -n "$snap_id" ]] || {
+        echo "ERROR: no Tier-1 snapshot (host $TIER1_HOST, tag $TIER1_TAG) in $TIER1_REPO" >&2
+        echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
+        exit 1
+    }
+    # The file's listing line only (mode starts with "-"), never the "snapshot … of [paths]" header.
+    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long "$snap_id" 2>/dev/null | grep -E '^-.* /[^ ]*/postgres-all\.sql$' | head -1)" || true
     [[ -n "$listing" ]] || {
-        echo "ERROR: Tier-1 latest snapshot contains no postgres-all.sql" >&2
+        echo "ERROR: Tier-1 snapshot $snap_id contains no postgres-all.sql" >&2
         echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
         exit 1
     }
     snap_path="$(echo "$listing" | awk '{print $NF}')"
     local partial="${POSTGRES_DUMP_PATH}.partial"
     RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" \
-        restic dump latest "$snap_path" > "$partial"
+        restic dump "$snap_id" "$snap_path" > "$partial"
     local size
     size="$(wc -c < "$partial")"
     if (( size < POSTGRES_DUMP_MIN_BYTES )); then
@@ -283,8 +297,11 @@ verify_only() {
 retention_dry_run() {
     require_non_root_workdir
     log "Running retention dry-run only; no prune/delete"
+    # --keep-tag tier1-transcripts: transcript snapshots are never pruned (seat ruling 2026-09-27). The guard is
+    # on every forget in the estate; tests/test_transcript_custody.py fails if one lacks it.
     run_restic forget \
         --no-lock \
+        --keep-tag tier1-transcripts \
         --keep-daily 7 \
         --keep-weekly 4 \
         --keep-monthly 2 \
