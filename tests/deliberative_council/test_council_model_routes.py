@@ -51,10 +51,6 @@ VALID_LITELLM_ROUTES = frozenset(
         "claude-opus",
         "gemini-pro",
         "gemini-flash",
-        "web-scout",
-        "web-research",
-        "web-reason",
-        "web-deep",
         "mistral-large",
         "local-fast",
         "coding",
@@ -77,6 +73,20 @@ def _resolved_council_routes() -> dict[str, str]:
 
 
 class TestCouncilMemberRoutes:
+    def test_retired_sonar_seat_is_off_the_default_panel(self) -> None:
+        from agents.deliberative_council.members import model_family
+
+        config = CouncilConfig()
+        aliases = config.model_aliases
+        assert "web-research" not in aliases
+        assert "web-scout" not in aliases
+        assert len(aliases) == 6
+        families = {model_family(alias) for alias in aliases}
+        assert len(families) == 5
+        assert "perplexity" not in families
+        assert config.min_valid_members == 4
+        assert config.min_valid_families == 4
+
     def test_every_council_alias_resolves_to_valid_route(self) -> None:
         offenders = {
             alias: route
@@ -95,6 +105,22 @@ class TestCouncilMemberRoutes:
         # alias must map to the served `gemini-pro` route, never pass through
         # to the unserved literal `gemini-3-pro`.
         assert MODELS.get("gemini-3-pro") == "gemini-pro"
+
+    def test_served_routes_have_no_sonar_or_retired_web_alias(self) -> None:
+        retired = {"web-scout", "web-research", "web-reason", "web-deep"}
+
+        def _bad(name: str) -> bool:
+            return name in retired or name.startswith("sonar") or "/sonar" in name
+
+        offenders = {alias: route for alias, route in MODELS.items() if _bad(alias) or _bad(route)}
+        assert offenders == {}
+        assert not any(_bad(route) for route in VALID_LITELLM_ROUTES)
+        if not _LITELLM_CONFIG.exists():
+            return
+        served = set(_MODEL_NAME_RE.findall(_LITELLM_CONFIG.read_text(encoding="utf-8")))
+        assert not any(_bad(name) for name in served)
+        text = _LITELLM_CONFIG.read_text(encoding="utf-8").lower()
+        assert "perplexity/sonar" not in text
 
     def test_council_routes_served_by_live_litellm_config(self) -> None:
         # When the LiteLLM config is on disk (operator machine), cross-check

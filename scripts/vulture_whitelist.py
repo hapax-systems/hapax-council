@@ -5169,6 +5169,29 @@ from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: 
 
 _ = (record_identifies_its_checkout,)
 
+# DETECTOR BLIND SPOT, not dead code (the second kind, see above). Every one of these has a real
+# production caller in scripts/hapax-estate-store-registry — an extensionless Python script that
+# vulture never parses (registry --list, canary originate/export, peer-check, sweep, grandfather).
+# Registration-at-production Stage 1 (report-only), 2026-09-02; task row
+# `registration-at-production-stage1-20260902`.
+from shared.estate_registration import (  # noqa: E402
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+)
+from shared.estate_store_registry import enumerate_stores  # noqa: E402
+
+_ = (
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+    enumerate_stores,
+)
+
 # Claim Verification Council dossier split (2026-09-02, row
 # cvc-dossier-evidence-not-process-trace-20260902): Pydantic invokes these `model_validator`s
 # dynamically to populate `evidentiary_rationale` / `process_trace` / `execution_receipt` from the
@@ -5182,6 +5205,17 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# 2026-09-05: the Stage-1 registration identity binding is called from the extension-less
+# executable scripts/hapax-estate-store-registry (bind_host_identity at its lines 196 and 440,
+# observed_host_identity at 359), which vulture's *.py walk cannot see.
+from shared.estate_registration import bind_host_identity as _bind_host_identity  # noqa: E402
+from shared.estate_registration import (  # noqa: E402
+    observed_host_identity as _observed_host_identity,
+)
+
+_bind_host_identity
+_observed_host_identity
 
 # Native load-set observation is called by the extensionless
 # scripts/hapax-platform-capability-receipts producer; Pydantic invokes the
@@ -5257,4 +5291,52 @@ _ = (
     _ema_render_pile_status,
     _ema_render_reduction_row,
     _ema_split_frontmatter,
+)
+
+# Transcript custody (transcript-backup-custody-all-harnesses-20260927): these are called by the
+# extensionless scripts/hapax-transcript-custody CLI (run by hapax-backup-transcripts.service) and by
+# tests/test_transcript_custody.py's forget-policy scan. Vulture scans .py modules but not
+# extensionless entrypoints, so it cannot see those call sites.
+from scripts.transcript_custody import (  # noqa: E402
+    backup_args as _tc_backup_args,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    count_snapshot as _tc_count_snapshot,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    credential_nodes as _tc_credential_nodes,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    forget_protects_transcripts as _tc_forget_protects_transcripts,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    listing_expected as _tc_listing_expected,  # the Windows-host pull, also CLI-only
+)
+from scripts.transcript_custody import (  # noqa: E402
+    parse_windows_inventory as _tc_parse_windows_inventory,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    resolve_paths as _tc_resolve_paths,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    tar_nodes as _tc_tar_nodes,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    windows_backup_args as _tc_windows_backup_args,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    windows_inventory_script as _tc_windows_inventory_script,
+)
+
+_ = (
+    _tc_backup_args,
+    _tc_count_snapshot,
+    _tc_credential_nodes,
+    _tc_forget_protects_transcripts,
+    _tc_resolve_paths,
+    _tc_listing_expected,
+    _tc_parse_windows_inventory,
+    _tc_tar_nodes,
+    _tc_windows_backup_args,
+    _tc_windows_inventory_script,
 )

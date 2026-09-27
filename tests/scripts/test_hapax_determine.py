@@ -202,6 +202,14 @@ class TestProducerTimeoutKillsTheWholeTree:
     still-live provider call. The timeout path must kill the whole process
     group and reap before returning."""
 
+    @pytest.mark.xfail(
+        strict=False,
+        reason=(
+            "quarantined by merge-group-flake-quarantine-determine-timeout-20260927: a concurrent "
+            "xdist worker's host-wide `pkill -f 'sleep 600'` (test_hapax_claude_headless.py) "
+            "SIGTERMs this producer, which then records 'failed'; removed with the fix"
+        ),
+    )
     def test_timeout_kills_and_reaps_descendants_before_returning(self, tmp_path: Path) -> None:
         child_pid_file = tmp_path / "child.pid"
         rec = det.run_producer(

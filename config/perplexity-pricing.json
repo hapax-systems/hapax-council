@@ -2,25 +2,8 @@
   "schema_version": 1,
   "provider": "perplexity",
   "currency": "usd",
-  "pricing_as_of": "2026-05-15",
-  "source_doc": "docs/superpowers/specs/2026-05-15-perplexity-api-integration-design.md",
+  "pricing_as_of": "2026-09-25",
+  "source_doc": "Sonar Chat Completions prices removed 2026-09-25; models is empty on purpose",
   "source_url": "https://docs.perplexity.ai/guides/pricing",
-  "models": {
-    "sonar": {
-      "input_usd_per_mtok": 1.0,
-      "output_usd_per_mtok": 1.0
-    },
-    "sonar-pro": {
-      "input_usd_per_mtok": 3.0,
-      "output_usd_per_mtok": 15.0
-    },
-    "sonar-reasoning-pro": {
-      "input_usd_per_mtok": 2.0,
-      "output_usd_per_mtok": 8.0
-    },
-    "sonar-deep-research": {
-      "input_usd_per_mtok": 2.0,
-      "output_usd_per_mtok": 8.0
-    }
-  }
+  "models": {}
 }

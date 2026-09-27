@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 DEFAULT_SPAWNS_DIR = Path.home() / ".cache" / "hapax" / "conductor" / "spawns"
 
 MANIFEST_CLAIM_WINDOW = timedelta(minutes=10)
+_CHILD_ID_RE = re.compile(r"[0-9a-f]{8}")
 
 _SPAWN_PATTERNS = [
     re.compile(r"\bbreak\s+this\s+out\b", re.IGNORECASE),
@@ -91,49 +92,59 @@ class SpawnRule(RuleBase):
     # Public API
     # ------------------------------------------------------------------
 
-    def claim_pending_manifest(self, state: SessionState) -> dict[str, object] | None:
-        """Claim a pending manifest within the 10-minute window.
+    def claim_pending_manifest(
+        self, state: SessionState, manifest_id: str | None = None
+    ) -> dict[str, object] | None:
+        """Claim the one pending manifest this session was launched for.
 
-        Scans spawns_dir for pending manifests. Returns the manifest data
-        (with 'status' updated to 'claimed') if one is found within the
-        claim window, otherwise None.
+        Adoption is explicit: the launcher names the manifest (``child_id``). A
+        session given no id adopts nothing. Before this, any conductor starting
+        within the window took any pending manifest, so unrelated lanes were
+        bound as children and the binding chained lane to lane (M103). The
+        manifest must still be pending and inside the claim window.
         """
+        if not manifest_id or _CHILD_ID_RE.fullmatch(manifest_id) is None:
+            return None
+        manifest_path = self.spawns_dir / f"{manifest_id}.yaml"
+        try:
+            data: dict[str, object] = yaml.safe_load(manifest_path.read_text()) or {}
+        except (OSError, yaml.YAMLError):
+            return None
+        if data.get("status") != "pending" or data.get("child_id") != manifest_id:
+            return None
         now = datetime.now()
-        for manifest_path in sorted(self.spawns_dir.glob("*.yaml")):
+        try:
+            created_at = datetime.fromisoformat(str(data.get("created_at", "")))
+        except (ValueError, TypeError):
+            return None
+        if now - created_at > MANIFEST_CLAIM_WINDOW:
+            log.debug("SpawnRule: manifest %s is stale", manifest_path.name)
+            return None
+
+        data["status"] = "claimed"
+        data["claimed_by"] = state.session_id
+        data["claimed_at"] = now.isoformat()
+        manifest_path.write_text(yaml.dump(data, default_flow_style=False))
+        state.parent_session = data.get("parent_session")
+        blocked = data.get("blocked_patterns", [])
+        state.parent_blocked_patterns.update(blocked if isinstance(blocked, list) else [])
+
+        log.info("SpawnRule: claimed manifest %s", manifest_path.name)
+        return data
+
+    def retire_pending_children(self) -> None:
+        """Mark this session's never-claimed manifests abandoned (M106), so none outlives it."""
+        for child in self._state.children:
             try:
-                data: dict[str, object] = yaml.safe_load(manifest_path.read_text()) or {}
+                data: dict[str, object] = yaml.safe_load(child.spawn_manifest.read_text()) or {}
             except (OSError, yaml.YAMLError):
                 continue
-
             if data.get("status") != "pending":
                 continue
-
-            created_at_str = data.get("created_at", "")
-            try:
-                created_at = datetime.fromisoformat(created_at_str)
-            except (ValueError, TypeError):
-                continue
-
-            age = now - created_at
-            if age > MANIFEST_CLAIM_WINDOW:
-                log.debug("SpawnRule: manifest %s is stale (age=%s)", manifest_path.name, age)
-                continue
-
-            # Claim it
-            data["status"] = "claimed"
-            data["claimed_by"] = state.session_id
-            data["claimed_at"] = now.isoformat()
-            manifest_path.write_text(yaml.dump(data, default_flow_style=False))
-            state.parent_session = data.get("parent_session")
-
-            # Load blocked patterns from parent
-            blocked = data.get("blocked_patterns", [])
-            state.in_flight_files.update(blocked)
-
-            log.info("SpawnRule: claimed manifest %s", manifest_path.name)
-            return data
-
-        return None
+            data["status"] = "abandoned"
+            data["abandoned_at"] = datetime.now().isoformat()
+            child.spawn_manifest.write_text(yaml.dump(data, default_flow_style=False))
+            child.status = "orphaned"
 
     def check_completed_children(self, state: SessionState) -> list[dict[str, object]]:
         """Scan for completed spawn manifests and return their result data."""
@@ -181,7 +192,8 @@ class SpawnRule(RuleBase):
         if self._state.parent_session and event.tool_name in _EDIT_TOOLS:
             file_path: str = event.tool_input.get("file_path", "")
             if file_path:
-                for pattern in self._blocked_patterns():
+                # The parent's files only, never this session's own in_flight_files (M103).
+                for pattern in sorted(self._state.parent_blocked_patterns):
                     if fnmatch(file_path, pattern) or file_path == pattern:
                         log.warning("SpawnRule: child blocked from parent file %s", file_path)
                         return HookResponse.block(
@@ -191,8 +203,14 @@ class SpawnRule(RuleBase):
         return None
 
     def on_post_tool_use(self, event: HookEvent) -> HookResponse | None:
-        # Detect spawn intent in user message and write manifest
-        if event.user_message and detect_spawn_intent(event.user_message):
+        # Spawn intent comes only from the operator's own words. A post-tool event's
+        # user_message is the tool's stdout (conductor-post.sh), and source code or logs
+        # that contain a spawn phrase minted manifests that other lanes adopted (M103).
+        if (
+            event.event_type == "user_prompt"
+            and event.user_message
+            and detect_spawn_intent(event.user_message)
+        ):
             topic = event.user_message[:50].strip().rstrip(".")
             log.info("SpawnRule: spawn intent detected — writing manifest")
             self._write_manifest(topic=topic, context=event.user_message)

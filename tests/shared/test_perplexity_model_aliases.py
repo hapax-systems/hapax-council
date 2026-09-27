@@ -1,26 +1,27 @@
-"""Tests verifying Perplexity model aliases resolve in the model registry."""
+"""Sonar Chat Completions aliases are not model routes."""
 
 from __future__ import annotations
 
 import pytest
 
 from shared.config import MODELS
+from shared.grounding_adapters.perplexity import _MODEL_ALIAS_TO_ID
 
-PERPLEXITY_ALIASES = ["web-scout", "web-research", "web-reason", "web-deep"]
-
-
-@pytest.mark.parametrize("alias", PERPLEXITY_ALIASES)
-def test_alias_registered(alias: str) -> None:
-    assert alias in MODELS, f"Perplexity alias {alias!r} missing from MODELS"
+RETIRED_SONAR_ALIASES = ["web-scout", "web-research", "web-reason", "web-deep"]
 
 
-@pytest.mark.parametrize("alias", PERPLEXITY_ALIASES)
-def test_alias_resolves_to_nonempty_string(alias: str) -> None:
-    resolved = MODELS[alias]
-    assert isinstance(resolved, str)
-    assert len(resolved) > 0
+@pytest.mark.parametrize("alias", RETIRED_SONAR_ALIASES)
+def test_alias_is_not_registered(alias: str) -> None:
+    assert alias not in MODELS
 
 
-def test_all_four_aliases_present() -> None:
-    for alias in PERPLEXITY_ALIASES:
-        assert alias in MODELS
+@pytest.mark.parametrize("alias", RETIRED_SONAR_ALIASES)
+def test_alias_is_not_rewritten_to_sonar(alias: str) -> None:
+    resolved = _MODEL_ALIAS_TO_ID.get(alias, alias)
+    assert resolved == alias
+    assert not resolved.startswith("sonar")
+
+
+def test_no_registered_model_value_names_sonar() -> None:
+    offenders = {alias: route for alias, route in MODELS.items() if "sonar" in route}
+    assert offenders == {}

@@ -578,6 +578,19 @@ PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 SEAT_OUTAGE_VERDICTS = review_team.FAMILY_OUTAGE_VERDICTS | {"invalid-output"}
 #: ``outage_cause`` recorded on a seat whose clean-exit reply was empty.
 EMPTY_OUTPUT_OUTAGE_CAUSE = "empty_output"
+#: ``outage_cause`` for a seat whose reviewer wrapper reported, on a process failure, that the
+#: model spent its whole completion budget reasoning (``scripts/hapax-glmcp-reviewer``). The
+#: seat cannot vote on that budget, so its family is latched out rather than burned per packet.
+REASONING_BUDGET_OUTAGE_CAUSE = "reasoning_budget_exhausted"
+#: The budget marker, as the wrapper authors it: its own name, then the token. Matched as a
+#: PREFIX, never as a substring - ``hapax-glmcp-reviewer: api error: {exc}`` carries Z.ai's
+#: message, so a token appearing anywhere inside a wrapper line would let provider text name an
+#: outage the seat never suffered. The wrapper flattens its message so it cannot open a line of
+#: its own either (``provider_text_on_one_line``), which is what makes this prefix trustworthy.
+REASONING_BUDGET_MARKER_PREFIX = f"hapax-glmcp-reviewer: {REASONING_BUDGET_OUTAGE_CAUSE}: "
+#: A line a reviewer wrapper authored itself, e.g. ``hapax-glmcp-reviewer: api error: ...``.
+#: Only these lines of a failed reviewer's stderr are kept; pass-through CLI output is not.
+REVIEWER_WRAPPER_LINE_RE = re.compile(r"\Ahapax-[a-z0-9]+(?:-[a-z0-9]+)*-reviewer: ")
 
 
 #: agy's own notice when headless mode auto-denies a tool and it stops without a reply
@@ -2394,6 +2407,23 @@ def sanitize_reviewer_diagnostic(text: str, *, limit: int = MAX_REVIEW_RUNNER_ST
     return truncate_context(redacted, limit=limit).strip()
 
 
+def reviewer_wrapper_lines(stderr: str) -> list[str]:
+    """The lines a failed reviewer's wrapper authored, minus the one that echoes model stdout."""
+
+    return [
+        line
+        for line in (stderr or "").splitlines()
+        if REVIEWER_WRAPPER_LINE_RE.match(line)
+        and not line.startswith(CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX)
+    ]
+
+
+def reviewer_wrapper_excerpt(stderr: str) -> str:
+    """A failed reviewer's own diagnostic lines, sanitized and bounded, for logs and dossier."""
+
+    return sanitize_reviewer_diagnostic(" | ".join(reviewer_wrapper_lines(stderr)))
+
+
 def render_payg_fallback_excerpt(text: str) -> str | None:
     """Return an allowlisted PAYG fallback diagnostic, never raw reviewer stderr."""
 
@@ -2622,16 +2652,40 @@ def dispatch_reviews(
     *,
     task_id: str | None = None,
     task_hash: str | None = None,
+    diff_full_bytes: int | None = None,
+    diff_delivered_bytes: int | None = None,
 ) -> list[dict[str, Any]]:
     """Run all seats in parallel; reviewer failures become named non-accepts."""
 
     family_cfgs = {entry["family"]: entry for entry in review_team.review_family_entries(registry)}
+
+    def _stamp_diff_coverage(review: dict[str, Any]) -> None:
+        # Diff coverage is dispatcher-measured and written here ONLY (M142 corollary):
+        # a seat can never attest its own coverage. When the caller did not measure a
+        # diff, any stale fields are stripped so coverage stays unrecorded (fail-closed
+        # at the quorum gate) rather than forged or inherited.
+        coverage_fields = (
+            review_team.DIFF_FULL_BYTES_FIELD,
+            review_team.DIFF_DELIVERED_BYTES_FIELD,
+            review_team.DIFF_FULL_FETCH_WITNESSED_FIELD,
+        )
+        if diff_full_bytes is None or diff_delivered_bytes is None:
+            for field in coverage_fields:
+                review.pop(field, None)
+            return
+        review[review_team.DIFF_FULL_BYTES_FIELD] = diff_full_bytes
+        review[review_team.DIFF_DELIVERED_BYTES_FIELD] = diff_delivered_bytes
+        # No current registry seat is tool-using: none can have fetched the full diff
+        # itself. A tool-using route's wrapper must witness the fetch before this
+        # flips; reviewer output never sets it.
+        review[review_team.DIFF_FULL_FETCH_WITNESSED_FIELD] = False
 
     def run_one(index: int) -> dict[str, Any]:
         started = time.monotonic()
         review = _run_one_seat(index)
         # Measured per seat, so reviewer timeouts are set from data (M109-dispatch).
         review["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        _stamp_diff_coverage(review)
         return review
 
     def _run_one_seat(index: int) -> dict[str, Any]:
@@ -2644,6 +2698,7 @@ def dispatch_reviews(
         diagnostic_stdout = ""
         runner_stderr_excerpt = ""
         reviewer_internal_error = False
+        reasoning_budget_exhausted = False
         try:
             family_cfg = dict(family_cfgs[seat.family])
             if task_id:
@@ -2657,17 +2712,26 @@ def dispatch_reviews(
             else:
                 reply = str(runner_result)
         except ReviewerProcessError as exc:
+            wrapper_excerpt = reviewer_wrapper_excerpt(exc.stderr)
             LOG.warning(
-                "reviewer %s (%s) process failed rc=%d; diagnostics kept in memory "
-                "for classification only",
+                "reviewer %s (%s) process failed rc=%d; wrapper said: %s",
                 seat.id,
                 seat.family,
                 exc.returncode,
+                wrapper_excerpt or "nothing (other output omitted)",
             )
             reply = ""
             process_failed = True
             process_output = f"reviewer process failed rc={exc.returncode}; output omitted"
-            runner_stderr_excerpt = process_output
+            runner_stderr_excerpt = (
+                f"{process_output}; wrapper: {wrapper_excerpt}"
+                if wrapper_excerpt
+                else process_output
+            )
+            reasoning_budget_exhausted = any(
+                line.startswith(REASONING_BUDGET_MARKER_PREFIX)
+                for line in reviewer_wrapper_lines(exc.stderr)
+            )
             if exc.stderr.strip():
                 wrapper_stdout_quota_wall = reviewer_stdout_quota_wall_diagnostic(exc.stderr)
                 wrapper_stdout_diagnostic = reviewer_stdout_classifier_diagnostic(exc.stderr)
@@ -2734,6 +2798,18 @@ def dispatch_reviews(
                     seat.family,
                 )
                 verdict = "reviewer-internal-error"
+            elif process_failed and reasoning_budget_exhausted:
+                # The wrapper's own line on a process failure, never model output: the seat
+                # spent its budget reasoning and cannot vote on it. Latch the family out.
+                LOG.warning(
+                    "reviewer %s (%s) exhausted its completion budget reasoning -> verdict "
+                    "reviewer-route-unavailable (%s)",
+                    seat.id,
+                    seat.family,
+                    REASONING_BUDGET_OUTAGE_CAUSE,
+                )
+                verdict = "reviewer-route-unavailable"
+                outage_cause = REASONING_BUDGET_OUTAGE_CAUSE
             elif walled:
                 LOG.warning(
                     "reviewer %s (%s) hit a provider quota wall -> verdict quota-wall",
@@ -3293,11 +3369,13 @@ def write_acceptance_receipt_if_due(
 ) -> Path | None:
     """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
 
-    Only on quorum-accept, only for ``frontier_review_required`` tasks, and an
-    existing receipt (e.g. operator-signed) is never overwritten.
+    Only on quorum-accept, or a no-quorum the seat's T2 rule excuses (the admission
+    recomputation decides and the receipt records the rule, the tier and the evidence);
+    only for ``frontier_review_required`` tasks, and an existing receipt (e.g.
+    operator-signed) is never overwritten.
     """
 
-    if dossier["review_team_verdict"] != review_team.QUORUM_ACCEPT:
+    if dossier["review_team_verdict"] not in {review_team.QUORUM_ACCEPT, "no-quorum"}:
         return None
     witness_snapshot_path: Path | None = None
     validation_outage_state_path = outage_state_path or FAMILY_OUTAGE_STATE
@@ -3319,6 +3397,7 @@ def write_acceptance_receipt_if_due(
             tmp.write(json.dumps(witness_snapshot, indent=1))
             witness_snapshot_path = Path(tmp.name)
         validation_outage_state_path = witness_snapshot_path
+    floor_release: dict[str, Any] = {}
     try:
         blockers = review_team.review_dossier_validity_blockers(
             frontmatter,
@@ -3330,6 +3409,7 @@ def write_acceptance_receipt_if_due(
             outage_state_path=validation_outage_state_path,
             admission_time=now_iso,
             route_blocked_families=route_blocked_families,
+            floor_release_out=floor_release,
         )
     finally:
         if witness_snapshot_path is not None:
@@ -3362,6 +3442,8 @@ def write_acceptance_receipt_if_due(
             for r in dossier.get("reviewers") or []
         ],
     }
+    if floor_release:
+        receipt["review_team_release_rule"] = floor_release
     artifact_review = dossier.get("artifact_review")
     if isinstance(artifact_review, dict):
         # A vault-only acceptance covers exactly these bytes. The closure gate
@@ -3878,6 +3960,8 @@ def review_pr(
         reviewer_runner,
         task_id=task_ids[0] if len(task_ids) == 1 else None,
         task_hash=task_hash,
+        diff_full_bytes=len(pr_diff.encode("utf-8")),
+        diff_delivered_bytes=len(diff.encode("utf-8")),
     )
     update_family_outage(reviews, now_iso)
     results: list[dict[str, Any]] = []
@@ -3934,9 +4018,20 @@ def review_pr(
                     "reviewer-internal-error",
                 )
             ]
-            dossier["no_quorum_cause"] = (
-                f"dead reviewers: {', '.join(dead)}" if dead else "verdict split below quorum"
-            )
+            partial = [
+                str(esc.get("reviewer"))
+                for esc in dossier.get("escalations") or []
+                if esc.get("kind") == "partial-coverage"
+            ]
+            if dead:
+                dossier["no_quorum_cause"] = f"dead reviewers: {', '.join(dead)}"
+            elif partial:
+                dossier["no_quorum_cause"] = (
+                    "partial diff coverage (truncated diff, no witnessed full fetch): "
+                    + ", ".join(partial)
+                )
+            else:
+                dossier["no_quorum_cause"] = "verdict split below quorum"
         if dossier["review_team_verdict"] == review_team.QUORUM_ACCEPT and dossier.get(
             "degraded_family_outage"
         ):
@@ -4309,8 +4404,18 @@ def review_artifact(
         )
         for seat in constitution.seats
     ]
+    # build_artifact_manifest refuses an oversize set rather than truncating it, so the
+    # delivered review payload is whole by construction (full == delivered).
+    artifact_payload_bytes = sum(len(text.encode("utf-8")) for text in contents.values())
     reviews = dispatch_reviews(
-        constitution, prompts, registry, reviewer_runner, task_id=task_id, task_hash=task_hash
+        constitution,
+        prompts,
+        registry,
+        reviewer_runner,
+        task_id=task_id,
+        task_hash=task_hash,
+        diff_full_bytes=artifact_payload_bytes,
+        diff_delivered_bytes=artifact_payload_bytes,
     )
     update_family_outage(reviews, now_iso)
     dossier = review_team.synthesize_dossier(

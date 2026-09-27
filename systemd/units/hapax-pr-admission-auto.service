@@ -17,8 +17,13 @@ Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 #   - when the failure-rate throttle calms → clear to normal
 # No-op (exit 0) for unrelated cases.
 ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/hapax-pr-admission auto
-TimeoutStartSec=30s
-# Don't restart on failure — the timer drives cadence; one missed tick is harmless.
+# The tick is I/O-bound on GitHub API calls and scales with the open-PR count: at 30s it
+# never completed. Measured 2026-09-24 at 86-100 open PRs: median 166s, p95 228s, max 290s.
+# Keep this below the timer's OnUnitActiveSec=7min; a tick that cannot finish inside the
+# cadence is a design signal, not a reason to raise this again.
+TimeoutStartSec=300s
+# Don't restart on failure — the timer drives cadence. One missed tick is harmless; a streak
+# of them is an outage.
 SuccessExitStatus=0
 
 [Install]

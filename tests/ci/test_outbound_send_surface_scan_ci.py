@@ -1,0 +1,97 @@
+"""Pin the CI evidence the two egress release classes rely on.
+
+release-mitigation-gate-audio-or-live-egress-20260927: RELEASE_MITIGATION_CHECKS
+names ``outbound-send-surface-scan`` for the outbound-message class, and the
+estate assessment names ``passive-validator`` (audio-graph-validate.yml) for
+audio-routing surfaces in the audio/live class. A name is only evidence while
+the job that produces it exists under that exact check-run name, executes
+rather than skipping, and triggers on the paths the gate reads. This file makes
+any drift loud instead of silently holding (or silently admitting) releases.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import yaml
+
+from shared.release_gate import AUDIO_ROUTING_EVIDENCE, AUDIO_ROUTING_SURFACES
+from shared.sdlc_lifecycle import RELEASE_MITIGATION_CHECKS
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+CI_YML = WORKFLOWS / "ci.yml"
+AUDIO_YML = WORKFLOWS / "audio-graph-validate.yml"
+SCAN_JOB = "outbound-send-surface-scan"
+
+
+def _load(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _on_block(doc: dict) -> dict:
+    # YAML 1.1 parses the bare key `on` as boolean True; accept both spellings.
+    return doc.get("on", doc.get(True, {}))
+
+
+def test_the_outbound_class_names_the_scan_job() -> None:
+    assert SCAN_JOB in RELEASE_MITIGATION_CHECKS["outbound_message_egress_sensitive"]
+
+
+def test_scan_job_runs_the_scanner_over_the_pr_diff() -> None:
+    job = _load(CI_YML)["jobs"][SCAN_JOB]
+    assert "post_merge_duplicate_filter" in set(job["needs"])
+    runs = [str(step.get("run", "")) for step in job["steps"]]
+    assert any(
+        re.search(
+            r"uv run\b[^\n]*python scripts/check-outbound-send-surface-diff\.py "
+            r'--base "\$base" --head "\$PR_HEAD"',
+            run,
+        )
+        for run in runs
+    ), "the scan job no longer executes the scanner over base...head"
+    checkout = next(step for step in job["steps"] if "actions/checkout" in str(step.get("uses")))
+    assert checkout.get("with", {}).get("fetch-depth") == 0, "the three-dot diff needs the base"
+
+
+def test_scan_job_is_unskippable_and_names_itself() -> None:
+    # all-green treats `skipped` as acceptable and this job is not in its needs,
+    # so a skipped job would read as absent evidence. It must always execute: no
+    # job-level `if`, no docs-only sentinel, and no `name:` override drifting the
+    # check-run name away from the map's string.
+    job = _load(CI_YML)["jobs"][SCAN_JOB]
+    assert "if" not in job
+    assert job.get("name", SCAN_JOB) == SCAN_JOB
+    for step in job["steps"]:
+        assert "docs_only" not in str(step.get("if", "")), step.get("name")
+
+
+def test_scan_job_is_evidence_not_a_merge_gate() -> None:
+    # Like secrets-scan: a finding fails only this class's evidence read, never
+    # every PR's merge.
+    assert SCAN_JOB not in set(_load(CI_YML)["jobs"]["all-green"]["needs"])
+    assert "pull_request" in _on_block(_load(CI_YML))
+
+
+def test_audio_routing_surfaces_mirror_the_audio_workflow_filter() -> None:
+    # The audio evidence exists exactly where the gate requires it: the job's
+    # trigger paths and the gate's audio surfaces are the same list.
+    on = _on_block(_load(AUDIO_YML))
+    assert tuple(on["pull_request"]["paths"]) == AUDIO_ROUTING_SURFACES
+    assert tuple(on["push"]["paths"]) == AUDIO_ROUTING_SURFACES
+    assert "merge_group" in on
+
+
+def test_audio_evidence_names_a_unique_unskippable_job() -> None:
+    audio = _load(AUDIO_YML)
+    job = audio["jobs"][AUDIO_ROUTING_EVIDENCE]
+    assert "if" not in job
+    assert job.get("name", AUDIO_ROUTING_EVIDENCE) == AUDIO_ROUTING_EVIDENCE
+    producers = [
+        path.name
+        for path in sorted(WORKFLOWS.glob("*.y*ml"))
+        for key, other in (_load(path).get("jobs") or {}).items()
+        if (other or {}).get("name", key) == AUDIO_ROUTING_EVIDENCE
+    ]
+    assert producers == ["audio-graph-validate.yml"], producers

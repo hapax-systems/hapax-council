@@ -486,7 +486,10 @@ class TestServedModelFamilyLabeling:
         assert served_model_family("command-r-08-2024-exl3-4.0bpw") == "cohere"
         assert served_model_family("compassverifier-7b") == "cohere"
         assert served_model_family("mistral-large-latest") == "mistral"
-        assert served_model_family("sonar-pro") == "perplexity"
+        assert served_model_family("sonar-pro") == "unknown"
+        assert served_model_family("web-scout") == "unknown"
+        assert served_model_family("web-research") == "unknown"
+        assert served_model_family("web-reason") == "unknown"
         # Cap-resilient diversity families admitted 2026-06-20 (cloud, no GPU conflict).
         assert served_model_family("deepseek/deepseek-chat-v3.1") == "deepseek"
         assert served_model_family("glm-5.2") == "zhipu"
@@ -501,7 +504,7 @@ class TestServedModelFamilyLabeling:
         aliases = CouncilConfig().model_aliases
         assert "deepseek" in aliases
         assert "glm" in aliases
-        # served families the roster can produce span >= 6 distinct families
+        # Served-name examples. sonar-pro is retired and is not a live family.
         fams = {
             served_model_family(m)
             for m in (
@@ -509,17 +512,16 @@ class TestServedModelFamilyLabeling:
                 "gemini-3.1-pro",
                 "command-r-08-2024",
                 "mistral-large",
-                "sonar-pro",
                 "deepseek/deepseek-chat",
                 "glm-5.2",
             )
         }
+        assert served_model_family("sonar-pro") == "unknown"
         assert {
             "anthropic",
             "google",
             "cohere",
             "mistral",
-            "perplexity",
             "deepseek",
             "zhipu",
         } <= fams
