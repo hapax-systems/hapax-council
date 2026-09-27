@@ -1,0 +1,16 @@
+# Reviewed outbound-message send surfaces (mail or messages leaving for a person).
+#
+# Read by scripts/check-outbound-send-surface-diff.py, the evidence for the
+# outbound_message_egress_sensitive release class (RELEASE_MITIGATION_CHECKS,
+# shared/sdlc_lifecycle.py). A diff that adds or changes a send vector in a file
+# not listed here FAILS the scan. Listing a new surface is part of the reviewed
+# diff: the scan names it, and the review-team quorum the class requires judges
+# it. An entry needs a `path` and a `reason`.
+#
+# Baseline at main 65c67e589: exactly one surface matches the scan's vocabulary
+# (shared/outbound_send_surface.py).
+surfaces:
+  - path: scripts/send-stakeholder-revenue-brief.py
+    reason: >-
+      Dormant, manual --send only, never scheduled; quarantined by
+      tests/test_mail_monitor_credential_scoped_send_guard.py. PR #4768 retires its send path.

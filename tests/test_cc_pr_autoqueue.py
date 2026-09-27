@@ -10556,6 +10556,160 @@ def test_release_gate_rejects_graphql_mitigation_failure_beyond_first_100(
     assert pages == ([] if rest_blocked else ["1", "2"])
 
 
+def _classify_egress_row(
+    tmp_path: Path, *, risk_flag: str, files: list[str], extra_checks: tuple[str, ...]
+) -> autoqueue.Decision:
+    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+
+    vault = _make_vault(tmp_path)
+    # The id doubles as the title; it must carry no risk vocabulary of its own
+    # (a bare "egress" would derive the audio/live class).
+    _write_task(
+        vault,
+        task_id="arm-decision-row",
+        status="pr_open",
+        pr=731,
+        extra_frontmatter={**_eligible_arm_extra(), "risk_flags": {risk_flag: True}},
+    )
+    _write_governance_review_dossier(vault, "arm-decision-row", 731)
+    checks = _governance_mitigation_checks()
+    checks += [
+        _check(name)
+        for name in (*LIVE_EGRESS_MITIGATION_CHECKS, *extra_checks)
+        if name != autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE
+    ]
+    pr = autoqueue._parse_pr(_pr(731, files=files, checks=checks))
+    assert pr is not None
+    return autoqueue.classify_pr(
+        pr,
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+        expected_auto_merge_method="SQUASH",
+        expected_auto_merge_method_source="test",
+    )
+
+
+def test_arm_decision_applies_the_egress_coverage_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The arm DECISION reads the estate assessment with the PR's files, not the
+    # bare canon map: with every class check green, an uncovered path still
+    # holds the audio/live class at decision time, not only at revalidation.
+    monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    decision = _classify_egress_row(
+        tmp_path,
+        risk_flag="audio_or_live_egress_sensitive",
+        files=["shared/capability_adapter_protocol.py", "scripts/hapax-operator-message"],
+        extra_checks=(),
+    )
+    assert decision.auto_arm is False
+    assert any(
+        reason.startswith("release_auto_arm_ineligible:")
+        and "egress_evidence_uncovered_paths:scripts/hapax-operator-message" in reason
+        for reason in decision.reasons
+    ), decision.reasons
+
+
+def test_arm_decision_holds_an_audio_surface_without_audio_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    decision = _classify_egress_row(
+        tmp_path,
+        risk_flag="audio_or_live_egress_sensitive",
+        files=["config/hapax/audio-link-map.conf"],
+        extra_checks=(),
+    )
+    assert decision.auto_arm is False
+    assert any(
+        "needs_mitigation:audio_or_live_egress_sensitive:passive-validator" in reason
+        for reason in decision.reasons
+    ), decision.reasons
+
+
+def test_arm_decision_auto_arms_an_outbound_row_on_its_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #4768's shape: the outbound-message class with a passing scan and the
+    # quorum arms on evidence, with no stamp.
+    monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    decision = _classify_egress_row(
+        tmp_path,
+        risk_flag="outbound_message_egress_sensitive",
+        files=["scripts/send-stakeholder-revenue-brief.py"],
+        extra_checks=("outbound-send-surface-scan",),
+    )
+    assert decision.auto_arm is True, decision.reasons
+
+
+def test_arm_decision_holds_an_outbound_row_without_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+    decision = _classify_egress_row(
+        tmp_path,
+        risk_flag="outbound_message_egress_sensitive",
+        files=["scripts/send-stakeholder-revenue-brief.py"],
+        extra_checks=(),
+    )
+    assert decision.auto_arm is False
+    assert any(
+        "needs_mitigation:outbound_message_egress_sensitive:outbound-send-surface-scan" in reason
+        for reason in decision.reasons
+    ), decision.reasons
+
+
+def test_apply_time_pre_arm_read_applies_the_egress_coverage_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The write boundary (arm_release_for_task) re-reads the estate assessment
+    # with the PR's files. A stale decision cannot arm the audio/live class on
+    # the canon tuple over an uncovered path.
+    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+
+    # Without a PR head the function strips the virtual quorum marker; let it
+    # through so only the coverage bound can hold the arm.
+    monkeypatch.setattr(autoqueue, "VIRTUAL_RELEASE_MITIGATION_CONTEXTS", frozenset())
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="apply-boundary-row",
+        status="pr_open",
+        pr=733,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {"audio_or_live_egress_sensitive": True},
+        },
+    )
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    ok, message = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=tmp_path / "ledger.jsonl",
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=("scripts/hapax-operator-message",),
+    )
+    assert ok is False
+    assert "egress_evidence_uncovered_paths:scripts/hapax-operator-message" in message
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+
+
+def test_seat_stamp_does_not_release_an_outbound_row_without_scan_evidence() -> None:
+    # No manual path: a release_authorized stamp still replays the class's
+    # evidence at the release-head boundary. Quorum alone does not release it.
+    fm = {
+        **_egress_armed_frontmatter(),
+        "risk_flags": {"outbound_message_egress_sensitive": True},
+    }
+    blockers = autoqueue._release_auto_arm_current_evidence_blockers(
+        fm,
+        verified_checks={autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE},
+        changed_files=("scripts/new-sender.py",),
+    )
+    assert (
+        "needs_mitigation:outbound_message_egress_sensitive:outbound-send-surface-scan" in blockers
+    )
+
+
 def test_egress_revalidation_without_changed_files_holds_coverage_unevaluable(
     tmp_path: Path,
 ) -> None:
