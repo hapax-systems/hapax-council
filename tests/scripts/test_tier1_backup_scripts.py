@@ -23,11 +23,11 @@ BACKUP_SCRIPTS = ("hapax-backup-local", "hapax-backup-remote")
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 # The DR script is podium's ~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, whose own
-# sha256 is fa0dafc7…), changed in exactly four hunks by the seat's exceptions (2026-09-27 10:29Z and 12:03Z): the
-# bootstrap clone (lines 22–23), Phase 3's FileStore restore (after line 153), Phase 12's dump search (613ff) and the
-# final first-backup step (830). DR_SCRIPT_SHA256 below is the digest of that result, not of the live blob. Any other
-# change belongs to the follow-up row, never to a silent edit.
-DR_SCRIPT_SHA256 = "2cc61973283fab8893483184e135499f62bd59c45168599c3b69ae750aca5424"
+# sha256 is fa0dafc7…), changed in exactly four hunks by the seat's exceptions (2026-09-27 10:29Z, 12:03Z, 12:12Z):
+# the bootstrap clone (lines 22–23), Phase 3's FileStore restore (after line 153), Phase 12's dump search (613ff) and
+# the manual-steps checklist (829–830: activation, unit reinstall, first backup). DR_SCRIPT_SHA256 below is the digest
+# of that result, not of the live blob. Any other change belongs to the follow-up row, never to a silent edit.
+DR_SCRIPT_SHA256 = "0df4dca04690ef53a91be7aa6e35bd120857451d47b7b8f02cb195d2eb0a80c0"
 
 
 @pytest.mark.parametrize("name", ["hapax-backup-local.service", "hapax-backup-remote.service"])
@@ -355,10 +355,48 @@ def test_dr_filestore_section_reads_no_secret_value() -> None:
     assert not re.search(r"(?<![<])<(?![<(])\s*\S", code), "an input redirect reads a file"
 
 
+def _manual_steps() -> list[str]:
+    text = (SCRIPTS / "hapax-cachyos-restore.sh").read_text(encoding="utf-8")
+    block = text[text.index('log "Manual steps:"') : text.index('log "Verification:"')]
+    return re.findall(r'^echo "\s*\d+\. (.*)"$', block, re.M)
+
+
 def test_dr_final_step_starts_the_backup_service() -> None:
     text = (SCRIPTS / "hapax-cachyos-restore.sh").read_text(encoding="utf-8")
     assert "First local backup: systemctl --user start hapax-backup-local.service" in text
     assert "~/.local/bin/hapax-backup-local.sh" not in text
+
+
+def test_dr_steps_build_the_activation_worktree_and_verify_it_before_any_start() -> None:
+    """The migrated units run from the activation worktree, which .cache exclusion leaves out of every snapshot;
+    hapax-source-activate builds it from ~/projects/hapax-council (#4813 round 5, seat exception 12:12Z)."""
+
+    steps = _manual_steps()
+    activate = next(i for i, s in enumerate(steps) if "hapax-source-activate" in s)
+    assert (
+        "test -x ~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-local"
+        in steps[activate]
+    )
+    sync = next(i for i, s in enumerate(steps) if "uv sync" in s)
+    starts = [i for i, s in enumerate(steps) if "systemctl --user start" in s]
+    assert sync < activate < min(starts)
+
+
+def test_dr_steps_reinstall_the_backup_units_from_council_before_the_first_backup() -> None:
+    """Units restored from an older snapshot's ~/.config/systemd/user still run distro-work."""
+
+    steps = _manual_steps()
+    reinstall = next(i for i, s in enumerate(steps) if "install -m 644" in s)
+    assert (
+        "~/projects/hapax-council/systemd/units/hapax-backup-{local,remote}.service ~/.config/systemd/user/"
+        in steps[reinstall]
+    )
+    assert "systemctl --user daemon-reload" in steps[reinstall]
+    first_backup = next(
+        i for i, s in enumerate(steps) if "hapax-backup-local.service" in s and "start" in s
+    )
+    activate = next(i for i, s in enumerate(steps) if "hapax-source-activate" in s)
+    assert activate < reinstall < first_backup
 
 
 def test_dr_bootstrap_clones_council_not_the_archived_repository() -> None:
