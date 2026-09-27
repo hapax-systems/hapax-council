@@ -137,7 +137,10 @@ TASK_FRONTIER_CHURN_NEXT_ACTION = (
 #: acquired and shared by all the resolutions under it, strictly below the 30 s a peer waits for
 #: the same lock. It bounds the time retakes ADD; the hold's baseline (each phase's first
 #: resolution, about 9-10 s apiece over 5,767 rows) is not the retake's to bound. At that
-#: resolution time it admits one retake across the locked phases (codex on #4829).
+#: resolution time it admits one retake across the locked phases (codex on #4829). A running
+#: resolution is not interrupted, so a retake slower than the attempt it was judged by can end
+#: past the deadline: retakes add at most the budget plus the excess of that one slower
+#: resolution, and none starts after it (codex on #4829 round 2).
 _UNDER_LOCK_CHURN_BUDGET_SECONDS = 25.0
 _churn_sleep = time.sleep
 _churn_clock = time.monotonic
@@ -3478,8 +3481,9 @@ def resolve_task_note_through_churn(
     retaken as a fresh, complete resolution, with jitter, at most
     ``INSPECTION_CHURN_MAX_ATTEMPTS`` times before ``deadline_at`` (by default M101's
     ``INSPECTION_CHURN_DEADLINE_SECONDS`` from now); the last refusal is raised. A retake
-    starts only if, judged by the attempt just made, it can finish before the deadline, so no
-    retake runs past it. Only a resolution over a stable frontier returns, and every other
+    starts only when an attempt as long as the last one fits before the deadline; a running
+    resolution is not interrupted, so a slower retake can end past it by its excess, and no
+    retake starts after that. Only a resolution over a stable frontier returns, and every other
     refusal is raised at once. Under the publication lock, the lock holder passes one
     ``deadline_at`` to every resolution under it (``_UNDER_LOCK_CHURN_BUDGET_SECONDS``).
     """

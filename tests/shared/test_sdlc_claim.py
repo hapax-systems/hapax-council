@@ -4811,6 +4811,41 @@ def test_retakes_under_one_lock_hold_share_one_budget_and_never_overrun_it(
     assert now[0] - baseline <= budget  # retakes add at most the budget, pauses included
 
 
+def test_a_slower_retake_overruns_by_at_most_its_excess_and_no_retake_follows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # codex on #4829 round 2: the fit check judges a retake by the attempt before it, and a
+    # running resolution is not interrupted. The claim is narrowed to what holds: a slower
+    # retake ends past the deadline by at most its excess, and no retake starts after it.
+    budget = sdlc_claim._UNDER_LOCK_CHURN_BUDGET_SECONDS
+    fixture = _fixture(tmp_path)
+    attempts = _churning_task_store(fixture.vault, monkeypatch)  # churn never settles
+    durations = iter([9.0, 20.0, 20.0, 20.0])  # the retake runs 11 s longer than it was judged
+    now = [0.0]
+    original = sdlc_claim.resolve_task_note
+
+    def timed_resolution(*args: object, **kwargs: object) -> object:
+        now[0] += next(durations)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(sdlc_claim, "resolve_task_note", timed_resolution)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", lambda: now[0])
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleep)
+    deadline = now[0] + budget
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._locked_preflight(fixture.intent, (), deadline_at=deadline)
+
+    assert len(attempts) == 2  # the retake started (9 + pause + 9 fits); nothing after it
+    assert now[0] > deadline  # the slower retake did end past the deadline
+    assert (
+        now[0] - deadline <= 20.0 - 9.0
+    )  # by at most its excess over the attempt it was judged by
+
+
 # ── governed release of a held claim publication (M166, M167) ────────────────
 # claim-cache-missing-governed-release-20260926
 
