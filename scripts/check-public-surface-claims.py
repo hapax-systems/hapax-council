@@ -55,20 +55,17 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "agents" / "omg_web_builder" / "static" / "index.html",
     REPO_ROOT / "docs" / "publication-drafts",
 )
-#: Built public-site output is a SEPARATE surface from the registry's sources: R8's spec call-out
-#: is the site's `verify-dist`, which the registry does not name. `--built-site-dir` names one
-#: (repeatable); this environment default lets a host that holds the site checkout scan its built
-#: pages without a flag.
+#: Built public-site output is a SEPARATE surface from the registry's sources (R8's spec call-out
+#: is the site's `verify-dist`, which the registry does not name). `--built-site-dir` names one
+#: (repeatable); this env default lets a host holding the site checkout scan its built pages.
 PUBLIC_SITE_DIST_ENV = "HAPAX_PUBLIC_SITE_DIST"
 
 
 def built_site_dirs(explicit: list[Path]) -> list[Path]:
-    """Built-site directories to scan: every explicit flag, else the env default's every path.
+    """Built-site directories: every explicit flag, else every path the env default names.
 
     Every named path is returned whether or not it exists, so ``iter_files`` fails loudly on any
-    that is missing. Naming a built output and scanning nothing — or silently skipping one of
-    several named outputs — is the silent pass this exists to prevent. A host without the site
-    checkout leaves the variable unset; there is deliberately no silent filter.
+    that is missing. A host without the site checkout leaves the variable unset.
     """
     if explicit:
         return list(explicit)
@@ -78,8 +75,7 @@ def built_site_dirs(explicit: list[Path]) -> list[Path]:
     return [Path(part) for part in env_value.split(os.pathsep) if part]
 
 
-#: `.htm` is scanned for the same reason `.html` is: built pages ship as either, and the register
-#: parser handles both (`lint.py`), so leaving `.htm` out silently skipped built `.htm` copy.
+#: `.htm` is scanned for the same reason `.html` is: leaving it out silently skipped `.htm` copy.
 SCANNABLE_SUFFIXES = {".cff", ".htm", ".html", ".j2", ".json", ".md", ".py", ".yaml", ".yml"}
 TOKEN_CLAIM_RULE = "Hapax.TokenCapitalClaimCeiling"
 SOURCE_DISPOSITION_RULE = "Hapax.PublicSurfaceSourceDisposition"
@@ -1184,13 +1180,9 @@ def scan_public_surface_paths(
 ) -> list[LintFinding]:
     """The gate's per-file hardening scan, one scanned file at a time.
 
-    R8's register carriage lint (``Hapax.RegisterCarriage``, the six devices of the HACA-C
-    §Register amendment) is wired in through ``lint_file``: ``check_register_carriage_text`` runs
-    for every file this loop reads, beside ``Hapax.FormalRegister``. This is the gate's single
-    file-scan surface, so an emission scanned here — including built ``.html`` pages — is checked
-    for the six devices. It is a named function so a test can drive exactly what the gate runs on
-    an emission, rather than asserting the wiring from ``lint_file`` alone; naming the rule at the
-    gate is what makes the wiring legible to a reviewer reading this file.
+    R8's register carriage lint (``Hapax.RegisterCarriage``) is wired in through ``lint_file``,
+    which runs ``check_register_carriage_text`` for every file this loop reads — including built
+    ``.html``/``.htm`` pages. Named so a test can drive exactly what the gate runs on an emission.
     """
     findings: list[LintFinding] = []
     for path in iter_files(paths):
@@ -1239,10 +1231,9 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         help=(
-            "a built public-site output directory to scan by block units (repeatable). R8's "
-            "register carriage lint runs on built pages as well as sources; when unset, the "
-            f"{PUBLIC_SITE_DIST_ENV} environment default is used if it exists. The canonical "
-            "invocation is in docs/runbooks/public-surface-scrutiny-gate-v2.md"
+            "a built public-site output directory to scan by block units (repeatable); every named "
+            f"path must be a directory that exists. Unset, {PUBLIC_SITE_DIST_ENV} is used. The "
+            "canonical invocation is in docs/runbooks/public-surface-scrutiny-gate-v2.md"
         ),
     )
     parser.add_argument(
@@ -1367,12 +1358,9 @@ def main(argv: list[str] | None = None) -> int:
     not_a_directory = [path for path in built_dirs if path.exists() and not path.is_dir()]
     if not_a_directory:
         print(
-            "error: --built-site-dir (or "
-            f"{PUBLIC_SITE_DIST_ENV}) is not a directory: "
+            f"error: --built-site-dir (or {PUBLIC_SITE_DIST_ENV}) is not a directory: "
             + ", ".join(str(path) for path in not_a_directory)
-            + ". Next action: name the built output DIRECTORY (the directory holding the built "
-            "pages), not a file inside it — a file target silently scans something other than the "
-            "built output.",
+            + ". Next action: name the built output DIRECTORY, not a file inside it.",
             file=sys.stderr,
         )
         return 2
@@ -1438,7 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
             remedy = "pass an existing path"
         print(
             f"error: scanned path not found: {missing}. Next action: {remedy}. A named built "
-            "output that is missing is a loud failure, never a silent pass.",
+            "output that is missing fails loudly, never silently.",
             file=sys.stderr,
         )
         return 2

@@ -305,16 +305,9 @@ def _make_orchestrator(
     )
 
 
-# ── Register carriage warnings are surfaced, not held ───────────────
-
-
 class _LintGate:
-    """A hardening gate whose lint child is built with the REAL finding serializer.
-
-    Both the child's structured report and its rendered findings come from the gate's own
-    ``lint_findings_report``, so no test reimplements the finding string format. ``raw_findings``
-    are rendered lines the report does NOT account for: the unreconcilable-report case.
-    """
+    """A gate whose lint child uses the REAL finding serializer (``lint_findings_report``), so no
+    test reimplements the format. ``raw_findings`` are lines the report does not account for."""
 
     def __init__(
         self,
@@ -401,12 +394,7 @@ def _publishing_orchestrator(
 
 
 class TestRegisterCarriageSurfacing:
-    """R8's over-inclusive warning is surfaced for human disposition, never a publication hold.
-
-    The register carriage lint is warnings-for-a-human by design. Holding publication on it would
-    block every artifact with a short fragment, so only those warnings are exempt; every other
-    warning and error holds exactly as before.
-    """
+    """R8's over-inclusive warning is surfaced for human disposition, never a publication hold."""
 
     def test_a_register_warning_does_not_hold_and_is_recorded(self, tmp_path, monkeypatch):
         _drop_artifact(tmp_path, slug="register-warn", surfaces=["fake"])
@@ -492,12 +480,7 @@ class TestRegisterCarriageSurfacing:
     def test_a_finding_the_report_cannot_account_for_blocks_the_exemption(
         self, tmp_path, monkeypatch
     ):
-        """Fail-closed: a finding the structured report cannot reconcile holds, and blocks it.
-
-        The artifact carries a register warning (exemptible) AND a rendered finding the report does
-        not account for (the structured analogue of an unreadable finding), so the exemption must
-        not release it.
-        """
+        """Fail-closed: an unreconcilable finding (with a register warning present) blocks it."""
         _drop_artifact(tmp_path, slug="unreadable-finding", surfaces=["fake"])
         orch, fake_module = _publishing_orchestrator(
             tmp_path,
@@ -567,11 +550,7 @@ def test_the_lint_child_rule_reapplied_to_a_narrowed_set_of_structured_rows() ->
 
 
 def test_reaggregation_keeps_flagged_issues_outside_the_child_results() -> None:
-    """codex minor: re-aggregation must not drop a flagged issue that no child result carries.
-
-    The gate adds issues of its own (e.g. an invalid operator override) to ``flagged_issues``; a
-    re-aggregation that rebuilds the list from children alone would silently lose them.
-    """
+    """codex minor: re-aggregation must not drop a flagged issue no child result carries."""
     gate_result = _LintGate((("Hapax.RegisterCarriage", "warning"),)).evaluate(
         PreprintArtifact(slug="s", title="E", abstract="Brief.", body_md="Body.")
     )
@@ -590,9 +569,9 @@ def test_reaggregation_keeps_flagged_issues_outside_the_child_results() -> None:
 def test_a_colon_bearing_path_cannot_spoof_the_exempt_rule(tmp_path) -> None:
     """codex critical: decide the exemption on structured fields, never the rendered string.
 
-    A source path carrying ``:1:Hapax.RegisterCarriage:warning:`` makes the rendered finding string
-    ambiguous; a string parse reads the *next* finding from that file as a register warning and can
-    turn a real HOLD into a release. Through the REAL gate, this artifact must still HOLD.
+    A path carrying ``:1:Hapax.RegisterCarriage:warning:`` makes a string parse read the next finding
+    as a register warning and can turn a real HOLD into a release; through the REAL gate it must
+    still HOLD.
     """
     spoof_path = tmp_path / "spoof:1:Hapax.RegisterCarriage:warning:.md"
     spoof_path.write_text("This is an existence proof.\n", encoding="utf-8")
@@ -614,8 +593,8 @@ def test_a_colon_bearing_path_cannot_spoof_the_exempt_rule(tmp_path) -> None:
     result = gate.evaluate(artifact)
 
     lint_child = next(child for child in result.child_results if child.name == "lint")
-    # Pre-conditions: the lint child is the only non-passing child, it holds a NON-register warning,
-    # and the colon-bearing label is present in the rendered findings (the spoof surface).
+    # Pre-conditions: only the lint child fails, it holds a NON-register warning, and the
+    # colon-bearing label is present in the rendered findings (the spoof surface).
     assert [
         child.name
         for child in result.child_results

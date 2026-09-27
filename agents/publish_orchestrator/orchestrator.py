@@ -1407,8 +1407,8 @@ class Orchestrator:
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
-#: How a surfaced register carriage finding is recorded in the publish log: kept, never held, for
-#: a human to disposition (fix / keep-with-reason / carry) per the adopted amendment.
+#: How a surfaced register carriage finding is recorded: kept, never held, for a human to
+#: disposition (fix / keep-with-reason / carry) per the adopted amendment.
 REGISTER_CARRIAGE_DISPOSITION = "surface_for_human_disposition"
 
 
@@ -1417,11 +1417,10 @@ def _lint_child_rows(
 ) -> tuple[Mapping[str, object], ...] | None:
     """The lint child's STRUCTURED findings, or ``None`` when they are absent or malformed.
 
-    Read from the child's report (:func:`shared.publication_hardening.gate.lint_findings_report`),
-    never by re-parsing the rendered ``file:line:rule:level:message`` strings: the ``file`` label is
-    free text, so a colon-bearing source path (``…:1:Hapax.RegisterCarriage:warning:…``) makes a
-    string parse ambiguous and can spoof the exempt rule. Any shape that does not carry the
-    documented fields returns ``None``, and the caller then never exempts — fail narrow.
+    Read from the child's report (``gate.lint_findings_report``), never by re-parsing the rendered
+    ``file:line:rule:level:message`` string: the ``file`` label is free text, so a colon-bearing
+    source path (``…:1:Hapax.RegisterCarriage:warning:…``) makes a string parse ambiguous and can
+    spoof the exempt rule. A shape without the documented fields returns ``None``: fail narrow.
     """
     report = lint_child.report
     if not isinstance(report, Mapping) or report.get("schema") != LINT_FINDINGS_REPORT_SCHEMA:
@@ -1440,11 +1439,8 @@ def _lint_child_rows(
 
 
 def _lint_child_decision(rows: Sequence[Mapping[str, object]]) -> PublicationGateDecision:
-    """The gate's own lint rule, re-applied to a narrowed set of STRUCTURED findings.
-
-    An ``error`` row rejects; any other row holds; no rows pass. The caller only releases when this
-    returns PASS.
-    """
+    """The gate's own lint rule, re-applied to a narrowed set of STRUCTURED findings: an
+    ``error`` row rejects, any other row holds, no rows pass."""
     if any(row["level"] == "error" for row in rows):
         return PublicationGateDecision.REJECT
     return PublicationGateDecision.HOLD if rows else PublicationGateDecision.PASS
@@ -1455,21 +1451,11 @@ def _surface_register_carriage_warnings(
 ) -> tuple[PublicationGateResult, tuple[str, ...]]:
     """Let a HOLD that is only register carriage warnings proceed, recording them.
 
-    Returns the (possibly unchanged) gate result and the surfaced finding strings. Only
-    ``Hapax.RegisterCarriage`` **warning**-severity findings are exempt: the R8 lint is
-    over-inclusive by design and its warning is meant to be dispositioned by a human, so holding
-    publication on it would stall every artifact with a short fragment. Everything else holds
-    exactly as before — a register *error* still rejects, any other warning or error still holds,
-    an unreadable finding holds, and if another child holds or rejects nothing is released.
-
-    The decision reads the lint child's STRUCTURED findings (rule, level), never the rendered
-    ``file:line:rule:level:message`` strings: the file label is free text, so a colon-bearing source
-    path could otherwise spoof a different warning into the exempt rule. If the structured report is
-    missing, malformed, or does not account for exactly the child's rendered findings, nothing is
-    exempted.
-
-    The surfaced findings stay in the lint child's findings, so the artifact's gate receipt carries
-    the rule, level, and text; the caller records them in the publish log too.
+    Only ``Hapax.RegisterCarriage`` **warning** findings are exempt; a register error, any other
+    warning or error, and an unreconcilable finding still hold, and another holding child releases
+    nothing. The decision reads STRUCTURED fields, never the rendered string, whose free-text
+    ``file`` label could spoof a warning into the exempt rule. Surfaced findings stay in the lint
+    child's findings (the receipt) and in the log.
     """
     if gate_result.decision != PublicationGateDecision.HOLD:
         return gate_result, ()
@@ -1490,8 +1476,7 @@ def _surface_register_carriage_warnings(
     accounted = collections.Counter(surfaced_rendered)
     accounted.update(remaining_rendered)
     if accounted != collections.Counter(lint_child.findings):
-        # The structured rows and the child's own findings disagree: never exempt on a report this
-        # code cannot reconcile with what the receipt will show.
+        # Rows and rendered findings disagree: never exempt on a report the receipt cannot show.
         return gate_result, ()
     rewired_lint = lint_child.model_copy(
         update={
@@ -1512,9 +1497,8 @@ def _surface_register_carriage_warnings(
     if PublicationGateDecision.HOLD in decisions:
         # Another child is holding: the register warnings are not what holds this artifact.
         return gate_result, ()
-    # Re-aggregation must not silently drop flagged issues that do not come from a child result
-    # (the gate adds e.g. operator-override errors): keep the original entries, minus the surfaced
-    # lint lines, and union in the re-aggregated child lines.
+    # Keep flagged issues that no child result carries (the gate adds operator-override errors),
+    # minus the surfaced lint lines, and union the re-aggregated child lines.
     surfaced_flagged = {f"lint: {rendered}" for rendered in surfaced_rendered}
     kept_flagged = tuple(
         issue for issue in gate_result.flagged_issues if issue not in surfaced_flagged

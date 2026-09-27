@@ -572,13 +572,8 @@ def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> No
 
 
 def test_public_surface_gate_runs_the_register_carriage_lint(tmp_path: Path) -> None:
-    """R8 is wired into the gate itself, not only into ``lint_file``.
-
-    The gate's file scan must publish the register carriage findings (``Hapax.RegisterCarriage``)
-    for a scanned emission, so Edition 2's drafts are actually checked for the six devices. This
-    drives the real gate over a register-positive document; revert the wiring and no such finding
-    is emitted.
-    """
+    """R8 is wired into the gate itself, not only ``lint_file``: the real gate over a
+    register-positive document must publish ``Hapax.RegisterCarriage`` findings."""
     doc = tmp_path / "register.md"
     doc.write_text("A proposition. A deadline. A result to answer to.\n", encoding="utf-8")
     token_report = _write_token_report(tmp_path / "token-report.json")
@@ -606,11 +601,10 @@ def test_public_surface_gate_register_carriage_escalates_under_warnings_fail(
 
 
 def test_public_surface_gate_scans_built_site_pages_by_block_units(tmp_path: Path) -> None:
-    """codex: the built site pages must be scanned, not only the registry's sources.
+    """codex: built site pages must be scanned, not only the registry's sources.
 
-    `--built-site-dir` names a built output (R8's spec call-out for the site's `verify-dist`). The
-    page is linted by block units: the register device in a paragraph is found, and the separate
-    nav anchors are not merged into the paragraph's unit.
+    `--built-site-dir` names a built output (R8's spec call-out for the site's `verify-dist`); the
+    page is linted by block units, and nav anchors are not merged into the paragraph's unit.
     """
     dist = tmp_path / "dist"
     dist.mkdir()
@@ -645,7 +639,7 @@ def test_public_surface_gate_scans_built_site_pages_by_block_units(tmp_path: Pat
 def test_public_surface_gate_scans_the_built_site_env_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A host with the built output present scans it without a flag (`HAPAX_PUBLIC_SITE_DIST`)."""
+    """A host with the built output present scans it without a flag (``HAPAX_PUBLIC_SITE_DIST``)."""
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "page.html").write_text(
@@ -683,11 +677,8 @@ def test_public_surface_gate_scans_built_htm_pages(tmp_path: Path) -> None:
 
 
 def test_an_explicit_missing_built_site_dir_fails_loudly(tmp_path: Path) -> None:
-    """claude: the "fails loudly" guarantee of ``built_site_dirs`` had no test.
-
-    A named built output that is missing must exit non-zero with a next action, never pass by
-    scanning nothing.
-    """
+    """claude: a missing named built output must exit non-zero with a next action, never pass by
+    scanning nothing."""
     doc = tmp_path / "copy.md"
     doc.write_text("Scoped public copy.\n", encoding="utf-8")
     token_report = _write_token_report(tmp_path / "token-report.json")
@@ -706,8 +697,7 @@ def test_an_explicit_missing_built_site_dir_fails_loudly(tmp_path: Path) -> None
 def test_a_wrong_built_site_env_default_fails_loudly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A set-but-wrong env default is a misconfiguration, not an absent checkout: scan nothing
-    silently is not an option, so it must fail loudly and name the variable."""
+    """A set-but-wrong env default is a misconfiguration: it must fail loudly, naming the variable."""
     doc = tmp_path / "copy.md"
     doc.write_text("Scoped public copy.\n", encoding="utf-8")
     token_report = _write_token_report(tmp_path / "token-report.json")
@@ -748,7 +738,7 @@ def test_a_mixed_built_site_env_default_fails_on_the_missing_path(
 
 
 def test_a_built_site_dir_that_is_not_a_directory_refuses(tmp_path: Path) -> None:
-    """codex: an existing non-directory --built-site-dir passed and scanned a file, not the output."""
+    """codex: a non-directory --built-site-dir passed and scanned a file, not the built output."""
     page = tmp_path / "page.html"
     page.write_text("<p>One front door. Many working parts.</p>\n", encoding="utf-8")
     doc = tmp_path / "copy.md"

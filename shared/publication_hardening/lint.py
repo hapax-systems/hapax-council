@@ -381,9 +381,8 @@ REGISTER_CARRIAGE_DEVICES: tuple[tuple[int, str], ...] = (
     ),
 )
 
-# The amendment's "Not forbidden" list as DOCUMENTED KEEP DISPOSITIONS. A keep is recorded with
-# its reason per edition; these are never silent exemptions, so a finding in one of these shapes
-# still carries the keep category it may be disposed under.
+# The amendment's "Not forbidden" list as DOCUMENTED KEEP DISPOSITIONS, never silent exemptions:
+# a finding in one of these shapes still carries the keep category it may be disposed under.
 REGISTER_KEEP_DISPOSITIONS: tuple[tuple[str, str], ...] = (
     ("section_label", "plain label or heading that names a section"),
     ("literal_enumeration", "literal enumeration of real items"),
@@ -394,13 +393,9 @@ REGISTER_KEEP_DISPOSITIONS: tuple[tuple[str, str], ...] = (
 )
 
 _REGISTER_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\u201c\"'(])")
-# A finite-verb test for the FRAGMENT device that stays quiet on plain prose. The port's cheap
-# `\w+(ed|es)\b` proxy fires on participles and imperatives ("Proceed", "agent-staffed") and
-# swallowed real fragments; dropping it made ordinary prose ("The artifact proposes a claim.")
-# look verbless, which broke the shipped plain-prose fixture. This keeps auxiliaries, the
-# pronoun+verb shape, and an -ed/-es inflection on a word that is NOT hyphen-preceded
-# (a hyphenated participle is an adjective, not the sentence's verb), plus an explicit
-# imperative carve-out: an imperative-led fragment is a fragment whatever its suffix.
+# The FRAGMENT device's finite-verb test, quiet on plain prose: the port's cheap `\w+(ed|es)\b`
+# proxy fired on participles and imperatives and swallowed real fragments. Keeps auxiliaries,
+# pronoun+verb, and an -ed/-es inflection not hyphen-preceded, plus an imperative carve-out.
 _REGISTER_FINITE_AUX = re.compile(
     r"\b(is|are|was|were|be|been|being|am|has|have|had|do|does|did|can|could|will|would|shall|"
     r"should|may|might|must|isn't|aren't|wasn't|don't|doesn't|didn't|won't|cannot|can't)\b"
@@ -414,8 +409,7 @@ def _register_is_fragment(unit: str) -> bool:
     """Over-inclusive: a unit with no finite-verb signal, or an imperative-led short unit."""
     head = unit.split()[0] if unit.split() else ""
     if head and _REGISTER_IMPERATIVE_HEAD.match(unit) and _register_words(unit) <= 12:
-        # A bare imperative ("Proceed under measurement") is a fragment for the register check
-        # even though its head may carry an -ed/-s suffix.
+        # A bare imperative is a fragment even though its head may carry an -ed/-s suffix.
         return not _REGISTER_FINITE_AUX.search(unit.split(" ", 1)[1] if " " in unit else "")
     return not _REGISTER_FINITE_AUX.search(unit)
 
@@ -432,12 +426,9 @@ _REGISTER_SCOPE_NEGATION = re.compile(
     re.IGNORECASE,
 )
 _REGISTER_ENUMERATION = re.compile(r"\s·\s|\s\((?:\d+|[a-z])\)\s|\A\s*\d+\.\s")
-#: Literal enumerations are not always middot- or number-prefixed. A comma series — "Apples,
-#: oranges, and pears." — is the commonest literal enumeration, and codex found device 2 firing on
-#: it with no keep disposition available. Two or more commas in one short, clause-unbroken line is
-#: an enumeration shape, not a tricolon held for rhythm. Kept deliberately narrow: a mid-line
-#: clause boundary (``;:``) or an over-long unit keeps an ordinary multi-clause sentence out, so
-#: the hint cannot wave a real flag away. The word ceiling is applied at the use site.
+#: A comma series ("Apples, oranges, and pears.") is the commonest literal enumeration and was
+#: flagged with no keep disposition: two commas in one short, clause-unbroken line is an
+#: enumeration, not a tricolon.
 _REGISTER_COMMA_SERIES = re.compile(r"\A[^.;:!?\n]*,[^,.;:!?\n]*,[^,.;:!?\n]*[.!?]?\Z")
 _REGISTER_COMMA_SERIES_MAX_WORDS = 16
 
@@ -500,36 +491,21 @@ def _register_keep_hint(unit: str, sentences: list[str]) -> str | None:
     return None
 
 
-#: Block-level tags whose inner text is one register unit on a built page. A built page must be
-#: linted by its block units, not by tag-stripped text: stripping merges navigation chrome and
-#: adjacent blocks into one pseudo-unit and invents findings (measured on the correction edition).
-#: Block-level tags whose text is one register unit on a built page. The content wrappers
-#: (``div``/``main``/``section``/…) are units too: five same-line ``<div>Proceed under
-#: measurement</div>`` blocks were joined by the residue pass into one over-long, unflagged unit
-#: (codex). With them here, each wrapper is its own unit, and a wrapper holding a nested block is
-#: still skipped in favour of the inner blocks.
+#: Block-level tags: one register unit each, linted by block units rather than tag-stripped text
+#: (stripping merges nav chrome and invents findings). A wrapper holding a nested block is skipped.
 _REGISTER_BLOCK_TAGS = (
     "p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption|"
     "div|main|section|article|header|footer|aside|figure"
 )
-#: Non-content regions of a built page: their text is never a register unit.
+#: Non-content regions of a built page: never a register unit.
 _REGISTER_HTML_BOILERPLATE = "nav|script|style|head|noscript|template|svg"
 
 
 def _register_html_units(text: str) -> list[tuple[int, str]]:
     """Leaf block units from built HTML, plus a residue fallback, with 1-based line numbers.
 
-    A body that itself contains a block element is not a unit: an outer ``<li>`` or
-    ``<blockquote>`` holding ``<p>``s must yield the ``<p>``s, not one merged unit (codex: the
-    outer tag swallowed its nested paragraphs). The body is tempered against any block open/close
-    tag so the innermost blocks win, and inline tags (``<em>``, ``<a>``) stay inside their unit.
-
-    Copy that sits outside the selected block tags — a ``<div>``, ``<main>`` or ``<section>``
-    wrapper, or text directly under ``<body>`` — is linted by a residue pass (codex: those
-    wrappers yielded no units, so the built-page gate could pass without scanning the copy).
-    Boilerplate regions (``<nav>``, ``<script>``, ``<style>``, ``<head>`` …) are masked first, so
-    navigation chrome is still never a unit; without that the residue pass would re-invent the
-    nav-chrome findings block units exist to avoid.
+    A body containing a block element is not a unit (an outer ``<li>`` yields its ``<p>``s), and
+    copy outside the block tags is linted by a residue pass over non-boilerplate text.
     """
     boilerplate = re.compile(
         rf"<({_REGISTER_HTML_BOILERPLATE})\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL
@@ -568,13 +544,9 @@ _REGISTER_HTML_SUFFIXES = (".html", ".htm")
 
 
 def _register_parser_mode(file_label: str) -> str:
-    """``html`` or ``text``, chosen by the file's own extension.
-
-    A content sniff was a fail-open (gemini): matching ``<p`` anywhere made a Markdown draft that
-    merely *mentions* ``<p>`` be read as HTML, so its ordinary paragraphs were skipped and the
-    gate passed it silently. The extension is the honest signal; a label with no path (as
-    ``lint_text`` passes) is text.
-    """
+    """``html`` or ``text``, by the file's extension. A content sniff was a fail-open: a Markdown
+    draft merely *mentioning* ``<p>`` was read as HTML, its paragraphs skipped, and the gate passed
+    it silently. A path-less label is text."""
     return "html" if Path(file_label).suffix.lower() in _REGISTER_HTML_SUFFIXES else "text"
 
 
@@ -585,8 +557,8 @@ def check_register_carriage_text(
 ) -> list[LintFinding]:
     """Flag writerly and rhetorical carriage (the six devices), over-inclusive by design.
 
-    One finding per (unit, device), carrying the device number, the line, the text, and — when
-    the unit's shape names one — the documented keep disposition it may be recorded under.
+    One finding per (unit, device): the device number, the line, the text, and (when the unit's
+    shape names one) the documented keep disposition it may be recorded under.
     """
     findings: list[LintFinding] = []
     units = (

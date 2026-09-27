@@ -1,9 +1,6 @@
-"""The ported register-carriage checks, red-first, against the spec's fixtures.
-
-Fixtures: the eight positive and five negative items named in the R8 spec
-(`frame/public-loop-20260925/ROWS-PROPOSED/R8-…`, sha256 prefix a8995263d80a3b0d) and the 31
-FIX units dev20's REGISTER-SWEEP-correction-edition-572773f2.md dispositioned. Over-inclusion is
-accepted by the amendment; missing a FIX item is a defect.
+"""The ported register-carriage checks against the spec's fixtures: the eight positive and five
+negative items in the R8 spec and dev20's 31 sweep FIX units. Over-inclusion is accepted; missing a
+FIX item is a defect.
 """
 
 from __future__ import annotations
@@ -249,11 +246,9 @@ def test_keep_dispositions_cover_the_amendments_not_forbidden_list() -> None:
 def test_named_bugfix_the_ported_finite_verb_proxy_swallowed_these_fragments() -> None:
     """Red-first witness for the one correctness fix the PR body names.
 
-    The port's cheap ``\\w+(ed|es)\\b`` finite-verb proxy fired on the -ed/-es surface of an
-    imperative ("Proceed") or a hyphenated participle ("agent-staffed"), so these real fragments
-    were read as verbful and dropped. Revert the fix — put ``_REGISTER_FINITE`` back as the
-    fragment test — and both units go silent; this is the red half the earlier packet lacked,
-    which cited only an incidental import-collection failure.
+    The port's cheap ``\\w+(ed|es)\\b`` proxy fired on the -ed/-es surface of an imperative
+    ("Proceed") or a hyphenated participle ("agent-staffed"), so these fragments were read as
+    verbful and dropped; reinstating it as the fragment test makes exactly this test red.
     """
     for unit in ("Proceed under measurement", "An agent-staffed R&D laboratory."):
         findings = check_register_carriage_text(unit, file_label="<fixture>")
@@ -283,18 +278,15 @@ def test_a_comma_enumeration_carries_the_literal_enumeration_keep() -> None:
 
 
 def test_the_parser_is_chosen_by_extension_not_by_stray_html_in_the_text() -> None:
-    """gemini's fail-open: a content sniff read a Markdown draft that mentions ``<p>`` as HTML.
-
-    HTML mode extracts block-tag text only, so a draft with no ``<p>…</p>`` pair yielded no units
-    and the gate passed it silently. Red before the fix: this draft returns no findings.
-    """
+    """gemini's fail-open: a content sniff read a Markdown draft mentioning ``<p>`` as HTML, and
+    HTML mode then yielded no units, so the gate passed it silently (red before the fix)."""
     draft = "The prose mentions the tag <p> as an example.\n\nOne front door. Many working parts.\n"
     findings = check_register_carriage_text(draft, file_label="draft.md")
     assert any("One front door" in f.message for f in findings), [f.message for f in findings]
 
 
 def test_nested_blocks_do_not_merge_units() -> None:
-    """codex: an outer ``<li>``/``<blockquote>`` swallowed its nested ``<p>``s into one unit."""
+    """codex: an outer ``<li>``/``<blockquote>`` swallowed its nested ``<p>``s."""
     page = (
         "<ul><li><p>One front door. Many working parts.</p>"
         "<p>The catalogue lists these records.</p></li></ul>"
@@ -308,11 +300,8 @@ def test_nested_blocks_do_not_merge_units() -> None:
 
 
 def test_html_copy_outside_the_block_tags_is_still_linted() -> None:
-    """codex: copy inside ``<div>``/``<main>``/``<section>`` yielded no units at all.
-
-    Red before the residue fallback: a built page whose copy sits in a wrapper produced nothing,
-    so the built-page gate passed it without scanning it.
-    """
+    """codex: copy inside ``<div>``/``<main>``/``<section>`` yielded no units at all (red before
+    the residue fallback)."""
     for page in (
         "<html><body><main><div>One front door. Many working parts.</div></main></body></html>",
         "<section>One front door. Many working parts.</section>",

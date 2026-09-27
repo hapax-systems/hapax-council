@@ -62,54 +62,21 @@ legal, privacy, entity, citation, or operator override review.
 
 ## Built site pages (R8 register carriage)
 
-The registry names the *sources*. A built public-site output is a second,
-separate surface: R8's spec call-out for the site's `verify-dist`. The gate
-scans built pages by leaf block units — a `<li>`, `<blockquote>` or content
-wrapper holding `<p>`s yields the paragraphs, not one merged unit — plus a
-residue pass over text outside those units, minus boilerplate (`nav`, `script`,
-`style`, `head`, `noscript`, `template`, `svg`). It runs the register carriage lint (`Hapax.RegisterCarriage`,
-the six devices of the HACA-C §Register amendment) over them beside
-`Hapax.FormalRegister`.
-
-The canonical, reproducible invocation over a built output is:
+The registry names the *sources*; a built public-site output is a separate surface (R8's spec
+call-out for the site's `verify-dist`). Built pages are linted by leaf block units, plus a residue
+pass over text outside them, minus boilerplate (see `_REGISTER_HTML_BOILERPLATE`). The parser is
+chosen by file extension (`.html`/`.htm`), never content: a Markdown draft mentioning `<p>` must
+still be read as text, or its paragraphs are skipped silently. The register carriage lint then runs
+beside `Hapax.FormalRegister`; its findings are `warning` level (over-inclusive by design, disposed
+fix / keep-with-reason / carry), so add `--warnings-fail` to make them block. Canonical invocation:
 
 ```bash
 uv run python scripts/check-public-surface-claims.py --warnings-fail \
   --built-site-dir "$HOME/projects/hrl-portal/dist"
 ```
 
-`--built-site-dir` is repeatable and is named explicitly, so naming a directory
-that is missing fails loudly rather than scanning nothing. A host that holds the
-site checkout may instead export the default:
-
-```bash
-export HAPAX_PUBLIC_SITE_DIST="$HOME/projects/hrl-portal/dist"   # pathsep-separated
-```
-
-Every path named by `HAPAX_PUBLIC_SITE_DIST` (or by `--built-site-dir`) must
-exist: the gate exits 2 and names the missing path and the variable, so a
-set-but-wrong default — or one missing entry in a multi-path default — fails
-loudly instead of scanning nothing or silently skipping a directory. Leave the
-variable unset on a host without the site checkout; the site repo's own
-`scripts/verify-dist.mjs`
-owns its dist pins; this gate is the source-side check that reads the same built
-pages. The register findings are `warning` level (over-inclusive by design; every
-hit is disposed fix / keep-with-reason / carry), so add `--warnings-fail` on the
-release path to make them block.
-
-The parser is chosen by file extension (`.html`/`.htm` are HTML; everything else
-is text). It is deliberately *not* chosen by content: a Markdown draft that
-mentions `<p>` must still be read as text, or its paragraphs are skipped and the
-gate passes it silently.
-
-### Recheck
-
-```bash
-uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic pytest \
-  tests/shared/test_register_carriage.py tests/scripts/test_check_public_surface_claims.py
-```
-
-Covers the parser mode, the built-site directory wiring (including the loud
-missing-directory failure), the nested-block units, the residue fallback for
-wrapper text, the boilerplate exclusion, and the register carriage emission from
-the gate itself.
+`--built-site-dir` is repeatable; `HAPAX_PUBLIC_SITE_DIST` (pathsep-separated) is the host default.
+Every named path must be an existing **directory**, else the gate exits 2 naming the path and the
+variable; leave it unset on a host without the site checkout. Recheck: `uv run --no-project --with
+pytest==9.0.2 --with pyyaml --with pydantic pytest tests/shared/test_register_carriage.py
+tests/scripts/test_check_public_surface_claims.py`.

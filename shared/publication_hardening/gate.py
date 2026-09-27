@@ -40,9 +40,7 @@ class PublicationGateDecision(StrEnum):
     OPERATOR_OVERRIDDEN_HOLD = "operator_overridden_hold"
 
 
-#: Schema marker for the lint child's structured findings report
-#: (:func:`lint_findings_report`). A consumer that decides on a finding's rule or level reads the
-#: structured fields and checks this marker; it must never re-parse the rendered finding string.
+#: Schema marker for the lint child's structured findings report: read these fields, never re-parse.
 LINT_FINDINGS_REPORT_SCHEMA = "hapax.publication_lint_findings.v1"
 
 
@@ -342,12 +340,9 @@ class PublicationHardeningGate:
 def lint_findings_report(findings: Sequence[LintFinding]) -> dict[str, object]:
     """The lint child's findings as a STRUCTURED report, beside its rendered strings.
 
-    A consumer that must decide on a finding's rule or level reads these fields. It must not
-    re-parse the rendered ``file:line:rule:level:message`` text: the ``file`` label is free text
-    (a source path can contain ``:1:Hapax.RegisterCarriage:warning:``) and an unescaped label
-    makes the boundary ambiguous, so a string parse can be spoofed into exempting a finding that
-    is not a register warning. ``rendered`` is carried so a consumer can still map a structured row
-    back to the child's own finding string without re-deriving it.
+    A consumer deciding on a rule or level reads these fields, never the rendered
+    ``file:line:rule:level:message`` text: the ``file`` label is free text, so a string parse is
+    spoofable. ``rendered`` maps a row back to the child's own finding string.
     """
     return {
         "schema": LINT_FINDINGS_REPORT_SCHEMA,
