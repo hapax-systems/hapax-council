@@ -631,12 +631,20 @@ def scan_unified_diff(text: str) -> ScanResult:
             )
         )
 
-    def emit_line(kinds: tuple[str, ...], line_no: int, content: str) -> None:
+    def emit_line(
+        kinds: tuple[str, ...], line_no: int, content: str, *, text: str | None = None
+    ) -> None:
         """Record one added line's kinds, applying the marker decision.
 
         The marker is honoured only on an allowlisted path. Anywhere else it does
         NOT exempt the line (the underlying findings stand) and it is itself a
         finding — never a silent ignore, which would hide the intent.
+
+        **This is the ONE place a finding's exemption is decided**, and it is decided from the
+        finding's OWN line: `line_no`/`content` must be the line the finding is about. A caller
+        that passes another line's content (or a region's first line) re-opens the marker leak
+        fixed in r3, so the call sites are audited by
+        `test_the_marker_decision_is_decided_by_the_findings_own_line`.
         """
 
         if not kinds and ALLOW_MARKER not in content:
@@ -647,7 +655,12 @@ def scan_unified_diff(text: str) -> ScanResult:
             marked_lines_emitted.add((path, line_no))
             findings.append(_marker_outside_fixtures_finding(path, line_no, content))
         for kind in kinds:
-            finding = Finding(path=path, line=line_no, kind=kind, text=content.strip())
+            finding = Finding(
+                path=path,
+                line=line_no,
+                kind=kind,
+                text=text if text is not None else content.strip(),
+            )
             (allowed if marker_ok else findings).append(finding)
 
     def flush() -> None:
@@ -695,15 +708,26 @@ def scan_unified_diff(text: str) -> ScanResult:
                     for _, content in added
                 )
             ):
-                first = added[0]
-                # Routed through `emit_line` so the marker decision is the ONE decision, wherever
-                # a finding is born: a marker on an allowlisted path makes this exemption
-                # visible in `allowed` rather than silent (gemini's round-2 minor).
-                emit_line(
-                    ("billing-scan-unusable-input",),
-                    first[0],
-                    first[1],
-                )
+                # ONE FINDING PER KEY-BEARING LINE, each with its own line's text. Attributing
+                # the region's damage to `added[0]` was a fail-open (dev21's r2 reproduction): a
+                # marker on line 1 moved the finding to `allowed` and line 2's unmarked
+                # `client = OpenAI(api_key` was never judged — exit 0 over a key-bearing line.
+                # The marker's contract is exactly the marked line, so a line's exemption may
+                # only ever speak for that line.
+                for line_no, content in added:
+                    if _KEY_BEARING_PROBE.search(content):
+                        emit_line(
+                            ("billing-scan-unusable-input",),
+                            line_no,
+                            content,
+                            text=(
+                                "this Python post-image region does not parse and this added "
+                                f"line carries credential-bearing text: {content.strip()[:120]!r}. "
+                                "Next action: make the region parse (or scan the file at its "
+                                "full head revision) so the structural check can decide; "
+                                "unparseable credential-bearing text is never exempt."
+                            ),
+                        )
         region = []
 
     state = "start"

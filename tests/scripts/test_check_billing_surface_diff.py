@@ -665,3 +665,100 @@ def test_main_diff_with_no_file_headers_fails_closed(scanner: ModuleType, tmp_pa
         "@@ -1,1 +1,1 @@\n+client = OpenAI(api_key=key)\n", encoding="utf-8"
     )  # billing-scan:allow: fixture data
     assert scanner.main(["--diff-file", str(path)]) == 2
+
+
+# ── round 3 (codex's critical, reproduced by dev21): the marker's contract is exactly ──
+# ── the marked line — a finding may never be exempted by another line's marker. ──
+
+
+def _hunk(path: str, body: list[str]) -> str:
+    return (
+        f"diff --git a/{path} b/{path}\n"
+        f"--- a/{path}\n"
+        f"+++ b/{path}\n"
+        f"@@ -0,0 +1,{len(body)} @@\n" + "".join(f"+{line}\n" for line in body)
+    )
+
+
+def test_a_marker_on_one_line_does_not_exempt_another_lines_finding(
+    scanner: ModuleType,
+) -> None:
+    """dev21's r2 reproduction, verbatim: the marker was on line 1, the key on line 2.
+
+    The unusable-input finding for the region was attributed to `added[0]`, so the marked first
+    line moved it to `allowed` and the unmarked key-bearing second line was never judged: `OK`,
+    exit 0. The marker's contract is exactly the marked line.
+    """
+
+    diff = _hunk(
+        "tests/test_probe.py",
+        ["# billing-scan:allow", "client = OpenAI(api_key"],
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert [f.line for f in result.findings] == [2], (
+        f"the unmarked line was not the finding: {[(f.line, f.kind) for f in result.findings]}"
+    )
+    # And the marked line exempts NOTHING here, because it carries no finding of its own: an
+    # exemption speaks for the line it is on, so a marked line with no finding has nothing to
+    # exempt. Asserted rather than left implicit — it is the other half of "the contract is
+    # exactly the marked line".
+    assert result.allowed == (), f"the marked line exempted something: {result.allowed}"
+
+
+def test_a_marker_on_the_second_line_does_not_exempt_the_first(scanner: ModuleType) -> None:
+    """The mirror: the key on line 1, the marker on line 2. An exemption speaks for one line."""
+
+    diff = _hunk(
+        "tests/test_probe.py",
+        ["client = OpenAI(api_key", "# billing-scan:allow"],
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert [f.line for f in result.findings] == [1], (
+        f"the marked line exempted the line above it: {[(f.line, f.kind) for f in result.findings]}"
+    )
+
+
+def test_both_lines_marked_is_allowed(scanner: ModuleType) -> None:
+    """The positive control: when every line the finding names carries the marker, it is allowed."""
+
+    diff = _hunk(
+        "tests/test_probe.py",
+        ["# billing-scan:allow", "client = OpenAI(api_key  # billing-scan:allow"],
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == (), f"a fully marked region was not exempt: {result.findings}"
+    assert result.allowed, "the exemptions were not reported in allowed"
+
+
+def test_no_emitter_exempts_a_finding_by_another_lines_marker(scanner: ModuleType) -> None:
+    """The attribution audit (r3 item 3): every emitter path, with a marked neighbour line.
+
+    `emit_line` is the single place an exemption is decided, and it decides from the finding's own
+    line. This walks the emitter paths — the unparseable-region arm, a parsed AST route, a
+    credential read, a Bearer header, and a pattern-only class — with the marker on a DIFFERENT
+    line of the same addable hunk, and requires the unmarked line's finding to stand. (Audit of
+    the call sites: `rg -n 'emit_line\\(' scripts/check-billing-surface-diff.py` — five call sites,
+    each passing the line it found.)
+    """
+
+    marked = "# billing-scan:allow"
+    # UNINDENTED on purpose: an indented first line makes the whole region unparseable, which
+    # would send every parsed shape down the unparseable arm and leave the parsed emitter
+    # untested — measured, because a mutant that mis-attributed the parsed emitter survived the
+    # first version of this test.
+    shapes = {
+        "unparseable region": ["client = OpenAI(api_key"],
+        "parsed AST route": ["client = OpenAI(api_key=key)"],
+        "credential read": ['key = os.environ["OPENAI_API_KEY"]'],
+        "bearer header": ['headers = {"Authorization": "Bearer " + token}'],
+        "pattern-only class": ['url = "https://api.openai.com/v1"'],
+    }
+    for label, body in shapes.items():
+        for marked_first in (True, False):
+            lines = [marked, *body] if marked_first else [*body, marked]
+            diff = _hunk("tests/test_probe.py", lines)
+            result = scanner.scan_unified_diff(diff)
+            assert result.findings, (
+                f"{label} (marker {'above' if marked_first else 'below'}): a marked neighbour "
+                "line exempted the finding"
+            )
