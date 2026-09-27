@@ -452,6 +452,24 @@ def test_marker_is_honoured_on_an_allowlisted_non_python_path(scanner: ModuleTyp
     assert result.findings == (), "the marker was not honoured on an allowlisted non-Python path"
 
 
+def test_a_doc_sections_completeness_is_still_judged(scanner: ModuleType) -> None:
+    """Doc files are not SCANNED, but their sections still count for input completeness.
+
+    Found while merging: a hunk header inside a doc section was skipped before the
+    completeness marks saw it, so every legitimate doc section read as incomplete. A
+    truncated diff is unusable whatever got cut, doc or not, and a complete doc section
+    stays clean.
+    """
+
+    truncated = "diff --git a/docs/x.md b/docs/x.md\nindex abc1234..def5678 100644\n"
+    result = scanner.scan_unified_diff(truncated)
+    assert "billing-scan-unusable-input" in [f.kind for f in result.findings], (
+        "a truncated doc section was read as a clean scan"
+    )
+    complete = scanner.scan_unified_diff(_diff("docs/runbooks/foo.md", ["some prose"]))
+    assert complete.findings == (), "a complete doc section was flagged as unusable"
+
+
 def test_strip_default_argument_is_scanned(scanner: ModuleType) -> None:
     """codex-1's round-4 critical, verbatim, on the AST path.
 

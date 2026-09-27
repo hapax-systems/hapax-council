@@ -841,14 +841,17 @@ def scan_unified_diff(text: str) -> ScanResult:
             if not skip_file:
                 scanned.append(path)
             continue
-        if skip_file or path is None:
-            continue
+        # Hunk headers are counted for EVERY section, doc files included: whether the input
+        # arrived whole is a property of the diff, not of the file's class (a truncated diff
+        # is unusable whatever got cut), so the mark must be set before the scan-skip test.
         header = _HUNK_HEADER_RE.match(raw)
         if header:
             flush()
             saw_hunk = True
             marks["hunk"] = True
             new_line = int(header.group(1))
+            continue
+        if skip_file or path is None:
             continue
         if raw.startswith("-"):
             continue
