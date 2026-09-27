@@ -528,6 +528,11 @@ class _FakeRunner:
         self.ruleset_detail_errors: dict[int, str] = {}
         self.ruleset_detail_raw_stdout: dict[int, str] = {}
         self.fail_queue_refs = False
+        # PR number -> GraphQL state ("OPEN"/"CLOSED"/"MERGED") served for the
+        # ref-hint reconciliation query; None models a PR number that does not
+        # resolve. Numbers absent here but present in open_prs answer "OPEN".
+        self.pr_states: dict[int, str | None] = {}
+        self.fail_ref_state_lookup = False
         self.calls: list[list[str]] = []
         self.fail_status_posts = False
         self.status_post_failure_message = "status post failed"
@@ -742,6 +747,25 @@ class _FakeRunner:
             if self.fail_status_posts:
                 return subprocess.CompletedProcess(cmd, 1, "", self.status_post_failure_message)
             return subprocess.CompletedProcess(cmd, 0, '{"state":"ok"}', "")
+        if cmd[:3] == ["gh", "api", "graphql"] and any("RefHintStates" in part for part in cmd):
+            if self.fail_ref_state_lookup:
+                return subprocess.CompletedProcess(cmd, 1, "", "ref hint state lookup unavailable")
+            repository: dict[str, Any] = {}
+            for part in cmd:
+                for match in re.finditer(r"pullRequest\(number:(\d+)\)", part):
+                    number = int(match.group(1))
+                    if number in self.pr_states:
+                        state = self.pr_states[number]
+                        repository[f"pr_{number}"] = (
+                            None if state is None else {"number": number, "state": state}
+                        )
+                    elif any(pr.get("number") == number for pr in self.open_prs):
+                        repository[f"pr_{number}"] = {"number": number, "state": "OPEN"}
+                    else:
+                        repository[f"pr_{number}"] = None
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"data": {"repository": repository}}), ""
+            )
         if cmd[:3] == ["gh", "api", "graphql"]:
             if self.merge_queue_stdout is not None and any("mergeQueue{" in part for part in cmd):
                 return subprocess.CompletedProcess(cmd, 0, self.merge_queue_stdout, "")
@@ -838,6 +862,45 @@ class _GraphQLRollupOnRestIndeterminateRunner(_FakeRunner):
                 }
             }
             return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        return super().__call__(cmd, **kwargs)
+
+
+class _RestRotationRunner(_FakeRunner):
+    """Minimal rotation-capable runner: rate probe plus paginated REST listing.
+
+    Mirrors the listing/rate-probe legs of the rotation-suite runner so the
+    persistent-rotation path (``rotation_state_path``) can be driven from this
+    file. Hydration, queue probes and mutations stay on ``_FakeRunner``.
+    """
+
+    def __init__(self, count: int) -> None:
+        super().__init__()
+        self.open_prs = [_pr(number=number) for number in range(count, 0, -1)]
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            self.calls.append(cmd)
+            payload = {
+                "resources": {
+                    pool: {"remaining": 5000, "limit": 5000, "reset": 1893456000}
+                    for pool in ("core", "graphql")
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        if "--include" in cmd and "repos/owner/repo/pulls" in cmd:
+            self.calls.append(cmd)
+            page = int(self._fields(cmd)["page"])
+            rows = self.open_prs[(page - 1) * 100 : page * 100]
+            headers = "HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n"
+            if page * 100 < len(self.open_prs):
+                headers += (
+                    f"Link: <https://api.github.com/repos/owner/repo/pulls?page={page + 1}>;"
+                    ' rel="next"\r\n'
+                )
+            body = json.dumps([self._rest_pr(row) for row in rows])
+            return subprocess.CompletedProcess(
+                cmd, 0, headers.rstrip("\r\n") + "\r\n\r\n" + body, ""
+            )
         return super().__call__(cmd, **kwargs)
 
 
@@ -2190,6 +2253,9 @@ class TestMergeQueuePayloadReconciliation:
         )
         if has_refs:
             runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-43-deadbeef"]
+            # Refs are hints reconciled against PR state: a ref survives only
+            # while the hinted PR verifiably stays OPEN.
+            runner.pr_states = {43: "OPEN"}
         with caplog.at_level("INFO", logger=autoqueue.LOG.name):
             report = autoqueue.run_reconciler(
                 repo="owner/repo",
@@ -4915,6 +4981,371 @@ def test_merge_queue_ref_numbers_returns_empty_set_when_matching_refs_fails(
     )
 
 
+class TestMergeQueueRefHintReconciliation:
+    """queued_prs treats gh-readonly-queue refs as hints; PR state is authority.
+
+    Defect cc-pr-autoqueue-armed-note-reconciliation-gap-20260914 item 1: refs
+    GitHub never garbage-collected kept merged/closed PRs in queued_prs, where
+    they read as still queued.
+    """
+
+    def _queued(self, tmp_path: Path, runner: _FakeRunner) -> set[int]:
+        queued = autoqueue.fetch_merge_queue_pr_numbers(
+            repo="owner/repo", repo_root=tmp_path, runner=runner
+        )
+        assert queued is not None
+        return queued
+
+    def test_merged_pr_ref_hint_drops_out_of_queued_prs(self, tmp_path: Path) -> None:
+        runner = _FakeRunner()
+        runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-99-deadbeef"]
+        runner.pr_states = {99: "MERGED"}
+
+        assert self._queued(tmp_path, runner) == set()
+
+    def test_closed_pr_ref_hint_drops_out_of_queued_prs(self, tmp_path: Path) -> None:
+        runner = _FakeRunner()
+        runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-98-deadbeef"]
+        runner.pr_states = {98: "CLOSED"}
+
+        assert self._queued(tmp_path, runner) == set()
+
+    def test_unresolvable_pr_ref_hint_drops_out_of_queued_prs(self, tmp_path: Path) -> None:
+        runner = _FakeRunner()
+        runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-97-deadbeef"]
+        runner.pr_states = {97: None}
+
+        assert self._queued(tmp_path, runner) == set()
+
+    def test_open_pr_ref_hint_is_kept(self, tmp_path: Path) -> None:
+        runner = _FakeRunner()
+        runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-96-deadbeef"]
+        runner.pr_states = {96: "OPEN"}
+
+        assert self._queued(tmp_path, runner) == {96}
+
+    def test_open_pr_ref_hint_from_live_listing_is_kept(self, tmp_path: Path) -> None:
+        runner = _FakeRunner()
+        runner.open_prs = [_pr(95)]
+        runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-95-deadbeef"]
+
+        assert self._queued(tmp_path, runner) == {95}
+
+    def test_state_lookup_indeterminate_keeps_hints(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        runner = _FakeRunner()
+        runner.queue_refs = ["refs/heads/gh-readonly-queue/main/pr-94-deadbeef"]
+        runner.fail_ref_state_lookup = True
+
+        with caplog.at_level("WARNING", logger=autoqueue.LOG.name):
+            assert self._queued(tmp_path, runner) == {94}
+        assert "ref hint" in caplog.text
+
+    def test_reconciler_drops_merged_ref_hint_but_keeps_open_one(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="ref-hint-open", pr=42)
+        runner = _FakeRunner()
+        runner.open_prs = [_pr(42)]
+        runner.queue_refs = [
+            "refs/heads/gh-readonly-queue/main/pr-42-live",
+            "refs/heads/gh-readonly-queue/main/pr-99-merged",
+        ]
+        runner.pr_states = {99: "MERGED"}
+
+        report = autoqueue.run_reconciler(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            vault_root=vault,
+            runner=runner,
+        )
+
+        assert report["queued_prs"] == [42]
+        assert report["decisions"][0]["action"] == "already_queued"
+
+
+def test_stale_release_arm_stamp_does_not_block_rearm(tmp_path: Path) -> None:
+    """Ledger 8.1 re-arm-follows-head: a stamp naming another head is stale.
+
+    The mismatch must not classify as a release_authorized_head_mismatch blocker;
+    the re-arm is evaluated against the current head and the staleness is
+    surfaced informationally on the decision.
+    """
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="stale-stamp-classify",
+        status="pr_open",
+        pr=727,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-old",
+            "stage": "S7_RELEASE",
+        },
+    )
+    pr = autoqueue._parse_pr(_pr(727))
+    assert pr is not None
+    tasks = autoqueue.load_task_notes(vault)
+
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=tasks,
+        queued_prs=set(),
+        expected_auto_merge_method="SQUASH",
+        expected_auto_merge_method_source="test",
+    )
+
+    assert decision.action == "queue"
+    assert not any(reason.startswith("release_authorized_head_") for reason in decision.reasons)
+    assert "release_authorized_head_stale:authorized=sha-old:current=sha-727" in decision.notes
+
+
+def test_fresh_release_arm_stamp_carries_no_stale_note(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="fresh-stamp-classify",
+        status="pr_open",
+        pr=727,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-727",
+            "stage": "S7_RELEASE",
+        },
+    )
+    pr = autoqueue._parse_pr(_pr(727))
+    assert pr is not None
+    tasks = autoqueue.load_task_notes(vault)
+
+    decision = autoqueue.classify_pr(
+        pr,
+        tasks=tasks,
+        queued_prs=set(),
+        expected_auto_merge_method="SQUASH",
+        expected_auto_merge_method_source="test",
+    )
+
+    assert decision.action == "queue"
+    assert not any("release_authorized_head" in note for note in decision.notes)
+
+
+class TestArmedNoteReconciliation:
+    """Bounded armed-note/unarmed-PR divergence tracking (defect item 2)."""
+
+    def _write_armed_task(self, vault: Path, number: int) -> None:
+        _write_task(
+            vault,
+            task_id=f"armed-note-{number}",
+            status="pr_open",
+            pr=number,
+            branch=f"feat/{number}",
+            extra_frontmatter={
+                **_eligible_arm_extra(),
+                "release_authorized": True,
+                "release_authorized_head_sha": f"sha-{number}",
+                "release_authorized_head_ref": f"feat/{number}",
+                "stage": "S7_RELEASE",
+            },
+        )
+
+    def _tracker(
+        self,
+        vault: Path,
+        tmp_path: Path,
+        *,
+        queued: set[int] | None = None,
+        persist: bool = True,
+    ) -> Any:
+        return autoqueue._ArmedNoteReconciliation(
+            tasks=autoqueue.load_task_notes(vault),
+            queued_prs=queued or set(),
+            state_path=tmp_path / "examined.json.armed-note-reconciliation.json",
+            repo="owner/repo",
+            now=datetime.now(UTC),
+            persist=persist,
+        )
+
+    def test_retry_seat_after_min_consecutive_divergent_passes(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        self._write_armed_task(vault, 42)
+        tracker = self._tracker(vault, tmp_path)
+        rows = [_pr(42)]
+
+        assert tracker.observe(rows) == frozenset()
+        assert tracker.observe(rows) == frozenset({42})
+        tracker.note_served({42})
+        assert tracker.report()["retried"] == [{"pr": 42, "retry": 1}]
+        # After a served retry the pass count re-accumulates from zero.
+        assert tracker.observe(rows) == frozenset()
+        assert tracker.report()["watched"] == [{"pr": 42, "consecutive_passes": 1, "retries": 1}]
+
+    def test_armed_pr_is_not_divergent(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        self._write_armed_task(vault, 42)
+        tracker = self._tracker(vault, tmp_path)
+
+        assert tracker.observe([_pr(42, auto_merge=True)]) == frozenset()
+        assert tracker.report()["watched"] == []
+
+    def test_queued_pr_is_not_divergent(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        self._write_armed_task(vault, 42)
+        tracker = self._tracker(vault, tmp_path, queued={42})
+
+        assert tracker.observe([_pr(42)]) == frozenset()
+        assert tracker.report()["watched"] == []
+
+    def test_unarmed_note_is_not_watched(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="plain-task", pr=42)
+        tracker = self._tracker(vault, tmp_path)
+
+        assert tracker.observe([_pr(42)]) == frozenset()
+        assert tracker.report()["watched"] == []
+
+    def test_retries_are_bounded_and_reported_exhausted(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        self._write_armed_task(vault, 42)
+        tracker = self._tracker(vault, tmp_path)
+        rows = [_pr(42)]
+
+        for expected_retry in (1, 2, 3):
+            assert tracker.observe(rows) == frozenset()
+            assert tracker.observe(rows) == frozenset({42})
+            tracker.note_served({42})
+            assert tracker.report()["retried"][-1] == {"pr": 42, "retry": expected_retry}
+        assert tracker.observe(rows) == frozenset()
+        assert tracker.observe(rows) == frozenset()  # exhausted: no fourth retry
+        assert tracker.report()["exhausted"] == [{"pr": 42, "retries": 3}]
+
+    def test_state_survives_a_new_instance(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        self._write_armed_task(vault, 42)
+        rows = [_pr(42)]
+        first = self._tracker(vault, tmp_path)
+        assert first.observe(rows) == frozenset()
+        first.persist()
+
+        resumed = self._tracker(vault, tmp_path)
+        assert resumed.observe(rows) == frozenset({42})
+
+    def test_dry_run_never_advances_the_state(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        self._write_armed_task(vault, 42)
+        rows = [_pr(42)]
+        preview = self._tracker(vault, tmp_path, persist=False)
+        assert preview.observe(rows) == frozenset()
+        preview.persist()
+
+        resumed = self._tracker(vault, tmp_path)
+        assert resumed.observe(rows) == frozenset()  # still the first pass
+
+
+def test_armed_note_unarmed_pr_gets_bounded_rearm_reconciliation(tmp_path: Path) -> None:
+    """Defect item 2 end to end: the diverged PR gets a bounded re-arm retry.
+
+    The divergence (note release-armed, autoMergeRequest absent, not queued) is
+    observed from the listing every tick; at the second consecutive pass the PR
+    takes a full-exam re-arm seat ahead of the fair rotation, and retries stop
+    at ARMED_NOTE_REARM_MAX_RETRIES. Each served retry is recorded in the report.
+    """
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="armed-note-divergence",
+        status="pr_open",
+        pr=42,
+        branch="feat/42",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-42",
+            "release_authorized_head_ref": "feat/42",
+            "stage": "S7_RELEASE",
+        },
+    )
+    runner = _RestRotationRunner(60)
+    rotation_state = tmp_path / "examined.json"
+    reconciliation_state = autoqueue._armed_note_reconciliation_state_path(rotation_state)
+    arm_call = [
+        "gh",
+        "pr",
+        "merge",
+        "42",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-42",
+    ]
+
+    def tick(*, apply: bool = True) -> dict[str, Any]:
+        return autoqueue.run_reconciler(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            vault_root=vault,
+            apply=apply,
+            limit=5,
+            rotation_state_path=rotation_state,
+            lineage_ledger_path=None,
+            quarantine_path=tmp_path / "quarantine.json",
+            admission_governor_path=tmp_path / "governor.yaml",
+            runner=runner,
+        )
+
+    def examined(report: dict[str, Any]) -> list[int]:
+        assert not report.get("skipped"), report
+        return [decision["pr"] for decision in report["decisions"]]
+
+    preview = tick(apply=False)
+    assert [entry["pr"] for entry in preview["armed_note_reconciliation"]["watched"]] == [42]
+    assert not reconciliation_state.exists()  # a dry run never advances the state
+
+    first = tick()
+    assert examined(first) == [1, 2, 3, 4, 5]  # the fair rotation, not the diverged PR
+    assert first["armed_note_reconciliation"]["watched"] == [
+        {"pr": 42, "consecutive_passes": 1, "retries": 0}
+    ]
+    assert first["armed_note_reconciliation"]["retried"] == []
+    assert arm_call not in runner.calls
+
+    second = tick()
+    assert examined(second)[0] == 42  # the retry seat jumps the rotation
+    assert set(examined(second)) == {42, 6, 7, 8, 9}
+    assert arm_call in runner.calls
+    assert second["armed_note_reconciliation"]["retried"] == [{"pr": 42, "retry": 1}]
+    # A retry seat is one-shot: it must not poison the persisted must-include set.
+    persisted = json.loads((tmp_path / "examined.json.must-include.json").read_text())
+    assert "42" not in persisted["repositories"]["owner/repo"]
+
+    third = tick()
+    assert 42 not in examined(third)
+    assert third["armed_note_reconciliation"]["retried"] == []
+
+    fourth = tick()
+    assert 42 in examined(fourth)
+    assert fourth["armed_note_reconciliation"]["retried"] == [{"pr": 42, "retry": 2}]
+
+    tick()
+    sixth = tick()
+    assert sixth["armed_note_reconciliation"]["retried"] == [{"pr": 42, "retry": 3}]
+
+    tick()
+    eighth = tick()
+    assert 42 not in examined(eighth)  # bounded: the retries are exhausted
+    assert eighth["armed_note_reconciliation"]["retried"] == []
+    assert eighth["armed_note_reconciliation"]["exhausted"] == [{"pr": 42, "retries": 3}]
+
+    row = next(item for item in runner.open_prs if item["number"] == 42)
+    row["autoMergeRequest"] = {"mergeMethod": "SQUASH"}
+    ninth = tick()
+    assert ninth["armed_note_reconciliation"]["watched"] == []
+    assert ninth["armed_note_reconciliation"]["exhausted"] == []
+
+
 def test_merge_queue_status_is_ready_for_already_queued_pr(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="queued-status", folder="active", status="merge_queue", pr=72)
@@ -6580,9 +7011,13 @@ def test_sensitive_path_waiver_uses_current_note_at_revalidation(
     )
 
 
-def test_head_locked_sensitive_path_stale_head_still_blocks_admission(
-    tmp_path: Path,
-) -> None:
+def test_head_locked_sensitive_path_stale_head_follows_current_head(tmp_path: Path) -> None:
+    """Ledger 8.1: the stale stamp is informational even on a sensitive path.
+
+    The armed note's sensitive-path waiver machinery already records the
+    governance waiver for an authorized task; the stale stamp joins it as an
+    informational waiver while the re-arm is evaluated against the current head.
+    """
     vault = _make_vault(tmp_path)
     _write_task(
         vault,
@@ -6611,21 +7046,46 @@ def test_head_locked_sensitive_path_stale_head_still_blocks_admission(
     )
 
     decision = next(item for item in report["decisions"] if item["pr"] == 763)
-    assert decision["action"] == "blocked"
-    assert decision["reasons"] == [
-        "release_authorized_head_mismatch:authorized=sha-before-force-push:current=sha-763"
-    ]
+    assert decision["action"] == "queue"
     assert not any(
-        item["pr"] == 763 and item["action"] == "release_authorization_waiver"
+        reason.startswith("release_authorized_head_") for reason in decision.get("reasons", [])
+    )
+    assert decision["notes"] == [
+        "release_authorized_head_stale:authorized=sha-before-force-push:current=sha-763"
+    ]
+    assert any(
+        item["pr"] == 763
+        and item["action"] == "release_authorization_waiver"
+        and item["waivers"]
+        == [
+            "release_authorized_head_stale:authorized=sha-before-force-push:current=sha-763",
+            "sensitive_path_waived_by_release_authorization:hapax-council/CLAUDE.md",
+        ]
         for item in report["mutations"]
     )
-    assert not any(call[:4] == ["gh", "pr", "merge", "763"] for call in runner.calls)
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "763",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-763",
+    ] in runner.calls
 
 
-def test_sensitive_path_stale_head_during_revalidation_blocks_before_waiver(
+def test_sensitive_path_stale_head_during_revalidation_follows_head(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A stamp repointed to an old head mid-flight is stale, not a stop.
+
+    Ledger 8.1: revalidation continues against the current head; the staleness
+    is recorded as an informational waiver beside the sensitive-path waiver.
+    """
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -6671,23 +7131,35 @@ def test_sensitive_path_stale_head_during_revalidation_blocks_before_waiver(
     )
 
     assert not any(
-        item["pr"] == 764 and item["action"] == "release_authorization_waiver"
+        item["pr"] == 764 and item["action"] == "release_head_revalidation"
+        for item in report["mutations"]
+        if not item["ok"]
+    )
+    assert any(
+        item["pr"] == 764
+        and item["action"] == "release_authorization_waiver"
+        and "release_authorized_head_stale:authorized=sha-old:current=sha-764" in item["waivers"]
+        and "sensitive_path_waived_by_release_authorization:hapax-council/CLAUDE.md"
+        in item["waivers"]
         for item in report["mutations"]
     )
-    assert not any(
+    assert any(
         call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-764"]
         and "state=success" in call
         for call in runner.calls
     )
-    assert any(
-        item["pr"] == 764
-        and item["action"] == "release_head_revalidation"
-        and item["ok"] is False
-        and item["message"]
-        == "current_task_gate_blocked:release_authorized_head_mismatch:"
-        "authorized=sha-old:current=sha-764"
-        for item in report["mutations"]
-    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "764",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-764",
+    ] in runner.calls
 
 
 def test_already_queued_replays_full_current_auto_arm_blockers_before_success_proof(
@@ -8053,7 +8525,13 @@ def test_arm_release_for_task_requires_head_sha_for_pr_linked_write(tmp_path: Pa
     assert not ledger.exists()
 
 
-def test_arm_release_for_task_rejects_stale_already_armed_note_head(tmp_path: Path) -> None:
+def test_arm_release_for_task_restamps_stale_armed_note_at_current_head(tmp_path: Path) -> None:
+    """Ledger 8.1: an armed note whose stamp names another head is re-pointed.
+
+    The stale stamp does not refuse the arm; the note is re-stamped at the
+    current (evidence-revalidated) head and the staleness is named in the
+    result message and the ledger trail.
+    """
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -8084,12 +8562,18 @@ def test_arm_release_for_task_rejects_stale_already_armed_note_head(tmp_path: Pa
         runner=runner,
     )
 
-    assert ok is False
-    assert (
-        message == "current_task_gate_blocked:release_authorized_head_mismatch:"
-        "authorized=sha-old:current=sha-728"
+    assert ok is True
+    assert message == (
+        "release re-armed stranded-stale-armed-head:"
+        "release_authorized_head_stale:authorized=sha-old:current=sha-728"
     )
-    assert not ledger.exists()
+    current = note.read_text(encoding="utf-8")
+    assert "release_authorized: true" in current
+    assert "release_authorized_head_sha: sha-728" in current
+    assert "sha-old" not in current
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
+    assert record["kind"] == "release_auto_arm"
+    assert record["pr_head_sha"] == "sha-728"
 
 
 def test_arm_release_for_task_rejects_headless_already_armed_note(tmp_path: Path) -> None:
@@ -8127,7 +8611,13 @@ def test_arm_release_for_task_rejects_headless_already_armed_note(tmp_path: Path
     assert not ledger.exists()
 
 
-def test_release_authorized_head_mismatch_blocks_later_admission(tmp_path: Path) -> None:
+def test_release_authorized_stale_stamp_rearms_at_current_head(tmp_path: Path) -> None:
+    """Ledger 8.1: a stamp naming another head is stale; the re-arm follows head.
+
+    The mismatch no longer blocks admission as release_authorized_head_mismatch;
+    the PR arms at its current head and the staleness is surfaced
+    informationally on the decision and as a release-authorization waiver.
+    """
     vault = _make_vault(tmp_path)
     _write_task(
         vault,
@@ -8153,12 +8643,32 @@ def test_release_authorized_head_mismatch_blocks_later_admission(tmp_path: Path)
     )
 
     decision = next(item for item in report["decisions"] if item["pr"] == 727)
-    assert decision["action"] == "blocked"
-    assert (
-        "release_authorized_head_mismatch:authorized=sha-before-force-push:current=sha-727"
-        in decision["reasons"]
+    assert decision["action"] == "queue"
+    assert not any(
+        reason.startswith("release_authorized_head_") for reason in decision.get("reasons", [])
     )
-    assert not any(call[:4] == ["gh", "pr", "merge", "727"] for call in runner.calls)
+    assert decision["notes"] == [
+        "release_authorized_head_stale:authorized=sha-before-force-push:current=sha-727"
+    ]
+    assert any(
+        item["pr"] == 727
+        and item["action"] == "release_authorization_waiver"
+        and "release_authorized_head_stale:authorized=sha-before-force-push:current=sha-727"
+        in item["waivers"]
+        for item in report["mutations"]
+    )
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "727",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-727",
+    ] in runner.calls
 
 
 def test_release_head_boundary_reports_unreadable_current_note(
@@ -8569,10 +9079,16 @@ def test_queue_failure_after_success_admission_rewrites_failure_status(
     )
 
 
-def test_release_head_boundary_revalidates_current_note_before_already_queued(
+def test_release_head_boundary_stale_stamp_keeps_already_queued(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A stamp repointed to an old head mid-flight must not dequeue the PR.
+
+    Ledger 8.1: the stale stamp is surfaced as an informational waiver and the
+    queued entry is retained; the current-head evidence revalidation is the
+    guard, not the stale stamp.
+    """
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -8616,20 +9132,21 @@ def test_release_head_boundary_revalidates_current_note_before_already_queued(
     )
 
     assert not any(
+        item["pr"] == 736 and item["action"] == "release_head_revalidation" and not item["ok"]
+        for item in report["mutations"]
+    )
+    assert any(
+        item["pr"] == 736
+        and item["action"] == "release_authorization_waiver"
+        and "release_authorized_head_stale:authorized=sha-old:current=sha-736" in item["waivers"]
+        for item in report["mutations"]
+    )
+    assert any(
         call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-736"]
         and "state=success" in call
         for call in runner.calls
     )
-    assert any(
-        item["pr"] == 736
-        and item["action"] == "release_head_revalidation"
-        and item["ok"] is False
-        and item["message"]
-        == "current_task_gate_blocked:release_authorized_head_mismatch:"
-        "authorized=sha-old:current=sha-736"
-        for item in report["mutations"]
-    )
-    assert any(
+    assert not any(
         call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
         for call in runner.calls
     )
@@ -9141,9 +9658,15 @@ def test_merge_pr_revalidates_current_release_authorization_before_head_locked_m
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
-def test_merge_pr_revalidates_current_release_authorized_head_before_merge(
+def test_merge_pr_revalidates_repointed_stamp_follows_current_head(
     tmp_path: Path,
 ) -> None:
+    """Ledger 8.1: a stamp repointed to an old head before the merge is stale.
+
+    merge_pr still re-reads the note and revalidates the current head before
+    arming; the stale stamp is informational and the arm follows the current
+    head, guarded by --match-head-commit.
+    """
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -9185,12 +9708,22 @@ def test_merge_pr_revalidates_current_release_authorized_head_before_merge(
         runner=runner,
     )
 
-    assert ok is False
-    assert (
-        message == "current_task_gate_blocked:release_authorized_head_mismatch:"
-        "authorized=sha-old:current=sha-736"
-    )
-    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+    assert ok is True, message
+    # The merge-time revalidation still reads the current note and fetches the
+    # current head's release evidence before arming.
+    assert any("repos/owner/repo/pulls/736" in part for call in runner.calls for part in call)
+    assert [
+        "gh",
+        "pr",
+        "merge",
+        "736",
+        "--repo",
+        "owner/repo",
+        "--auto",
+        "--squash",
+        "--match-head-commit",
+        "sha-736",
+    ] in runner.calls
 
 
 def test_head_guard_required_merge_fails_when_head_sha_missing(tmp_path: Path) -> None:
