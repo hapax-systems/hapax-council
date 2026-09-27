@@ -2274,6 +2274,8 @@ _MALFORMED = [
     "duplicated_status",
     "duplicated_pr",
     "duplicated_assigned",
+    "quoted_duplicate_assigned",
+    "quoted_duplicate_status",
     "body_only",
 ]
 
@@ -2281,6 +2283,12 @@ _MALFORMED = [
 def _malform(text: str, how: str) -> str:
     if how == "unparseable":  # parsed.ok is false
         return text.replace("status: pr_open", "status: pr_open\nbroken: [", 1)
+    if how == "quoted_duplicate_status":
+        return text.replace("status: pr_open", 'status: pr_open\n"status": claimed', 1)
+    if how == "quoted_duplicate_assigned":  # one YAML key, two spellings (codex, round 5)
+        return text.replace(
+            "assigned_to: cx-test", 'assigned_to: cx-test\n"assigned_to": cx-other', 1
+        )
     if how == "duplicated_assigned":  # the last value would read as reassigned
         return text.replace(
             "assigned_to: cx-test", "assigned_to: cx-test\nassigned_to: cx-other", 1
@@ -2371,6 +2379,12 @@ def test_neither_release_path_releases_a_malformed_note(tmp_path: Path, how: str
         ("assigned_to: cx-test", "unreadable"),  # the body's status line never counts
         ("assigned_to: other\nassigned_to: cx-test\nstatus: pr_open", "unreadable"),  # any dup
         ("status: pr_open\npr: 4999\npr: null", "unreadable"),
+        ('status: pr_open\n"status": claimed', "unreadable"),  # one key, two spellings
+        ('"status": pr_open', "unreadable"),  # not plainly spelled, so not rewritable
+        ('status: pr_open\npr: 4999\n"pr": null', "unreadable"),
+        ('status: pr_open\nbranch: feat/started\n"branch": null', "unreadable"),
+        ('status: pr_open\nroute: {a: 1, "a": 2}', "unreadable"),  # flow style, nested
+        ("status: pr_open\nroute: {a: 1, b: 2}", "pr_open"),  # a flow mapping as such is fine
     ],
 )
 def test_a_release_reads_status_only_from_release_grade_frontmatter(
@@ -2534,8 +2548,23 @@ def test_started_work_is_never_returned(
         ("status: claimed", "status: claimed\nbranch: feat/started\nbranch: null"),
         ("status: claimed", "status: claimed\npr: 4999\npr: null"),
         ("status: claimed", "status: claimed\nbroken: ["),
+        ("status: claimed", 'status: claimed\n"status": claimed'),
+        ("status: claimed", 'status: claimed\nbranch: feat/started\n"branch": null'),
+        ("assigned_to: cx-test", '"assigned_to": cx-test'),
+        ("status: claimed", 'status: claimed\npr: 4999\n"pr": null'),
+        ("status: claimed", 'status: claimed\nroute: {a: 1, "a": 2}'),
     ],
-    ids=["duplicated_status", "branch_hidden_by_a_later_null", "duplicated_pr", "unparseable"],
+    ids=[
+        "duplicated_status",
+        "branch_hidden_by_a_later_null",
+        "duplicated_pr",
+        "unparseable",
+        "quoted_duplicate_status",
+        "branch_hidden_by_a_quoted_null",
+        "quoted_only_assigned",
+        "pr_hidden_by_a_quoted_null",
+        "flow_style_duplicate",
+    ],
 )
 def test_a_note_with_duplicated_keys_is_never_returned(tmp_path: Path, old: str, new: str) -> None:
     # codex on #4826 round 4: PyYAML keeps the last of duplicate keys. Two `status: claimed`

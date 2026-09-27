@@ -27,6 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import yaml
+
 from shared.coord_projection import (
     CapturedFile,
     FileProjection,
@@ -6252,28 +6254,50 @@ def _assigned_elsewhere(note: Path, role: str) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value.strip() != role
 
 
-def _release_frontmatter(note: Path) -> dict | None:
-    """The note's parsed frontmatter when it can ground a release decision, else None.
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """A SafeLoader that refuses any mapping stating one key twice, by YAML key identity, so
+    ``status:`` and ``"status":`` are the same key; PyYAML otherwise keeps the last silently."""
 
-    A release archives live claim files on the strength of a row's status, so that status
-    must come from frontmatter that parses and states ``status`` exactly once. PyYAML keeps
-    the last of duplicate keys silently, and a ``status:`` line in the body never counts. A
-    missing, malformed or duplicated status means hold, never release (codex on #4826; the
-    seat's 17:05Z ruling)."""
+
+def _construct_unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict:
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        mapping[key] = loader.construct_object(value_node, deep=True)
+    return mapping
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
+def _release_frontmatter(note: Path) -> dict | None:
+    """The note's frontmatter when it can ground a release decision, else None.
+
+    A release archives live claim files, and a return rewrites the note, on the strength of
+    its fields, so they must come from frontmatter that parses, states no key twice by YAML
+    key identity (a quoted and a plain spelling are one key; codex on #4826 rounds 4-5), and
+    spells ``status`` plainly exactly once, so that the value read is the line a rewrite
+    changes. A ``status:`` line in the body never counts. Anything else means hold, never
+    release (the seat's 17:05Z and 17:25Z rulings)."""
 
     parsed = parse_frontmatter_with_diagnostics(note)
     if not parsed.ok or parsed.frontmatter is None:
         return None
     text = note.read_text(encoding="utf-8")
     block = text[3 : text.find("\n---", 3)]
-    if len(re.findall(r"(?m)^status[ \t]*:", block)) != 1:
+    try:
+        fields = yaml.load(block, Loader=_UniqueKeyLoader)  # noqa: S506 - a SafeLoader subclass
+    except yaml.YAMLError:
         return None
-    # Any duplicated top-level key hides an earlier value behind the last (codex on #4826
-    # round 4: a later `branch: null` concealed a branch with work on it).
-    keys = re.findall(r"(?m)^([A-Za-z_][\w-]*)[ \t]*:", block)
-    if len(keys) != len(set(keys)):
+    if not isinstance(fields, dict) or len(re.findall(r"(?m)^status[ \t]*:", block)) != 1:
         return None
-    return parsed.frontmatter
+    return fields
 
 
 def _pipeline_held_for(note: Path, role: str) -> bool:
@@ -7212,10 +7236,17 @@ def return_claim(
             # Release-grade only: with a duplicated key the parse keeps the last value, so the
             # checks below could pass while the rewrite changes only the first (codex, round 4).
             fields = _release_frontmatter(note)
-            if fields is None:
+            block = text[3 : text.find("\n---", 3)]
+            # The rewrite changes the plainly spelled lines, so each key it rewrites must be
+            # one (codex, round 5: a quoted-only key would be appended to, not replaced).
+            if fields is None or any(
+                len(re.findall(rf"(?m)^{key}[ \t]*:", block)) != 1
+                for key in ("assigned_to", "claimed_at")
+            ):
                 raise _release_hold(
                     "claim_return_note_malformed",
-                    f"{task_id}'s frontmatter does not parse, or states a key more than once",
+                    f"{task_id}'s frontmatter does not parse, states a key twice, or does not "
+                    "spell each key the return rewrites plainly once",
                     "repair the note's frontmatter by hand, then rerun",
                 )
             status = str(fields.get("status") or "").strip()
