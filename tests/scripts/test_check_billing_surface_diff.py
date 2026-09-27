@@ -299,6 +299,159 @@ def test_non_python_file_grants_no_exemption_at_all(scanner: ModuleType) -> None
     assert result.allowed == (), "a non-Python file was granted an exemption"
 
 
+# ── round 5 (codex-1's critical + major, claude-1's minor): a section is complete or ──
+# ── it is unusable; and the marker allowlist matches exactly. ──
+
+
+def test_index_only_header_fails_closed(scanner: ModuleType) -> None:
+    """codex-1's round-5 critical, verbatim: an `index`-only header used to scan clean.
+
+    The `index` line cleared the old `saw_header_only` flag while `path` stayed ``None``, so
+    input that ended there escaped both end-of-diff checks and reported success.
+    """
+
+    diff = "diff --git a/shared/foo.py b/shared/foo.py\nindex d95f3ad..94b334d 100644\n"
+    result = scanner.scan_unified_diff(diff)
+    assert [f.kind for f in result.findings] == ["billing-scan-unusable-input"], (
+        "an index-only header (a truncated content change) scanned clean"
+    )
+
+
+def test_truncation_shapes_all_fail_closed(scanner: ModuleType) -> None:
+    """Every way a content section can be cut short, not just the `index`-only one."""
+
+    shapes = {
+        "header only": "diff --git a/shared/foo.py b/shared/foo.py\n",
+        "index then EOF": (
+            "diff --git a/shared/foo.py b/shared/foo.py\nindex d95f3ad..94b334d 100644\n"
+        ),
+        "new file, content cut": (
+            "diff --git a/shared/foo.py b/shared/foo.py\n"
+            "new file mode 100644\n"
+            "index 0000000..54bc850\n"
+        ),
+        "file section cut before +++": (
+            "diff --git a/shared/foo.py b/shared/foo.py\n"
+            "index d95f3ad..94b334d 100644\n"
+            "--- a/shared/foo.py\n"
+        ),
+        "file section cut before the hunk": (
+            "diff --git a/shared/foo.py b/shared/foo.py\n"
+            "index d95f3ad..94b334d 100644\n"
+            "--- a/shared/foo.py\n"
+            "+++ b/shared/foo.py\n"
+        ),
+        "mode change cut after old mode": (
+            "diff --git a/shared/foo.py b/shared/foo.py\nold mode 100644\n"
+        ),
+        "rename cut before rename to": (
+            "diff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.py\n"
+        ),
+    }
+    for label, diff in shapes.items():
+        result = scanner.scan_unified_diff(diff)
+        assert "billing-scan-unusable-input" in [f.kind for f in result.findings], (
+            f"a truncated section scanned clean: {label}"
+        )
+
+
+def test_complete_sections_without_content_scan_clean(scanner: ModuleType) -> None:
+    """The three legitimate contentless forms must NOT be findings (codex-1's warning).
+
+    Mode-only changes, empty new files and pure renames carry no `---`/`+++` and no hunk;
+    holding on those would be a false positive that blocks ordinary PRs.
+    """
+
+    shapes = {
+        "mode-only change": (
+            "diff --git a/scripts/foo b/scripts/foo\nold mode 100644\nnew mode 100755\n"
+        ),
+        "empty new file": (
+            "diff --git a/shared/empty.py b/shared/empty.py\n"
+            "new file mode 100644\n"
+            "index 0000000..e69de29\n"
+        ),
+        "deleted empty file": (
+            "diff --git a/shared/gone.py b/shared/gone.py\n"
+            "deleted file mode 100644\n"
+            "index e69de29..0000000\n"
+        ),
+        "pure rename": (
+            "diff --git a/old.py b/new.py\n"
+            "similarity index 100%\n"
+            "rename from old.py\n"
+            "rename to new.py\n"
+        ),
+        "binary section": (
+            "diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ\n"
+        ),
+    }
+    for label, diff in shapes.items():
+        result = scanner.scan_unified_diff(diff)
+        assert result.findings == (), (
+            f"a complete contentless section was flagged: {label} -> "
+            f"{[f.kind for f in result.findings]}"
+        )
+
+
+def test_added_line_that_looks_like_a_file_header_does_not_swallow_the_rest(
+    scanner: ModuleType,
+) -> None:
+    """An added line whose text begins `++ ` is content, not a `+++` header.
+
+    Otherwise the rest of the hunk is parsed as another file's section — a fail-open the
+    round-5 rewrite had to close, since completeness is now keyed on the section.
+    """
+
+    diff = _diff(
+        "shared/foo_client.py",
+        [
+            # The added line's TEXT is `+ 1`, so the raw diff line begins `+++` — and it stays
+            # valid Python, so the region still parses and the read is decided per node.
+            "++ 1",
+            'key = os.environ["OPENAI_API_KEY"]',
+        ],
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert "credential-env-read" in [f.kind for f in result.findings], (
+        "an added line beginning `++` was read as a `+++` header and hid the added read"
+    )
+    assert [f.path for f in result.findings] == ["shared/foo_client.py"], (
+        "the look-alike line was read as a header and mis-attributed the finding"
+    )
+
+
+def test_marker_allowlist_does_not_admit_a_prefixed_path(scanner: ModuleType) -> None:
+    """codex-1's round-5 major: a FILE entry must match exactly, not by prefix."""
+
+    diff = _diff(
+        "scripts/check-billing-surface-diff.py_helper.py",
+        ["client = OpenAI(api_key=key)  # billing-scan:allow"],  # billing-scan:allow: fixture data
+    )
+    result = scanner.scan_unified_diff(diff)
+    kinds = [f.kind for f in result.findings]
+    assert "billing-scan-allow-outside-fixtures" in kinds, (
+        "a path that merely begins with an allowlisted file's name bought the exemption"
+    )
+    assert "api-key-route" in kinds, "the route beside the marker was exempted"
+    assert result.allowed == (), "a prefixed path was granted an exemption"
+
+
+def test_marker_is_honoured_on_an_allowlisted_non_python_path(scanner: ModuleType) -> None:
+    """claude-1's round-5 minor, pinned as behaviour: the marker is not Python-only.
+
+    The docstring used to say a non-Python file gets "no exemption of any kind", which
+    contradicted the marker being honoured under `tests/**` whatever the file kind is.
+    """
+
+    diff = _diff(
+        "tests/fixtures/launcher.sh",
+        ["unset OLD_API_KEY  # billing-scan:allow (fixture)"],  # billing-scan:allow: fixture data
+    )
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == (), "the marker was not honoured on an allowlisted non-Python path"
+
+
 def test_strip_default_argument_is_scanned(scanner: ModuleType) -> None:
     """codex-1's round-4 critical, verbatim, on the AST path.
 
