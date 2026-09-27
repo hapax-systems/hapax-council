@@ -118,6 +118,33 @@ for f in "${FILES[@]}"; do
     done
 done
 
+# Registered principals' given names, read from the gitignored local registry
+# (hooks/scripts/principal-name-map.sh). It is absent in CI, where the surname
+# above is the check. A match reports file and line numbers only; the name and
+# the line content are never printed.
+# shellcheck source=hooks/scripts/principal-name-map.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hooks/scripts/principal-name-map.sh"
+names_status=0
+registry_names="$(principal_names)" || names_status=$?
+if [ "$names_status" -ne 0 ]; then
+    echo "check-legal-name-leaks: the principal-name-map registry at $(principal_name_map_path) exists but cannot be read." >&2
+    echo "Fix its permissions or remove it (it must be a readable file). Failing closed." >&2
+    exit 2
+fi
+if [ -n "$registry_names" ]; then
+    for f in "${FILES[@]}"; do
+        [ -f "$f" ] || continue
+        if is_whitelisted "$f"; then
+            continue
+        fi
+        lines="$(grep -niwF -f <(printf '%s\n' "$registry_names") -- "$f" 2>/dev/null | cut -d: -f1 | paste -sd, - || true)"
+        if [ -n "$lines" ]; then
+            echo "REGISTERED-PRINCIPAL NAME in $f:$lines (name withheld)" >&2
+            LEAKS=$((LEAKS + 1))
+        fi
+    done
+fi
+
 if [ "$LEAKS" -gt 0 ]; then
     cat >&2 <<'EOF'
 

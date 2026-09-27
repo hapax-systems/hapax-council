@@ -64,17 +64,57 @@ new_content="$(printf '%s' "$input" | jq -r '.tool_input.new_string // .tool_inp
 
 blocked=()
 
-# Operator full name (exact match only)
-if echo "$new_content" | grep -qiP 'Ryan\s+Kleeberger'; then
-  blocked+=("Operator full name detected")
+# The guard machinery must carry the name patterns it enforces. These four files
+# are exempt from the name checks by exact repo-relative path (anchored at a path
+# boundary, never a directory glob). They must stay inside the CI scanner's
+# WHITELIST_GLOBS (pinned by tests/hooks/test_pii_guard.py).
+LEGAL_NAME_EXEMPT_PATHS=(
+  'hooks/scripts/pii-guard.sh'
+  'scripts/check-legal-name-leaks.sh'
+  'tests/hooks/test_pii_guard.py'
+  'tests/scripts/test_check_legal_name_leaks.py'
+)
+name_checks_exempt=0
+for exempt_path in "${LEGAL_NAME_EXEMPT_PATHS[@]}"; do
+  case "$file_path" in
+    "$exempt_path"|*/"$exempt_path") name_checks_exempt=1 ;;
+  esac
+done
+
+# Registered principals' given names, read from the gitignored local registry
+# (hooks/scripts/principal-name-map.sh). Absent registry: no names, surname only.
+# An unreadable registry fails closed. A matched name is never printed.
+# shellcheck source=hooks/scripts/principal-name-map.sh
+source "$(dirname "${BASH_SOURCE[0]}")/principal-name-map.sh"
+names_status=0
+registry_names="$(principal_names)" || names_status=$?
+if [ "$names_status" -ne 0 ]; then
+  echo "pii-guard: BLOCKED — the principal-name-map registry at $(principal_name_map_path) exists but cannot be read." >&2
+  echo "Fix its permissions or remove it (it must be a readable file). This gate fails closed." >&2
+  exit 2
 fi
 
-# The family surname alone: it names every household member, registered as a
-# principal or not. Opaque principal IDs (principal-<letter><digit>) are NOT
-# sensitive and are never blocked: they are the vocabulary that replaces the
-# names. Household given names cannot be listed in a public guard.
-if echo "$new_content" | grep -qiP 'Kleeberger'; then
-  blocked+=("Family surname detected")
+if [ "$name_checks_exempt" -eq 0 ]; then
+  # Operator full name (exact match only)
+  if echo "$new_content" | grep -qiP 'Ryan\s+Kleeberger'; then
+    blocked+=("Operator full name detected")
+  fi
+
+  # The family surname alone: it names every household member, registered as a
+  # principal or not. Opaque principal IDs (principal-<letter><digit>) are NOT
+  # sensitive and are never blocked: they are the vocabulary that replaces names.
+  if echo "$new_content" | grep -qiP 'Kleeberger'; then
+    blocked+=("Family surname detected")
+  fi
+
+  if [ -n "$registry_names" ]; then
+    while IFS= read -r registry_name; do
+      if printf '%s\n' "$new_content" | grep -qiwF -- "$registry_name"; then
+        blocked+=("Registered principal given name detected (local registry; name withheld)")
+        break
+      fi
+    done <<< "$registry_names"
+  fi
 fi
 
 # Location data

@@ -8,6 +8,7 @@ never appears as a contiguous literal in source).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,13 +36,57 @@ def fixture_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _run(script_args: list[str]) -> int:
-    """Invoke the guard with the given args; return its exit code."""
+def _run_full(
+    script_args: list[str], env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    # Never read the host's real principal registry from a test.
+    run_env = {
+        **os.environ,
+        "HAPAX_PRINCIPAL_NAME_MAP": "/nonexistent/hapax-test/principal-name-map.yaml",
+        **(env or {}),
+    }
     return subprocess.run(
-        ["bash", str(SCRIPT), *script_args],
-        capture_output=True,
-        text=True,
-    ).returncode
+        ["bash", str(SCRIPT), *script_args], capture_output=True, text=True, env=run_env
+    )
+
+
+def _run(script_args: list[str], env: dict[str, str] | None = None) -> int:
+    """Invoke the guard with the given args; return its exit code."""
+    return _run_full(script_args, env).returncode
+
+
+# Registered principals' given names come from the gitignored local registry
+# when it is provisioned. Synthetic token only: no real name in any file.
+_SYNTHETIC = "Zorblaxine"
+
+
+def test_registry_given_name_fails_without_echoing_it(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    f = fixture_dir / "doc.md"
+    f.write_text(f"met {_SYNTHETIC} today\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 1
+    assert f"{f}:1" in result.stderr
+    assert _SYNTHETIC.lower() not in (result.stderr + result.stdout).lower()
+
+
+def test_registry_absent_falls_back_to_the_surname(fixture_dir: Path) -> None:
+    f = fixture_dir / "doc.md"
+    f.write_text(f"met {_SYNTHETIC} today\n", encoding="utf-8")
+    assert _run([str(f)]) == 0
+    f.write_text(f"met {_LAST} today\n", encoding="utf-8")
+    assert _run([str(f)]) == 1
+
+
+def test_unreadable_registry_fails_closed(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.mkdir()
+    f = fixture_dir / "doc.md"
+    f.write_text("clean\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 2
+    assert "principal-name-map" in result.stderr
 
 
 def test_clean_file_passes(fixture_dir: Path) -> None:
@@ -71,7 +116,7 @@ def test_case_insensitive_match(fixture_dir: Path) -> None:
 def test_family_surname_alone_fails(fixture_dir: Path) -> None:
     # The surname alone names every household member, registered or not.
     f = fixture_dir / "registered-identity-leak.md"
-    f.write_text("subject: Kleeberger\n", encoding="utf-8")
+    f.write_text(f"subject: {_LAST}\n", encoding="utf-8")
     assert _run([str(f)]) == 1
 
 
