@@ -86,7 +86,8 @@ def test_backs_up_and_verifies_the_store_by_names_only(tmp_path: Path) -> None:
     result = _run(env)
     assert result.returncode == 0, result.stderr
     assert (
-        f"holds {env['REINS_SECRET_STORE']}/.key and 3 of 3 entries (names only)" in result.stdout
+        f"holds {env['REINS_SECRET_STORE']}/.key and all 3 entries by name (names only)"
+        in result.stdout
     )
     assert SENTINEL not in result.stdout + result.stderr
     (snap,) = _snapshots(env)
@@ -150,7 +151,70 @@ def test_verify_fails_when_the_snapshot_lacks_an_entry(tmp_path: Path) -> None:
     env = _restic_that_drops(tmp_path, _setup(tmp_path), r"entry-1\.bin")
     result = _run(env)
     assert result.returncode == 1
-    assert "holds 2 entries, fewer than the store's 3" in result.stderr
+    assert "1 of the store's 3 entries missing from snapshot" in result.stderr
+    assert "entry-1.bin" in result.stderr
+
+
+def test_verify_compares_entry_names_not_only_counts(tmp_path: Path) -> None:
+    """A snapshot with as many entries as the store, but a different one in place of entry-1, must still fail: the
+    predicate is every entry, not a count (#4823 review, codex)."""
+
+    real = shutil.which("restic")
+    env = _setup(tmp_path)
+    wrap = tmp_path / "wrap"
+    wrap.mkdir()
+    (wrap / "restic").write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = ls ]; then "{real}" "$@" | sed "s/entry-1\\.bin/entry-9.bin/g"; '
+        'exit "${PIPESTATUS[0]}"; fi\n'
+        f'exec "{real}" "$@"\n',
+        encoding="utf-8",
+    )
+    (wrap / "restic").chmod(0o755)
+    result = _run(dict(env, PATH=f"{wrap}:{env['PATH']}"))
+    assert result.returncode == 1
+    assert "entry-1" in result.stderr and "missing from snapshot" in result.stderr
+
+
+def test_a_missing_entry_list_names_three_counts_all_and_gives_a_next_action(
+    tmp_path: Path,
+) -> None:
+    env = _restic_that_drops(tmp_path, _setup(tmp_path, entries=5), r"entry-[0-3]\.bin")
+    result = _run(env)
+    assert result.returncode == 1
+    assert "4 of the store's 5 entries missing from snapshot" in result.stderr
+    named = [f"entry-{i}.bin" for i in range(4) if f"entry-{i}.bin" in result.stderr]
+    assert len(named) == 3  # at most three names, however many are missing
+    assert "rerun the backup" in result.stderr and "ls -l" in result.stderr
+
+
+def test_verify_mode_rechecks_the_latest_snapshot_without_writing(tmp_path: Path) -> None:
+    """`--verify` makes any witness reproducible: it re-checks this host's latest tier1-filestore snapshot against
+    the store by name, and writes nothing (#4824 review)."""
+
+    env = _setup(tmp_path)
+    assert _run(env).returncode == 0
+    before = len(_snapshots(env))
+    ok = subprocess.run(
+        [str(SCRIPT), "--verify"], env=env, capture_output=True, text=True, timeout=300
+    )
+    assert ok.returncode == 0, ok.stderr
+    assert "holds" in ok.stdout and "all 3 entries by name" in ok.stdout
+    assert len(_snapshots(env)) == before  # nothing written
+    (Path(env["REINS_SECRET_STORE"]) / "entry-new.bin").write_text(SENTINEL, encoding="utf-8")
+    stale = subprocess.run(
+        [str(SCRIPT), "--verify"], env=env, capture_output=True, text=True, timeout=300
+    )
+    assert stale.returncode == 1 and "entry-new.bin" in stale.stderr
+    assert SENTINEL not in ok.stdout + ok.stderr + stale.stdout + stale.stderr
+
+
+def test_verify_mode_without_any_snapshot_refuses(tmp_path: Path) -> None:
+    env = _setup(tmp_path)
+    result = subprocess.run(
+        [str(SCRIPT), "--verify"], env=env, capture_output=True, text=True, timeout=300
+    )
+    assert result.returncode == 1 and "no tier1-filestore snapshot" in result.stderr
 
 
 def test_verify_fails_when_the_snapshot_lacks_the_key(tmp_path: Path) -> None:
@@ -166,7 +230,16 @@ def test_the_script_reads_no_value_and_prunes_nothing() -> None:
 
     text = SCRIPT.read_text(encoding="utf-8")
     code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-    for reader in ("cat ", "head ", "tail -c", "xxd", ' < "$STORE', 'hapax-secret "$'):
+    for reader in (
+        "cat ",
+        "head ",
+        "tail ",
+        "xxd",
+        "od ",
+        "strings ",
+        ' < "$STORE',
+        'hapax-secret "$',
+    ):
         assert reader not in code, reader
     assert "restic forget" not in code
 
