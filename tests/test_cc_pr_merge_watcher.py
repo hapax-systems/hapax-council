@@ -17,6 +17,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
+
 # Ensure scripts/ is importable in tests.
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS) not in sys.path:
@@ -340,7 +342,14 @@ class TestRunWatcher:
             repo_root=tmp_path,
             runner=runner,
         )
-        assert counters == {"merged": 1, "linked": 1, "closed": 1, "failed": 0, "skipped": 0}
+        assert counters == {
+            "merged": 1,
+            "linked": 1,
+            "closed": 1,
+            "awaiting": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
         # cc-close was invoked with --pr 100.
         assert any(
             cmd[-3:] == ["--pr", "100", "--retroactive"] for cmd in runner.cc_close_invocations
@@ -468,7 +477,14 @@ class TestRunWatcher:
             repo_root=tmp_path,
             runner=runner,
         )
-        assert counters == {"merged": 1, "linked": 2, "closed": 2, "failed": 0, "skipped": 0}
+        assert counters == {
+            "merged": 1,
+            "linked": 2,
+            "closed": 2,
+            "awaiting": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
         assert [cmd[1] for cmd in runner.cc_close_invocations] == ["task-A", "task-B"]
 
     def test_killswitch_skips(self, tmp_path: Path, monkeypatch: Any) -> None:
@@ -1060,3 +1076,249 @@ class TestStuckPRAlerter:
             )
             == []
         )
+
+
+# ---------------------------------------------------------------------------
+# rows owing runtime witnesses land merged_awaiting_runtime_witness, never done
+# (merge-watcher-closes-witness-rows-as-awaiting-20260927)
+# ---------------------------------------------------------------------------
+
+_WITNESSES = (
+    "    runtime_observation:\n"
+    "    - the next merged row lands awaiting on the installed watcher\n"
+    "    - the transcript copy reaches the custody store"
+)
+#: A surface that cannot be read owes a witness: each fails closed to awaiting, never done.
+_UNREADABLE_SURFACES = {
+    "unknown_surface_key": "    runtime_observation: []\n    witnessed_by: nobody",
+    "duplicated_key_hides_witnesses": _WITNESSES + "\n    runtime_observation: []",
+    "unparseable_frontmatter": "    runtime_observation: [a",
+}
+
+
+def _write_witness_note(vault: Path, *, task_id: str, pr: int, surface: str) -> Path:
+    note = vault / "active" / f"{task_id}-test.md"
+    note.write_text(
+        f"""---
+type: cc-task
+task_id: {task_id}
+title: "x"
+status: pr_open
+assigned_to: cx-red
+pr_repo: {FIXTURE_PR_REPO}
+pr: {pr}
+route_metadata:
+  verification_surface:
+{surface}
+---
+
+# {task_id}
+
+## Session log
+- fixture
+"""
+    )
+    return note
+
+
+def _status_of(note: Path) -> str:
+    match = re.search(r"^status: *(\S+)", note.read_text(), flags=re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def _merged_cursor_run(tmp_path: Path, vault: Path) -> tuple[dict[str, int], _FakeRunner, Path]:
+    cursor = tmp_path / "cursor.txt"
+    watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+    _make_cc_close(tmp_path)
+    runner = _FakeRunner()
+    runner.gh_payload = [
+        {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/w"},
+    ]
+    counters = watcher.run_watcher(
+        cursor_path=cursor, vault_root=vault, repo_root=tmp_path, runner=runner
+    )
+    return counters, runner, cursor
+
+
+class TestRuntimeWitnessRows:
+    def test_the_cursor_loop_moves_a_witness_row_to_awaiting_not_done(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-W", pr=100, surface=_WITNESSES)
+
+        counters, runner, cursor = _merged_cursor_run(tmp_path, vault)
+
+        assert runner.cc_close_invocations == []
+        assert note.is_file() and not (vault / "closed" / note.name).exists()
+        assert _status_of(note) == "merged_awaiting_runtime_witness"
+        text = note.read_text()
+        log = text.split("## Session log\n", 1)[1].splitlines()[0]
+        assert "PR #100 merged" in log
+        assert "the next merged row lands awaiting on the installed watcher" in log
+        assert "the transcript copy reaches the custody store" in log
+        assert "observe them, then cc-close task-W --pr 100" in log
+        assert "assigned_to: cx-red" in text  # it stays with its owner, pipeline-held
+        assert (counters["closed"], counters["awaiting"], counters["failed"]) == (0, 1, 0)
+        assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 12, tzinfo=UTC)
+
+    def test_the_missed_merge_sweep_moves_a_witness_row_to_awaiting_not_done(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-W", pr=100, surface=_WITNESSES)
+        _make_cc_close(tmp_path)
+        runner = _ReconcileRunner()
+        runner.pr_states = {"100": "MERGED"}
+
+        counts = watcher.reconcile_stale_pr_states(
+            vault_root=vault, repo_root=tmp_path, runner=runner
+        )
+
+        assert runner.cc_close_invocations == []
+        assert _status_of(note) == "merged_awaiting_runtime_witness"
+        assert (counts["closed"], counts["awaiting"]) == (0, 1)
+
+    def test_an_empty_witness_list_still_closes_done(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(
+            vault, task_id="task-E", pr=100, surface="    runtime_observation: []"
+        )
+
+        counters, runner, _cursor = _merged_cursor_run(tmp_path, vault)
+
+        assert any(cmd[1:3] == ["task-E", "--pr"] for cmd in runner.cc_close_invocations)
+        assert _status_of(note) == "pr_open"  # the (faked) cc-close owns that transition
+        assert (counters["closed"], counters["awaiting"]) == (1, 0)
+
+    @pytest.mark.parametrize("surface", sorted(_UNREADABLE_SURFACES))
+    def test_an_unreadable_surface_fails_closed_to_awaiting_never_done(
+        self, tmp_path: Path, monkeypatch: Any, surface: str
+    ) -> None:
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(
+            vault, task_id="task-M", pr=100, surface=_UNREADABLE_SURFACES[surface]
+        )
+
+        counters, runner, _cursor = _merged_cursor_run(tmp_path, vault)
+
+        assert runner.cc_close_invocations == []
+        assert _status_of(note) == "merged_awaiting_runtime_witness"
+        assert counters["awaiting"] == 1
+        assert "cannot be read" in note.read_text().split("## Session log\n", 1)[1]
+
+    @pytest.mark.parametrize(
+        "status_lines",
+        ["status: pr_open\nstatus: merge_queue", '"status": pr_open', "state: pr_open"],
+        ids=["twice", "quoted_only", "absent"],
+    )
+    def test_the_writer_refuses_without_one_plain_status_line_and_holds_the_cursor(
+        self, tmp_path: Path, monkeypatch: Any, status_lines: str
+    ) -> None:
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-R", pr=100, surface=_WITNESSES)
+        note.write_text(note.read_text().replace("status: pr_open", status_lines, 1))
+        before = note.read_bytes()
+
+        counters, runner, cursor = _merged_cursor_run(tmp_path, vault)
+
+        assert runner.cc_close_invocations == []
+        assert note.read_bytes() == before
+        assert (counters["closed"], counters["awaiting"], counters["failed"]) == (0, 0, 1)
+        assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 0, tzinfo=UTC)
+
+    def test_a_dry_run_reports_the_awaiting_transition_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-D", pr=100, surface=_WITNESSES)
+        before = note.read_bytes()
+        cursor = tmp_path / "cursor.txt"
+        watcher.write_cursor(cursor, datetime(2026, 4, 26, 0, tzinfo=UTC))
+        runner = _FakeRunner()
+        runner.gh_payload = [
+            {"number": 100, "mergedAt": "2026-04-26T12:00:00Z", "headRefName": "feat/w"},
+        ]
+
+        counters = watcher.run_watcher(
+            cursor_path=cursor, vault_root=vault, repo_root=tmp_path, runner=runner, dry_run=True
+        )
+
+        assert note.read_bytes() == before
+        assert (counters["closed"], counters["awaiting"]) == (0, 1)
+
+    def test_the_awaiting_status_is_read_from_the_ssot_not_a_literal(self) -> None:
+        from shared.sdlc_lifecycle import TASK_MERGED_AWAITING_WITNESS_STATUS
+
+        source = (_SCRIPTS / "cc-pr-merge-watcher.py").read_text(encoding="utf-8")
+
+        assert "TASK_MERGED_AWAITING_WITNESS_STATUS" in source
+        assert TASK_MERGED_AWAITING_WITNESS_STATUS not in source, (
+            "cc-pr-merge-watcher.py must name the awaiting status through "
+            "shared.sdlc_lifecycle.TASK_MERGED_AWAITING_WITNESS_STATUS, not a literal"
+        )
+
+    def test_the_writer_rechecks_the_witnesses_under_the_lock(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        # The decision is re-read under the note lock: a row that stopped declaring witnesses
+        # after the first read is not moved, and the next cycle decides it afresh.
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-C", pr=100, surface=_WITNESSES)
+        before = note.read_bytes()
+        reads: list[int] = []
+        original = watcher.unmet_runtime_witnesses
+
+        def first_read_only(text: str) -> tuple[str, ...]:
+            reads.append(len(reads) + 1)
+            return original(text) if len(reads) == 1 else ()
+
+        monkeypatch.setattr(watcher, "unmet_runtime_witnesses", first_read_only)
+
+        counters, runner, _cursor = _merged_cursor_run(tmp_path, vault)
+
+        assert reads == [1, 2]
+        assert note.read_bytes() == before
+        assert runner.cc_close_invocations == []
+        assert (counters["awaiting"], counters["failed"]) == (0, 1)
+
+    def test_the_awaiting_writer_takes_the_note_lock(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        import threading
+
+        from shared.task_note_lock import projected_path_lock
+
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        monkeypatch.setenv("HAPAX_TASK_NOTE_LOCK_TIMEOUT", "0")
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-L", pr=100, surface=_WITNESSES)
+        before = note.read_bytes()
+        held, release = threading.Event(), threading.Event()
+
+        def peer_writer() -> None:  # another thread: the lock is re-entrant per thread only
+            with projected_path_lock("task-L", (note,)):
+                held.set()
+                release.wait(10)
+
+        peer = threading.Thread(target=peer_writer)
+        peer.start()
+        assert held.wait(10)
+        try:
+            counters, runner, cursor = _merged_cursor_run(tmp_path, vault)
+        finally:
+            release.set()
+            peer.join(10)
+
+        assert note.read_bytes() == before
+        assert (counters["awaiting"], counters["failed"]) == (0, 1)
+        assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 0, tzinfo=UTC)

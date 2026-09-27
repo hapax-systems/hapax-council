@@ -126,6 +126,30 @@ class TestPrActions:
         )
 
 
+class TestTaskPipelineHeldStatuses:
+    def test_every_pipeline_held_status_is_an_active_status(self) -> None:
+        # A pipeline-held row stays in active/, so the vault-shape check must admit its status.
+        # merged_awaiting_runtime_witness was held but not active, and every such row errored
+        # (merge-watcher-closes-witness-rows-as-awaiting-20260927).
+        from shared.sdlc_lifecycle import TASK_ACTIVE_STATUSES, TASK_PIPELINE_HELD_STATUSES
+
+        assert TASK_PIPELINE_HELD_STATUSES <= TASK_ACTIVE_STATUSES, (
+            "pipeline-held statuses missing from TASK_ACTIVE_STATUSES: "
+            f"{sorted(TASK_PIPELINE_HELD_STATUSES - TASK_ACTIVE_STATUSES)}"
+        )
+
+    def test_the_awaiting_status_is_named_once_and_pipeline_held(self) -> None:
+        from shared.sdlc_lifecycle import (
+            TASK_MERGED_AWAITING_WITNESS_STATUS,
+            TASK_PIPELINE_HELD_STATUSES,
+            TASK_RESUMABLE_STATUSES,
+        )
+
+        assert TASK_MERGED_AWAITING_WITNESS_STATUS == "merged_awaiting_runtime_witness"
+        held_beyond_resumable = TASK_PIPELINE_HELD_STATUSES - TASK_RESUMABLE_STATUSES
+        assert held_beyond_resumable == {TASK_MERGED_AWAITING_WITNESS_STATUS}
+
+
 class TestTaskDispatchableStatuses:
     def test_dispatchable_statuses_is_offered_claimed_in_progress(self) -> None:
         assert frozenset({"offered", "claimed", "in_progress"}) == TASK_DISPATCHABLE_STATUSES
