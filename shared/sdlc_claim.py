@@ -6243,12 +6243,12 @@ def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Pa
 
 
 def _assigned_elsewhere(note: Path, role: str) -> bool:
-    """Whether the note's parsed frontmatter explicitly assigns the task away from ``role``:
-    to ``unassigned`` or to another named role. An absent, empty or unparseable assignment is
-    no proof, so the caller holds."""
+    """Whether the note's release-grade frontmatter explicitly assigns the task away from
+    ``role``: to ``unassigned`` or to another named role. An absent, empty, unparseable or
+    duplicated assignment is no proof, so the caller holds (#4826 round 5)."""
 
-    frontmatter = parse_frontmatter_with_diagnostics(note).frontmatter
-    value = frontmatter.get("assigned_to") if isinstance(frontmatter, dict) else None
+    frontmatter = _release_frontmatter(note)
+    value = frontmatter.get("assigned_to") if frontmatter is not None else None
     return isinstance(value, str) and bool(value.strip()) and value.strip() != role
 
 
@@ -6267,6 +6267,11 @@ def _release_frontmatter(note: Path) -> dict | None:
     text = note.read_text(encoding="utf-8")
     block = text[3 : text.find("\n---", 3)]
     if len(re.findall(r"(?m)^status[ \t]*:", block)) != 1:
+        return None
+    # Any duplicated top-level key hides an earlier value behind the last (codex on #4826
+    # round 4: a later `branch: null` concealed a branch with work on it).
+    keys = re.findall(r"(?m)^([A-Za-z_][\w-]*)[ \t]*:", block)
+    if len(keys) != len(set(keys)):
         return None
     return parsed.frontmatter
 
@@ -7204,8 +7209,15 @@ def return_claim(
             )
         with projected_path_lock(task_id, (note,)):
             text = note.read_text(encoding="utf-8")
-            frontmatter = parse_frontmatter_with_diagnostics(note).frontmatter
-            fields = frontmatter if isinstance(frontmatter, dict) else {}
+            # Release-grade only: with a duplicated key the parse keeps the last value, so the
+            # checks below could pass while the rewrite changes only the first (codex, round 4).
+            fields = _release_frontmatter(note)
+            if fields is None:
+                raise _release_hold(
+                    "claim_return_note_malformed",
+                    f"{task_id}'s frontmatter does not parse, or states a key more than once",
+                    "repair the note's frontmatter by hand, then rerun",
+                )
             status = str(fields.get("status") or "").strip()
             started = [
                 key

@@ -369,6 +369,19 @@ _cc_role_release_status() {
   esac
   return 1
 }
+# A row's status for that decision, read the way the Python release reads it: from frontmatter
+# that parses and states each key once (shared.sdlc_claim._release_frontmatter), never a body
+# line or the last of duplicate keys; otherwise "unreadable", which frees nothing (#4826 r5).
+_cc_release_status() {
+  NOTE="$1" CC_REPO="$SCRIPT_DIR/.." "$python_runner" -I -c '
+import os, sys
+sys.path.insert(0, os.environ["CC_REPO"])
+from pathlib import Path
+from shared.sdlc_claim import _release_frontmatter
+fields = _release_frontmatter(Path(os.environ["NOTE"]))
+print("unreadable" if fields is None else (str(fields.get("status") or "").strip() or "unknown"))
+' 2>/dev/null || echo unreadable
+}
 # Only this run's lease scan may set the charter-keep grant; a value inherited
 # from the caller's environment would force the charter branch without the
 # child-may-mint check having run for this claim.
@@ -400,7 +413,7 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
         [[ -f "$c" ]] && expired_note="$c" && break
       done
       if [[ -n "$expired_note" ]] && \
-        _cc_role_release_status "$(grep -oP '^status:\s*\K\S+' "$expired_note" 2>/dev/null || echo unknown)"; then
+        _cc_role_release_status "$(_cc_release_status "$expired_note")"; then
         continue
       fi
     fi
@@ -430,7 +443,7 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     [[ -f "$c" ]] && existing_note="$c" && break
   done
   [[ -n "$existing_note" ]] || continue
-  existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
+  existing_status="$(_cc_release_status "$existing_note")"
   _cc_role_release_status "$existing_status" && continue
   child_note=""
   for c in "$vault_root_check/active/$task_id-"*.md "$vault_root_check/active/$task_id.md"; do

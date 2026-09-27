@@ -2256,6 +2256,10 @@ def test_every_marker_is_checked_so_a_second_held_row_is_released_too(tmp_path: 
                 cache / kept.name, kept.stat().st_mode & 0o777
             )  # the residue check reads modes
     assert (cache / f"cc-active-task-cx-test-{first_session}").exists()
+    # Releases are stamped to the second, and this fixture releases one publication twice; a
+    # same-second second release holds on the taken staging name (fail closed). Real residue is
+    # not released twice, so the test steps past the second rather than widen the stamp.
+    time.sleep(1.1)
 
     taken = _claim(home, "next-row", session_id=third_session)
 
@@ -2265,33 +2269,95 @@ def test_every_marker_is_checked_so_a_second_held_row_is_released_too(tmp_path: 
     assert not (cache / f"cc-active-task-cx-test-{first_session}").exists()
 
 
+_MALFORMED = [
+    "unparseable",
+    "duplicated_status",
+    "duplicated_pr",
+    "duplicated_assigned",
+    "body_only",
+]
+
+
 def _malform(text: str, how: str) -> str:
-    if how == "unparseable":
+    if how == "unparseable":  # parsed.ok is false
         return text.replace("status: pr_open", "status: pr_open\nbroken: [", 1)
-    if how == "duplicated":
+    if how == "duplicated_assigned":  # the last value would read as reassigned
+        return text.replace(
+            "assigned_to: cx-test", "assigned_to: cx-test\nassigned_to: cx-other", 1
+        )
+    if how == "duplicated_status":
         return text.replace("status: pr_open", "status: claimed\nstatus: pr_open", 1)
+    if how == "duplicated_pr":
+        return text.replace("status: pr_open", "status: pr_open\npr: 4999\npr: null", 1)
     # "body_only": no status in the frontmatter, and a pr_open line in the body
     return text.replace("status: pr_open\n", "", 1) + "\nstatus: pr_open\n"
 
 
-@pytest.mark.parametrize("how", ["unparseable", "duplicated", "body_only"])
-def test_a_malformed_pipeline_held_note_is_never_released(tmp_path: Path, how: str) -> None:
-    # codex on #4826 round 3, and the seat's 17:05Z ruling: the release read the status with a
-    # text regex over the whole note, so a note whose frontmatter does not parse, states status
-    # twice, or carries it only in the body had its live claim files archived. Hold instead.
-    home = tmp_path / "home"
+def _malformed_parked_row(home: Path, how: str) -> tuple[Path, dict[Path, bytes | None]]:
     parked = _write_task(home, "active", "parked-row")
     _write_task(home, "active", "next-row")
     assert _claim(home, "parked-row").returncode == 0
     _set_status(parked, "claimed", "pr_open")
     parked.write_text(_malform(parked.read_text(encoding="utf-8"), how), encoding="utf-8")
-    markers = _bytes_of(_role_sidecars(home)["marker"])
+    return parked, _bytes_of(_role_sidecars(home)["marker"])
+
+
+@pytest.mark.parametrize("how", _MALFORMED)
+def test_the_lease_check_reads_a_malformed_note_as_holding_the_slot(
+    tmp_path: Path, how: str
+) -> None:
+    # codex on #4826 rounds 3-4, and the seat's round-5 ruling (sweep the class): every read
+    # must parse and see each key once. The lease loop used a whole-file grep, so a body-only
+    # status or the last of duplicate keys could free the slot.
+    home = tmp_path / "home"
+    _parked, markers = _malformed_parked_row(home, how)
 
     held = _claim(home, "next-row")
 
-    # Either hold is right: the lease check blocks on a doubled status (7), and the release
-    # declines a note that cannot ground it (8). The invariant is that nothing is released.
-    assert held.returncode in {7, 8}, held.stderr
+    assert held.returncode == 7, held.stderr
+    assert "already has active task 'parked-row' (status: unreadable)" in held.stderr
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
+    assert _lineage_shapes(home, "parked-row") == []
+
+
+@pytest.mark.parametrize("how", _MALFORMED)
+def test_an_expired_lease_on_a_malformed_note_still_holds(tmp_path: Path, how: str) -> None:
+    home = tmp_path / "home"
+    _parked, markers = _malformed_parked_row(home, how)
+    _expire(home)
+
+    held = _claim(home, "next-row")
+
+    assert held.returncode == 7, held.stderr
+    assert "expired claim" in held.stderr
+    assert _lineage_shapes(home, "parked-row") == []
+
+
+@pytest.mark.parametrize("how", _MALFORMED)
+def test_neither_release_path_releases_a_malformed_note(tmp_path: Path, how: str) -> None:
+    # The Python paths, exercised directly: the lease check now blocks first end to end.
+    from shared.sdlc_claim import release_pipeline_held_residue
+
+    home = tmp_path / "home"
+    _parked, markers = _malformed_parked_row(home, how)
+    roots = default_claim_publication_roots(home=home)
+
+    assert (
+        release_pipeline_held_residue(
+            vault_root=_task_root(home),
+            cache_dir=Path(roots.claim_cache_dir),
+            transaction_root=Path(roots.claim_transaction_root),
+            lock_root=Path(roots.claim_lock_root),
+            role="cx-test",
+            current_task_id="next-row",
+            observed_at="20260927T172000Z",
+        )
+        == []
+    )
+    explicit = _release(home, "parked-row")
+
+    assert explicit.returncode == 8
+    assert "claim_residue_live_marker" in explicit.stderr
     assert _bytes_of(_role_sidecars(home)["marker"]) == markers
     assert _lineage_shapes(home, "parked-row") == []
 
@@ -2303,6 +2369,8 @@ def test_a_malformed_pipeline_held_note_is_never_released(tmp_path: Path, how: s
         ("status: claimed\nstatus: pr_open", "unreadable"),  # PyYAML would keep the last
         ("broken: [", "unreadable"),
         ("assigned_to: cx-test", "unreadable"),  # the body's status line never counts
+        ("assigned_to: other\nassigned_to: cx-test\nstatus: pr_open", "unreadable"),  # any dup
+        ("status: pr_open\npr: 4999\npr: null", "unreadable"),
     ],
 )
 def test_a_release_reads_status_only_from_release_grade_frontmatter(
@@ -2457,6 +2525,35 @@ def test_started_work_is_never_returned(
     assert f"HOLD - {code}:" in refused.stderr
     assert note.read_bytes() == before
     assert _bytes_of(_role_sidecars(home)["marker"]) == sidecars
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("status: claimed", "status: claimed\nstatus: claimed"),
+        ("status: claimed", "status: claimed\nbranch: feat/started\nbranch: null"),
+        ("status: claimed", "status: claimed\npr: 4999\npr: null"),
+        ("status: claimed", "status: claimed\nbroken: ["),
+    ],
+    ids=["duplicated_status", "branch_hidden_by_a_later_null", "duplicated_pr", "unparseable"],
+)
+def test_a_note_with_duplicated_keys_is_never_returned(tmp_path: Path, old: str, new: str) -> None:
+    # codex on #4826 round 4: PyYAML keeps the last of duplicate keys. Two `status: claimed`
+    # passed the check while only the first was rewritten, and a later `branch: null` hid a
+    # branch with work on it. A note with any duplicated key is refused, unchanged.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "doubled-row")
+    assert _claim(home, "doubled-row").returncode == 0
+    note.write_text(note.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
+    before = note.read_bytes()
+    markers = _bytes_of(_role_sidecars(home)["marker"])
+
+    refused = _return(home, "doubled-row")
+
+    assert refused.returncode == 8
+    assert "HOLD - claim_return_note_malformed:" in refused.stderr
+    assert note.read_bytes() == before
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
 
 
 def test_only_the_holder_returns_a_claim(tmp_path: Path) -> None:
