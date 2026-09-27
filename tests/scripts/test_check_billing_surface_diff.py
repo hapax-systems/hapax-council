@@ -806,6 +806,75 @@ def test_non_python_file_grants_no_exemption_at_all(scanner: ModuleType) -> None
 # ── exemption matched anywhere on a line must never hide a different operation. ──
 
 
+# ── round 4 (codex-1's critical): the strip exempts its TARGET, not its subtree — ──
+# ── a read in the strip's own default argument is code and must be scanned. ──
+
+
+def test_strip_default_argument_is_scanned(scanner: ModuleType) -> None:
+    """codex-1's round-4 critical, verbatim, on the AST path.
+
+    At `c34dd481b` the exemption covered every node inside the strip, so the added read
+    in the default argument was never reported and the gate could pass.
+    """
+
+    line = 'os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])'  # billing-scan:allow: fixture data
+    diff = _diff("shared/foo_launcher.py", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert "credential-env-read" in [f.kind for f in result.findings], (
+        "the strip's default argument was exempted with the strip: the added read passed"
+    )
+    assert {f.kind for f in result.allowed} == {"protective-strip"}, (
+        "the granted exemption must name the strip alone, not the read inside it"
+    )
+
+
+def test_strip_default_argument_is_scanned_on_the_text_path(scanner: ModuleType) -> None:
+    """The text-path equivalent. Already closed at `c34dd481b` (no text-path exemption
+    exists), red against `79c5d1cd7`, which is the head dev21's round 4 reviewed —
+    there the whole line matched the statement-strip regex, default argument included.
+    """
+
+    line = 'os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])'  # billing-scan:allow: fixture data
+    diff = _diff("scripts/foo_launcher.sh", [line])
+    result = scanner.scan_unified_diff(diff)
+    assert "credential-env-read" in [f.kind for f in result.findings], (
+        "a strip-shaped line in a non-Python file exempted its own default argument"
+    )
+    assert result.allowed == (), "a non-Python file was granted an exemption"
+
+
+def test_strip_default_argument_read_shapes_are_all_scanned(scanner: ModuleType) -> None:
+    """Every spelling of a read in the default argument, not just the subscript form."""
+
+    lines = [
+        'os.environ.pop("OLD_API_KEY", os.environ.get("OPENAI_API_KEY"))',
+        'os.environ.pop("OLD_API_KEY", os.getenv("OPENAI_API_KEY"))',
+        'os.environ.pop("OLD_API_KEY", os.environ.setdefault("OPENAI_API_KEY", ""))',
+        'del os.environ["ANTHROPIC_API_KEY" if os.environ["OPENAI_API_KEY"] else "X"]',
+    ]
+    for line in lines:
+        diff = _diff("shared/foo_launcher.py", [line])  # billing-scan:allow: fixture data
+        result = scanner.scan_unified_diff(diff)
+        assert "credential-env-read" in [f.kind for f in result.findings], (
+            f"a read in the strip's own arguments was exempted: {line!r}"
+        )
+
+
+def test_strip_without_a_read_in_its_arguments_stays_clean(scanner: ModuleType) -> None:
+    """Positive control: the governed strip is still exempt, and still reported."""
+
+    lines = [
+        'os.environ.pop("OLD_API_KEY", None)',
+        'os.environ.pop("ANTHROPIC_API_KEY")',
+        'del os.environ["OPENAI_API_KEY"]',
+    ]
+    diff = _diff("shared/foo_launcher.py", lines)
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == (), "the target-only exemption stopped exempting the target"
+    assert {f.kind for f in result.allowed} == {"protective-strip"}
+    assert len(result.allowed) == len(lines), "each strip must be reported on its own line"
+
+
 def test_mixed_line_proxy_class_does_not_hide_a_route(scanner: ModuleType) -> None:
     """The proxy class: a governed-proxy literal on the line must not exempt a route."""
 

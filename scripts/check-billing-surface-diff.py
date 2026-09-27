@@ -52,11 +52,12 @@ decided differently:
 
 Every exemption the scan grants is printed as ``allowed`` with its path and line,
 so review sees each one: a Python ``Call`` genuinely bound to the governed proxy,
-a Python protective strip node (``os.environ.pop(<literal>[, default])`` or
-``del os.environ[<literal>]`` — that node alone, never a read elsewhere on the
-line), and a line carrying the visible ``billing-scan:allow`` marker on an
-allowlisted path. **A proxy name anywhere else never exempts a line, and a
-non-Python file is granted no exemption at all.**
+the **target node alone** of a Python protective strip
+(``os.environ.pop(<literal>[, default])`` or ``del os.environ[<literal>]`` — never a
+read elsewhere on the line, and never the strip's own default argument), and a line
+carrying the visible ``billing-scan:allow`` marker on an allowlisted path. **A proxy
+name anywhere else never exempts a line, a strip's other children are scanned as
+ordinary code, and a non-Python file is granted no exemption at all.**
 
 Fail-closed paths, so the absence of a finding is never an accident: a Python
 region that does not parse is never exempt (the line rules apply), and if it is
@@ -140,12 +141,16 @@ _CREDENTIAL_NAME = (
     r"[A-Z][A-Z0-9_]*_(?:API_KEY|API_TOKEN|AUTH_TOKEN|SECRET_KEY|ACCESS_TOKEN|SESSION_TOKEN)"
 )
 
-#: NOTE: the protective strip is NO LONGER a line pattern. It was an exemption searched
+#: NOTE: the protective strip is NOT a line pattern and NOT a subtree. It was a pattern
 #: over the whole line, so `os.environ.pop("OLD_API_KEY", None); key = os.environ["OPENAI_API_KEY"]`
-#: passed (round-3 critical). It is now decided per node by `_node_is_protective_strip`,
-#: and only `os.environ.pop(<literal>[, default])` / `del os.environ[<literal>]` qualify —
-#: `env.pop(...)` and shell `unset` are not the governed launcher pattern and are not
-#: exempted anywhere. Deleting the constant is deliberate: a dead line-pattern here would
+#: passed (round-3 critical); it was then the whole strip subtree, so
+#: `os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])` passed (round-4 critical).
+#: It is now decided per node by `_strip_target_node`, which returns the **one** node a
+#: recognised strip exempts — the credential it strips. Exactly two forms are recognised,
+#: `os.environ.pop(<literal>[, default])` and `del os.environ[<literal>]`; **every other
+#: child of the strip, the default argument included, is scanned as ordinary code**.
+#: `env.pop(...)` and shell `unset` are not recognised at all, on any path. Keeping the
+#: deleted line-pattern constant deleted is deliberate: a dead line-pattern here would
 #: invite the next reader to re-wire a whole-line exemption.
 
 #: THE TEXT PATH GRANTS NO EXEMPTION AT ALL — not per line, and not per statement.
@@ -309,14 +314,14 @@ _KEY_BEARING_PROBE = re.compile(r"api[_-]?key|apikey|\btoken\b|\bkey\b", re.IGNO
 #: Keys are the sites; values state what each is decided from.
 EXEMPTION_SITES: dict[str, str] = {
     "proxy": "per ast.Call: that call's own literal base_url/api_base/endpoint target",
-    "protective_strip": "per ast node: os.environ.pop(<literal>[, default]) or del os.environ[<literal>]",
+    "protective_strip": "per ast node: ONLY the target node of os.environ.pop(<literal>[, default]) or del os.environ[<literal>]; every other child, the default argument included, is scanned",
     "allow_marker": "path-allowlisted comment (tests/**, the scanner's own source); applies to the marked line's nodes only",
     "text_path_non_python": "none: non-Python files, and Python text that did not parse, grant no exemption of any kind",
 }
 #: The functions that implement the AST-decided sites. The guard test
 #: (`tests/scripts/test_check_billing_surface_diff.py::test_no_exemption_is_decided_from_line_content`)
 #: parses this scanner's own source and fails if any of them takes line text as an input.
-NODE_EXEMPTION_FUNCTIONS: tuple[str, ...] = ("_call_is_proxy_bound", "_node_is_protective_strip")
+NODE_EXEMPTION_FUNCTIONS: tuple[str, ...] = ("_call_is_proxy_bound", "_strip_target_node")
 #: “Line text” carriers the guard refuses to see inside an exemption function.
 _LINE_TEXT_NAMES = frozenset({"content", "line", "raw", "text", "source"})
 
@@ -343,32 +348,43 @@ def _literal_str(node: ast.AST) -> str | None:
     return None
 
 
-def _node_is_protective_strip(node: ast.AST) -> bool:
-    """True for the SPECIFIC strip operation: ``os.environ.pop("X"[, default])`` / ``del os.environ["X"]``.
+def _strip_target_node(node: ast.AST) -> ast.AST | None:
+    """The ONE child a recognised protective strip exempts: the credential it strips.
 
-    Only the strip's own node is exempt. `env.pop(...)` and shell ``unset`` are NOT
-    exempt: they are not the governed launcher pattern, and exempting them would
-    re-open the hole this function exists to close for any object named ``env``.
+    Recognised forms are exactly ``os.environ.pop(<literal>[, default])`` and
+    ``del os.environ[<literal>]``; the exempt node is the **target literal** (for
+    ``del``, the subscript that names it). **Every other child node is scanned as
+    ordinary code — the default argument included** (codex-1's round-4 critical:
+    ``os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])`` was passing
+    because the exemption covered the whole subtree, so the added read in the
+    default argument was never reported).
+
+    ``env.pop(...)`` and shell ``unset`` are **not recognised as strips at all** —
+    not here and not on the text path — because they are not the governed launcher
+    pattern, and exempting whatever object happens to be named ``env`` is how this
+    hole kept re-opening. There is no path on which they are exempt: the text path
+    grants no exemption whatsoever (see ``EXEMPTION_SITES``).
     """
 
     if isinstance(node, ast.Delete) and len(node.targets) == 1:
         target = node.targets[0]
-        return (
+        if (
             isinstance(target, ast.Subscript)
             and _is_os_environ(target.value)
             and _literal_str(target.slice) is not None
-        )
+        ):
+            return target
+        return None
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "pop"
+        and _is_os_environ(node.func.value)
+        and bool(node.args)
+        and _literal_str(node.args[0]) is not None
     ):
-        return (
-            _is_os_environ(node.func.value)
-            and bool(node.args)
-            and _literal_str(node.args[0]) is not None
-        )
-    return False
+        return node.args[0]
+    return None
 
 
 def _node_credential_env_read(node: ast.AST) -> bool:
@@ -435,9 +451,11 @@ def _node_findings_for_region(
 
     **Every exemption is decided on a NODE, never on a line** (round-3 contract):
 
-    - ``protective_strip`` exempts only the strip's own ``Call``/``Delete`` node, so a
-      credential read elsewhere on the same line is still counted — the case that broke
-      ``os.environ.pop("OLD_API_KEY", None); key = os.environ["OPENAI_API_KEY"]``;
+    - ``protective_strip`` exempts only the strip's **target** node, so a credential read
+      elsewhere on the same line is still counted (the round-3 case,
+      ``os.environ.pop("OLD_API_KEY", None); key = os.environ["OPENAI_API_KEY"]``) **and so
+      is a read in the strip's own default argument** (the round-4 case,
+      ``os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])``);
     - ``proxy`` exempts only a ``Call`` whose own route target is a governed proxy;
     - a node is reported only when an ADDED line falls inside it, so pre-existing code in
       the context lines is not this change's surface.
@@ -475,22 +493,24 @@ def _node_findings_for_region(
         segment = ast.get_source_segment(source, node) or ""
         return (segment.splitlines() or [""])[0].strip()[:200]
 
-    # The strip's own node AND everything inside it is the strip — `del os.environ["X"]`
-    # contains a Subscript that would otherwise read as a credential read. Nothing
-    # OUTSIDE the strip node is exempt, which is the round-3 fix.
-    strip_covered: set[int] = set()
+    # ONLY the strip's target node is exempt. Its other children — the default argument
+    # above all — are scanned like any other code (codex-1's round-4 critical).
+    strip_targets: set[int] = set()
     for node in ast.walk(tree):
-        if node_is_added(node) and _node_is_protective_strip(node):
-            for inner in ast.walk(node):
-                strip_covered.add(id(inner))
-            allowed_out.append(
-                Finding(
-                    path=path,
-                    line=first_line + (node.lineno or 1) - 1,
-                    kind="protective-strip",
-                    text=snippet(node),
-                )
+        if not node_is_added(node):
+            continue
+        target = _strip_target_node(node)
+        if target is None:
+            continue
+        strip_targets.add(id(target))
+        allowed_out.append(
+            Finding(
+                path=path,
+                line=first_line + (node.lineno or 1) - 1,
+                kind="protective-strip",
+                text=snippet(node),
             )
+        )
 
     for node in ast.walk(tree):
         if not node_is_added(node):
@@ -510,8 +530,8 @@ def _node_findings_for_region(
                 continue
             out.append(Finding(path=path, line=line_no, kind="api-key-route", text=snippet(node)))
         if _node_credential_env_read(node):
-            if id(node) in strip_covered:
-                continue  # exempted by the strip node that covers it; recorded above
+            if id(node) in strip_targets:
+                continue  # the strip's target itself; recorded above
             out.append(
                 Finding(path=path, line=line_no, kind="credential-env-read", text=snippet(node))
             )
