@@ -86,7 +86,8 @@ def test_backs_up_and_verifies_the_store_by_names_only(tmp_path: Path) -> None:
     result = _run(env)
     assert result.returncode == 0, result.stderr
     assert (
-        f"holds {env['REINS_SECRET_STORE']}/.key and 3 of 3 entries (names only)" in result.stdout
+        f"holds {env['REINS_SECRET_STORE']}/.key and all 3 entries by name (names only)"
+        in result.stdout
     )
     assert SENTINEL not in result.stdout + result.stderr
     (snap,) = _snapshots(env)
@@ -150,7 +151,29 @@ def test_verify_fails_when_the_snapshot_lacks_an_entry(tmp_path: Path) -> None:
     env = _restic_that_drops(tmp_path, _setup(tmp_path), r"entry-1\.bin")
     result = _run(env)
     assert result.returncode == 1
-    assert "holds 2 entries, fewer than the store's 3" in result.stderr
+    assert "1 of the store's 3 entries missing from snapshot" in result.stderr
+    assert "entry-1.bin" in result.stderr
+
+
+def test_verify_compares_entry_names_not_only_counts(tmp_path: Path) -> None:
+    """A snapshot with as many entries as the store, but a different one in place of entry-1, must still fail: the
+    predicate is every entry, not a count (#4823 review, codex)."""
+
+    real = shutil.which("restic")
+    env = _setup(tmp_path)
+    wrap = tmp_path / "wrap"
+    wrap.mkdir()
+    (wrap / "restic").write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [ "$1" = ls ]; then "{real}" "$@" | sed "s/entry-1\\.bin/entry-9.bin/g"; '
+        'exit "${PIPESTATUS[0]}"; fi\n'
+        f'exec "{real}" "$@"\n',
+        encoding="utf-8",
+    )
+    (wrap / "restic").chmod(0o755)
+    result = _run(dict(env, PATH=f"{wrap}:{env['PATH']}"))
+    assert result.returncode == 1
+    assert "entry-1" in result.stderr and "missing from snapshot" in result.stderr
 
 
 def test_verify_fails_when_the_snapshot_lacks_the_key(tmp_path: Path) -> None:
@@ -166,7 +189,7 @@ def test_the_script_reads_no_value_and_prunes_nothing() -> None:
 
     text = SCRIPT.read_text(encoding="utf-8")
     code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-    for reader in ("cat ", "head ", "tail -c", "xxd", ' < "$STORE', 'hapax-secret "$'):
+    for reader in ("cat ", "head -c", "tail -c", "xxd", ' < "$STORE', 'hapax-secret "$'):
         assert reader not in code, reader
     assert "restic forget" not in code
 

@@ -40,7 +40,8 @@ RESTIC_PASSWORD="$(hapax_secret_read "$PASSWORD_ENTRY")" || die "cannot read the
 [[ -n "$RESTIC_PASSWORD" ]] || die "the restic password '$PASSWORD_ENTRY' is empty"
 export RESTIC_PASSWORD RESTIC_REPOSITORY="$REPO"
 
-expected="$(find "$STORE" -maxdepth 1 -type f -name '*.bin' | wc -l)"
+expected_names="$(find "$STORE" -maxdepth 1 -type f -name '*.bin' -printf '%f\n' | sort)"
+expected="$(grep -c . <<<"$expected_names" || true)"
 
 snapshot="$(restic backup --json --tag "$TAG" --host "$HOST" "$STORE" \
     | jq -r 'select(.message_type == "summary") | .snapshot_id')" \
@@ -51,12 +52,16 @@ snapshot="$(restic backup --json --tag "$TAG" --host "$HOST" "$STORE" \
 listing="$(restic ls --json "$snapshot" | jq -r 'select(.struct_type == "node" and .type == "file") | .path')" \
     || die "cannot list snapshot ${snapshot:0:8}"
 has_key="$(grep -cxF "$STORE/.key" <<<"$listing" || true)"
-bins="$(grep -cE "^${STORE//./\\.}/[^/]+\.bin$" <<<"$listing" || true)"
+# Every entry the store holds now must be in the snapshot, by name: a count alone would pass a snapshot that holds as
+# many entries under other names. Entry names are the store's index, not secret values.
+snapshot_names="$(grep -E "^${STORE//./\\.}/[^/]+\.bin$" <<<"$listing" | sed 's|.*/||' | sort -u || true)"
+missing="$(comm -23 <(printf '%s\n' "$expected_names" | grep .) <(printf '%s\n' "$snapshot_names" | grep .) || true)"
 
 if [[ "$has_key" -ne 1 ]]; then
     die "snapshot ${snapshot:0:8} does not hold $STORE/.key"
 fi
-if (( bins < expected )); then
-    die "snapshot ${snapshot:0:8} holds $bins entries, fewer than the store's $expected"
+if [[ -n "$missing" ]]; then
+    count="$(grep -c . <<<"$missing")"
+    die "$count of the store's $expected entries missing from snapshot ${snapshot:0:8}: $(head -3 <<<"$missing" | tr '\n' ' ')"
 fi
-echo "hapax-backup-filestore: snapshot ${snapshot:0:8} ($TAG, host $HOST) holds $STORE/.key and $bins of $expected entries (names only)"
+echo "hapax-backup-filestore: snapshot ${snapshot:0:8} ($TAG, host $HOST) holds $STORE/.key and all $expected entries by name (names only)"
