@@ -315,11 +315,15 @@ reason, changing nothing:
 - `claim_return_note_malformed`: the frontmatter does not parse, states a key twice, or does not
   state `status`, `assigned_to` and `claimed_at` each exactly once and plainly. Repair it by hand,
   then rerun.
+- `claim_return_archive_collision`: an archive name for this second is already taken. It is checked
+  before the note is written, so nothing changed; rerun after a second.
 - `claim_return_unfinished`, `claim_return_live_marker`, `claim_return_rewrite_unverified`: follow
   the printed next action.
 
-A crash between the note write and the archive leaves the `reassigned_task` shape, which
-`cc-claim --release-claim-residue <task-id>` releases.
+The one exception to "changing nothing": `claim_return_archive_incomplete` means the note **was**
+returned to `offered` but the claim files could not be archived (an I/O failure). That is the same
+state a crash between the note write and the archive leaves, the `reassigned_task` shape, and
+`cc-claim --release-claim-residue <task-id>` releases it.
 
 ### An Unreadable Held Row
 

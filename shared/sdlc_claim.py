@@ -6905,15 +6905,19 @@ def _previously_archived(
     return False
 
 
-def _archive_residue(
+def _residue_archive_plan(
     present: Sequence[FileProjection],
     *,
     journal: _RoleTaskJournal,
     vault_root: Path,
-    shape: str,
     observed_at: str,
     staged: Mapping[Path, Path] | None = None,
-) -> tuple[Path, tuple[Path, ...]]:
+) -> tuple[Path, Path, list[Path]]:
+    """Where a release of ``present`` archives and stages, and every name already taken.
+
+    One definition for :func:`_archive_residue` and for a caller that must know, before its
+    first mutation, that the archive cannot collide (``return_claim``, codex on #4832 round 2).
+    """
     intent = journal.intent
     staged = staged or {}
     archive_dir = (
@@ -6950,12 +6954,30 @@ def _archive_residue(
     ):
         if (existing.exists() or existing.is_symlink()) and not _binding_names(existing, line):
             taken.append(existing)
+    return archive_dir, staging_dir, taken
+
+
+def _archive_residue(
+    present: Sequence[FileProjection],
+    *,
+    journal: _RoleTaskJournal,
+    vault_root: Path,
+    shape: str,
+    observed_at: str,
+    staged: Mapping[Path, Path] | None = None,
+) -> tuple[Path, tuple[Path, ...]]:
+    intent = journal.intent
+    staged = staged or {}
+    archive_dir, staging_dir, taken = _residue_archive_plan(
+        present, journal=journal, vault_root=vault_root, observed_at=observed_at, staged=staged
+    )
     if taken:
         raise _release_hold(
             "claim_residue_archive_collision",
             f"{taken[0]} already exists (or belongs to another publication)",
             "preserve every file and inspect the lineage and staging directories",
         )
+    readme, bound = archive_dir / "README.md", staging_dir / "PUBLICATION"
     archive_dir.mkdir(parents=True, exist_ok=True)
     os.makedirs(staging_dir, mode=0o700, exist_ok=True)
     # Bind the staging to this journal: a crashed run's staged originals are recovered only by
@@ -7431,6 +7453,19 @@ def return_claim(
                 f"{others[0]} names {task_id} or cannot be read",
                 "inspect that marker; another session may be working the row",
             )
+        # Every archive name must be free before the note is written, so a collision is a
+        # no-change refusal (codex on #4832 round 2). Every release of this role's residue runs
+        # under the publication lock held here, so no archive can be created in between.
+        _archive_dir, _staging_dir, taken = _residue_archive_plan(
+            list(residue), journal=journal, vault_root=vault_root, observed_at=observed_at
+        )
+        if taken:
+            raise _release_hold(
+                "claim_return_archive_collision",
+                f"{taken[0]} already exists, so the claim files could not be archived",
+                "rerun after a second (the archive is named by the second); if it persists, "
+                "preserve every file and inspect the lineage and staging directories",
+            )
         with projected_path_lock(task_id, (note,)):
             text = note.read_text(encoding="utf-8")
             fields = _release_fields(text)
@@ -7484,14 +7519,22 @@ def return_claim(
             tmp = note.with_suffix(note.suffix + ".tmp")  # as cc-close writes a note
             tmp.write_text(returned, encoding="utf-8")
             tmp.replace(note)
-        archive_dir, archived = _archive_residue(
-            list(residue),
-            journal=journal,
-            vault_root=vault_root,
-            shape="returned_claim",
-            observed_at=observed_at,
-            staged={},
-        )
+        try:
+            archive_dir, archived = _archive_residue(
+                list(residue),
+                journal=journal,
+                vault_root=vault_root,
+                shape="returned_claim",
+                observed_at=observed_at,
+                staged={},
+            )
+        except (ClaimResidueArchiveHold, OSError) as exc:
+            # The note is already returned: the crash-window state, which is recoverable.
+            raise _release_hold(
+                "claim_return_archive_incomplete",
+                f"{task_id} was returned to offered, but its claim files were not archived ({exc})",
+                f"run `cc-claim --release-claim-residue {task_id}` (the reassigned_task shape)",
+            ) from exc
     return ClaimResidueRelease(
         "returned_claim", journal.publication_id, archive_dir, archived, None
     )

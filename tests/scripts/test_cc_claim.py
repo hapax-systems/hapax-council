@@ -3080,3 +3080,48 @@ def test_the_release_grade_reader_refuses_an_unclosed_frontmatter() -> None:
 
     unclosed = "---\ntask_id: row\nstatus: pr_open\nbody without a closing delimiter\n"
     assert _release_fields(unclosed) is None
+
+
+def test_an_archive_collision_is_a_no_change_refusal(tmp_path: Path) -> None:
+    # codex on #4832 round 2: the archive names were checked only after the note was written,
+    # so a collision left the note offered with the claim still live. They are checked first.
+    from shared.sdlc_claim import ClaimResidueArchiveHold
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    stamp = "20260927T230000Z"
+    archive = (
+        _task_root(home) / "_lineage" / "unstarted-row" / f"claim-residue-release-{stamp}-cx-test"
+    )
+    archive.mkdir(parents=True)
+    (archive / "cc-active-task-cx-test").write_text("someone else's\n", encoding="utf-8")
+    before, markers = note.read_bytes(), _bytes_of(_role_sidecars(home)["marker"])
+
+    with pytest.raises(ClaimResidueArchiveHold) as held:
+        _return_in_process(home, observed_at=stamp)
+
+    assert "claim_return_archive_collision" in held.value.message
+    assert note.read_bytes() == before
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
+
+
+def test_an_archive_failure_after_the_note_names_the_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Anything the pre-check cannot foresee (an I/O error) leaves the crash-window state; the
+    # hold says so and names the release that recovers it.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+
+    def disk_full(*_args: object, **_kwargs: object) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(sdlc_claim, "_archive_residue", disk_full)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as held:
+        _return_in_process(home)
+
+    assert "claim_return_archive_incomplete" in held.value.message
+    assert "cc-claim --release-claim-residue unstarted-row" in held.value.message
+    assert "status: offered" in note.read_text(encoding="utf-8")
