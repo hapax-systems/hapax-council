@@ -200,7 +200,7 @@ if [[ ! -f "$DR_SCRIPT" ]]; then
     exit 1
 fi
 if ! rclone copy "$DR_SCRIPT" b2:hapax-backups/dr-scripts/; then
-    log "FATAL: DR script upload failed — B2 still holds the stale copy"
+    log "FATAL: DR script upload failed — B2 still holds the stale copy; check the remote with \`rclone lsd b2:hapax-backups\`, then rerun"
     exit 1
 fi
 ok "DR script uploaded: $(basename "$DR_SCRIPT")"

@@ -19,8 +19,8 @@ set -euo pipefail
 #   Option A — GitHub (authenticate via browser):
 #     sudo pacman -S git github-cli
 #     gh auth login              # browser OAuth, no SSH key needed
-#     gh repo clone ryanklee/distro-work
-#     ./distro-work/hapax-cachyos-restore.sh
+#     gh repo clone hapax-systems/hapax-council
+#     ./hapax-council/scripts/hapax-cachyos-restore.sh
 #
 #   Option B — B2 (needs key ID + app key):
 #     sudo pacman -S rclone
@@ -610,8 +610,30 @@ fi
 # ─── Phase 12: Docker stack ────────────────────────────────────────────────
 log "=== Phase 12: Start Docker stack + restore databases ==="
 
-DUMP="$RESTORE_DIR/tmp/hapax-backup-dumps-remote"
-[[ ! -d "$DUMP" ]] && DUMP="$RESTORE_DIR/tmp/hapax-backup-dumps"
+# Where the producers write their dumps: /store/llm-data/backup-dumps-{remote,local} since ca32d43 (2026-09-02;
+# disk, not tmpfs), /tmp before it. The old search looked only in /tmp, so a restore from any newer snapshot silently
+# skipped PostgreSQL and Qdrant and still reported completion (#4623 review round 1 critical 1; #4813). No dump is a
+# refusal, never a skip.
+DUMP=""
+for _candidate in \
+    "$RESTORE_DIR/store/llm-data/backup-dumps-remote" \
+    "$RESTORE_DIR/store/llm-data/backup-dumps-local" \
+    "$RESTORE_DIR/tmp/hapax-backup-dumps-remote" \
+    "$RESTORE_DIR/tmp/hapax-backup-dumps"; do
+    if [[ -d "$_candidate" ]]; then
+        DUMP="$_candidate"
+        break
+    fi
+done
+if [[ -z "$DUMP" ]]; then
+    fail "No database dump in the restored snapshot. Searched:"
+    fail "  $RESTORE_DIR/store/llm-data/backup-dumps-remote"
+    fail "  $RESTORE_DIR/store/llm-data/backup-dumps-local"
+    fail "  $RESTORE_DIR/tmp/hapax-backup-dumps-remote"
+    fail "  $RESTORE_DIR/tmp/hapax-backup-dumps"
+    fail "Next: find the dump in the snapshot you restored (restic snapshots, then restic ls <snapshot-id> | grep postgres-all.sql), restore the directory that holds it under $RESTORE_DIR, then rerun Phase 12"
+    exit 1
+fi
 
 if [[ -f ~/llm-stack/docker-compose.yml ]]; then
     log "Starting Docker stack..."

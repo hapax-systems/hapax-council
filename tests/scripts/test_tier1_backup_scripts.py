@@ -22,9 +22,10 @@ UNITS = REPO / "systemd" / "units"
 BACKUP_SCRIPTS = ("hapax-backup-local", "hapax-backup-remote")
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
-# sha256 of podium's ~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6). The DR script
-# moved unchanged; a change to it belongs to the follow-up row, not to a silent edit here.
-LIVE_DR_SCRIPT_SHA256 = "fa0dafc78244daae304028fb980b53efb0ff36362f773325d0b4f7d7806e30cc"
+# The DR script is podium's ~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, sha256
+# fa0dafc7…), changed in exactly two hunks by the seat's exception (2026-09-27 10:29Z): the bootstrap clone (lines
+# 22–23) and Phase 12's dump search (lines 613ff). Any other change belongs to the follow-up row, never to a silent edit.
+DR_SCRIPT_SHA256 = "cba66be560ea5b04ad7f684c163b9272e79b8d77e7062bfa7a955619f8483480"
 
 
 @pytest.mark.parametrize("name", ["hapax-backup-local.service", "hapax-backup-remote.service"])
@@ -121,9 +122,151 @@ def test_remote_uploads_the_in_repo_dr_script_under_its_old_object_name() -> Non
     assert (SCRIPTS / "hapax-cachyos-restore.sh").is_file()
 
 
-def test_the_dr_script_moved_unchanged() -> None:
+def _run_dr_upload(tmp_path: Path, *, with_dr_script: bool, rclone_exit: int) -> tuple:
+    """Run the remote script's own DR-upload section, cut from the script, beside a fake rclone. The full script
+    cannot reach it cheaply (the pg_dumpall gate needs a real 1 GB dump), so the section runs as it is written."""
+
+    text = (SCRIPTS / "hapax-backup-remote").read_text(encoding="utf-8")
+    start = text.index('DR_SCRIPT="${_hapax_self%/*}/hapax-cachyos-restore.sh"')
+    end = text.index("\n", text.index('ok "DR script uploaded'))
+    here = tmp_path / "scripts"
+    here.mkdir()
+    if with_dr_script:
+        (here / "hapax-cachyos-restore.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "rclone.log"
+    (bin_dir / "rclone").write_text(
+        f'#!/usr/bin/env bash\necho "$*" >> "{calls}"\nexit {rclone_exit}\n', encoding="utf-8"
+    )
+    (bin_dir / "rclone").chmod(0o755)
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'log() { echo "$1"; }\nok() { echo "OK: $1"; }\n'
+        f'_hapax_self="{here}/hapax-backup-remote"\n' + text[start:end] + "\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(probe)],
+        env=dict(os.environ, PATH=f"{bin_dir}:/usr/bin:/bin"),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result, (calls.read_text(encoding="utf-8") if calls.exists() else ""), here
+
+
+def test_dr_upload_sends_the_in_repo_script_to_its_old_object(tmp_path: Path) -> None:
+    result, calls, here = _run_dr_upload(tmp_path, with_dr_script=True, rclone_exit=0)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls.strip() == f"copy {here}/hapax-cachyos-restore.sh b2:hapax-backups/dr-scripts/"
+    assert "OK: DR script uploaded: hapax-cachyos-restore.sh" in result.stdout
+
+
+def test_dr_upload_fails_loudly_when_the_script_is_missing(tmp_path: Path) -> None:
+    result, calls, _ = _run_dr_upload(tmp_path, with_dr_script=False, rclone_exit=0)
+    assert result.returncode == 1
+    assert "FATAL: DR script missing at" in result.stdout
+    assert calls == ""  # nothing uploaded
+
+
+def test_dr_upload_fails_loudly_when_rclone_fails(tmp_path: Path) -> None:
+    result, _, _ = _run_dr_upload(tmp_path, with_dr_script=True, rclone_exit=1)
+    assert result.returncode == 1
+    assert "FATAL: DR script upload failed" in result.stdout
+
+
+def test_the_forget_scan_covers_the_moved_scripts() -> None:
+    """The never-prune rule for tier1-transcripts is pinned by the tree-wide scan; it must actually see these."""
+
+    from tests import test_transcript_custody as custody
+
+    found = {where.split(":")[0]: args for where, args in custody._forget_invocations()}
+    for script in BACKUP_SCRIPTS:
+        assert f"scripts/{script}" in found, sorted(found)
+        assert custody.tc.forget_protects_transcripts(found[f"scripts/{script}"])
+
+
+def _phase12_dump(tmp_path: Path, present: list[str]) -> subprocess.CompletedProcess:
+    """Run the DR script's own Phase 12 dump search (from its header to the Docker stack start) against a fixture
+    restore tree holding ``present`` (paths relative to RESTORE_DIR), and print the DUMP it chose."""
+
+    text = (SCRIPTS / "hapax-cachyos-restore.sh").read_text(encoding="utf-8")
+    start = text.index("# ─── Phase 12")
+    end = text.index("if [[ -f ~/llm-stack/docker-compose.yml ]]", start)
+    restore = tmp_path / "restore"
+    for rel in present:
+        (restore / rel).mkdir(parents=True)
+        (restore / rel / "postgres-all.sql").write_text("-- dump\n", encoding="utf-8")
+    probe = tmp_path / "phase12.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'log() { echo "$1"; }\nok() { echo "$1"; }\nwarn() { echo "$1"; }\nfail() { echo "$1"; }\n'
+        f'RESTORE_DIR="{restore}"\n' + text[start:end] + 'echo "DUMP=$DUMP"\n',
+        encoding="utf-8",
+    )
+    return subprocess.run(["bash", str(probe)], capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize(
+    "present",
+    [
+        ["store/llm-data/backup-dumps-remote"],  # a B2 snapshot since ca32d43 (2026-09-02)
+        ["store/llm-data/backup-dumps-local"],  # a NAS snapshot since ca32d43
+        ["tmp/hapax-backup-dumps-remote"],  # a snapshot from before 09-02
+        ["tmp/hapax-backup-dumps"],
+    ],
+)
+def test_dr_phase12_finds_the_dumps_where_the_producers_write_them(
+    tmp_path: Path, present: list[str]
+) -> None:
+    result = _phase12_dump(tmp_path, present)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"DUMP={tmp_path / 'restore' / present[0]}\n" in result.stdout
+
+
+def test_dr_phase12_prefers_the_current_dump_location(tmp_path: Path) -> None:
+    result = _phase12_dump(
+        tmp_path, ["tmp/hapax-backup-dumps-remote", "store/llm-data/backup-dumps-remote"]
+    )
+    assert f"DUMP={tmp_path / 'restore' / 'store/llm-data/backup-dumps-remote'}\n" in result.stdout
+
+
+def test_dr_phase12_refuses_loudly_when_no_dump_exists(tmp_path: Path) -> None:
+    """Never a silent skip of PostgreSQL and Qdrant that still reports completion (#4813 review critical)."""
+
+    result = _phase12_dump(tmp_path, [])
+    assert result.returncode != 0
+    assert "DUMP=" not in result.stdout
+    for rel in (
+        "store/llm-data/backup-dumps-remote",
+        "store/llm-data/backup-dumps-local",
+        "tmp/hapax-backup-dumps-remote",
+        "tmp/hapax-backup-dumps",
+    ):
+        assert rel in result.stdout + result.stderr
+
+
+def test_dr_bootstrap_clones_council_not_the_archived_repository() -> None:
+    header = (
+        (SCRIPTS / "hapax-cachyos-restore.sh")
+        .read_text(encoding="utf-8")
+        .split("# YOU NEED TO KNOW")[0]
+    )
+    assert "gh repo clone hapax-systems/hapax-council" in header
+    assert "./hapax-council/scripts/hapax-cachyos-restore.sh" in header
+    assert "gh repo clone ryanklee/distro-work" not in header
+
+
+def test_dr_upload_failure_names_a_next_action(tmp_path: Path) -> None:
+    result, _, _ = _run_dr_upload(tmp_path, with_dr_script=True, rclone_exit=1)
+    assert "rclone lsd b2:hapax-backups" in result.stdout and "rerun" in result.stdout
+
+
+def test_the_dr_script_is_the_live_one_plus_the_two_granted_hunks() -> None:
     digest = hashlib.sha256((SCRIPTS / "hapax-cachyos-restore.sh").read_bytes()).hexdigest()
-    assert digest == LIVE_DR_SCRIPT_SHA256
+    assert digest == DR_SCRIPT_SHA256
 
 
 def test_remote_unit_carries_the_live_memory_policy() -> None:
