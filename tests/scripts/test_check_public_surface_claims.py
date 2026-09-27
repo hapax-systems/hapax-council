@@ -544,12 +544,17 @@ def test_public_surface_claim_gate_passes_scoped_claim(tmp_path: Path) -> None:
     result = _run_gate(doc, token_report, source_reconciliation)
 
     assert result.returncode == 0
-    # R8's register carriage lint runs over every scanned file and is over-inclusive by design, so
-    # a scoped claim fixture may carry a `Hapax.RegisterCarriage` warning. What must not appear is
-    # a claim finding: this asserts the claim gates stay quiet on a scoped claim.
+    # Before R8 was wired into the gate this fixture produced no finding at all, so this test read
+    # `stdout == ""`. R8 now runs over every scanned file and is over-inclusive by design: the
+    # short neutral sentence earns the documented device-3 register warning. The relaxation is
+    # exactly that one rule: the claim gates this test guards stay quiet, and the warning present
+    # is the register carriage one, at device 3 — asserted, not ignored.
     assert [
         line for line in result.stdout.splitlines() if "Hapax.RegisterCarriage" not in line
     ] == []
+    assert "Hapax.RegisterCarriage" in result.stdout
+    assert "Device 3" in result.stdout
+    assert "Hapax.PublicClaimOverreach" not in result.stdout
 
 
 def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> None:
@@ -771,11 +776,16 @@ def test_public_surface_gate_allows_api_only_receipt_disposition(tmp_path: Path)
     result = _run_gate(doc, token_report, source_reconciliation)
 
     assert result.returncode == 0
-    # R8's register carriage lint is over-inclusive by design; the assertion is that no claim
-    # finding (the thing this test guards) is emitted for an api-only receipt disposition.
+    # R8 is over-inclusive by design: "Scoped governed-path copy." earns the documented device-3
+    # register warning. The relaxation is that one rule only — the api-only receipt disposition
+    # this test guards is still clean, at the rule the test names, not at blanket silence.
     assert [
         line for line in result.stdout.splitlines() if "Hapax.RegisterCarriage" not in line
     ] == []
+    assert "Hapax.RegisterCarriage" in result.stdout
+    assert "Device 3" in result.stdout
+    assert "Hapax.PublicSurfaceSourceDisposition" not in result.stdout
+    assert "Hapax.PublicClaimOverreach" not in result.stdout
 
 
 def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path) -> None:
