@@ -59,3 +59,24 @@ The gate consumes the Token Capital claim re-gate receipt, the public-surface
 source-of-truth reconciliation receipt, and the publication freshness snapshot
 from `scripts/publication-freshness-audit.py`. It is not a replacement for
 legal, privacy, entity, citation, or operator override review.
+
+## Built site pages (R8 register carriage)
+
+The registry names the *sources*; a built public-site output is a separate surface (R8's spec
+call-out for the site's `verify-dist`). Built pages are linted by leaf block units, plus a residue
+pass over text outside them, minus boilerplate (see `_REGISTER_HTML_BOILERPLATE`). The parser is
+chosen by file extension (`.html`/`.htm`), never content: a Markdown draft mentioning `<p>` must
+still be read as text, or its paragraphs are skipped silently. The register carriage lint then runs
+beside `Hapax.FormalRegister`; its findings are `warning` level (over-inclusive by design, disposed
+fix / keep-with-reason / carry), so add `--warnings-fail` to make them block. Canonical invocation:
+
+```bash
+uv run python scripts/check-public-surface-claims.py --warnings-fail \
+  --built-site-dir "$HOME/projects/hrl-portal/dist"
+```
+
+`--built-site-dir` is repeatable; `HAPAX_PUBLIC_SITE_DIST` (pathsep-separated) is the host default.
+Every named path must be an existing **directory**, else the gate exits 2 naming the path and the
+variable; leave it unset on a host without the site checkout. Recheck: `uv run --no-project --with
+pytest==9.0.2 --with pyyaml --with pydantic pytest tests/shared/test_register_carriage.py
+tests/scripts/test_check_public_surface_claims.py`.

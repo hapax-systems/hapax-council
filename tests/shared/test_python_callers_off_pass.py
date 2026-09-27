@@ -52,7 +52,7 @@ CALLERS = (
     "agents/audio_processor.py",
     "agents/langfuse_sync.py",
     "agents/studio_compositor/structural_director.py",
-    "agents/_google_auth.py",
+    # agents/_google_auth.py was retired by #4625; its callers use shared/google_auth.py.
     "shared/google_auth.py",
     "scripts/mint-google-token.py",
     "agents/health_monitor/checks/credentials.py",

@@ -7,6 +7,10 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
 
 from shared.github_public_surface import GitHubPublicSurfaceReport
 from shared.publication_freshness import (
@@ -544,7 +548,15 @@ def test_public_surface_claim_gate_passes_scoped_claim(tmp_path: Path) -> None:
     result = _run_gate(doc, token_report, source_reconciliation)
 
     assert result.returncode == 0
-    assert result.stdout == ""
+    # Before R8 was wired into the gate this fixture produced no finding at all, so this test read
+    # `stdout == ""`. R8 now runs over every scanned file and is over-inclusive by design: the
+    # short neutral sentence earns exactly one documented device-3 register warning. An ALLOWLIST,
+    # not a denylist: the complete output is the one expected line, so any other finding fails.
+    assert result.stdout.splitlines() == [
+        f"{doc}:1: warning: Hapax.RegisterCarriage: Device 3 (aphorisms, maxims, slogans, "
+        "taglines and closing flourishes): 'Missing test evidence blocks the governed push "
+        "path.'. Rewrite as a plain statement that carries the same content."
+    ]
 
 
 def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> None:
@@ -557,6 +569,203 @@ def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> No
 
     assert result.returncode == 1
     assert "Hapax.PublicClaimOverreach" in result.stdout
+
+
+def test_public_surface_gate_runs_the_register_carriage_lint(tmp_path: Path) -> None:
+    """R8 is wired into the gate itself, not only ``lint_file``: the real gate over a
+    register-positive document must publish ``Hapax.RegisterCarriage`` findings."""
+    doc = tmp_path / "register.md"
+    doc.write_text("A proposition. A deadline. A result to answer to.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    rules = {finding["rule"] for finding in json.loads(result.stdout)}
+    assert "Hapax.RegisterCarriage" in rules, rules
+
+
+def test_public_surface_gate_register_carriage_escalates_under_warnings_fail(
+    tmp_path: Path,
+) -> None:
+    doc = tmp_path / "register-warn.md"
+    doc.write_text("A proposition. A deadline. A result to answer to.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--warnings-fail")
+
+    assert result.returncode == 1
+    assert "Hapax.RegisterCarriage" in result.stdout
+
+
+def test_public_surface_gate_scans_built_site_pages_by_block_units(tmp_path: Path) -> None:
+    """codex: built site pages must be scanned, not only the registry's sources.
+
+    `--built-site-dir` names a built output; the page is linted by block units, and nav anchors are
+    not merged into the paragraph's unit.
+    """
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    page = dist / "register.html"
+    page.write_text(
+        "<html><body><nav><a href='/'>Research</a><a href='/r'>Register</a></nav>"
+        "<p>One front door. Many working parts.</p></body></html>",
+        encoding="utf-8",
+    )
+    # The positional document has an unscanned suffix, so the register finding can only come from
+    # the built directory — an assertion on a scanned positional file would not pin the wiring.
+    doc = tmp_path / "quiet.txt"
+    doc.write_text("One front door. Many working parts.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(
+        doc, token_report, source_reconciliation, "--built-site-dir", str(dist), "--json"
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    findings = json.loads(result.stdout)
+    register = [f for f in findings if f["rule"] == "Hapax.RegisterCarriage"]
+    assert register, findings
+    assert all(f["file"] == str(page) for f in register), register
+    assert any("One front door" in f["message"] for f in register), register
+    assert not any("Research" in f["message"] and "front door" in f["message"] for f in register), (
+        register
+    )
+
+
+def test_public_surface_gate_scans_the_built_site_env_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host with the built output present scans it without a flag (``HAPAX_PUBLIC_SITE_DIST``)."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "page.html").write_text(
+        "<p>One front door. Many working parts.</p>\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HAPAX_PUBLIC_SITE_DIST", str(dist))
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(
+        "One front door" in f["message"]
+        for f in json.loads(result.stdout)
+        if f["rule"] == "Hapax.RegisterCarriage"
+    )
+
+
+def test_public_surface_gate_scans_built_htm_pages(tmp_path: Path) -> None:
+    """codex: `SCANNABLE_SUFFIXES` lacked `.htm`, so built `.htm` pages were never collected."""
+    page = tmp_path / "page.htm"
+    page.write_text("<p>One front door. Many working parts.</p>\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(page, token_report, source_reconciliation, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(
+        finding["rule"] == "Hapax.RegisterCarriage" for finding in json.loads(result.stdout)
+    ), json.loads(result.stdout)
+
+
+def test_an_explicit_missing_built_site_dir_fails_loudly(tmp_path: Path) -> None:
+    """claude: a missing named built output must exit non-zero, never pass by scanning nothing."""
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    absent = tmp_path / "dist-absent"
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--built-site-dir", str(absent))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(absent) in combined
+    assert "Next action" in combined
+    assert "drop --built-site-dir" in combined
+
+
+def test_a_wrong_built_site_env_default_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A set-but-wrong env default is a misconfiguration: it must fail loudly, naming the variable."""
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    absent = tmp_path / "dist-absent"
+    monkeypatch.setenv("HAPAX_PUBLIC_SITE_DIST", str(absent))
+
+    result = _run_gate(doc, token_report, source_reconciliation)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(absent) in combined
+    assert "HAPAX_PUBLIC_SITE_DIST" in combined
+
+
+def test_a_mixed_built_site_env_default_fails_on_the_missing_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codex: one missing directory in a multi-path default was silently skipped."""
+    present = tmp_path / "dist-present"
+    present.mkdir()
+    (present / "page.html").write_text(
+        "<p>One front door. Many working parts.</p>\n", encoding="utf-8"
+    )
+    absent = tmp_path / "dist-absent"
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    monkeypatch.setenv("HAPAX_PUBLIC_SITE_DIST", os.pathsep.join([str(present), str(absent)]))
+
+    result = _run_gate(doc, token_report, source_reconciliation)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(absent) in combined
+    assert "HAPAX_PUBLIC_SITE_DIST" in combined
+
+
+def test_a_built_site_dir_that_is_not_a_directory_refuses(tmp_path: Path) -> None:
+    """codex: a non-directory --built-site-dir scanned a file, not the built output."""
+    page = tmp_path / "page.html"
+    page.write_text("<p>One front door. Many working parts.</p>\n", encoding="utf-8")
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--built-site-dir", str(page))
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(page) in combined
+    assert "not a directory" in combined
+    assert "Next action" in combined
+
+
+def test_a_missing_positional_path_fails_loudly(tmp_path: Path) -> None:
+    """The else-branch remedy: a missing positional path says to pass an existing path."""
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    absent = tmp_path / "absent.md"
+
+    result = _run_gate(absent, token_report, source_reconciliation)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(absent) in combined
+    assert "pass an existing path" in combined
 
 
 def test_public_surface_gate_offline_mode_cannot_authorize_release(
@@ -732,7 +941,20 @@ def test_public_surface_gate_allows_api_only_receipt_disposition(tmp_path: Path)
     result = _run_gate(doc, token_report, source_reconciliation)
 
     assert result.returncode == 0
-    assert result.stdout == ""
+    # R8 is over-inclusive by design: "Scoped governed-path copy." earns the documented device-3
+    # and device-6 register warnings, and nothing else. An ALLOWLIST, not a denylist: the complete
+    # output is these two lines, so the api-only receipt disposition is clean and any other
+    # finding fails this test.
+    expected = [
+        "Device 3 (aphorisms, maxims, slogans, taglines and closing flourishes)",
+        "Device 6 (dramatic one-line paragraphs, and series of short declaratives or imperatives "
+        "for emphasis)",
+    ]
+    assert result.stdout.splitlines() == [
+        f"{doc}:1: warning: Hapax.RegisterCarriage: {device}: 'Scoped governed-path copy.'. "
+        f"Rewrite as a plain statement that carries the same content."
+        for device in expected
+    ]
 
 
 def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path) -> None:

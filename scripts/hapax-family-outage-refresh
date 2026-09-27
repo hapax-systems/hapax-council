@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Keep family-outage witnesses fresh (TTL 2h) while each family's `until` is in the future. cx-blue 2026-09-16.
+# Tracked here since 2026-09-25 (ENCOUNTERED-MACHINERY M150): the hand-installed copy had no argument
+# parsing, so `--help` ran the refresh. The refresh itself is unchanged.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: hapax-family-outage-refresh [-h|--help]
+
+With no arguments, restamp observed_at on every entry of
+~/.cache/hapax/review-team/family-outage.json whose `until` is still in the future, then list
+the entries. Entries without `until`, or whose `until` has passed, are left untouched. A missing
+state file is a no-op. Run by hapax-family-outage-refresh.timer.
+EOF
+}
+
+if [[ $# -gt 0 ]]; then
+    if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+        usage
+        exit 0
+    fi
+    usage >&2
+    exit 2
+fi
+
+FO="$HOME/.cache/hapax/review-team/family-outage.json"; [ -f "$FO" ] || exit 0
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ); nowe=$(date -u +%s)
+jq --arg now "$now" --argjson nowe "$nowe" 'with_entries(if (.value.until // "") != "" and ((.value.until | fromdate?) // 0) > $nowe then .value.observed_at = $now else . end)' "$FO" > "$FO.tmp" && mv "$FO.tmp" "$FO"
+jq -r 'to_entries[] | "\(.key) observed_at=\(.value.observed_at) until=\(.value.until // "-")"' "$FO"

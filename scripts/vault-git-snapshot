@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# vault-git-snapshot — commit the vault on podium, mirror history to an appendix bare repo.
+#
+# Git runs on podium over ssh. The vault is nfs4 with local_lock=none, so a
+# client-side git lock is a regular file both hosts see. Appendix pulls; podium
+# does not push.
+#
+# A 0-byte index.lock is left when a git in this repo is killed before it
+# writes the index (the security-guidance hook's `git stash create` is the
+# writer observed on 2026-09-25). This script reaps that lock only when it is
+# at least as old as the timer interval and no live git on either host is in
+# this repo or holds the lock file. The reap renames the lock into evidence.
+# It does not delete it. A younger lock, a local holder, a remote holder, or
+# an unreachable remote all skip the reap. The commit then fails closed, and
+# the unit's OnFailure= sends that failure to incident intake.
+#
+# The interval matches systemd/units/vault-git-snapshot.timer
+# (OnCalendar=*:0/20). Change both together.
+
+set -euo pipefail
+
+REMOTE_HOST="${VAULT_SNAPSHOT_HOST:-hapax-podium.local}"
+REMOTE_PATH="${VAULT_SNAPSHOT_PATH:-Documents/Personal}"
+LOCAL_REPO="${VAULT_SNAPSHOT_LOCAL_REPO:-$HOME/Documents/Personal}"
+REMOTE_REPO="${VAULT_SNAPSHOT_REMOTE_REPO:-$HOME/Documents/Personal}"
+BARE="${VAULT_SNAPSHOT_BARE:-$HOME/backups/vault.git}"
+BRANCH="${VAULT_SNAPSHOT_BRANCH:-master}"
+INTERVAL_SEC="${VAULT_SNAPSHOT_INTERVAL_SEC:-1200}"
+EVIDENCE_DIR="${VAULT_SNAPSHOT_LOCK_EVIDENCE:-$HOME/hapax-state/evidence/vault-git-snapshot-index-lock}"
+
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+
+# One scanner for both hosts. comm is matched exactly so a name that merely
+# contains "git" does not count. read -d '' returns 1 at EOF.
+read -r -d '' VAULT_SNAPSHOT_HOLDER_PY <<'PY' || true
+import os
+import sys
+
+repo = os.path.realpath(sys.argv[1])
+lock_arg = sys.argv[2]
+lock = os.path.realpath(lock_arg) if os.path.lexists(lock_arg) else lock_arg
+count = 0
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    base = f"/proc/{name}"
+    try:
+        comm = open(f"{base}/comm", encoding="utf-8", errors="replace").read().strip()
+    except OSError:
+        continue
+    if comm != "git" and not comm.startswith("git-"):
+        continue
+    held = False
+    try:
+        cwd = os.path.realpath(os.readlink(f"{base}/cwd"))
+    except OSError:
+        cwd = ""
+    if cwd == repo or cwd.startswith(repo + os.sep):
+        held = True
+    if not held:
+        fd_dir = f"{base}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            fds = []
+        for fd in fds:
+            try:
+                target = os.readlink(f"{fd_dir}/{fd}")
+            except OSError:
+                continue
+            owner = os.path.realpath(os.path.dirname(target))
+            if target == lock or (
+                os.path.basename(target) == "index.lock"
+                and os.path.basename(owner) == ".git"
+                and os.path.dirname(owner) == repo
+            ):
+                held = True
+                break
+    if held:
+        count += 1
+print(count)
+PY
+
+# Print the number of live git processes in this repo, or holding its index.lock.
+vault_snapshot_count_git_holders() {
+  local repo="$1" lock="$2"
+  python3 - "$repo" "$lock" <<<"$VAULT_SNAPSHOT_HOLDER_PY"
+}
+
+# rc is the probe's exit status. count is its stdout when rc is 0.
+# unreachable and hold both mean do not reap.
+vault_snapshot_classify_remote() {
+  local rc="$1" count="$2"
+  if [[ "$rc" != "0" ]]; then
+    printf 'unreachable\n'
+    return 0
+  fi
+  if [[ "$count" != "0" ]]; then
+    printf 'hold\n'
+    return 0
+  fi
+  printf 'clear\n'
+}
+
+# Prints "reap" or "keep <reason>". Holders are checked before age so a live
+# git is never described as merely young.
+vault_snapshot_reap_decision() {
+  local age="$1" interval="$2" local_count="$3" remote_state="$4"
+  if [[ "$local_count" != "0" ]]; then
+    printf 'keep local-holder\n'
+    return 0
+  fi
+  if [[ "$remote_state" != "clear" ]]; then
+    printf 'keep remote-%s\n' "$remote_state"
+    return 0
+  fi
+  if (( age < interval )); then
+    printf 'keep young\n'
+    return 0
+  fi
+  printf 'reap\n'
+}
+
+# Rename lock into evidence when decision is reap. Any other decision leaves
+# the lock where it is. mv -n refuses to overwrite an evidence file.
+vault_snapshot_apply_reap() {
+  local lock="$1" evidence="$2" decision="$3" dest="${4:-}"
+  if [[ "$decision" != "reap" ]]; then
+    return 0
+  fi
+  if [[ -z "$dest" ]]; then
+    dest="$evidence/index.lock-$(date -u +%Y%m%dT%H%M%S%NZ)"
+  fi
+  mkdir -p -- "$(dirname -- "$dest")"
+  if [[ -e "$dest" ]]; then
+    printf 'evidence destination already exists: %s\nNext action: leave that evidence file in place and rerun; the next stamp is a new name. Do not overwrite it.\n' "$dest" >&2
+    return 1
+  fi
+  mv -n -- "$lock" "$dest" || true
+  if [[ -e "$lock" || ! -f "$dest" ]]; then
+    printf 'lock rename failed: %s\nNext action: leave the lock in place, confirm no git process holds it, and rerun the snapshot. Do not delete the lock.\n' "$lock" >&2
+    return 1
+  fi
+  printf '%s\n' "$dest"
+}
+
+vault_snapshot_remote_git_count() {
+  local repo="$1" lock="$2" host="$3"
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" \
+    "python3 - $(printf '%q' "$repo") $(printf '%q' "$lock")" <<<"$VAULT_SNAPSHOT_HOLDER_PY"
+}
+
+main() {
+  local lock="$LOCAL_REPO/.git/index.lock"
+  if [[ -e "$lock" ]]; then
+    local now age local_count remote_rc remote_count remote_state decision
+    now="$(date +%s)"
+    age=$(( now - $(stat -c %Y "$lock") ))
+    local_count="$(vault_snapshot_count_git_holders "$LOCAL_REPO" "$lock")"
+    remote_rc=0
+    remote_count="$(vault_snapshot_remote_git_count "$REMOTE_REPO" "$lock" "$REMOTE_HOST")" || remote_rc=$?
+    remote_state="$(vault_snapshot_classify_remote "$remote_rc" "${remote_count:-}")"
+    decision="$(vault_snapshot_reap_decision "$age" "$INTERVAL_SEC" "$local_count" "$remote_state")"
+    log "index.lock age=${age}s local_git=${local_count} remote=${remote_state} decision=${decision}"
+    if [[ "$decision" == "reap" ]]; then
+      local moved
+      moved="$(vault_snapshot_apply_reap "$lock" "$EVIDENCE_DIR" "$decision")"
+      log "reaped index.lock -> ${moved}"
+    else
+      log "kept index.lock (${decision}). Next action: leave the lock in place until it is older than ${INTERVAL_SEC}s and no git on either host holds it, then rerun the unit. The snapshot is refused so the failure page fires."
+      exit 1
+    fi
+  fi
+
+  if [[ ! -d "$BARE" ]]; then
+    log "FATAL: bare mirror missing at $BARE. Next action: create that bare repo, or set VAULT_SNAPSHOT_BARE, then rerun the unit."
+    exit 1
+  fi
+
+  log "snapshotting vault on ${REMOTE_HOST}:${REMOTE_PATH}"
+  local dirty
+  dirty=$(ssh -o BatchMode=yes -o ConnectTimeout=15 "$REMOTE_HOST" \
+    "cd ${REMOTE_PATH} && git status --porcelain | wc -l")
+  log "dirty paths: ${dirty}"
+
+  if [[ "${dirty}" -gt 0 ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=15 "$REMOTE_HOST" \
+      "cd ${REMOTE_PATH} && git add -A && git commit -q -m \"vault autosnapshot $(date -u +%Y-%m-%dT%H:%MZ)\""
+    log "committed ${dirty} paths"
+  else
+    log "clean — nothing to commit"
+  fi
+
+  local before after
+  before=$(git -C "$BARE" rev-parse --verify -q "$BRANCH" 2>/dev/null || echo none)
+  git -C "$BARE" fetch --quiet "${REMOTE_HOST}:${REMOTE_PATH}" "${BRANCH}:${BRANCH}"
+  after=$(git -C "$BARE" rev-parse --verify -q "$BRANCH")
+
+  if [[ "$before" == "$after" ]]; then
+    log "mirror unchanged at ${after:0:12}"
+  else
+    log "mirror advanced ${before:0:12} -> ${after:0:12}"
+  fi
+
+  git -C "$BARE" cat-file -e "${after}^{commit}"
+  log "mirror verified: ${BRANCH} = ${after:0:12}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

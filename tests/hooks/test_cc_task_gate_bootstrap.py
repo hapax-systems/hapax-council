@@ -7,6 +7,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
@@ -83,7 +85,14 @@ tags:
 """
 
 
-def _task_note(task_id: str, parent_request: Path) -> str:
+# Mint-time rule (M66/M67): parent refs are vault-relative note paths, so the
+# valid fixture uses that form rather than a host-absolute one.
+VAULT_REL_PARENT = (
+    "20-projects/hapax-requests/active/REQ-20260517150000-perspective-merge-remediation.md"
+)
+
+
+def _task_note(task_id: str, parent: str = VAULT_REL_PARENT) -> str:
     return f"""---
 type: cc-task
 task_id: {task_id}
@@ -108,8 +117,8 @@ created_at: 2026-05-17T15:00:00Z
 updated_at: 2026-05-17T15:00:00Z
 claimed_at: null
 completed_at: null
-parent_request: {parent_request}
-parent_spec: {parent_request}
+parent_request: {parent}
+parent_spec: {parent}
 authority_case: CASE-SDLC-REFORM-001
 mutation_scope_refs:
   - /home/hapax/projects/hapax-council
@@ -150,11 +159,9 @@ def test_no_claim_allows_valid_new_request_note_and_audits(tmp_path: Path) -> No
 
 
 def test_no_claim_allows_valid_new_offered_task_note_and_audits(tmp_path: Path) -> None:
+    """The valid mint: vault-relative parent refs land and are audited."""
     task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
-    request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
     task_root.mkdir(parents=True)
-    request_root.mkdir(parents=True)
-    parent_request = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
     task_path = task_root / "perspective-pr-merge-to-main.md"
 
     result = _run_hook(
@@ -163,7 +170,7 @@ def test_no_claim_allows_valid_new_offered_task_note_and_audits(tmp_path: Path) 
             "tool_name": "Write",
             "tool_input": {
                 "file_path": str(task_path),
-                "content": _task_note("perspective-pr-merge-to-main", parent_request),
+                "content": _task_note("perspective-pr-merge-to-main"),
             },
         },
     )
@@ -188,13 +195,10 @@ def test_nested_task_id_does_not_shadow_top_level(tmp_path: Path) -> None:
     vault: three active notes were failing this way.
     """
     task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
-    request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
     task_root.mkdir(parents=True)
-    request_root.mkdir(parents=True)
-    parent_request = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
     task_path = task_root / "perspective-pr-merge-to-main.md"
 
-    note = _task_note("perspective-pr-merge-to-main", parent_request)
+    note = _task_note("perspective-pr-merge-to-main")
     shadowed = note.replace(
         "tags:\n  - cc-task",
         "supersedes:\n  task_id: some-other-task-entirely\n  status: withdrawn\ntags:\n  - cc-task",
@@ -233,6 +237,146 @@ def test_no_claim_blocks_invalid_task_bootstrap(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "invalid unclaimed governance bootstrap" in result.stderr
     assert "status" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "floor", ["standard", "verification_receipt", "production", "Deterministic_OK"]
+)
+def test_no_claim_blocks_task_bootstrap_with_an_illegal_quality_floor(
+    tmp_path: Path, floor: str
+) -> None:
+    """M110: a row minted with a floor outside QualityFloor silently blocks every dependent's
+    claim at cc-claim, and a later close does not cure it. Refuse it at birth."""
+    request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    request_root.mkdir(parents=True)
+    request_path = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
+    request_path.write_text(_request_note("REQ-20260517150000"), encoding="utf-8")
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / "perspective-pr-merge-to-main.md"
+    content = _task_note("perspective-pr-merge-to-main").replace(
+        "quality_floor: deterministic_ok\n", f"quality_floor: {floor}\n"
+    )
+    assert f"quality_floor: {floor}\n" in content
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": content}},
+    )
+
+    assert result.returncode == 2
+    assert "quality_floor" in result.stderr
+    assert "frontier_review_required" in result.stderr
+
+
+def test_bootstrap_legal_quality_floors_match_the_route_metadata_contract() -> None:
+    """The hook stays dependency-light (no shared import), so pin its copy to the source."""
+    import importlib.util
+
+    from shared.route_metadata_schema import QualityFloor
+
+    hook = Path(__file__).resolve().parents[2] / "hooks" / "scripts" / "cc-task-gate-bootstrap.py"
+    spec = importlib.util.spec_from_file_location("cc_task_gate_bootstrap", hook)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    contract = frozenset(member.value for member in QualityFloor)
+    assert contract == module.LEGAL_QUALITY_FLOORS
+
+
+@pytest.mark.parametrize("field", ["parent_request", "parent_spec"])
+def test_no_claim_blocks_prose_parent_ref(tmp_path: Path, field: str) -> None:
+    """M66: narrative prose in a parent ref is refused at mint time.
+
+    The 20260914 malformed mint carried a reviewer-round summary paragraph in
+    `parent_request`; a consumer Path.stat()s the field as a filename and raised
+    OSError 36 (File name too long) every ~2 min. Prose belongs in the note
+    body; these fields carry vault-relative paths.
+    """
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / f"prose-{field}-mint.md"
+    prose = (
+        '"glm-1 and claude-1 reported independently in round 16 of PR 4668: '
+        "capability_shape never reaches route_envelope, and scaffold_revision records "
+        'the claiming worktree HEAD. Both need writers on shared/sdlc_claim.py."'
+    )
+    content = _task_note(f"prose-{field}-mint").replace(
+        f"{field}: {VAULT_REL_PARENT}", f"{field}: {prose}"
+    )
+    assert f"{field}: {prose}" in content
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": content}},
+    )
+
+    assert result.returncode == 2
+    assert field in result.stderr
+    assert "vault-relative" in result.stderr
+    assert "Next action" in result.stderr
+    assert not task_path.exists()
+
+
+@pytest.mark.parametrize("field", ["parent_request", "parent_spec"])
+def test_no_claim_blocks_absolute_parent_ref(tmp_path: Path, field: str) -> None:
+    """An absolute path is not a vault-relative path: refused with the same next action."""
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / f"absolute-{field}-mint.md"
+    content = _task_note(f"absolute-{field}-mint").replace(
+        f"{field}: {VAULT_REL_PARENT}",
+        f"{field}: {tmp_path}/Documents/Personal/{VAULT_REL_PARENT}",
+    )
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": content}},
+    )
+
+    assert result.returncode == 2
+    assert field in result.stderr
+    assert "vault-relative" in result.stderr
+    assert not task_path.exists()
+
+
+def test_no_claim_blocks_unterminated_frontmatter_fence(tmp_path: Path) -> None:
+    """M67: frontmatter running to EOF with no closing fence is refused at mint time."""
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / "unterminated-fence-mint.md"
+    unfenced = _task_note("unterminated-fence-mint").split("\n---\n", 1)[0] + "\n"
+    assert "\n---\n" not in unfenced[4:]
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": unfenced}},
+    )
+
+    assert result.returncode == 2
+    assert "must close" in result.stderr
+    assert "Next action" in result.stderr
+    assert not task_path.exists()
+
+
+def test_no_claim_blocks_yaml_unparseable_frontmatter(tmp_path: Path) -> None:
+    """The fence must enclose YAML that actually parses, not just line-scan clean."""
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / "unparseable-yaml-mint.md"
+    content = _task_note("unparseable-yaml-mint").replace(
+        'title: "Perspective PR merge to main"', 'title: "unterminated quote'
+    )
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": content}},
+    )
+
+    assert result.returncode == 2
+    assert "must parse as YAML" in result.stderr
+    assert not task_path.exists()
 
 
 def test_no_claim_blocks_existing_governance_note_edit(tmp_path: Path) -> None:

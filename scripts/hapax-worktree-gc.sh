@@ -16,6 +16,11 @@ Options:
   --base-ref REF              Merge target ref (default: origin/main)
   --clean-age-seconds N       Auto-remove threshold (default: 172800 = 48h)
   --alert-age-seconds N       Unmerged alert threshold (default: 604800 = 7d)
+  --release-keep N            Source-activation releases kept regardless of age, newest
+                              first, not counting the active/candidate release (default: 5)
+  --releases-only             Run ONLY the release pass: no orphan-spawn reaper, no registry
+                              pre-pass, no merged-worktree sweep, no unmerged alerts
+                              (also: HAPAX_WORKTREE_GC_RELEASES_ONLY=1)
   --now EPOCH                 Override current epoch seconds, for tests
   --ntfy-url URL              Full ntfy topic URL for alerts
   --no-fetch                  Do not refresh origin/main before checking merges
@@ -93,6 +98,8 @@ repo="${HAPAX_WORKTREE_GC_REPO:-$HOME/projects/hapax-council}"
 base_ref="${HAPAX_WORKTREE_GC_BASE_REF:-origin/main}"
 clean_age_seconds="${HAPAX_WORKTREE_GC_CLEAN_AGE_SECONDS:-172800}"
 alert_age_seconds="${HAPAX_WORKTREE_GC_ALERT_AGE_SECONDS:-604800}"
+release_keep="${HAPAX_WORKTREE_GC_RELEASE_KEEP:-5}"
+releases_only="${HAPAX_WORKTREE_GC_RELEASES_ONLY:-0}"
 now="${HAPAX_WORKTREE_GC_NOW:-}"
 dry_run=0
 fetch_first=1
@@ -123,6 +130,11 @@ while (($#)); do
             alert_age_seconds="$2"
             shift 2
             ;;
+        --release-keep)
+            (($# >= 2)) || die "--release-keep requires a value"
+            release_keep="$2"
+            shift 2
+            ;;
         --now)
             (($# >= 2)) || die "--now requires epoch seconds"
             now="$2"
@@ -135,6 +147,10 @@ while (($#)); do
             ;;
         --no-fetch)
             fetch_first=0
+            shift
+            ;;
+        --releases-only)
+            releases_only=1
             shift
             ;;
         --dry-run)
@@ -153,6 +169,17 @@ done
 
 is_uint "$clean_age_seconds" || die "--clean-age-seconds must be an integer"
 is_uint "$alert_age_seconds" || die "--alert-age-seconds must be an integer"
+is_uint "$release_keep" || die "--release-keep must be an integer"
+[[ "$releases_only" == "0" || "$releases_only" == "1" ]] || \
+    die "HAPAX_WORKTREE_GC_RELEASES_ONLY must be 0 or 1"
+if ((releases_only)); then
+    # Release-only activation (2026-09-25): the orphan reaper, the registry pre-pass and the
+    # merged-worktree sweep act on every lane worktree; a dry run on appendix showed the registry
+    # reap alone would remove 110 worktrees, one of them the ExecStart tree of an enabled unit.
+    # They stay off until reviewed; the release pass (age + count cap + lock/live/unit/dirty
+    # guards) runs alone.
+    printf 'hapax-worktree-gc: releases-only mode (orphan reaper, registry pre-pass and merged-worktree sweep skipped)\n'
+fi
 if [[ -z "$now" ]]; then
     now="$(date +%s)"
 fi
@@ -177,7 +204,7 @@ fi
 # (root cause of the 2026-06-27 pileup: removable=7 removed=0 live_refused=7).
 # Best-effort and self-limiting (live tmux panes are protected); never blocks GC.
 orphan_reaper="$(dirname "$(readlink -f "$0")")/hapax-orphan-spawn-reaper.py"
-if [[ "${HAPAX_WORKTREE_GC_REAP_ORPHANS:-1}" == "1" && -x "$orphan_reaper" ]]; then
+if ((! releases_only)) && [[ "${HAPAX_WORKTREE_GC_REAP_ORPHANS:-1}" == "1" && -x "$orphan_reaper" ]]; then
     if ((dry_run)); then
         "$orphan_reaper" --dry-run || true
     else
@@ -202,7 +229,7 @@ registry_cli="$(dirname "$(readlink -f "$0")")/hapax-worktree-register"
 declare -A registry_protected_set=()
 registry_mode="off"
 registry_prepass_failed=0
-if [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$registry_cli" ]]; then
+if ((! releases_only)) && [[ "${HAPAX_WORKTREE_GC_REGISTRY:-1}" == "1" && -f "$registry_cli" ]]; then
     idle_h="${HAPAX_WORKTREE_GC_REGISTRY_IDLE_HOURS:-48}"
     registry_mode="failed"  # assume failure until backfill AND protected-paths both succeed
     if HAPAX_WORKTREE_GC_REPO="$repo" python3 "$registry_cli" backfill >/dev/null 2>&1; then
@@ -261,6 +288,7 @@ removed=0
 old_unmerged=0
 skipped=0
 live_refused=0
+release_refused=0
 alert_lines=()
 
 # Surface a fail-closed registry pre-pass (set above, before counters exist) through the normal alert
@@ -272,9 +300,13 @@ fi
 # Live-PID guard. The release-GC ghost (audit 2026-06-11, F1/F1R): a release
 # dir was deleted while logos-api still executed from it, leaving the process
 # serving 500s from a gutted tree for ~2.5 days. Never remove a worktree that
-# any live process maps via /proc/<pid>/cwd or /proc/<pid>/exe. Same-user
-# processes only (readlink on other users' proc entries fails silently), which
-# covers the systemd --user estate that binds these dirs.
+# any live process references via /proc/<pid>/cwd, /proc/<pid>/exe, or a file
+# mapping in /proc/<pid>/maps. maps is required, not optional: a daemon run
+# from a release .venv has exe = the uv-managed interpreter (the venv's python
+# is a symlink outside the release) and may have cwd elsewhere, so only its
+# mapped .so files name the release (2026-09-25 appendix reap: release d689ba7c
+# was live by maps alone). Same-user processes only (other users' proc entries
+# fail silently), which covers the systemd --user estate that binds these dirs.
 #
 # Prints space-separated "pid(kind)" descriptors for live processes whose
 # cwd/exe resolve to (or under) the given real path. Empty output = no refs.
@@ -305,6 +337,18 @@ for pid in pids:
         target = target.removesuffix(" (deleted)")
         if target == want or target.startswith(want + "/"):
             refs.append(f"{pid}({kind})")
+    try:
+        with open(os.path.join(root, pid, "maps"), encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                fields = line.rstrip("\n").split(None, 5)
+                if len(fields) < 6:
+                    continue
+                mapped = fields[5].removesuffix(" (deleted)")
+                if mapped.startswith(want + "/"):
+                    refs.append(f"{pid}(maps)")
+                    break
+    except OSError:
+        pass
 print(" ".join(refs), end="")
 PY
 )"
@@ -342,6 +386,91 @@ for k in ("active_source_path", "active_source_head", "candidate_source_path"):
 ' "$sacur" 2>/dev/null)
     break
 done
+
+# Unit-reference guard for releases: a unit, drop-in or timer that names a release
+# path (ExecStart=, WorkingDirectory=, Environment=...) would break on its next start
+# if the release were removed, even with no process alive right now. Prints the
+# referencing files space-separated; empty output = no references. Unreadable or
+# absent dirs are skipped (grep -s).
+unit_refs_for_path() {
+    local want="$1" dirs d out=""
+    dirs="${HAPAX_WORKTREE_GC_UNIT_DIRS-$HOME/.config/systemd/user:/etc/systemd}"
+    local IFS=':'
+    for d in $dirs; do
+        [[ -n "$d" && -d "$d" ]] || continue
+        out+="$(grep -rlsF -- "$want" "$d" 2>/dev/null | tr '\n' ' ')"
+    done
+    printf '%s' "${out% }"
+}
+
+# release_tree_state <release-path>
+# Classifies a release worktree before removal. Line 1 is the verdict:
+#   clean      nothing modified or untracked (ignored files such as .venv are fine)
+#   mode-only  only tracked files whose MODE changed, with identical content: the stray
+#              `chmod +x` class (2026-09-25: 6 of 33 reaped releases carried exactly
+#              `mode change 100644 => 100755 scripts/hapax-determine`); the paths follow,
+#              one per line, relative to the release root
+#   dirty      anything else (content edit, untracked file, staged change, unreadable
+#              status); line 2 names the first offending entry
+# Fails CLOSED: any git error classifies as dirty, so the release is kept.
+release_tree_state() {
+    python3 - "$1" <<'PY'
+import subprocess
+import sys
+
+path = sys.argv[1]
+
+
+def git(*args: str) -> bytes:
+    return subprocess.run(
+        ["git", "--no-optional-locks", "-C", path, *args], capture_output=True, check=True
+    ).stdout
+
+
+try:
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if not status:
+        print("clean")
+        sys.exit(0)
+    paths = []
+    for entry in (e for e in status.split(b"\0") if e):
+        xy, name = entry[:2], entry[3:]
+        if xy != b" M" or b"\n" in name:
+            print("dirty")
+            print(f"status {xy.decode(errors='replace')!r} {name.decode(errors='replace')}")
+            sys.exit(0)
+        paths.append(name)
+    numstat = {}
+    for rec in (r for r in git("diff", "--numstat", "-z").split(b"\0") if r):
+        added, deleted, name = rec.split(b"\t", 2)
+        numstat[name] = (added, deleted)
+    raw_fields = git("diff", "--raw", "-z", "--no-abbrev").split(b"\0")
+    modes = {}
+    for meta, name in zip(raw_fields[0::2], raw_fields[1::2], strict=False):
+        if meta.startswith(b":"):
+            src_mode, dst_mode = meta[1:].split(b" ")[:2]
+            modes[name] = (src_mode, dst_mode)
+    for name in paths:
+        src_dst = modes.get(name)
+        regular = (b"100644", b"100755")
+        if (
+            numstat.get(name) != (b"0", b"0")
+            or src_dst is None
+            or src_dst[0] == src_dst[1]
+            or src_dst[0] not in regular
+            or src_dst[1] not in regular
+        ):
+            print("dirty")
+            print(f"content-or-type-change {name.decode(errors='replace')}")
+            sys.exit(0)
+    print("mode-only")
+    for name in paths:
+        print(name.decode())
+except Exception as exc:  # noqa: BLE001 - fail closed on any classification error
+    print("dirty")
+    print(f"classification-failed {type(exc).__name__}: {exc}")
+PY
+}
 
 # branch_remote_deleted <repo> <bare-branch-name>
 # True (0) iff a LOCAL branch was SQUASH/REBASE-merged on GitHub, detected GIT-ONLY
@@ -439,14 +568,17 @@ process_worktree() {
 
     if [[ -z "$branch" ]]; then
         # Reap stale source-activation release worktrees (detached snapshots of
-        # main) once older than the clean threshold, except the active/candidate
-        # release. Root-cause fix for unbounded release accumulation.
+        # main) once older than the clean threshold OR ranked beyond the release
+        # count cap, except the active/candidate release. Root-cause fix for
+        # unbounded release accumulation.
         if [[ "$real_path" == */source-activation/releases/* && -n "$head" ]]; then
             local rel_sha="${real_path##*/}"
-            if ((age >= clean_age_seconds)) && [[ " $release_retain_shas " != *" $rel_sha "* ]]; then
+            local over_cap="${release_over_cap[$real_path]:-}"
+            if { ((age >= clean_age_seconds)) || [[ -n "$over_cap" ]]; } \
+                && [[ " $release_retain_shas " != *" $rel_sha "* ]]; then
                 old_merged_clean=$((old_merged_clean + 1))
-                printf 'hapax-worktree-gc: removable release %s age=%s\n' \
-                    "$path" "$(format_age "$age")"
+                printf 'hapax-worktree-gc: removable release %s age=%s%s\n' \
+                    "$path" "$(format_age "$age")" "${over_cap:+ over-cap(keep=$release_keep)}"
                 if [[ -n "$locked" ]]; then
                     printf 'hapax-worktree-gc: skip locked release: %s (%s)\n' "$path" "$locked"
                     skipped=$((skipped + 1))
@@ -465,20 +597,75 @@ process_worktree() {
                     fi
                     return 0
                 fi
+                local unit_refs
+                unit_refs="$(unit_refs_for_path "$real_path")"
+                if [[ -n "$unit_refs" ]]; then
+                    release_refused=$((release_refused + 1))
+                    printf 'hapax-worktree-gc: refuse unit-referenced release %s (units: %s)\n' \
+                        "$path" "$unit_refs"
+                    alert_lines+=("- $path ($branch_label), age $(format_age "$age"), release GC REFUSED: referenced by $unit_refs — repoint the unit onto the current release before GC")
+                    return 0
+                fi
+                # Never `worktree remove --force`: force would silently discard a real diff
+                # someone left in a release. Only the stray-mode class is repaired (restore the
+                # committed mode, re-check clean); anything else is refused and alerted.
+                local tree_state verdict
+                tree_state="$(release_tree_state "$real_path")"
+                verdict="${tree_state%%$'\n'*}"
+                if [[ "$verdict" == "mode-only" ]]; then
+                    local -a mode_paths=()
+                    mapfile -t mode_paths < <(printf '%s\n' "$tree_state" | tail -n +2)
+                    if ((dry_run)); then
+                        printf 'hapax-worktree-gc: dry-run would restore stray mode in release %s: %s\n' \
+                            "$path" "${mode_paths[*]}"
+                        printf 'hapax-worktree-gc: dry-run would remove release %s\n' "$path"
+                        return 0
+                    fi
+                    if git --literal-pathspecs -C "$real_path" checkout -- "${mode_paths[@]}" \
+                        && [[ "$(release_tree_state "$real_path")" == "clean" ]]; then
+                        printf 'hapax-worktree-gc: restored stray mode in release %s: %s\n' \
+                            "$path" "${mode_paths[*]}"
+                        verdict="clean"
+                    else
+                        verdict="dirty"
+                        tree_state=$'dirty\nmode restore did not leave the tree clean'
+                    fi
+                fi
+                if [[ "$verdict" != "clean" ]]; then
+                    release_refused=$((release_refused + 1))
+                    printf 'hapax-worktree-gc: refuse dirty release %s (%s)\n' \
+                        "$path" "$(printf '%s\n' "$tree_state" | sed -n 2p)"
+                    alert_lines+=("- $path ($branch_label), age $(format_age "$age"), release GC REFUSED: tree not clean ($(printf '%s\n' "$tree_state" | sed -n 2p)) — inspect by hand; never --force")
+                    return 0
+                fi
                 if ((dry_run)); then
                     printf 'hapax-worktree-gc: dry-run would remove release %s\n' "$path"
                 else
-                    git -C "$repo" worktree remove --force "$path"
-                    removed=$((removed + 1))
-                    printf 'hapax-worktree-gc: removed release %s\n' "$path"
+                    local remove_out
+                    if remove_out="$(git -C "$repo" worktree remove "$path" 2>&1)"; then
+                        removed=$((removed + 1))
+                        printf 'hapax-worktree-gc: removed release %s\n' "$path"
+                    else
+                        release_refused=$((release_refused + 1))
+                        printf 'hapax-worktree-gc: refuse release %s: git worktree remove failed: %s\n' \
+                            "$path" "$remove_out"
+                        alert_lines+=("- $path ($branch_label), release GC REFUSED by git: $remove_out")
+                    fi
                 fi
                 return 0
             fi
+        fi
+        if ((releases_only)); then
+            return 0
         fi
         if ((age >= alert_age_seconds)); then
             old_unmerged=$((old_unmerged + 1))
             alert_lines+=("- $path ($branch_label), age $(format_age "$age"), no branch attached")
         fi
+        return 0
+    fi
+
+    if ((releases_only)); then
         return 0
     fi
 
@@ -601,6 +788,37 @@ process_worktree() {
     fi
 }
 
+# Release count cap (2026-09-25): the 48 h age rule alone lets a merge-heavy day hold
+# every release it made (16 on 2026-09-17, ~6.5 GiB physical each on appendix). Rank the
+# non-retained release worktrees newest-first by the same mtime the age rule uses; any
+# ranked beyond $release_keep is reapable regardless of age. Being over the cap only makes
+# a release a CANDIDATE: the lock, live-process, unit-reference and dirty-tree guards in
+# process_worktree still decide, so a locked or live release over the cap is never removed.
+declare -A release_over_cap=()
+release_rank_input=""
+while IFS= read -r line; do
+    case "$line" in
+        worktree\ */source-activation/releases/*)
+            _rel_path="${line#worktree }"
+            [[ -d "$_rel_path" ]] || continue
+            _rel_real="$(cd "$_rel_path" && pwd -P)"
+            [[ " $release_retain_shas " == *" ${_rel_real##*/} "* ]] && continue
+            _rel_mtime="$(stat -c %Y "$_rel_path" 2>/dev/null)" || continue
+            release_rank_input+="${_rel_mtime} ${_rel_real}"$'\n'
+            ;;
+    esac
+done <"$tmp_worktree_list"
+if [[ -n "$release_rank_input" ]]; then
+    _rank=0
+    while IFS= read -r _ranked; do
+        [[ -n "$_ranked" ]] || continue
+        _rank=$((_rank + 1))
+        if ((_rank > release_keep)); then
+            release_over_cap["${_ranked#* }"]=1
+        fi
+    done < <(printf '%s' "$release_rank_input" | sort -rn -k1,1)
+fi
+
 worktree_path=""
 head_sha=""
 branch_ref=""
@@ -651,5 +869,5 @@ if ((${#alert_lines[@]} > 0)); then
     send_ntfy_alert "$alert_body"
 fi
 
-printf 'hapax-worktree-gc: scanned=%d removable=%d removed=%d live_refused=%d stale_unmerged=%d skipped=%d\n' \
-    "$scanned" "$old_merged_clean" "$removed" "$live_refused" "$old_unmerged" "$skipped"
+printf 'hapax-worktree-gc: scanned=%d removable=%d removed=%d live_refused=%d release_refused=%d stale_unmerged=%d skipped=%d\n' \
+    "$scanned" "$old_merged_clean" "$removed" "$live_refused" "$release_refused" "$old_unmerged" "$skipped"
