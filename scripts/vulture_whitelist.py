@@ -5292,3 +5292,31 @@ _ = (
     _ema_render_reduction_row,
     _ema_split_frontmatter,
 )
+
+# Transcript custody (transcript-backup-custody-all-harnesses-20260927): these are called by the
+# extensionless scripts/hapax-transcript-custody CLI (run by hapax-backup-transcripts.service) and by
+# tests/test_transcript_custody.py's forget-policy scan. Vulture scans .py modules but not
+# extensionless entrypoints, so it cannot see those call sites.
+from scripts.transcript_custody import (  # noqa: E402
+    backup_args as _tc_backup_args,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    count_snapshot as _tc_count_snapshot,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    credential_nodes as _tc_credential_nodes,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    forget_protects_transcripts as _tc_forget_protects_transcripts,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    resolve_paths as _tc_resolve_paths,
+)
+
+_ = (
+    _tc_backup_args,
+    _tc_count_snapshot,
+    _tc_credential_nodes,
+    _tc_forget_protects_transcripts,
+    _tc_resolve_paths,
+)

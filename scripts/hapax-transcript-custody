@@ -5,8 +5,8 @@ Subcommands:
   inventory [--json]   the transcript paths on this host: declared path, real path, kind, file count and bytes
   backup [--dry-run]   restic backup of every real path, tagged tier1-transcripts, credential files excluded
   verify               open this host's newest tier1-transcripts snapshot and count the files under every path; exit 1,
-                       with a remedy, on a missing, symlinked, empty or dropped path, a dropped harness path, or a
-                       credential file
+                       with a remedy, on a missing, symlinked, empty or dropped path, a dropped harness path, a
+                       credential file, or a snapshot older than --max-age-hours (default 26)
 
 The repository is RESTIC_REPOSITORY (default: the tier-1 NAS repository /mnt/nas/backups/restic). The password is
 the FileStore entry backups/restic-password (HAPAX_TRANSCRIPT_RESTIC_PASSWORD_ENTRY overrides it). The unit is
@@ -24,6 +24,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -186,6 +187,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
         previous_targets=prev_targets,
         snapshot_credentials=tc.credential_nodes(nodes),
     ) + list(res.problems)
+    # Bind verify to this run's snapshot: the unit runs verify right after backup, so the newest snapshot for this
+    # host must be fresh. An old one means no snapshot was taken this run, and verifying the last one would pass.
+    age_hours = (datetime.now(UTC) - datetime.fromisoformat(cur["time"])).total_seconds() / 3600
+    if age_hours > args.max_age_hours:
+        failures.append(
+            f"stale: the newest {tc.SNAPSHOT_TAG} snapshot {cur.get('short_id')} is {age_hours:.1f}h old "
+            f"(max {args.max_age_hours:g}h), so no snapshot was taken this run"
+        )
     print(
         json.dumps(
             {
@@ -224,7 +233,13 @@ def main(argv: list[str] | None = None) -> int:
     inv.add_argument("--json", action="store_true")
     bak = sub.add_parser("backup")
     bak.add_argument("--dry-run", action="store_true")
-    sub.add_parser("verify")
+    ver = sub.add_parser("verify")
+    ver.add_argument(
+        "--max-age-hours",
+        type=float,
+        default=26.0,
+        help="fail if the newest snapshot is older than this (default 26: one nightly cycle plus margin)",
+    )
     args = parser.parse_args(argv)
     return {"inventory": cmd_inventory, "backup": cmd_backup, "verify": cmd_verify}[args.cmd](args)
 

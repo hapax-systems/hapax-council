@@ -289,6 +289,24 @@ def test_cli_verify_fails_a_snapshot_with_a_stray_credential_target(tmp_path: Pa
     assert "credential: the snapshot holds" in result.stderr and "auth.json" in result.stderr
 
 
+@pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
+def test_cli_verify_fails_when_the_newest_snapshot_is_not_from_this_run(tmp_path: Path) -> None:
+    """Verify is bound to this run's snapshot: if the newest one is two days old (tonight's backup took none),
+    a healthy old snapshot must not pass as tonight's."""
+
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    home = _home(tmp_path)
+    env = _cli_env(tmp_path, home)
+    subprocess.run(["restic", "init"], env=env, capture_output=True, check=True, timeout=120)
+    backdated = tc.backup_args(tc.resolve_paths(home).paths) + ["--time", "2020-01-01 04:15:00"]
+    subprocess.run(["restic", *backdated], env=env, capture_output=True, check=True, timeout=120)
+    stale = _cli(env, "verify")
+    assert stale.returncode == 1
+    assert "stale: the newest tier1-transcripts snapshot" in stale.stderr
+    assert _cli(env, "verify", "--max-age-hours", "1e9").returncode == 0
+
+
 def test_cli_inventory_json_and_problem_exit(tmp_path: Path) -> None:
     home = _home(tmp_path)
     env = _cli_env(tmp_path, home)
