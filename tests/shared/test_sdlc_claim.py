@@ -4942,17 +4942,59 @@ def test_an_earlier_archive_of_another_publication_does_not_count(tmp_path: Path
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
 
 
-def test_a_same_stamp_rerun_keeps_the_earlier_readme(tmp_path: Path) -> None:
-    # Neither overwritten nor duplicated: the README is created once per release directory.
+def test_a_same_stamp_rerun_keeps_its_own_earlier_readme(tmp_path: Path) -> None:
+    # Neither overwritten nor duplicated: a same-stamp rerun reuses its own journal's README.
+    fixture, journal, _projections = _held_publication(tmp_path)
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    archive = lineage / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+    archive.mkdir(parents=True)
+    earlier = f"an earlier run\npublication_id: {journal.name}\n"
+    (archive / "README.md").write_text(earlier, encoding="utf-8")
+
+    _release_held(fixture)
+
+    assert (archive / "README.md").read_text(encoding="utf-8") == earlier
+
+
+@pytest.mark.parametrize(
+    "readme",
+    [f"publication_id: claim-pub-{'0' * 64}\n", "an earlier run with no publication_id\n"],
+    ids=["another-publication", "no-publication"],
+)
+def test_a_same_stamp_rerun_refuses_a_readme_of_another_or_no_publication(
+    tmp_path: Path, readme: str
+) -> None:
+    # #4804 round 2 (codex critical): never archive under a receipt that is not this journal's.
     fixture, _journal, _projections = _held_publication(tmp_path)
     lineage = fixture.vault / "_lineage" / "task-alpha"
     archive = lineage / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
     archive.mkdir(parents=True)
-    (archive / "README.md").write_text("an earlier run\n", encoding="utf-8")
+    (archive / "README.md").write_text(readme, encoding="utf-8")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
 
-    _release_held(fixture)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
 
-    assert (archive / "README.md").read_text(encoding="utf-8") == "an earlier run\n"
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_a_staging_directory_bound_to_another_publication_holds_before_any_move(
+    tmp_path: Path,
+) -> None:
+    # #4804 round 2 (claude): the staging-binding collision, pinned.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / f"{_RELEASE_STAMP}-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"claim-pub-{'0' * 64}\n", encoding="ascii")
+    trees = (fixture.cache, fixture.transactions, fixture.vault / "_lineage")
+    before = tuple(_tree_snapshot(tree) for tree in trees)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert tuple(_tree_snapshot(tree) for tree in trees) == before
 
 
 def _staged_copy(

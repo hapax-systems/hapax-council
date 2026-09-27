@@ -1954,6 +1954,31 @@ def _lapse_every_sidecar(home: Path) -> None:
 
 
 @pytest.mark.parametrize("status", ["claimed", "in_progress"])
+def test_a_live_own_claim_is_answered_as_applied_and_never_self_resumed(
+    tmp_path: Path, status: str
+) -> None:
+    # #4804 round 2 (claude): the safety invariant, pinned. With its lease live, the role's
+    # rerun is answered by the applied publication before the status gate, so the new
+    # self-resume branch never rewrites a live claim.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "live-row")
+    assert _claim(home, "live-row").returncode == 0
+    if status == "in_progress":
+        note.write_text(
+            note.read_text(encoding="utf-8").replace("status: claimed", "status: in_progress", 1),
+            encoding="utf-8",
+        )
+    _next_second()
+    before = note.read_bytes()
+
+    rerun = _claim(home, "live-row")
+
+    assert rerun.returncode == 0, rerun.stderr
+    assert "applied publication already owns task" in rerun.stdout
+    assert note.read_bytes() == before
+
+
+@pytest.mark.parametrize("status", ["claimed", "in_progress"])
 def test_a_role_resumes_its_own_row_after_its_lease_lapsed(tmp_path: Path, status: str) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "own-row")

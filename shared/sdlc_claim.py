@@ -6666,25 +6666,29 @@ def _archive_residue(
         )
         if path.exists() or path.is_symlink()
     ]
+    # A same-stamp rerun may reuse the lineage README and the staging binding, but only this
+    # journal's: archiving under another publication's receipt would be untraceable.
+    readme, bound = archive_dir / "README.md", staging_dir / "PUBLICATION"
+    if (
+        readme.exists()
+        and f"publication_id: {journal.publication_id}"
+        not in readme.read_text(encoding="utf-8").splitlines()
+    ):
+        taken.append(readme)
+    if bound.exists() and bound.read_text(encoding="ascii").strip() != journal.publication_id:
+        taken.append(bound)
     if taken:
         raise _release_hold(
             "claim_residue_archive_collision",
-            f"{taken[0]} already exists",
+            f"{taken[0]} already exists (or belongs to another publication)",
             "preserve every file and inspect the lineage and staging directories",
         )
     archive_dir.mkdir(parents=True, exist_ok=True)
     os.makedirs(staging_dir, mode=0o700, exist_ok=True)
     # Bind the staging to this journal: a crashed run's staged originals are recovered only by
     # a rerun for the same publication (see _staged_original).
-    with suppress(FileExistsError):
-        with (staging_dir / "PUBLICATION").open("x", encoding="ascii") as bound:
-            bound.write(f"{journal.publication_id}\n")
-    if (staging_dir / "PUBLICATION").read_text(encoding="ascii").strip() != journal.publication_id:
-        raise _release_hold(
-            "claim_residue_archive_collision",
-            f"{staging_dir} is bound to another publication",
-            "preserve it and inspect the staging directory",
-        )
+    with suppress(FileExistsError), bound.open("x", encoding="ascii") as binding:
+        binding.write(f"{journal.publication_id}\n")
     lines = [
         "Governed release of claim residue (cc-claim --release-claim-residue).",
         f"shape: {shape}",
@@ -6700,9 +6704,9 @@ def _archive_residue(
             for projection in present
         ),
     ]
-    with suppress(FileExistsError):  # created once: never overwritten or duplicated
-        with (archive_dir / "README.md").open("x", encoding="utf-8") as readme:
-            readme.write("\n".join(lines) + "\n")
+    # Created once: never overwritten or duplicated (an existing one is this journal's, above).
+    with suppress(FileExistsError), readme.open("x", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
     archived = tuple(
         _archive_verified(projection, archive_dir, staging_dir, staged.get(projection.path))
         for projection in present
