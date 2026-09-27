@@ -14,6 +14,11 @@ OnFailure=notify-failure@%n.service
 # After=mnt-nas-backups.mount, with no Requires= (measured with a transient unit, 2026-09-27): it orders the run
 # after a mount in progress, but does not stop the run when the NAS is absent. The CLI is that guard: it refuses a
 # repository that is missing, or that is not on HAPAX_TRANSCRIPT_REPOSITORY_MOUNT.
+#
+# Windows hosts (row transcript-custody-windows-hosts-20260927): the host named by HAPAX_TRANSCRIPT_WINDOWS_PULLER pulls
+# each host in HAPAX_TRANSCRIPT_WINDOWS_HOSTS over SSH, as a tar stream into restic (--host <that host>, the same tag),
+# with nothing installed on Windows. The same verify covers them. A sleeping host is reported, not failed, until its
+# newest snapshot is older than 72h. Every other host running this unit skips the pull.
 
 [Service]
 Type=oneshot
@@ -23,6 +28,8 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=RESTIC_REPOSITORY=/mnt/nas/backups/restic
 Environment=HAPAX_TRANSCRIPT_REPOSITORY_MOUNT=/mnt/nas/backups
 Environment=RESTIC_CACHE_DIR=%h/.cache/restic
+Environment="HAPAX_TRANSCRIPT_WINDOWS_HOSTS=hapax-dextra hapax-talus"
+Environment=HAPAX_TRANSCRIPT_WINDOWS_PULLER=hapax-appendix
 Nice=10
 IOSchedulingClass=idle
 MemoryHigh=2G

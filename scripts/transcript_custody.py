@@ -328,6 +328,201 @@ def verify(
     return failures
 
 
+#: Windows hosts are pulled, never pushed from (row transcript-custody-windows-hosts-20260927). The puller runs two
+#: commands over SSH: a PowerShell inventory of the table's paths under %USERPROFILE%, then the Windows
+#: built-in bsdtar streaming exactly those paths, with credentials excluded by name, into
+#: ``restic backup --stdin-from-command``. restic fails the backup when the stream command exits non-zero. There is
+#: no staging copy and nothing installed or scheduled on the Windows side.
+WINDOWS_SSH_OPTIONS: tuple[str, ...] = (
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=15",
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=4",
+)
+
+#: A Windows host sleeps, so a missed night is expected. Its newest snapshot may be this old before verify fails
+#: (seat ruling 2026-09-27).
+WINDOWS_MAX_AGE_HOURS = 72.0
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def encoded_powershell(script: str) -> list[str]:
+    """A remote command that runs ``script`` in Windows PowerShell 5.1. It uses -EncodedCommand (base64 of UTF-16LE),
+    so no quoting survives or breaks through the SSH command line."""
+
+    import base64
+
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+
+
+def windows_inventory_script(table: Sequence[TranscriptPath] = TRANSCRIPT_PATHS) -> str:
+    """PowerShell that prints, as JSON, every table path present under %USERPROFILE%, with its kind, file count and
+    reparse-point flag (a junction or symlink, which tar would record as a link, not as its contents)."""
+
+    rels = ", ".join(_ps_quote(tp.rel) for tp in table)
+    return (
+        "$ErrorActionPreference = 'Stop'\n"
+        "$h = $env:USERPROFILE\n"
+        "$out = @()\n"
+        f"foreach ($r in @({rels})) {{\n"
+        "  $p = Join-Path $h ($r -replace '/', '\\')\n"
+        "  foreach ($i in @(Get-Item -Force -Path $p -ErrorAction SilentlyContinue)) {\n"
+        "    $rel = $i.FullName.Substring($h.Length + 1) -replace '\\\\', '/'\n"
+        "    $reparse = [bool]($i.Attributes -band [IO.FileAttributes]::ReparsePoint)\n"
+        "    if ($i.PSIsContainer) {\n"
+        "      $n = @(Get-ChildItem -Recurse -File -Force -Path $i.FullName -ErrorAction SilentlyContinue).Count\n"
+        "      $k = 'dir'\n"
+        "    } else { $n = 1; $k = 'file' }\n"
+        "    $out += [pscustomobject]@{ rel = $rel; kind = $k; files = $n; reparse = $reparse }\n"
+        "  }\n"
+        "}\n"
+        "ConvertTo-Json -InputObject @($out) -Compress\n"
+    )
+
+
+def windows_tar_script(rels: Sequence[str]) -> str:
+    """PowerShell that streams ``rels`` (relative to %USERPROFILE%) as a tar on stdout, excluding every credential
+    name, and exits with tar's own exit code."""
+
+    if not rels:
+        raise ValueError(
+            "no Windows transcript paths to stream; refusing to write an empty snapshot"
+        )
+    excludes = " ".join(f"--exclude {_ps_quote(p)}" for p in CREDENTIAL_PATTERNS)
+    names = " ".join(_ps_quote(r) for r in rels)
+    return f"& tar.exe -cf - {excludes} -C $env:USERPROFILE {names}\nexit $LASTEXITCODE\n"
+
+
+def _table_entry(rel: str, table: Sequence[TranscriptPath]) -> TranscriptPath | None:
+    for tp in table:
+        if rel == tp.rel or (_has_glob(tp.rel) and fnmatch.fnmatch(rel, tp.rel)):
+            return tp
+    return None
+
+
+def parse_windows_inventory(
+    host: str, text: str, table: Sequence[TranscriptPath] = TRANSCRIPT_PATHS
+) -> Resolution:
+    """The inventory's JSON as a :class:`Resolution`. Each path's ``real`` is its member path in the host's tar
+    (``/`` + the path relative to %USERPROFILE%), which is what :func:`count_snapshot` matches against. A reparse
+    point is a problem, never a silent skip."""
+
+    import json
+
+    rows = json.loads(text or "[]")
+    if isinstance(rows, dict):  # PowerShell 5.1 can unwrap a one-element array
+        rows = [rows]
+    result = Resolution()
+    for row in rows:
+        rel = str(row["rel"])
+        tp = _table_entry(rel, table)
+        if tp is None:
+            result.problems.append(f"inventory: {host}:~/{rel} matches no path in the table")
+            continue
+        if row.get("reparse"):
+            result.problems.append(
+                f"symlink: {host}:~/{rel} is a junction or symlink; tar would record the link, not its contents"
+            )
+            continue
+        result.paths.append(
+            ResolvedPath(
+                harness=tp.harness,
+                declared=f"{host}:~/{rel}",
+                real="/" + rel,
+                kind="dir" if row.get("kind") == "dir" else "file",
+                via_symlink=False,
+                min_files=tp.min_files,
+            )
+        )
+    return result
+
+
+def windows_backup_args(host: str, rels: Sequence[str], tag: str = SNAPSHOT_TAG) -> list[str]:
+    """``restic backup`` arguments that pull ``host``'s paths as one tar stream, under the host's own name."""
+
+    return [
+        "backup",
+        "--stdin-from-command",
+        "--stdin-filename",
+        f"{host}-transcripts.tar",
+        "--host",
+        host,
+        "--tag",
+        tag,
+        "--",
+        "ssh",
+        *WINDOWS_SSH_OPTIONS,
+        host,
+        *encoded_powershell(windows_tar_script(rels)),
+    ]
+
+
+def tar_nodes(members: Iterable) -> list[dict]:
+    """A tar listing (``tarfile.TarInfo`` members) as a ``restic ls --json`` node stream, so that
+    :func:`count_snapshot`, :func:`credential_nodes` and :func:`verify` read it unchanged."""
+
+    nodes = []
+    for m in members:
+        # A hard link's content is in the archive under its first name, so it counts as a file. A symbolic link is
+        # only the link, so it is recorded as one, and verify fails it as a nested symlink.
+        if m.isdir():
+            kind = "dir"
+        elif m.isfile() or m.islnk():
+            kind = "file"
+        elif m.issym():
+            kind = "symlink"
+        else:
+            kind = "other"
+        nodes.append({"struct_type": "node", "path": "/" + m.name.rstrip("/"), "type": kind})
+    return nodes
+
+
+def listing_targets(
+    nodes: Iterable[Mapping], table: Sequence[TranscriptPath] = TRANSCRIPT_PATHS
+) -> list[str]:
+    """The table paths a tar listing holds as members of their own (the stream's top-level targets)."""
+
+    found = []
+    for node in nodes:
+        path = node.get("path")
+        if isinstance(path, str) and _table_entry(path.lstrip("/"), table) is not None:
+            found.append(path)
+    return sorted(set(found))
+
+
+def listing_expected(
+    host: str, nodes: Sequence[Mapping], table: Sequence[TranscriptPath] = TRANSCRIPT_PATHS
+) -> list[ResolvedPath]:
+    """What a Windows host held when its snapshot was taken, read from the snapshot's own listing. It is used when the
+    host cannot be asked now (asleep at verify, or the snapshot is not from this run), so the floor, drop and
+    credential checks still apply."""
+
+    kinds = {n.get("path"): n.get("type") for n in nodes}
+    expected = []
+    for target in listing_targets(nodes, table):
+        tp = _table_entry(target.lstrip("/"), table)
+        assert tp is not None  # listing_targets returned only table paths
+        expected.append(
+            ResolvedPath(
+                harness=tp.harness,
+                declared=f"{host}:~{target}",
+                real=target,
+                kind="dir" if kinds.get(target) == "dir" else "file",
+                via_symlink=False,
+                min_files=tp.min_files,
+            )
+        )
+    return expected
+
+
 REMEDY = (
     "next action: run `hapax-transcript-custody inventory` on this host to see which transcript paths exist and "
     "where they resolve; fix the path table (scripts/transcript_custody.py) or the store; then rerun "
