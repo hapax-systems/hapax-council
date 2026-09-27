@@ -125,6 +125,53 @@ def test_each_device_has_a_case() -> None:
         assert device in {int(f.message.split("Device ", 1)[1][0]) for f in findings}
 
 
+#: One unit per device-4 antithesis regex, so every branch is pinned, not just one.
+DEVICE_4_BRANCHES: tuple[str, ...] = (
+    "The record is not a proof or a promise.",
+    "Four questions, not a ladder.",
+    "Not the measurement but the record answers.",
+    "The number is not a measure of safety;",
+)
+
+#: One unit per device-6 branch: two short sentences; one short sentence; two imperatives; a
+#: series holding an imperative; a wh-led short first sentence with a longer second.
+DEVICE_6_BRANCHES: tuple[str, ...] = (
+    "Fix the rules. Inspect the evidence.",
+    "The original stays visible.",
+    "Proceed · Measure · Report",
+    "Proceed / The record stays public beside its source.",
+    "What does the claim support? The record names the evidence and its source.",
+)
+
+#: dev20's interim sweep flag -> the amendment device it ports onto. The port is a mapping, not a
+#: re-derivation; each row is a unit the interim tool flagged under that flag.
+PORTED_FLAG_MAP: tuple[tuple[str, int, str], ...] = (
+    ("VERBLESS", 1, "An agent-staffed R&D laboratory."),
+    ("FLOURISH", 3, "A forecast needs a finish line."),
+    ("ANTITHESIS", 4, "Four questions, not a ladder."),
+    ("QUESTION", 5, "What does the claim support?"),
+    ("SERIES", 6, "Fix the rules. Inspect the evidence."),
+    ("ONELINER", 6, "One front door. Many working parts."),
+)
+
+
+@pytest.mark.parametrize("text", DEVICE_4_BRANCHES)
+def test_every_device_4_branch_flags(text: str) -> None:
+    assert 4 in _devices(text), (
+        f"device 4 missed {text!r}: {[f.message for f in check_register_carriage_text(text)]}"
+    )
+
+
+@pytest.mark.parametrize("text", DEVICE_6_BRANCHES)
+def test_every_device_6_branch_flags(text: str) -> None:
+    assert 6 in _devices(text), f"device 6 missed {text!r}"
+
+
+@pytest.mark.parametrize(("flag", "device", "unit"), PORTED_FLAG_MAP)
+def test_the_ported_flag_map_reaches_the_mapped_device(flag: str, device: int, unit: str) -> None:
+    assert device in _devices(unit), f"{flag} should reach device {device} for {unit!r}"
+
+
 @pytest.mark.parametrize(("text", "expected"), SPEC_POSITIVE)
 def test_spec_positive_fixtures_flag(text: str, expected: tuple[int, ...]) -> None:
     devices = _devices(text)

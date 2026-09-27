@@ -656,8 +656,8 @@ def check_register_carriage_text(
         if (
             re.search(r"\b(?:is|are|was|were) not\b[^.;]{0,60}\b(?:or|but)\b", unit, re.IGNORECASE)
             or re.search(r"\b\w+(?: \w+){0,3}, not (?:a |an |the )?\w+", unit)
-            or re.search(r"\bnot\b[^.;]{1,60}\bbut\b", unit)
-            or re.search(r"\bnot\b[^.;]{1,40};", unit)
+            or re.search(r"\bnot\b[^.;]{1,60}\bbut\b", unit, re.IGNORECASE)
+            or re.search(r"\bnot\b[^.;]{1,40};", unit, re.IGNORECASE)
         ):
             hits.append((4, unit))
         for sentence in sentences:

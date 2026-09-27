@@ -667,6 +667,21 @@ def test_public_surface_gate_scans_the_built_site_env_default(
     )
 
 
+def test_public_surface_gate_scans_built_htm_pages(tmp_path: Path) -> None:
+    """codex: `SCANNABLE_SUFFIXES` lacked `.htm`, so built `.htm` pages were never collected."""
+    page = tmp_path / "page.htm"
+    page.write_text("<p>One front door. Many working parts.</p>\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(page, token_report, source_reconciliation, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(
+        finding["rule"] == "Hapax.RegisterCarriage" for finding in json.loads(result.stdout)
+    ), json.loads(result.stdout)
+
+
 def test_an_explicit_missing_built_site_dir_fails_loudly(tmp_path: Path) -> None:
     """claude: the "fails loudly" guarantee of ``built_site_dirs`` had no test.
 

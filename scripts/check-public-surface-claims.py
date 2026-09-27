@@ -79,7 +79,9 @@ def built_site_dirs(explicit: list[Path]) -> list[Path]:
     return [path for path in candidates if path.exists()]
 
 
-SCANNABLE_SUFFIXES = {".cff", ".html", ".j2", ".json", ".md", ".py", ".yaml", ".yml"}
+#: `.htm` is scanned for the same reason `.html` is: built pages ship as either, and the register
+#: parser handles both (`lint.py`), so leaving `.htm` out silently skipped built `.htm` copy.
+SCANNABLE_SUFFIXES = {".cff", ".htm", ".html", ".j2", ".json", ".md", ".py", ".yaml", ".yml"}
 TOKEN_CLAIM_RULE = "Hapax.TokenCapitalClaimCeiling"
 SOURCE_DISPOSITION_RULE = "Hapax.PublicSurfaceSourceDisposition"
 GITHUB_PUBLIC_CLAIM_RULE = "Hapax.GitHubPublicClaimEvidenceGate"
@@ -1410,10 +1412,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except FileNotFoundError as exc:
+        missing = exc.filename or str(exc)
+        named_built_dir = any(str(path) == str(missing) for path in args.built_site_dir)
+        remedy = (
+            "drop --built-site-dir for it, or unset "
+            f"{PUBLIC_SITE_DIST_ENV} if the built output is not present on this host"
+            if named_built_dir
+            else "pass an existing path"
+        )
         print(
-            f"error: {exc}. Next action: name an existing path, or drop --built-site-dir and "
-            f"unset {PUBLIC_SITE_DIST_ENV} if the built output is not present on this host. A "
-            "named built output that is missing is a loud failure, never a silent pass.",
+            f"error: scanned path not found: {missing}. Next action: {remedy}. A named built "
+            "output that is missing is a loud failure, never a silent pass.",
             file=sys.stderr,
         )
         return 2
