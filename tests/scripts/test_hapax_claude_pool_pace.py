@@ -486,33 +486,32 @@ def test_cadence_lag_is_not_a_false_refusal(
     assert payload["reading_age_seconds"] == int(timedelta(minutes=25).total_seconds())
 
 
-def test_a_reading_ledgered_within_one_probe_cadence_is_admissible(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-) -> None:  # noqa: ANN001
-    """The 10:04Z-refuse / 10:06Z-allow shape: ``record`` lags the probe by one tick.
-
-    A receipt observed at NOW is the newest reading; the sink's newest row names the PREVIOUS
-    reading, eight minutes older — one probe cadence, not an exact match. Exact-timestamp equality
-    refused this (measured 10:04Z refuse, 10:06Z allow); within one cadence it is durable evidence.
-    """
-    _sink_root(tmp_path, monkeypatch)
-    receipts = _window_receipts(tmp_path, weekly_used=5.0, weekly_reset=WEEKLY_RESET)
-    pace = _pace()
-    previous = NOW - timedelta(minutes=8)
+def _ledger_row(pace: ModuleType, *, observed: datetime, captured: datetime, weekly: float = 4.0):
+    """One ledger row naming ``observed`` as its reading, written at ``captured``."""
     pace.append_reading(
         {
-            "captured_at": previous.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "weekly_observed_at": previous.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "weekly_used_percent": 4.0,
+            "captured_at": captured.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "weekly_observed_at": observed.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "weekly_used_percent": weekly,
             "weekly_resets_at": WEEKLY_RESET.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "five_hour_used_percent": 1.0,
             "line_percent": LINE_AT_NOW,
-            "reading_age_seconds": 480,
+            "reading_age_seconds": int(abs((captured - observed).total_seconds())),
             "over_line": False,
             "source_ref": "test",
         },
-        now=previous,
+        now=captured,
     )
+
+
+def test_a_row_naming_this_reading_within_one_cadence_is_admissible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """The cadence stays as the tolerance on capture lag: ``record`` writes this reading later."""
+    _sink_root(tmp_path, monkeypatch)
+    receipts = _window_receipts(tmp_path, weekly_used=5.0, weekly_reset=WEEKLY_RESET)
+    pace = _pace()
+    _ledger_row(pace, observed=NOW, captured=NOW + timedelta(minutes=8))
     capsys.readouterr()
 
     rc = _run(["check", *_base_args(tmp_path, receipts), "--json"])
@@ -521,6 +520,28 @@ def test_a_reading_ledgered_within_one_probe_cadence_is_admissible(
     assert rc == 0
     assert payload["decision"] == "allow"
     assert payload["ledgered"] is True
+
+
+def test_an_earlier_probes_row_does_not_admit_this_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """The hole codex found: a failed append for THIS reading let an EARLIER probe's row satisfy the
+    check, because the earlier row was always within one cadence. Identity must bind, not proximity.
+    """
+    _sink_root(tmp_path, monkeypatch)
+    receipts = _window_receipts(tmp_path, weekly_used=5.0, weekly_reset=WEEKLY_RESET)
+    pace = _pace()
+    _ledger_row(
+        pace, observed=NOW - timedelta(minutes=10), captured=NOW - timedelta(minutes=10), weekly=3.0
+    )
+    capsys.readouterr()
+
+    rc = _run(["check", *_base_args(tmp_path, receipts), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == _pace().EXIT_REFUSE_UNKNOWN
+    assert payload["reason"] == "pace_reading_not_ledgered"
+    assert payload["ledgered"] is False
 
 
 def test_a_reading_ledgered_beyond_one_cadence_still_refuses(

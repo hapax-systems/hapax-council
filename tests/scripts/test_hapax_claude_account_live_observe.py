@@ -101,6 +101,50 @@ def probe_stream(monkeypatch, *records):
     return obs.probe(NOW)
 
 
+def test_a_failed_ledger_append_admits_nothing(monkeypatch, tmp_path: Path, capsys) -> None:  # noqa: ANN001
+    """Fail closed (seat ruling 07:31Z): a measurement that could not be ledgered admits nothing.
+
+    Minting anyway would let an earlier probe's ledger row satisfy the governor's check for THIS
+    reading, admitting a launch on a reading that was never ledgered.
+    """
+    sink_root = tmp_path / "durable"
+    sink_root.mkdir()
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(sink_root))
+    pace_receipts = tmp_path / "pace-receipts"
+    pace_receipts.mkdir()
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(pace_receipts))
+    marker = tmp_path / "activation.json"
+    marker.write_text(
+        json.dumps({"activated_at": "2026-09-24T18:00:00Z", "by": "seat", "reason": "t"}) + "\n",
+        encoding="utf-8",
+    )
+    observation = obs.Observation(
+        kind="served",
+        at=obs._parse_ts("2026-09-24T18:06:36Z"),
+        source="claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
+        windows={
+            "seven_day": (9.0, obs._parse_ts("2026-09-25T22:00:00Z")),
+            "five_hour": (8.0, obs._parse_ts("2026-09-24T21:30:00Z")),
+        },
+        subscription_served=True,
+    )
+
+    def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("sink unavailable")
+
+    monkeypatch.setattr(sink_mod.DurableJsonlSink, "append", _boom)
+
+    rc, payload, _calls = run_main(monkeypatch, tmp_path, capsys, probe_result=observation)
+
+    assert rc == 5
+    assert "pace_ledger" in payload
+    assert "error" in payload["pace_ledger"]
+    assert "admits nothing" in payload["hint"]
+    assert not list((tmp_path / "receipts").glob("*.yaml"))
+
+
 def test_a_pace_hold_is_not_a_probe_failure(monkeypatch, tmp_path: Path, capsys) -> None:  # noqa: ANN001
     """The self-lock half: over the line the governor refuses the admission mint while the probe's
     own reading is ledgered, so the probe reports ``pace_held`` and exits 0.

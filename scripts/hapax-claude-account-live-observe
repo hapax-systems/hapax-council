@@ -996,6 +996,19 @@ def main(argv: list[str] | None = None) -> int:
                 led = ledger_probe_reading(evidence, now=now)
             except Exception as exc:  # noqa: BLE001 — a ledger failure is reported, never hidden
                 payload["pace_ledger"] = {"error": f"{type(exc).__name__}: {exc}"}
+                payload["hint"] = (
+                    "the pacing reading could not be ledgered, so NOTHING is admitted: a measurement "
+                    "that could not be ledgered admits nothing, and minting here would let an earlier "
+                    "probe's ledger row satisfy the governor's check for THIS reading. Next action: "
+                    "check HAPAX_DURABLE_SINK_ROOT points at writable persistent storage, then rerun "
+                    "`scripts/hapax-claude-pool-pace record`."
+                )
+                if args.json:
+                    print(json.dumps(payload, indent=1))
+                else:
+                    print(f"account-live: {verdict}")
+                    print(f"  {payload['hint']}", file=sys.stderr)
+                return 5
             else:
                 payload["pace_ledger"] = {
                     "ledgered": led is not None,

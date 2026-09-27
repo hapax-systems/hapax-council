@@ -289,18 +289,27 @@ def ledger_state() -> tuple[str, list[dict[str, Any]]]:
 
 
 def _ledgered(payload: dict[str, Any], rows: list[dict[str, Any]]) -> bool:
-    """Whether the sink holds this reading, or one within a single probe cadence of it.
+    """Whether the sink holds THIS reading, written within one probe cadence of it.
 
-    Exact-timestamp equality refused a reading the governor had just measured, because ``record``
-    runs on its own slower timer than the probe's cadence. See :data:`PROBE_CADENCE`. A row whose
-    own reading is more than one cadence away is a different reading and does not count.
+    Identity, not merely proximity: a row naming a DIFFERENT (earlier) reading does not admit this
+    one, however close its timestamp. A one-cadence proximity rule was a hole — the probe mints a
+    reading every ``PROBE_CADENCE``, so an earlier probe's row was always within tolerance and
+    satisfied the check even when THIS reading's own ledger append had failed, admitting a launch on
+    a reading that was never ledgered. The cadence stays as the tolerance on capture lag: a row that
+    names this reading may be written up to one cadence after it (``record`` runs on its own slower
+    timer than the probe's cadence) and still counts.
     """
     observed = _stamp_instant(payload.get("weekly_observed_at"))
     if observed is None:
         return False
     for row in rows:
-        candidate = _stamp_instant(row.get("payload", {}).get("weekly_observed_at"))
-        if candidate is not None and abs(candidate - observed) <= PROBE_CADENCE:
+        row_payload = row.get("payload", {})
+        if row_payload.get("weekly_observed_at") != payload.get("weekly_observed_at"):
+            continue
+        captured = _stamp_instant(row_payload.get("captured_at")) or _stamp_instant(
+            row.get("timestamp")
+        )
+        if captured is not None and abs(captured - observed) <= PROBE_CADENCE:
             return True
     return False
 
