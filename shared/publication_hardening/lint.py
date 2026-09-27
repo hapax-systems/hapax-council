@@ -503,7 +503,15 @@ def _register_keep_hint(unit: str, sentences: list[str]) -> str | None:
 #: Block-level tags whose inner text is one register unit on a built page. A built page must be
 #: linted by its block units, not by tag-stripped text: stripping merges navigation chrome and
 #: adjacent blocks into one pseudo-unit and invents findings (measured on the correction edition).
-_REGISTER_BLOCK_TAGS = "p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption"
+#: Block-level tags whose text is one register unit on a built page. The content wrappers
+#: (``div``/``main``/``section``/…) are units too: five same-line ``<div>Proceed under
+#: measurement</div>`` blocks were joined by the residue pass into one over-long, unflagged unit
+#: (codex). With them here, each wrapper is its own unit, and a wrapper holding a nested block is
+#: still skipped in favour of the inner blocks.
+_REGISTER_BLOCK_TAGS = (
+    "p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption|"
+    "div|main|section|article|header|footer|aside|figure"
+)
 #: Non-content regions of a built page: their text is never a register unit.
 _REGISTER_HTML_BOILERPLATE = "nav|script|style|head|noscript|template|svg"
 

@@ -64,10 +64,12 @@ legal, privacy, entity, citation, or operator override review.
 
 The registry names the *sources*. A built public-site output is a second,
 separate surface: R8's spec call-out for the site's `verify-dist`. The gate
-scans built pages by block units — a `<li>` or `<blockquote>` holding `<p>`s
-yields the paragraphs, not one merged unit — and runs the register carriage
-lint (`Hapax.RegisterCarriage`, the six devices of the HACA-C §Register
-amendment) over them beside `Hapax.FormalRegister`.
+scans built pages by leaf block units — a `<li>`, `<blockquote>` or content
+wrapper holding `<p>`s yields the paragraphs, not one merged unit — plus a
+residue pass over text outside those units, minus boilerplate (`nav`, `script`,
+`style`, `head`). It runs the register carriage lint (`Hapax.RegisterCarriage`,
+the six devices of the HACA-C §Register amendment) over them beside
+`Hapax.FormalRegister`.
 
 The canonical, reproducible invocation over a built output is:
 
@@ -84,8 +86,11 @@ site checkout may instead export the default:
 export HAPAX_PUBLIC_SITE_DIST="$HOME/projects/hrl-portal/dist"   # pathsep-separated
 ```
 
-An env-provided directory is included only when it exists, so a host without the
-site checkout is not a false failure. The site repo's own `scripts/verify-dist.mjs`
+An env-provided directory that exists is included; if `HAPAX_PUBLIC_SITE_DIST`
+is *set* but names no existing directory, the gate exits 2 and names the
+variable — a set-but-wrong default is a misconfiguration, not an absent
+checkout. Leave the variable unset on a host without the site checkout; the
+site repo's own `scripts/verify-dist.mjs`
 owns its dist pins; this gate is the source-side check that reads the same built
 pages. The register findings are `warning` level (over-inclusive by design; every
 hit is disposed fix / keep-with-reason / carry), so add `--warnings-fail` on the

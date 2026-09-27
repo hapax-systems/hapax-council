@@ -76,7 +76,10 @@ def built_site_dirs(explicit: list[Path]) -> list[Path]:
     if not env_value:
         return []
     candidates = [Path(part) for part in env_value.split(os.pathsep) if part]
-    return [path for path in candidates if path.exists()]
+    existing = [path for path in candidates if path.exists()]
+    # A set-but-wrong env default is a misconfiguration, not an absent checkout: return the named
+    # candidates so ``iter_files`` fails loudly instead of the gate passing by scanning nothing.
+    return existing or candidates
 
 
 #: `.htm` is scanned for the same reason `.html` is: built pages ship as either, and the register
@@ -1413,13 +1416,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     except FileNotFoundError as exc:
         missing = exc.filename or str(exc)
-        named_built_dir = any(str(path) == str(missing) for path in args.built_site_dir)
-        remedy = (
-            "drop --built-site-dir for it, or unset "
-            f"{PUBLIC_SITE_DIST_ENV} if the built output is not present on this host"
-            if named_built_dir
-            else "pass an existing path"
-        )
+        env_paths = {
+            str(Path(part))
+            for part in os.environ.get(PUBLIC_SITE_DIST_ENV, "").split(os.pathsep)
+            if part
+        }
+        if any(str(path) == str(missing) for path in args.built_site_dir):
+            remedy = "drop --built-site-dir for it"
+        elif str(missing) in env_paths:
+            remedy = f"unset or correct {PUBLIC_SITE_DIST_ENV}"
+        else:
+            remedy = "pass an existing path"
         print(
             f"error: scanned path not found: {missing}. Next action: {remedy}. A named built "
             "output that is missing is a loud failure, never a silent pass.",

@@ -700,6 +700,41 @@ def test_an_explicit_missing_built_site_dir_fails_loudly(tmp_path: Path) -> None
     combined = result.stdout + result.stderr
     assert str(absent) in combined
     assert "Next action" in combined
+    assert "drop --built-site-dir" in combined
+
+
+def test_a_wrong_built_site_env_default_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A set-but-wrong env default is a misconfiguration, not an absent checkout: scan nothing
+    silently is not an option, so it must fail loudly and name the variable."""
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    absent = tmp_path / "dist-absent"
+    monkeypatch.setenv("HAPAX_PUBLIC_SITE_DIST", str(absent))
+
+    result = _run_gate(doc, token_report, source_reconciliation)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(absent) in combined
+    assert "HAPAX_PUBLIC_SITE_DIST" in combined
+
+
+def test_a_missing_positional_path_fails_loudly(tmp_path: Path) -> None:
+    """The else-branch remedy: a missing positional path says to pass an existing path."""
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+    absent = tmp_path / "absent.md"
+
+    result = _run_gate(absent, token_report, source_reconciliation)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert str(absent) in combined
+    assert "pass an existing path" in combined
 
 
 def test_public_surface_gate_offline_mode_cannot_authorize_release(

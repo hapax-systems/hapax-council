@@ -321,6 +321,13 @@ def test_html_copy_outside_the_block_tags_is_still_linted() -> None:
         assert any("One front door" in m for m in messages), (page, messages)
 
 
+def test_adjacent_same_line_wrappers_are_separate_units() -> None:
+    """codex: five same-line `<div>` wrappers were joined into one over-long, unflagged unit."""
+    page = "<div>Proceed under measurement</div>" * 5
+    messages = [f.message for f in check_register_carriage_text(page, file_label="page.html")]
+    assert any("Proceed under measurement" in m for m in messages), messages
+
+
 def test_html_boilerplate_is_never_a_unit_even_with_the_residue_fallback() -> None:
     """The residue pass must not re-invent the nav-chrome units block units exist to avoid."""
     page = (
