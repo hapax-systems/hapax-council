@@ -10,9 +10,9 @@ Tier 1 local coverage:
 
 - Timer: `hapax-backup-local.timer`
 - Service: `hapax-backup-local.service`
-- Script: `$HOME/projects/distro-work/hapax-backup-local.sh`
+- Script: `scripts/hapax-backup-local`, run from the activation worktree (`~/.cache/hapax/source-activation/worktree`); recheck with `systemctl --user show hapax-backup-local.service -p ExecStart`
 - Restic repository: `/mnt/nas/backups/restic`
-- Staging: `/tmp/hapax-backup-dumps`
+- Staging: `/store/llm-data/backup-dumps-local` (tier 2: `/store/llm-data/backup-dumps-remote`); recheck with `ls -d /store/llm-data/backup-dumps-*` during a run
 
 Critical offsite safety baseline:
 
