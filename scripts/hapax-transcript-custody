@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""hapax-transcript-custody — back up every harness transcript store by its real path, and verify the snapshot.
+
+Subcommands:
+  inventory [--json]   the transcript paths on this host: declared path, real path, kind, file count and bytes
+  backup [--dry-run]   restic backup of every real path, tagged tier1-transcripts, credential files excluded
+  verify               open this host's newest tier1-transcripts snapshot and count the files under every path; exit 1,
+                       with a remedy, on a missing, symlinked, empty or dropped path, a dropped harness path, a
+                       credential file, or a snapshot older than --max-age-hours (default 26)
+
+The repository is RESTIC_REPOSITORY (default: the tier-1 NAS repository /mnt/nas/backups/restic). The password is
+the FileStore entry backups/restic-password (HAPAX_TRANSCRIPT_RESTIC_PASSWORD_ENTRY overrides it). The unit is
+systemd/units/hapax-backup-transcripts.service. The row is transcript-backup-custody-all-harnesses-20260927 (M174:
+a green backup job once hid an empty ~/.claude for months, so the check opens the snapshot).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts import transcript_custody as tc  # noqa: E402
+
+DEFAULT_REPOSITORY = "/mnt/nas/backups/restic"
+
+
+def _mount_point(path: str) -> str:
+    cur = os.path.abspath(path)
+    while not os.path.ismount(cur):
+        cur = os.path.dirname(cur)
+    return cur
+
+
+def _require_repository(repo: str) -> None:
+    """A local repository must exist and sit on its own mount: an unmounted NAS path falls through to the root
+    filesystem, where restic would find no repository or a stale one. The unit's RequiresMountsFor= gives only
+    After= on the NAS mount in the user manager, with no Requires=, so this check is the guard.
+
+    HAPAX_TRANSCRIPT_REPOSITORY_MOUNT (the unit sets /mnt/nas/backups) names the mount the repository must sit on:
+    with the NAS absent, a repository under another mount (/mnt, say) would otherwise pass."""
+
+    if ":" in repo.split("/", 1)[0]:  # rclone:, sftp:, s3: ... a remote repository
+        return
+    if not os.path.isfile(os.path.join(repo, "config")):
+        raise SystemExit(
+            f"hapax-transcript-custody: no restic repository at {repo} (is the NAS mounted?); {tc.REMEDY}"
+        )
+    mount = _mount_point(repo)
+    if mount == "/":
+        raise SystemExit(
+            f"hapax-transcript-custody: {repo} is on the root filesystem, not a mount; refusing; {tc.REMEDY}"
+        )
+    required = os.environ.get("HAPAX_TRANSCRIPT_REPOSITORY_MOUNT")
+    if required and mount != os.path.abspath(required):
+        raise SystemExit(
+            f"hapax-transcript-custody: {repo} is on {mount}, not on the required mount {required} (is the NAS "
+            f"mounted? check `findmnt {required}`); refusing; {tc.REMEDY}"
+        )
+
+
+def _restic_env() -> dict[str, str]:
+    from shared.secrets import get_secret
+
+    if shutil.which("restic") is None:
+        raise SystemExit(
+            "hapax-transcript-custody: restic is not installed on this host; install the packaged binary "
+            "(pacman -S restic), then rerun"
+        )
+    env = dict(os.environ)
+    env.setdefault("RESTIC_REPOSITORY", DEFAULT_REPOSITORY)
+    _require_repository(env["RESTIC_REPOSITORY"])
+    entry = os.environ.get("HAPAX_TRANSCRIPT_RESTIC_PASSWORD_ENTRY", "backups/restic-password")
+    # RESTIC_PASSWORD in the environment is used first (a manual run or a test); the unit sets none, so the
+    # FileStore entry is the production path.
+    env["RESTIC_PASSWORD"] = get_secret(entry, env="RESTIC_PASSWORD", required=False) or ""
+    if not env["RESTIC_PASSWORD"]:
+        raise SystemExit(
+            f"hapax-transcript-custody: the restic password '{entry}' is empty or missing; put it with hapax-secret"
+        )
+    return env
+
+
+def _count(real: str, kind: str) -> tuple[int, int, list[str]]:
+    """Files, bytes and nested symlinks under ``real``. os.walk lists a symlink to a directory among the
+    directories and does not descend it, so both lists are checked for links."""
+
+    if kind == "file":
+        return 1, os.lstat(real).st_size, []
+    files = size = 0
+    links: list[str] = []
+    for root, dirs, names in os.walk(real, followlinks=False):
+        links += [os.path.join(root, d) for d in dirs if os.path.islink(os.path.join(root, d))]
+        for name in names:
+            full = os.path.join(root, name)
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            if os.path.islink(full):
+                links.append(full)
+                continue
+            files += 1
+            size += st.st_size
+    return files, size, links
+
+
+def cmd_inventory(args: argparse.Namespace) -> int:
+    res = tc.resolve_paths(Path.home())
+    rows = []
+    problems = list(res.problems)
+    for p in res.paths:
+        files, size, links = _count(p.real, p.kind)
+        if links:
+            problems.append(
+                f"nested symlink: {p.real} holds {len(links)} symlink(s) {sorted(links)[:3]}; the backup would "
+                "record the links, not their targets. Add each target's real path to the path table"
+            )
+        rows.append(
+            {
+                "harness": p.harness,
+                "declared": p.declared,
+                "real": p.real,
+                "kind": p.kind,
+                "via_symlink": p.via_symlink,
+                "files": files,
+                "bytes": size,
+                "nested_symlinks": len(links),
+            }
+        )
+    if args.json:
+        print(json.dumps({"host": socket.gethostname(), "paths": rows, "problems": problems}))
+    else:
+        for r in rows:
+            link = " (via symlink)" if r["via_symlink"] else ""
+            print(
+                f"{r['harness']:<12} {r['files']:>9} files {r['bytes'] / 1e6:>10.1f} MB  {r['real']}{link}"
+            )
+        for problem in problems:
+            print(f"PROBLEM {problem}", file=sys.stderr)
+    return 1 if problems else 0
+
+
+def cmd_backup(args: argparse.Namespace) -> int:
+    res = tc.resolve_paths(Path.home())
+    restic_args = tc.backup_args(res.paths)
+    if args.dry_run:
+        print(json.dumps(["restic", *restic_args]))
+        return 0
+    proc = subprocess.run(["restic", *restic_args], env=_restic_env(), check=False)
+    # restic exits 3 when some files could not be read: the snapshot is incomplete, and that is a failure.
+    for problem in res.problems:
+        print(f"hapax-transcript-custody: {problem}; {tc.REMEDY}", file=sys.stderr)
+    if proc.returncode != 0:
+        print(
+            f"hapax-transcript-custody: restic backup exited {proc.returncode}; {tc.REMEDY}",
+            file=sys.stderr,
+        )
+    return 0 if proc.returncode == 0 and not res.problems else 1
+
+
+def _restic_json(env: dict[str, str], *cmd: str) -> str:
+    return subprocess.run(
+        ["restic", *cmd, "--json", "--no-lock"], env=env, capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _nodes(env: dict[str, str], snapshot_id: str) -> Iterator[dict]:
+    for line in _restic_json(env, "ls", snapshot_id).splitlines():
+        try:
+            yield json.loads(line)
+        except ValueError:
+            continue
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    host = socket.gethostname()
+    env = _restic_env()
+    res = tc.resolve_paths(Path.home())
+    snapshots = sorted(
+        json.loads(_restic_json(env, "snapshots", "--tag", tc.SNAPSHOT_TAG, "--host", host)) or [],
+        key=lambda s: s["time"],
+    )
+    if not snapshots:
+        print(
+            f"hapax-transcript-custody: no {tc.SNAPSHOT_TAG} snapshot for {host}; {tc.REMEDY}",
+            file=sys.stderr,
+        )
+        return 1
+    cur, prev = snapshots[-1], (snapshots[-2] if len(snapshots) > 1 else None)
+    targets = list(cur.get("paths") or [])
+    prev_targets = list((prev or {}).get("paths") or [])
+    paths = sorted(set(targets) | set(prev_targets) | {p.real for p in res.paths})
+    nodes = list(_nodes(env, cur["id"]))
+    current = tc.count_snapshot(nodes, paths)
+    previous = tc.count_snapshot(_nodes(env, prev["id"]), paths) if prev else None
+    failures = tc.verify(
+        res.paths,
+        current,
+        snapshot_targets=targets,
+        previous=previous,
+        previous_targets=prev_targets,
+        snapshot_credentials=tc.credential_nodes(nodes),
+    ) + list(res.problems)
+    # Bind verify to this run's snapshot: the unit runs verify right after backup, so the newest snapshot for this
+    # host must be fresh. An old one means no snapshot was taken this run, and verifying the last one would pass.
+    age_hours = (datetime.now(UTC) - datetime.fromisoformat(cur["time"])).total_seconds() / 3600
+    if age_hours > args.max_age_hours:
+        failures.append(
+            f"stale: the newest {tc.SNAPSHOT_TAG} snapshot {cur.get('short_id')} is {age_hours:.1f}h old "
+            f"(max {args.max_age_hours:g}h), so no snapshot was taken this run"
+        )
+    print(
+        json.dumps(
+            {
+                "host": host,
+                "snapshot": cur.get("short_id"),
+                "time": cur.get("time"),
+                "previous": (prev or {}).get("short_id"),
+                "failures": failures,
+                "paths": {p: {"type": c.node_type, "files": c.files} for p, c in current.items()},
+            }
+        )
+    )
+    for p, c in sorted(current.items()):
+        print(f"  {c.files:>9} files  {c.node_type or 'ABSENT':<8} {p}")
+    if failures:
+        for failure in failures:
+            print(f"FAIL {failure}", file=sys.stderr)
+        print(
+            f"hapax-transcript-custody: {len(failures)} failure(s) in snapshot {cur.get('short_id')}; {tc.REMEDY}",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"hapax-transcript-custody: snapshot {cur.get('short_id')} holds every transcript path, none empty or "
+        "dropped, no credential"
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="hapax-transcript-custody", description=__doc__.splitlines()[0]
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    inv = sub.add_parser("inventory")
+    inv.add_argument("--json", action="store_true")
+    bak = sub.add_parser("backup")
+    bak.add_argument("--dry-run", action="store_true")
+    ver = sub.add_parser("verify")
+    ver.add_argument(
+        "--max-age-hours",
+        type=float,
+        default=26.0,
+        help="fail if the newest snapshot is older than this (default 26: one nightly cycle plus margin)",
+    )
+    args = parser.parse_args(argv)
+    return {"inventory": cmd_inventory, "backup": cmd_backup, "verify": cmd_verify}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

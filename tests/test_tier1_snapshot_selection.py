@@ -95,13 +95,33 @@ def test_a_newer_snapshot_with_a_different_tag_or_host_is_not_tier1(tmp_path: Pa
     dumps = tmp_path / "dumps"
     dumps.mkdir()
     (dumps / "postgres-all.sql").write_text("-- PostgreSQL database cluster dump complete\n")
-    restic("backup", "--host", "hapax-podium", "--tag", "tier1-local", str(dumps))
+    # Explicit snapshot times, so the order never rests on clock resolution.
+    t1 = ("--time", "2026-09-26 03:25:00")
+    restic("backup", "--host", "hapax-podium", "--tag", "tier1-local", *t1, str(dumps))
     tier1 = json.loads(restic("snapshots", "--json"))[-1]["id"]
     transcripts = tmp_path / "transcripts"
     transcripts.mkdir()
     (transcripts / "s.jsonl").write_text("{}\n")
-    restic("backup", "--host", "hapax-podium", "--tag", "tier1-transcripts", str(transcripts))
-    restic("backup", "--host", "hapax-monocle", "--tag", "monocle-daily", str(transcripts))
+    restic(
+        "backup",
+        "--host",
+        "hapax-podium",
+        "--tag",
+        "tier1-transcripts",
+        "--time",
+        "2026-09-27 01:44:00",
+        str(transcripts),
+    )
+    restic(
+        "backup",
+        "--host",
+        "hapax-monocle",
+        "--tag",
+        "monocle-daily",
+        "--time",
+        "2026-09-27 02:00:00",
+        str(transcripts),
+    )
 
     newest = max(json.loads(restic("snapshots", "--json")), key=lambda s: s["time"])["id"]
     assert newest != tier1  # the bare `latest` would now pick a snapshot without the dump
@@ -117,3 +137,196 @@ def test_a_newer_snapshot_with_a_different_tag_or_host_is_not_tier1(tmp_path: Pa
     assert picked == tier1
     listing = restic("ls", "--long", picked)
     assert "postgres-all.sql" in listing
+
+
+def _fake_bin(tmp_path: Path, restic_body: str) -> dict[str, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "hapax-secret").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+    (bin_dir / "restic").write_text("#!/usr/bin/env bash\n" + restic_body, encoding="utf-8")
+    for tool in ("hapax-secret", "restic"):
+        (bin_dir / tool).chmod(0o755)
+    return dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+
+
+def _helper(env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-c", f'. "{LIB}"; tier1_latest_snapshot_id'],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")
+def test_helper_empty_and_error_paths(tmp_path: Path) -> None:
+    # No tier-1 snapshot: nothing printed, success.
+    empty = _helper(_fake_bin(tmp_path, "echo '[]'\n"))
+    assert empty.returncode == 0 and empty.stdout.strip() == ""
+    # restic fails: non-zero, even without pipefail in the caller.
+    failed = _helper(_fake_bin(tmp_path, "exit 1\n"))
+    assert failed.returncode != 0
+
+
+def _watchdog_probe(tmp_path: Path, env: dict[str, str], call: str) -> subprocess.CompletedProcess:
+    text = (REPO / "scripts/hapax-backup-watchdog").read_text(encoding="utf-8")
+    start = text.index("restic_password() {")
+    end = text.index("check_qdrant_snapshots() {", start)
+    dump_start = text.index("check_postgres_dump_in_snapshot() {")
+    dump_end = text.index("\n}\n", dump_start) + 3
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        f'. "{REPO}/scripts/lib/secret.sh"\n. "{LIB}"\n'
+        "FAILURES=()\nlog() { :; }\n"
+        + text[start:end]
+        + text[dump_start:dump_end]
+        + call
+        + "\n"
+        + 'printf "%s\\n" "${FAILURES[@]}"\n',
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    return subprocess.run([str(probe)], capture_output=True, text=True, timeout=30, env=env)
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")
+def test_watchdog_reports_a_restic_failure_instead_of_aborting(tmp_path: Path) -> None:
+    """Under set -euo pipefail, a failing tier-1 query must become a reported failure, and the watchdog must go on
+    to its remaining checks and its alert."""
+
+    env = _fake_bin(tmp_path, "exit 1\n")
+    age = _watchdog_probe(tmp_path, env, "check_snapshot_age repo Tier1-NAS 36 entry tier1")
+    assert age.returncode == 0, age.stderr
+    assert "cannot read tier-1 snapshots" in age.stdout
+    dump = _watchdog_probe(
+        tmp_path, env, "check_postgres_dump_in_snapshot repo Tier1-NAS entry tier1"
+    )
+    assert dump.returncode == 0, dump.stderr
+    assert "cannot read tier-1 snapshots" in dump.stdout
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")
+def test_watchdog_gdrive_dump_check_names_the_newest_snapshot(tmp_path: Path) -> None:
+    """The non-tier-1 branch (the GDrive repository): the newest snapshot by time, listed by id."""
+
+    env = _fake_bin(
+        tmp_path,
+        'if [[ "$1" == snapshots ]]; then echo \'[{"id":"old","time":"2026-09-01T00:00:00Z"},'
+        '{"id":"new","time":"2026-09-26T00:00:00Z"}]\'; exit 0; fi\n'
+        'if [[ "$1" == ls && "$3" == new ]]; then '
+        "echo '-rw- 1 1 2000000000 date /snap/postgres-all.sql'; fi\n"
+        "exit 0\n",
+    )
+    result = _watchdog_probe(
+        tmp_path, env, "check_postgres_dump_in_snapshot repo GDrive-Critical entry"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""  # no failures: it listed "new", which holds the dump
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")
+def test_dump_check_reads_the_file_line_not_the_snapshot_header(tmp_path: Path) -> None:
+    """When the dump is itself a backup target (the R2 repository), `restic ls --long` prints a header naming it
+    before the file's own line. Taking the header made "could not parse dump size" a standing false failure
+    (podium, 09-25 and 09-26)."""
+
+    env = _fake_bin(
+        tmp_path,
+        'if [[ "$1" == snapshots ]]; then echo \'[{"id":"new","time":"2026-09-26T00:00:00Z"}]\'; exit 0; fi\n'
+        'if [[ "$1" == ls ]]; then\n'
+        "  echo 'snapshot new of [/store/llm-data/postgres-dumps/postgres-all.sql /etc/x] at 2026-09-26'\n"
+        "  echo '-rw-r--r--  1000  1000 6796844321 2026-09-26 22:22:20 "
+        "/store/llm-data/postgres-dumps/postgres-all.sql'\n"
+        "fi\nexit 0\n",
+    )
+    result = _watchdog_probe(
+        tmp_path, env, "check_postgres_dump_in_snapshot repo GDrive-Critical entry"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "", result.stdout
+
+
+def _gdrive_materialize(tmp_path: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+    text = (REPO / "scripts/hapax-backup-gdrive-critical").read_text(encoding="utf-8")
+    start = text.index("materialize_validated_dump() {")
+    end = text.index("\nappend_required() {", start)
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        f'. "{REPO}/scripts/lib/secret.sh"\n. "{LIB}"\n'
+        f"POSTGRES_DUMP_PATH={tmp_path / 'dump' / 'postgres-all.sql'}\n"
+        "TIER1_REPO=repo\nTIER1_PASSWORD_ENTRY=entry\nPOSTGRES_DUMP_MIN_BYTES=1\n"
+        "log() { :; }\n" + text[start:end] + "materialize_validated_dump\n",
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    return subprocess.run([str(probe)], capture_output=True, text=True, timeout=30, env=env)
+
+
+def test_gdrive_materialize_reports_a_failing_tier1_query(tmp_path: Path) -> None:
+    result = _gdrive_materialize(tmp_path, _fake_bin(tmp_path, "exit 1\n"))
+    assert result.returncode == 1
+    assert "cannot list Tier-1 snapshots" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")
+def test_gdrive_materialize_dumps_the_file_line_not_the_snapshot_header(tmp_path: Path) -> None:
+    """gdrive-critical's own copy of the header fix: the listing's header names the dump before the file's line, and
+    the dump must be taken from the file line's path."""
+
+    dump = "/store/llm-data/postgres-dumps/postgres-all.sql"
+    env = _fake_bin(
+        tmp_path,
+        'if [[ "$1" == snapshots ]]; then echo \'[{"id":"t1","time":"2026-09-26T00:00:00Z"}]\'; exit 0; fi\n'
+        'if [[ "$1" == ls ]]; then\n'
+        f"  echo 'snapshot t1 of [{dump} /etc/x] at 2026-09-26'\n"
+        f"  echo '-rw-r--r--  1000  1000 6796844321 2026-09-26 22:22:20 {dump}'\n"
+        "  exit 0\nfi\n"
+        f'if [[ "$1" == dump && "$2" == t1 && "$3" == {dump} ]]; then echo DUMP-OK; exit 0; fi\n'
+        'echo "unexpected restic $*" >&2; exit 1\n',
+    )
+    result = _gdrive_materialize(tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "dump" / "postgres-all.sql").read_text() == "DUMP-OK\n"
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")
+def test_whole_watchdog_runs_every_check_and_alerts_when_restic_fails(tmp_path: Path) -> None:
+    """The whole script, not extracted functions: with restic failing everywhere it must still attempt every
+    check, raise the alert through hapax-alert, and exit 1."""
+
+    scripts = tmp_path / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    shutil.copy(REPO / "scripts/hapax-backup-watchdog", scripts / "hapax-backup-watchdog")
+    for lib in ("secret.sh", "tier1-snapshot.sh"):
+        shutil.copy(REPO / "scripts/lib" / lib, scripts / "lib" / lib)
+    alerts = tmp_path / "alerts.log"
+    (scripts / "hapax-alert").write_text(
+        f'#!/usr/bin/env bash\necho "$@" >> "{alerts}"\n', encoding="utf-8"
+    )
+    (scripts / "hapax-alert").chmod(0o755)
+    env = _fake_bin(tmp_path, "exit 1\n")
+    for tool in ("curl", "notify-send"):
+        (tmp_path / "bin" / tool).write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        (tmp_path / "bin" / tool).chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(scripts / "hapax-backup-watchdog")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    out = result.stdout
+    # every check ran, after the tier-1 failure
+    for step in (
+        "Tier1-NAS snapshot age",
+        "GDrive-Critical snapshot age",
+        "Qdrant",
+        "BACKUP HEALTH",
+    ):
+        assert step in out, (step, out[-800:])
+    assert "cannot read tier-1 snapshots" in out
+    assert "Backup Health FAIL" in alerts.read_text(encoding="utf-8")
