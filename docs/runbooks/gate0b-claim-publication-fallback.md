@@ -325,6 +325,21 @@ returned to `offered` but the claim files could not be archived (an I/O failure)
 state a crash between the note write and the archive leaves, the `reassigned_task` shape, and
 `cc-claim --release-claim-residue <task-id>` releases it.
 
+Recheck after a return, or after the claim path released a `pipeline_held` row. The output decides
+the next step:
+
+```bash
+role="${HAPAX_AGENT_ROLE:?}"
+tasks=~/Documents/Personal/20-projects/hapax-cc-tasks
+# A return: expect `status: offered`, `assigned_to: unassigned`, `claimed_at: null`.
+# A pipeline_held release: expect the row's pipeline status, still assigned to the role.
+grep -E '^(status|assigned_to|claimed_at):' "$tasks/active/<task-id>.md"
+# Expect no marker of the role still naming the task.
+grep -lx '<task-id>' ~/.cache/hapax/cc-active-task-"${role}"* 2>/dev/null || echo "no marker names <task-id>"
+# Expect `shape: returned_claim` or `shape: pipeline_held` in the newest archive.
+grep -h '^shape:' "$tasks/_lineage/<task-id>"/claim-residue-release-*/README.md
+```
+
 ### An Unreadable Held Row
 
 **Symptom.** `cc-claim <next>` refuses with
