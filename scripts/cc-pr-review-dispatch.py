@@ -582,6 +582,12 @@ EMPTY_OUTPUT_OUTAGE_CAUSE = "empty_output"
 #: model spent its whole completion budget reasoning (``scripts/hapax-glmcp-reviewer``). The
 #: seat cannot vote on that budget, so its family is latched out rather than burned per packet.
 REASONING_BUDGET_OUTAGE_CAUSE = "reasoning_budget_exhausted"
+#: The budget marker, as the wrapper authors it: its own name, then the token. Matched as a
+#: PREFIX, never as a substring - ``hapax-glmcp-reviewer: api error: {exc}`` carries Z.ai's
+#: message, so a token appearing anywhere inside a wrapper line would let provider text name an
+#: outage the seat never suffered. The wrapper flattens its message so it cannot open a line of
+#: its own either (``provider_text_on_one_line``), which is what makes this prefix trustworthy.
+REASONING_BUDGET_MARKER_PREFIX = f"hapax-glmcp-reviewer: {REASONING_BUDGET_OUTAGE_CAUSE}: "
 #: A line a reviewer wrapper authored itself, e.g. ``hapax-glmcp-reviewer: api error: ...``.
 #: Only these lines of a failed reviewer's stderr are kept; pass-through CLI output is not.
 REVIEWER_WRAPPER_LINE_RE = re.compile(r"\Ahapax-[a-z0-9]+(?:-[a-z0-9]+)*-reviewer: ")
@@ -2723,7 +2729,7 @@ def dispatch_reviews(
                 else process_output
             )
             reasoning_budget_exhausted = any(
-                f": {REASONING_BUDGET_OUTAGE_CAUSE}:" in line
+                line.startswith(REASONING_BUDGET_MARKER_PREFIX)
                 for line in reviewer_wrapper_lines(exc.stderr)
             )
             if exc.stderr.strip():

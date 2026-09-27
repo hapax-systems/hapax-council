@@ -139,6 +139,19 @@ class ReasoningBudgetExhausted(ProviderReplyUnusable):
     """
 
 
+def provider_text_on_one_line(value: object) -> str:
+    """Provider-controlled text flattened onto a single line.
+
+    The review dispatcher reads this wrapper's stderr for its own marker lines by line prefix,
+    and it has to: the marker is the only channel that survives a dead reviewer process. Z.ai's
+    error text is provider-controlled, so a newline inside it would otherwise let the provider
+    start a second line that looks like this wrapper's own - including one that forges the
+    named reasoning-budget outage. Collapse it here, where the text is still ours to shape.
+    """
+
+    return " ".join(str(value).splitlines()).strip() or "(no message)"
+
+
 class ZaiHttpError(ApiError):
     """Structured Z.ai HTTP failure that may be eligible for a governed fallback."""
 
@@ -1696,17 +1709,22 @@ def main(argv: list[str] | None = None) -> int:
             raise ConfigError("stdin prompt is empty; pipe a rendered review prompt on stdin")
         reply = call_glm(prompt, config, api_key)
     except ConfigError as exc:
-        print(f"hapax-glmcp-reviewer: {exc}", file=sys.stderr)
+        print(f"hapax-glmcp-reviewer: {provider_text_on_one_line(exc)}", file=sys.stderr)
         return 2
     except ApiError as exc:
         if isinstance(exc, ReasoningBudgetExhausted) or isinstance(
             exc.__cause__, ReasoningBudgetExhausted
         ):
             # the marker comes from the type, so the dispatcher can name the outage whatever
-            # the message says
-            print(f"hapax-glmcp-reviewer: {REASONING_BUDGET_EXHAUSTED}: {exc}", file=sys.stderr)
+            # the message says; the message is flattened so the provider cannot open a line of
+            # its own after the marker
+            print(
+                f"hapax-glmcp-reviewer: {REASONING_BUDGET_EXHAUSTED}: "
+                f"{provider_text_on_one_line(exc)}",
+                file=sys.stderr,
+            )
             return 1
-        print(f"hapax-glmcp-reviewer: api error: {exc}", file=sys.stderr)
+        print(f"hapax-glmcp-reviewer: api error: {provider_text_on_one_line(exc)}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("hapax-glmcp-reviewer: interrupted", file=sys.stderr)

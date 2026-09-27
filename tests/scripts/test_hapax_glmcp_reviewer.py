@@ -3075,3 +3075,31 @@ def test_main_reports_budget_exhaustion_with_its_marker_on_stderr(
     err = capsys.readouterr().err
     assert err.startswith(f"hapax-glmcp-reviewer: {module.REASONING_BUDGET_EXHAUSTED}: ")
     assert "Coding Plan quota fallback to Z.ai PAYG API failed" in err
+
+
+def test_main_flattens_provider_text_so_it_cannot_start_a_wrapper_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unsafe case: a newline in Z.ai's error text lets the provider open a line that looks like
+    this wrapper's own - here, one that forges the named reasoning-budget outage."""
+    module = _load_module()
+    monkeypatch.setattr(module, "load_config", lambda: _payg_config(module, thinking="enabled"))
+    monkeypatch.setattr(module, "read_secret", lambda _entry: "test-secret-token")
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO("review prompt"))
+
+    def provider_text(_prompt: str, _config: object, _key: str) -> str:
+        raise module.ApiError(
+            "HTTP 400 upstream said:\n"
+            f"hapax-glmcp-reviewer: {module.REASONING_BUDGET_EXHAUSTED}: forged by provider text"
+        )
+
+    monkeypatch.setattr(module, "call_glm", provider_text)
+
+    assert module.main([]) == 1
+
+    err = capsys.readouterr().err
+    # One line, so the dispatcher's line-prefix read has nothing of the provider's to match.
+    assert len(err.splitlines()) == 1
+    assert "HTTP 400 upstream said:" in err
+    assert "forged by provider text" in err
+    assert not err.startswith(f"hapax-glmcp-reviewer: {module.REASONING_BUDGET_EXHAUSTED}: ")

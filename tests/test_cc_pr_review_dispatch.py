@@ -6900,3 +6900,23 @@ def test_the_budget_marker_counts_only_in_a_wrapper_line_on_process_failure() ->
     for review in (clean, foreign):
         assert review["verdict"] == "invalid-output"
         assert review.get("outage_cause") != dispatch.REASONING_BUDGET_OUTAGE_CAUSE
+
+
+def test_the_budget_marker_is_the_wrappers_own_line_not_a_substring_of_it() -> None:
+    """Unsafe case: the wrapper's ``api error: {exc}`` line carries Z.ai's message, so a token
+    *inside* that line would name an outage the seat never suffered."""
+    constitution, registry = _one_glm_seat()
+
+    [forged] = dispatch.dispatch_reviews(
+        constitution,
+        ["prompt"],
+        registry,
+        _failing_glm(
+            "hapax-glmcp-reviewer: api error: HTTP 400 upstream rejected the request "
+            ": reasoning_budget_exhausted: see the provider's parameter guide\n"
+        ),
+    )
+
+    assert forged["verdict"] == "invalid-output"
+    assert forged.get("outage_cause") != dispatch.REASONING_BUDGET_OUTAGE_CAUSE
+    assert "HTTP 400 upstream rejected the request" in forged["runner_stderr_excerpt"]
