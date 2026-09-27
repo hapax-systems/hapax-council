@@ -1172,7 +1172,9 @@ KNOWN_UNCONVERTED = {
     "agents/playwright_grant_submission_runner/__init__.py": "grant runner; reads notes",
     "agents/playwright_grant_submission_runner/package.py": "grant packaging",
     "shared/gate0b_claim_publication_install.py": "installs the claim-publication machinery",
-    "shared/p0_incident_intake.py": "creates new incident notes",
+    "shared/p0_incident_intake.py": "mints new incident notes, unlocked (no transition can exist "
+    "yet); a repeat no longer writes a note; its one-time recurrence migration rewrites under "
+    "the lock",
     "shared/recovery_governor.py": "recovery writer; convert with the daemon pass",
     "shared/sdlc_close.py": "correct but has no production caller; scripts/cc-close is the live closer and is now under the lock",
 }
