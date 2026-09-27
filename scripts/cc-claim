@@ -607,11 +607,11 @@ if canon_enforced:
         release_pipeline_held_residue,
         resolve_applied_claim_publication,
         resolve_applied_claim_publication_for_task,
+        resolve_task_note_through_churn,
     )
     from shared.sdlc_task_store import (  # noqa: E402
         ClaimDispatchBinding,
         TaskStoreError,
-        resolve_task_note,
     )
 
     def _archive_dispatch_only_claim_residue(
@@ -1457,12 +1457,9 @@ if not canon_enforced:
     sys.exit(0)
 
 try:
-    snapshot = resolve_task_note(
-        path.parent.parent,
-        task_id,
-        state="active",
-        require_no_other_state=True,
-    )
+    # Task-store churn from any other row is retaken, bounded (M95); the exact-bytes
+    # check below still refuses if this task's own note moved.
+    snapshot = resolve_task_note_through_churn(path.parent.parent, task_id)
     if snapshot.path != path.resolve() or snapshot.content != note_before:
         raise TaskStoreError(
             "claim_publication_task_changed_during_preflight",

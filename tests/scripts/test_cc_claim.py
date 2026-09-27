@@ -2498,6 +2498,19 @@ def test_the_lease_checks_release_vocabulary_is_the_ssot() -> None:
     )
 
 
+def test_the_claim_preflight_resolves_through_the_churn_retake() -> None:
+    # M95: the preflight's embedded Python runs isolated (-I), so no test can race churn
+    # into it; the retake itself is tested in tests/shared/test_sdlc_claim.py. This pins
+    # that the preflight uses it, and that no bare resolve_task_note is left in cc-claim.
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "snapshot = resolve_task_note_through_churn(path.parent.parent, task_id)" in source
+    assert "resolve_task_note(" not in source, (
+        "scripts/cc-claim must resolve through resolve_task_note_through_churn, "
+        "or task-store churn from any other row holds the claim (M95)"
+    )
+
+
 def _expire(home: Path, *, hours: int = 7) -> None:
     aged = time.time() - hours * 3600
     for paths in _role_sidecars(home).values():
