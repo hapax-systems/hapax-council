@@ -3184,7 +3184,11 @@ def classify_pr(
             changed_files=pr.files,
             changed_file_count=pr.changed_files_count,
         )
-        arm = assess_release_auto_arm(task.frontmatter, verified_checks=verified_checks)
+        # The estate assessment, never the bare canon map: the audio/live-egress
+        # class also needs its changed-file bound (audio evidence, pin coverage).
+        arm = assess_release_auto_arm_estate(
+            task.frontmatter, verified_checks=verified_checks, changed_files=pr.files
+        )
         if arm.needs_arming:
             if arm.eligible:
                 auto_arm = True
@@ -3856,8 +3860,8 @@ def arm_release_for_task(
             changed_files=changed_files,
             changed_file_count=changed_file_count,
         )
-    pre_arm_assessment = assess_release_auto_arm(
-        current_frontmatter, verified_checks=verified_checks
+    pre_arm_assessment = assess_release_auto_arm_estate(
+        current_frontmatter, verified_checks=verified_checks, changed_files=changed_files
     )
     if not pre_arm_assessment.eligible:
         if pre_arm_assessment.armed:
