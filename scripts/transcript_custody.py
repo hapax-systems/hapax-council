@@ -215,6 +215,9 @@ class PathCount:
     node_type: str | None = None  # the snapshot's node type at exactly ``path``; None when absent
     files: int = 0
     credential_files: list[str] = field(default_factory=list)
+    # Symlinks inside the path: restic records the link, not what it points to, so a transcript subtree reached
+    # through one is not in the snapshot.
+    nested_symlinks: list[str] = field(default_factory=list)
 
 
 def count_snapshot(nodes: Iterable[Mapping], paths: Sequence[str]) -> dict[str, PathCount]:
@@ -237,6 +240,8 @@ def count_snapshot(nodes: Iterable[Mapping], paths: Sequence[str]) -> dict[str, 
                 counts[p].files += 1
                 if is_credential(os.path.basename(npath)):
                     counts[p].credential_files.append(npath)
+            elif npath.startswith(prefix) and ntype == "symlink":
+                counts[p].nested_symlinks.append(npath)
     return counts
 
 
@@ -297,6 +302,12 @@ def verify(
         if c.credential_files:
             failures.append(
                 f"credential: {rp.real} holds credential file(s) {sorted(c.credential_files)[:3]}"
+            )
+        if c.nested_symlinks:
+            failures.append(
+                f"nested symlink: {rp.real} holds {len(c.nested_symlinks)} symlink(s) "
+                f"{sorted(c.nested_symlinks)[:3]}; the snapshot has the links, not their targets. Add each "
+                "target's real path to the path table"
             )
         prev = (previous or {}).get(rp.real)
         if prev is not None and prev.files > 0 and c.files < prev.files * (1 - max_drop):

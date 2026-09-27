@@ -45,8 +45,8 @@ def _mount_point(path: str) -> str:
 
 def _require_repository(repo: str) -> None:
     """A local repository must exist and sit on its own mount: an unmounted NAS path falls through to the root
-    filesystem, where restic would find no repository or a stale one (the unit's RequiresMountsFor= cannot order
-    a user unit against the system NAS mount)."""
+    filesystem, where restic would find no repository or a stale one. The unit's RequiresMountsFor= gives only
+    After= on the NAS mount in the user manager, with no Requires=, so this check is the guard."""
 
     if ":" in repo.split("/", 1)[0]:  # rclone:, sftp:, s3: ... a remote repository
         return
@@ -82,26 +82,41 @@ def _restic_env() -> dict[str, str]:
     return env
 
 
-def _count(real: str, kind: str) -> tuple[int, int]:
+def _count(real: str, kind: str) -> tuple[int, int, list[str]]:
+    """Files, bytes and nested symlinks under ``real``. os.walk lists a symlink to a directory among the
+    directories and does not descend it, so both lists are checked for links."""
+
     if kind == "file":
-        return 1, os.lstat(real).st_size
+        return 1, os.lstat(real).st_size, []
     files = size = 0
-    for root, _dirs, names in os.walk(real, followlinks=False):
+    links: list[str] = []
+    for root, dirs, names in os.walk(real, followlinks=False):
+        links += [os.path.join(root, d) for d in dirs if os.path.islink(os.path.join(root, d))]
         for name in names:
+            full = os.path.join(root, name)
             try:
-                st = os.lstat(os.path.join(root, name))
+                st = os.lstat(full)
             except OSError:
+                continue
+            if os.path.islink(full):
+                links.append(full)
                 continue
             files += 1
             size += st.st_size
-    return files, size
+    return files, size, links
 
 
 def cmd_inventory(args: argparse.Namespace) -> int:
     res = tc.resolve_paths(Path.home())
     rows = []
+    problems = list(res.problems)
     for p in res.paths:
-        files, size = _count(p.real, p.kind)
+        files, size, links = _count(p.real, p.kind)
+        if links:
+            problems.append(
+                f"nested symlink: {p.real} holds {len(links)} symlink(s) {sorted(links)[:3]}; the backup would "
+                "record the links, not their targets. Add each target's real path to the path table"
+            )
         rows.append(
             {
                 "harness": p.harness,
@@ -111,19 +126,20 @@ def cmd_inventory(args: argparse.Namespace) -> int:
                 "via_symlink": p.via_symlink,
                 "files": files,
                 "bytes": size,
+                "nested_symlinks": len(links),
             }
         )
     if args.json:
-        print(json.dumps({"host": socket.gethostname(), "paths": rows, "problems": res.problems}))
+        print(json.dumps({"host": socket.gethostname(), "paths": rows, "problems": problems}))
     else:
         for r in rows:
             link = " (via symlink)" if r["via_symlink"] else ""
             print(
                 f"{r['harness']:<12} {r['files']:>9} files {r['bytes'] / 1e6:>10.1f} MB  {r['real']}{link}"
             )
-        for problem in res.problems:
+        for problem in problems:
             print(f"PROBLEM {problem}", file=sys.stderr)
-    return 1 if res.problems else 0
+    return 1 if problems else 0
 
 
 def cmd_backup(args: argparse.Namespace) -> int:

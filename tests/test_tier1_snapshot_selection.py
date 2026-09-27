@@ -248,11 +248,10 @@ def test_dump_check_reads_the_file_line_not_the_snapshot_header(tmp_path: Path) 
     assert result.stdout.strip() == "", result.stdout
 
 
-def test_gdrive_materialize_reports_a_failing_tier1_query(tmp_path: Path) -> None:
+def _gdrive_materialize(tmp_path: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
     text = (REPO / "scripts/hapax-backup-gdrive-critical").read_text(encoding="utf-8")
     start = text.index("materialize_validated_dump() {")
     end = text.index("\nappend_required() {", start)
-    env = _fake_bin(tmp_path, "exit 1\n")
     probe = tmp_path / "probe.sh"
     probe.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n"
@@ -263,9 +262,34 @@ def test_gdrive_materialize_reports_a_failing_tier1_query(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     probe.chmod(0o755)
-    result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=30, env=env)
+    return subprocess.run([str(probe)], capture_output=True, text=True, timeout=30, env=env)
+
+
+def test_gdrive_materialize_reports_a_failing_tier1_query(tmp_path: Path) -> None:
+    result = _gdrive_materialize(tmp_path, _fake_bin(tmp_path, "exit 1\n"))
     assert result.returncode == 1
     assert "cannot list Tier-1 snapshots" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")
+def test_gdrive_materialize_dumps_the_file_line_not_the_snapshot_header(tmp_path: Path) -> None:
+    """gdrive-critical's own copy of the header fix: the listing's header names the dump before the file's line, and
+    the dump must be taken from the file line's path."""
+
+    dump = "/store/llm-data/postgres-dumps/postgres-all.sql"
+    env = _fake_bin(
+        tmp_path,
+        'if [[ "$1" == snapshots ]]; then echo \'[{"id":"t1","time":"2026-09-26T00:00:00Z"}]\'; exit 0; fi\n'
+        'if [[ "$1" == ls ]]; then\n'
+        f"  echo 'snapshot t1 of [{dump} /etc/x] at 2026-09-26'\n"
+        f"  echo '-rw-r--r--  1000  1000 6796844321 2026-09-26 22:22:20 {dump}'\n"
+        "  exit 0\nfi\n"
+        f'if [[ "$1" == dump && "$2" == t1 && "$3" == {dump} ]]; then echo DUMP-OK; exit 0; fi\n'
+        'echo "unexpected restic $*" >&2; exit 1\n',
+    )
+    result = _gdrive_materialize(tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "dump" / "postgres-all.sql").read_text() == "DUMP-OK\n"
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq absent")

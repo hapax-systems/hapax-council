@@ -10,8 +10,10 @@ OnFailure=notify-failure@%n.service
 # files under every transcript path. A missing, symlinked, empty or dropped path, or a credential file, fails the
 # unit, and OnFailure notifies with the remedy from the journal. The repository is the existing tier-1 NAS
 # repository; the tag tier1-transcripts keeps these snapshots in their own retention group. The code is
-# scripts/transcript_custody.py in the activation worktree below. RequiresMountsFor= cannot order a user unit against
-# the system NAS mount, so the CLI itself refuses a repository that is missing or on the root filesystem.
+# scripts/transcript_custody.py in the activation worktree below. In the user manager, RequiresMountsFor= gives only
+# After=mnt-nas-backups.mount, with no Requires= (measured with a transient unit, 2026-09-27): it orders the run
+# after a mount in progress, but does not stop the run when the NAS is absent. The CLI is that guard: it refuses a
+# repository that is missing or on the root filesystem.
 
 [Service]
 Type=oneshot

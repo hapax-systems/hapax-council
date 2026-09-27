@@ -162,35 +162,90 @@ def test_forget_protection_rule() -> None:
 
 
 _REPO = Path(__file__).resolve().parents[1]
-_FORGET = __import__("re").compile(r"\b(?:restic|run_restic)\s+forget\b")
+# restic (or the run_restic wrapper), any global options such as ``-r "$repo"``, then the forget subcommand: shell
+# lines and Python argv lists alike.
+_FORGET = __import__("re").compile(r"""\b(?:restic|run_restic)\b['"]?[^#\n]*?['"]?\bforget\b""")
+
+
+def _forget_commands(text: str) -> list[tuple[int, list[str]]]:
+    """Every ``restic … forget`` command in ``text``, as (1-based line, argument tokens), with backslash
+    continuation lines joined and quotes, commas and brackets stripped from the tokens."""
+
+    lines = text.splitlines()
+    found = []
+    i = 0
+    while i < len(lines):
+        start, parts = i, [lines[i].rstrip("\\").strip()]
+        while lines[i].rstrip().endswith("\\") and i + 1 < len(lines):
+            i += 1
+            parts.append(lines[i].rstrip("\\").strip())
+        i += 1
+        logical = " ".join(parts)
+        if logical.lstrip().startswith("#") or not _FORGET.search(logical):
+            continue
+        tokens = [t.strip("\"',[]()") for t in logical.split()]
+        found.append((start + 1, [t for t in tokens if t]))
+    return found
+
+
+def _tracked_files() -> list[Path]:
+    """Every tracked file that can run: the whole tree but tests, docs and Markdown (git ls-files; a plain walk
+    when the checkout has no git)."""
+
+    try:
+        names = subprocess.run(
+            ["git", "-C", str(_REPO), "ls-files"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        ).stdout.splitlines()
+        paths = [_REPO / n for n in names]
+    except (OSError, subprocess.SubprocessError):
+        paths = [p for p in _REPO.rglob("*") if ".git" not in p.parts and ".venv" not in p.parts]
+    return sorted(
+        p
+        for p in paths
+        if p.is_file()
+        and p.relative_to(_REPO).parts[0] not in {"tests", "docs"}
+        and p.suffix not in {".md", ".pyc"}
+        and p.name != "transcript_custody.py"
+    )
 
 
 def _forget_invocations() -> list[tuple[str, list[str]]]:
-    """Every ``restic forget`` command in the tree's scripts and units, with its continuation lines joined."""
+    """Every ``restic … forget`` command in the tree's tracked, runnable files."""
 
     found = []
-    for base in ("scripts", "systemd", "agents", "shared"):
-        for path in sorted((_REPO / base).rglob("*")):
-            if (
-                not path.is_file()
-                or path.suffix in {".pyc", ".md"}
-                or path.name == "transcript_custody.py"
-            ):
-                continue
-            try:
-                lines = path.read_text(encoding="utf-8").splitlines()
-            except (UnicodeDecodeError, OSError):
-                continue
-            for i, line in enumerate(lines):
-                if not _FORGET.search(line) or line.lstrip().startswith("#"):
-                    continue
-                command = [line.rstrip("\\").strip()]
-                j = i
-                while lines[j].rstrip().endswith("\\") and j + 1 < len(lines):
-                    j += 1
-                    command.append(lines[j].rstrip("\\").strip())
-                found.append((f"{path.relative_to(_REPO)}:{i + 1}", " ".join(command).split()))
+    for path in _tracked_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if "forget" not in text:
+            continue
+        for line, args in _forget_commands(text):
+            found.append((f"{path.relative_to(_REPO)}:{line}", args))
     return found
+
+
+def test_the_forget_scan_sees_every_command_form() -> None:
+    """The scan must see global options between restic and forget, the run_restic wrapper, continuation lines and
+    Python argv lists, and must not match comments."""
+
+    sample = "\n".join(
+        [
+            'restic -r "$repo" forget --prune --keep-daily 7',  # 1: global option before forget
+            "run_restic forget \\",  # 2-3: wrapper, continuation line
+            "    --keep-tag tier1-transcripts --prune",
+            'subprocess.run(["restic", "--repo", repo, "forget", "--keep-daily", "7"])',  # 4: Python argv
+            "# restic forget --prune",  # 5: a comment
+            "restic snapshots --json",  # 6: not a forget
+        ]
+    )
+    commands = _forget_commands(sample)
+    assert [line for line, _ in commands] == [1, 2, 4]
+    assert [tc.forget_protects_transcripts(args) for _, args in commands] == [False, True, False]
 
 
 def test_no_forget_in_the_tree_can_prune_transcript_snapshots() -> None:
@@ -321,6 +376,93 @@ def test_cli_inventory_json_and_problem_exit(tmp_path: Path) -> None:
     bad = _cli(env, "inventory", "--json")
     assert bad.returncode == 1
     assert any("dangling" in p for p in json.loads(bad.stdout)["problems"])
+
+
+def test_cli_inventory_reports_a_nested_symlink(tmp_path: Path) -> None:
+    """A transcript subtree reached through a symlink inside a table path would be backed up as the link: the
+    inventory names it and exits 1."""
+
+    home = _home(tmp_path)
+    elsewhere = tmp_path / "elsewhere-sessions"
+    elsewhere.mkdir()
+    (elsewhere / "s9.jsonl").write_text("{}\n")
+    (home / ".claude/projects/p2").symlink_to(elsewhere)
+    result = _cli(_cli_env(tmp_path, home), "inventory", "--json")
+    assert result.returncode == 1
+    out = json.loads(result.stdout)
+    assert any("nested symlink" in p and "p2" in p for p in out["problems"])
+    assert {r["real"]: r for r in out["paths"]}[str(home / ".claude/projects")][
+        "nested_symlinks"
+    ] == 1
+
+
+def test_a_nested_symlink_in_the_snapshot_fails() -> None:
+    rp = tc.ResolvedPath("claude", "~/.claude/projects", "/h/.claude/projects", "dir", False, 1)
+    nodes = _nodes(
+        {
+            "/h/.claude/projects": "dir",
+            "/h/.claude/projects/p1/s1.jsonl": "file",
+            "/h/.claude/projects/p2": "symlink",
+        }
+    )
+    failures = tc.verify([rp], tc.count_snapshot(nodes, [rp.real]), snapshot_targets=[rp.real])
+    assert any(f.startswith("nested symlink: /h/.claude/projects") for f in failures)
+
+
+def test_cli_backup_dry_run_prints_the_restic_command(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    result = _cli(_cli_env(tmp_path, home), "backup", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(result.stdout)
+    assert argv[:4] == ["restic", "backup", "--tag", tc.SNAPSHOT_TAG]
+    exclude = argv.index("auth.json")
+    assert argv[exclude - 1 : exclude + 1] == ["--exclude", "auth.json"]
+    assert str(tmp_path / "data2/agent-state/codex/sessions") in argv  # the real path, not ~/.codex
+    assert str(home / ".codex/sessions") not in argv
+
+
+def _cli_module():
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+
+    loader = SourceFileLoader("hapax_transcript_custody_cli", str(CLI))
+    module = module_from_spec(spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+def test_cli_refuses_a_repository_on_the_root_filesystem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unmounted NAS path falls through to the root filesystem; a repository found there is refused."""
+
+    cli = _cli_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "config").write_text("")
+    monkeypatch.setattr(cli, "_mount_point", lambda _path: "/")
+    with pytest.raises(SystemExit, match="is on the root filesystem"):
+        cli._require_repository(str(repo))
+    monkeypatch.setattr(cli, "_mount_point", lambda _path: str(tmp_path))
+    cli._require_repository(str(repo))  # on its own mount: accepted
+    cli._require_repository("rclone:gdrive:somewhere")  # a remote repository is not a local path
+
+
+@pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
+def test_cli_verify_fails_a_nested_symlink_through_real_restic(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    home = _home(tmp_path)
+    elsewhere = tmp_path / "elsewhere-sessions"
+    elsewhere.mkdir()
+    (elsewhere / "s9.jsonl").write_text("{}\n")
+    (home / ".claude/projects/p2").symlink_to(elsewhere)
+    env = _cli_env(tmp_path, home)
+    subprocess.run(["restic", "init"], env=env, capture_output=True, check=True, timeout=120)
+    assert _cli(env, "backup").returncode == 0
+    result = _cli(env, "verify")
+    assert result.returncode == 1
+    assert "nested symlink:" in result.stderr and "p2" in result.stderr
 
 
 @pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed on this host")
