@@ -64,7 +64,10 @@ check_snapshot_age() {
     # repository also takes tier1-transcripts and monocle snapshots, which would mask a stalled tier-1 job.
     local latest_time
     if [[ -n "$tier1" ]]; then
-        latest_time="$(RESTIC_PASSWORD="$password" RESTIC_REPOSITORY="$repo" tier1_latest_snapshot_time)"
+        latest_time="$(RESTIC_PASSWORD="$password" RESTIC_REPOSITORY="$repo" tier1_latest_snapshot_time)" || {
+            FAILURES+=("$label: cannot read tier-1 snapshots (restic or jq failed); check the NAS mount and \`restic snapshots\`")
+            return
+        }
     else
         latest_time=$(RESTIC_PASSWORD="$password" RESTIC_REPOSITORY="$repo" restic snapshots --no-lock --json 2>/dev/null \
             | jq -r 'max_by(.time).time // empty' 2>/dev/null) || {
@@ -144,12 +147,18 @@ check_postgres_dump_in_snapshot() {
     # snapshot of any host and tag (scripts/lib/tier1-snapshot.sh).
     local snap_id
     if [[ -n "$tier1" ]]; then
-        snap_id="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" tier1_latest_snapshot_id)"
+        snap_id="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" tier1_latest_snapshot_id)" || {
+            FAILURES+=("$label: dump-check cannot read tier-1 snapshots (restic or jq failed); check the NAS mount and \`restic snapshots\`")
+            return
+        }
     else
         snap_id="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic snapshots --no-lock --json 2>/dev/null \
             | jq -r 'max_by(.time).id // empty' 2>/dev/null)" || true
     fi
-    [[ -z "$snap_id" ]] && { FAILURES+=("$label: dump-check found no snapshot"); return; }
+    [[ -z "$snap_id" ]] && {
+        FAILURES+=("$label: dump-check found no snapshot; run the backup job, then \`restic snapshots\` to confirm")
+        return
+    }
     local listing
     listing="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic ls --long "$snap_id" 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
     [[ -z "$listing" ]] && { FAILURES+=("$label: snapshot $snap_id contains NO postgres-all.sql"); return; }

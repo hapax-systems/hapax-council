@@ -16,10 +16,13 @@
 TIER1_HOST="${HAPAX_TIER1_HOST:-hapax-podium}"
 TIER1_TAG="${HAPAX_TIER1_TAG:-tier1-local}"
 
+# Prints nothing and returns 0 when there is no tier-1 snapshot. Returns non-zero when restic or jq fails, whatever
+# the caller's pipefail setting; callers guard the call and report, because under `set -e` an unguarded failure
+# would abort the script (the watchdog would then skip its remaining checks and its alert).
 _tier1_newest() {
-    local field="$1"
-    restic snapshots --no-lock --json --host "$TIER1_HOST" --tag "$TIER1_TAG" 2>/dev/null \
-        | jq -r "max_by(.time).${field} // empty" 2>/dev/null
+    local field="$1" out
+    out="$(restic snapshots --no-lock --json --host "$TIER1_HOST" --tag "$TIER1_TAG" 2>/dev/null)" || return 1
+    printf '%s' "$out" | jq -r "max_by(.time).${field} // empty" 2>/dev/null
 }
 
 tier1_latest_snapshot_id() {

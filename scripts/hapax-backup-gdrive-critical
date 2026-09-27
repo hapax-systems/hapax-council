@@ -134,7 +134,11 @@ materialize_validated_dump() {
     # The NAS repository also holds tier1-transcripts and monocle snapshots, so the tier-1 snapshot is named by
     # host and tag (scripts/lib/tier1-snapshot.sh), once, and listed and dumped by that id.
     local listing snap_path snap_id
-    snap_id="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" tier1_latest_snapshot_id)"
+    snap_id="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" tier1_latest_snapshot_id)" || {
+        echo "ERROR: cannot list Tier-1 snapshots in $TIER1_REPO (restic or jq failed)" >&2
+        echo "Next: check the NAS mount and \`restic snapshots\` against $TIER1_REPO, then re-run" >&2
+        exit 1
+    }
     [[ -n "$snap_id" ]] || {
         echo "ERROR: no Tier-1 snapshot (host $TIER1_HOST, tag $TIER1_TAG) in $TIER1_REPO" >&2
         echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
