@@ -55,6 +55,30 @@ DEFAULT_TARGETS = (
     REPO_ROOT / "agents" / "omg_web_builder" / "static" / "index.html",
     REPO_ROOT / "docs" / "publication-drafts",
 )
+#: Built public-site output is a SEPARATE surface from the registry's sources: R8's spec call-out
+#: is the site's `verify-dist`, which the registry does not name. `--built-site-dir` names one
+#: (repeatable); this environment default lets a host that holds the site checkout scan its built
+#: pages without a flag.
+PUBLIC_SITE_DIST_ENV = "HAPAX_PUBLIC_SITE_DIST"
+
+
+def built_site_dirs(explicit: list[Path]) -> list[Path]:
+    """Built-site directories to scan: explicit flags, else the env default when it exists.
+
+    An explicitly named directory is returned even when missing, so ``iter_files`` fails loudly:
+    naming a built output and scanning nothing is the silent pass this exists to prevent. The
+    environment default is included only when it exists, so a host without the site checkout is
+    not a false failure.
+    """
+    if explicit:
+        return list(explicit)
+    env_value = os.environ.get(PUBLIC_SITE_DIST_ENV, "").strip()
+    if not env_value:
+        return []
+    candidates = [Path(part) for part in env_value.split(os.pathsep) if part]
+    return [path for path in candidates if path.exists()]
+
+
 SCANNABLE_SUFFIXES = {".cff", ".html", ".j2", ".json", ".md", ".py", ".yaml", ".yml"}
 TOKEN_CLAIM_RULE = "Hapax.TokenCapitalClaimCeiling"
 SOURCE_DISPOSITION_RULE = "Hapax.PublicSurfaceSourceDisposition"
@@ -1209,6 +1233,18 @@ def main(argv: list[str] | None = None) -> int:
         help="treat warnings as failures, not only errors",
     )
     parser.add_argument(
+        "--built-site-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "a built public-site output directory to scan by block units (repeatable). R8's "
+            "register carriage lint runs on built pages as well as sources; when unset, the "
+            f"{PUBLIC_SITE_DIST_ENV} environment default is used if it exists. The canonical "
+            "invocation is in docs/runbooks/public-surface-scrutiny-gate-v2.md"
+        ),
+    )
+    parser.add_argument(
         "--github-material-envelope",
         type=Path,
         help="machine-readable envelope for GitHub README/profile/package/release claims",
@@ -1325,7 +1361,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    paths = args.paths or public_surface_registry_paths(public_surface_registry)
+    paths = list(args.paths or public_surface_registry_paths(public_surface_registry))
+    paths.extend(built_site_dirs(args.built_site_dir))
     if github_public_surface_report is not None:
         findings.extend(
             check_github_public_surface_drift(

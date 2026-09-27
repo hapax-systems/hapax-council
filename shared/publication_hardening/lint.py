@@ -507,20 +507,37 @@ _REGISTER_BLOCK_TAGS = "p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption"
 
 
 def _register_html_units(text: str) -> list[tuple[int, str]]:
-    """Block units from built HTML, with the 1-based line of each opening tag."""
+    """Leaf block units from built HTML, with the 1-based line of each opening tag.
+
+    A body that itself contains a block element is not a unit: an outer ``<li>`` or
+    ``<blockquote>`` holding ``<p>``s must yield the ``<p>``s, not one merged unit (codex: the
+    outer tag swallowed its nested paragraphs). The body is tempered against any block open/close
+    tag so the innermost blocks win, and inline tags (``<em>``, ``<a>``) stay inside their unit.
+    """
+    block = _REGISTER_BLOCK_TAGS
+    body = rf"(?:(?!<\s*/?\s*(?:{block})\b).)*"
     units: list[tuple[int, str]] = []
-    for match in re.finditer(
-        rf"<({_REGISTER_BLOCK_TAGS})\b[^>]*>(.*?)</\1>", text, re.IGNORECASE | re.DOTALL
-    ):
-        body = re.sub(r"<[^>]+>", " ", match.group(2))
-        body = re.sub(r"\s+", " ", body).strip()
-        if body:
-            units.append((text[: match.start()].count("\n") + 1, body))
+    for match in re.finditer(rf"<({block})\b[^>]*>({body})</\1>", text, re.IGNORECASE | re.DOTALL):
+        inner = re.sub(r"<[^>]+>", " ", match.group(2))
+        inner = re.sub(r"\s+", " ", inner).strip()
+        if inner:
+            units.append((text[: match.start()].count("\n") + 1, inner))
     return units
 
 
-def _register_looks_like_html(text: str) -> bool:
-    return bool(re.search(r"<(?:p|h[1-6]|li|td|th|dd|dt|blockquote|figcaption)\b", text, re.I))
+#: File extensions linted as built HTML. Chosen by extension, never by content.
+_REGISTER_HTML_SUFFIXES = (".html", ".htm")
+
+
+def _register_parser_mode(file_label: str) -> str:
+    """``html`` or ``text``, chosen by the file's own extension.
+
+    A content sniff was a fail-open (gemini): matching ``<p`` anywhere made a Markdown draft that
+    merely *mentions* ``<p>`` be read as HTML, so its ordinary paragraphs were skipped and the
+    gate passed it silently. The extension is the honest signal; a label with no path (as
+    ``lint_text`` passes) is text.
+    """
+    return "html" if Path(file_label).suffix.lower() in _REGISTER_HTML_SUFFIXES else "text"
 
 
 def check_register_carriage_text(
@@ -534,7 +551,11 @@ def check_register_carriage_text(
     the unit's shape names one — the documented keep disposition it may be recorded under.
     """
     findings: list[LintFinding] = []
-    units = _register_html_units(text) if _register_looks_like_html(text) else _register_units(text)
+    units = (
+        _register_html_units(text)
+        if _register_parser_mode(file_label) == "html"
+        else _register_units(text)
+    )
     for lineno, unit in units:
         if _register_words(unit) < 3:
             continue

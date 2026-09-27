@@ -59,3 +59,39 @@ The gate consumes the Token Capital claim re-gate receipt, the public-surface
 source-of-truth reconciliation receipt, and the publication freshness snapshot
 from `scripts/publication-freshness-audit.py`. It is not a replacement for
 legal, privacy, entity, citation, or operator override review.
+
+## Built site pages (R8 register carriage)
+
+The registry names the *sources*. A built public-site output is a second,
+separate surface: R8's spec call-out for the site's `verify-dist`. The gate
+scans built pages by block units — a `<li>` or `<blockquote>` holding `<p>`s
+yields the paragraphs, not one merged unit — and runs the register carriage
+lint (`Hapax.RegisterCarriage`, the six devices of the HACA-C §Register
+amendment) over them beside `Hapax.FormalRegister`.
+
+The canonical, reproducible invocation over a built output is:
+
+```bash
+uv run python scripts/check-public-surface-claims.py --warnings-fail \
+  --built-site-dir "$HOME/projects/hrl-portal/dist"
+```
+
+`--built-site-dir` is repeatable and is named explicitly, so naming a directory
+that is missing fails loudly rather than scanning nothing. A host that holds the
+site checkout may instead export the default:
+
+```bash
+export HAPAX_PUBLIC_SITE_DIST="$HOME/projects/hrl-portal/dist"   # pathsep-separated
+```
+
+An env-provided directory is included only when it exists, so a host without the
+site checkout is not a false failure. The site repo's own `scripts/verify-dist.mjs`
+owns its dist pins; this gate is the source-side check that reads the same built
+pages. The register findings are `warning` level (over-inclusive by design; every
+hit is disposed fix / keep-with-reason / carry), so add `--warnings-fail` on the
+release path to make them block.
+
+The parser is chosen by file extension (`.html`/`.htm` are HTML; everything else
+is text). It is deliberately *not* chosen by content: a Markdown draft that
+mentions `<p>` must still be read as text, or its paragraphs are skipped and the
+gate passes it silently.

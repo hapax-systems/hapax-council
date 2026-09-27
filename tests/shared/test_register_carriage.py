@@ -235,6 +235,31 @@ def test_a_comma_enumeration_carries_the_literal_enumeration_keep() -> None:
     ), [f.message for f in findings]
 
 
+def test_the_parser_is_chosen_by_extension_not_by_stray_html_in_the_text() -> None:
+    """gemini's fail-open: a content sniff read a Markdown draft that mentions ``<p>`` as HTML.
+
+    HTML mode extracts block-tag text only, so a draft with no ``<p>…</p>`` pair yielded no units
+    and the gate passed it silently. Red before the fix: this draft returns no findings.
+    """
+    draft = "The prose mentions the tag <p> as an example.\n\nOne front door. Many working parts.\n"
+    findings = check_register_carriage_text(draft, file_label="draft.md")
+    assert any("One front door" in f.message for f in findings), [f.message for f in findings]
+
+
+def test_nested_blocks_do_not_merge_units() -> None:
+    """codex: an outer ``<li>``/``<blockquote>`` swallowed its nested ``<p>``s into one unit."""
+    page = (
+        "<ul><li><p>One front door. Many working parts.</p>"
+        "<p>The catalogue lists these records.</p></li></ul>"
+    )
+    messages = [f.message for f in check_register_carriage_text(page, file_label="page.html")]
+    assert any("One front door. / Many working parts." in m for m in messages), messages
+    assert any("The catalogue lists these records." in m for m in messages), messages
+    assert not any("front door" in m and "catalogue" in m for m in messages), (
+        f"nested blocks were merged into one unit: {messages}"
+    )
+
+
 def test_a_built_page_is_linted_by_its_block_units() -> None:
     """Tag-stripped text merges blocks and invents units; block units are the built-page input."""
     page = (

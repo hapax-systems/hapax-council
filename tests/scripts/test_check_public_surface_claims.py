@@ -7,6 +7,10 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
 
 from shared.github_public_surface import GitHubPublicSurfaceReport
 from shared.publication_freshness import (
@@ -546,15 +550,13 @@ def test_public_surface_claim_gate_passes_scoped_claim(tmp_path: Path) -> None:
     assert result.returncode == 0
     # Before R8 was wired into the gate this fixture produced no finding at all, so this test read
     # `stdout == ""`. R8 now runs over every scanned file and is over-inclusive by design: the
-    # short neutral sentence earns the documented device-3 register warning. The relaxation is
-    # exactly that one rule: the claim gates this test guards stay quiet, and the warning present
-    # is the register carriage one, at device 3 — asserted, not ignored.
-    assert [
-        line for line in result.stdout.splitlines() if "Hapax.RegisterCarriage" not in line
-    ] == []
-    assert "Hapax.RegisterCarriage" in result.stdout
-    assert "Device 3" in result.stdout
-    assert "Hapax.PublicClaimOverreach" not in result.stdout
+    # short neutral sentence earns exactly one documented device-3 register warning. An ALLOWLIST,
+    # not a denylist: the complete output is the one expected line, so any other finding fails.
+    assert result.stdout.splitlines() == [
+        f"{doc}:1: warning: Hapax.RegisterCarriage: Device 3 (aphorisms, maxims, slogans, "
+        "taglines and closing flourishes): 'Missing test evidence blocks the governed push "
+        "path.'. Rewrite as a plain statement that carries the same content."
+    ]
 
 
 def test_public_surface_claim_gate_warnings_fail_escalates(tmp_path: Path) -> None:
@@ -601,6 +603,68 @@ def test_public_surface_gate_register_carriage_escalates_under_warnings_fail(
 
     assert result.returncode == 1
     assert "Hapax.RegisterCarriage" in result.stdout
+
+
+def test_public_surface_gate_scans_built_site_pages_by_block_units(tmp_path: Path) -> None:
+    """codex: the built site pages must be scanned, not only the registry's sources.
+
+    `--built-site-dir` names a built output (R8's spec call-out for the site's `verify-dist`). The
+    page is linted by block units: the register device in a paragraph is found, and the separate
+    nav anchors are not merged into the paragraph's unit.
+    """
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    page = dist / "register.html"
+    page.write_text(
+        "<html><body><nav><a href='/'>Research</a><a href='/r'>Register</a></nav>"
+        "<p>One front door. Many working parts.</p></body></html>",
+        encoding="utf-8",
+    )
+    # The positional document has an unscanned suffix, so the register finding can only come from
+    # the built directory — an assertion on a scanned positional file would not pin the wiring.
+    doc = tmp_path / "quiet.txt"
+    doc.write_text("One front door. Many working parts.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(
+        doc, token_report, source_reconciliation, "--built-site-dir", str(dist), "--json"
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    findings = json.loads(result.stdout)
+    register = [f for f in findings if f["rule"] == "Hapax.RegisterCarriage"]
+    assert register, findings
+    assert all(f["file"] == str(page) for f in register), register
+    assert any("One front door" in f["message"] for f in register), register
+    assert not any("Research" in f["message"] and "front door" in f["message"] for f in register), (
+        register
+    )
+
+
+def test_public_surface_gate_scans_the_built_site_env_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host with the built output present scans it without a flag (`HAPAX_PUBLIC_SITE_DIST`)."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "page.html").write_text(
+        "<p>One front door. Many working parts.</p>\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HAPAX_PUBLIC_SITE_DIST", str(dist))
+    doc = tmp_path / "copy.md"
+    doc.write_text("Scoped public copy.\n", encoding="utf-8")
+    token_report = _write_token_report(tmp_path / "token-report.json")
+    source_reconciliation = _write_source_reconciliation(tmp_path / "source-report.json")
+
+    result = _run_gate(doc, token_report, source_reconciliation, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(
+        "One front door" in f["message"]
+        for f in json.loads(result.stdout)
+        if f["rule"] == "Hapax.RegisterCarriage"
+    )
 
 
 def test_public_surface_gate_offline_mode_cannot_authorize_release(
@@ -777,15 +841,19 @@ def test_public_surface_gate_allows_api_only_receipt_disposition(tmp_path: Path)
 
     assert result.returncode == 0
     # R8 is over-inclusive by design: "Scoped governed-path copy." earns the documented device-3
-    # register warning. The relaxation is that one rule only — the api-only receipt disposition
-    # this test guards is still clean, at the rule the test names, not at blanket silence.
-    assert [
-        line for line in result.stdout.splitlines() if "Hapax.RegisterCarriage" not in line
-    ] == []
-    assert "Hapax.RegisterCarriage" in result.stdout
-    assert "Device 3" in result.stdout
-    assert "Hapax.PublicSurfaceSourceDisposition" not in result.stdout
-    assert "Hapax.PublicClaimOverreach" not in result.stdout
+    # and device-6 register warnings, and nothing else. An ALLOWLIST, not a denylist: the complete
+    # output is these two lines, so the api-only receipt disposition is clean and any other
+    # finding fails this test.
+    expected = [
+        "Device 3 (aphorisms, maxims, slogans, taglines and closing flourishes)",
+        "Device 6 (dramatic one-line paragraphs, and series of short declaratives or imperatives "
+        "for emphasis)",
+    ]
+    assert result.stdout.splitlines() == [
+        f"{doc}:1: warning: Hapax.RegisterCarriage: {device}: 'Scoped governed-path copy.'. "
+        f"Rewrite as a plain statement that carries the same content."
+        for device in expected
+    ]
 
 
 def test_public_surface_gate_fails_publication_freshness_blocker(tmp_path: Path) -> None:
