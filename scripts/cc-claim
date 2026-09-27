@@ -376,6 +376,9 @@ unset HAPAX_CHARTER_KEEP_TASK || true
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
+  # An unreadable marker reads as empty here and is skipped, while the Python release
+  # (shared.sdlc_claim._other_live_markers) treats one as live and holds, so the pair fails
+  # closed. Keep them paired; aligning this side changes the rule for every claim (#4826).
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
@@ -451,7 +454,7 @@ sys.exit(0 if ok else 1)
   if grep -q '^claim_form:[[:space:]]*charter[[:space:]]*$' "$existing_note" 2>/dev/null; then
     echo "  The unit was not recorded. Next action: on the '$task_id' note, set parent_charter: '$existing_task' and keep every mutation_scope_ref inside that charter's charter_scope, then rerun cc-claim; or close the charter with cc-close $existing_task if it is terminal." >&2
   else
-    echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+    echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead. If you have not started it (no PR, no branch), return it with cc-claim --return-claim $existing_task." >&2
   fi
   if [[ "$canon_enforced" == "0" ]]; then
     echo "  Legacy fallback only: cc-claim --force $task_id" >&2

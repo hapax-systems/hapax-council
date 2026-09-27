@@ -6252,13 +6252,47 @@ def _assigned_elsewhere(note: Path, role: str) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value.strip() != role
 
 
+def _release_frontmatter(note: Path) -> dict | None:
+    """The note's parsed frontmatter when it can ground a release decision, else None.
+
+    A release archives live claim files on the strength of a row's status, so that status
+    must come from frontmatter that parses and states ``status`` exactly once. PyYAML keeps
+    the last of duplicate keys silently, and a ``status:`` line in the body never counts. A
+    missing, malformed or duplicated status means hold, never release (codex on #4826; the
+    seat's 17:05Z ruling)."""
+
+    parsed = parse_frontmatter_with_diagnostics(note)
+    if not parsed.ok or parsed.frontmatter is None:
+        return None
+    text = note.read_text(encoding="utf-8")
+    block = text[3 : text.find("\n---", 3)]
+    if len(re.findall(r"(?m)^status[ \t]*:", block)) != 1:
+        return None
+    return parsed.frontmatter
+
+
+def _pipeline_held_for(note: Path, role: str) -> bool:
+    """Whether the note's release-grade frontmatter says the pipeline holds it for ``role``."""
+
+    fields = _release_frontmatter(note)
+    return (
+        fields is not None
+        and str(fields.get("status") or "").strip() in TASK_PIPELINE_HELD_STATUSES
+        and str(fields.get("assigned_to") or "").strip() == role
+    )
+
+
 def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
+    """The row's status for a release decision: ``missing`` with no note, ``unreadable`` when
+    its frontmatter cannot ground a release (:func:`_release_frontmatter`). Neither releases."""
+
     task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
     if task_path is None:
         return "missing"
-    text = task_path.read_text(encoding="utf-8")
-    match = re.search(r"^status:[ \t]*(.*)$", text, re.MULTILINE)
-    return (match.group(1).strip() if match else "") or "unknown"
+    fields = _release_frontmatter(task_path)
+    if fields is None:
+        return "unreadable"
+    return str(fields.get("status") or "").strip() or "unknown"
 
 
 def archive_dispatch_only_claim_residue(
@@ -6919,7 +6953,7 @@ def _release_applied_residue(
         elif (
             note is not None
             and note.parent.name == "active"
-            and (status in TASK_PIPELINE_HELD_STATUSES)
+            and _pipeline_held_for(note, journal.intent.role)
         ):
             # Pipeline-held (the seat's 2026-09-27 ruling): the work is done and the pipeline
             # owes a verdict, so the markers hold no worker. The note keeps this role as its
@@ -7016,7 +7050,9 @@ def _marker_tasks(cache_dir: Path, role: str) -> list[str]:
     """Every task this role's claim markers name, each once: the bare key, then each session
     key. A suffix that is not a session UUID belongs to another role (``cx-red`` vs
     ``cx-red-operator-email``). Every marker counts: a lingering session-keyed one can name a
-    different row from the bare key (codex on #4826)."""
+    different row from the bare key (codex on #4826). An unreadable marker is skipped here, as
+    scripts/cc-claim's lease loop skips it; :func:`_other_live_markers` then treats it as live
+    and the release holds, so the pair fails closed."""
 
     prefix = f"cc-active-task-{role}-"
     markers = [cache_dir / f"cc-active-task-{role}"] + sorted(
@@ -7052,6 +7088,10 @@ def release_pipeline_held_residue(
     markers names, other than the one being claimed, its residue is released as
     ``pipeline_held`` (archived, never unlinked). Each row keeps this role as its named resumer.
     Anything else is left to the claim path, which decides as before.
+
+    Called by scripts/cc-claim before the new claim publishes. The status filter here is a
+    pre-check read outside any lock: :func:`release_claim_residue` re-derives the shape under
+    the role's publication lock from release-grade frontmatter, and holds on any surprise.
     """
 
     return [

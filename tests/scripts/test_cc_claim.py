@@ -2265,6 +2265,89 @@ def test_every_marker_is_checked_so_a_second_held_row_is_released_too(tmp_path: 
     assert not (cache / f"cc-active-task-cx-test-{first_session}").exists()
 
 
+def _malform(text: str, how: str) -> str:
+    if how == "unparseable":
+        return text.replace("status: pr_open", "status: pr_open\nbroken: [", 1)
+    if how == "duplicated":
+        return text.replace("status: pr_open", "status: claimed\nstatus: pr_open", 1)
+    # "body_only": no status in the frontmatter, and a pr_open line in the body
+    return text.replace("status: pr_open\n", "", 1) + "\nstatus: pr_open\n"
+
+
+@pytest.mark.parametrize("how", ["unparseable", "duplicated", "body_only"])
+def test_a_malformed_pipeline_held_note_is_never_released(tmp_path: Path, how: str) -> None:
+    # codex on #4826 round 3, and the seat's 17:05Z ruling: the release read the status with a
+    # text regex over the whole note, so a note whose frontmatter does not parse, states status
+    # twice, or carries it only in the body had its live claim files archived. Hold instead.
+    home = tmp_path / "home"
+    parked = _write_task(home, "active", "parked-row")
+    _write_task(home, "active", "next-row")
+    assert _claim(home, "parked-row").returncode == 0
+    _set_status(parked, "claimed", "pr_open")
+    parked.write_text(_malform(parked.read_text(encoding="utf-8"), how), encoding="utf-8")
+    markers = _bytes_of(_role_sidecars(home)["marker"])
+
+    held = _claim(home, "next-row")
+
+    # Either hold is right: the lease check blocks on a doubled status (7), and the release
+    # declines a note that cannot ground it (8). The invariant is that nothing is released.
+    assert held.returncode in {7, 8}, held.stderr
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
+    assert _lineage_shapes(home, "parked-row") == []
+
+
+@pytest.mark.parametrize(
+    ("front", "expected"),
+    [
+        ("status: pr_open", "pr_open"),
+        ("status: claimed\nstatus: pr_open", "unreadable"),  # PyYAML would keep the last
+        ("broken: [", "unreadable"),
+        ("assigned_to: cx-test", "unreadable"),  # the body's status line never counts
+    ],
+)
+def test_a_release_reads_status_only_from_release_grade_frontmatter(
+    tmp_path: Path, front: str, expected: str
+) -> None:
+    from shared.sdlc_claim import _task_status_for_any_state
+
+    root = tmp_path / "tasks"
+    (root / "active").mkdir(parents=True)
+    (root / "active" / "row.md").write_text(
+        f"---\ntask_id: row\n{front}\n---\n\nstatus: pr_open\n", encoding="utf-8"
+    )
+
+    assert _task_status_for_any_state(root, "row") == expected
+
+
+def test_release_pipeline_held_residue_directly(tmp_path: Path) -> None:
+    # gemini on #4826 round 3 read this function as uncalled; cc-claim calls it before publishing
+    # (the E2E tests above). This exercises it directly as well.
+    from shared.sdlc_claim import release_pipeline_held_residue
+
+    home = tmp_path / "home"
+    parked = _write_task(home, "active", "parked-row")
+    assert _claim(home, "parked-row").returncode == 0
+    roots = default_claim_publication_roots(home=home)
+    kwargs = {
+        "vault_root": _task_root(home),
+        "cache_dir": Path(roots.claim_cache_dir),
+        "transaction_root": Path(roots.claim_transaction_root),
+        "lock_root": Path(roots.claim_lock_root),
+        "role": "cx-test",
+        "current_task_id": "next-row",
+        "observed_at": "20260927T170000Z",
+    }
+    assert release_pipeline_held_residue(**kwargs) == []  # worker-held: left alone
+    assert _role_sidecars(home)["marker"][0].exists()
+    _set_status(parked, "claimed", "pr_open")
+
+    (released,) = release_pipeline_held_residue(**kwargs)
+
+    assert released.shape == "pipeline_held"
+    assert not _role_sidecars(home)["marker"][0].exists()
+    assert release_pipeline_held_residue(**{**kwargs, "observed_at": "20260927T170100Z"}) == []
+
+
 def test_resuming_a_pipeline_held_row_still_needs_a_free_slot(tmp_path: Path) -> None:
     home = tmp_path / "home"
     parked = _write_task(home, "active", "parked-row")
@@ -2291,6 +2374,7 @@ def test_a_worker_held_row_still_holds_the_slot(tmp_path: Path) -> None:
 
     assert refused.returncode == 7
     assert "already has active task 'working-row'" in refused.stderr
+    assert "cc-claim --return-claim working-row" in refused.stderr  # codex on #4826 round 3
 
 
 def test_the_lease_checks_release_vocabulary_is_the_ssot() -> None:
@@ -2305,7 +2389,12 @@ def test_the_lease_checks_release_vocabulary_is_the_ssot() -> None:
         for status in line.split(")", 1)[0].strip().split("|")
         if status
     }
-    assert listed == set(TASK_ROLE_RELEASING_STATUSES)
+    assert listed == set(TASK_ROLE_RELEASING_STATUSES), (
+        "scripts/cc-claim _cc_role_release_status must list exactly "
+        "shared.sdlc_lifecycle.TASK_ROLE_RELEASING_STATUSES; missing "
+        f"{sorted(set(TASK_ROLE_RELEASING_STATUSES) - listed)}, extra "
+        f"{sorted(listed - set(TASK_ROLE_RELEASING_STATUSES))}"
+    )
 
 
 def _return(home: Path, task_id: str, *, extra_env: dict[str, str] | None = None):
