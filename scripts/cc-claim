@@ -386,6 +386,21 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
         continue
       fi
     fi
+    # Release is a property of the row, not of the lease's age. Pipeline-held rows sit past the
+    # TTL as a matter of course, so an expired marker naming a row whose status releases the role
+    # frees the slot like an unexpired one, and the governed release below archives its files
+    # (#4826 round 2, the ordering #4611 had found). A worker-held row's expired lease still holds.
+    if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
+      expired_note=""
+      for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md" \
+        "$vault_root_check/closed/$existing_task-"*.md "$vault_root_check/closed/$existing_task.md"; do
+        [[ -f "$c" ]] && expired_note="$c" && break
+      done
+      if [[ -n "$expired_note" ]] && \
+        _cc_role_release_status "$(grep -oP '^status:\s*\K\S+' "$expired_note" 2>/dev/null || echo unknown)"; then
+        continue
+      fi
+    fi
     if [[ "$canon_enforced" == "1" ]]; then
       claim_base="$(basename "$cf")"
       claim_key="${claim_base#cc-active-task-}"

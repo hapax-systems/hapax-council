@@ -2339,15 +2339,22 @@ def test_the_holder_returns_an_unstarted_claim_to_offered(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    ("field", "old", "new"),
+    ("field", "old", "new", "code"),
     [
-        ("pr", "status: claimed", "status: claimed\npr: 4999"),
-        ("branch", "status: claimed", "status: claimed\nbranch: feat/started"),
-        ("status", "status: claimed", "status: pr_open"),
-        ("assigned", "assigned_to: cx-test", "assigned_to: cx-other"),
+        ("pr", "status: claimed", "status: claimed\npr: 4999", "claim_return_started"),
+        (
+            "branch",
+            "status: claimed",
+            "status: claimed\nbranch: feat/started",
+            "claim_return_started",
+        ),
+        ("status", "status: claimed", "status: pr_open", "claim_return_started"),
+        ("assigned", "assigned_to: cx-test", "assigned_to: cx-other", "claim_return_not_holder"),
     ],
 )
-def test_started_work_is_never_returned(tmp_path: Path, field: str, old: str, new: str) -> None:
+def test_started_work_is_never_returned(
+    tmp_path: Path, field: str, old: str, new: str, code: str
+) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "started-row")
     assert _claim(home, "started-row").returncode == 0
@@ -2358,7 +2365,7 @@ def test_started_work_is_never_returned(tmp_path: Path, field: str, old: str, ne
     refused = _return(home, "started-row")
 
     assert refused.returncode == 8
-    assert "claim_return_" in refused.stderr
+    assert f"HOLD - {code}:" in refused.stderr
     assert note.read_bytes() == before
     assert _bytes_of(_role_sidecars(home)["marker"]) == sidecars
 
@@ -2372,7 +2379,63 @@ def test_only_the_holder_returns_a_claim(tmp_path: Path) -> None:
     refused = _return(home, "held-row", extra_env=_OTHER_ROLE)
 
     assert refused.returncode == 8
+    assert "HOLD - claim_return_not_holder:" in refused.stderr
     assert note.read_bytes() == before
+
+
+def test_a_lapsed_claim_is_not_returned_but_pointed_at_the_residue_release(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "lapsed-row")
+    assert _claim(home, "lapsed-row").returncode == 0
+    for marker in _role_sidecars(home)["marker"]:
+        marker.rename(marker.with_name(marker.name + ".moved-by-test"))
+    before = note.read_bytes()
+
+    refused = _return(home, "lapsed-row")
+
+    assert refused.returncode == 8
+    assert "HOLD - claim_return_not_live:" in refused.stderr
+    assert "--release-claim-residue lapsed-row" in refused.stderr
+    assert note.read_bytes() == before
+
+
+def _expire(home: Path, *, hours: int = 7) -> None:
+    aged = time.time() - hours * 3600
+    for paths in _role_sidecars(home).values():
+        for path in paths:
+            if path.exists():
+                os.utime(path, (aged, aged))
+
+
+def test_an_expired_lease_on_a_pipeline_held_row_still_frees_the_slot(tmp_path: Path) -> None:
+    # #4826 round 2 (codex): the lease's expiry was checked before the row's status, so past the
+    # 6 h TTL, which is when pipeline-held rows sit, the manual stale-lease HOLD came back.
+    home = tmp_path / "home"
+    parked = _write_task(home, "active", "parked-row")
+    _write_task(home, "active", "next-row")
+    assert _claim(home, "parked-row").returncode == 0
+    _set_status(parked, "claimed", "pr_open")
+    _expire(home)
+
+    taken = _claim(home, "next-row")
+
+    assert taken.returncode == 0, taken.stderr
+    assert _lineage_shapes(home, "parked-row") == ["pipeline_held"]
+
+
+def test_an_expired_lease_on_a_worker_held_row_still_holds(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "working-row")
+    _write_task(home, "active", "next-row")
+    assert _claim(home, "working-row").returncode == 0
+    _expire(home)
+
+    refused = _claim(home, "next-row")
+
+    assert refused.returncode == 7
+    assert "expired claim" in refused.stderr
 
 
 def test_a_crash_between_the_note_and_the_archive_is_released_as_reassigned(
