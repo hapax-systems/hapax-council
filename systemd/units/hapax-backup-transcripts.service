@@ -1,0 +1,28 @@
+[Unit]
+Description=Hapax transcript backup: every harness transcript store by its real path, then a recursive post-backup check
+Documentation=file:///home/hapax/projects/hapax-council/scripts/transcript_custody.py
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/nas/backups
+OnFailure=notify-failure@%n.service
+
+# The p0 row transcript-backup-custody-all-harnesses-20260927 (witnessed mechanics M174: a green backup job hid an empty
+# ~/.claude for months). Backup, then verify, in the same unit: the verify step opens the new snapshot and counts the
+# files under every transcript path. A missing, symlinked, empty or dropped path, or a credential file, fails the
+# unit, and OnFailure notifies with the remedy from the journal. The repository is the existing tier-1 NAS
+# repository; the tag tier1-transcripts keeps these snapshots in their own retention group.
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-transcript-custody backup
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-transcript-custody verify
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RESTIC_REPOSITORY=/mnt/nas/backups/restic
+Environment=RESTIC_CACHE_DIR=%h/.cache/restic
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=2G
+MemoryMax=3G
+CPUQuota=50%
+TimeoutStartSec=8h
+SyslogIdentifier=hapax-backup-transcripts
