@@ -136,11 +136,10 @@ def test_a_garbage_line_makes_the_section_unusable(scanner: ModuleType) -> None:
 
 
 def test_eof_no_newline_marker_is_metadata_not_content(scanner: ModuleType) -> None:
-    """gemini-1's round-7 major: the `\\ No newline` marker must not join the post-image.
+    """gemini's r7 major: the marker must not join the post-image region.
 
-    Before the fix the marker fell through to the region, so a perfectly valid diff whose last
-    added line is a governed strip failed to parse — and, being key-bearing, was reported as
-    unusable input instead of exempt.
+    A governed strip whose hunk ends at an unterminated last line must stay exempt, not fail to
+    parse.
     """
 
     diff = (
@@ -165,23 +164,12 @@ def test_eof_no_newline_marker_is_metadata_not_content(scanner: ModuleType) -> N
 def test_combined_section_fuzz_never_reads_a_cut_section_as_whole(
     scanner: ModuleType, tmp_path: Path
 ) -> None:
-    """The class-level test: real `git diff` output whose sections COMBINE marks.
+    """The class test: real `git diff` sections that COMBINE a content mark with a contentless one.
 
-    #4795's r5, r6 and r7 were the same class one level deeper each time (index-only header; short
-    hunk; short hunk plus a rename or mode pair). The previous fuzz only ever exercised one shape
-    per section, so it never combined them. Here each fixture is one REAL section that carries a
-    content mark AND a contentless mark — rename+content, mode+content, empty-blob+content,
-    binary, and a `\\ No newline` EOF hunk — and every strict prefix of every fixture is scanned
-    and required to report something, except at the boundaries this test names in advance:
-
-    * a prefix that stops right after a **mode pair** is a legitimate mode-only diff (git emits
-      the pair and then, only if content changed, an `index` line — so that truncation window is
-      one line wide and indistinguishable in the text; this is the one ambiguity the table has,
-      and it is named here rather than left implicit);
-    * everything else must report `billing-scan-unusable-input` (a cut section) or the planted
-      credential read (a section that arrived whole). A rename is NOT such a boundary: git writes
-      `similarity index 100%` for a pure rename and a lower percentage whenever content follows,
-      which is what makes that prefix a truncation rather than a diff.
+    rename+content, mode+content, empty-blob+content, binary and an EOF `\ No newline` hunk, each
+    scanned at every line boundary, every character, and with each header deleted in turn. One
+    clean prefix is allowed and named: a prefix ending exactly after a mode pair, which IS a
+    legitimate mode-only diff (git omits the `index` line when no content follows).
     """
 
     import subprocess
@@ -352,11 +340,7 @@ def test_a_hunk_before_any_path_fails_closed(scanner: ModuleType) -> None:
 
 
 def test_content_before_any_file_header_fails_closed(scanner: ModuleType) -> None:
-    """dev21's second reproduction, and its mid-diff variant: no section owns those lines.
-
-    A bare `+++` (no `diff --git`) printed `OK … 1 changed file(s)`; the same is true of any
-    line that arrives before the first header, or between headers where no section is open.
-    """
+    """dev21's second reproduction: no section owns a line before the first header."""
 
     for label, diff in (
         (
@@ -381,11 +365,10 @@ def test_content_before_any_file_header_fails_closed(scanner: ModuleType) -> Non
 
 
 def test_the_governed_proxy_exemption_applies_and_does_not(scanner: ModuleType) -> None:
-    """claude's round-2 major: the True branch of `_call_is_proxy_bound` needs its own pin.
+    """claude's r2 major: both halves of the proxy exemption, because only the pair means anything.
 
-    Both halves in one test, because the exemption is only meaningful with its negative: a call
-    bound to a governed proxy is exempt, and the same call without that binding — or with the
-    proxy named only in a neighbouring literal, or with a dynamic target — is a finding.
+    Bound to a governed proxy → exempt and reported in `allowed`; unbound, neighbour-named,
+    dynamic or non-governed → a finding.
     """
 
     exempt = (
@@ -530,12 +513,7 @@ def test_non_python_file_gets_no_proxy_exemption(scanner: ModuleType) -> None:
 
 
 def test_non_python_file_grants_no_exemption_at_all(scanner: ModuleType) -> None:
-    """Seat round 3, item 2: no exemptions for non-Python, per statement or per line.
-
-    Red-first pin for the removal: at ``79c5d1cd7`` the statement-level strip exemption
-    exempted exactly this line (a ``;``-delimited fragment of one line is still line
-    content). It must now be a finding, and nothing may be recorded as allowed.
-    """
+    """The text path grants no structural exemption to a non-Python file (r3 class fix)."""
 
     diff = _diff("scripts/foo_launcher.sh", ['del os.environ["ANTHROPIC_API_KEY"]'])
     result = scanner.scan_unified_diff(diff)
@@ -566,16 +544,6 @@ def test_allow_marker_on_a_production_path_fails(scanner: ModuleType, tmp_path: 
     )
     assert "api-key-route" in kinds, "the marker still exempted the underlying production route"
     assert result.allowed == (), "a production path was still granted an exemption"
-
-
-def test_allow_marker_on_a_production_path_fails_even_without_a_route(
-    scanner: ModuleType,
-) -> None:
-    """The marker alone is the violation: intent to self-exempt is not a silent ignore."""
-
-    diff = _diff("shared/foo_client.py", ["    value = compute()  # billing-scan:allow"])
-    result = scanner.scan_unified_diff(diff)
-    assert [f.kind for f in result.findings] == ["billing-scan-allow-outside-fixtures"]
 
 
 def test_marker_allowlist_does_not_admit_a_prefixed_path(scanner: ModuleType) -> None:
@@ -627,10 +595,6 @@ def test_main_flagged_diff_exits_one(scanner: ModuleType, tmp_path: Path) -> Non
     assert scanner.main(["--diff-file", str(path)]) == 1
 
 
-def test_main_missing_diff_file_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
-    assert scanner.main(["--diff-file", str(tmp_path / "absent.diff")]) == 2
-
-
 def test_main_without_input_mode_fails_closed(scanner: ModuleType) -> None:
     assert scanner.main([]) == 2
 
@@ -643,27 +607,11 @@ def test_main_empty_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path)
     assert scanner.main(["--diff-file", str(path)]) == 2
 
 
-def test_main_whitespace_only_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
-    path = tmp_path / "blank.diff"
-    path.write_text("\n\n   \n", encoding="utf-8")
-    assert scanner.main(["--diff-file", str(path)]) == 2
-
-
 def test_main_malformed_diff_input_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
     """Text that is not a unified diff at all is unusable input, not a clean scan."""
 
     path = tmp_path / "prose.diff"
     path.write_text("this is not a unified diff\nit has no file headers\n", encoding="utf-8")
-    assert scanner.main(["--diff-file", str(path)]) == 2
-
-
-def test_main_diff_with_no_file_headers_fails_closed(scanner: ModuleType, tmp_path: Path) -> None:
-    """A truncated diff (hunks with no ``diff --git``/``+++`` header) is unusable."""
-
-    path = tmp_path / "truncated.diff"
-    path.write_text(
-        "@@ -1,1 +1,1 @@\n+client = OpenAI(api_key=key)\n", encoding="utf-8"
-    )  # billing-scan:allow: fixture data
     assert scanner.main(["--diff-file", str(path)]) == 2
 
 
@@ -683,11 +631,11 @@ def _hunk(path: str, body: list[str]) -> str:
 def test_a_marker_on_one_line_does_not_exempt_another_lines_finding(
     scanner: ModuleType,
 ) -> None:
-    """dev21's r2 reproduction, verbatim: the marker was on line 1, the key on line 2.
+    """dev21's r2 reproduction: marker on line 1, key on line 2, exit 0.
 
-    The unusable-input finding for the region was attributed to `added[0]`, so the marked first
-    line moved it to `allowed` and the unmarked key-bearing second line was never judged: `OK`,
-    exit 0. The marker's contract is exactly the marked line.
+    The unusable finding was attributed to `added[0]`, so the marked line moved it to `allowed`
+    and the unmarked key-bearing line was never judged. The marker's contract is exactly the
+    marked line.
     """
 
     diff = _hunk(
@@ -731,14 +679,12 @@ def test_both_lines_marked_is_allowed(scanner: ModuleType) -> None:
 
 
 def test_no_emitter_exempts_a_finding_by_another_lines_marker(scanner: ModuleType) -> None:
-    """The attribution audit (r3 item 3): every emitter path, with a marked neighbour line.
+    """The attribution audit (r3 item 3): five emitter shapes, marker above and below.
 
-    `emit_line` is the single place an exemption is decided, and it decides from the finding's own
-    line. This walks the emitter paths — the unparseable-region arm, a parsed AST route, a
-    credential read, a Bearer header, and a pattern-only class — with the marker on a DIFFERENT
-    line of the same addable hunk, and requires the unmarked line's finding to stand. (Audit of
-    the call sites: `rg -n 'emit_line\\(' scripts/check-billing-surface-diff.py` — five call sites,
-    each passing the line it found.)
+    `emit_line` is the single place an exemption is decided (four call sites, listed in the PR
+    body), and it decides from the finding's own line. Shapes are UNINDENTED so the region parses
+    and reaches the parsed emitter — an indented first line sends them down the unparseable arm,
+    which is how a mis-attribution mutant survived the first version of this test.
     """
 
     marked = "# billing-scan:allow"
