@@ -81,7 +81,7 @@ def test_research_tracked_across_rounds(tmp_path: Path) -> None:
         "tool_name": "Agent",
         "tool_input": {"prompt": PROMPT},
         "session_id": "integ-test",
-        "user_message": "\n".join(f"- finding {i}" for i in range(10)),
+        "tool_output": "\n".join(f"- finding {i}" for i in range(10)),
     }
     server.process_event(post_r1)
 
@@ -91,7 +91,7 @@ def test_research_tracked_across_rounds(tmp_path: Path) -> None:
         "tool_name": "Agent",
         "tool_input": {"prompt": PROMPT},
         "session_id": "integ-test",
-        "user_message": "\n".join(f"- finding {i}" for i in range(3)),
+        "tool_output": "\n".join(f"- finding {i}" for i in range(3)),
     }
     server.process_event(post_r2)
 
@@ -101,7 +101,7 @@ def test_research_tracked_across_rounds(tmp_path: Path) -> None:
         "tool_name": "Agent",
         "tool_input": {"prompt": PROMPT},
         "session_id": "integ-test",
-        "user_message": "- one finding",
+        "tool_output": "- one finding",
     }
     server.process_event(post_r3)
 
@@ -132,7 +132,7 @@ def test_epic_pipeline_full_flow(tmp_path: Path) -> None:
         "tool_name": "Agent",
         "tool_input": {"prompt": "research any loose ends before implementation"},
         "session_id": "integ-test",
-        "user_message": "- finding A\n- finding B",
+        "tool_output": "- finding A\n- finding B",
     }
     server.process_event(event)
 
@@ -156,7 +156,7 @@ def test_smoke_activates_on_pr(tmp_path: Path) -> None:
         "tool_name": "Bash",
         "tool_input": {"command": "gh pr create --title test"},
         "session_id": "integ-test",
-        "user_message": "Created PR: https://github.com/hapax/hapax-council/pull/999",
+        "tool_output": "Created PR: https://github.com/hapax/hapax-council/pull/999",
     }
     server.process_event(event)
 

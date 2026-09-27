@@ -202,19 +202,18 @@ class SpawnRule(RuleBase):
                         )
         return None
 
-    def on_post_tool_use(self, event: HookEvent) -> HookResponse | None:
-        # Spawn intent comes only from the operator's own words. A post-tool event's
-        # user_message is the tool's stdout (conductor-post.sh), and source code or logs
-        # that contain a spawn phrase minted manifests that other lanes adopted (M103).
-        if (
-            event.event_type == "user_prompt"
-            and event.user_message
-            and detect_spawn_intent(event.user_message)
-        ):
+    def on_user_prompt(self, event: HookEvent) -> HookResponse | None:
+        # Spawn intent comes only from the operator's own words. conductor-post.sh
+        # used to carry a Bash stdout in `user_message`, so source code or logs that
+        # merely *contained* a spawn phrase minted a manifest another lane adopted
+        # (M103). Tool output is never an operator turn.
+        if event.user_message and detect_spawn_intent(event.user_message):
             topic = event.user_message[:50].strip().rstrip(".")
             log.info("SpawnRule: spawn intent detected — writing manifest")
             self._write_manifest(topic=topic, context=event.user_message)
+        return None
 
+    def on_post_tool_use(self, event: HookEvent) -> HookResponse | None:
         # Check for completed children and inject reunion results
         if self._state.children:
             completed = self.check_completed_children(self._state)

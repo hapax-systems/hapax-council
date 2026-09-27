@@ -137,7 +137,7 @@ class RelayRule(RuleBase):
 
         # Detect PR events in Bash output
         if event.tool_name == "Bash":
-            output: str = event.user_message or ""
+            output: str = event.tool_output or ""
             pr_event = detect_pr_event(output)
             if pr_event:
                 log.info(
