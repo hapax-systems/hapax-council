@@ -2189,3 +2189,187 @@ def test_an_unassigned_working_row_is_still_refused(tmp_path: Path) -> None:
 
     assert result.returncode == 4
     assert note.read_bytes() == before
+
+
+# ── claim-plane-live-claim-handoff-verb-20260927 ──────────────────────────────
+
+
+def _set_status(note: Path, old: str, new: str) -> None:
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(f"status: {old}", f"status: {new}", 1),
+        encoding="utf-8",
+    )
+
+
+def _lineage_shapes(home: Path, task_id: str) -> list[str]:
+    lineage = _task_root(home) / "_lineage" / task_id
+    return sorted(
+        line.split(":", 1)[1].strip()
+        for readme in lineage.glob("claim-residue-release-*/README.md")
+        for line in readme.read_text(encoding="utf-8").splitlines()
+        if line.startswith("shape:")
+    )
+
+
+def test_a_pipeline_held_row_frees_the_slot_and_keeps_its_named_resumer(tmp_path: Path) -> None:
+    # (b), the seat's 2026-09-27T15:58:53Z ruling: pr_open is pipeline-held, not worker-held
+    # (L-109; #4611's intent). fugu-rebase held #4770 (pr_open) and could not take #4767.
+    home = tmp_path / "home"
+    parked = _write_task(home, "active", "parked-row")
+    _write_task(home, "active", "next-row")
+    assert _claim(home, "parked-row").returncode == 0
+    _set_status(parked, "claimed", "pr_open")
+
+    taken = _claim(home, "next-row")
+
+    assert taken.returncode == 0, taken.stderr
+    text = parked.read_text(encoding="utf-8")
+    assert "status: pr_open" in text and "assigned_to: cx-test" in text
+    assert _lineage_shapes(home, "parked-row") == ["pipeline_held"]
+    marker = _role_sidecars(home)["marker"][0]
+    assert marker.read_text(encoding="utf-8").split()[0] == "next-row"
+
+
+def test_resuming_a_pipeline_held_row_still_needs_a_free_slot(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    parked = _write_task(home, "active", "parked-row")
+    _write_task(home, "active", "next-row")
+    assert _claim(home, "parked-row").returncode == 0
+    _set_status(parked, "claimed", "pr_open")
+    assert _claim(home, "next-row").returncode == 0
+    before = parked.read_bytes()
+
+    resumed = _claim(home, "parked-row")
+
+    assert resumed.returncode == 7
+    assert "already has active task 'next-row'" in resumed.stderr
+    assert parked.read_bytes() == before
+
+
+def test_a_worker_held_row_still_holds_the_slot(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "working-row")
+    _write_task(home, "active", "next-row")
+    assert _claim(home, "working-row").returncode == 0
+
+    refused = _claim(home, "next-row")
+
+    assert refused.returncode == 7
+    assert "already has active task 'working-row'" in refused.stderr
+
+
+def test_the_lease_checks_release_vocabulary_is_the_ssot() -> None:
+    from shared.sdlc_lifecycle import TASK_ROLE_RELEASING_STATUSES
+
+    source = SCRIPT.read_text(encoding="utf-8")
+    body = source.split("_cc_role_release_status() {", 1)[1].split("\n}", 1)[0]
+    listed = {
+        status
+        for line in body.splitlines()
+        if ")" in line and not line.strip().startswith("#")
+        for status in line.split(")", 1)[0].strip().split("|")
+        if status
+    }
+    assert listed == set(TASK_ROLE_RELEASING_STATUSES)
+
+
+def _return(home: Path, task_id: str, *, extra_env: dict[str, str] | None = None):
+    return _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        extra_env=extra_env,
+        extra_args=["--return-claim"],
+    )
+
+
+def test_the_holder_returns_an_unstarted_claim_to_offered(tmp_path: Path) -> None:
+    # (a): dev22 held tier1-backup-scripts-into-council-reland-20260927 with no work under it.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "unstarted-row")
+    assert _claim(home, "unstarted-row").returncode == 0
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 0, returned.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "status: offered" in text and "assigned_to: unassigned" in text
+    assert re.search(r"^claimed_at: null$", text, flags=re.MULTILINE)
+    assert "returned the claim unstarted" in text
+    assert not any(path.exists() for paths in _role_sidecars(home).values() for path in paths)
+    assert _lineage_shapes(home, "unstarted-row") == ["returned_claim"]
+    taken = _claim(home, "unstarted-row", extra_env=_OTHER_ROLE)
+    assert taken.returncode == 0, taken.stderr
+
+
+@pytest.mark.parametrize(
+    ("field", "old", "new"),
+    [
+        ("pr", "status: claimed", "status: claimed\npr: 4999"),
+        ("branch", "status: claimed", "status: claimed\nbranch: feat/started"),
+        ("status", "status: claimed", "status: pr_open"),
+        ("assigned", "assigned_to: cx-test", "assigned_to: cx-other"),
+    ],
+)
+def test_started_work_is_never_returned(tmp_path: Path, field: str, old: str, new: str) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "started-row")
+    assert _claim(home, "started-row").returncode == 0
+    note.write_text(note.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
+    before = note.read_bytes()
+    sidecars = _bytes_of(_role_sidecars(home)["marker"])
+
+    refused = _return(home, "started-row")
+
+    assert refused.returncode == 8
+    assert "claim_return_" in refused.stderr
+    assert note.read_bytes() == before
+    assert _bytes_of(_role_sidecars(home)["marker"]) == sidecars
+
+
+def test_only_the_holder_returns_a_claim(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "held-row")
+    assert _claim(home, "held-row").returncode == 0
+    before = note.read_bytes()
+
+    refused = _return(home, "held-row", extra_env=_OTHER_ROLE)
+
+    assert refused.returncode == 8
+    assert note.read_bytes() == before
+
+
+def test_a_crash_between_the_note_and_the_archive_is_released_as_reassigned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The seat's 16:00:23Z ruling: the crash window's state must be one existing tooling resolves.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "crashed-row")
+    assert _claim(home, "crashed-row").returncode == 0
+    roots = default_claim_publication_roots(home=home)
+
+    def crash(*_args, **_kwargs):
+        raise KeyboardInterrupt("killed after the note write")
+
+    monkeypatch.setattr(sdlc_claim, "_archive_residue", crash)
+    with pytest.raises(KeyboardInterrupt):
+        sdlc_claim.return_claim(
+            vault_root=_task_root(home),
+            cache_dir=Path(roots.claim_cache_dir),
+            transaction_root=Path(roots.claim_transaction_root),
+            lock_root=Path(roots.claim_lock_root),
+            role="cx-test",
+            task_id="crashed-row",
+            observed_at="20260927T160000Z",
+        )
+    monkeypatch.undo()
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    assert _role_sidecars(home)["marker"][0].exists()
+
+    released = _release(home, "crashed-row")
+
+    assert released.returncode == 0, released.stderr
+    assert "reassigned_task" in released.stdout

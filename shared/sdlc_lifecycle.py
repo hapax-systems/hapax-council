@@ -86,6 +86,17 @@ TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_F
 #: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
 TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
 
+#: Pipeline-held: the lane's work is done and the pipeline owes a verdict (review, merge, a
+#: runtime witness). Such a row holds no worker, and ``assigned_to`` keeps its named resumer.
+TASK_PIPELINE_HELD_STATUSES = TASK_RESUMABLE_STATUSES | frozenset(
+    {"merged_awaiting_runtime_witness"}
+)
+
+#: A role's one-active-task slot is free when its current task is in one of these; the bash
+#: lease check in scripts/cc-claim MUST match (pinned by tests/scripts/test_cc_claim.py). The
+#: seat's 2026-09-27 ruling, re-landing #4611's intent (L-109: 43 lanes held by finished work).
+TASK_ROLE_RELEASING_STATUSES = TASK_TERMINAL_STATUSES | TASK_PIPELINE_HELD_STATUSES
+
 BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
 BLOCKED_WITNESS_FIELDS = ("blocked_witness", "blocked_witness_path")
 _FRONTMATTER_NULL_SCALARS = frozenset({"", "null", "none", "~", "[]"})

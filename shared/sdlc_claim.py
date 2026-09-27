@@ -58,6 +58,7 @@ from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.sdlc_lifecycle import (
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    TASK_PIPELINE_HELD_STATUSES,
     TASK_RESUMABLE_STATUSES,
     TASK_TERMINAL_STATUSES,
 )
@@ -6374,7 +6375,14 @@ def archive_dispatch_only_claim_residue(
 class ClaimResidueRelease:
     """What one governed release of a role's claim residue did."""
 
-    shape: Literal["held_publication", "lapsed_lease", "closed_task", "reassigned_task"]
+    shape: Literal[
+        "held_publication",
+        "lapsed_lease",
+        "closed_task",
+        "reassigned_task",
+        "pipeline_held",
+        "returned_claim",
+    ]
     publication_id: str
     archive_dir: Path
     archived: tuple[Path, ...]
@@ -6892,7 +6900,9 @@ def _release_applied_residue(
             f"{others[0]} names {task_id} or cannot be read",
             f"inspect the marker at {others[0]}; until then treat the claim as live",
         )
-    shape: Literal["lapsed_lease", "closed_task", "reassigned_task"] = "lapsed_lease"
+    shape: Literal["lapsed_lease", "closed_task", "reassigned_task", "pipeline_held"] = (
+        "lapsed_lease"
+    )
     if any(_is_claim_activation_projection(projection) for projection in present):
         status = _task_status_for_any_state(vault_root, task_id)
         note = _task_note_path_for_any_state(vault_root, task_id)
@@ -6906,6 +6916,15 @@ def _release_applied_residue(
             # Re-offered or reassigned: the note no longer names this role. Publication writes
             # the note before the markers, so these markers cannot be a live claim.
             shape = "reassigned_task"
+        elif (
+            note is not None
+            and note.parent.name == "active"
+            and (status in TASK_PIPELINE_HELD_STATUSES)
+        ):
+            # Pipeline-held (the seat's 2026-09-27 ruling): the work is done and the pipeline
+            # owes a verdict, so the markers hold no worker. The note keeps this role as its
+            # named resumer; resuming it later publishes fresh markers.
+            shape = "pipeline_held"
         else:
             raise _release_hold(
                 "claim_residue_live_marker",
@@ -6990,6 +7009,197 @@ def release_claim_residue(
         )
 
 
+_SESSION_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _marker_task(cache_dir: Path, role: str) -> str | None:
+    """The task this role's claim marker names: the bare key first, then a session key. A
+    suffix that is not a session UUID belongs to another role (``cx-red`` vs
+    ``cx-red-operator-email``)."""
+
+    prefix = f"cc-active-task-{role}-"
+    markers = [cache_dir / f"cc-active-task-{role}"] + sorted(
+        path
+        for path in cache_dir.glob(f"{prefix}*")
+        if _SESSION_KEY_RE.fullmatch(path.name[len(prefix) :])
+    )
+    for marker in markers:
+        try:
+            words = marker.read_text(encoding="utf-8").split()
+        except OSError:
+            continue
+        if words:
+            return words[0]
+    return None
+
+
+def release_pipeline_held_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    role: str,
+    current_task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease | None:
+    """Before a new claim, free this role's slot of a row the pipeline now holds.
+
+    The seat's 2026-09-27 ruling: a pipeline-held row (``TASK_PIPELINE_HELD_STATUSES``) does
+    not count against the role's one-active-task slot. If this role's marker names such a row,
+    other than the one being claimed, its residue is released as ``pipeline_held`` (archived,
+    never unlinked). The row keeps this role as its named resumer. Anything else is left to the
+    claim path, which decides as before.
+    """
+
+    held = _marker_task(cache_dir, role)
+    if held is None or held == current_task_id:
+        return None
+    if _task_status_for_any_state(vault_root, held) not in TASK_PIPELINE_HELD_STATUSES:
+        return None
+    return release_claim_residue(
+        vault_root=vault_root,
+        cache_dir=cache_dir,
+        transaction_root=transaction_root,
+        lock_root=lock_root,
+        role=role,
+        task_id=held,
+        observed_at=observed_at,
+    )
+
+
+def _returned_note_text(text: str, *, role: str, observed_at: str) -> str:
+    end = text.find("\n---", 3)
+    front, body = text[:end], text[end:]
+    for key, value in (
+        ("status", "offered"),
+        ("assigned_to", "unassigned"),
+        ("claimed_at", "null"),
+    ):
+        front, count = re.subn(rf"(?m)^{key}:.*$", f"{key}: {value}", front, count=1)
+        if not count:
+            front += f"\n{key}: {value}"
+    moment = datetime.strptime(observed_at, "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = (
+        f"- {moment} {role}: returned the claim unstarted (cc-claim --return-claim); the row is "
+        "offered again.\n"
+    )
+    header = re.search(r"(?mi)^## Session log\n", body)
+    if header is None:
+        return front + body.rstrip("\n") + f"\n\n## Session log\n{line}"
+    return front + body[: header.end()] + line + body[header.end() :]
+
+
+def return_claim(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    role: str,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    """Return this role's own live, unstarted claim to ``offered`` (``cc-claim --return-claim``).
+
+    The seat's 2026-09-27 ruling (option 1): a locked direct transition, as ``cc-close`` and
+    ``cc-stage-advance`` are, not a new publication mode. It refuses, changing nothing, unless
+    this role holds a live claim on the task (an applied journal whose residue, markers
+    included, is at its after-image), the note is ``claimed`` or ``in_progress`` and assigned to
+    this role, and it names no ``pr`` or ``branch``: work that has started is never returned.
+    Under the role's publication lock and the note's projection lock, the note is rewritten
+    first (``offered``, ``unassigned``, ``claimed_at: null``, and a log line), and then the six
+    sidecars are archived as ``returned_claim``. A crash between the two leaves the
+    ``reassigned_task`` shape, which :func:`release_claim_residue` releases.
+    """
+
+    if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
+        raise _release_hold(
+            "claim_return_stamp_invalid",
+            f"{observed_at!r} is not YYYYMMDDTHHMMSSZ",
+            "pass the UTC time in that form",
+        )
+    journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+    if not journals:
+        raise _release_hold(
+            "claim_return_not_holder",
+            f"{role} has no claim publication for {task_id}",
+            "only the role that holds the claim can return it",
+        )
+    with _claim_publication_lock(journals[0].intent, lock_root=lock_root):
+        journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+        if any(item.state not in {"applied", "aborted"} for item in journals):
+            raise _release_hold(
+                "claim_return_unfinished",
+                f"a claim publication of {role} for {task_id} is unfinished",
+                f"run `cc-claim --recover-claim-publications {task_id}` first",
+            )
+        live = [
+            (journal, residue)
+            for journal in journals
+            if journal.state == "applied"
+            and (residue := _journal_residue(journal, cache_dir))
+            and all(_residue_state(item) == "after" for item in residue)
+            and any(_is_claim_activation_projection(item) for item in residue)
+        ]
+        if len(live) != 1:
+            raise _release_hold(
+                "claim_return_not_live",
+                f"{role} holds no single live claim on {task_id}",
+                f"a lapsed lease is released with `cc-claim --release-claim-residue {task_id}`",
+            )
+        journal, residue = live[0]
+        note = _task_note_path_for_any_state(vault_root, task_id)
+        if note is None or note.parent.name != "active":
+            raise _release_hold(
+                "claim_return_note_missing", f"{task_id} has no active note", "inspect the row"
+            )
+        if others := _other_live_markers(cache_dir, role, task_id, residue):
+            raise _release_hold(
+                "claim_return_live_marker",
+                f"{others[0]} names {task_id} or cannot be read",
+                "inspect that marker; another session may be working the row",
+            )
+        with projected_path_lock(task_id, (note,)):
+            text = note.read_text(encoding="utf-8")
+            frontmatter = parse_frontmatter_with_diagnostics(note).frontmatter
+            fields = frontmatter if isinstance(frontmatter, dict) else {}
+            status = str(fields.get("status") or "").strip()
+            started = [
+                key
+                for key in ("pr", "branch")
+                if str(fields.get(key) or "").strip() not in {"", "None", "null"}
+            ]
+            if status not in {"claimed", "in_progress"} or started:
+                raise _release_hold(
+                    "claim_return_started",
+                    f"{task_id} is {status or 'unknown'}"
+                    + (f" and names {', '.join(started)}" if started else ""),
+                    "work that has started is not returned: finish it and run cc-close, or close "
+                    "it as withdrawn",
+                )
+            if str(fields.get("assigned_to") or "").strip() != role:
+                raise _release_hold(
+                    "claim_return_not_holder",
+                    f"{task_id} is assigned to {fields.get('assigned_to')!r}, not {role}",
+                    "only the role that holds the claim can return it",
+                )
+            tmp = note.with_suffix(note.suffix + ".tmp")  # as cc-close writes a note
+            tmp.write_text(_returned_note_text(text, role=role, observed_at=observed_at), "utf-8")
+            tmp.replace(note)
+        archive_dir, archived = _archive_residue(
+            list(residue),
+            journal=journal,
+            vault_root=vault_root,
+            shape="returned_claim",
+            observed_at=observed_at,
+            staged={},
+        )
+    return ClaimResidueRelease(
+        "returned_claim", journal.publication_id, archive_dir, archived, None
+    )
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -7022,6 +7232,8 @@ __all__ = [
     "recover_claim_publications",
     "rehydrate_applied_activation_projections",
     "release_claim_residue",
+    "release_pipeline_held_residue",
+    "return_claim",
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
     "resolve_claim_publication_admission_provenance",
