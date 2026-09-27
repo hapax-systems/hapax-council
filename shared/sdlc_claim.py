@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 
+from shared.cc_task_pr_link import is_nullish
 from shared.coord_projection import (
     CapturedFile,
     FileProjection,
@@ -7322,6 +7323,8 @@ def release_pipeline_held_residue(
         )
         for held in _marker_tasks(cache_dir, role)
         if held != current_task_id
+        # A pre-lock filter only: release_claim_residue re-derives the shape under the role's
+        # publication lock from release-grade frontmatter and holds on any change since.
         and _task_status_for_any_state(vault_root, held) in TASK_PIPELINE_HELD_STATUSES
     ]
 
@@ -7439,10 +7442,13 @@ def return_claim(
                     "repair the note's frontmatter by hand, then rerun",
                 )
             status = str(fields.get("status") or "").strip()
+            # The estate's one definition of absent (shared.cc_task_pr_link.NULLISH): YAML null,
+            # or a string spelling of it such as "null", "~" or "nil". Anything else names
+            # started work (the seat's clause 7; no fourth copy of the set).
             started = [
                 key
                 for key in ("pr", "branch")
-                if str(fields.get(key) or "").strip() not in {"", "None", "null"}
+                if not (fields.get(key) is None or is_nullish(str(fields[key])))
             ]
             if status not in {"claimed", "in_progress"} or started:
                 raise _release_hold(
