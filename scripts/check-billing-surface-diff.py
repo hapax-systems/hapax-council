@@ -7,6 +7,11 @@ The provider_billing_sensitive release class's deterministic evidence
 counts its SUCCESS as one arm of that class's evidence (the no-implicit-API/PAYG
 rule; memory provider-spend-is-standing-authorized-not-api-spend).
 
+**None of that wiring is in this file's PR.** The `RELEASE_MITIGATION_CHECKS`
+entry, the `ci.yml` job and the autoqueue's evidence read land in **#4805**
+(the second half of the #4795 split); this half is the scanner the wiring will
+invoke, so nothing here is wired to anything yet.
+
 **What success proves, and what it does not.** Success proves exactly this: no
 ADDED line matched this scan's line patterns, and — for Python — every parsed
 ``Call`` carrying a credential argument also binds its own route to a governed
@@ -66,9 +71,10 @@ region that does not parse is never exempt (the line rules apply), and if it is
 credential-bearing while those rules cannot match, it becomes a
 ``billing-scan-unusable-input`` finding. An **incomplete section** is the same kind
 of finding, because its content was never read, and completeness is judged from the
-input rather than from the file's class: a section is whole when it shows a hunk, a
-binary note, a mode-only change, a pure rename, or an empty-file ``index``. An
-``index``-only header is a truncated content change, never a clean scan.
+input rather than from the file's class: a section is whole when it shows a binary
+note, a mode-only change, a pure rename, an empty-file ``index``, or a hunk **whose
+body delivered the counts its header declares** (a hunk that ends short was cut
+inside). An ``index``-only header is a truncated content change, never a clean scan.
 
 Exit codes: 0 clean, 1 findings, 2 fail-closed (no usable diff input).
 """
@@ -266,7 +272,12 @@ _PLAN_TYPE_API_RE = re.compile(r"\bplan_type[\"']?\s*[:=]\s*[\"']api[\"']")
 
 _PY_SUFFIXES = (".py",)
 _DOC_SUFFIXES = (".md", ".rst", ".txt")
-_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+#: A hunk header, with BOTH line counts captured: ``@@ -<old_start>[,<old_count>] +<new_start>[,<new_count>] @@``.
+#: The counts are the hunk's inventory, and the hunk is only whole when its body delivers
+#: exactly that many lines on each side (codex-1's round-6 critical: capturing only the
+#: new-side start let input cut off right after ``@@``, or mid-hunk, scan clean). An absent
+#: count means one line, per the diff format.
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 @dataclass(frozen=True)
@@ -289,7 +300,8 @@ def _is_doc_path(path: str) -> bool:
     return lowered.endswith(_DOC_SUFFIXES) or lowered.startswith("docs/")
 
 
-#: The short form of git's empty blob (``e69de29bb2d1d6434b8b29ae775ad8c2e48c5391``). An
+#: The short form of git's empty blob (its short hash is ``e69de29``; the full hash is
+#: git's, not this file's to write down). An
 #: ``index`` line that names it on one side and the all-zero object on the other is how git
 #: describes a file that is empty on one side — a COMPLETE section with no content, not a
 #: truncated one.
@@ -302,6 +314,7 @@ def _section_marks() -> dict[str, bool]:
     return {
         "preamble": False,  # any `index`/mode/rename line arrived
         "hunk": False,
+        "hunk_short": False,  # a hunk's body did not deliver its header's counts
         "binary": False,
         "file_section": False,  # `---` arrived, so `+++` follows
         "old_mode": False,
@@ -319,9 +332,15 @@ def _fold_index_marks(marks: dict[str, bool], raw: str) -> None:
     if not body:
         return
     old, _, new = body[0].partition("..")
+    # The zero side is ANY run of zeros: git abbreviates it to 7 characters, this repo's
+    # `gh pr diff` output abbreviates to 10 (`index 0000000000..fe91c83f72`), and a full
+    # 40-character hash is legal too (gemini-1's round-6 major: `old == "0000000"` made
+    # every 10-character empty-file section read as unusable).
+    old_is_zero = bool(old) and set(old) == {"0"}
+    new_is_zero = bool(new) and set(new) == {"0"}
     marks["preamble"] = True
-    marks["empty_blob"] = (old == "0000000" and new.startswith(_EMPTY_BLOB_SHORT)) or (
-        new == "0000000" and old.startswith(_EMPTY_BLOB_SHORT)
+    marks["empty_blob"] = (old_is_zero and new.startswith(_EMPTY_BLOB_SHORT)) or (
+        new_is_zero and old.startswith(_EMPTY_BLOB_SHORT)
     )
 
 
@@ -333,13 +352,17 @@ def _section_is_complete(marks: dict[str, bool]) -> bool:
     the ``copy`` pair), or an **empty file** creation/deletion (the empty-blob ``index``).
     Those last three legitimately carry no ``---``/``+++`` and no hunk.
 
+    A hunk only counts when its **body delivered the counts its header declares** — see
+    ``hunk_short`` — because otherwise input cut off inside a hunk would still count as
+    whole (codex-1's round-6 critical).
+
     Anything else is an **incomplete** section, and an incomplete section must never read as
     a clean scan (codex critical, round 5): an ``index``-only header is a truncated content
     change, and it used to clear the old ``saw_header_only`` flag and escape every check.
     """
 
     return bool(
-        marks["hunk"]
+        (marks["hunk"] and not marks["hunk_short"])
         or marks["binary"]
         or marks["empty_blob"]
         or (marks["old_mode"] and marks["new_mode"])
@@ -664,6 +687,24 @@ def scan_unified_diff(text: str) -> ScanResult:
     previous_header_path: str | None = None
     marks = _section_marks()
     marked_lines_emitted: set[tuple[str, int]] = set()
+    #: Lines a hunk's header still owes on each side, and whether a body is open. A hunk is
+    #: whole only when both budgets reach exactly zero (codex-1's round-6 critical).
+    hunk_left_old = 0
+    hunk_left_new = 0
+    in_hunk = False
+
+    def close_hunk() -> None:
+        """A hunk that ends short makes the section incomplete (round-6 critical).
+
+        Called at every point a hunk body can end: the next hunk's header, the next file's
+        header, and the end of the diff. A body line arriving after both budgets were spent
+        is treated the same way — the header lied, so the section is not whole either.
+        """
+
+        nonlocal in_hunk
+        if in_hunk and (hunk_left_old != 0 or hunk_left_new != 0):
+            marks["hunk_short"] = True
+        in_hunk = False
 
     def emit_incomplete(blocking_path: str, where: str) -> None:
         """One finding per section the input never finished delivering.
@@ -674,17 +715,25 @@ def scan_unified_diff(text: str) -> ScanResult:
         no file section arrived), and `where` says which end of the diff cut it.
         """
 
+        if marks["hunk_short"]:
+            tail = (
+                "a hunk ended short of the line counts its own header declares (or a line "
+                "arrived after both counts were spent), so the input was cut inside a hunk"
+            )
+        else:
+            tail = (
+                "no hunk, no binary note, and none of the contentless forms git emits whole "
+                "(mode-only change, pure rename, empty file)"
+            )
         findings.append(
             Finding(
                 path=blocking_path or "(unknown path)",
                 line=0,
                 kind="billing-scan-unusable-input",
                 text=(
-                    f"the diff ends {where} with an INCOMPLETE section for this file: no "
-                    "hunk, no binary note, and none of the contentless forms git emits "
-                    "whole (mode-only change, pure rename, empty file). An `index`-only "
-                    "header is a truncated content change. Next action: regenerate the "
-                    "diff so every section is complete."
+                    f"the diff ends {where} with an INCOMPLETE section for this file: {tail}. "
+                    "An `index`-only header is a truncated content change. Next action: "
+                    "regenerate the diff so every section is complete."
                 ),
             )
         )
@@ -781,6 +830,7 @@ def scan_unified_diff(text: str) -> ScanResult:
     for raw in text.splitlines():
         if raw.startswith("diff --git "):
             flush()
+            close_hunk()
             # The section that just ended must have arrived WHOLE (round 2's no-hunk arm,
             # round 3's no-file-section arm and round 5's index-only-header arm are all the
             # same defect: a section the input never finished delivering reading as clean).
@@ -823,6 +873,23 @@ def scan_unified_diff(text: str) -> ScanResult:
         if raw.startswith(("similarity index", "dissimilarity index")):
             marks["preamble"] = True
             continue
+        # Hunk bodies are counted for EVERY section before anything is skipped: a hunk that
+        # ends short proves the input was cut, doc file or not (round-6 critical).
+        if in_hunk:
+            if raw.startswith("\\"):
+                pass  # `\ No newline at end of file` annotates the line above; it is not a line
+            elif raw.startswith("+"):
+                hunk_left_new -= 1
+            elif raw.startswith("-"):
+                hunk_left_old -= 1
+            else:  # a context line: git writes " ", and a trailing-space strip leaves it empty
+                hunk_left_old -= 1
+                hunk_left_new -= 1
+            # No separate overshoot guard here: a body line arriving after both budgets were
+            # spent drives one of them negative, and `close_hunk`'s single "not zero" test
+            # catches it with the short case. (Measured: a mutant that tolerates the negative
+            # is behaviourally identical, so a second guard would be dead weight — one
+            # hazard, one mechanism.)
         if raw.startswith("--- ") and not marks["hunk"]:
             marks["file_section"] = True
             marks["preamble"] = True
@@ -846,10 +913,14 @@ def scan_unified_diff(text: str) -> ScanResult:
         # is unusable whatever got cut), so the mark must be set before the scan-skip test.
         header = _HUNK_HEADER_RE.match(raw)
         if header:
+            close_hunk()
             flush()
             saw_hunk = True
             marks["hunk"] = True
-            new_line = int(header.group(1))
+            hunk_left_old = int(header.group(2) or 1)
+            hunk_left_new = int(header.group(4) or 1)
+            in_hunk = True
+            new_line = int(header.group(3))
             continue
         if skip_file or path is None:
             continue
@@ -862,6 +933,7 @@ def scan_unified_diff(text: str) -> ScanResult:
         region.append((new_line, raw[1:] if raw.startswith(" ") else raw, False))
         new_line += 1  # context line
     flush()
+    close_hunk()
     # Only a section that was actually OPENED can be incomplete: an empty input has no
     # section to be whole, and `main()` already fails that closed on its own terms.
     if previous_header_path is not None and not _section_is_complete(marks):

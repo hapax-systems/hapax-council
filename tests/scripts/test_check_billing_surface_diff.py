@@ -583,7 +583,9 @@ def test_pre_existing_call_in_context_lines_is_not_flagged(scanner: ModuleType) 
         "diff --git a/shared/foo_client.py b/shared/foo_client.py\n"
         "--- a/shared/foo_client.py\n"
         "+++ b/shared/foo_client.py\n"
-        "@@ -1,3 +1,4 @@\n"
+        # Counts corrected to what the body delivers (two context lines, one added): git never
+        # emits a header its body does not fill, and the hunk-budget check now says so.
+        "@@ -1,2 +1,3 @@\n"
         " client = OpenAI(api_key=pre_existing_key)\n"
         ' LOGGER.info("unchanged")\n'
         "+x = 1\n"
@@ -979,6 +981,172 @@ def test_a_doc_sections_completeness_is_still_judged(scanner: ModuleType) -> Non
     )
     complete = scanner.scan_unified_diff(_diff("docs/runbooks/foo.md", ["some prose"]))
     assert complete.findings == (), "a complete doc section was flagged as unusable"
+
+
+# ── round 6/7 (codex-1's critical + major, gemini-1's major): a hunk is whole only ──
+# ── when its body delivers its header's counts; the zero side is any run of zeros. ──
+
+
+def test_truncation_inside_a_hunk_fails_closed(scanner: ModuleType) -> None:
+    """codex-1's round-6 critical: a hunk header alone must not prove a section whole.
+
+    The header declares how many lines each side owes; input cut off right after ``@@`` or
+    mid-hunk used to scan clean because only the header's presence was checked.
+    """
+
+    head = (
+        "diff --git a/shared/foo.py b/shared/foo.py\n"
+        "index d95f3ad..94b334d 100644\n"
+        "--- a/shared/foo.py\n"
+        "+++ b/shared/foo.py\n"
+    )
+    hunk = "@@ -1,2 +1,3 @@\n"
+    body = " ctx\n-old\n+one\n+two\n"
+    shapes = {
+        "right after @@": head + hunk,
+        "mid-hunk (one line in)": head + hunk + " ctx\n",
+        "short of the old count": head + hunk + " ctx\n+one\n+two\n",
+        "short of the new count": head + hunk + " ctx\n-old\n+one\n",
+        "a body line after both counts were spent": head + hunk + body + "+three\n",
+        "a short hunk closed by the next file's header": (
+            head + hunk + " ctx\n" + "diff --git a/b.py b/b.py\n"
+        ),
+    }
+    for label, diff in shapes.items():
+        result = scanner.scan_unified_diff(diff)
+        assert "billing-scan-unusable-input" in [f.kind for f in result.findings], (
+            f"a hunk that did not deliver its header's counts scanned clean: {label}"
+        )
+    whole = scanner.scan_unified_diff(head + hunk + body)
+    assert whole.findings == (), "a hunk that delivered its counts exactly was flagged"
+    # Attribution, not just the fact of the finding: a short hunk must be blamed on the file
+    # it was cut in. Without the close at the next file's header the state stays open, the
+    # NEXT section inherits it, and the finding names the wrong file (measured: that mutant is
+    # otherwise equivalent, so this assertion is what pins the boundary).
+    misattributed = scanner.scan_unified_diff(head + hunk + " ctx\n" + "diff --git a/b.py b/b.py\n")
+    blamed = [f.path for f in misattributed.findings if f.kind == "billing-scan-unusable-input"]
+    assert "shared/foo.py" in blamed, (
+        f"a short hunk closed by the next file's header was blamed on {blamed} instead"
+    )
+
+
+def test_empty_file_index_forms_all_read_as_contentless(scanner: ModuleType) -> None:
+    """gemini-1's round-6 major: the zero side is any run of zeros, not exactly seven.
+
+    This repo's ``gh pr diff`` abbreviates to ten characters
+    (``index 0000000000..fe91c83f72``), so a fixed ``"0000000"`` made every ten-character
+    empty-file section read as unusable input — a false positive on ordinary diffs.
+
+    Every hash here is *derived* from git at runtime rather than written as a literal: a
+    40-character hex literal is a "Hex High Entropy String" to the pre-push secret scan, and a
+    git blob hash is not a credential. Deriving it keeps the test honest — it uses the real
+    empty blob git actually produces — and needs no allowlist pragma.
+    """
+
+    import subprocess
+
+    empty_blob = subprocess.run(
+        ["git", "hash-object", "-t", "blob", "/dev/null"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert len(empty_blob) == 40, f"unexpected empty-blob hash form: {empty_blob!r}"
+    forms = {
+        "7-char": "0" * 7,
+        "10-char": "0" * 10,
+        "40-char": "0" * len(empty_blob),
+    }
+    for label, zero in forms.items():
+        short = empty_blob[: len(zero)]
+        added = (
+            "diff --git a/shared/empty.py b/shared/empty.py\n"
+            "new file mode 100644\n"
+            f"index {zero}..{short}\n"
+        )
+        result = scanner.scan_unified_diff(added)
+        assert result.findings == (), f"an empty-file {label} index was flagged: {result.findings}"
+        removed = (
+            "diff --git a/shared/gone.py b/shared/gone.py\n"
+            "deleted file mode 100644\n"
+            f"index {short}..{zero}\n"
+        )
+        assert scanner.scan_unified_diff(removed).findings == (), (
+            f"a deleted-empty-file {label} index was flagged"
+        )
+    # And a NON-empty index must still be held: it promises content that never arrived.
+    truncated = (
+        "diff --git a/shared/foo.py b/shared/foo.py\n"
+        "new file mode 100644\n"
+        "index 0000000000..fe91c83f72\n"
+    )
+    kinds = [f.kind for f in scanner.scan_unified_diff(truncated).findings]
+    assert "billing-scan-unusable-input" in kinds, (
+        "a non-empty index with no content was read as a clean scan"
+    )
+
+
+def test_truncation_at_every_line_boundary_of_a_real_diff_fails_closed(
+    scanner: ModuleType, tmp_path: Path
+) -> None:
+    """The class-level test the seat asked for: fuzz every line boundary of a REAL diff.
+
+    A real ``git diff --find-renames --unified=0`` over a mode-only change, a pure rename, an
+    empty new file and a content file whose added line is a credential read is generated here,
+    then every prefix at a line boundary is scanned. The invariant: **no prefix may report a
+    clean scan** — it either still contains the canary read, or the section it cut short is
+    flagged incomplete. The per-shape tests above are this test's instances; this is the one
+    that ends the class rather than the instance.
+    """
+
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+    git("init", "-q", ".")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (repo / "aaa_canary.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "modeonly.py").write_text("y = 1\n", encoding="utf-8")
+    (repo / "oldname.py").write_text("z = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    (repo / "aaa_canary.py").write_text(
+        'x = 1\nkey = os.environ["OPENAI_API_KEY"]\n', encoding="utf-8"
+    )
+    (repo / "modeonly.py").chmod(0o755)
+    git("mv", "oldname.py", "newname.py")
+    (repo / "empty_new.py").write_text("", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "change")
+    diff = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--find-renames", "--unified=0", "HEAD~1..HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    # The fixture must be a diff this scanner reads WHOLE, or the fuzz would pass vacuously:
+    # exactly one finding, and it is the canary read.
+    whole = scanner.scan_unified_diff(diff)
+    assert [f.kind for f in whole.findings] == ["credential-env-read"], (
+        "the real-diff fixture is not a clean baseline: "
+        f"{[(f.kind, f.path) for f in whole.findings]}"
+    )
+
+    lines = diff.splitlines(True)
+    assert len(lines) > 15, f"fixture too small to fuzz meaningfully: {len(lines)} lines"
+    for boundary in range(1, len(lines)):
+        prefix = "".join(lines[:boundary])
+        result = scanner.scan_unified_diff(prefix)
+        assert result.findings, (
+            "a prefix of a real diff reported a clean scan at line "
+            f"{boundary} (last line: {prefix.splitlines()[-1]!r})"
+        )
 
 
 def test_strip_default_argument_is_scanned(scanner: ModuleType) -> None:
