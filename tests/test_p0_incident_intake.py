@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -10,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
+
+import pytest
 
 import shared.p0_incident_intake as p0_intake
 from shared.p0_incident_intake import (
@@ -23,10 +26,6 @@ from shared.p0_incident_intake import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INTAKE_SCRIPT = REPO_ROOT / "scripts" / "hapax-p0-incident-intake"
-
-
-def _latest_alert_section(text: str) -> str:
-    return text.split("## Latest Alert", 1)[1].split("## Evidence", 1)[0]
 
 
 def _write_fake_bin(path: Path, body: str) -> None:
@@ -125,24 +124,59 @@ def test_same_incident_updates_existing_task(tmp_path):
 
     assert first_result.created is True
     assert second_result.created is False
-    assert second_result.updated is True
+    assert second_result.updated is True  # coalesced into the open incident
     assert second_result.task_path == first_result.task_path
     assert list((task_root / "active").glob("*.md")) == [first_result.task_path]
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     incident = state["incidents"][first_result.fingerprint]
     assert incident["count"] == 2
+    assert r"literal backref \1 must survive" in incident["last_message"]
 
-    task = first_result.task_path.read_text(encoding="utf-8")
-    assert "incident_count: 2" in task
-    assert task.count("## Latest Alert") == 1
-    assert "- Count: 2" in task
-    assert "- Last seen: `2026-06-12T20:05:00Z`" in task
-    latest = _latest_alert_section(task)
-    assert r"literal backref \1 must survive" in latest
-    assert "INV-2 false: local worktree ledger drift remains" in latest
-    assert "INV-2 false: local worktree ledger drift\n```" not in latest
-    assert "p0-incident-intake updated" in task
+    events = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    assert events[-1]["count"] == 2
+    assert r"literal backref \1 must survive" in events[-1]["message"]
+
+
+def test_repeats_of_an_open_incident_never_rewrite_its_task_note(tmp_path):
+    # p0-incident-intake-recurrence-to-sidecar-ledger-20260927: every repeat rewrote the note, so
+    # the task-store frontier churned under every concurrent cc-claim (the oom-policy-audit note
+    # reached 2.4 MB). Repeats go to the state and the append-only ledger; the note is written once.
+    task_root = tmp_path / "tasks"
+    state_path = tmp_path / "state.json"
+    ledger_path = tmp_path / "events.jsonl"
+    first = datetime(2026, 9, 27, 13, 0, tzinfo=UTC)
+    kwargs = {
+        "priority": "urgent",
+        "tags": ["skull"],
+        "task_root": task_root,
+        "state_path": state_path,
+        "ledger_path": ledger_path,
+    }
+    minted = record_notification("Service Failed: demo.service", "tick 0", now=first, **kwargs)
+    note = minted.task_path
+    os.utime(note, ns=(1_000_000_000, 1_000_000_000))
+    before = (note.read_bytes(), note.stat().st_mtime_ns)
+    repeats = 5
+
+    for tick in range(1, repeats + 1):
+        result = record_notification(
+            "Service Failed: demo.service",
+            f"tick {tick}",
+            now=first + timedelta(minutes=5 * tick),
+            **kwargs,
+        )
+        assert (result.created, result.updated, result.task_path) == (False, True, note)
+
+    assert (note.read_bytes(), note.stat().st_mtime_ns) == before
+    assert f"- Incident ledger: `{ledger_path}`" in before[0].decode()  # the pointer, from the mint
+    events = [
+        json.loads(line)
+        for line in ledger_path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["fingerprint"] == minted.fingerprint
+    ]
+    assert len(events) == repeats + 1
+    assert (events[-1]["count"], events[-1]["message"]) == (repeats + 1, f"tick {repeats}")
 
 
 def test_recurrence_after_closed_task_mints_new_active_task_with_prior_context(tmp_path):
@@ -163,6 +197,16 @@ def test_recurrence_after_closed_task_mints_new_active_task_with_prior_context(t
         now=first,
     )
     assert first_result.task_path is not None
+    record_notification(  # a repeat while open: counted in state, not written to the note
+        "Service Failed: demo.service",
+        "first failure text, again",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=ledger_path,
+        now=first + timedelta(minutes=5),
+    )
     first_task = first_result.task_path.read_text(encoding="utf-8")
     first_task = first_task.replace("status: offered", "status: done", 1)
     first_task = first_task.replace("completed_at: null", "completed_at: 2026-06-12T20:30:00Z", 1)
@@ -211,6 +255,7 @@ def test_recurrence_after_closed_task_mints_new_active_task_with_prior_context(t
     assert "This alert recurred after prior task" in task
     assert "Root cause: demo unit used a stale deploy path." in task
     assert "second failure text after the prior task was closed" in task
+    assert "- Prior incident count: `2`" in task  # from the state, since the note is written once
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     incident = state["incidents"][first_result.fingerprint]
@@ -226,7 +271,8 @@ def test_recurrence_after_closed_task_mints_new_active_task_with_prior_context(t
     assert events[-1]["recurrence_of_task_id"] == first_result.task_id
 
 
-def test_existing_task_without_latest_alert_gets_repaired(tmp_path):
+def test_a_repeat_leaves_a_legacy_note_without_latest_alert_untouched(tmp_path):
+    # Formerly a repeat "repaired" such a note by rewriting it; a repeat now writes no note.
     task_root = tmp_path / "tasks"
     state_path = tmp_path / "state.json"
     ledger_path = tmp_path / "events.jsonl"
@@ -258,10 +304,9 @@ def test_existing_task_without_latest_alert_gets_repaired(tmp_path):
         now=second,
     )
 
-    repaired = first_result.task_path.read_text(encoding="utf-8")
-    assert repaired.count("## Latest Alert") == 1
-    assert repaired.index("## Latest Alert") < repaired.index("## Evidence")
-    assert "second failure text" in _latest_alert_section(repaired)
+    assert first_result.task_path.read_text(encoding="utf-8") == task_text
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["incidents"][first_result.fingerprint]["last_message"] == "second failure text"
 
 
 def test_concurrent_alerts_preserve_single_task_and_count(tmp_path):
@@ -331,7 +376,7 @@ def test_concurrent_alerts_preserve_single_task_and_count(tmp_path):
     incident = next(iter(state["incidents"].values()))
     assert incident["count"] == worker_count
     assert len(ledger_path.read_text(encoding="utf-8").splitlines()) == worker_count
-    assert f"incident_count: {worker_count}" in task_files[0].read_text(encoding="utf-8")
+    assert "incident_count: 1" in task_files[0].read_text(encoding="utf-8")  # written once, at mint
 
 
 def test_ledger_append_failure_fails_open_and_persists_state(tmp_path, monkeypatch):
@@ -1324,3 +1369,156 @@ def test_reaper_timer_is_wired_into_durable_inventories():
     assert "enable hapax-p0-incident-reaper.timer" in preset
     audit = (REPO_ROOT / "scripts" / "audit-runtime-activation-drift.py").read_text()
     assert '"hapax-p0-incident-reaper.timer"' in audit
+
+
+# ── one-time migration of the per-repeat lines ────────────────────────────────
+# p0-incident-intake-recurrence-to-sidecar-ledger-20260927
+
+_MIGRATED_AT = datetime(2026, 9, 27, 14, 0, tzinfo=UTC)
+
+
+def _legacy_inflated_note(task_root: Path, state_path: Path, repeats: int) -> tuple[Path, str]:
+    """A minted incident note, then inflated the way the intake wrote repeats before the fix."""
+    minted = record_notification(
+        "Service Failed: demo.service",
+        "tick 0",
+        priority="urgent",
+        tags=["skull"],
+        task_root=task_root,
+        state_path=state_path,
+        ledger_path=state_path.with_name("events.jsonl"),
+        now=datetime(2026, 9, 27, 13, 0, tzinfo=UTC),
+    )
+    text = minted.task_path.read_text(encoding="utf-8")
+    assert "## Session Log\n" in text
+    repeat_lines = "".join(
+        f"- 2026-09-27T13:{5 * n:02d}:00Z p0-incident-intake updated from "
+        f"`Service Failed: demo.service` (count={n + 1}).\n"
+        for n in range(repeats, 0, -1)
+    )
+    minted.task_path.write_text(
+        text.replace("## Session Log\n", "## Session Log\n" + repeat_lines, 1), encoding="utf-8"
+    )
+    return minted.task_path, repeat_lines
+
+
+def test_the_migration_dry_run_reports_and_changes_nothing(tmp_path):
+    task_root, state_path, archive = tmp_path / "tasks", tmp_path / "state.json", tmp_path / "arch"
+    note, _lines = _legacy_inflated_note(task_root, state_path, repeats=3)
+    before = note.read_bytes()
+
+    results = p0_intake.migrate_recurrence_blocks(
+        task_root=task_root,
+        state_path=state_path,
+        archive_root=archive,
+        lock_root=tmp_path / "locks",
+        now=_MIGRATED_AT,
+    )
+
+    assert [(item.note, item.moved_lines, item.after_sha256) for item in results] == [
+        (note.name, 3, None)
+    ]
+    assert note.read_bytes() == before
+    assert not archive.exists()
+
+
+def test_the_migration_archives_first_then_moves_the_repeat_lines_once(tmp_path):
+    task_root, state_path, archive = tmp_path / "tasks", tmp_path / "state.json", tmp_path / "arch"
+    note, repeat_lines = _legacy_inflated_note(task_root, state_path, repeats=3)
+    other = task_root / "active" / "some-other-row.md"
+    other.write_text(f"## Session Log\n{repeat_lines}", encoding="utf-8")
+    before = note.read_bytes()
+
+    (result,) = p0_intake.migrate_recurrence_blocks(
+        task_root=task_root,
+        state_path=state_path,
+        archive_root=archive,
+        lock_root=tmp_path / "locks",
+        now=_MIGRATED_AT,
+        apply=True,
+    )
+
+    run = archive / "20260927T140000Z"
+    assert (run / note.name).read_bytes() == before
+    assert (run / f"{note.stem}.repeats.log").read_text(encoding="utf-8") == repeat_lines
+    after = note.read_text(encoding="utf-8")
+    (pointer,) = [line for line in after.splitlines(keepends=True) if "per-repeat lines" in line]
+    assert f"moved 3 per-repeat lines to `{run / (note.stem + '.repeats.log')}`" in pointer
+    assert after == before.decode("utf-8").replace(repeat_lines, pointer, 1)  # nothing else changed
+    assert (result.moved_lines, result.after_sha256) == (
+        3,
+        hashlib.sha256(after.encode("utf-8")).hexdigest(),
+    )
+    assert json.loads((run / "manifest.json").read_text(encoding="utf-8"))[0]["moved_lines"] == 3
+    assert other.read_text(encoding="utf-8") == f"## Session Log\n{repeat_lines}"
+
+    again = p0_intake.migrate_recurrence_blocks(
+        task_root=task_root,
+        state_path=state_path,
+        archive_root=archive,
+        lock_root=tmp_path / "locks",
+        now=_MIGRATED_AT + timedelta(hours=1),
+        apply=True,
+    )
+    assert again == []
+    assert note.read_text(encoding="utf-8") == after
+
+
+def test_the_migration_rewrite_waits_on_the_notes_projection_lock(tmp_path, monkeypatch):
+    import threading
+
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
+    task_root, state_path, archive = tmp_path / "tasks", tmp_path / "state.json", tmp_path / "arch"
+    locks = tmp_path / "locks"
+    note, _lines = _legacy_inflated_note(task_root, state_path, repeats=2)
+    before = note.read_bytes()
+    task_id = p0_intake._frontmatter_value(before.decode("utf-8"), "task_id")
+    held, release = threading.Event(), threading.Event()
+
+    def holder() -> None:
+        with projected_path_lock(task_id, [note], root=locks):
+            held.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    held.wait(10)
+    monkeypatch.setenv("HAPAX_TASK_NOTE_LOCK_TIMEOUT", "0.3")
+    try:
+        with pytest.raises(TaskNoteLockError):
+            p0_intake.migrate_recurrence_blocks(
+                task_root=task_root,
+                state_path=state_path,
+                archive_root=archive,
+                lock_root=locks,
+                now=_MIGRATED_AT,
+                apply=True,
+            )
+    finally:
+        release.set()
+        thread.join(10)
+
+    assert note.read_bytes() == before
+
+
+def test_the_migration_command_line_defaults_to_a_dry_run(tmp_path):
+    home = tmp_path / "home"
+    task_root = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    state_path = home / ".cache" / "hapax" / "p0-incident-intake" / "state.json"
+    note, _lines = _legacy_inflated_note(task_root, state_path, repeats=2)
+    before = note.read_bytes()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "shared.p0_incident_intake", "migrate-recurrences"],
+        cwd=REPO_ROOT,
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["moved_lines"] == 2
+    assert "would move 2 per-repeat lines from 1 notes" in result.stderr
+    assert note.read_bytes() == before
