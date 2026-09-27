@@ -661,7 +661,6 @@ def scan_unified_diff(text: str) -> ScanResult:
     new_line = 0
     region: list[tuple[int, str, bool]] = []
     saw_hunk = False
-    binary_section = False
     previous_header_path: str | None = None
     marks = _section_marks()
     marked_lines_emitted: set[tuple[str, int]] = set()
@@ -793,12 +792,10 @@ def scan_unified_diff(text: str) -> ScanResult:
             path = None
             skip_file = True
             saw_hunk = False
-            binary_section = False
             previous_header_path = raw[len("diff --git ") :].split(" b/")[-1].strip()
             marks = _section_marks()
             continue
         if raw.startswith("Binary files ") or raw.startswith("GIT binary patch"):
-            binary_section = True
             marks["binary"] = True  # a section DID arrive; it is simply binary
             continue
         if raw.startswith("index "):
