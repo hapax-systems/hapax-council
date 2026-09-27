@@ -23,10 +23,11 @@ BACKUP_SCRIPTS = ("hapax-backup-local", "hapax-backup-remote")
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 # The DR script is podium's ~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, whose own
-# sha256 is fa0dafc7…), changed in exactly two hunks by the seat's exception (2026-09-27 10:29Z): the bootstrap clone
-# (lines 22–23) and Phase 12's dump search (lines 613ff). DR_SCRIPT_SHA256 below is the digest of that result, not of
-# the live blob. Any other change belongs to the follow-up row, never to a silent edit.
-DR_SCRIPT_SHA256 = "195e0769d7015f61b86592a98b05d4c8f2749ec011336d4f32cebb23c9391b7b"
+# sha256 is fa0dafc7…), changed in exactly four hunks by the seat's exceptions (2026-09-27 10:29Z and 12:03Z): the
+# bootstrap clone (lines 22–23), Phase 3's FileStore restore (after line 153), Phase 12's dump search (613ff) and the
+# final first-backup step (830). DR_SCRIPT_SHA256 below is the digest of that result, not of the live blob. Any other
+# change belongs to the follow-up row, never to a silent edit.
+DR_SCRIPT_SHA256 = "2cc61973283fab8893483184e135499f62bd59c45168599c3b69ae750aca5424"
 
 
 @pytest.mark.parametrize("name", ["hapax-backup-local.service", "hapax-backup-remote.service"])
@@ -266,6 +267,98 @@ def test_dr_phase12_refuses_loudly_when_no_dump_exists(tmp_path: Path) -> None:
         "tmp/hapax-backup-dumps",
     ):
         assert rel in result.stdout + result.stderr
+
+
+_SENTINEL = "SENTINEL-NOT-A-REAL-SECRET"
+
+
+def _filestore_section() -> str:
+    text = (SCRIPTS / "hapax-cachyos-restore.sh").read_text(encoding="utf-8")
+    start = text.index("# ─── FileStore (")
+    return text[start : text.index("# ─── end FileStore", start)]
+
+
+def _restore_filestore(tmp_path: Path, blobs: list[str] | None) -> tuple:
+    """Run the DR script's own Phase 3 FileStore section against a fixture restored home. ``blobs`` are the .bin
+    names in the snapshot's FileStore (None: the snapshot holds no FileStore). Each blob holds a sentinel value."""
+
+    rhome = tmp_path / "restore" / "home" / "hapax"
+    rhome.mkdir(parents=True)
+    if blobs is not None:
+        store = rhome / ".config" / "reins" / "secrets"
+        store.mkdir(parents=True)
+        (store / ".key").write_text(_SENTINEL + "-key", encoding="utf-8")
+        for name in blobs:
+            (store / name).write_text(f"{_SENTINEL}-{name}", encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    probe = tmp_path / "filestore.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        'log() { echo "$1"; }\nok() { echo "OK $1"; }\nwarn() { echo "WARN $1"; }\nfail() { echo "FAIL $1"; }\n'
+        f'RHOME="{rhome}"\n' + _filestore_section(),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(probe)],
+        env=dict(os.environ, HOME=str(home)),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result, home / ".config" / "reins" / "secrets"
+
+
+def test_dr_restores_the_filestore_with_its_modes_and_verifies_the_entry_names(
+    tmp_path: Path,
+) -> None:
+    result, store = _restore_filestore(
+        tmp_path,
+        ["backups-restic-password.bin", "backblaze-restic-password.bin", "other-entry.bin"],
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (store / ".key").is_file() and (store / "other-entry.bin").is_file()
+    assert oct(store.stat().st_mode & 0o777) == "0o700"
+    assert {oct(p.stat().st_mode & 0o777) for p in store.iterdir()} == {"0o600"}
+    assert "OK FileStore entry present: backups/restic-password" in result.stdout
+    assert "OK FileStore entry present: backblaze/restic-password" in result.stdout
+    assert _SENTINEL not in result.stdout + result.stderr  # no secret value is ever printed
+
+
+def test_dr_names_a_missing_filestore_entry(tmp_path: Path) -> None:
+    result, _ = _restore_filestore(tmp_path, ["backups-restic-password.bin"])
+    assert result.returncode == 0
+    assert "WARN FileStore entry missing: backblaze/restic-password" in result.stdout
+    assert "hapax-secret backblaze/restic-password" in result.stdout
+    assert _SENTINEL not in result.stdout + result.stderr
+
+
+def test_dr_warns_with_the_next_action_when_the_snapshot_has_no_filestore(tmp_path: Path) -> None:
+    result, store = _restore_filestore(tmp_path, None)
+    assert result.returncode == 0  # an older snapshot must still restore
+    assert "WARN The snapshot holds no FileStore" in result.stdout
+    assert "hapax-secret" in result.stdout and not store.exists()
+
+
+def test_dr_filestore_section_reads_no_secret_value() -> None:
+    """The section copies the store and tests names with -f; nothing in it opens a blob's content."""
+
+    section = _filestore_section()
+    code = "\n".join(line for line in section.splitlines() if not line.lstrip().startswith("#"))
+    code = re.sub(r'"(?:[^"\\]|\\.)*"', '""', code)  # messages are text, not commands
+    readers = re.findall(
+        r"(?:^|[\s;&|(`])(cat|head|tail|read|less|more|strings|xxd|od|hapax-secret)(?=\s)",
+        code,
+        re.M,
+    )
+    assert readers == [], readers
+    assert not re.search(r"(?<![<])<(?![<(])\s*\S", code), "an input redirect reads a file"
+
+
+def test_dr_final_step_starts_the_backup_service() -> None:
+    text = (SCRIPTS / "hapax-cachyos-restore.sh").read_text(encoding="utf-8")
+    assert "First local backup: systemctl --user start hapax-backup-local.service" in text
+    assert "~/.local/bin/hapax-backup-local.sh" not in text
 
 
 def test_dr_bootstrap_clones_council_not_the_archived_repository() -> None:

@@ -151,6 +151,30 @@ chmod 700 ~/.gnupg ~/.ssh 2>/dev/null || true
 chmod 600 ~/.gnupg/* ~/.ssh/id_* 2>/dev/null || true
 chmod 644 ~/.ssh/*.pub ~/.ssh/known_hosts 2>/dev/null || true
 
+# ─── FileStore (the estate's secret store since 2026-09-16) ─────────────────
+# Restored from the backup with its key, like ~/.gnupg; the backup services read their restic passwords from it.
+# Only entry names are checked (the store keeps "a/b" as "a-b.bin"); no value is read. Snapshots from before #4813 do
+# not hold it: say so, with the next action, and go on (#4813, seat exception 2026-09-27 12:03Z).
+FILESTORE_ENTRIES=(backups/restic-password backblaze/restic-password)
+if [[ -f "$RHOME/.config/reins/secrets/.key" ]]; then
+    mkdir -p ~/.config/reins
+    rm -rf ~/.config/reins/secrets
+    cp -a "$RHOME/.config/reins/secrets" ~/.config/reins/
+    chmod 700 ~/.config/reins/secrets
+    find ~/.config/reins/secrets -type f -exec chmod 600 {} +
+    ok "Restored the FileStore (~/.config/reins/secrets)"
+    for entry in "${FILESTORE_ENTRIES[@]}"; do
+        if [[ -f ~/.config/reins/secrets/"${entry//\//-}.bin" ]]; then
+            ok "FileStore entry present: $entry"
+        else
+            warn "FileStore entry missing: $entry; the backup services need it. Next: put it with \`hapax-secret $entry\`"
+        fi
+    done
+else
+    warn "The snapshot holds no FileStore (~/.config/reins/secrets/.key); snapshots from before #4813 do not. The backup services read ${FILESTORE_ENTRIES[*]} from it. Next: put each with \`hapax-secret <name>\` once ~/.local/bin is restored"
+fi
+# ─── end FileStore
+
 # Verify pass
 pass ls > /dev/null 2>&1 && ok "pass store verified" || warn "pass may need GPG passphrase unlock"
 
@@ -849,7 +873,7 @@ echo "  6. Verify: pass show api/anthropic"
 echo "  7. Verify: claude --version && claude plugins list"
 echo "  8. cd ~/projects/hapax-council && uv sync"
 echo "  9. systemctl --user start logos-api && systemctl --user start hapax-daimonion"
-echo " 10. First local backup: ~/.local/bin/hapax-backup-local.sh"
+echo " 10. First local backup: systemctl --user start hapax-backup-local.service"
 echo ""
 log "Verification:"
 echo "  nvidia-smi                    # GPU"
