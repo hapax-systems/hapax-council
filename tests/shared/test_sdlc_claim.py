@@ -19,6 +19,7 @@ from hapax.context_canon import contract as context_contract
 
 import shared.sdlc_claim as sdlc_claim
 import shared.sdlc_task_store as sdlc_task_store
+from shared.coord_projection import LifecycleTransitionError
 from shared.dispatcher_policy import DispatchAction, RouteDecision
 from shared.execution_admission import (
     ACTION_INTENT_SCHEMA,
@@ -4955,20 +4956,30 @@ def test_churn_carried_only_in_reason_code_names_the_retry(exc: Exception) -> No
 # claim-recovery-manifest-records-store-reason-code-20260927
 
 
-def _phase_observations() -> list[dict[str, object]]:
-    from shared.coord_event_log import default_event_log
+@pytest.fixture
+def coord_ledger(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """This test's own coord tree, set explicitly (not left to the conftest), as its ledger path.
 
-    mirror = default_event_log().jsonl_path
-    if not mirror.is_file():
+    A sibling of tmp_path, so tests that snapshot tmp_path see no new files.
+    """
+    coord = tmp_path_factory.mktemp("coord-ledger")
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(coord))
+    return coord / "ledger.jsonl"
+
+
+def _phase_observations(ledger: Path) -> list[dict[str, object]]:
+    if not ledger.is_file():
         return []
-    events = [json.loads(line) for line in mirror.read_text(encoding="utf-8").splitlines()]
+    events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
     return [e for e in events if e["event_type"] == sdlc_claim.CLAIM_PUBLICATION_PHASE_OBSERVED]
 
 
-def test_a_publication_emits_one_non_authoritative_observation_per_state(tmp_path: Path) -> None:
+def test_a_publication_emits_one_non_authoritative_observation_per_state(
+    tmp_path: Path, coord_ledger: Path
+) -> None:
     fixture = _applied_publication(tmp_path)
 
-    observed = _phase_observations()
+    observed = _phase_observations(coord_ledger)
 
     assert [e["payload"]["state"] for e in observed] == [
         "created",
@@ -4987,7 +4998,7 @@ def test_a_publication_emits_one_non_authoritative_observation_per_state(tmp_pat
 
 
 def test_a_held_publication_observes_the_stores_own_reason(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coord_ledger: Path
 ) -> None:
     # The reason_code row's intent: a recovery_required journal names only the wrapper code, so
     # a churn hold was not attributable. The observation carries the store's reason.
@@ -5012,10 +5023,55 @@ def test_a_held_publication_observes_the_stores_own_reason(
             now=active.checked_at,
         )
 
-    held = _phase_observations()[-1]["payload"]
+    held = _phase_observations(coord_ledger)[-1]["payload"]
     assert held["state"] == "recovery_required"
     assert held["reason_code"] == "claim_publication_task_projection_invalid"
     assert held["reason_detail"] == "task_store_frontier_changed_during_index_build"
+
+
+@pytest.mark.parametrize(
+    ("raised", "detail"),
+    [
+        (
+            LifecycleTransitionError("projection_refused", "repair", "note:changed"),
+            "projection_refused:note:changed",
+        ),
+        (RuntimeError("disk full"), "pre_activation_projection:RuntimeError"),
+    ],
+    ids=["lifecycle_transition_error", "generic_exception"],
+)
+def test_the_other_held_branches_observe_their_reasons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    coord_ledger: Path,
+    raised: Exception,
+    detail: str,
+) -> None:
+    # glm on #4830: the LifecycleTransitionError and generic-exception branches of the
+    # transaction also write recovery_required; each must observe its wrapped reason.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise raised
+
+    monkeypatch.setattr(sdlc_claim, "_apply_projections", refuse)
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=tmp_path / "receipts",
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    held = _phase_observations(coord_ledger)[-1]["payload"]
+    assert held["state"] == "recovery_required"
+    assert (held["reason_code"], held["reason_detail"]) == (
+        "claim_publication_projection_failed",
+        detail,
+    )
 
 
 def test_a_failing_emitter_leaves_the_publication_byte_identical(

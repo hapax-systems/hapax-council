@@ -2496,7 +2496,11 @@ def _observe_claim_publication_phase(
         default_event_log().append(event, writer=CoordWriter.daemon(), fail_open=True)
     except Exception as exc:  # noqa: BLE001 - an observation never decides a claim
         _LOG.warning(
-            "claim publication phase observation not emitted: %s: %s", type(exc).__name__, exc
+            "claim publication phase observation not emitted (%s: %s); the claim's outcome is "
+            "unaffected. Next action: check the coord event log under $HAPAX_COORD_DIR "
+            "(default ~/.cache/hapax/coord) and its spool, then let the daemon ingest it",
+            type(exc).__name__,
+            exc,
         )
 
 
