@@ -50,6 +50,10 @@ INSTALL_RECEIPT_FILENAME = "activation-receipt.json"
 #: once the install is consistent again. While it exists, cc-claim holds instead of making a
 #: first-use install without a basis (gate0b-reprovision-inflight-hold-marker-20260927).
 REPROVISION_IN_FLIGHT_FILENAME = "reprovision-in-flight.json"
+#: The load results cc-claim answers with a first-use install (scripts/cc-claim).
+_FIRST_USE_REASON_CODES = frozenset(
+    {"gate0b_install_receipt_missing", "gate0b_install_manifest_missing"}
+)
 GATE0B_CLAIM_PUBLICATION_OPERATION = "claim.publish"
 GATE0B_CLAIM_PUBLICATION_CAPABILITY_ROLE = "claim_publisher"
 GATE0B_CLAIM_PUBLICATION_EXECUTION_HOST = "appendix"
@@ -814,16 +818,25 @@ def load_claim_publication_composition(
     if marker.exists() or marker.is_symlink():
         # Checked first: a missing receipt mid-re-provision must hold, never first-use install.
         raise _in_flight(marker, "gate0b_install_reprovision_in_flight")
-    receipt = _load_install_receipt(root_path / INSTALL_RECEIPT_FILENAME)
     try:
-        manifest_payload = _read_private_install_file(root_path / "composition-manifest.json")
-        manifest_record = json.loads(manifest_payload.decode("ascii"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ExecutionAdmissionError(
-            "gate0b_install_manifest_missing",
-            "restore the exact installed composition manifest",
-            str(root_path / "composition-manifest.json"),
-        ) from exc
+        receipt = _load_install_receipt(root_path / INSTALL_RECEIPT_FILENAME)
+        try:
+            manifest_payload = _read_private_install_file(root_path / "composition-manifest.json")
+            manifest_record = json.loads(manifest_payload.decode("ascii"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ExecutionAdmissionError(
+                "gate0b_install_manifest_missing",
+                "restore the exact installed composition manifest",
+                str(root_path / "composition-manifest.json"),
+            ) from exc
+    except ExecutionAdmissionError as exc:
+        # The check above can race a re-provision that starts between it and these reads. A
+        # missing file with the marker now present is that run, not a first use: hold. If the
+        # run has already finished, its receipt exists again, and a first-use install cannot
+        # overwrite it (gate0b_install_file_collision).
+        if exc.reason_code in _FIRST_USE_REASON_CODES and (marker.exists() or marker.is_symlink()):
+            raise _in_flight(marker, "gate0b_install_reprovision_in_flight") from exc
+        raise
     manifest = ExecutionCompositionManifest.model_validate(manifest_record)
     if manifest_payload != execution_composition_manifest_bytes(manifest):
         raise ExecutionAdmissionError(
