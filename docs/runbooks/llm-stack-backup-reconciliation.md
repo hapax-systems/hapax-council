@@ -87,15 +87,17 @@ inside the encrypted restic repositories, like `~/.password-store/` and
   (`scripts/hapax-backup-{local,remote}`).
 - Every other host running a store: `hapax-backup-filestore.{service,timer}`
   writes it to the tier-1 NAS repository with tag `tier1-filestore` and
-  `--host <host>`, then verifies the new snapshot by path listing (the `.key`,
-  and at least as many `.bin` entries as the store). Retention is podium's
+  `--host <host>`, then verifies the new snapshot by path listing: the `.key`,
+  and every `.bin` entry the store holds, by name. Retention is podium's
   tier-1 forget (`--group-by host,tags`).
 - Recheck, names only: on the host, `scripts/hapax-backup-filestore --verify`
   (from the activation worktree, with `RESTIC_REPOSITORY` set) re-checks its
   latest `tier1-filestore` snapshot against the store by name and writes
-  nothing. By hand:
-  `restic snapshots --tag tier1-filestore --host <host>` and
-  `restic ls <snapshot-id> | grep -c '/\.config/reins/secrets/.*\.bin$'`.
+  nothing. By hand, find the snapshot with
+  `restic snapshots --tag tier1-filestore --host <host>`, then compare names:
+  `comm -23 <(ls ~/.config/reins/secrets | grep '\.bin$' | sort) <(restic ls <snapshot-id> | grep -oE '[^/]+\.bin$' | sort)`
+  prints every store entry the snapshot lacks; empty output means all are
+  present.
 
 Restore order: **the FileStore comes back before any service that reads a
 secret starts** (the backup units, logos-api, anything calling `hapax-secret`).
