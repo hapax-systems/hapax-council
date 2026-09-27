@@ -13,8 +13,13 @@ from typing import Any
 
 import yaml
 
+#: A merged row whose declared runtime witnesses are still owed. The PR merge watcher moves such
+#: a row here instead of closing it done; its owner observes them, then closes it.
+TASK_MERGED_AWAITING_WITNESS_STATUS = "merged_awaiting_runtime_witness"
+
 TASK_ACTIVE_STATUSES = frozenset(
     {
+        TASK_MERGED_AWAITING_WITNESS_STATUS,
         "offered",
         "claimed",
         "in_progress",
@@ -89,7 +94,7 @@ TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
 #: Pipeline-held: the lane's work is done and the pipeline owes a verdict (review, merge, a
 #: runtime witness). Such a row holds no worker, and ``assigned_to`` keeps its named resumer.
 TASK_PIPELINE_HELD_STATUSES = TASK_RESUMABLE_STATUSES | frozenset(
-    {"merged_awaiting_runtime_witness"}
+    {TASK_MERGED_AWAITING_WITNESS_STATUS}
 )
 
 #: A role's one-active-task slot is free when its current task is in one of these; the bash

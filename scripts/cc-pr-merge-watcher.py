@@ -24,6 +24,7 @@ staggered cadence declared in ``systemd/units/hapax-cc-pr-merge-watcher.timer``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -42,7 +43,10 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from typing import Any
+from typing import Any, Literal
+
+import yaml
+from pydantic import ValidationError
 
 from shared.cc_task_pr_link import (
     NULLISH,
@@ -51,6 +55,12 @@ from shared.cc_task_pr_link import (
     is_well_formed_repo,
     same_repo,
 )
+from shared.route_metadata_schema import (
+    VerificationSurface,
+    route_metadata_payload_from_frontmatter,
+)
+from shared.sdlc_lifecycle import TASK_MERGED_AWAITING_WITNESS_STATUS
+from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
@@ -380,14 +390,195 @@ def find_linked_task(
 _LEGACY_API_ENTRYPOINTS = (find_linked_task,)
 
 
+#: How a merged PR's task was settled: closed done, moved to await its runtime witnesses, or
+#: None when it was not settled (the cursor holds and the next cycle retries).
+Settlement = Literal["closed", "awaiting"] | None
+
+#: The one matcher for a frontmatter ``status`` key line, in any quoting. The awaiting writer
+#: requires exactly one match, plainly spelled, and rewrites that match by position, so the line
+#: it checked is the line it changes (#4826's rounds 3-6).
+_STATUS_KEY_LINE = re.compile(r"""^(["']?)status\1[ \t]*:.*$""", flags=re.MULTILINE)
+
+
+def _frontmatter_span(text: str) -> tuple[int, int] | None:
+    """The frontmatter block's bounds in ``text``, as the task store reads it."""
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    return (3, end) if end != -1 else None
+
+
+def unmet_runtime_witnesses(text: str) -> tuple[str, ...]:
+    """The runtime witnesses a task's route metadata declares, which a merge does not observe.
+
+    Empty only when the task declares none. A surface that cannot be read -- the frontmatter
+    does not parse or states a key twice, or ``verification_surface`` does not validate --
+    owes a witness, so the row fails closed to awaiting and is never certified done.
+    """
+    span = _frontmatter_span(text)
+    if span is None:
+        return ("the task's frontmatter cannot be read (no frontmatter block)",)
+    # The one duplicate-key definition (#4826): YAML keeps the last of two keys, so a later
+    # `runtime_observation: []` would otherwise hide the declared witnesses.
+    from shared.sdlc_claim import UniqueKeyLoader
+
+    try:
+        fields = yaml.load(text[span[0] : span[1]], Loader=UniqueKeyLoader)  # noqa: S506
+    except yaml.YAMLError as exc:
+        return (f"the task's frontmatter cannot be read ({type(exc).__name__})",)
+    if not isinstance(fields, dict):
+        return ("the task's frontmatter cannot be read (not a mapping)",)
+    # route_metadata_payload_from_frontmatter drops a container that is not a mapping, which
+    # would read as "declares none" and close the row done (codex on #4828). The exempt values
+    # are the estate's null spellings (shared.sdlc_lifecycle._FRONTMATTER_NULL_SCALARS: "", "[]",
+    # and YAML null), plus an empty mapping: each means "no route metadata", so declares nothing.
+    # A top-level `verification_surface: []` is not dropped by the extractor; it fails
+    # VerificationSurface below and owes a witness (dev21's measurement, #4828 round 2).
+    for name in ("route_metadata", "verification_surface"):
+        container = fields.get(name)
+        if container not in (None, "", [], {}) and not isinstance(container, dict):
+            return (f"{name} cannot be read (not a mapping)",)
+    try:
+        surface = route_metadata_payload_from_frontmatter(fields).get("verification_surface")
+        if surface is None:
+            return ()
+        return tuple(VerificationSurface.model_validate(surface).runtime_observation)
+    except (ValidationError, TypeError, ValueError) as exc:
+        return (f"route_metadata.verification_surface cannot be read ({type(exc).__name__})",)
+
+
+def await_runtime_witnesses(task: LinkedTask, *, dry_run: bool = False) -> bool:
+    """Move a merged task that owes runtime witnesses to the awaiting status, never done.
+
+    The row stays in active/ and keeps ``assigned_to``: it is pipeline-held (#4826), so its
+    owner's slot is free. The decision is re-read and the one plain ``status`` line rewritten
+    by position under the note's projection lock. Returns False, changing nothing, when that
+    line is not exactly one, when the witnesses no longer apply, or when the lock refuses; the
+    cursor then holds and the next cycle retries.
+    """
+    note = task.note_path
+    next_action = f"observe them, then cc-close {task.task_id} --pr {task.pr_number}"
+    if dry_run:
+        LOG.info(
+            "[dry-run] would move task %s to %s (PR #%d merged; unmet runtime witnesses)",
+            task.task_id,
+            TASK_MERGED_AWAITING_WITNESS_STATUS,
+            task.pr_number,
+        )
+        return True
+    try:
+        with projected_path_lock(task.task_id, (note,)):
+            text = note.read_text(encoding="utf-8")
+            span = _frontmatter_span(text)
+            lines = list(_STATUS_KEY_LINE.finditer(text, *span)) if span else []
+            if (
+                len(lines) == 1
+                and not lines[0].group(1)
+                and lines[0].group(0).split(":", 1)[1].strip()
+                == TASK_MERGED_AWAITING_WITNESS_STATUS
+            ):
+                # Already held (a retried cursor cycle): settled, with nothing written (#4828).
+                LOG.info("task %s is already %s", task.task_id, TASK_MERGED_AWAITING_WITNESS_STATUS)
+                return True
+            witnesses = unmet_runtime_witnesses(text)
+            if not witnesses or len(lines) != 1 or lines[0].group(1):
+                LOG.error(
+                    "task %s owes runtime witnesses but was NOT moved to %s: its frontmatter must "
+                    "spell `status:` plainly exactly once (found %d), and it must still declare "
+                    "witnesses. Next action: repair the row's frontmatter by hand; the next "
+                    "cycle retries",
+                    task.task_id,
+                    TASK_MERGED_AWAITING_WITNESS_STATUS,
+                    len(lines),
+                )
+                return False
+            now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            text = (
+                text[: lines[0].start()]
+                + f"status: {TASK_MERGED_AWAITING_WITNESS_STATUS}"
+                + text[lines[0].end() :]
+            )
+            log_line = (
+                f"- {now} merge-watcher: PR #{task.pr_number} merged; runtime witnesses unmet: "
+                f"{'; '.join(witnesses)}. Status {TASK_MERGED_AWAITING_WITNESS_STATUS}, not "
+                f"done. Next action: {next_action}\n"
+            )
+            if "## Session log\n" in text:
+                text = text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
+            else:
+                text = text.rstrip("\n") + f"\n\n## Session log\n{log_line}"
+            tmp = note.with_suffix(note.suffix + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(note)
+    except TaskNoteLockError as exc:
+        LOG.error("task %s: awaiting transition REFUSED: %s", task.task_id, exc)
+        return False
+    except OSError as exc:
+        LOG.error("task %s: awaiting transition failed to read or write: %s", task.task_id, exc)
+        return False
+    LOG.info(
+        "task %s -> %s (PR #%d merged; %d runtime witness(es) unmet). Next action: %s",
+        task.task_id,
+        TASK_MERGED_AWAITING_WITNESS_STATUS,
+        task.pr_number,
+        len(witnesses),
+        next_action,
+    )
+    return True
+
+
+def settle_merged_task(
+    task: LinkedTask,
+    *,
+    repo_root: Path | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
+    dry_run: bool = False,
+) -> Settlement:
+    """The one decision for a merged PR's task, shared by the cursor loop and the sweep.
+
+    A task that declares runtime witnesses is moved to await them; a merge observes code, not
+    the runtime. Only a task that declares none is closed done through ``cc-close``.
+    """
+    try:
+        decided = task.note_path.read_bytes()
+        owed = unmet_runtime_witnesses(decided.decode("utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        LOG.error(
+            "task %s: cannot read %s: %s. Next action: restore the note as UTF-8 at that path "
+            "(or repair it by hand); the next cycle retries, and nothing is closed until then",
+            task.task_id,
+            task.note_path,
+            exc,
+        )
+        return None
+    if owed:
+        return "awaiting" if await_runtime_witnesses(task, dry_run=dry_run) else None
+    if dry_run:
+        LOG.info("[dry-run] would cc-close task %s for PR #%d", task.task_id, task.pr_number)
+        return "closed"
+    # cc-close takes the note lock itself, so this decision cannot be held under it; instead
+    # cc-close closes done only the exact bytes decided here, checked under its lock (#4828).
+    closed = close_linked_task(
+        task,
+        repo_root=repo_root,
+        runner=runner,
+        expect_sha256=hashlib.sha256(decided).hexdigest(),
+    )
+    return "closed" if closed else None
+
+
 def close_linked_task(
     task: LinkedTask,
     *,
     repo_root: Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
     role: str = "watcher",
+    expect_sha256: str | None = None,
 ) -> bool:
-    """Invoke ``scripts/cc-close`` on the matched task. Returns True on success."""
+    """Invoke ``scripts/cc-close`` on the matched task. Returns True on success.
+
+    With ``expect_sha256``, cc-close refuses (exit 4) unless the note still has those bytes.
+    """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     cc_close = repo_root / "scripts" / "cc-close"
@@ -406,6 +597,8 @@ def close_linked_task(
     env["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] = "1"
     env["HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF"] = "1"
     cmd = [str(cc_close), task.task_id, "--pr", str(task.pr_number), "--retroactive"]
+    if expect_sha256:
+        cmd[2:2] = ["--expect-sha256", expect_sha256]
     LOG.info("closing task %s for PR #%d", task.task_id, task.pr_number)
     try:
         proc = runner(
@@ -480,7 +673,7 @@ def run_watcher(
     """
     if os.environ.get(KILLSWITCH_ENV) == "1":
         LOG.info("killswitch %s=1; skipping watcher cycle", KILLSWITCH_ENV)
-        return {"merged": 0, "linked": 0, "closed": 0, "failed": 0, "skipped": 1}
+        return {"merged": 0, "linked": 0, "closed": 0, "awaiting": 0, "failed": 0, "skipped": 1}
 
     repo_root = repo_root or default_repo_root()
     cursor = read_cursor(cursor_path)
@@ -491,6 +684,7 @@ def run_watcher(
 
     linked = 0
     closed = 0
+    awaiting = 0
     failed = 0
     newest_seen = cursor  # start where we were; bump only across a failure-free prefix
     first_failure_at: datetime | None = None
@@ -503,22 +697,12 @@ def run_watcher(
                 newest_seen = pr.merged_at
             continue
         linked += len(tasks)
-        if dry_run:
-            for task in tasks:
-                LOG.info(
-                    "[dry-run] would cc-close task %s for PR #%d (merged %s)",
-                    task.task_id,
-                    pr.number,
-                    pr.merged_at.isoformat(),
-                )
-            closed += len(tasks)
-            if first_failure_at is None and pr.merged_at > newest_seen:
-                newest_seen = pr.merged_at
-            continue
         pr_failed = False
         for task in tasks:
-            ok = close_linked_task(task, repo_root=repo_root, runner=runner)
-            if ok:
+            settled = settle_merged_task(task, repo_root=repo_root, runner=runner, dry_run=dry_run)
+            if settled == "awaiting":
+                awaiting += 1
+            elif settled:
                 closed += 1
             else:
                 pr_failed = True
@@ -540,6 +724,7 @@ def run_watcher(
         "merged": len(merged),
         "linked": linked,
         "closed": closed,
+        "awaiting": awaiting,
         "failed": failed,
         "skipped": 0,
     }
@@ -640,20 +825,18 @@ def _close_merged_note(
     repo_root: Path,
     dry_run: bool,
     runner: Callable[..., subprocess.CompletedProcess],
-) -> bool:
-    """cc-close a task whose PR is merged (the cursor loop missed it). True on close."""
+) -> Settlement:
+    """Settle a task whose PR is merged (the cursor loop missed it), as the cursor loop does."""
     task_id = _task_id_from_note(note, text)
-    if dry_run:
-        LOG.info("[dry-run] would cc-close task %s (PR #%s merged)", task_id, pr_num)
-        return True
-    ok = close_linked_task(
+    settled = settle_merged_task(
         LinkedTask(task_id=task_id, note_path=note, pr_number=int(pr_num)),
         repo_root=repo_root,
         runner=runner,
+        dry_run=dry_run,
     )
-    if ok:
-        LOG.info("stale PR drain: %s -> closed (PR #%s merged)", note.stem, pr_num)
-    return ok
+    if settled and not dry_run:
+        LOG.info("stale PR drain: %s -> %s (PR #%s merged)", note.stem, settled, pr_num)
+    return settled
 
 
 def _apply_pr_state(
@@ -669,9 +852,12 @@ def _apply_pr_state(
 ) -> None:
     """Reconcile one note against its PR's current state."""
     if pr_state == "MERGED":
-        if _close_merged_note(
+        settled = _close_merged_note(
             note, text, pr_num, repo_root=repo_root, dry_run=dry_run, runner=runner
-        ):
+        )
+        if settled == "awaiting":
+            counts["awaiting"] += 1
+        elif settled:
             counts["closed"] += 1
     elif pr_state == "CLOSED":
         if _block_stale_note(
@@ -775,7 +961,7 @@ def reconcile_stale_pr_states(
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     active = vault_root / "active"
-    counts = {"scanned": 0, "stale": 0, "closed": 0, "repaired": 0, "skipped": 0}
+    counts = {"scanned": 0, "stale": 0, "closed": 0, "awaiting": 0, "repaired": 0, "skipped": 0}
     # THE KILLSWITCH MUST STOP BOTH DOORS. run_watcher honoured it and this path did not, so
     # HAPAX_CC_HYGIENE_OFF=1 left automated task mutation running: this function queries PRs,
     # rewrites `pr: null` notes, and invokes cc-close. A killswitch that stops half the automation
