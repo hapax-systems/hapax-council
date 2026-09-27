@@ -91,6 +91,22 @@ def fake_run(stdout: str):
 
 
 @pytest.fixture(autouse=True)
+def _durable_sink_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Bind a durable sink root under ``tmp_path`` for every test in this module.
+
+    The probe ledgers its own reading (the governor's cadence fix), so a served run now needs a
+    writable durable-sink root. CI has none (the default ``~/.cache/hapax/stage0-durable-sink`` is
+    absent), which dequeued #4811: the probe exited 5 in a test that expected 0. The host's storage
+    must not decide what these tests assert, so each binds its own root; the no-writable-root case
+    keeps its own test below.
+    """
+    root = tmp_path / "durable-sink"
+    root.mkdir()
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(root))
+    return root
+
+
+@pytest.fixture(autouse=True)
 def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(obs.PROBE_ENV_SCRUBBED) + ["ANTHROPIC_MODEL"]:
         monkeypatch.delenv(name, raising=False)
@@ -99,6 +115,37 @@ def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
 def probe_stream(monkeypatch, *records):
     monkeypatch.setattr(obs.subprocess, "run", fake_run(stream(*records)))
     return obs.probe(NOW)
+
+
+def test_a_probe_without_a_writable_sink_root_mints_nothing(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:  # noqa: ANN001
+    """Fail closed where no sink is writable — the CI condition that dequeued #4811.
+
+    The probe's ledger append fails (the root is absent, so the sink refuses it), so nothing is
+    minted and the exit code is 5 with a next action. This is the fail-closed path kept under its
+    own test, as the seat's ruling requires.
+    """
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(tmp_path / "absent-durable-sink"))
+    observation = obs.Observation(
+        kind="served",
+        at=obs._parse_ts("2026-09-24T18:06:36Z"),
+        source="claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
+        windows={
+            "seven_day": (9.0, obs._parse_ts("2026-09-25T22:00:00Z")),
+            "five_hour": (8.0, obs._parse_ts("2026-09-24T21:30:00Z")),
+        },
+        subscription_served=True,
+    )
+
+    rc, payload, _calls = run_main(monkeypatch, tmp_path, capsys, probe_result=observation)
+
+    assert rc == 5
+    assert "error" in payload["pace_ledger"]
+    assert "admits nothing" in payload["hint"]
+    assert not list((tmp_path / "receipts").glob("*.yaml"))
 
 
 def test_a_failed_ledger_append_admits_nothing(monkeypatch, tmp_path: Path, capsys) -> None:  # noqa: ANN001
