@@ -35,6 +35,7 @@ fi
 force=false
 recover_claim_publications_only=false
 release_claim_residue_only=false
+return_claim=false
 rehydrate_activation_cache_only=false
 # Default mode publishes through the admitted Gate-0B claim-publication path.
 # The legacy note/cache writer is available only as an explicit slice-1 fallback.
@@ -46,6 +47,7 @@ usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim --recover-claim-publications [<task_id>]
        cc-claim --rehydrate-activation-cache <task_id>
        cc-claim --release-claim-residue <task_id>
+       cc-claim --return-claim <task_id>
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
 Every --dispatch-* option requires one VALUE from the dispatcher receipt.
@@ -78,6 +80,7 @@ while [[ $# -gt 0 ]]; do
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
     --rehydrate-activation-cache) rehydrate_activation_cache_only=true; shift ;;
     --release-claim-residue) release_claim_residue_only=true; shift ;;
+    --return-claim) release_claim_residue_only=true; return_claim=true; shift ;;
     --dispatch-message-id) require_option_value "$1" "${2:-}"; dispatch_message_id="$2"; shift 2 ;;
     --dispatch-binding-hash) require_option_value "$1" "${2:-}"; dispatch_binding_hash="$2"; shift 2 ;;
     --dispatch-platform) require_option_value "$1" "${2:-}"; dispatch_platform="$2"; shift 2 ;;
@@ -95,7 +98,7 @@ if [[ "$rehydrate_activation_cache_only" == "true" && ( -z "$task_id" || "$recov
   exit 1
 fi
 if [[ "$release_claim_residue_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$rehydrate_activation_cache_only" == "true" || "$force" == "true" ) ]]; then
-  echo "cc-claim: release_usage_invalid: supply one task id and no other mode. Next action: rerun cc-claim --release-claim-residue <task_id>, naming the task the role's residue names." >&2
+  echo "cc-claim: release_usage_invalid: supply one task id and no other mode. Next action: rerun cc-claim --release-claim-residue <task_id> (or --return-claim <task_id>), naming the one task." >&2
   exit 1
 fi
 if [[ -z "$task_id" && "$recover_claim_publications_only" != "true" ]]; then
@@ -295,12 +298,13 @@ vault_root_check="$CC_TASK_ROOT"
 # Governed release of this role's claim residue for one task (M166-M173). It runs before the
 # lease scan, because the residue it releases is what that scan and the claim path hold on.
 if [[ "$release_claim_residue_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" <<'PYEOF'
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" "$return_claim" <<'PYEOF'
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 repo_root, vault_root, role, task_id = Path(sys.argv[1]).resolve(), Path(sys.argv[2]), *sys.argv[3:5]
+returning = sys.argv[5] == "true"
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -309,11 +313,14 @@ from shared.sdlc_claim import (  # noqa: E402
     ClaimPublicationError,
     ClaimResidueArchiveHold,
     release_claim_residue,
+    return_claim,
 )
 
 roots = default_claim_publication_roots(home=Path.home())
 try:
-    released = release_claim_residue(
+    # --return-claim: the holder returns its own unstarted claim to offered; else the governed
+    # release of residue that no live claim owns.
+    released = (return_claim if returning else release_claim_residue)(
         vault_root=vault_root,
         cache_dir=Path(roots.claim_cache_dir),
         transaction_root=Path(roots.claim_transaction_root),
@@ -328,6 +335,12 @@ except ClaimResidueArchiveHold as exc:
 except ClaimPublicationError as exc:
     print(f"cc-claim: HOLD - {exc}. Next action: repair the named root, then rerun.", file=sys.stderr)
     sys.exit(8)
+if returning:
+    print(
+        f"cc-claim: returned '{task_id}' to offered, unassigned; archived "
+        f"{len(released.archived)} claim file(s) to {released.archive_dir}"
+    )
+    sys.exit(0)
 print(
     f"cc-claim: released {released.shape} residue of {role} for {task_id} "
     f"(publication {released.publication_id}); archived {len(released.archived)} file(s) to "
@@ -457,7 +470,7 @@ sys.exit(0 if ok else 1)
     if [[ "$existing_status" == "unreadable" ]]; then
       echo "  '$existing_task' cannot be read for a release: its frontmatter does not parse, states a key twice, or does not spell status plainly once, so its slot stays held and nothing was released. Next action: repair that row's frontmatter by hand (one plain status line, no duplicate keys), then rerun cc-claim." >&2
     else
-      echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+      echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead. If you have not started it (no PR, no branch), return it with cc-claim --return-claim $existing_task." >&2
     fi
   fi
   if [[ "$canon_enforced" == "0" ]]; then

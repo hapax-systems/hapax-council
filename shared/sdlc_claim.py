@@ -6435,16 +6435,54 @@ def _release_frontmatter(note: Path) -> dict | None:
     changes. A ``status:`` line in the body never counts. Anything else means hold, never
     release (the seat's 17:05Z and 17:25Z rulings)."""
 
-    parsed = parse_frontmatter_with_diagnostics(note)
-    if not parsed.ok or parsed.frontmatter is None:
-        return None
-    text = note.read_text(encoding="utf-8")
-    block = text[3 : text.find("\n---", 3)]
     try:
-        fields = yaml.load(block, Loader=UniqueKeyLoader)  # noqa: S506 - a SafeLoader subclass
+        text = note.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return _release_fields(text)
+
+
+#: The ONE matcher for a top-level frontmatter key line, in any quoting (#4826 rounds 3-6).
+#: The release-grade read counts ``status`` with it, and the return rewrites exactly the lines
+#: it found, by position, so the line validated is always the line changed. A space before the
+#: colon (``status : claimed``) is the same key line to both.
+_FRONTMATTER_KEY_LINE = re.compile(
+    r"""^(?P<quote>["']?)(?P<key>[A-Za-z_][A-Za-z0-9_-]*)(?P=quote)[ \t]*:(?P<value>.*)$""",
+    re.MULTILINE,
+)
+
+
+def _frontmatter_block_span(text: str) -> tuple[int, int] | None:
+    """The frontmatter block's bounds in ``text``: after the opening ``---``, to the next."""
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    return (3, end) if end != -1 else None
+
+
+def _frontmatter_key_lines(text: str, key: str) -> list[re.Match[str]]:
+    """Every frontmatter line that states ``key``, in any quoting, in order."""
+    span = _frontmatter_block_span(text)
+    if span is None:
+        return []
+    return [
+        line for line in _FRONTMATTER_KEY_LINE.finditer(text, *span) if line.group("key") == key
+    ]
+
+
+def _release_fields(text: str) -> dict | None:
+    """Release-grade fields of a note's text (see :func:`_release_frontmatter`), else None."""
+
+    parsed = parse_frontmatter_with_diagnostics(text)
+    span = _frontmatter_block_span(text)
+    if not parsed.ok or parsed.frontmatter is None or span is None:
+        return None
+    try:
+        fields = yaml.load(text[span[0] : span[1]], Loader=UniqueKeyLoader)  # noqa: S506
     except yaml.YAMLError:
         return None
-    if not isinstance(fields, dict) or len(re.findall(r"(?m)^status[ \t]*:", block)) != 1:
+    status_lines = _frontmatter_key_lines(text, "status")
+    if not isinstance(fields, dict) or len(status_lines) != 1 or status_lines[0].group("quote"):
         return None
     return fields
 
@@ -6593,6 +6631,7 @@ class ClaimResidueRelease:
         "closed_task",
         "reassigned_task",
         "pipeline_held",
+        "returned_claim",
     ]
     publication_id: str
     archive_dir: Path
@@ -7287,6 +7326,171 @@ def release_pipeline_held_residue(
     ]
 
 
+#: The keys ``--return-claim`` rewrites, and what each becomes.
+_RETURN_REWRITES = (("status", "offered"), ("assigned_to", "unassigned"), ("claimed_at", "null"))
+
+
+def _returned_note_text(text: str, *, role: str, returned_at: str) -> str:
+    """``text`` returned to offered, each rewritten key's one plain line replaced by position.
+
+    Every line is found with :data:`_FRONTMATTER_KEY_LINE`, the matcher the release-grade read
+    validates with, so the line checked is the line changed (#4826 rounds 3-6). A key that is
+    not stated exactly once, plainly, is a hold, never an append.
+    """
+
+    edits: list[tuple[int, int, str]] = []
+    for key, value in _RETURN_REWRITES:
+        lines = _frontmatter_key_lines(text, key)
+        if len(lines) != 1 or lines[0].group("quote"):
+            raise _release_hold(
+                "claim_return_note_malformed",
+                f"`{key}` is stated {len(lines)} time(s)"
+                + (" in quotes" if lines and lines[0].group("quote") else "")
+                + ", not once plainly",
+                "repair the note's frontmatter by hand (one plain line per key), then rerun",
+            )
+        edits.append((lines[0].start(), lines[0].end(), f"{key}: {value}"))
+    for start, end, line in sorted(edits, reverse=True):
+        text = text[:start] + line + text[end:]
+    entry = f"- {returned_at} {role} returned the claim to offered (cc-claim --return-claim)\n"
+    marker = "## Session log\n"
+    if marker in text:
+        return text.replace(marker, marker + entry, 1)
+    return text.rstrip("\n") + f"\n\n{marker}{entry}"
+
+
+def return_claim(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    role: str,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    """Return this role's own live, unstarted claim to ``offered`` (``cc-claim --return-claim``).
+
+    A locked direct transition, as ``cc-close`` is (the seat's option 1, 2026-09-27). It refuses,
+    changing nothing, unless this role holds exactly one live applied claim on the task, the
+    note is ``claimed`` or ``in_progress`` and assigned to this role, and it names no ``pr`` and
+    no ``branch``: work that has started is never returned. Under the role's publication lock
+    and the note's projection lock, the note is read once; its release-grade fields decide, the
+    same bytes are rewritten by position, and the result must read back as offered before it is
+    written. Then the claim files are archived as ``returned_claim``. A crash between the two
+    leaves the ``reassigned_task`` shape, which :func:`release_claim_residue` releases.
+    """
+
+    if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
+        raise _release_hold(
+            "claim_return_stamp_invalid",
+            f"{observed_at!r} is not YYYYMMDDTHHMMSSZ",
+            "pass the UTC time in that form",
+        )
+    journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+    if not journals:
+        raise _release_hold(
+            "claim_return_not_holder",
+            f"{role} has no claim publication for {task_id}",
+            "only the role that holds the claim can return it",
+        )
+    with _claim_publication_lock(journals[0].intent, lock_root=lock_root):
+        journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+        if any(item.state not in {"applied", "aborted"} for item in journals):
+            raise _release_hold(
+                "claim_return_unfinished",
+                f"a claim publication of {role} for {task_id} is unfinished",
+                f"run `cc-claim --recover-claim-publications {task_id}` first",
+            )
+        live = [
+            (journal, residue)
+            for journal in journals
+            if journal.state == "applied"
+            and (residue := _journal_residue(journal, cache_dir))
+            and all(_residue_state(item) == "after" for item in residue)
+            and any(_is_claim_activation_projection(item) for item in residue)
+        ]
+        if len(live) != 1:
+            raise _release_hold(
+                "claim_return_not_live",
+                f"{role} holds no single live claim on {task_id}",
+                f"a lapsed lease is released with `cc-claim --release-claim-residue {task_id}`",
+            )
+        journal, residue = live[0]
+        note = _task_note_path_for_any_state(vault_root, task_id)
+        if note is None or note.parent.name != "active":
+            raise _release_hold(
+                "claim_return_note_missing", f"{task_id} has no active note", "inspect the row"
+            )
+        if others := _other_live_markers(cache_dir, role, task_id, residue):
+            raise _release_hold(
+                "claim_return_live_marker",
+                f"{others[0]} names {task_id} or cannot be read",
+                "inspect that marker; another session may be working the row",
+            )
+        with projected_path_lock(task_id, (note,)):
+            text = note.read_text(encoding="utf-8")
+            fields = _release_fields(text)
+            if fields is None:
+                raise _release_hold(
+                    "claim_return_note_malformed",
+                    f"{task_id}'s frontmatter does not parse, states a key twice, or does not "
+                    "spell status plainly once",
+                    "repair the note's frontmatter by hand, then rerun",
+                )
+            status = str(fields.get("status") or "").strip()
+            started = [
+                key
+                for key in ("pr", "branch")
+                if str(fields.get(key) or "").strip() not in {"", "None", "null"}
+            ]
+            if status not in {"claimed", "in_progress"} or started:
+                raise _release_hold(
+                    "claim_return_started",
+                    f"{task_id} is {status or 'unknown'}"
+                    + (f" and names {', '.join(started)}" if started else ""),
+                    "work that has started is not returned: finish it and run cc-close, or close "
+                    "it as withdrawn",
+                )
+            if str(fields.get("assigned_to") or "").strip() != role:
+                raise _release_hold(
+                    "claim_return_not_holder",
+                    f"{task_id} is assigned to {fields.get('assigned_to')!r}, not {role}",
+                    "only the role that holds the claim can return it",
+                )
+            returned_at = (
+                f"{observed_at[0:4]}-{observed_at[4:6]}-{observed_at[6:8]}T"
+                f"{observed_at[9:11]}:{observed_at[11:13]}:{observed_at[13:15]}Z"
+            )
+            returned = _returned_note_text(text, role=role, returned_at=returned_at)
+            after = _release_fields(returned)
+            if (
+                after is None
+                or after.get("status") != "offered"
+                or after.get("assigned_to") != "unassigned"
+                or after.get("claimed_at") is not None
+            ):
+                raise _release_hold(
+                    "claim_return_rewrite_unverified",
+                    f"{task_id}'s returned note does not read back as offered and unassigned",
+                    "repair the note's frontmatter by hand, then rerun; nothing was written",
+                )
+            tmp = note.with_suffix(note.suffix + ".tmp")  # as cc-close writes a note
+            tmp.write_text(returned, encoding="utf-8")
+            tmp.replace(note)
+        archive_dir, archived = _archive_residue(
+            list(residue),
+            journal=journal,
+            vault_root=vault_root,
+            shape="returned_claim",
+            observed_at=observed_at,
+            staged={},
+        )
+    return ClaimResidueRelease(
+        "returned_claim", journal.publication_id, archive_dir, archived, None
+    )
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -7320,6 +7524,7 @@ __all__ = [
     "rehydrate_applied_activation_projections",
     "release_claim_residue",
     "release_pipeline_held_residue",
+    "return_claim",
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
     "UniqueKeyLoader",

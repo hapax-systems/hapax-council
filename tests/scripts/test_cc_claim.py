@@ -2688,3 +2688,229 @@ def test_an_expired_lease_on_a_worker_held_row_still_holds(tmp_path: Path) -> No
 
     assert refused.returncode == 7
     assert "expired claim" in refused.stderr
+
+
+# ── cc-claim --return-claim: the holder returns its own unstarted claim ──────
+# claim-plane-return-claim-verb-20260927 (split out of #4826 by the seat's stop rule)
+
+
+def _return(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
+    return _claim(
+        home, task_id, dispatch=False, install_gate0b=False, extra_args=["--return-claim"]
+    )
+
+
+def _claimed_row(home: Path, task_id: str = "unstarted-row") -> Path:
+    note = _write_task(home, "active", task_id)
+    assert _claim(home, task_id).returncode == 0
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+    return note
+
+
+def test_the_holder_returns_an_unstarted_claim_and_frees_its_slot(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    _write_task(home, "active", "next-row")
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 0, returned.stderr
+    assert "returned 'unstarted-row' to offered" in returned.stdout
+    text = note.read_text(encoding="utf-8")
+    assert "status: offered" in text and "status: claimed" not in text
+    assert "assigned_to: unassigned" in text and "claimed_at: null" in text
+    assert "cx-test returned the claim to offered (cc-claim --return-claim)" in text
+    assert _lineage_shapes(home, "unstarted-row") == ["returned_claim"]
+    assert all(not path.exists() for path in _role_sidecars(home)["marker"])
+    assert _claim(home, "next-row").returncode == 0  # the slot is free
+
+
+#: One per review specimen from #4826 rounds 3-6: each must hold, changing nothing.
+_RETURN_SPECIMENS = {
+    "duplicate_status": ("status: claimed", "status: claimed\nstatus: in_progress"),
+    "later_branch_null_hides_a_branch": (
+        "status: claimed",
+        "status: claimed\nbranch: feat/started\nbranch: null",
+    ),
+    "quoted_duplicate_status": ("status: claimed", 'status: claimed\n"status": claimed'),
+    "quoted_branch_null_hides_a_branch": (
+        "status: claimed",
+        'status: claimed\nbranch: feat/started\n"branch": null',
+    ),
+    "quoted_only_assigned_to": ("assigned_to: cx-test", '"assigned_to": cx-test'),
+    "claimed_at_absent_is_a_hold_never_an_append": ("claimed_at:", "claimed_on:"),
+    "duplicate_in_a_flow_mapping": ("status: claimed", 'status: claimed\nroute: {a: 1, "a": 2}'),
+}
+
+
+@pytest.mark.parametrize("specimen", sorted(_RETURN_SPECIMENS))
+def test_a_malformed_note_is_never_returned(tmp_path: Path, specimen: str) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    old, new = _RETURN_SPECIMENS[specimen]
+    note.write_text(note.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
+    before, markers = note.read_bytes(), _bytes_of(_role_sidecars(home)["marker"])
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 8, returned.stderr
+    assert "claim_return_note_malformed" in returned.stderr
+    assert note.read_bytes() == before
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
+    assert _lineage_shapes(home, "unstarted-row") == []
+
+
+def test_a_space_before_the_colon_is_the_same_status_line(tmp_path: Path) -> None:
+    # gemini on #4826 round 6: validation accepted `status : claimed` while the rewrite matched
+    # only `^status:`, so it appended a second status. One matcher: the line is replaced.
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("status: claimed", "status : claimed", 1),
+        encoding="utf-8",
+    )
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 0, returned.stderr
+    frontmatter = note.read_text(encoding="utf-8").split("\n---", 1)[0]
+    assert [line for line in frontmatter.splitlines() if line.startswith("status")] == [
+        "status: offered"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("edit", "code"),
+    [
+        (("status: claimed", "status: claimed\npr: 4999"), "claim_return_started"),
+        (("status: claimed", "status: claimed\nbranch: feat/started"), "claim_return_started"),
+        (("assigned_to: cx-test", "assigned_to: cx-other"), "claim_return_not_holder"),
+    ],
+    ids=["names_a_pr", "names_a_branch", "assigned_elsewhere"],
+)
+def test_the_return_refuses_started_or_foreign_rows(
+    tmp_path: Path, edit: tuple[str, str], code: str
+) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    note.write_text(note.read_text(encoding="utf-8").replace(*edit, 1), encoding="utf-8")
+    before = note.read_bytes()
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 8, returned.stderr
+    assert code in returned.stderr
+    assert note.read_bytes() == before
+    assert _lineage_shapes(home, "unstarted-row") == []
+
+
+def test_a_claim_that_is_not_live_is_not_returned(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    for marker in _role_sidecars(home)["marker"]:
+        marker.unlink()  # the claim files are gone: nothing live to return
+    before = note.read_bytes()
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 8, returned.stderr
+    assert "claim_return_not_live" in returned.stderr
+    assert note.read_bytes() == before
+
+
+def test_a_role_without_a_claim_cannot_return_it(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "unclaimed-row")
+    before = note.read_bytes()
+
+    returned = _return(home, "unclaimed-row")
+
+    assert returned.returncode == 8, returned.stderr
+    assert "claim_return_not_holder" in returned.stderr
+    assert note.read_bytes() == before
+
+
+def test_a_crash_between_the_note_and_the_archive_is_released_as_reassigned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The note is written first; a crash before the archive leaves the claim files naming a row
+    # that is no longer assigned to this role: the reassigned_task shape, which
+    # --release-claim-residue already releases.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    roots = default_claim_publication_roots(home=home)
+
+    def crash(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("crash before the archive")
+
+    monkeypatch.setattr(sdlc_claim, "_archive_residue", crash)
+    with pytest.raises(RuntimeError):
+        sdlc_claim.return_claim(
+            vault_root=_task_root(home),
+            cache_dir=home / ".cache" / "hapax",
+            transaction_root=Path(roots.claim_transaction_root),
+            lock_root=Path(roots.claim_lock_root),
+            role="cx-test",
+            task_id="unstarted-row",
+            observed_at="20260927T230000Z",
+        )
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    assert any(path.exists() for path in _role_sidecars(home)["marker"])
+
+    released = _claim(
+        home,
+        "unstarted-row",
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=["--release-claim-residue"],
+    )
+
+    assert released.returncode == 0, released.stderr
+    assert _lineage_shapes(home, "unstarted-row") == ["reassigned_task"]
+
+
+def test_the_slot_refusal_names_the_return_verb(tmp_path: Path) -> None:
+    # codex on #4826 round 7, clause (5): an unstarted row blocking the slot can be returned.
+    home = tmp_path / "home"
+    _claimed_row(home)
+    _write_task(home, "active", "next-row")
+
+    blocked = _claim(home, "next-row")
+
+    assert blocked.returncode != 0
+    assert "cc-claim --return-claim unstarted-row" in blocked.stderr
+
+
+def test_a_rewrite_that_does_not_read_back_as_offered_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Defense in depth: the returned text is re-read through the release-grade reader before it
+    # is written; one that does not read back as offered and unassigned is a hold.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    before, markers = note.read_bytes(), _bytes_of(_role_sidecars(home)["marker"])
+    roots = default_claim_publication_roots(home=home)
+    monkeypatch.setattr(
+        sdlc_claim,
+        "_returned_note_text",
+        lambda text, **_kwargs: text.replace("status: claimed", "status: offered\nstatus: x", 1),
+    )
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as held:
+        sdlc_claim.return_claim(
+            vault_root=_task_root(home),
+            cache_dir=home / ".cache" / "hapax",
+            transaction_root=Path(roots.claim_transaction_root),
+            lock_root=Path(roots.claim_lock_root),
+            role="cx-test",
+            task_id="unstarted-row",
+            observed_at="20260927T230000Z",
+        )
+
+    assert "claim_return_rewrite_unverified" in held.value.message
+    assert note.read_bytes() == before
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
