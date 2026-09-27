@@ -1520,6 +1520,9 @@ def _surface_register_carriage_warnings(
         if child.decision != PublicationGateDecision.PASS
         for finding in child.findings
     )
+    # A PASS release must not carry a flag no child explains (the gate's own invalid override).
+    if any(issue not in child_flagged for issue in kept_flagged):
+        return gate_result, ()
     flagged = tuple(dict.fromkeys((*kept_flagged, *child_flagged)))
     return (
         PublicationGateResult(

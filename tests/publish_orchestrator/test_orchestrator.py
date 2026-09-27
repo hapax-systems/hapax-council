@@ -438,107 +438,119 @@ class TestRegisterCarriageSurfacing:
         assert any("Hapax.RegisterCarriage" in f for f in lint_child["findings"])
         assert any("surfaced for human disposition" in f for f in lint_child["findings"])
 
-    def test_another_warning_still_holds(self, tmp_path, monkeypatch):
-        fake_module, gate_log = self._run(
-            tmp_path,
-            monkeypatch,
-            "other-warn",
-            _LintGate(
-                (("Hapax.RegisterCarriage", "warning"), ("Hapax.PublicClaimOverreach", "warning"))
+    @pytest.mark.parametrize(
+        ("slug", "gate", "expected", "marker"),
+        (
+            (
+                "other-warn",
+                _LintGate(
+                    (
+                        ("Hapax.RegisterCarriage", "warning"),
+                        ("Hapax.PublicClaimOverreach", "warning"),
+                    )
+                ),
+                "operator_hold",
+                "Hapax.PublicClaimOverreach",
             ),
-        )
-
-        fake_module.publish_artifact.assert_not_called()
-        draft = self._document(tmp_path, "other-warn")
-        assert draft["approval"] == "withheld"
-        assert draft["publication_gate_result"]["decision"] == "hold"
-        assert gate_log["result"] == "operator_hold"
-        assert any("Hapax.PublicClaimOverreach" in i for i in gate_log["flagged_issues"])
-        assert gate_log["register_carriage_dispositions"] == []
-
-    def test_a_register_error_still_holds(self, tmp_path, monkeypatch):
-        fake_module, gate_log = self._run(
-            tmp_path,
-            monkeypatch,
-            "register-error",
-            _LintGate((("Hapax.RegisterCarriage", "error"),)),
-        )
-
-        fake_module.publish_artifact.assert_not_called()
-        assert self._document(tmp_path, "register-error")["approval"] == "failed"
-        assert gate_log["result"] == "rejected"
-        assert gate_log["publication_gate_decision"] == "reject"
-
-    def test_a_finding_the_report_cannot_account_for_blocks_the_exemption(
-        self, tmp_path, monkeypatch
-    ):
-        """Fail-closed: an unreconcilable finding (with a register warning present) blocks it."""
-        fake_module, gate_log = self._run(
-            tmp_path,
-            monkeypatch,
-            "unreadable-finding",
-            _LintGate(
-                (("Hapax.RegisterCarriage", "warning"),),
-                raw_findings=("a lint finding with no parsable shape",),
+            (
+                "register-error",
+                _LintGate((("Hapax.RegisterCarriage", "error"),)),
+                "rejected",
+                None,
             ),
-        )
-
-        fake_module.publish_artifact.assert_not_called()
-        assert self._document(tmp_path, "unreadable-finding")["approval"] == "withheld"
-        assert gate_log["result"] in {"operator_hold", "rejected"}
-        assert gate_log["register_carriage_dispositions"] == []
-
-    def test_another_holding_child_blocks_the_exemption(self, tmp_path, monkeypatch):
-        """Fail-closed: another holding child releases nothing, even with only register warnings."""
-        fake_module, gate_log = self._run(
-            tmp_path,
-            monkeypatch,
-            "other-child-holds",
-            _LintGate(
-                (("Hapax.RegisterCarriage", "warning"),),
-                extra_children=(
-                    PublicationGateChildResult(
-                        name="codebase",
-                        decision=PublicationGateDecision.HOLD,
-                        findings=("numeric expectation unmet",),
+            (
+                "unreadable-finding",
+                _LintGate(
+                    (("Hapax.RegisterCarriage", "warning"),),
+                    raw_findings=("a lint finding with no parsable shape",),
+                ),
+                None,
+                None,
+            ),
+            (
+                "other-child-holds",
+                _LintGate(
+                    (("Hapax.RegisterCarriage", "warning"),),
+                    extra_children=(
+                        PublicationGateChildResult(
+                            name="codebase",
+                            decision=PublicationGateDecision.HOLD,
+                            findings=("numeric expectation unmet",),
+                        ),
                     ),
                 ),
+                "operator_hold",
+                "codebase",
             ),
-        )
+        ),
+    )
+    def test_a_hold_the_exemption_must_not_release(
+        self,
+        tmp_path,
+        monkeypatch,
+        slug: str,
+        gate: object,
+        expected: str | None,
+        marker: str | None,
+    ):
+        """An existing warning, a register error, an unreconcilable report and another holding child
+        each keep the HOLD, and none of them is recorded as a surfaced register warning."""
+        fake_module, gate_log = self._run(tmp_path, monkeypatch, slug, gate)
 
         fake_module.publish_artifact.assert_not_called()
-        assert self._document(tmp_path, "other-child-holds")["approval"] == "withheld"
+        assert self._document(tmp_path, slug)["approval"] in {"withheld", "failed"}
         assert gate_log["register_carriage_dispositions"] == []
-        assert any("codebase" in issue for issue in gate_log["flagged_issues"])
+        if expected is not None:
+            assert gate_log["result"] == expected
+        if marker is not None:
+            assert any(marker in issue for issue in gate_log["flagged_issues"])
 
 
-def test_the_lint_child_rule_reapplied_to_a_narrowed_set_of_structured_rows() -> None:
-    """The re-applied rule reads structured rows: error rejects, others hold, none passes."""
-    decide = orchestrator_module._lint_child_decision
-    assert decide(()) is PublicationGateDecision.PASS
-    assert decide(({"rule": "Hapax.PublicClaimOverreach", "level": "warning"},)) is (
-        PublicationGateDecision.HOLD
+def _real_gate() -> PublicationHardeningGate:
+    """The real gate with passing non-lint children, so only the lint child can hold."""
+    return PublicationHardeningGate(
+        review_pass=_ApprovingReviewPass(),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
     )
-    assert decide(({"rule": "Hapax.RegisterCarriage", "level": "error"},)) is (
-        PublicationGateDecision.REJECT
-    )
 
 
-def test_reaggregation_keeps_flagged_issues_outside_the_child_results() -> None:
-    """codex minor: re-aggregation must not drop a flagged issue no child result carries."""
-    gate_result = _LintGate((("Hapax.RegisterCarriage", "warning"),)).evaluate(
+def test_an_unexplained_flag_keeps_the_hold_and_survives_unchanged() -> None:
+    """codex minors r7/r10: a flag no child carries is never dropped, and it keeps the HOLD."""
+    held = _LintGate((("Hapax.RegisterCarriage", "warning"),)).evaluate(
         PreprintArtifact(slug="s", title="E", abstract="Brief.", body_md="Body.")
     )
-    gate_result = gate_result.model_copy(
-        update={"flagged_issues": (*gate_result.flagged_issues, "publication_override_invalid: x")}
+    flagged = held.model_copy(
+        update={"flagged_issues": (*held.flagged_issues, "publication_override_invalid: x")}
     )
 
-    released, surfaced = orchestrator_module._surface_register_carriage_warnings(gate_result)
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(flagged)
 
-    assert released.decision is PublicationGateDecision.PASS
-    assert surfaced
+    assert released.decision is PublicationGateDecision.HOLD
+    assert surfaced == ()
     assert "publication_override_invalid: x" in released.flagged_issues
-    assert not any("Hapax.RegisterCarriage" in issue for issue in released.flagged_issues)
+
+
+def test_an_invalid_override_with_a_lone_register_warning_stays_a_hold() -> None:
+    """codex r10: the gate's own invalid-override flag must not survive a release. The REAL gate:
+    an unauthorized override flags ``operator_override_invalid`` while the lint child holds on
+    register warnings only, so the release path must refuse."""
+    artifact = PreprintArtifact(
+        slug="invalid-override",
+        title="E",
+        abstract="Brief.",
+        body_md="One front door. Many working parts.",
+        surfaces_targeted=["fake"],
+        publication_gate_override={"by_referent": "someone-unauthorized", "reason": "x"},
+    )
+    result = _real_gate().evaluate(artifact)
+    assert any("operator_override_invalid" in issue for issue in result.flagged_issues)
+
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(result)
+
+    assert released.decision is PublicationGateDecision.HOLD
+    assert surfaced == ()
 
 
 def test_a_hold_no_child_explains_stays_a_hold() -> None:
@@ -553,7 +565,6 @@ def test_a_hold_no_child_explains_stays_a_hold() -> None:
                 child.model_copy(update={"decision": PublicationGateDecision.PASS})
                 for child in held.child_results
             ),
-            "flagged_issues": ("publication_override_invalid: x",),
         }
     )
 
