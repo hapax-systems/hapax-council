@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import textwrap
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1929,3 +1930,169 @@ def test_release_touches_no_other_role_or_session(tmp_path: Path) -> None:
     assert "claim_residue_no_journal" in other_role.stderr
     assert released.returncode == 0, released.stderr
     assert _bytes_of(foreign) == before
+
+
+# ── self-resume of the role's own lapsed row ─────────────────────────────────
+# claim-plane-self-resume-own-lapsed-row-20260927: a role whose own lease lapsed could not take
+# its row back; the seat had to hand-edit the note (2026-09-26, dev44 and dev33).
+
+
+def _next_second() -> None:
+    """A real lapse takes hours; the claim epoch (and so the dispatch binding and its receipt)
+    has one-second resolution, so never resume inside the claim's own second."""
+
+    claimed_second = int(time.time())
+    while int(time.time()) == claimed_second:
+        time.sleep(0.05)
+
+
+def _lapse_every_sidecar(home: Path) -> None:
+    for group in _role_sidecars(home).values():
+        for path in group:
+            path.unlink(missing_ok=True)
+    _next_second()
+
+
+@pytest.mark.parametrize("status", ["claimed", "in_progress"])
+def test_a_role_resumes_its_own_row_after_its_lease_lapsed(tmp_path: Path, status: str) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "own-row")
+    assert _claim(home, "own-row").returncode == 0
+    if status == "in_progress":
+        note.write_text(
+            note.read_text(encoding="utf-8").replace("status: claimed", "status: in_progress", 1),
+            encoding="utf-8",
+        )
+    _lapse_every_sidecar(home)
+
+    resumed = _claim(home, "own-row")
+
+    assert resumed.returncode == 0, resumed.stderr
+    text = note.read_text(encoding="utf-8")
+    assert f"status: {status}" in text
+    assert "assigned_to: cx-test" in text
+    assert text.count("resumed its own lapsed claim (cc-claim") == 1
+    assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
+        encoding="utf-8"
+    ).strip() == "own-row"
+
+
+def test_a_lapsed_lease_is_released_then_resumed(tmp_path: Path) -> None:
+    # Composes with the residue release (#4801): the HOLD names it, it clears the residue,
+    # and the role takes its own row back without a hand edit.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "own-row")
+    assert _claim(home, "own-row").returncode == 0
+    for marker in _role_sidecars(home)["marker"]:
+        marker.unlink()
+    held = _claim(home, "own-row")
+    assert held.returncode == 8
+    assert "cc-claim --release-claim-residue own-row" in held.stderr
+    assert _release(home, "own-row").returncode == 0
+    _next_second()
+
+    resumed = _claim(home, "own-row")
+
+    assert resumed.returncode == 0, resumed.stderr
+    assert "resumed its own lapsed claim (cc-claim" in note.read_text(encoding="utf-8")
+
+
+def test_a_role_claims_an_offered_row_already_assigned_to_it(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "own-offered-row", assigned_to="cx-test")
+
+    result = _claim(home, "own-offered-row")
+
+    assert result.returncode == 0, result.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "status: claimed" in text
+    assert "assigned_to: cx-test" in text
+
+
+@pytest.mark.parametrize("status", ["claimed", "in_progress"])
+def test_a_working_row_of_another_role_is_still_refused(tmp_path: Path, status: str) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "their-row", status=status, assigned_to="cx-other")
+    before = note.read_bytes()
+
+    result = _claim(home, "their-row")
+
+    assert result.returncode == 4
+    assert "cx-other" in result.stderr
+    assert note.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("marker", "content"),
+    [
+        ("cc-active-task-cx-other", b"own-row\n"),
+        ("cc-active-task-cx-test-77777777-1111-2222-3333-444455556666", b"own-row\n"),
+        ("cc-active-task-cx-other", b"\xff\xfe"),  # unreadable: it may name the row
+    ],
+    ids=["other-role", "other-session", "unreadable"],
+)
+def test_own_row_is_not_resumed_while_another_claim_marker_names_it(
+    tmp_path: Path, marker: str, content: bytes
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "own-row")
+    assert _claim(home, "own-row").returncode == 0
+    _lapse_every_sidecar(home)
+    live = home / ".cache" / "hapax" / marker
+    live.write_bytes(content)
+    before = note.read_bytes()
+
+    result = _claim(home, "own-row")
+
+    assert result.returncode == 4
+    assert str(live) in result.stderr
+    assert note.read_bytes() == before
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
+def test_an_own_offered_row_is_not_claimed_while_another_claim_marker_names_it(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "own-offered-row", assigned_to="cx-test")
+    cache = home / ".cache" / "hapax"
+    cache.mkdir(parents=True)
+    live = cache / "cc-active-task-cx-other"
+    live.write_text("own-offered-row\n", encoding="utf-8")
+    before = note.read_bytes()
+
+    result = _claim(home, "own-offered-row")
+
+    assert result.returncode == 4
+    assert str(live) in result.stderr
+    assert note.read_bytes() == before
+
+
+def test_a_closed_row_stays_refused_and_points_at_the_residue_release(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "closed-row")
+    assert _claim(home, "closed-row").returncode == 0
+    closed = _task_root(home) / "closed" / note.name
+    closed.write_text(
+        note.read_text(encoding="utf-8").replace("status: claimed", "status: done", 1),
+        encoding="utf-8",
+    )
+    note.unlink()
+    before = closed.read_bytes()
+
+    result = _claim(home, "closed-row")
+
+    assert result.returncode == 2
+    assert "cc-claim --release-claim-residue closed-row" in result.stderr
+    assert closed.read_bytes() == before
+
+
+def test_an_unassigned_working_row_is_still_refused(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "orphan-row", status="claimed", assigned_to="unassigned")
+    before = note.read_bytes()
+
+    result = _claim(home, "orphan-row")
+
+    assert result.returncode == 4
+    assert note.read_bytes() == before

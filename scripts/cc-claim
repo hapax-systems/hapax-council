@@ -437,6 +437,11 @@ done
 if [[ -z "$note_path" ]] && [[ -f "$vault_root/active/$task_id.md" ]]; then
   note_path="$vault_root/active/$task_id.md"
 fi
+if [[ -z "$note_path" ]] && [[ -f "$vault_root/closed/$task_id.md" ]]; then
+  echo "cc-claim: task '$task_id' is closed; a closed row is never claimed or resumed." >&2
+  echo "Next action: if this role's claim markers still name it (closed from another process, M173), release them with \`cc-claim --release-claim-residue $task_id\`, then claim an active task." >&2
+  exit 2
+fi
 if [[ -z "$note_path" ]]; then
   echo "cc-claim: task '$task_id' not found in $vault_root/active/" >&2
   echo "Next action: browse offered tasks at $vault_root/_dashboard/cc-offered.md and rerun with the exact active task id." >&2
@@ -506,6 +511,7 @@ if str(repo_root) not in sys.path:
 from shared.charter_claim import child_may_mint, sidecar_belongs_to  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
+    TASK_DISPATCHABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
     blocked_reason_from_frontmatter,
     blocked_witness_from_frontmatter,
@@ -816,6 +822,43 @@ def _is_claimable_assignee(value: str) -> bool:
 # Canonical SSOT: a lane may resume an owned task in any merge-ready state, not
 # just pr_open/merge_queue (shared/sdlc_lifecycle.py TASK_RESUMABLE_STATUSES).
 READY_STATUSES = TASK_RESUMABLE_STATUSES
+# A lane may also take back its OWN working row after its lease lapsed: a live claim by this
+# role never reaches here (it is answered above as an applied publication), so only a lapsed
+# one does. Before this, the seat had to hand-edit the note (2026-09-26, dev44 and dev33).
+OWN_WORKING_STATUSES = TASK_DISPATCHABLE_STATUSES - TASK_CLAIMABLE_STATUSES
+
+
+def _other_claim_markers(cache: Path) -> list[Path]:
+    """Every claim marker naming this task except the caller's own two keys: another role's
+    live claim, or another session's of this role. A self-resume never takes one over."""
+
+    own = {f"cc-active-task-{role}", f"cc-active-task-{role}-{session_id}"}
+    hits: list[Path] = []
+    for marker in sorted(cache.glob("cc-active-task-*")):
+        if marker.name in own:
+            continue
+        try:
+            named = marker.read_text(encoding="utf-8").splitlines()[:1]
+        except (OSError, UnicodeError):
+            hits.append(marker)  # unreadable: it may name the task, so it counts as live
+            continue
+        if named == [task_id]:
+            hits.append(marker)
+    return hits
+
+
+def _refuse_while_another_claim_holds(verb: str) -> None:
+    others = _other_claim_markers(cache_dir)
+    if others:
+        print(
+            f"cc-claim: refusing to {verb} '{task_id}' — another claim marker names it or cannot "
+            "be read: "
+            + ", ".join(str(path) for path in others)
+            + ". Next action: inspect it; a live claim is handed off to its lane, and this role's "
+            f"own lapsed residue is released with `cc-claim --release-claim-residue {task_id}`.",
+            file=sys.stderr,
+        )
+        sys.exit(4)
 
 
 status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
@@ -826,18 +869,21 @@ assigned_to = _strip_scalar(assigned_raw)
 
 if status in TASK_CLAIMABLE_STATUSES:
     if assigned_match and not _is_claimable_assignee(assigned_raw):
-        print(
-            f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_to}'. "
-            "Next action: ask the assigned lane/operator to release it or claim a different "
-            "offered task.",
-            file=sys.stderr,
-        )
-        sys.exit(4)
+        if assigned_to != role:
+            print(
+                f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_to}'. "
+                "Next action: ask the assigned lane/operator to release it or claim a different "
+                "offered task.",
+                file=sys.stderr,
+            )
+            sys.exit(4)
+        _refuse_while_another_claim_holds("claim")
     claim_mode = "claim"
-elif status in READY_STATUSES:
+elif status in READY_STATUSES or status in OWN_WORKING_STATUSES:
+    state_label = "ready-state" if status in READY_STATUSES else "working"
     if _is_claimable_assignee(assigned_raw):
         print(
-            f"cc-claim: refusing to resume '{task_id}' — ready-state task is not assigned to "
+            f"cc-claim: refusing to resume '{task_id}' — {state_label} task is not assigned to "
             f"'{role}'. Next action: restore assigned_to: {role} if this lane owns the PR "
             "follow-up, or claim a different offered task.",
             file=sys.stderr,
@@ -851,6 +897,8 @@ elif status in READY_STATUSES:
             file=sys.stderr,
         )
         sys.exit(4)
+    if status in OWN_WORKING_STATUSES:
+        _refuse_while_another_claim_holds("resume")
     claim_mode = "resume"
 else:
     detail = ""
@@ -1243,7 +1291,12 @@ if claim_mode == "claim":
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"
 else:
     session_suffix = f", session={session_id}" if session_id else ""
-    log_line = f"- {now} {role} resumed ready-state task (cc-claim{session_suffix})\n"
+    resumed = (
+        "resumed its own lapsed claim"
+        if status in OWN_WORKING_STATUSES
+        else "resumed ready-state task"
+    )
+    log_line = f"- {now} {role} {resumed} (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: resumed task '{task_id}' for role '{role}'"
 
 text = re.sub(

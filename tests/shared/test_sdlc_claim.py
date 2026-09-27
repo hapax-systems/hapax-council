@@ -4851,3 +4851,104 @@ def test_release_refuses_when_the_quarantine_name_is_taken(tmp_path: Path) -> No
 
     assert "claim_residue_quarantine_exists" in raised.value.message
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+# ── #4801 round-3 residuals (claim-plane-self-resume-own-lapsed-row-20260927 (5), (6)) ──
+
+
+def test_a_rerun_finishes_the_archive_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # (5): a crash between the staging rename and the lineage copy leaves the moved original
+    # only in the cache staging directory; the rerun recognises it and completes the archive.
+    fixture, journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+    assert not first.path.exists()
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+    assert (released.archive_dir / first.path.name).read_bytes() == first.after
+
+
+def test_a_file_archived_earlier_counts_after_its_staged_copy_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lineage copy alone proves an earlier release, once the cache staging is cleaned.
+    fixture, journal, projections = _held_publication(tmp_path)
+    real_archive = sdlc_claim._archive_verified
+    calls = {"n": 0}
+
+    def killed_after_first(*args: object, **kwargs: object) -> Path:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise _Killed
+        return real_archive(*args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", killed_after_first)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+    for staged in (fixture.cache / "claim-residue-release").rglob("cc-claim-*"):
+        staged.rename(tmp_path / f"cleaned-{staged.name}")  # the cache staging was cleaned
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+
+
+def test_an_earlier_archive_of_another_publication_does_not_count(tmp_path: Path) -> None:
+    # (6): the same file name and bytes under another publication's release prove nothing.
+    fixture, _journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    first.path.unlink()
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    other = lineage / "claim-residue-release-20260101T000000Z-cx-red"
+    other.mkdir(parents=True)
+    (other / first.path.name).write_bytes(first.after)
+    (other / "README.md").write_text(f"publication_id: claim-pub-{'0' * 64}\n", encoding="utf-8")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_a_same_stamp_rerun_keeps_the_earlier_readme(tmp_path: Path) -> None:
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    archive = lineage / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+    archive.mkdir(parents=True)
+    (archive / "README.md").write_text("an earlier run\n", encoding="utf-8")
+
+    _release_held(fixture)
+
+    assert (archive / "README.md").read_text(encoding="utf-8").startswith("an earlier run\n")

@@ -57,6 +57,7 @@ from shared.execution_admission import (
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.sdlc_lifecycle import (
     TASK_CLAIMABLE_STATUSES,
+    TASK_DISPATCHABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
     TASK_TERMINAL_STATUSES,
 )
@@ -73,6 +74,12 @@ from shared.task_note_lock import held_by_current_thread, projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+
+#: A lane resumes its own task in a merge-ready state, and also in its own working state after
+#: its lease lapsed (a live claim is resolved as an applied publication before any new intent).
+_OWN_RESUMABLE_STATUSES = TASK_RESUMABLE_STATUSES | (
+    TASK_DISPATCHABLE_STATUSES - TASK_CLAIMABLE_STATUSES
+)
 
 CLAIM_PUBLICATION_SCHEMA = "hapax.claim-publication-transaction.v1"
 CLAIM_PUBLICATION_RECEIPT_SCHEMA = "hapax.claim-publication-receipt.v2"
@@ -332,16 +339,13 @@ class ClaimPublicationIntent:
                 "advance the task through a lawful claimable lifecycle projection",
                 f"{task.task_id}:claimable={task.frontmatter.get('claimable')!r}",
             )
-        if from_status in TASK_CLAIMABLE_STATUSES and assigned_to.lower() in {
-            "",
-            "none",
-            "null",
-            "unassigned",
-            "~",
-        }:
+        if from_status in TASK_CLAIMABLE_STATUSES and (
+            assigned_to.lower() in {"", "none", "null", "unassigned", "~"}
+            or assigned_to == binding.lane
+        ):
             claim_mode = "claim"
             to_status = "claimed"
-        elif from_status in TASK_RESUMABLE_STATUSES and assigned_to == binding.lane:
+        elif from_status in _OWN_RESUMABLE_STATUSES and assigned_to == binding.lane:
             claim_mode = "resume"
             to_status = from_status
         else:
@@ -2001,7 +2005,7 @@ def _validate_intent(intent: ClaimPublicationIntent) -> None:
         or (
             intent.claim_mode == "resume"
             and (
-                intent.from_status not in TASK_RESUMABLE_STATUSES
+                intent.from_status not in _OWN_RESUMABLE_STATUSES
                 or intent.to_status != intent.from_status
             )
         )
@@ -6507,7 +6511,34 @@ def _copy_verified(content: bytes, mode: int, target: Path) -> None:
         )
 
 
-def _archive_verified(projection: FileProjection, archive_dir: Path, staging_dir: Path) -> Path:
+def _staged_original(projection: FileProjection, journal: _RoleTaskJournal) -> Path | None:
+    """An earlier run's moved original of this file, if a crash left it staged in the cache
+    before its lineage copy: exactly the journal's after-image, under this role and task."""
+
+    root = (
+        _normalized(journal.intent.cache_dir)
+        / "claim-residue-release"
+        / _safe_lineage_component(journal.intent.task_id)
+    )
+    suffix = f"-{_safe_lineage_component(journal.intent.role)}"
+    for directory in sorted(root.iterdir()) if root.is_dir() else ():
+        candidate = directory / projection.path.name
+        if not directory.name.endswith(suffix) or candidate.is_symlink():
+            continue
+        try:
+            if _file_state(candidate) == (projection.after, projection.after_mode):
+                return candidate
+        except LifecycleTransitionError:
+            continue
+    return None
+
+
+def _archive_verified(
+    projection: FileProjection,
+    archive_dir: Path,
+    staging_dir: Path,
+    staged_original: Path | None = None,
+) -> Path:
     """Move one residue file out of its live name, then archive exactly the bytes moved.
 
     The live file is renamed into ``staging_dir``, inside the cache's own filesystem, so the
@@ -6516,14 +6547,15 @@ def _archive_verified(projection: FileProjection, archive_dir: Path, staging_dir
     file this release never touches. The moved bytes, never the journal's image, are copied
     verified into the lineage. Nothing is unlinked: the moved original stays staged.
     On a mismatch the moved bytes are kept as ``<name>.live-differed-from-journal`` and the
-    release refuses.
+    release refuses. A ``staged_original`` left by a crashed run is archived as it stands.
     """
 
-    staged = staging_dir / projection.path.name
+    staged = staged_original or staging_dir / projection.path.name
     destination = archive_dir / projection.path.name
     differed = archive_dir / f"{projection.path.name}.live-differed-from-journal"
     try:
-        os.rename(projection.path, staged)
+        if staged_original is None:
+            os.rename(projection.path, staged)
     except FileNotFoundError as exc:
         raise _release_hold(
             "claim_residue_hash_mismatch",
@@ -6576,9 +6608,14 @@ def _previously_archived(
         if not directory.name.endswith(suffix) or candidate.is_symlink():
             continue
         try:
-            if candidate.is_file() and candidate.read_bytes() == projection.after:
+            readme = (directory / "README.md").read_text(encoding="utf-8").splitlines()
+            if (
+                f"publication_id: {journal.publication_id}" in readme
+                and candidate.is_file()
+                and candidate.read_bytes() == projection.after
+            ):
                 return True
-        except OSError:
+        except (OSError, UnicodeError):
             continue
     return False
 
@@ -6590,8 +6627,10 @@ def _archive_residue(
     vault_root: Path,
     shape: str,
     observed_at: str,
+    staged: Mapping[Path, Path] | None = None,
 ) -> tuple[Path, tuple[Path, ...]]:
     intent = journal.intent
+    staged = staged or {}
     archive_dir = (
         vault_root
         / "_lineage"
@@ -6639,9 +6678,11 @@ def _archive_residue(
             for projection in present
         ),
     ]
-    (archive_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with (archive_dir / "README.md").open("a", encoding="utf-8") as readme:  # never overwritten
+        readme.write("\n".join(lines) + "\n")
     archived = tuple(
-        _archive_verified(projection, archive_dir, staging_dir) for projection in present
+        _archive_verified(projection, archive_dir, staging_dir, staged.get(projection.path))
+        for projection in present
     )
     return archive_dir, archived
 
@@ -6672,6 +6713,7 @@ def _release_held_publication(
         )
     residue = _journal_residue(journal, cache_dir)
     present: list[FileProjection] = []
+    staged: dict[Path, Path] = {}
     for projection in residue:
         state = _residue_state(projection)
         if _is_claim_activation_projection(projection):
@@ -6689,9 +6731,13 @@ def _release_held_publication(
             )
         elif state == "after":
             present.append(projection)
-        elif not _previously_archived(projection, journal, vault_root):
-            # Absent counts only as already released: an earlier run of this release, cut
-            # off mid-archive, holds exactly this after-image in the lineage.
+        elif _previously_archived(projection, journal, vault_root):
+            continue
+        elif (original := _staged_original(projection, journal)) is not None:
+            staged[projection.path] = original  # a crashed run moved it; finish its archive
+            present.append(projection)
+        else:
+            # Absent counts only as already released, or as moved by a crashed run.
             raise _release_hold(
                 "claim_residue_projection_missing",
                 f"{projection.path} is absent and no earlier release archived its after-image",
@@ -6728,6 +6774,7 @@ def _release_held_publication(
         vault_root=vault_root,
         shape="held_publication",
         observed_at=observed_at,
+        staged=staged,
     )
     os.rename(journal_dir, quarantined)
     return ClaimResidueRelease(
@@ -6743,7 +6790,9 @@ def _release_applied_residue(
     task_id: str,
     observed_at: str,
 ) -> ClaimResidueRelease:
-    candidates: list[tuple[_RoleTaskJournal, tuple[FileProjection, ...], list[FileProjection]]] = []
+    candidates: list[
+        tuple[_RoleTaskJournal, tuple[FileProjection, ...], list[FileProjection], dict[Path, Path]]
+    ] = []
     mismatched = unaccounted = False
     for journal in journals:
         residue = _journal_residue(journal, cache_dir)
@@ -6752,16 +6801,24 @@ def _release_applied_residue(
             mismatched = True
             continue
         present = [item for item, state in zip(residue, states, strict=True) if state == "after"]
-        # As on the held path: an absent epoch or dispatch sidecar must already be archived.
-        if present and any(
-            state == "absent"
-            and not _is_claim_activation_projection(item)
-            and not _previously_archived(item, journal, vault_root)
-            for item, state in zip(residue, states, strict=True)
-        ):
+        # As on the held path: an absent epoch or dispatch sidecar must already be archived,
+        # or be staged by a crashed run, whose archive this run then finishes.
+        staged: dict[Path, Path] = {}
+        missing = False
+        for item, state in zip(residue, states, strict=True):
+            if state != "absent" or _is_claim_activation_projection(item):
+                continue
+            if _previously_archived(item, journal, vault_root):
+                continue
+            if (original := _staged_original(item, journal)) is None:
+                missing = True
+            else:
+                staged[item.path] = original
+                present.append(item)
+        if present and missing:
             unaccounted = True
         elif present:
-            candidates.append((journal, residue, present))
+            candidates.append((journal, residue, present, staged))
     if not candidates:
         if unaccounted:
             raise _release_hold(
@@ -6787,7 +6844,7 @@ def _release_applied_residue(
             f"{len(candidates)} applied journals match the residue for {task_id}",
             "preserve the sidecars and inspect the journals",
         )
-    journal, residue, present = candidates[0]
+    journal, residue, present, staged = candidates[0]
     if others := _other_live_markers(cache_dir, journal.intent.role, task_id, residue):
         raise _release_hold(
             "claim_residue_live_marker",
@@ -6805,7 +6862,12 @@ def _release_applied_residue(
             )
         shape = "closed_task"
     archive_dir, archived = _archive_residue(
-        present, journal=journal, vault_root=vault_root, shape=shape, observed_at=observed_at
+        present,
+        journal=journal,
+        vault_root=vault_root,
+        shape=shape,
+        observed_at=observed_at,
+        staged=staged,
     )
     return ClaimResidueRelease(shape, journal.publication_id, archive_dir, archived, None)
 
