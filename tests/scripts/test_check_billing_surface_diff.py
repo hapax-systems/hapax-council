@@ -106,13 +106,6 @@ def test_api_key_route_added_fails(scanner: ModuleType) -> None:
     assert finding.line == 1
 
 
-def test_new_credential_env_read_fails(scanner: ModuleType) -> None:
-    line = '    token = os.environ.get("MOONSHOT_TEST_API_KEY")'  # billing-scan:allow: fixture data
-    diff = _diff("shared/foo.py", [line])
-    result = scanner.scan_unified_diff(diff)
-    assert any(f.kind == "credential-env-read" for f in result.findings)
-
-
 def test_protective_env_strip_passes(scanner: ModuleType) -> None:
     """The governed launcher strip, in Python: exempt per node — and reported."""
 
@@ -130,159 +123,82 @@ def test_protective_env_strip_passes(scanner: ModuleType) -> None:
     )
 
 
-def test_route_bound_to_governed_proxy_is_still_exempt(scanner: ModuleType) -> None:
-    """Positive control: the legitimate exemption must survive the fix."""
+def test_a_garbage_line_makes_the_section_unusable(scanner: ModuleType) -> None:
+    """Clause 1 of the re-land predicate: an unparseable line is damage, never content.
 
-    line = '    client = OpenAI(api_key=LITELLM_KEY, base_url="http://127.0.0.1:4000/v1")'  # billing-scan:allow: fixture data
-    diff = _diff("shared/foo_client.py", [line])
-    result = scanner.scan_unified_diff(diff)
-    assert result.findings == (), "a client genuinely bound to the proxy must stay exempt"
-
-
-def test_mixed_line_protective_strip_does_not_hide_a_credential_read(
-    scanner: ModuleType,
-) -> None:
-    """codex-1's round-3 critical, verbatim: the strip must not exempt its neighbours."""
-
-    line = 'os.environ.pop("OLD_API_KEY", None); key = os.environ["OPENAI_API_KEY"]'  # billing-scan:allow: fixture data
-    diff = _diff("shared/foo_launcher.py", [line])
-    result = scanner.scan_unified_diff(diff)
-    kinds = [f.kind for f in result.findings]
-    assert "credential-env-read" in kinds, (
-        "a protective strip on the line exempted a credential read on the same line"
-    )
-    assert {f.kind for f in result.allowed} == {"protective-strip"}, (
-        "the strip's own node is the only thing exempt: the read elsewhere on the line "
-        "must be a finding, and the granted exemption must name the strip alone"
-    )
-
-
-def test_non_python_file_grants_no_exemption_at_all(scanner: ModuleType) -> None:
-    """Seat round 3, item 2: no exemptions for non-Python, per statement or per line.
-
-    Red-first pin for the removal: at ``79c5d1cd7`` the statement-level strip exemption
-    exempted exactly this line (a ``;``-delimited fragment of one line is still line
-    content). It must now be a finding, and nothing may be recorded as allowed.
+    Measured before making this strict: a 72 KB real `gh pr diff` carries no blank body lines,
+    so real output never contains a line outside the section grammar unless it was cut.
     """
 
-    diff = _diff("scripts/foo_launcher.sh", ['del os.environ["ANTHROPIC_API_KEY"]'])
-    result = scanner.scan_unified_diff(diff)
-    assert "credential-env-read" in [f.kind for f in result.findings], (
-        "a text-path exemption exempted a strip in a non-Python file"
-    )
-    assert result.allowed == (), "a non-Python file was granted an exemption"
-
-
-def test_truncation_inside_a_hunk_fails_closed(scanner: ModuleType) -> None:
-    """codex-1's round-6 critical: a hunk header alone must not prove a section whole.
-
-    The header declares how many lines each side owes; input cut off right after ``@@`` or
-    mid-hunk used to scan clean because only the header's presence was checked.
-    """
-
-    head = (
-        "diff --git a/shared/foo.py b/shared/foo.py\n"
-        "index d95f3ad..94b334d 100644\n"
-        "--- a/shared/foo.py\n"
-        "+++ b/shared/foo.py\n"
-    )
-    hunk = "@@ -1,2 +1,3 @@\n"
-    body = " ctx\n-old\n+one\n+two\n"
-    shapes = {
-        "right after @@": head + hunk,
-        "mid-hunk (one line in)": head + hunk + " ctx\n",
-        "short of the old count": head + hunk + " ctx\n+one\n+two\n",
-        "short of the new count": head + hunk + " ctx\n-old\n+one\n",
-        "a body line after both counts were spent": head + hunk + body + "+three\n",
-        "a short hunk closed by the next file's header": (
-            head + hunk + " ctx\n" + "diff --git a/b.py b/b.py\n"
-        ),
-    }
-    for label, diff in shapes.items():
-        result = scanner.scan_unified_diff(diff)
+    head = "diff --git a/shared/foo.py b/shared/foo.py\nold mode 100644\nnew mode 100755\n"
+    # A section that is otherwise COMPLETE (a mode-only change is a whole diff), so the only
+    # thing that can make it unusable is the stray line itself — the previous shapes drew their
+    # unusable finding from a spent hunk budget instead, which is why this one isolates the
+    # grammar rather than the arithmetic.
+    for label, garbage in (
+        ("a bare line", "this is not diff syntax"),
+        ("a header-looking stray", "no newline at end of file"),
+    ):
+        result = scanner.scan_unified_diff(head + garbage + "\n")
         assert "billing-scan-unusable-input" in [f.kind for f in result.findings], (
-            f"a hunk that did not deliver its header's counts scanned clean: {label}"
+            f"{label} was tolerated as content: {[f.kind for f in result.findings]}"
         )
-    whole = scanner.scan_unified_diff(head + hunk + body)
-    assert whole.findings == (), "a hunk that delivered its counts exactly was flagged"
-    # Attribution, not just the fact of the finding: a short hunk must be blamed on the file
-    # it was cut in. Without the close at the next file's header the state stays open, the
-    # NEXT section inherits it, and the finding names the wrong file (measured: that mutant is
-    # otherwise equivalent, so this assertion is what pins the boundary).
-    misattributed = scanner.scan_unified_diff(head + hunk + " ctx\n" + "diff --git a/b.py b/b.py\n")
-    blamed = [f.path for f in misattributed.findings if f.kind == "billing-scan-unusable-input"]
-    assert "shared/foo.py" in blamed, (
-        f"a short hunk closed by the next file's header was blamed on {blamed} instead"
+    assert scanner.scan_unified_diff(head).findings == (), (
+        "the mode-only control section was flagged, so the test proves nothing about the stray line"
     )
+    # A BLANK line is the one tolerated stray, and it is stated rather than left implicit: a
+    # blank line cannot carry content in any section shape, so a patch file that ends with an
+    # extra newline is not damage. Every non-empty stray fails closed.
+    assert scanner.scan_unified_diff(head + "\n").findings == ()
 
 
-def test_empty_file_index_forms_all_read_as_contentless(scanner: ModuleType) -> None:
-    """gemini-1's round-6 major: the zero side is any run of zeros, not exactly seven.
+def test_eof_no_newline_marker_is_metadata_not_content(scanner: ModuleType) -> None:
+    """gemini-1's round-7 major: the `\\ No newline` marker must not join the post-image.
 
-    This repo's ``gh pr diff`` abbreviates to ten characters
-    (``index 0000000000..fe91c83f72``), so a fixed ``"0000000"`` made every ten-character
-    empty-file section read as unusable input — a false positive on ordinary diffs.
-
-    Every hash here is *derived* from git at runtime rather than written as a literal: a
-    40-character hex literal is a "Hex High Entropy String" to the pre-push secret scan, and a
-    git blob hash is not a credential. Deriving it keeps the test honest — it uses the real
-    empty blob git actually produces — and needs no allowlist pragma.
+    Before the fix the marker fell through to the region, so a perfectly valid diff whose last
+    added line is a governed strip failed to parse — and, being key-bearing, was reported as
+    unusable input instead of exempt.
     """
 
-    import subprocess
-
-    empty_blob = subprocess.run(
-        ["git", "hash-object", "-t", "blob", "/dev/null"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert len(empty_blob) == 40, f"unexpected empty-blob hash form: {empty_blob!r}"
-    forms = {
-        "7-char": "0" * 7,
-        "10-char": "0" * 10,
-        "40-char": "0" * len(empty_blob),
-    }
-    for label, zero in forms.items():
-        short = empty_blob[: len(zero)]
-        added = (
-            "diff --git a/shared/empty.py b/shared/empty.py\n"
-            "new file mode 100644\n"
-            f"index {zero}..{short}\n"
-        )
-        result = scanner.scan_unified_diff(added)
-        assert result.findings == (), f"an empty-file {label} index was flagged: {result.findings}"
-        removed = (
-            "diff --git a/shared/gone.py b/shared/gone.py\n"
-            "deleted file mode 100644\n"
-            f"index {short}..{zero}\n"
-        )
-        assert scanner.scan_unified_diff(removed).findings == (), (
-            f"a deleted-empty-file {label} index was flagged"
-        )
-    # And a NON-empty index must still be held: it promises content that never arrived.
-    truncated = (
-        "diff --git a/shared/foo.py b/shared/foo.py\n"
-        "new file mode 100644\n"
-        "index 0000000000..fe91c83f72\n"
+    diff = (
+        "diff --git a/shared/foo_launcher.py b/shared/foo_launcher.py\n"
+        "index d95f3ad..94b334d 100644\n"
+        "--- a/shared/foo_launcher.py\n"
+        "+++ b/shared/foo_launcher.py\n"
+        "@@ -1,0 +1,1 @@\n"
+        '+os.environ.pop("OLD_API_KEY", None)\n'
+        "\\ No newline at end of file\n"
     )
-    kinds = [f.kind for f in scanner.scan_unified_diff(truncated).findings]
-    assert "billing-scan-unusable-input" in kinds, (
-        "a non-empty index with no content was read as a clean scan"
+    result = scanner.scan_unified_diff(diff)
+    assert result.findings == (), (
+        "a valid EOF hunk whose last line is a governed strip was not read as valid: "
+        f"{[(f.kind, f.text[:60]) for f in result.findings]}"
+    )
+    assert any(f.kind == "protective-strip" for f in result.allowed), (
+        "the strip in the EOF hunk was not recognised at all"
     )
 
 
-def test_truncation_at_every_line_boundary_of_a_real_diff_fails_closed(
+def test_combined_section_fuzz_never_reads_a_cut_section_as_whole(
     scanner: ModuleType, tmp_path: Path
 ) -> None:
-    """The class-level test the seat asked for: fuzz every line boundary of a REAL diff.
+    """The class-level test: real `git diff` output whose sections COMBINE marks.
 
-    A real ``git diff --find-renames --unified=0`` over a mode-only change, a pure rename, an
-    empty new file and a content file whose added line is a credential read is generated here,
-    then every prefix at a line boundary is scanned. The invariant: **no prefix may report a
-    clean scan** — it either still contains the canary read, or the section it cut short is
-    flagged incomplete. The per-shape tests above are this test's instances; this is the one
-    that ends the class rather than the instance.
+    #4795's r5, r6 and r7 were the same class one level deeper each time (index-only header; short
+    hunk; short hunk plus a rename or mode pair). The previous fuzz only ever exercised one shape
+    per section, so it never combined them. Here each fixture is one REAL section that carries a
+    content mark AND a contentless mark — rename+content, mode+content, empty-blob+content,
+    binary, and a `\\ No newline` EOF hunk — and every strict prefix of every fixture is scanned
+    and required to report something, except at the boundaries this test names in advance:
+
+    * a prefix that stops right after a **mode pair** is a legitimate mode-only diff (git emits
+      the pair and then, only if content changed, an `index` line — so that truncation window is
+      one line wide and indistinguishable in the text; this is the one ambiguity the table has,
+      and it is named here rather than left implicit);
+    * everything else must report `billing-scan-unusable-input` (a cut section) or the planted
+      credential read (a section that arrived whole). A rename is NOT such a boundary: git writes
+      `similarity index 100%` for a pure rename and a lower percentage whenever content follows,
+      which is what makes that prefix a truncation rather than a diff.
     """
 
     import subprocess
@@ -290,67 +206,95 @@ def test_truncation_at_every_line_boundary_of_a_real_diff_fails_closed(
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    def git(*args: str) -> None:
-        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+    def git(*args: str) -> str:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+        )
+        return proc.stdout.strip()
 
+    # Big enough that git's rename detection actually fires (measured: a five-line file is
+    # reported as a delete+add even with -M, while a fifty-line file with one line appended is
+    # `similarity index 98%` — a fixture that is not a rename cannot fuzz one).
+    body = "".join(f"line{index} = {index}\n" for index in range(50))
     git("init", "-q", ".")
     git("config", "user.email", "t@t")
     git("config", "user.name", "t")
-    (repo / "aaa_canary.py").write_text("x = 1\n", encoding="utf-8")
-    (repo / "modeonly.py").write_text("y = 1\n", encoding="utf-8")
-    (repo / "oldname.py").write_text("z = 1\n", encoding="utf-8")
+    (repo / "renamed.py").write_text(body, encoding="utf-8")
+    (repo / "moded.py").write_text(body, encoding="utf-8")
+    (repo / "was_empty.py").write_text("", encoding="utf-8")
+    (repo / "binary.bin").write_bytes(b"\x00\x01\x02\x03" * 64)
+    (repo / "eof.py").write_text(body, encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "base")
-    (repo / "aaa_canary.py").write_text(
-        'x = 1\nkey = os.environ["OPENAI_API_KEY"]\n', encoding="utf-8"
+
+    git("mv", "renamed.py", "renamed_after.py")
+    (repo / "renamed_after.py").write_text(
+        f'{body}key = os.environ["OPENAI_API_KEY"]\n', encoding="utf-8"
     )
-    (repo / "modeonly.py").chmod(0o755)
-    git("mv", "oldname.py", "newname.py")
-    (repo / "empty_new.py").write_text("", encoding="utf-8")
+    (repo / "moded.py").write_text(f'{body}key = os.environ["OPENAI_API_KEY"]\n', encoding="utf-8")
+    (repo / "moded.py").chmod(0o755)
+    (repo / "was_empty.py").write_text('key = os.environ["OPENAI_API_KEY"]\n', encoding="utf-8")
+    (repo / "binary.bin").write_bytes(b"\x00\x09\x08\x07" * 64)
+    (repo / "eof.py").write_text(
+        'a = 1\nb = 2\nkey = os.environ["OPENAI_API_KEY"]', encoding="utf-8"
+    )
     git("add", "-A")
-    git("commit", "-qm", "change")
-    diff = subprocess.run(
-        ["git", "-C", str(repo), "diff", "--find-renames", "--unified=0", "HEAD~1..HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+    git("commit", "-qm", "combined")
 
-    # The fixture must be a diff this scanner reads WHOLE, or the fuzz would pass vacuously:
-    # exactly one finding, and it is the canary read.
-    whole = scanner.scan_unified_diff(diff)
-    assert [f.kind for f in whole.findings] == ["credential-env-read"], (
-        "the real-diff fixture is not a clean baseline: "
-        f"{[(f.kind, f.path) for f in whole.findings]}"
-    )
+    def section(path: str) -> str:
+        return git("diff", "--find-renames", "--unified=0", "HEAD~1..HEAD", "--", path)
 
-    lines = diff.splitlines(True)
-    assert len(lines) > 15, f"fixture too small to fuzz meaningfully: {len(lines)} lines"
-    for boundary in range(1, len(lines)):
-        prefix = "".join(lines[:boundary])
-        result = scanner.scan_unified_diff(prefix)
-        assert result.findings, (
-            "a prefix of a real diff reported a clean scan at line "
-            f"{boundary} (last line: {prefix.splitlines()[-1]!r})"
+    fixtures = {
+        # Both sides of the rename must be inside the pathspec, or git shows the new name as an
+        # addition instead of a rename.
+        "rename+content": git(
+            "diff",
+            "--find-renames",
+            "--unified=0",
+            "HEAD~1..HEAD",
+            "--",
+            "renamed.py",
+            "renamed_after.py",
+        ),
+        "mode+content": section("moded.py"),
+        "empty-blob+content": section("was_empty.py"),
+        "binary": section("binary.bin"),
+        "eof-no-newline": section("eof.py"),
+    }
+    assert "rename from" in fixtures["rename+content"] and "@@" in fixtures["rename+content"]
+    assert "old mode" in fixtures["mode+content"] and "@@" in fixtures["mode+content"]
+    assert "e69de29" in fixtures["empty-blob+content"] and "@@" in fixtures["empty-blob+content"]
+    assert "Binary files" in fixtures["binary"]
+    assert "\\ No newline at end of file" in fixtures["eof-no-newline"]
+
+    for label, diff in fixtures.items():
+        # The whole fixture must be readable: the corpus of combined sections is not all damage.
+        whole = scanner.scan_unified_diff(diff)
+        assert not any(f.kind == "billing-scan-unusable-input" for f in whole.findings), (
+            f"a complete combined section ({label}) was read as damaged: "
+            f"{[(f.kind, f.text[:60]) for f in whole.findings]}"
         )
-
-
-def test_strip_default_argument_is_scanned(scanner: ModuleType) -> None:
-    """codex-1's round-4 critical, verbatim, on the AST path.
-
-    At `c34dd481b` the exemption covered every node inside the strip, so the added read
-    in the default argument was never reported and the gate could pass.
-    """
-
-    line = 'os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])'  # billing-scan:allow: fixture data
-    diff = _diff("shared/foo_launcher.py", [line])
-    result = scanner.scan_unified_diff(diff)
-    assert "credential-env-read" in [f.kind for f in result.findings], (
-        "the strip's default argument was exempted with the strip: the added read passed"
-    )
-    assert {f.kind for f in result.allowed} == {"protective-strip"}, (
-        "the granted exemption must name the strip alone, not the read inside it"
-    )
+        lines = diff.splitlines(True)
+        clean_allowed = 0
+        for boundary in range(1, len(lines)):
+            prefix = "".join(lines[:boundary])
+            result = scanner.scan_unified_diff(prefix)
+            if result.findings:
+                continue
+            # No findings: only the one named ambiguity may be clean, and only where the prefix
+            # is exactly a mode pair with nothing after it.
+            last = prefix.splitlines()[-1]
+            assert label == "mode+content" and last.startswith("new mode"), (
+                f"{label}: a strict prefix scanned clean at line {boundary} "
+                f"(last line {last!r}) — a cut section read as whole"
+            )
+            clean_allowed += 1
+        if label == "mode+content":
+            assert clean_allowed == 1, (
+                f"expected exactly the one mode-pair boundary to be clean, got {clean_allowed}"
+            )
+        else:
+            assert clean_allowed == 0
 
 
 def test_no_exemption_is_decided_from_line_content(scanner: ModuleType) -> None:

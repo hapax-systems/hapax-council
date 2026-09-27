@@ -315,13 +315,16 @@ def _section_marks() -> dict[str, bool]:
         "preamble": False,  # any `index`/mode/rename line arrived
         "hunk": False,
         "hunk_short": False,  # a hunk's body did not deliver its header's counts
+        "unparseable": False,  # a line that is neither a mark nor a body line nor a header
         "binary": False,
         "file_section": False,  # `---` arrived, so `+++` follows
         "old_mode": False,
         "new_mode": False,
         "rename_from": False,
         "rename_to": False,
+        "rename_needs_content": False,  # a <100% similarity / dissimilarity implies hunks follow
         "empty_blob": False,
+        "content_index": False,  # an index line that promises content must follow
     }
 
 
@@ -342,31 +345,59 @@ def _fold_index_marks(marks: dict[str, bool], raw: str) -> None:
     marks["empty_blob"] = (old_is_zero and new.startswith(_EMPTY_BLOB_SHORT)) or (
         new_is_zero and old.startswith(_EMPTY_BLOB_SHORT)
     )
+    # An `index` that is NOT the empty-file form promises content that must follow: git omits the
+    # line entirely for a mode-only change and for a pure rename, and always writes it when it is
+    # about to show a hunk. So its presence without a hunk is the same damage as an index-only
+    # header — and it is the discriminator that closed the mode+content and rename+content cuts
+    # the every-prefix fuzz found after the rename fix.
+    marks["content_index"] = not marks["empty_blob"]
 
 
 def _section_is_complete(marks: dict[str, bool]) -> bool:
-    """True only when the input shows a whole section — contentless forms included.
+    """THE COMPLETENESS TABLE. A section is whole exactly when the marks say so, and the code
+    below is a transcription of this table — not of the shapes each review round happened to
+    produce. Re-lands from the abandoned #4795, whose three failures were all one class: a
+    truncated section reading as clean because a mark that proves *absence of content* was
+    allowed to prove *wholeness of content*.
 
-    Complete means one of: a hunk, a binary note, a **mode-only** change
-    (``old mode`` + ``new mode``), a **pure rename** (``rename from`` + ``rename to``, or
-    the ``copy`` pair), or an **empty file** creation/deletion (the empty-blob ``index``).
-    Those last three legitimately carry no ``---``/``+++`` and no hunk.
+    | marks on the section                                              | whole? |
+    |-------------------------------------------------------------------|--------|
+    | it declares a hunk, every hunk consumed both counts exactly       | yes    |
+    | it declares a hunk, and any hunk is short or overrun              | **no** |
+    | no hunk, a binary note                                            | yes    |
+    | no hunk, an empty-file index (``…000…`` on one side, empty blob on the other) | yes |
+    | no hunk, an ``index`` line that is not the empty-file form        | **no** |
+    | no hunk, ``old mode`` **and** ``new mode``, **and no** ``index``  | yes    |
+    | no hunk, ``rename from``/``rename to`` with ``similarity index 100%`` | yes |
+    | no hunk, a rename with a lower similarity or a ``dissimilarity``  | **no** |
+    | no hunk, nothing but preamble (``diff --git``/``---``/``+++``/…)  | **no** |
+    | any of the above, plus an **unparseable** line                    | **no** |
 
-    A hunk only counts when its **body delivered the counts its header declares** — see
-    ``hunk_short`` — because otherwise input cut off inside a hunk would still count as
-    whole (codex-1's round-6 critical).
+    The two rows that say "no hunk" are the fix for codex-1's round-7 critical: a rename or a
+    mode pair used to OR its way to "whole" over the top of a short hunk, so a rename-with-
+    content or mode-with-content section truncated mid-hunk scanned clean. **A mark that means
+    "this section has no content" can only speak for a section that declares no hunk.**
 
-    Anything else is an **incomplete** section, and an incomplete section must never read as
-    a clean scan (codex critical, round 5): an ``index``-only header is a truncated content
-    change, and it used to clear the old ``saw_header_only`` flag and escape every check.
+    An unparseable line — anything that is neither a mark nor a body line nor a section header —
+    is treated as damage and makes the section not whole (round-7 predicate, clause 1). Measured
+    before choosing that strictness: a 72 KB real `gh pr diff` carries **no** blank body lines,
+    so real output never has such a line unless it was cut or corrupted.
     """
 
+    if marks["unparseable"]:
+        return False
+    if marks["hunk"]:
+        # Hunk-first: nothing else on the section can outvote a short hunk.
+        return not marks["hunk_short"]
+    if marks["binary"] or marks["empty_blob"]:
+        return True
+    if marks["content_index"]:
+        # An `index` that is not the empty-file form means git was about to show content; a
+        # section that stops here was cut. This is what closes mode+content and rename+content.
+        return False
     return bool(
-        (marks["hunk"] and not marks["hunk_short"])
-        or marks["binary"]
-        or marks["empty_blob"]
-        or (marks["old_mode"] and marks["new_mode"])
-        or (marks["rename_from"] and marks["rename_to"])
+        (marks["old_mode"] and marks["new_mode"])
+        or (marks["rename_from"] and marks["rename_to"] and not marks["rename_needs_content"])
     )
 
 
@@ -848,6 +879,9 @@ def scan_unified_diff(text: str) -> ScanResult:
         if raw.startswith("Binary files ") or raw.startswith("GIT binary patch"):
             marks["binary"] = True  # a section DID arrive; it is simply binary
             continue
+        if marks["binary"]:
+            # A declared-binary section's payload is opaque; the note is what makes it whole.
+            continue
         if raw.startswith("index "):
             _fold_index_marks(marks, raw)
             continue
@@ -872,24 +906,30 @@ def scan_unified_diff(text: str) -> ScanResult:
             continue
         if raw.startswith(("similarity index", "dissimilarity index")):
             marks["preamble"] = True
+            # A rename is only whole without hunks when the content is IDENTICAL: git writes
+            # `similarity index 100%` for a pure rename and a lower percentage (or a
+            # `dissimilarity index`) whenever content changes follow, so a section claiming to
+            # be a pure rename on a lower similarity is a section whose hunks were cut.
+            similarity = re.match(r"^similarity index (\d+)%$", raw)
+            if similarity is None or int(similarity.group(1)) < 100:
+                marks["rename_needs_content"] = True
             continue
-        # Hunk bodies are counted for EVERY section before anything is skipped: a hunk that
-        # ends short proves the input was cut, doc file or not (round-6 critical).
-        if in_hunk:
-            if raw.startswith("\\"):
-                pass  # `\ No newline at end of file` annotates the line above; it is not a line
-            elif raw.startswith("+"):
-                hunk_left_new -= 1
-            elif raw.startswith("-"):
-                hunk_left_old -= 1
-            else:  # a context line: git writes " ", and a trailing-space strip leaves it empty
-                hunk_left_old -= 1
-                hunk_left_new -= 1
-            # No separate overshoot guard here: a body line arriving after both budgets were
-            # spent drives one of them negative, and `close_hunk`'s single "not zero" test
-            # catches it with the short case. (Measured: a mutant that tolerates the negative
-            # is behaviourally identical, so a second guard would be dead weight — one
-            # hazard, one mechanism.)
+        # Hunk headers are counted for EVERY section, doc files included: whether the input
+        # arrived whole is a property of the diff, not of the file's class (a truncated diff is
+        # unusable whatever got cut), so the mark is set before the scan-skip test below. The
+        # header check must also precede the body accounting, or a second `@@` would be eaten as
+        # a body line.
+        header = _HUNK_HEADER_RE.match(raw)
+        if header:
+            close_hunk()
+            flush()
+            saw_hunk = True
+            marks["hunk"] = True
+            hunk_left_old = int(header.group(2) or 1)
+            hunk_left_new = int(header.group(4) or 1)
+            in_hunk = True
+            new_line = int(header.group(3))
+            continue
         if raw.startswith("--- ") and not marks["hunk"]:
             marks["file_section"] = True
             marks["preamble"] = True
@@ -908,19 +948,30 @@ def scan_unified_diff(text: str) -> ScanResult:
             if not skip_file:
                 scanned.append(path)
             continue
-        # Hunk headers are counted for EVERY section, doc files included: whether the input
-        # arrived whole is a property of the diff, not of the file's class (a truncated diff
-        # is unusable whatever got cut), so the mark must be set before the scan-skip test.
-        header = _HUNK_HEADER_RE.match(raw)
-        if header:
-            close_hunk()
-            flush()
-            saw_hunk = True
-            marks["hunk"] = True
-            hunk_left_old = int(header.group(2) or 1)
-            hunk_left_new = int(header.group(4) or 1)
-            in_hunk = True
-            new_line = int(header.group(3))
+        if in_hunk and raw.startswith("\\"):
+            # `\ No newline at end of file` is hunk METADATA and is consumed here, never scanned
+            # (gemini-1's round-7 major: `pass` fell through to the region, so the marker joined
+            # the post-image text and `ast.parse` failed on a diff that was perfectly valid).
+            continue
+        if in_hunk:
+            # The body grammar, strictly: a line is a context line (` `), an added line (`+`) or
+            # a removed line (`-`) and nothing else. The old tolerant `else` treated ANY other
+            # line as context, which is how damage could pass as content.
+            if raw.startswith("+"):
+                hunk_left_new -= 1
+            elif raw.startswith("-"):
+                hunk_left_old -= 1
+            elif raw.startswith(" "):
+                hunk_left_old -= 1
+                hunk_left_new -= 1
+            else:
+                marks["unparseable"] = True
+                continue
+            # No separate overshoot guard: a body line after both budgets were spent drives one
+            # negative, and `close_hunk`'s single "not zero" test catches it with the short case.
+        elif raw.strip():
+            # Outside a hunk only the marks and headers handled above are legal.
+            marks["unparseable"] = True
             continue
         if skip_file or path is None:
             continue
