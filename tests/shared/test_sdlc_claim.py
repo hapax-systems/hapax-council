@@ -4468,3 +4468,266 @@ def test_inspection_recovers_from_a_transient_concurrent_change(
     assert results == ()
     assert captures == [1, 2]
     assert len(sleeps) == 1
+
+
+# ── governed release of a held claim publication (M166, M167) ────────────────
+# claim-cache-missing-governed-release-20260926
+
+
+_RELEASE_STAMP = "20260927T010000Z"
+
+
+def _held_publication(
+    tmp_path: Path, *, edit_note: bool = True
+) -> tuple[ClaimFixture, Path, tuple[object, ...]]:
+    """A real admitted publication interrupted before its markers (the frontier-churn HOLD
+    of M167), and then, unless ``edit_note`` is false, a legitimate note edit (M166)."""
+
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def interrupt(phase: str, _index: int | None) -> None:
+        if phase == "before_activation_projection":
+            raise RuntimeError("simulated HOLD after the note, epoch and dispatch")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=tmp_path / "receipts",
+            lock_root=fixture.locks,
+            now=active.checked_at,
+            failure_hook=interrupt,
+        )
+    journal = fixture.transactions / admitted_claim_publication_id(
+        fixture.intent, active.consumption
+    )
+    _intent, projections, _id, state, _consumption = sdlc_claim._load_admitted_manifest(
+        journal / "manifest.json"
+    )
+    assert state == "recovery_required"
+    if edit_note:
+        note = fixture.intent.note_path
+        note.write_bytes(note.read_bytes().replace(b"Body remains", b"Edited. Body remains"))
+    return fixture, journal, projections
+
+
+def _release_held(fixture: ClaimFixture) -> object:
+    return sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at=_RELEASE_STAMP,
+    )
+
+
+def _residue_projections(projections: tuple[object, ...]) -> list[object]:
+    return [
+        item
+        for item in projections[:7]
+        if item.path.name.startswith(("cc-claim-epoch-", "cc-claim-dispatch-"))
+    ]
+
+
+def test_release_quarantines_a_held_publication_and_archives_its_residue(
+    tmp_path: Path,
+) -> None:
+    fixture, journal, projections = _held_publication(tmp_path)
+    note_before = fixture.intent.note_path.read_bytes()
+    residue = _residue_projections(projections)
+    assert residue and all(item.path.read_bytes() == item.after for item in residue)
+
+    released = _release_held(fixture)
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+    quarantined = journal.with_name(f"{journal.name}.quarantined-{_RELEASE_STAMP}")
+    assert (quarantined / "manifest.json").is_file()
+    assert fixture.intent.note_path.read_bytes() == note_before
+    assert not any(item.path.exists() for item in residue)
+    for item in residue:
+        assert (released.archive_dir / item.path.name).read_bytes() == item.after
+    assert released.archive_dir.parent == fixture.vault / "_lineage" / "task-alpha"
+    # The quarantined journal is the completed remedy: recovery no longer holds on it.
+    assert (
+        recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            task_id="task-alpha",
+        )
+        == ()
+    )
+
+
+def test_release_refuses_a_held_publication_that_recovery_can_still_finish(
+    tmp_path: Path,
+) -> None:
+    fixture, journal, _projections = _held_publication(tmp_path, edit_note=False)
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_recoverable" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_held_publication_with_a_live_marker(tmp_path: Path) -> None:
+    fixture, _journal, projections = _held_publication(tmp_path)
+    marker = next(item for item in projections[:7] if item.path.name.startswith("cc-active-task-"))
+    marker.path.write_bytes(marker.after)
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_live_marker" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_held_publication_whose_residue_differs(tmp_path: Path) -> None:
+    fixture, _journal, projections = _held_publication(tmp_path)
+    epoch = next(item for item in projections[:7] if item.path.name.startswith("cc-claim-epoch-"))
+    epoch.path.write_bytes(b"1 task-alpha\n")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_hash_mismatch" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_held_publication_whose_admission_proof_drifted(
+    tmp_path: Path,
+) -> None:
+    fixture, _journal, projections = _held_publication(tmp_path)
+    proof = projections[7]
+    proof.path.write_bytes(proof.after + b" ")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_drift" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_held_publication_while_another_session_holds_the_task(
+    tmp_path: Path,
+) -> None:
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    (fixture.cache / "cc-active-task-cx-red-session-xyz").write_text("task-alpha\n")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_live_marker" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_touches_only_the_cache_its_journal_projected_into(tmp_path: Path) -> None:
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    other_cache = tmp_path / "other-cache"
+    other_cache.mkdir()
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        sdlc_claim.release_claim_residue(
+            vault_root=fixture.vault,
+            cache_dir=other_cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            role="cx-red",
+            task_id="task-alpha",
+            observed_at=_RELEASE_STAMP,
+        )
+
+    assert "claim_residue_foreign_path" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+class _Killed(BaseException):
+    """A process kill: nothing after it runs, not even the journal's failure bookkeeping."""
+
+
+def test_release_refuses_a_journal_that_is_unfinished_but_not_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_persist = sdlc_claim._persist_admitted_manifest_state
+
+    def killed_before_recording_the_failure(*args: object, **kwargs: object) -> None:
+        if kwargs.get("state") == "recovery_required":
+            raise _Killed
+        original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sdlc_claim, "_persist_admitted_manifest_state", killed_before_recording_the_failure
+    )
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def interrupt(phase: str, _index: int | None) -> None:
+        if phase == "before_activation_projection":
+            raise RuntimeError("interrupted before the markers")
+
+    with pytest.raises(_Killed):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=tmp_path / "receipts",
+            lock_root=fixture.locks,
+            now=active.checked_at,
+            failure_hook=interrupt,
+        )
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_manifest_state", original_persist)
+    note = fixture.intent.note_path
+    note.write_bytes(note.read_bytes().replace(b"Body remains", b"Edited. Body remains"))
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_journal_not_held" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_stamp_outside_the_quarantine_grammar(tmp_path: Path) -> None:
+    fixture, journal, _projections = _held_publication(tmp_path)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        sdlc_claim.release_claim_residue(
+            vault_root=fixture.vault,
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            role="cx-red",
+            task_id="task-alpha",
+            observed_at="2026-09-27 01:00",
+        )
+
+    assert "claim_residue_stamp_invalid" in raised.value.message
+    assert journal.exists()
+
+
+def test_release_of_a_held_publication_finishes_after_an_interrupted_archive(
+    tmp_path: Path,
+) -> None:
+    # A rerun after a crash mid-archive: residue already archived is absent, the rest is
+    # archived, and the journal is quarantined.
+    fixture, journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    first.path.unlink()
+
+    released = _release_held(fixture)
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+    assert not any(item.path.exists() for item in _residue_projections(projections))

@@ -162,11 +162,41 @@ Record why the fallback was used in the task session log or relay status. The
 verification proves only a legacy claim write; it is not admitted-publication
 evidence.
 
+## Governed Release Of Claim Residue
+
+A role wedged by its own claim residue releases it itself, without operator scripts:
+
+```bash
+cc-claim --release-claim-residue <task-id>
+```
+
+Name the task the residue names; the claim HOLD prints the exact command. The release acts
+only on the calling role's residue for that task. Every file it touches must equal the
+after-image of a claim-publication journal of that role and task, and must be one of that
+journal's own session sidecars. It holds the role's publication lock, archives each file by
+verified copy into `_lineage/<task-id>/claim-residue-release-<stamp>-<role>/` (with a README),
+never deletes, and never touches the task note. It covers three shapes:
+
+| Shape | What is left | What the release does |
+|-------|--------------|-----------------------|
+| `held_publication` (M166, M167) | A `recovery_required` journal whose note has moved past both of its images, so recovery holds on a projection conflict. Epoch and dispatch sidecars exist; the markers were never written. | Archives the sidecars, then quarantines the journal in place as `claim-pub-<sha>.quarantined-<stamp>`. |
+| `lapsed_lease` (M168) | Epoch and dispatch sidecars with no `cc-active-task-*` marker; the next claim holds on `claim_cache_missing`. | Archives the sidecars. |
+| `closed_task` (M173) | Markers, epochs and dispatch naming a row that another process closed (it is terminal and absent from `active/`); the next claim holds on `claim_task_mismatch`. | Archives all six sidecars. |
+
+It refuses, with exit 8 and a named `claim_residue_*` reason, before the first mutation:
+- on a live claim (a marker naming a task that is not closed, or another session's marker for it);
+- on a sidecar that differs from the journal;
+- on a journal that recovery can still finish, or whose admission evidence drifted;
+- when the calling role has no journal for the task.
+
+A released row whose note still reads `claimed` by the role stays that way; the release never
+edits it.
+
 ## Manual Stale-Lease Release
 
-Governed release is scheduled for a later Gate-0B slice. Until then, use this
-manual procedure only with operator approval when a stale claim HOLD names an
-exact `cc-active-task-*` path:
+Use this manual procedure only with operator approval, and only for the shape the governed release
+refuses: an **expired** claim HOLD (exit 7) that names an exact `cc-active-task-*` path whose task
+is still live. For the three shapes above, use `cc-claim --release-claim-residue` instead.
 
 ```bash
 set -euo pipefail

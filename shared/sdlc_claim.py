@@ -4941,17 +4941,18 @@ _CLAIM_PUBLICATION_DIRECTORY_RE = re.compile(r"^claim-pub-[0-9a-f]{64}$")
 #: stamp. Tightening it requires first giving the estate a quarantine *verb* —
 #: filed separately, not assumed here.
 #:
-#: "No code produces this name" is the SOLE rationale for a deliberately loose pattern that
-#: skips inspection, so it is recheckable rather than asserted. From the repo root::
+#: The verb now exists: :func:`release_claim_residue` (2026-09-27) quarantines a held journal
+#: as ``.quarantined-YYYYMMDDTHHMMSSZ``, and it is the only producer. Recheck from the repo
+#: root::
 #:
 #:     rg -n 'quarantined-' --glob '!*.md' -- scripts shared agents hooks
 #:
-#: Expected as of 2026-09-15, and stated so the output DECIDES something rather than merely
-#: printing: four hits in this file (this comment and the pattern itself) plus exactly one
-#: unrelated hit, ``scripts/hapax-audio-topology`` returning the audio-domain constant
-#: ``"quarantined-declared-inactive"``. **No hit renames, creates or otherwise emits a
-#: ``claim-pub-<sha>.quarantined-<stamp>`` directory.** If that ever changes, this pattern can
-#: and should be tightened to the grammar the new producer emits.
+#: Expected: the hits in this file (this comment, the pattern, and the release's rename and
+#: docstring) plus one unrelated hit, ``scripts/hapax-audio-topology`` returning the
+#: audio-domain constant ``"quarantined-declared-inactive"``. The pattern stays loose anyway.
+#: Hand-applied names of the older shapes above remain on disk, on hosts that cannot all be
+#: inspected from one checkout. Tightening it to the producer's grammar would turn those into
+#: holds. That is a separate decision, taken only after an inventory of every host's roots.
 _CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE = re.compile(
     r"^claim-pub-[0-9a-f]{64}\.quarantined-\S+$"
 )
@@ -6355,6 +6356,411 @@ def archive_dispatch_only_claim_residue(
     return archived
 
 
+@dataclass(frozen=True)
+class ClaimResidueRelease:
+    """What one governed release of a role's claim residue did."""
+
+    shape: Literal["held_publication", "lapsed_lease", "closed_task"]
+    publication_id: str
+    archive_dir: Path
+    archived: tuple[Path, ...]
+    quarantined_journal: Path | None
+
+
+@dataclass(frozen=True)
+class _RoleTaskJournal:
+    manifest_path: Path
+    intent: ClaimPublicationIntent
+    projections: tuple[FileProjection, ...]
+    publication_id: str
+    state: str
+
+
+_RELEASE_STAMP_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z$")
+
+
+def _release_hold(reason_code: str, detail: str, next_action: str) -> ClaimResidueArchiveHold:
+    return ClaimResidueArchiveHold(f"HOLD - {reason_code}: {detail}. Next action: {next_action}.")
+
+
+def _role_task_journals(
+    transaction_root: Path, *, role: str, task_id: str
+) -> list[_RoleTaskJournal]:
+    root = _normalized(transaction_root)
+    if not root.is_dir():
+        return []
+    journals: list[_RoleTaskJournal] = []
+    for entry in sorted(root.iterdir(), key=lambda path: path.name):
+        if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(entry.name) is None:
+            continue  # quarantined journals are already released
+        try:
+            intent, projections, publication_id, state, _consumption = _load_any_manifest(
+                entry / "manifest.json"
+            )
+        except ClaimPublicationError:
+            continue  # an unreadable journal proves nothing about this role; recovery reports it
+        if intent.role == role and intent.task_id == task_id and entry.name == publication_id:
+            journals.append(
+                _RoleTaskJournal(
+                    entry / "manifest.json", intent, projections, publication_id, state
+                )
+            )
+    return journals
+
+
+def _journal_residue(journal: _RoleTaskJournal, cache_dir: Path) -> tuple[FileProjection, ...]:
+    """The journal's live projections other than the note. Each must be one of the six
+    sidecars of the journal's own role and session in ``cache_dir``: nothing else is touched."""
+
+    cache = _normalized(cache_dir)
+    keys = (journal.intent.role, f"{journal.intent.role}-{journal.intent.session_id}")
+    allowed = {
+        name
+        for key in keys
+        for name in (
+            f"cc-active-task-{key}",
+            f"cc-claim-epoch-{key}",
+            f"cc-claim-dispatch-{key}.json",
+        )
+    }
+    note_path = _normalized(journal.intent.note_path)
+    residue: list[FileProjection] = []
+    for projection in journal.projections[:7]:
+        if projection.path == note_path:
+            continue
+        if projection.path.parent != cache or projection.path.name not in allowed:
+            raise _release_hold(
+                "claim_residue_foreign_path",
+                f"{journal.publication_id} projects {projection.path}",
+                "preserve the journal and inspect it; a release acts only on the sidecars of "
+                "the journal's own role and session",
+            )
+        residue.append(projection)
+    return tuple(residue)
+
+
+def _residue_state(projection: FileProjection) -> Literal["absent", "after", "other"]:
+    try:
+        content, mode = _file_state(projection.path)
+    except LifecycleTransitionError:
+        return "other"
+    if content is None:
+        return "absent"
+    return "after" if (content, mode) == (projection.after, projection.after_mode) else "other"
+
+
+def _other_live_markers(
+    cache_dir: Path, role: str, task_id: str, residue: Sequence[FileProjection]
+) -> list[Path]:
+    """Markers of this role naming the task that the journal does not account for: another
+    session's live claim, which a release must never take."""
+
+    own = {projection.path for projection in residue}
+    hits: list[Path] = []
+    for path in sorted(_normalized(cache_dir).iterdir()):
+        if path in own or not (
+            path.name == f"cc-active-task-{role}" or path.name.startswith(f"cc-active-task-{role}-")
+        ):
+            continue
+        try:
+            named = path.read_text(encoding="utf-8").splitlines()[:1]
+        except (OSError, UnicodeError):
+            continue
+        if named == [task_id]:
+            hits.append(path)
+    return hits
+
+
+def _task_in_active(vault_root: Path, task_id: str) -> bool:
+    active = vault_root / "active"
+    return (active / f"{task_id}.md").exists() or any(
+        candidate.name.startswith(f"{task_id}-") and candidate.suffix == ".md"
+        for candidate in (active.iterdir() if active.is_dir() else ())
+    )
+
+
+def _archive_verified(projection: FileProjection, archive_dir: Path) -> Path:
+    """Copy one residue file into ``archive_dir``, verify the copy against the journal's
+    after-image, and only then remove the original."""
+
+    destination = archive_dir / projection.path.name
+    scratch = archive_dir / f".copying-{projection.path.name}"
+    if destination.exists() or destination.is_symlink() or scratch.exists():
+        raise _release_hold(
+            "claim_residue_archive_collision",
+            f"{destination} already exists",
+            "preserve both files and inspect the lineage directory before retrying",
+        )
+    if _residue_state(projection) != "after":
+        raise _release_hold(
+            "claim_residue_hash_mismatch",
+            f"{projection.path} changed during the release",
+            "preserve the sidecar and rerun the release once it is stable",
+        )
+    if projection.after is None or projection.after_mode is None:
+        raise _release_hold(
+            "claim_residue_hash_mismatch",
+            f"{projection.path} has no after-image in its journal",
+            "preserve the sidecar and inspect the journal",
+        )
+    fd = os.open(
+        scratch, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+    )
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(projection.after)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(scratch, projection.after_mode)
+    os.rename(scratch, destination)
+    if destination.read_bytes() != projection.after:
+        raise _release_hold(
+            "claim_residue_archive_unverified",
+            f"{destination} does not equal the journal's after-image",
+            "preserve both files; the original sidecar was not removed",
+        )
+    projection.path.unlink()
+    return destination
+
+
+def _archive_residue(
+    present: Sequence[FileProjection],
+    *,
+    journal: _RoleTaskJournal,
+    vault_root: Path,
+    shape: str,
+    observed_at: str,
+) -> tuple[Path, tuple[Path, ...]]:
+    intent = journal.intent
+    archive_dir = (
+        vault_root
+        / "_lineage"
+        / _safe_lineage_component(intent.task_id)
+        / f"claim-residue-release-{observed_at}-{_safe_lineage_component(intent.role)}"
+    )
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archived = tuple(_archive_verified(projection, archive_dir) for projection in present)
+    lines = [
+        "Governed release of claim residue (cc-claim --release-claim-residue).",
+        f"shape: {shape}",
+        f"task_id: {intent.task_id}",
+        f"role: {intent.role}",
+        f"session_id: {intent.session_id}",
+        f"publication_id: {journal.publication_id}",
+        f"released_at: {observed_at}",
+        "archived (sha256 equals the journal's after-image):",
+        *(
+            f"  - {projection.path} sha256:{_sha256(projection.after or b'')}"
+            for projection in present
+        ),
+    ]
+    (archive_dir / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return archive_dir, archived
+
+
+def _release_held_publication(
+    journal: _RoleTaskJournal, *, cache_dir: Path, vault_root: Path, observed_at: str
+) -> ClaimResidueRelease:
+    task_id = journal.intent.task_id
+    if journal.state != "recovery_required":
+        raise _release_hold(
+            "claim_residue_journal_not_held",
+            f"{journal.publication_id} is {journal.state}",
+            f"run `cc-claim --recover-claim-publications {task_id}`; only a recovery_required "
+            "journal is released",
+        )
+    note_path = _normalized(journal.intent.note_path)
+    note = next(item for item in journal.projections[:7] if item.path == note_path)
+    try:
+        note_state = _file_state(note.path)
+    except LifecycleTransitionError:
+        note_state = (b"", None)
+    if note_state in {(note.after, note.after_mode), (note.before, note.before_mode)}:
+        raise _release_hold(
+            "claim_residue_recoverable",
+            f"the note of {journal.publication_id} is still at one of its journal images, so "
+            "recovery can finish the publication",
+            f"run `cc-claim --recover-claim-publications {task_id}`",
+        )
+    residue = _journal_residue(journal, cache_dir)
+    present: list[FileProjection] = []
+    for projection in residue:
+        state = _residue_state(projection)
+        if _is_claim_activation_projection(projection):
+            if state != "absent":
+                raise _release_hold(
+                    "claim_residue_live_marker",
+                    f"{projection.path} exists, so this publication reached its markers",
+                    "treat the claim as live: finish it and run cc-close",
+                )
+        elif state == "other":
+            raise _release_hold(
+                "claim_residue_hash_mismatch",
+                f"{projection.path} differs from the after-image of {journal.publication_id}",
+                "preserve the sidecar; it belongs to another claim",
+            )
+        elif state == "after":
+            present.append(projection)
+    drifted = [
+        str(item.path) for item in journal.projections[7:] if _residue_state(item) != "after"
+    ]
+    if drifted:
+        raise _release_hold(
+            "claim_residue_projection_drift",
+            f"admission projections of {journal.publication_id} left their after-image: "
+            + ", ".join(drifted),
+            "preserve the journal and inspect the drifted admission evidence",
+        )
+    if others := _other_live_markers(cache_dir, journal.intent.role, task_id, residue):
+        raise _release_hold(
+            "claim_residue_live_marker",
+            f"{others[0]} names {task_id}",
+            "treat the claim as live: finish it and run cc-close",
+        )
+    journal_dir = journal.manifest_path.parent
+    quarantined = journal_dir.with_name(f"{journal_dir.name}.quarantined-{observed_at}")
+    if quarantined.exists() or quarantined.is_symlink():
+        raise _release_hold(
+            "claim_residue_quarantine_exists",
+            f"{quarantined} already exists",
+            "preserve both journals and inspect them",
+        )
+    archive_dir, archived = _archive_residue(
+        present,
+        journal=journal,
+        vault_root=vault_root,
+        shape="held_publication",
+        observed_at=observed_at,
+    )
+    os.rename(journal_dir, quarantined)
+    return ClaimResidueRelease(
+        "held_publication", journal.publication_id, archive_dir, archived, quarantined
+    )
+
+
+def _release_applied_residue(
+    journals: Sequence[_RoleTaskJournal],
+    *,
+    cache_dir: Path,
+    vault_root: Path,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    candidates: list[tuple[_RoleTaskJournal, tuple[FileProjection, ...], list[FileProjection]]] = []
+    mismatched = False
+    for journal in journals:
+        residue = _journal_residue(journal, cache_dir)
+        states = [_residue_state(projection) for projection in residue]
+        if "other" in states:
+            mismatched = True
+            continue
+        present = [item for item, state in zip(residue, states, strict=True) if state == "after"]
+        if present:
+            candidates.append((journal, residue, present))
+    if not candidates:
+        if mismatched:
+            raise _release_hold(
+                "claim_residue_hash_mismatch",
+                f"the role's sidecars for {task_id} differ from every applied journal's "
+                "after-image",
+                "preserve the sidecars; they belong to another claim",
+            )
+        raise _release_hold(
+            "claim_residue_none",
+            f"no residue of this role remains for {task_id}",
+            "nothing to release; rerun cc-claim",
+        )
+    if len(candidates) > 1:
+        raise _release_hold(
+            "claim_residue_ambiguous",
+            f"{len(candidates)} applied journals match the residue for {task_id}",
+            "preserve the sidecars and inspect the journals",
+        )
+    journal, residue, present = candidates[0]
+    if others := _other_live_markers(cache_dir, journal.intent.role, task_id, residue):
+        raise _release_hold(
+            "claim_residue_live_marker",
+            f"{others[0]} names {task_id}",
+            "treat the claim as live: finish it and run cc-close",
+        )
+    shape: Literal["lapsed_lease", "closed_task"] = "lapsed_lease"
+    if any(_is_claim_activation_projection(projection) for projection in present):
+        status = _task_status_for_any_state(vault_root, task_id)
+        if status not in TASK_TERMINAL_STATUSES or _task_in_active(vault_root, task_id):
+            raise _release_hold(
+                "claim_residue_live_marker",
+                f"a marker names {task_id}, which is {status}",
+                "treat the claim as live: finish it and run cc-close",
+            )
+        shape = "closed_task"
+    archive_dir, archived = _archive_residue(
+        present, journal=journal, vault_root=vault_root, shape=shape, observed_at=observed_at
+    )
+    return ClaimResidueRelease(shape, journal.publication_id, archive_dir, archived, None)
+
+
+def release_claim_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    role: str,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    """Release one role's claim residue for one task: the governed form of the operator
+    scripts that M166-M173 needed.
+
+    It acts only on files a journal of (``role``, ``task_id``) projected, only when each equals
+    that journal's after-image, and only under the role's publication lock. It never touches
+    the task note, never deletes (each file is archived by verified copy into
+    ``_lineage/<task>/``), and never touches another role's or session's files. Shapes:
+
+    - ``held_publication``: a ``recovery_required`` journal whose note has moved past both of
+      its images. Its markers are absent and its admission evidence is intact. The residue is
+      archived and the journal is quarantined in place as ``<id>.quarantined-<observed_at>``.
+    - ``lapsed_lease``: markers absent; the residue matches an applied journal.
+    - ``closed_task``: markers present, but the task is terminal and absent from ``active/``
+      (it was closed from another process).
+
+    Anything else raises :class:`ClaimResidueArchiveHold` before the first mutation.
+    """
+
+    if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
+        raise _release_hold(
+            "claim_residue_stamp_invalid",
+            f"{observed_at!r} is not YYYYMMDDTHHMMSSZ",
+            "pass the UTC release time in that form",
+        )
+    journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+    if not journals:
+        raise _release_hold(
+            "claim_residue_no_journal",
+            f"no claim-publication journal of {role} for {task_id}",
+            "run the release as the role that claimed the task, naming the task its residue names",
+        )
+    with _claim_publication_lock(journals[0].intent, lock_root=lock_root):
+        journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+        unfinished = [item for item in journals if item.state not in {"applied", "aborted"}]
+        if len(unfinished) > 1:
+            raise _release_hold(
+                "claim_residue_ambiguous",
+                f"{len(unfinished)} unfinished journals of {role} for {task_id}",
+                f"run `cc-claim --recover-claim-publications {task_id}` and inspect what holds",
+            )
+        if unfinished:
+            return _release_held_publication(
+                unfinished[0], cache_dir=cache_dir, vault_root=vault_root, observed_at=observed_at
+            )
+        return _release_applied_residue(
+            [item for item in journals if item.state == "applied"],
+            cache_dir=cache_dir,
+            vault_root=vault_root,
+            task_id=task_id,
+            observed_at=observed_at,
+        )
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -6371,6 +6777,7 @@ __all__ = [
     "ClaimPublicationReceipt",
     "ClaimPublicationRecoveryResult",
     "ClaimResidueArchiveHold",
+    "ClaimResidueRelease",
     "admitted_claim_publication_id",
     "archive_dispatch_only_claim_residue",
     "admitted_claim_publication_id",
@@ -6385,6 +6792,7 @@ __all__ = [
     "inspect_claim_publications",
     "recover_claim_publications",
     "rehydrate_applied_activation_projections",
+    "release_claim_residue",
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
     "resolve_claim_publication_admission_provenance",
