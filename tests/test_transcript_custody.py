@@ -318,6 +318,8 @@ def _cli_env(tmp_path: Path, home: Path) -> dict[str, str]:
         RESTIC_PASSWORD="test-only",
         RESTIC_CACHE_DIR=str(tmp_path / "cache"),
         PYTHONPATH=str(_REPO),
+        HAPAX_TRANSCRIPT_WINDOWS_PULLER="",  # no Windows pull unless a test asks for one
+        HAPAX_TRANSCRIPT_WINDOWS_HOSTS="",
     )
 
 
@@ -577,3 +579,350 @@ def test_real_restic_round_trip(tmp_path: Path) -> None:
     ]
     failures = tc.verify([], tc.count_snapshot(bad_nodes, [link]), snapshot_targets=bad["paths"])
     assert any(f.startswith("symlink:") for f in failures), failures
+
+
+# --- Windows hosts, pulled over SSH (row transcript-custody-windows-hosts-20260927) ---
+
+# A stand-in for `ssh <options> <host> powershell ... -EncodedCommand <b64>`. It decodes the PowerShell. An inventory
+# script is answered from FAKE_PROFILE_<host> as the real one would. A tar script streams a real tar of the named
+# paths, honouring --exclude unless the host's mode is "leak". Mode "unreachable" exits 255, as ssh does with no
+# connection; mode "cut" writes part of the stream, then exits 1.
+_FAKE_SSH = r"""#!/usr/bin/env python3
+import base64, fnmatch, json, os, re, sys, tarfile
+args = sys.argv[1:]
+i = 0
+while args[i] == "-o":
+    i += 2
+host, rest = args[i], args[i + 1:]
+key = host.replace("-", "_")
+mode = os.environ.get("FAKE_SSH_MODE_" + key, "ok")
+with open(os.environ["FAKE_SSH_LOG"], "a") as log:
+    log.write(host + "\n")
+if mode == "unreachable":
+    sys.exit(255)
+if mode == "denied":
+    sys.stderr.write(host + ": Permission denied (publickey).\n")
+    sys.exit(255)
+script = base64.b64decode(rest[rest.index("-EncodedCommand") + 1]).decode("utf-16-le")
+profile = os.environ["FAKE_PROFILE_" + key]
+quoted = lambda text: [q.replace("''", "'") for q in re.findall(r"'((?:[^']|'')*)'", text)]
+if "tar.exe" in script:
+    excludes = [] if mode == "leak" else quoted(" ".join(re.findall(r"--exclude '(?:[^']|'')*'", script)))
+    names = quoted(script.split("-C $env:USERPROFILE", 1)[1])
+    out = tarfile.open(fileobj=sys.stdout.buffer, mode="w|")
+    keep = lambda ti: None if any(fnmatch.fnmatch(os.path.basename(ti.name), p) for p in excludes) else ti
+    for n, name in enumerate(names):
+        out.add(os.path.join(profile, name), arcname=name, filter=keep)
+        if mode == "cut" and n == 0:
+            sys.stdout.buffer.flush()
+            sys.exit(1)
+    out.close()
+    sys.exit(0)
+rels = quoted(script.split("foreach ($r in @(", 1)[1].split(")", 1)[0])
+rows = []
+for rel in rels:
+    for full in sorted(__import__("glob").glob(os.path.join(profile, rel))):
+        name = os.path.relpath(full, profile).replace(os.sep, "/")
+        if os.path.isdir(full) and not os.path.islink(full):
+            files = sum(len(f) for _, _, f in os.walk(full))
+            rows.append({"rel": name, "kind": "dir", "files": files, "reparse": False})
+        else:
+            rows.append({"rel": name, "kind": "file", "files": 1, "reparse": os.path.islink(full)})
+print(json.dumps(rows[0] if len(rows) == 1 else rows))
+"""
+
+
+def _windows_env(tmp_path: Path, **modes: str) -> tuple[dict[str, str], Path]:
+    """A CLI environment in which this host pulls one Windows host, "win-a", through the fake ssh."""
+
+    import socket
+    import sys
+
+    home = _home(tmp_path)
+    profile = tmp_path / "win-a-profile"
+    (profile / ".claude/projects/p1").mkdir(parents=True)
+    for i in range(4):
+        (profile / f".claude/projects/p1/s{i}.jsonl").write_text('{"type":"user"}\n')
+    (profile / ".claude/history.jsonl").write_text("{}\n")
+    (profile / ".claude/.credentials.json").write_text('{"token":"not-a-real-secret"}')
+    (profile / ".grok/sessions/g1").mkdir(parents=True)
+    (profile / ".grok/sessions/g1/updates.jsonl").write_text("{}\n")
+    # Inside a streamed path, so only the by-name exclusion keeps it out of the snapshot.
+    (profile / ".grok/sessions/g1/auth.json").write_text('{"token":"not-a-real-secret"}')
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "ssh"
+    fake.write_text(_FAKE_SSH.replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1))
+    fake.chmod(0o755)
+    env = _cli_env(tmp_path, home)
+    env.update(
+        PATH=f"{bin_dir}:{os.environ['PATH']}",
+        HAPAX_TRANSCRIPT_WINDOWS_PULLER=socket.gethostname(),
+        HAPAX_TRANSCRIPT_WINDOWS_HOSTS="win-a",
+        FAKE_PROFILE_win_a=str(profile),
+        FAKE_SSH_LOG=str(tmp_path / "ssh.log"),
+        **{f"FAKE_SSH_MODE_{k}": v for k, v in modes.items()},
+    )
+    subprocess.run(["restic", "init"], env=env, capture_output=True, check=True, timeout=120)
+    return env, profile
+
+
+def _win_snapshots(env: dict[str, str]) -> list[dict]:
+    out = subprocess.run(
+        ["restic", "snapshots", "--json", "--host", "win-a", "--tag", tc.SNAPSHOT_TAG],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    ).stdout
+    return json.loads(out) or []
+
+
+_needs_restic = pytest.mark.skipif(shutil.which("restic") is None, reason="restic is not installed")
+
+
+@_needs_restic
+def test_windows_pull_backs_up_and_verifies_without_the_credential(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, _ = _windows_env(tmp_path)
+    backup = _cli(env, "backup")
+    assert backup.returncode == 0, backup.stderr
+    (snap,) = _win_snapshots(env)
+    assert snap["hostname"] == "win-a" and snap["paths"] == ["/win-a-transcripts.tar"]
+    result = _cli(env, "verify")
+    assert result.returncode == 0, result.stderr
+    assert "win-a snapshot" in result.stdout and "holds every transcript path" in result.stdout
+    assert "4 files" in result.stdout and "win-a:~/.claude/projects" in result.stdout
+
+
+@_needs_restic
+def test_windows_credential_in_the_stream_fails_verify(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, _ = _windows_env(tmp_path, win_a="leak")
+    assert _cli(env, "backup").returncode == 0
+    result = _cli(env, "verify")
+    assert result.returncode == 1
+    assert "win-a: credential:" in result.stderr and "g1/auth.json" in result.stderr
+
+
+@_needs_restic
+def test_windows_cut_stream_fails_the_backup_and_saves_no_snapshot(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, _ = _windows_env(tmp_path, win_a="cut")
+    result = _cli(env, "backup")
+    assert result.returncode == 1
+    assert "restic backup of win-a exited" in result.stderr
+    assert _win_snapshots(env) == []
+
+
+@_needs_restic
+def test_windows_unreachable_is_reported_then_fails_only_when_stale(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, profile = _windows_env(tmp_path)
+    assert _cli(env, "backup").returncode == 0
+    env["FAKE_SSH_MODE_win_a"] = "unreachable"
+    asleep = _cli(env, "backup")
+    assert asleep.returncode == 0, asleep.stderr  # a sleeping host is not a failure tonight
+    assert "win-a is unreachable" in asleep.stderr
+    fresh = _cli(env, "verify")
+    assert fresh.returncode == 0, fresh.stderr
+    assert "the snapshot's own listing" in fresh.stdout
+
+    # Only an old snapshot: stale past the bound.
+    env2, _ = _windows_env(tmp_path / "old")
+    rels = [".claude/projects", ".claude/history.jsonl", ".grok/sessions"]
+    args = tc.windows_backup_args("win-a", rels)
+    cut = args.index("--")
+    old = [*args[:cut], "--time", "2020-01-01 04:15:00", *args[cut:]]
+    subprocess.run(["restic", *old], env=env2, capture_output=True, check=True, timeout=120)
+    assert (
+        _cli({**env2, "HAPAX_TRANSCRIPT_WINDOWS_HOSTS": ""}, "backup").returncode == 0
+    )  # local only
+    env2["FAKE_SSH_MODE_win_a"] = "unreachable"
+    stale = _cli(env2, "verify")
+    assert stale.returncode == 1
+    assert "win-a: stale:" in stale.stderr
+
+
+@_needs_restic
+def test_windows_nested_symlink_and_drop_fail_verify(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, profile = _windows_env(tmp_path)
+    assert _cli(env, "backup").returncode == 0
+    for i in range(1, 4):  # 4 files -> 1: more than half lost
+        (profile / f".claude/projects/p1/s{i}.jsonl").unlink()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (profile / ".claude/projects/p2").symlink_to(elsewhere)
+    assert _cli(env, "backup").returncode == 0
+    result = _cli(env, "verify")
+    assert result.returncode == 1
+    assert "win-a: dropped:" in result.stderr and "win-a: nested symlink:" in result.stderr
+
+
+@_needs_restic
+def test_windows_refused_ssh_is_a_failure_not_a_quiet_night(tmp_path: Path) -> None:
+    """ssh exits 255 for a sleeping host and for a refused key alike; a refusal will not heal, so it fails now."""
+
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, _ = _windows_env(tmp_path, win_a="denied")
+    result = _cli(env, "backup")
+    assert result.returncode == 1
+    assert "win-a refused the connection (Permission denied)" in result.stderr
+    assert "next action" in result.stderr
+
+
+@_needs_restic
+def test_windows_reachable_host_with_no_transcripts_fails_backup(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, profile = _windows_env(tmp_path)
+    assert _cli(env, "backup").returncode == 0
+    shutil.rmtree(profile / ".claude")
+    shutil.rmtree(profile / ".grok")
+    result = _cli(env, "backup")
+    assert result.returncode == 1
+    assert "win-a is reachable but holds no transcript path" in result.stderr
+
+
+@_needs_restic
+def test_windows_harness_path_that_vanishes_fails_verify(tmp_path: Path) -> None:
+    if not _on_own_mount(tmp_path):
+        pytest.skip("the temp directory is on the root filesystem, which the CLI rightly refuses")
+    env, profile = _windows_env(tmp_path)
+    assert _cli(env, "backup").returncode == 0
+    shutil.rmtree(profile / ".grok")
+    assert _cli(env, "backup").returncode == 0
+    result = _cli(env, "verify")
+    assert result.returncode == 1
+    assert "win-a: harness path dropped: /.grok/sessions" in result.stderr
+
+
+def test_windows_pull_runs_only_on_the_named_puller(tmp_path: Path) -> None:
+    env, _ = _windows_env_without_restic(tmp_path)
+    env["HAPAX_TRANSCRIPT_WINDOWS_PULLER"] = "some-other-host"
+    result = _cli(env, "backup", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert len(result.stdout.strip().splitlines()) == 1  # the local command only
+    assert not (tmp_path / "ssh.log").exists()
+
+
+def _windows_env_without_restic(tmp_path: Path) -> tuple[dict[str, str], Path]:
+    real = shutil.which("restic")
+    if real is None:
+        pytest.skip("restic is not installed")
+    return _windows_env(tmp_path)
+
+
+def test_parse_windows_inventory() -> None:
+    one = tc.parse_windows_inventory(
+        "h", '{"rel": ".claude/projects", "kind": "dir", "files": 3, "reparse": false}'
+    )
+    assert [(p.real, p.kind, p.declared) for p in one.paths] == [
+        ("/.claude/projects", "dir", "h:~/.claude/projects")
+    ]
+    many = tc.parse_windows_inventory(
+        "h",
+        json.dumps(
+            [
+                {"rel": ".grok/sessions", "kind": "dir", "files": 1, "reparse": True},
+                {"rel": ".grok/downloads", "kind": "dir", "files": 1, "reparse": False},
+                {
+                    "rel": ".codex/thread_history_1.sqlite",
+                    "kind": "file",
+                    "files": 1,
+                    "reparse": False,
+                },
+            ]
+        ),
+    )
+    assert [p.real for p in many.paths] == ["/.codex/thread_history_1.sqlite"]
+    assert any(p.startswith("symlink: h:~/.grok/sessions") for p in many.problems)
+    assert any("matches no path in the table" in p for p in many.problems)
+    assert tc.parse_windows_inventory("h", "").paths == []
+
+
+def test_windows_scripts_and_tar_nodes() -> None:
+    import base64
+    import io
+    import tarfile
+
+    with pytest.raises(ValueError):
+        tc.windows_tar_script([])
+    script = tc.windows_tar_script([".claude/projects", "odd'name"])
+    assert "--exclude '.credentials.json'" in script and "--exclude 'auth.json'" in script
+    assert "'odd''name'" in script and script.rstrip().endswith("exit $LASTEXITCODE")
+    cmd = tc.encoded_powershell(script)
+    assert base64.b64decode(cmd[-1]).decode("utf-16-le") == script
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, kind in (
+            ("d", tarfile.DIRTYPE),
+            ("d/f", tarfile.REGTYPE),
+            ("d/l", tarfile.SYMTYPE),
+        ):
+            info = tarfile.TarInfo(name)
+            info.type = kind
+            tar.addfile(info)
+        hard = tarfile.TarInfo("d/h")
+        hard.type, hard.linkname = tarfile.LNKTYPE, "d/f"
+        tar.addfile(hard)
+    buf.seek(0)
+    nodes = tc.tar_nodes(tarfile.open(fileobj=buf, mode="r"))
+    assert [(n["path"], n["type"]) for n in nodes] == [
+        ("/d", "dir"),
+        ("/d/f", "file"),
+        ("/d/l", "symlink"),
+        ("/d/h", "file"),
+    ]
+
+
+@pytest.mark.skipif(shutil.which("bsdtar") is None, reason="bsdtar (libarchive) is not installed")
+def test_real_bsdtar_honours_the_generated_excludes_at_any_depth(tmp_path: Path) -> None:
+    """Windows' tar.exe is libarchive's bsdtar. Run the same engine with exactly the --exclude arguments that
+    windows_tar_script generates, over credentials nested inside streamed paths: none may reach the stream."""
+
+    import re
+    import tarfile
+
+    profile = tmp_path / "profile"
+    (profile / ".grok/sessions/g1/deep").mkdir(parents=True)
+    (profile / ".grok/sessions/g1/updates.jsonl").write_text("{}\n")
+    for name in (
+        "auth.json",
+        "deep/.credentials.json",
+        "deep/server.pem",
+        "deep/api.token",
+        "deep/.env",
+    ):
+        (profile / ".grok/sessions/g1" / name).write_text("not-a-real-secret")
+    (profile / ".claude/projects").mkdir(parents=True)
+    (profile / ".claude/projects/s.jsonl").write_text("{}\n")
+    script = tc.windows_tar_script([".grok/sessions", ".claude/projects"])
+    excludes = [p.replace("''", "'") for p in re.findall(r"--exclude '((?:[^']|'')*)'", script)]
+    assert excludes == list(tc.CREDENTIAL_PATTERNS)
+    cmd = ["bsdtar", "-cf", "-"]
+    for pattern in excludes:
+        cmd += ["--exclude", pattern]
+    cmd += ["-C", str(profile), ".grok/sessions", ".claude/projects"]
+    stream = subprocess.run(cmd, capture_output=True, check=True, timeout=60).stdout
+    import io
+
+    nodes = tc.tar_nodes(tarfile.open(fileobj=io.BytesIO(stream), mode="r"))
+    assert tc.credential_nodes(nodes) == []
+    files = sorted(n["path"] for n in nodes if n["type"] == "file")
+    assert files == ["/.claude/projects/s.jsonl", "/.grok/sessions/g1/updates.jsonl"]
+
+
+def test_the_unit_names_the_windows_puller_and_hosts() -> None:
+    unit = (_REPO / "systemd/units/hapax-backup-transcripts.service").read_text(encoding="utf-8")
+    assert 'Environment="HAPAX_TRANSCRIPT_WINDOWS_HOSTS=hapax-dextra hapax-talus"\n' in unit
+    assert "Environment=HAPAX_TRANSCRIPT_WINDOWS_PULLER=hapax-appendix\n" in unit

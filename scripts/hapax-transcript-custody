@@ -8,6 +8,10 @@ Subcommands:
                        with a remedy, on a missing, symlinked, empty or dropped path, a dropped harness path, a
                        credential file, or a snapshot older than --max-age-hours (default 26)
 
+Windows hosts: on the host that HAPAX_TRANSCRIPT_WINDOWS_PULLER names, backup also pulls each host in
+HAPAX_TRANSCRIPT_WINDOWS_HOSTS over SSH, as a tar stream of its table paths (credentials excluded by name), into a
+snapshot under that host's name. verify checks those snapshots the same way, and fails one older than 72h.
+
 The repository is RESTIC_REPOSITORY (default: the tier-1 NAS repository /mnt/nas/backups/restic). The password is
 the FileStore entry backups/restic-password (HAPAX_TRANSCRIPT_RESTIC_PASSWORD_ENTRY overrides it). The unit is
 systemd/units/hapax-backup-transcripts.service. The row is transcript-backup-custody-all-harnesses-20260927 (M174:
@@ -152,12 +156,97 @@ def cmd_inventory(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def _windows_hosts() -> list[str]:
+    """The Windows hosts this machine pulls: HAPAX_TRANSCRIPT_WINDOWS_HOSTS, but only on the host that
+    HAPAX_TRANSCRIPT_WINDOWS_PULLER names. The unit is the same file on every host, and exactly one of them pulls."""
+
+    puller = os.environ.get("HAPAX_TRANSCRIPT_WINDOWS_PULLER", "")
+    if not puller or puller != socket.gethostname():
+        return []
+    return os.environ.get("HAPAX_TRANSCRIPT_WINDOWS_HOSTS", "").split()
+
+
+def _windows_inventory(host: str) -> tc.Resolution | None:
+    """The host's transcript paths, or None when SSH cannot reach it (asleep, off, or off the tailnet)."""
+
+    cmd = [
+        "ssh",
+        *tc.WINDOWS_SSH_OPTIONS,
+        host,
+        *tc.encoded_powershell(tc.windows_inventory_script()),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=False)
+    except subprocess.TimeoutExpired:
+        return None
+    if proc.returncode == 255:  # ssh's own failure: asleep and unreachable, or refused
+        refusal = [m for m in tc.SSH_REFUSAL_MARKERS if m in proc.stderr]
+        if refusal:
+            return tc.Resolution(problems=[f"ssh: {host} refused the connection ({refusal[0]})"])
+        return None
+    if proc.returncode != 0:
+        tail = proc.stderr.strip().splitlines()[-1:] or [""]
+        return tc.Resolution(problems=[f"inventory: {host} exited {proc.returncode} ({tail[0]})"])
+    try:
+        return tc.parse_windows_inventory(host, proc.stdout.strip())
+    except (ValueError, KeyError, TypeError) as exc:
+        return tc.Resolution(
+            problems=[f"inventory: {host} printed an unreadable inventory ({exc})"]
+        )
+
+
+def _backup_windows(dry_run: bool) -> int:
+    """Pull each Windows host's transcripts; the number of failures. An unreachable host is reported, and is not a
+    failure here: verify fails it once its newest snapshot is older than the staleness bound."""
+
+    failed = 0
+    env = None
+    for host in _windows_hosts():
+        inv = _windows_inventory(host)
+        if inv is None:
+            print(
+                f"hapax-transcript-custody: {host} is unreachable over SSH (asleep?); no snapshot this run. "
+                f"verify fails once its newest snapshot is older than {tc.WINDOWS_MAX_AGE_HOURS:g}h",
+                file=sys.stderr,
+            )
+            continue
+        for problem in inv.problems:
+            print(f"hapax-transcript-custody: {problem}; {tc.WINDOWS_REMEDY}", file=sys.stderr)
+            failed += 1
+        rels = [p.real.lstrip("/") for p in inv.paths]
+        if not rels:
+            if not inv.problems:
+                # Reachable, and every transcript path is gone: no snapshot would be taken, and verify would keep
+                # passing on the last one. That is a custody event, so it fails now.
+                print(
+                    f"hapax-transcript-custody: {host} is reachable but holds no transcript path; "
+                    f"{tc.WINDOWS_REMEDY}",
+                    file=sys.stderr,
+                )
+                failed += 1
+            continue
+        restic_args = tc.windows_backup_args(host, rels)
+        if dry_run:
+            print(json.dumps(["restic", *restic_args]))
+            continue
+        env = env or _restic_env()
+        proc = subprocess.run(["restic", *restic_args], env=env, check=False)
+        if proc.returncode != 0:
+            # --stdin-from-command: a failed or cut SSH stream fails the backup, never a short snapshot.
+            print(
+                f"hapax-transcript-custody: restic backup of {host} exited {proc.returncode}; {tc.WINDOWS_REMEDY}",
+                file=sys.stderr,
+            )
+            failed += 1
+    return failed
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     res = tc.resolve_paths(Path.home())
     restic_args = tc.backup_args(res.paths)
     if args.dry_run:
         print(json.dumps(["restic", *restic_args]))
-        return 0
+        return 1 if _backup_windows(dry_run=True) else 0
     proc = subprocess.run(["restic", *restic_args], env=_restic_env(), check=False)
     # restic exits 3 when some files could not be read: the snapshot is incomplete, and that is a failure.
     for problem in res.problems:
@@ -167,7 +256,8 @@ def cmd_backup(args: argparse.Namespace) -> int:
             f"hapax-transcript-custody: restic backup exited {proc.returncode}; {tc.REMEDY}",
             file=sys.stderr,
         )
-    return 0 if proc.returncode == 0 and not res.problems else 1
+    windows_failed = _backup_windows(dry_run=False)
+    return 0 if proc.returncode == 0 and not res.problems and not windows_failed else 1
 
 
 def _restic_json(env: dict[str, str], *cmd: str) -> str:
@@ -235,6 +325,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     for p, c in sorted(current.items()):
         print(f"  {c.files:>9} files  {c.node_type or 'ABSENT':<8} {p}")
+    windows_failed = sum(_verify_windows(env, h, args.max_age_hours) for h in _windows_hosts())
     if failures:
         for failure in failures:
             print(f"FAIL {failure}", file=sys.stderr)
@@ -246,6 +337,102 @@ def cmd_verify(args: argparse.Namespace) -> int:
     print(
         f"hapax-transcript-custody: snapshot {cur.get('short_id')} holds every transcript path, none empty or "
         "dropped, no credential"
+    )
+    return 1 if windows_failed else 0
+
+
+def _tar_listing(env: dict[str, str], snapshot: dict) -> list[dict]:
+    """The node stream of a Windows snapshot: its one stdin file is a tar, read from ``restic dump`` as a stream."""
+
+    import tarfile
+
+    (path,) = snapshot.get("paths") or ["?"]
+    proc = subprocess.Popen(
+        ["restic", "dump", "--no-lock", snapshot["id"], path], env=env, stdout=subprocess.PIPE
+    )
+    assert proc.stdout is not None
+    try:
+        nodes = tc.tar_nodes(tarfile.open(fileobj=proc.stdout, mode="r|"))
+        # tarfile stops at the end-of-archive marker; a tar is padded past it to its record size. Drain the rest, so
+        # restic finishes its write instead of dying of SIGPIPE, which would fail verify spuriously.
+        while proc.stdout.read(1 << 16):
+            pass
+    finally:
+        proc.stdout.close()
+    if proc.wait() != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode, ["restic", "dump", snapshot["id"], path]
+        )
+    return nodes
+
+
+def _verify_windows(env: dict[str, str], host: str, fresh_hours: float) -> int:
+    """Verify a Windows host's newest snapshot; 1 on failure. It fails when there is no snapshot, when the newest is
+    older than the staleness bound, or on the same floor, drop, symlink and credential checks as a local snapshot.
+    The expected paths are the host's live inventory when the snapshot is from this run and the host answers;
+    otherwise they are read from the snapshot's own listing."""
+
+    snapshots = sorted(
+        json.loads(_restic_json(env, "snapshots", "--tag", tc.SNAPSHOT_TAG, "--host", host)) or [],
+        key=lambda s: s["time"],
+    )
+    if not snapshots:
+        print(
+            f"FAIL missing: no {tc.SNAPSHOT_TAG} snapshot for Windows host {host}; {tc.WINDOWS_REMEDY}",
+            file=sys.stderr,
+        )
+        return 1
+    cur, prev = snapshots[-1], (snapshots[-2] if len(snapshots) > 1 else None)
+    failures: list[str] = []
+    age_hours = (datetime.now(UTC) - datetime.fromisoformat(cur["time"])).total_seconds() / 3600
+    if age_hours > tc.WINDOWS_MAX_AGE_HOURS:
+        failures.append(
+            f"stale: {host}'s newest {tc.SNAPSHOT_TAG} snapshot {cur.get('short_id')} is {age_hours:.1f}h old "
+            f"(max {tc.WINDOWS_MAX_AGE_HOURS:g}h): the host has not been reachable at backup time"
+        )
+    nodes = _tar_listing(env, cur)
+    prev_nodes = _tar_listing(env, prev) if prev else []
+    inv = _windows_inventory(host) if age_hours <= fresh_hours else None
+    if inv is None:
+        expected = tc.listing_expected(host, nodes)
+    else:
+        expected = inv.paths
+        failures += inv.problems
+    targets, prev_targets = tc.listing_targets(nodes), tc.listing_targets(prev_nodes)
+    paths = sorted(set(targets) | set(prev_targets) | {p.real for p in expected})
+    current = tc.count_snapshot(nodes, paths)
+    failures += tc.verify(
+        expected,
+        current,
+        snapshot_targets=targets,
+        previous=tc.count_snapshot(prev_nodes, paths) if prev else None,
+        previous_targets=prev_targets,
+        snapshot_credentials=tc.credential_nodes(nodes),
+    )
+    source = "live inventory" if inv is not None else "the snapshot's own listing"
+    print(
+        json.dumps(
+            {
+                "host": host,
+                "snapshot": cur.get("short_id"),
+                "time": cur.get("time"),
+                "failures": failures,
+            }
+        )
+    )
+    for p, c in sorted(current.items()):
+        print(f"  {c.files:>9} files  {c.node_type or 'ABSENT':<8} {host}:~{p}")
+    if failures:
+        for failure in failures:
+            print(f"FAIL {host}: {failure}", file=sys.stderr)
+        print(
+            f"hapax-transcript-custody: {len(failures)} failure(s) for {host}; {tc.WINDOWS_REMEDY}",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"hapax-transcript-custody: {host} snapshot {cur.get('short_id')} ({age_hours:.1f}h old; expected paths "
+        f"from {source}) holds every transcript path, none empty or dropped, no credential"
     )
     return 0
 

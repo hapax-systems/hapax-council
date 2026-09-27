@@ -5310,7 +5310,22 @@ from scripts.transcript_custody import (  # noqa: E402
     forget_protects_transcripts as _tc_forget_protects_transcripts,
 )
 from scripts.transcript_custody import (  # noqa: E402
+    listing_expected as _tc_listing_expected,  # the Windows-host pull, also CLI-only
+)
+from scripts.transcript_custody import (  # noqa: E402
+    parse_windows_inventory as _tc_parse_windows_inventory,
+)
+from scripts.transcript_custody import (  # noqa: E402
     resolve_paths as _tc_resolve_paths,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    tar_nodes as _tc_tar_nodes,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    windows_backup_args as _tc_windows_backup_args,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    windows_inventory_script as _tc_windows_inventory_script,
 )
 
 _ = (
@@ -5319,4 +5334,9 @@ _ = (
     _tc_credential_nodes,
     _tc_forget_protects_transcripts,
     _tc_resolve_paths,
+    _tc_listing_expected,
+    _tc_parse_windows_inventory,
+    _tc_tar_nodes,
+    _tc_windows_backup_args,
+    _tc_windows_inventory_script,
 )
