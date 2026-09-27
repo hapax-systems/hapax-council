@@ -4,7 +4,7 @@
 The runner handles the automation Stripe exposes through the merchant REST API:
 product creation, price creation, Payment Link creation with automatic tax, and
 webhook endpoint registration for the existing receive-only rail. Direct
-merchant signup, EIN/KYC, payout bank verification, pass-store writes, and live
+merchant signup, EIN/KYC, payout bank verification, FileStore writes, and live
 charges remain explicit operator gates.
 """
 
@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+
+from shared.secrets import put_secret
 
 STRIPE_API_BASE = "https://api.stripe.com/v1"
 DEFAULT_PRODUCTS_CONFIG = Path(
@@ -602,27 +604,22 @@ def _resolve_api_key(
     return api_key
 
 
-def write_pass_entries(
+def write_secret_entries(
     *,
     api_key: str,
     webhook_secret: str | None,
-    pass_runner: Any = subprocess.run,
+    secret_writer: Any = put_secret,
 ) -> list[str]:
-    written = [_pass_insert(API_KEY_PASS_ENTRY, api_key, pass_runner=pass_runner)]
+    written = [_store_secret(API_KEY_PASS_ENTRY, api_key, secret_writer=secret_writer)]
     if webhook_secret:
         written.append(
-            _pass_insert(WEBHOOK_SECRET_PASS_ENTRY, webhook_secret, pass_runner=pass_runner)
+            _store_secret(WEBHOOK_SECRET_PASS_ENTRY, webhook_secret, secret_writer=secret_writer)
         )
     return written
 
 
-def _pass_insert(key: str, value: str, *, pass_runner: Any) -> str:
-    pass_runner(
-        ["pass", "insert", "-m", key],
-        input=value + "\n",
-        text=True,
-        check=True,
-    )
+def _store_secret(key: str, value: str, *, secret_writer: Any) -> str:
+    secret_writer(key, value.encode("utf-8"))
     return key
 
 
@@ -730,7 +727,7 @@ def _args(argv: list[str] | None) -> argparse.Namespace:
         "--execute", action="store_true", help="call Stripe in test mode by default"
     )
     parser.add_argument("--live", action="store_true", help="allow live Stripe calls with env gate")
-    parser.add_argument("--write-pass-store", action="store_true")
+    parser.add_argument("--write-secrets", action="store_true")
     parser.add_argument("--write-vault-note", action="store_true")
     parser.add_argument("--vault-note", type=Path, default=DEFAULT_VAULT_NOTE)
     parser.add_argument("--write-example-config", type=Path)
@@ -743,7 +740,7 @@ def main(
     *,
     env: Mapping[str, str] = os.environ,
     http: HttpPoster | None = None,
-    pass_runner: Any = subprocess.run,
+    secret_writer: Any = put_secret,
 ) -> int:
     args = _args(argv)
     try:
@@ -766,13 +763,13 @@ def main(
                 webhook_url=webhook_url,
                 client=client,
             )
-            if args.write_pass_store:
-                written = write_pass_entries(
+            if args.write_secrets:
+                written = write_secret_entries(
                     api_key=api_key,
                     webhook_secret=secrets.webhook_secret,
-                    pass_runner=pass_runner,
+                    secret_writer=secret_writer,
                 )
-                execution = {**execution, "pass_store_entries_written": written}
+                execution = {**execution, "secret_entries_written": written}
         paths = write_records(
             output_dir=args.output_dir.expanduser(),
             plan=plan,

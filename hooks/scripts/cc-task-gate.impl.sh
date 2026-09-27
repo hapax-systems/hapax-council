@@ -371,10 +371,42 @@ bash_source_mutation_requires_scope() {
   return 1
 }
 
+# Resolve a repo root that actually carries the needed shared/ module.
+# In-repo the gate lives at <repo>/hooks/scripts, so ../.. works. In the
+# canonical FM-6 deployment the impl IS ~/.local/lib/hapax/hooks/cc-task-gate.sh,
+# whose ../.. (~/.local/lib) has no shared/ tree at all — and a bare shared/
+# presence check is not sufficient either, since stale checkouts (e.g.
+# ~/.cache/hapax/rebuild/worktree) can carry shared/ without the module. Gate
+# every candidate on the module file itself, mirroring the
+# _escape_grant_repo_root ladder; degrade-closed on the original ../.. output.
+_cc_gate_repo_root() {
+  local module_rel="$1"
+  local d r c
+  d="$SCRIPT_DIR"
+  r="$(cd "$d/../.." 2>/dev/null && pwd)"
+  if [[ -n "${HAPAX_COORD_REPO_ROOT:-}" && -f "$HAPAX_COORD_REPO_ROOT/$module_rel" ]]; then
+    printf '%s\n' "$HAPAX_COORD_REPO_ROOT"
+    return 0
+  fi
+  if [[ -n "$r" && -f "$r/$module_rel" ]]; then
+    printf '%s\n' "$r"
+    return 0
+  fi
+  for c in \
+    "${XDG_CACHE_HOME:-$HOME/.cache}/hapax/rebuild/worktree" \
+    "$HOME/projects/hapax-council"; do
+    if [[ -f "$c/$module_rel" ]]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  printf '%s\n' "$r"
+}
+
 connector_tool_is_mutating() {
   local name="$1"
   local repo_root rc
-  repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  repo_root="$(_cc_gate_repo_root shared/mcp_connector_policy.py)"
   if command -v python3 >/dev/null 2>&1; then
     set +e
     PYTHONPATH="$repo_root:${PYTHONPATH:-}" \
@@ -926,6 +958,11 @@ src_auth = fields.get("source_mutation_authorized", "")
 docs_auth = fields.get("docs_mutation_authorized", "")
 runtime_auth = fields.get("runtime_mutation_authorized", "")
 scope_refs = fields.get("mutation_scope_refs", "")
+# A charter is the coordinator's grant. Work inside charter_scope does not
+# need a second claim. The lease stays this note.
+if fields.get("claim_form") == "charter" and fields.get("charter_scope"):
+    extra = fields["charter_scope"]
+    scope_refs = f"{scope_refs}\x1f{extra}" if scope_refs else extra
 print(
     f"{status}\t{assigned}\t{blocked_reason}\t{blocked_witness}\t"
     f"{authority_case}\t{parent_spec}\t{route_schema}\t{stage}\t"
@@ -1040,35 +1077,91 @@ is_nullish() {
 # if present, else insert it before the closing '---'. Atomic (tmp + rename).
 # Used to stamp a derived/defaulted field durably so downstream release/packet
 # checks read it consistently. Best-effort: returns non-zero on any failure.
+# Stamp one frontmatter field, under the projection lock.
+#
+# This note is a path shared/coord_projection.py relocates transactionally. A stamp landing
+# between its preimage pin and its atomic install is counted by the transition's safety
+# check and then destroyed, while the transition is still recorded applied — fail-open, and
+# invisible from either side (beta 2026-09-13T22:10Z; codex-1 C1 on PR #4667).
+#
+# Refuses rather than stamping if the lock cannot be taken. Failing open here would restore
+# exactly the race this closes; the caller reports the refusal instead.
 _stamp_frontmatter_field() {
-  local note="$1" key="$2" value="$3"
-  python3 - "$note" "$key" "$value" <<'PYEOF' 2>/dev/null || return 1
+  local note="$1" key="$2" value="$3" repo_root
+  repo_root="$(_cc_gate_repo_root shared/task_note_lock.py)" || return 1
+  # Propagate the interpreter's exit code verbatim. `|| return 1` collapsed the 3 that
+  # means "the projection lock is held" into the 1 that means "something else broke", so
+  # the caller's contention branch could never fire and every failure was recorded as
+  # refused_error — the mirror image of the defect these exit codes were added to fix. A
+  # boundary that flattens a distinction both sides agreed on is as bad as never making it.
+  local _stamp_py_rc=0
+  # A short bound: this runs inside a tool-call hook, so waiting out a wedged transition
+  # would hang the session. Refusing to stamp is safe; the caller reports it.
+  #
+  # The env prefix and the command are ONE logical line with nothing between them, on
+  # purpose. Bash removes a backslash-newline before it tokenizes, so a comment placed after
+  # the continuation is joined onto the assignment and its `#` ends the command right there:
+  # the bound became a plain, unexported shell variable, the interpreter never saw it, and
+  # the gate waited task_note_lock's 30s default inside a tool-call hook while this comment
+  # said 5s (round 5: gemini-1 critical, claude-1 major — measured with a stand-in
+  # interpreter that printed what it inherited: nothing). Pinned by
+  # test_the_gate_s_lock_bound_reaches_the_interpreter, which asks the interpreter, not the
+  # source.
+  HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
+  PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" <<'PYEOF' || _stamp_py_rc=$?
 import sys
 from pathlib import Path
 
+from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
 path, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-text = path.read_text(encoding="utf-8")
-if not text.startswith("---"):
+try:
+    lock = projected_path_lock(None, (path,))
+    lock.__enter__()
+except TaskNoteLockError as exc:
+    print(f"cc-task-gate: {key} stamp skipped — {exc}", file=sys.stderr)
+    # Exit 3 means specifically 'another writer or a transition holds this note'. Every
+    # other failure keeps exit 1, so the caller can record the cause it actually saw
+    # rather than filing an unsafe root or malformed frontmatter as contention.
+    sys.exit(3)
+except Exception as exc:  # noqa: BLE001 — the gate reports; it does not stamp regardless.
+    print(f"cc-task-gate: {key} stamp failed — {exc}", file=sys.stderr)
     sys.exit(1)
-end = text.find("\n---", 4)
-if end < 0:
-    sys.exit(1)
-front, body = text[4:end], text[end:]
-out, found = [], False
-for line in front.splitlines():
-    stripped = line.strip()
-    if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+try:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        sys.exit(1)
+    end = text.find("\n---", 4)
+    if end < 0:
+        sys.exit(1)
+    front, body = text[4:end], text[end:]
+    out, found = [], False
+    for line in front.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+            out.append(f"{key}: {value}")
+            found = True
+        else:
+            out.append(line)
+    if not found:
         out.append(f"{key}: {value}")
-        found = True
-    else:
-        out.append(line)
-if not found:
-    out.append(f"{key}: {value}")
-new = "---\n" + "\n".join(out) + body
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(new, encoding="utf-8")
-tmp.replace(path)
+    rendered = "---\n" + "\n".join(out) + body
+    # One fixed scratch sibling, deliberately: the projection lock above serializes every
+    # stamper, so a per-process name would only add a scratch class the recovery sweep does
+    # not discover — which the row pre-registers as a hazard in its own right
+    # (2026-09-13T23:24:07Z: discovery coverage for ALL scratch classes). A crash between
+    # write and replace leaves this one reusable slot, exactly as before this change.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(rendered, encoding="utf-8")
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+finally:
+    lock.__exit__(None, None, None)
 PYEOF
+  return "$_stamp_py_rc"
 }
 
 # authority_case and parent_spec remain HARD requirements: they are the verified
@@ -1151,15 +1244,53 @@ fi
 if [[ "$_is_docs_edit" != "true" && -z "$_stage_num" && "$impl_authorized" == "true" ]] \
    && ! is_nullish "$authority_case" && ! is_nullish "$parent_spec"; then
   _orig_stage="${case_stage:-<blank>}"
-  case_stage="S6_IMPLEMENTATION"
-  _stage_num=6
-  _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION" || true
   _stage_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
   mkdir -p "$(dirname "$_stage_ledger")" 2>/dev/null || true
-  printf '{"ts":"%s","kind":"stage_derived","role":"%s","task":"%s","case":"%s","from":"%s","to":"S6_IMPLEMENTATION"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" \
+  # The stamp can now REFUSE (another writer or a transition holds the note's projection
+  # lock). Its result decides what follows: deriving the stage in memory and reporting
+  # "stamped" while the note is unchanged would admit the mutation on the strength of a write
+  # that did not happen, and every retry would append another derivation record for it.
+  if _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION"; then
+    case_stage="S6_IMPLEMENTATION"
+    _stage_num=6
+    _stage_outcome="stamped"
+    echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
+  else
+    # 3 is specifically "the projection lock is held"; anything else is a different failure
+    # and must not be filed as contention — a receipt that says projection_lock_held for a
+    # malformed note sends the operator to look for a holder that was never there.
+    _stamp_rc=$?
+    if [[ "$_stamp_rc" -eq 3 ]]; then
+      _stage_outcome="refused_locked"
+      _stage_reason="projection_lock_held"
+      _stage_detail="A transition or another writer holds this note's projection lock, so the note was NOT modified and the stage was NOT derived.
+
+  Next action: retry in a moment. If it persists, find the holder with
+    fuser -v \"\${HAPAX_COORD_DIR:-\$HOME/.cache/hapax/coord}/task-locks\"/*.lock"
+    else
+      _stage_outcome="refused_error"
+      _stage_reason="stamp_failed"
+      _stage_detail="The stage stamp failed for a reason other than lock contention (see the
+  cc-task-gate message above: an unsafe or unavailable lock root, malformed frontmatter, a
+  missing note, or a write error). The note was NOT modified.
+
+  Next action: fix the cause named above, then retry."
+    fi
+    _emit_block <<EOF
+cc-task-gate: BLOCKED — task '$task_id' has a blank stage and it could not be stamped.
+
+  Task: $note_path
+  $_stage_detail
+EOF
+    printf '{"ts":"%s","kind":"stage_derive_refused","role":"%s","task":"%s","case":"%s","from":"%s","reason":"%s","stamp_rc":%s}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" \
+      "$_stage_reason" "$_stamp_rc" \
+      >> "$_stage_ledger" 2>/dev/null || true
+    exit 2
+  fi
+  printf '{"ts":"%s","kind":"stage_derived","role":"%s","task":"%s","case":"%s","from":"%s","to":"S6_IMPLEMENTATION","outcome":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" "$_stage_outcome" \
     >> "$_stage_ledger" 2>/dev/null || true
-  echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
 fi
 if [[ "$_is_docs_edit" != "true" && ( -z "$_stage_num" || "$_stage_num" -lt 6 ) ]]; then
   _emit_block <<EOF
@@ -1341,7 +1472,105 @@ print("allowed" if allowed else "denied")
 PYEOF
 )"
   case "$scope_check" in
-    allowed) ;;
+    allowed)
+      # A charter may edit charter_scope without a second claim. A path that
+      # is outside the precise mutation_scope_refs is still allowed. When it
+      # is inside the charter_scope, the recorded units are consulted: an
+      # edit a unit covers is that unit's work, and an edit no unit covers is
+      # written down as a breach. If the report cannot be written, the edit
+      # stops.
+      _charter_shared_top="$(_escape_grant_repo_root 2>/dev/null || true)"
+      if ! python3 - "$note_path" "$edit_path" "$HOME/.cache/hapax" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" "$_charter_shared_top" <<'PYEOF'
+import json
+import os
+import sys
+from pathlib import Path
+
+note, edit, cache, repo_top, vault_root, file_top, shared_top = sys.argv[1:8]
+text = Path(note).read_text(encoding="utf-8")
+if "\nclaim_form: charter" not in f"\n{text}":
+    sys.exit(0)
+# The edit may target a repository that carries no shared/ tree; the canonical
+# council source root selected by _escape_grant_repo_root is the import source
+# when it exists, with the previous anchoring kept as the fallback.
+if shared_top and (Path(shared_top) / "shared").is_dir():
+    sys.path.insert(0, shared_top)
+else:
+    sys.path.insert(0, file_top or repo_top or str(Path(note).resolve().parents[3]))
+from shared.charter_claim import (  # noqa: E402
+    _frontmatter,
+    _refs,
+    covers,
+    obligation_breaches,
+    write_obligation_report,
+)
+
+fields = _frontmatter(text)
+if str(fields.get("claim_form") or "") != "charter":
+    sys.exit(0)
+target = Path(os.path.expanduser(edit)).resolve(strict=False)
+relative = None
+for root in (file_top, repo_top, vault_root):
+    if not root:
+        continue
+    try:
+        relative = str(target.relative_to(Path(root).resolve(strict=False)))
+        break
+    except ValueError:
+        continue
+if relative is None:
+    relative = str(target)
+precise = _refs(fields.get("mutation_scope_refs"))
+if any(covers(item, relative) for item in precise):
+    sys.exit(0)
+task_id = str(fields.get("task_id") or "").strip() or "charter"
+charter_scope = _refs(fields.get("charter_scope"))
+child_scopes = []
+# Unit notes are siblings of the charter note in its active directory.
+active_root = Path(note).parent
+for ledger in sorted(Path(cache).glob("charter-units-*.jsonl")):
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("schema") != "hapax.charter-unit.v1":
+            continue
+        if row.get("charter_id") != task_id:
+            continue
+        unit_id = str(row.get("unit_id") or "").strip()
+        if not unit_id:
+            continue
+        child_text = ""
+        for pattern in (f"{unit_id}-*.md", f"{unit_id}.md"):
+            matches = sorted(active_root.glob(pattern))
+            if matches:
+                child_text = matches[0].read_text(encoding="utf-8")
+                break
+        child_scopes.append(_refs(_frontmatter(child_text).get("mutation_scope_refs")))
+breaches = obligation_breaches(charter_scope, child_scopes, [relative])
+if breaches:
+    try:
+        write_obligation_report(
+            Path(cache) / f"charter-obligation-{task_id}.jsonl",
+            breaches,
+            charter_id=task_id,
+        )
+    except OSError:
+        sys.exit(3)
+sys.exit(0)
+PYEOF
+      then
+        _emit_block <<EOF
+cc-task-gate: BLOCKED — the charter check did not finish, so the edit did not proceed.
+
+  File: $edit_path
+  Task: $note_path
+  Next action: read the python error above. A missing report file is only one cause. If the cache directory cannot be written, create it or set HAPAX_METHODOLOGY_EMERGENCY=1 for an emergency bypass.
+EOF
+        exit 2
+      fi
+      ;;
     missing)
       _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' has no mutation_scope_refs for direct file mutation.

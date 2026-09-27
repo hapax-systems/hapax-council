@@ -1327,19 +1327,28 @@ class TestSystemdUnits:
     def test_service_enables_reconciliation(self) -> None:
         unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.service"
         text = unit.read_text()
-        # The scheduled unit opts into reconciliation by declaring the two-host
-        # claim plane (the audit derives the peer per-host — no hardcoded single
-        # target that would silently no-op to self on the host it names).
-        plane_lines = [
+        # The scheduled unit opts into reconciliation via the activation
+        # worktree's registry declaration (HAPAX_COUNCIL_DIR): the audit
+        # resolves the claim plane from claim_plane.hosts and derives the peer
+        # per-host — no hardcoded single target that would silently no-op to
+        # self on the host it names, and no pair pin in the unit itself.
+        council_lines = [
             line
             for line in text.splitlines()
-            if "HAPAX_CLAIM_PLANE_HOSTS=" in line and not line.strip().startswith("#")
+            if "HAPAX_COUNCIL_DIR=" in line and not line.strip().startswith("#")
         ]
-        assert plane_lines, "Host reconciliation must be enabled via HAPAX_CLAIM_PLANE_HOSTS"
-        plane = plane_lines[0]
-        assert "hapax-podium" in plane and "hapax-appendix" in plane, (
-            "the claim plane must name both hosts so each derives the other as peer"
+        assert council_lines, "Host reconciliation must be enabled via HAPAX_COUNCIL_DIR"
+        assert "source-activation/worktree" in council_lines[0], (
+            "the declared plane context must be the governed activation worktree, "
+            "not the mutable dev tree"
         )
+        registry = SCRIPT.parent.parent / "config" / "infrastructure" / "host-storage-registry.json"
+        reg_text = registry.read_text()
+        assert (
+            '"claim_plane"' in reg_text
+            and '"hapax-podium"' in reg_text
+            and ('"hapax-appendix"' in reg_text)
+        ), "the shipped registry must declare both plane hosts so each derives the other as peer"
 
     def test_timer_unit_parses(self) -> None:
         unit = SCRIPT.parent.parent / "systemd" / "units" / "codex-claim-audit.timer"

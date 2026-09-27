@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily FileStore backup into the tier-1 NAS restic repository
+
+[Timer]
+# After the transcripts backup (04:15), clear of podium's tier-1 prune.
+OnCalendar=*-*-* 04:45:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

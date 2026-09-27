@@ -14,9 +14,10 @@ def test_render_includes_summary_line():
     assert "DELETE:" in text
 
 
-def test_render_includes_pass_insert_commands():
+def test_render_includes_put_instructions_never_pass():
     text = render_operator_queue()
-    assert "pass insert" in text
+    assert "hapax-secret" in text
+    assert "pass insert" not in text
 
 
 def test_render_includes_known_surface():
@@ -43,8 +44,8 @@ def test_default_mode_prints_full_report(capsys):
 
 
 def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
-    # Stub `pass` lookup to deterministic results without touching the
-    # operator's actual pass-store.
+    # Stub the presence probe to deterministic results without touching the
+    # operator's actual FileStore.
     from agents.publication_bus import __main__ as m
 
     # Cred-blocked keys after PRs #1676 / #1680 / batch wiring +
@@ -58,7 +59,7 @@ def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
             "google/youtube-force-ssl-token",
         }
 
-    monkeypatch.setattr(m, "_key_present_in_pass", fake_present)
+    monkeypatch.setattr(m, "_key_present", fake_present)
     rc = m.main(["--check-creds"])
     assert rc == 0
     captured = capsys.readouterr()
@@ -74,7 +75,7 @@ def test_check_creds_mode_lists_per_key(capsys, monkeypatch):
 def test_check_creds_all_missing_renders_correctly(capsys, monkeypatch):
     from agents.publication_bus import __main__ as m
 
-    monkeypatch.setattr(m, "_key_present_in_pass", lambda _k: False)
+    monkeypatch.setattr(m, "_key_present", lambda _k: False)
     rc = m.main(["--check-creds"])
     assert rc == 0
     captured = capsys.readouterr()
@@ -87,7 +88,7 @@ def test_check_creds_all_missing_renders_correctly(capsys, monkeypatch):
 def test_check_creds_all_present_renders_correctly(capsys, monkeypatch):
     from agents.publication_bus import __main__ as m
 
-    monkeypatch.setattr(m, "_key_present_in_pass", lambda _k: True)
+    monkeypatch.setattr(m, "_key_present", lambda _k: True)
     rc = m.main(["--check-creds"])
     assert rc == 0
     captured = capsys.readouterr()

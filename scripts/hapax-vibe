@@ -245,27 +245,8 @@ if [ ! -d "$WORKDIR" ]; then
 fi
 WORKDIR="$(cd "$WORKDIR" && pwd)"
 
-WORKTREE_AGENTS="$WORKDIR/AGENTS.md"
-if [ ! -f "$WORKTREE_AGENTS" ] || head -1 "$WORKTREE_AGENTS" 2>/dev/null | grep -qF '<!-- HAPAX-VIBE-MANAGED'; then
-  cat > "$WORKTREE_AGENTS" <<EOF_AGENTS
-<!-- HAPAX-VIBE-MANAGED: regenerated on every hapax-vibe launch. Do not hand-edit. -->
-
-# Hapax Vibe Lane - $SESSION
-
-You are Mistral Vibe operating as the $SESSION lane in the Hapax relay
-protocol. Read ~/.cache/hapax/relay/onboarding-vbe.md first, then invoke the
-relay-protocol skill.
-
-- Lane: $SESSION
-- Worktree: $WORKDIR
-- Interface: vibe
-- Tier: jr-plus
-
-Active task:
-\$(cat ~/.cache/hapax/cc-active-task-$SESSION 2>/dev/null || echo "no active task")
-EOF_AGENTS
-  echo "hapax-vibe: refreshed $WORKTREE_AGENTS" >&2
-fi
+# Repository instructions are authored policy. Lane identity travels in the
+# existing environment/relay context below, never by overwriting AGENTS.md.
 
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
@@ -299,7 +280,6 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   fi
 fi
 
-export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
 
 collect_relay_inflections() {
@@ -407,6 +387,9 @@ write_runner() {
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
+    if [ -n "${VIBE_ACTIVE_MODEL:-}" ]; then
+      printf 'export VIBE_ACTIVE_MODEL=%q\n' "$VIBE_ACTIVE_MODEL"
+    fi
     printf 'exec %q' "$VIBE_BIN"
     for arg in "${VIBE_ARGS[@]}"; do
       printf ' %q' "$arg"

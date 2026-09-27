@@ -129,8 +129,8 @@ def test_each_cred_blocked_entry_documents_disposition():
     that omit either signal fail CI before merging. Two regression pins:
 
     * The rationale references the operator action explicitly — at
-      minimum a literal pass-store insert command (``pass insert
-      <key>``) or the phrase ``operator-action`` so a future auditor
+      minimum a literal put instruction (``hapax-secret``) or the
+      phrase ``operator-action`` so a future auditor
       can grep the codebase for who-needs-to-do-what.
     * The rationale carries a review-by ISO-8601 date so a perpetual
       CRED_BLOCKED state surfaces audit pressure when the date passes.
@@ -142,9 +142,9 @@ def test_each_cred_blocked_entry_documents_disposition():
         if entry.status != "CRED_BLOCKED":
             continue
         rationale_lc = entry.rationale.lower()
-        assert "operator-action" in rationale_lc or "pass insert" in rationale_lc, (
+        assert "operator-action" in rationale_lc or "hapax-secret" in rationale_lc, (
             f"{module}: CRED_BLOCKED rationale must reference the operator "
-            f"action (e.g. 'operator-action: pass insert <key>') so "
+            f"action (e.g. 'operator-action: put <key> with hapax-secret') so "
             f"who-unblocks-this is greppable. Got: {entry.rationale!r}"
         )
         assert iso_date.search(entry.rationale), (
@@ -171,23 +171,27 @@ def test_crossref_depositor_pass_key_in_queue():
     assert "crossref/depositor-credentials" in keys
 
 
-def test_credential_readiness_probes_pass():
-    with patch("agents.publication_bus.wire_status.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 1
+def test_credential_readiness_probes_presence_once_per_key():
+    probed: list[str] = []
+
+    def fake_has_secret(name: str) -> bool:
+        probed.append(name)
+        return False
+
+    with patch("agents.publication_bus.wire_status.has_secret", side_effect=fake_has_secret):
         result = credential_readiness()
-        assert isinstance(result, dict)
-        for key in cred_blocked_pass_keys():
-            assert key in result
-            assert result[key] is False
-        assert mock_run.call_count == len(cred_blocked_pass_keys())
+    assert isinstance(result, dict)
+    for key in cred_blocked_pass_keys():
+        assert key in result
+        assert result[key] is False
+    assert sorted(probed) == sorted(cred_blocked_pass_keys())
 
 
 def test_credential_readiness_reports_present_creds():
-    with patch("agents.publication_bus.wire_status.subprocess.run") as mock_run:
-        mock_run.return_value.returncode = 0
+    with patch("agents.publication_bus.wire_status.has_secret", return_value=True):
         result = credential_readiness()
-        for key in cred_blocked_pass_keys():
-            assert result[key] is True
+    for key in cred_blocked_pass_keys():
+        assert result[key] is True
 
 
 def test_overdue_reviews_empty_before_deadline():

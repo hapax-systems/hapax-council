@@ -30,6 +30,9 @@ def test_audit_ward_visibility_json_filters_active_wards_and_fails_thresholds(
             str(layout),
             "--active-wards-file",
             str(active_wards),
+            # Visibility behavior is independent of subprocess startup duration.
+            "--active-wards-stale-s",
+            "0",
             "--canvas-w",
             "100",
             "--canvas-h",
@@ -76,6 +79,9 @@ def test_audit_ward_visibility_json_passes_when_active_thresholds_are_met(
             str(layout),
             "--active-wards-file",
             str(active_wards),
+            # Visibility behavior is independent of subprocess startup duration.
+            "--active-wards-stale-s",
+            "0",
             "--canvas-w",
             "100",
             "--canvas-h",
@@ -136,6 +142,9 @@ def test_audit_ward_visibility_prefers_rendered_assignment_readback(
             str(layout),
             "--active-wards-file",
             str(active_wards),
+            # Visibility behavior is independent of subprocess startup duration.
+            "--active-wards-stale-s",
+            "0",
             "--canvas-w",
             "100",
             "--canvas-h",

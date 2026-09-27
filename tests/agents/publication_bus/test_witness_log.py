@@ -18,12 +18,14 @@ Coverage:
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
-
-import pytest
 
 from agents.publication_bus.publisher_kit import (
     Publisher,
@@ -42,16 +44,6 @@ from agents.publication_bus.witness_log import (
     build_witness_event,
     reset_idempotency_cache,
 )
-
-
-@pytest.fixture(autouse=True)
-def _isolate_idempotency_cache():
-    """Ensure each test starts with an empty in-process dedup set."""
-
-    reset_idempotency_cache()
-    yield
-    reset_idempotency_cache()
-
 
 # ── build_witness_event ──────────────────────────────────────────────
 
@@ -224,6 +216,37 @@ class _FakeErrorPublisher(Publisher):
 
 
 class TestPublisherAbcIntegration:
+    def test_fixture_isolates_dispatched_publish(self, tmp_path: Path, monkeypatch) -> None:
+        """Exercise the fixture's env override against a fresh, safe default."""
+        from agents.publication_bus import witness_log
+        from agents.publication_bus.publisher_kit import base
+
+        fake_home = tmp_path / "default-home"
+        spec = importlib.util.spec_from_file_location("isolated_witness_log", witness_log.__file__)
+        assert spec is not None and spec.loader is not None
+        isolated = importlib.util.module_from_spec(spec)
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+            spec.loader.exec_module(isolated)
+        monkeypatch.setattr(base, "append_publication_witness", isolated.append_publication_witness)
+
+        log_path = Path(os.environ[PUBLICATION_LOG_PATH_ENV])
+        assert log_path.is_relative_to(tmp_path)
+        default_parent = isolated.DEFAULT_PUBLICATION_LOG_PATH.parent
+        assert default_parent == fake_home / "hapax-state" / "publication"
+        assert not default_parent.exists()
+        assert not log_path.exists()
+
+        result = _FakeOkPublisher().publish(PublisherPayload(target="ok-target", text="body"))
+
+        assert result.ok
+        assert not default_parent.exists()
+        rows = [json.loads(line) for line in log_path.read_text().splitlines()]
+        assert len(rows) == 1
+        assert rows[0]["surface"] == _FakeOkPublisher.surface_name
+        assert rows[0]["target"] == "ok-target"
+        assert rows[0]["result"] == "ok"
+
     def test_ok_publish_appends_witness_row(self, tmp_path: Path, monkeypatch) -> None:
         log_path = tmp_path / "publication-log.jsonl"
         monkeypatch.setenv(PUBLICATION_LOG_PATH_ENV, str(log_path))
@@ -333,3 +356,39 @@ class TestAntiOverclaim:
         )
         contents = log_path.read_text()
         assert sensitive not in contents
+
+
+def test_publication_sink_isolation_after_suite(tmp_path: Path) -> None:
+    """Check the default sink after whole modules finish, including teardown."""
+    fake_home = tmp_path / "suite-home"
+    fake_home.mkdir()
+    env = {**os.environ, "HOME": str(fake_home), "PYTHONDONTWRITEBYTECODE": "1"}
+    env.pop(PUBLICATION_LOG_PATH_ENV, None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--confcutdir=tests",
+            "tests/agents/publication_bus/publisher_kit",
+            "tests/agents/publication_bus/test_bluesky_publisher.py",
+            "tests/agents/publication_bus/test_bridgy_publisher.py",
+            "tests/agents/publication_bus/test_internet_archive_publisher.py",
+            "tests/agents/bluesky_atproto_adapter/test_publish_artifact.py",
+            "tests/agents/bridgy_adapter/test_bridgy_adapter.py",
+            "tests/agents/internet_archive_ias3_adapter/test_publish_artifact.py",
+        ],
+        cwd=Path(__file__).resolve().parents[3],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    publication = fake_home / "hapax-state" / "publication"
+    assert not any(path.is_file() for path in publication.rglob("*")), (
+        "test modules wrote the default publication sink\n" + result.stdout + result.stderr
+    )

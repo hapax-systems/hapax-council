@@ -5,7 +5,7 @@ This is the structural vocabulary for "a capability is the FULL descriptor". The
 companion backfill makes ``execution_descriptor`` a stored, required route field with a
 strict ``ModelId``; this module pins the type vocabulary + the best-effort
 `derive`/`materialize` that projects a route's descriptor from its legacy fields — notably
-SURFACING the effort smuggled into ``model_or_engine`` (codex.headless.full = "gpt-5.5-xhigh")
+SURFACING the effort smuggled into ``model_or_engine`` (codex.headless.full = "gpt-6-astra-xhigh")
 and mapping the free-text ``model_or_engine`` onto the structured ``ModelId`` catalog.
 """
 
@@ -21,6 +21,7 @@ from shared.platform_capability_registry import (
     PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
     Quantization,
+    build_supply_vector,
     derive_execution_descriptor,
     load_platform_capability_registry,
     materialize_descriptor_leaves,
@@ -72,9 +73,9 @@ def test_derive_splits_the_smuggled_effort_suffix() -> None:
     # the verified smoking gun: effort smuggled into a model string
     registry = load_platform_capability_registry()
     codex = registry.require("codex.headless.full")
-    assert codex.model_or_engine == "gpt-5.5-xhigh"  # the smuggle, as stored
+    assert codex.model_or_engine == "gpt-6-astra-xhigh"  # the smuggle, as stored
     d = derive_execution_descriptor(codex)
-    assert d.model_id is ModelId.GPT_5_5  # effort split OUT, model mapped to the catalog
+    assert d.model_id is ModelId.GPT_6_ASTRA  # effort split OUT, model mapped to the catalog
     assert d.effort is Effort.XHIGH
 
 
@@ -207,3 +208,14 @@ def test_registry_rejects_variant_inheriting_unknown_route() -> None:
             ]
     with pytest.raises(ValueError, match="unknown route_id"):
         PlatformCapabilityRegistry.model_validate(data)
+
+
+def test_shipped_routes_all_project_concrete_descriptor_fingerprints() -> None:
+    registry = load_platform_capability_registry()
+    routes = registry.route_map()
+    assert routes
+    for route_id, route in routes.items():
+        assert route.execution_descriptor.model_id != ModelId.UNKNOWN, route_id
+        assert build_supply_vector(route).route.model_fingerprint == str(
+            route.execution_descriptor.model_id
+        ), route_id

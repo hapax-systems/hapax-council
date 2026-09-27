@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import runpy
@@ -12,8 +13,10 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import patch
+
+import pytest
+import yaml
 
 from shared.dispatcher_policy import (
     DispatchAction,
@@ -41,8 +44,181 @@ API_NOW = "2026-06-04T16:00:00Z"
 API_NOW_DT = datetime.fromisoformat(API_NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
 
-if TYPE_CHECKING:
-    import pytest
+
+def _receipt_source_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: str,
+) -> tuple[Path, Path, Path]:
+    home = tmp_path / "home"
+    installed = home / ".local/bin/hapax-platform-capability-receipts"
+    child = home / "projects/hapax-council--child"
+    child_script = child / "scripts/hapax-platform-capability-receipts"
+    for script in (installed, child_script):
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_bytes(SCRIPT.read_bytes())
+    (child / "shared").symlink_to(REPO_ROOT / "shared", target_is_directory=True)
+    for root in (home / "projects/hapax-council", child, home / ".local"):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "AGENTS.md").write_text(f"stale instructions from {root}\n")
+
+    default = home / ".cache/hapax/source-activation/worktree"
+    default.parent.mkdir(parents=True)
+    default_source = tmp_path / "default-release"
+    default.symlink_to(default_source, target_is_directory=True)
+    selected = default
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", raising=False)
+    if binding == "empty":
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", "")
+    elif binding == "override":
+        # A populated default must not substitute for a missing override.
+        default_source.mkdir()
+        (default_source / "AGENTS.md").write_text("stale default activation\n")
+        selected = home / "selected-activation"
+        selected.symlink_to(tmp_path / "override-release", target_is_directory=True)
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", "~/selected-activation")
+
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "AGENTS.md").write_text("stale cwd instructions\n")
+    monkeypatch.chdir(unrelated)
+    # run_path mutates sys.path through the script; restore it after each case.
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    return installed, child_script, selected
+
+
+@pytest.mark.parametrize("binding", ["default", "empty", "override"])
+@pytest.mark.parametrize("installed_copy", [True, False], ids=["installed", "checkout"])
+@pytest.mark.parametrize("activation_present", [True, False], ids=["present", "missing"])
+def test_receipt_observes_selected_activation_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: str,
+    installed_copy: bool,
+    activation_present: bool,
+) -> None:
+    installed, child_script, selected = _receipt_source_fixture(tmp_path, monkeypatch, binding)
+    source = selected.resolve()
+    body = b"selected activation instructions\n"
+    digest = hashlib.sha256(body).hexdigest()
+    if activation_present:
+        source.mkdir()
+        (source / "AGENTS.md").write_bytes(body)
+
+    # Supply implementation dependencies even when activation is absent.
+    # This must never cause the observed project to become this checkout.
+    monkeypatch.syspath_prepend(str(REPO_ROOT))
+    script = installed if installed_copy else child_script
+    assert script.is_file() and not script.is_symlink()
+    namespace = runpy.run_path(str(script), run_name="__test__")
+    assert namespace["REPO_ROOT"] == (source if installed_copy else child_script.parents[1])
+
+    payload = next(
+        route
+        for route in json.loads(REGISTRY.read_text())["routes"]
+        if route["route_id"] == "codex.headless.full"
+    )
+    payload["native_load_set"] = {
+        "native_home": ".codex",
+        "memory_scope": "session",
+        "source_refs": ["fixture:selected-activation"],
+        "files": [
+            {
+                "root": "project",
+                "path": "AGENTS.md",
+                "kind": "instructions",
+                "sha256": digest,
+            }
+        ],
+    }
+    route = namespace["PlatformCapabilityRoute"].model_validate(payload)
+    quota = namespace["surface_evidence"](
+        status=namespace["EvidenceStatus"].UNOBSERVABLE,
+        source="fixture",
+        observed_at=NOW_DT,
+        stale_after="24h",
+        reason_codes=["fixture_no_quota_observation"],
+    )
+    globals_ = namespace["build_receipt"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "observe_cli",
+        lambda *args, **kwargs: namespace["CliEvidence"](binary="codex", available=False),
+    )
+    monkeypatch.setitem(globals_, "observe_quota", lambda *args, **kwargs: quota)
+    with patch("subprocess.run", side_effect=AssertionError("unexpected live probe")):
+        receipt = namespace["build_receipt"](
+            platform="codex",
+            routes=[route],
+            observed_at=NOW_DT,
+            stale_after="24h",
+            provider_docs_stale_after="24h",
+            timeout=1,
+            codex_exec_auth_timeout=1,
+            codex_exec_auth_probe=False,
+        )
+
+    observation = receipt.load_sets[route.route_id]
+    assert observation["resolved_roots"]["project"] == str(source)
+    assert observation["files"] == [
+        {
+            "root": "project",
+            "path": "AGENTS.md",
+            "observed_path": str(source / "AGENTS.md"),
+            "state": "match" if activation_present else "missing",
+            "sha256": digest if activation_present else None,
+        }
+    ]
+    assert observation["problems"] == ([] if activation_present else ["missing:project:AGENTS.md"])
+    assert observation["native_loading"] == "unobserved"
+    assert observation["boundary"] == "host_observation"
+    assert observation["may_authorize"] is False
+    assert receipt.quota.status.value == "unobservable"
+
+
+@pytest.mark.parametrize("binding", ["default", "empty", "override"])
+def test_installed_receipt_imports_from_activation_without_checkout_pythonpath(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: str,
+) -> None:
+    installed, _, selected = _receipt_source_fixture(tmp_path, monkeypatch, binding)
+    source = selected.resolve()
+    source.mkdir()
+    (source / "shared").symlink_to(REPO_ROOT / "shared", target_is_directory=True)
+    env = {"HOME": str(tmp_path / "home"), "PATH": os.defpath}
+    if binding != "default":
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = os.environ["HAPAX_SOURCE_ACTIVATE_WORKTREE"]
+    # Fresh isolated interpreter: no pytest module cache, cwd imports or PYTHONPATH.
+    # Loading definitions does not execute main() or run any receipt probes.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            (
+                "import json, runpy, sys\n"
+                "namespace = runpy.run_path(sys.argv[1], run_name='__test__')\n"
+                "import shared.platform_capability_receipts as receipts\n"
+                "print(json.dumps({"
+                "'root': str(namespace['REPO_ROOT']), "
+                "'module': receipts.__file__}))\n"
+            ),
+            str(installed),
+        ],
+        cwd=tmp_path / "unrelated",
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    imported = json.loads(result.stdout)
+    assert imported["root"] == str(source)
+    assert Path(imported["module"]) == source / "shared/platform_capability_receipts.py"
 
 
 def _run_receipts(
@@ -295,6 +471,12 @@ def _mark_platform_receipt_account_live_quota_observed(
             [
                 *quota.get("evidence_refs", []),
                 f"test:{platform}:account-live-quota:observed",
+                # The producer names every route it observed; the consumer honours only named
+                # routes (#4616). This helper simulates a receipt that observed all of them.
+                *(
+                    f"platform-capability-registry:{route_id}:quota:observed"
+                    for route_id in payload.get("routes", [])
+                ),
             ]
         )
     )
@@ -320,6 +502,11 @@ def test_receipt_refresh_redacts_secret_env_and_records_missing_cli(tmp_path: Pa
     assert receipt["cli"]["available"] is False
     assert "cli_missing_or_unusable" in receipt["capability"]["reason_codes"]
     assert all(item["redacted"] is True for item in receipt["config_refs"])
+    assert len(receipt["load_sets"]) == 2
+    for observation in receipt["load_sets"].values():
+        assert observation["declaration"] == "present"
+        assert observation["native_loading"] == "unobserved"
+        assert observation["may_authorize"] is False
 
 
 def test_receipt_refresh_fails_local_on_unrelated_observation_metadata(
@@ -369,6 +556,34 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
         for ref in route.freshness.evidence.quota.evidence_refs
     )
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
+
+
+@pytest.mark.parametrize("names_route", [True, False])
+@pytest.mark.parametrize("reason", ["quota_window_exhausted", "quota_telemetry_unknown"])
+def test_observed_quota_preserves_reported_blockers_through_registry_overlay(
+    tmp_path: Path, names_route: bool, reason: str
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_codex_exec_success(bin_dir / "codex", tmp_path / "codex-used")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)})
+    assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
+    receipt_path = tmp_path / "codex.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["quota"]["reason_codes"] = [reason]
+    if not names_route:
+        receipt["quota"]["evidence_refs"].remove(
+            "platform-capability-registry:codex.headless.full:quota:observed"
+        )
+    receipt_path.write_text(json.dumps(receipt))
+    route = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT).require(
+        "codex.headless.full"
+    )
+    assert reason in route.freshness.evidence.quota.blocked_reasons
+    assert reason in route.blocked_reasons
+    assert route.route_state.value == "blocked"
+    assert ("account_live_quota_receipt_absent" in route.blocked_reasons) is (not names_route)
 
 
 def test_codex_receipt_without_exec_auth_probe_fails_closed(tmp_path: Path) -> None:
@@ -2020,3 +2235,392 @@ def test_live_read_path_defaults_receipt_dir_to_env_for_opus(tmp_path: Path) -> 
 
     assert decision.action is DispatchAction.LAUNCH
     assert "policy_launch" in decision.reason_codes
+
+
+def _quota_receipt(path: Path, **overrides: object) -> Path:
+    body: dict[str, object] = {
+        "schema": "hapax.claude_quota_admission.v1",
+        "status": "quota_available",
+        "route_id": "claude.headless.full",
+        "observation": "subscription_quota_headroom_observed",
+        "observed_at": "2026-09-01T23:10:17Z",
+        "stale_after_seconds": 1800,
+        "evidence_ref": "claude-subscription-headroom-observed-20260901t231017z",
+        "account_live_quota_observed": True,
+        "lane_presence_used_as_quota_evidence": False,
+    }
+    body.update(overrides)
+    lines = []
+    for key, value in body.items():
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        lines.append(f"{key}: {value}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _quota_ledger_fresh_for(
+    tmp_path: Path,
+    routes: dict[str, str],
+    *,
+    captured_at: str = "2026-09-01T23:00:00Z",
+    fresh_until: str = "2026-09-01T23:30:00Z",
+) -> Path:
+    """A live-ledger fixture whose quota snapshots cover exactly ``routes`` (route_id -> state).
+
+    The receipts consumer observes quota for a route only when a fresh positive relay receipt AND a
+    fresh validated ledger snapshot both name it (#4616), so tests that want "observed" must
+    provide both halves.
+    """
+    from shared.quota_spend_ledger import (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS as _expected_providers,
+    )
+
+    payload = json.loads(QUOTA_LEDGER.read_text(encoding="utf-8"))
+    payload["ledger_id"] = "quota-spend-ledger-test-live"
+    payload["captured_at"] = captured_at
+    # The ledger's own validator (subscription_quota_state_for_route) is what the consumer now
+    # trusts, so the fixture must satisfy it: telemetry-writer provenance, the expected provider
+    # for receipt-bounded routes, and an admission evidence reference in the writer's own shape.
+    payload["generated_from"] = list(
+        dict.fromkeys([*payload.get("generated_from", []), "scripts/hapax-quota-telemetry-writer"])
+    )
+
+    def _refs(route_id: str, state: str) -> list[str]:
+        if state != "fresh":
+            return [f"test:ledger:{route_id}:{state}"]
+        # The validator's witness pattern requires a `-YYYYMMDDtHHMMSSz` stamp on both the receipt
+        # label and the witness, exactly as the admission writer stamps them.
+        stamp = captured_at.replace("-", "").replace(":", "").lower()
+        if route_id.startswith("agy."):
+            # The validator's agy shape: an agy-quota-admission label, exactly one safe witness,
+            # the sanctioned reviewer tool and model, and both timestamps.
+            return [
+                f"relay-receipt:agy-quota-admission-{stamp}.yaml"
+                f":witness:agy-headroom-observed-{stamp}"
+                f":supported_tool:hapax-agy-reviewer:model:gemini-3.1-pro-high"
+                f":observed_at:{captured_at}:fresh_until:{fresh_until}"
+            ]
+        label = f"claude-subscription-quota-admission-{route_id.replace('.', '-')}-{stamp}.yaml"
+        return [
+            f"relay-receipt:{label}:witness:claude-subscription-headroom-observed-{stamp}"
+            f":observation:subscription_quota_headroom_observed"
+            f":observed_at:{captured_at}:fresh_until:{fresh_until}:account-live-quota:observed"
+        ]
+
+    payload["quota_snapshots"] = [
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": f"quota-test-{route_id.replace('.', '-')}",
+            "captured_at": captured_at,
+            "fresh_until": fresh_until if state == "fresh" else None,
+            "route_id": route_id,
+            # The validator expects each receipt-bounded route's own provider (agy is not claude).
+            "provider": _expected_providers.get(route_id, "anthropic-claude-subscription"),
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": state,
+            "evidence_refs": _refs(route_id, state),
+            "operator_visible_reason": f"test fixture: {route_id} {state}",
+        }
+        for route_id, state in routes.items()
+    ]
+    target = tmp_path / "quota-spend-ledger-live.json"
+    target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return target
+
+
+class _Route:
+    def __init__(self, route_id: str) -> None:
+        self.route_id = route_id
+
+
+class TestQuotaIsReadNotHardcoded:
+    """`quota` was a LITERAL: UNOBSERVABLE for every platform on every run, with no lookup at all.
+
+    Meanwhile `hapax-claude-account-live-observe` writes fresh, positive, mechanically-obtained
+    receipts every ten minutes — 6,917 were on disk when this was found. So all 16 declared routes
+    reported quota unobservable for a property that was in fact continuously observed.
+
+    This inverts the estate's 2026-08-19 rule, which diagnosed *an allowed observation with no
+    producer* degrading into an operator attestation. Here the producer exists and runs; the
+    CONSUMER was the stub — and a hardcoded verdict is worse than a missing one, because it cannot
+    come back.
+    """
+
+    def _module(self, tmp_path: Path):
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        # **Patch `__globals__`, not the returned dict.** `runpy.run_path` hands back a COPY of the
+        # module globals, so assigning into it never reaches the functions — they keep resolving
+        # `QUOTA_RECEIPT_DIR` to the real `~/.cache/hapax/relay/receipts`. The first version did
+        # that and two tests "passed" by reading the operator's live receipts, which is coverage
+        # theatre pointed at production state.
+        module["observe_quota"].__globals__["QUOTA_RECEIPT_DIR"] = tmp_path
+        # And the validated ledger half (#4616): a fresh snapshot for the route these tests use.
+        module["observe_quota"].__globals__["QUOTA_LEDGER_LIVE"] = _quota_ledger_fresh_for(
+            tmp_path, {"claude.headless.full": "fresh"}
+        )
+        return module
+
+    def test_a_fresh_positive_receipt_is_observed(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path)
+        _quota_receipt(tmp_path / "claude-quota-admission-a.yaml")
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "observed", result.reason_codes
+        assert any("quota-admission" in ref for ref in result.evidence_refs)
+
+    def test_a_stale_receipt_is_not_observed(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path)
+        _quota_receipt(tmp_path / "claude-quota-admission-b.yaml", stale_after_seconds=60)
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 59, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "unobservable"
+        assert "account_live_quota_receipt_absent" in result.reason_codes
+
+    def test_lane_presence_evidence_is_refused(self, tmp_path: Path) -> None:
+        """A lane existing is not evidence its quota has headroom.
+
+        Accepting it would rebuild the attestation-in-disguise this path exists to remove; the
+        receipt carries the flag precisely so a consumer can refuse it.
+        """
+        module = self._module(tmp_path)
+        _quota_receipt(
+            tmp_path / "claude-quota-admission-c.yaml",
+            lane_presence_used_as_quota_evidence=True,
+        )
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "unobservable", (
+            "lane presence must never be accepted as quota evidence"
+        )
+
+    def test_another_routes_receipt_is_not_borrowed(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path)
+        _quota_receipt(tmp_path / "other-quota-admission.yaml", route_id="glmcp.review.direct")
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "unobservable"
+
+    def test_a_yaml_parsed_datetime_is_accepted(self, tmp_path: Path) -> None:
+        """PyYAML turns an ISO timestamp into a `datetime`, not a `str`.
+
+        The first version of this lookup tested `isinstance(observed_at, str)` and therefore
+        rejected every well-formed receipt on disk — reporting quota unobservable for exactly the
+        reason it was written to fix. The receipts are unquoted timestamps, so this is the normal
+        case, not an edge one.
+        """
+        module = self._module(tmp_path)
+        path = tmp_path / "claude-quota-admission-d.yaml"
+        _quota_receipt(path)
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert isinstance(parsed["observed_at"], datetime), (
+            "fixture must reproduce YAML's datetime coercion, or this test proves nothing"
+        )
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full")],
+            now=datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC),
+        )
+        assert result.status.value == "observed"
+
+
+class _WrapperRoute:
+    def __init__(self, route_id: str, sanctioned_wrapper: str) -> None:
+        self.route_id = route_id
+        self.sanctioned_wrapper = sanctioned_wrapper
+
+
+class TestQuotaIsPerRouteAndLedgerBacked:
+    """Three review findings on #4616, each unanimous across glm, codex and gemini (2026-09-02):
+
+    1. `observe_quota` read raw admission YAML and never consulted the live quota-spend ledger the
+       exit predicate mandates, so a receipt the ledger had rejected could still mark quota observed.
+    2. One route's fresh receipt marked the WHOLE platform observed, clearing quota blockers for
+       sibling routes it never saw.
+    3. `launcher_command_path` re-ran a failing `split()[0]` and raised for a route with no
+       sanctioned wrapper instead of reporting None.
+    """
+
+    NOW = datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC)
+
+    def _module(self, tmp_path: Path, ledger: Path | None):
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        module["observe_quota"].__globals__["QUOTA_RECEIPT_DIR"] = tmp_path
+        module["observe_quota"].__globals__["QUOTA_LEDGER_LIVE"] = ledger or (
+            tmp_path / "no-such-ledger.json"
+        )
+        return module
+
+    def test_one_routes_receipt_does_not_observe_its_siblings(self, tmp_path: Path) -> None:
+        ledger = _quota_ledger_fresh_for(
+            tmp_path, {"claude.headless.full": "fresh", "claude.headless.opus": "fresh"}
+        )
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml")  # claude.headless.full only
+        result = module["observe_quota"](
+            "claude",
+            [_Route("claude.headless.full"), _Route("claude.headless.opus")],
+            now=self.NOW,
+        )
+        assert result.status.value == "observed"
+        refs = list(result.evidence_refs)
+        assert "platform-capability-registry:claude.headless.full:quota:observed" in refs
+        assert "platform-capability-registry:claude.headless.opus:quota:observed" not in refs
+        # The references are the ledger validator's (redacted) plus a bare presence marker for
+        # the relay receipt — never the raw receipt's path or its self-declared evidence_ref.
+        assert "local:claude:quota-admission-receipt:claude.headless.full:present" in refs
+        assert any(ref.startswith("relay-receipt:") for ref in refs)
+        raw_evidence_ref = "claude-subscription-headroom-observed-20260901t231017z"  # receipt's own
+        assert not any(ref.startswith("local:~") or raw_evidence_ref in ref for ref in refs)
+
+    def test_a_receipt_the_ledger_does_not_confirm_is_not_observed(self, tmp_path: Path) -> None:
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "exhausted"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml")
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+        assert result.reason_codes == ["account_live_quota_receipt_absent"]
+
+    def test_receipts_without_a_readable_ledger_are_telemetry_unknown(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path, ledger=None)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml")
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+        assert result.reason_codes == ["quota_telemetry_unknown"]
+        assert any(ref.endswith(":unreadable") for ref in result.evidence_refs)
+
+    def test_no_receipt_at_all_is_receipt_absent_whatever_the_ledger(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path, ledger=None)
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+        assert result.reason_codes == ["account_live_quota_receipt_absent"]
+
+    def test_a_future_dated_receipt_is_refused(self, tmp_path: Path) -> None:
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml", observed_at="2026-09-01T23:45:00Z")
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+
+    def test_an_unbounded_ttl_is_refused(self, tmp_path: Path) -> None:
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml", stale_after_seconds=10**9)
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "unobservable"
+
+    def test_a_corrupt_receipt_is_rejected_without_aborting_the_refresh(
+        self, tmp_path: Path
+    ) -> None:
+        """One receipt with invalid UTF-8 used to raise UnicodeDecodeError out of the observer
+        and crash the timer; it is now rejected fail-closed while a good sibling still counts."""
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        (tmp_path / "corrupt-quota-admission.yaml").write_bytes(b"route_id: \xff\xfe\n")
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml")
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "observed"
+
+    def test_observed_stale_after_is_bounded_by_the_ledger_freshness(self, tmp_path: Path) -> None:
+        # fixture ledger: fresh_until 23:30Z; now 23:15Z -> 900 s remain, below the receipt's TTL
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(tmp_path / "claude-quota-admission.yaml", stale_after_seconds=3600)
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "observed"
+        assert result.stale_after == "900s"
+
+    def test_observed_stale_after_is_what_is_left_of_the_raw_receipts_lifetime(
+        self, tmp_path: Path
+    ) -> None:
+        """A receipt 15 min into a 20 min TTL vouches for 5 more minutes, not another 20.
+
+        The platform receipt is dated from its own generation, so carrying the raw receipt's full
+        TTL renewed quota past the moment anyone last observed it (review finding on #4616).
+        """
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(
+            tmp_path / "claude-quota-admission.yaml",
+            observed_at="2026-09-01T23:00:00Z",
+            stale_after_seconds=1200,
+        )
+        result = module["observe_quota"]("claude", [_Route("claude.headless.full")], now=self.NOW)
+        assert result.status.value == "observed"
+        # now 23:15Z: 300 s left on the receipt, 900 s left on the ledger snapshot
+        assert result.stale_after == "300s"
+
+    def test_an_untyped_provenance_ref_from_the_validator_is_typed_not_fatal(
+        self, tmp_path: Path
+    ) -> None:
+        """Measured 2026-09-02 18:12 CDT on this consumer's first activated run: the ledger validator
+        returned its provenance entry `scripts/hapax-quota-telemetry-writer` among the refs,
+        SurfaceEvidence refused the bare path, and every platform's refresh died with it."""
+        ledger = _quota_ledger_fresh_for(tmp_path, {"claude.headless.full": "fresh"})
+        module = self._module(tmp_path, ledger)
+        globals_ = module["_ledger_fresh_routes"].__globals__
+        real = globals_["subscription_quota_state_for_route"]
+
+        def with_provenance(ledger_obj, route_id, *, now=None):
+            state, refs = real(ledger_obj, route_id, now=now)
+            return state, [*refs, "scripts/hapax-quota-telemetry-writer"]
+
+        globals_["subscription_quota_state_for_route"] = with_provenance
+        try:
+            _quota_receipt(tmp_path / "claude-quota-admission.yaml")
+            result = module["observe_quota"](
+                "claude", [_Route("claude.headless.full")], now=self.NOW
+            )
+        finally:
+            globals_["subscription_quota_state_for_route"] = real
+        assert result.status.value == "observed", result.reason_codes
+        assert (
+            "quota-spend-ledger:generated_from:scripts/hapax-quota-telemetry-writer"
+            in result.evidence_refs
+        )
+        assert "scripts/hapax-quota-telemetry-writer" not in result.evidence_refs
+
+    def test_the_agy_review_route_is_observed_from_its_own_receipt_and_ledger_snapshot(
+        self, tmp_path: Path
+    ) -> None:
+        """The exit predicate names agy as well as claude, and agy has its own provider and
+        evidence shape in the ledger's validator (review finding on #4616)."""
+        ledger = _quota_ledger_fresh_for(tmp_path, {"agy.review.direct": "fresh"})
+        module = self._module(tmp_path, ledger)
+        _quota_receipt(
+            tmp_path / "agy-quota-admission.yaml",
+            schema="hapax.agy_quota_admission.v1",
+            route_id="agy.review.direct",
+            evidence_ref="agy-headroom-observed-20260901t231017z",
+        )
+        result = module["observe_quota"]("agy", [_Route("agy.review.direct")], now=self.NOW)
+        assert result.status.value == "observed", result.reason_codes
+        assert (
+            "platform-capability-registry:agy.review.direct:quota:observed" in result.evidence_refs
+        )
+        assert "local:agy:quota-admission-receipt:agy.review.direct:present" in result.evidence_refs
+
+    def test_no_sanctioned_wrapper_is_none_not_an_exception(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path, ledger=None)
+        assert module["launcher_command_path"](_WrapperRoute("x.y", "")) is None
+        assert module["launcher_command_path"](_WrapperRoute("x.y", "   ")) is None
+        evidence = module["observe_wrapper"](_WrapperRoute("x.y", ""))
+        assert evidence.exists is False and evidence.executable is False
+        assert evidence.sha256 is None
+
+    def test_a_declared_wrapper_still_resolves(self, tmp_path: Path) -> None:
+        module = self._module(tmp_path, ledger=None)
+        path = module["launcher_command_path"](_WrapperRoute("x.y", "scripts/hapax-claude --x"))
+        assert path is not None and path.name == "hapax-claude"

@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+# The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
+# the symlink path — so the lib lives beside the TARGET and must be resolved first (measured:
+# invoked through the symlink, `${BASH_SOURCE[0]%/*}/lib` was ~/.local/bin/lib, absent, rc=1).
+# /usr/bin/readlink by absolute path keeps this independent of PATH; the fallback keeps a host
+# without coreutils on the direct-invocation behaviour rather than dying here.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
+. "${_hapax_self%/*}/lib/tier1-snapshot.sh"
+
 # Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
 # This script does not create live database dumps, create Qdrant snapshots,
 # upload live MinIO backing stores, or run destructive restic prune. It does
@@ -22,6 +33,9 @@ QDRANT_SNAPSHOT_DIR="${HAPAX_QDRANT_SNAPSHOT_DIR:-/store/llm-data/qdrant-snapsho
 HAPAX_VAULT_DIR="${HAPAX_VAULT_DIR:-$HOME/Documents/Personal/30-areas/hapax}"
 # Bundle must not live inside the vault it bundles (recursive growth).
 VAULT_BUNDLE_DIR="${HAPAX_VAULT_BUNDLE_DIR:-/store/llm-data/vault-bundles}"
+# The gpg-encrypted secret-store archive (ciphertext; passphrase lives elsewhere). Added 2026-09-02:
+# the manifest covered every other critical artefact and not the one whose loss is unrecoverable.
+SECRET_STORE_DIR="${HAPAX_SECRET_STORE_DIR:-/mnt/nas/archive/hapax-preservation/secret-store}"
 
 # Conservative Google Drive/rclone defaults. Operators may tune these by env.
 export RCLONE_TRANSFERS="${RCLONE_TRANSFERS:-1}"
@@ -68,12 +82,12 @@ log() { echo "[$(date -Iseconds)] $*" >&2; }
 
 restic_password() {
     local password
-    password="$(pass show "$PASSWORD_ENTRY" 2>/dev/null | sed -n '1p')" || {
-        echo "ERROR: cannot read restic password pass entry '$PASSWORD_ENTRY'" >&2
+    password="$(hapax_secret_read "$PASSWORD_ENTRY")" || {
+        echo "ERROR: cannot read the restic password '$PASSWORD_ENTRY' from the FileStore. Next action: put it with \`hapax-secret $PASSWORD_ENTRY\`." >&2
         return 1
     }
     if [[ -z "$password" ]]; then
-        echo "ERROR: restic password pass entry '$PASSWORD_ENTRY' is empty" >&2
+        echo "ERROR: the restic password '$PASSWORD_ENTRY' is empty. Next action: re-put it with \`hapax-secret $PASSWORD_ENTRY\`." >&2
         return 1
     fi
     printf '%s' "$password"
@@ -108,26 +122,39 @@ materialize_validated_dump() {
     # /tmp; we refuse to point the manifest there. Fail closed if NAS has no dump.
     mkdir -p "$(dirname "$POSTGRES_DUMP_PATH")"
     local password
-    password="$(pass show "$TIER1_PASSWORD_ENTRY" 2>/dev/null | sed -n '1p')" || {
-        echo "ERROR: cannot read Tier-1 restic password ($TIER1_PASSWORD_ENTRY)" >&2
-        echo "Next: unlock pass and re-run" >&2
+    password="$(hapax_secret_read "$TIER1_PASSWORD_ENTRY")" || {
+        echo "ERROR: cannot read the Tier-1 restic password ($TIER1_PASSWORD_ENTRY) from the FileStore" >&2
+        echo "Next action: put it with \`hapax-secret $TIER1_PASSWORD_ENTRY\`, then re-run" >&2
         exit 1
     }
     [[ -n "$password" ]] || {
         echo "ERROR: Tier-1 restic password is empty" >&2
         exit 1
     }
-    local listing snap_path
-    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long latest 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
+    # The NAS repository also holds tier1-transcripts and monocle snapshots, so the tier-1 snapshot is named by
+    # host and tag (scripts/lib/tier1-snapshot.sh), once, and listed and dumped by that id.
+    local listing snap_path snap_id
+    snap_id="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" tier1_latest_snapshot_id)" || {
+        echo "ERROR: cannot list Tier-1 snapshots in $TIER1_REPO (restic or jq failed)" >&2
+        echo "Next: check the NAS mount and \`restic snapshots\` against $TIER1_REPO, then re-run" >&2
+        exit 1
+    }
+    [[ -n "$snap_id" ]] || {
+        echo "ERROR: no Tier-1 snapshot (host $TIER1_HOST, tag $TIER1_TAG) in $TIER1_REPO" >&2
+        echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
+        exit 1
+    }
+    # The file's listing line only (mode starts with "-"), never the "snapshot … of [paths]" header.
+    listing="$(RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" restic ls --long "$snap_id" 2>/dev/null | grep -E '^-.* /[^ ]*/postgres-all\.sql$' | head -1)" || true
     [[ -n "$listing" ]] || {
-        echo "ERROR: Tier-1 latest snapshot contains no postgres-all.sql" >&2
+        echo "ERROR: Tier-1 snapshot $snap_id contains no postgres-all.sql" >&2
         echo "Next: run hapax-backup-local so NAS holds a validated dump" >&2
         exit 1
     }
     snap_path="$(echo "$listing" | awk '{print $NF}')"
     local partial="${POSTGRES_DUMP_PATH}.partial"
     RESTIC_REPOSITORY="$TIER1_REPO" RESTIC_PASSWORD="$password" \
-        restic dump latest "$snap_path" > "$partial"
+        restic dump "$snap_id" "$snap_path" > "$partial"
     local size
     size="$(wc -c < "$partial")"
     if (( size < POSTGRES_DUMP_MIN_BYTES )); then
@@ -224,6 +251,7 @@ build_manifest() {
     append_latest_qdrant_snapshots "$manifest"
     append_vault_evidence "$manifest"
     append_if_exists "$VAULT_BUNDLE_DIR" "$manifest"
+    append_if_exists "$SECRET_STORE_DIR" "$manifest"
 
     sort -u "$manifest" -o "$manifest"
     if [[ ! -s "$manifest" ]]; then
@@ -269,8 +297,11 @@ verify_only() {
 retention_dry_run() {
     require_non_root_workdir
     log "Running retention dry-run only; no prune/delete"
+    # --keep-tag tier1-transcripts: transcript snapshots are never pruned (seat ruling 2026-09-27). The guard is
+    # on every forget in the estate; tests/test_transcript_custody.py fails if one lacks it.
     run_restic forget \
         --no-lock \
+        --keep-tag tier1-transcripts \
         --keep-daily 7 \
         --keep-weekly 4 \
         --keep-monthly 2 \

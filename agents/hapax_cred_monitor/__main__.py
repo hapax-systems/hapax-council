@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from .expiry_probe import collect_expiry_statuses, route_expiry_alerts
-from .monitor import DEFAULT_PASS_STORE, compute_delta, walk_pass_store
+from .monitor import compute_delta, walk_secret_store
 from .unblocker_report import (
     DEFAULT_CACHE_DIR,
     append_delta_log,
@@ -37,13 +37,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser = argparse.ArgumentParser(
         prog="agents.hapax_cred_monitor",
-        description="Snapshot pass entry names; emit operator-unblocker report.",
+        description="Snapshot FileStore secret names; emit operator-unblocker report.",
     )
     parser.add_argument(
         "--store",
         type=Path,
-        default=DEFAULT_PASS_STORE,
-        help="Pass store directory (default: ~/.password-store)",
+        default=None,
+        help="Secret store directory (default: this host's FileStore root)",
     )
     parser.add_argument(
         "--cache-dir",
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    snapshot = walk_pass_store(args.store)
+    snapshot = walk_secret_store(args.store)
     report = build_report(snapshot)
 
     if args.report:

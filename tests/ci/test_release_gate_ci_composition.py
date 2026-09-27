@@ -101,6 +101,29 @@ def test_egress_boundary_pin_job_executes_the_pin_file_per_pr() -> None:
     ), "egress-boundary-pin no longer executes the egress pin file"
 
 
+def test_egress_boundary_pin_job_executes_the_consent_containment_pins_per_pr() -> None:
+    # The consent-containment lane's coverage admission
+    # (LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES, shared/release_gate.py) is
+    # justified by this job executing the lane's core containment pins on
+    # every PR head: consent reader pipeline, archive purge, face enrollment.
+    # Dropping one silently re-widens the lane without its behavioral
+    # evidence — evidence follows coverage, and this anchor holds the
+    # coverage to its pins.
+    job = _ci()["jobs"]["egress-boundary-pin"]
+    run_steps = [str(step.get("run", "")) for step in job["steps"]]
+    joined = "\n".join(run_steps)
+    for pin_file in (
+        "tests/test_consent_pipeline_reader.py",
+        "tests/test_archive_purge.py",
+        "tests/shared/test_face_enrollment_registry.py",
+        "tests/hapax_daimonion/test_conversational_policy.py",
+        "packages/agentgov/tests/test_carrier.py",
+    ):
+        assert re.search(rf"uv run\b.*\bpytest\b.*{re.escape(pin_file)}", joined), (
+            f"egress-boundary-pin no longer executes the consent pin {pin_file}"
+        )
+
+
 def test_egress_pin_file_still_contains_the_named_behavior_pins() -> None:
     # Structurally pinned with semantic anchors. Threat model, stated honestly:
     # this guard defeats SILENT STRUCTURAL drift — deleted functions, gutted

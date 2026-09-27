@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import stat
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -112,7 +114,28 @@ CREATE INDEX IF NOT EXISTS idx_messages_expiry
 """
 
 
-def _connect(db_path: Path, busy_timeout_ms: int = 5000) -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect(db_path: Path, busy_timeout_ms: int = 5000) -> Iterator[sqlite3.Connection]:
+    """Yield a WAL-mode connection that commits/rolls back AND closes.
+
+    ``sqlite3.Connection`` used directly as a context manager only ends the
+    transaction; the connection itself stays open until GC. An open WAL
+    connection pins ``messages.db-wal``/``-shm`` on disk, and its eventual GC
+    collection deletes them at an unpredictable moment — the merge-queue flake
+    in test_relay_mq's directory snapshots. Closing here makes both the
+    commit/rollback and the sidecar removal deterministic. Use
+    ``_open_connection`` for a caller-managed long-lived connection.
+    """
+
+    conn = _open_connection(db_path, busy_timeout_ms)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+def _open_connection(db_path: Path, busy_timeout_ms: int = 5000) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")

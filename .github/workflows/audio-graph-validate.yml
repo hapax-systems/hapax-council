@@ -30,6 +30,10 @@ on:
       - "docs/audio/**"
       - "hooks/scripts/*audio*"
       - ".github/workflows/audio-graph-validate.yml"
+      - "shared/s4_scenes.py"
+      - "tests/shared/test_s4_scenes.py"
+      - "agents/faderfox_bridge.py"
+      - "tests/agents/test_faderfox_bridge.py"
   pull_request:
     branches: [main]
     paths: *audio-authority-paths
@@ -92,6 +96,14 @@ jobs:
                         tests/shared/test_canonical_audio_topology.py \
                         tests/shared/test_audio_topology_inspector.py \
                         tests/docs/test_audio_current_capsule.py \
+                        -q --no-header
+      - name: Run the topology reference's key-file suites (S-4 scenes, Faderfox bridge)
+        # These suites are what makes passive-validator release evidence for
+        # these files (shared/release_gate.py AUDIO_ROUTING_SURFACES). Pinned by
+        # tests/ci/test_outbound_send_surface_scan_ci.py.
+        run: |
+          uv run pytest tests/shared/test_s4_scenes.py \
+                        tests/agents/test_faderfox_bridge.py \
                         -q --no-header
       - name: Check audio AuthorityCase metadata
         run: uv run python scripts/check-audio-authority-case.py --strict

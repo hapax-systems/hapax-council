@@ -1,46 +1,49 @@
 """Credential-entry → unblocked-service registry.
 
-Pure data, no I/O. Maps each pass entry name (the path under
-``~/.password-store/`` minus the ``.gpg`` suffix) to the set of services
-or surfaces that gain capability when the entry arrives.
+Pure data, no I/O. Maps each FileStore secret name (the blob name ``hapax-secret --list``
+prints, e.g. ``api-anthropic``) to the set of services or surfaces that gain capability
+when the entry arrives.
 
 The registry is the single source of truth for "what does this credential
 unblock?" Health-monitor checks, operator-unblocker reports, and the
 optional auto-resume path all read this dict.
 
 Adding a new credential: add an ``ExpectedEntry`` to ``EXPECTED_ENTRIES``
-naming the entry, the services it unblocks, and a one-line operator
-remediation hint. Do NOT include sample values, partial fingerprints, or
-any secret material — entry NAMES only.
+naming the entry and the services it unblocks; the remediation is derived
+(the one ``hapax-secret`` put instruction). Do NOT include sample values,
+partial fingerprints, or any secret material — entry NAMES only.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from shared.secrets import put_instruction
+
 
 @dataclass(frozen=True)
 class ExpectedEntry:
-    """One pass entry the system expects to be populated.
+    """One FileStore secret the system expects to be populated.
 
     Attributes:
-        name: Entry name relative to ``~/.password-store/`` without the
-            ``.gpg`` suffix (e.g., ``"orcid/orcid"``,
-            ``"bluesky/operator-app-password"``).
+        name: The secret's blob name, as ``hapax-secret --list`` prints it and as the
+            operator types it into the put dialogue (e.g., ``"orcid-orcid"``,
+            ``"bluesky-operator-app-password"``).
         unblocks: Services, daemons, or surfaces that gain capability
             when this entry is present. Free-form identifiers
             (systemd unit names, publisher slugs, registry keys).
-        remediation: One-line hint shown in the unblocker report.
-            Must NOT contain the actual secret material — only the
-            ``pass insert`` invocation.
         category: High-level grouping for operator dashboards.
     """
 
     name: str
     unblocks: tuple[str, ...]
-    remediation: str
     category: str = "other"
     notes: str = ""
+
+    @property
+    def remediation(self) -> str:
+        """The one operator next-action: put this entry with ``hapax-secret``."""
+        return put_instruction(self.name)
 
 
 # Canonical registry of credentials the system can use, by descending
@@ -50,7 +53,7 @@ class ExpectedEntry:
 EXPECTED_ENTRIES: tuple[ExpectedEntry, ...] = (
     # ── publication / attribution surfaces ─────────────────────────
     ExpectedEntry(
-        name="zenodo/api-token",
+        name="zenodo-api-token",
         unblocks=(
             "zenodo-deposit-publisher",
             "zenodo-refusal-deposit-publisher",
@@ -58,113 +61,97 @@ EXPECTED_ENTRIES: tuple[ExpectedEntry, ...] = (
             "iscitedby-touch-phase-2",
             "refusal-as-related-identifier-phase-2",
         ),
-        remediation="pass insert zenodo/api-token",
         category="publication",
         notes="Highest value-unlocked entry: 6 Phase 2 publication-bus tasks.",
     ),
     ExpectedEntry(
-        name="orcid/orcid",
+        name="orcid-orcid",
         unblocks=(
             "hapax-orcid-verifier.timer",
             "hapax-datacite-mirror.timer",
             "hapax-datacite-snapshot.timer",
             "hapax-self-federate-rss.timer",
         ),
-        remediation="pass insert orcid/orcid",
         category="attribution",
         notes="ORCID iD (public identifier; not a secret value but stored uniformly).",
     ),
     ExpectedEntry(
-        name="omg-lol/api-key",
+        name="omg-lol-api-key",
         unblocks=(
             "omg-lol-weblog-bearer-fanout",
             "omg_rss_fanout-multi-target",
             "omg-credits-publisher",
         ),
-        remediation="pass insert omg-lol/api-key",
         category="publication",
     ),
     ExpectedEntry(
-        name="bluesky/operator-app-password",
+        name="bluesky-operator-app-password",
         unblocks=("bluesky-atproto-multi-identity",),
-        remediation="pass insert bluesky/operator-app-password",
         category="publication",
     ),
     ExpectedEntry(
-        name="bluesky/operator-did",
+        name="bluesky-operator-did",
         unblocks=("bluesky-atproto-multi-identity",),
-        remediation="pass insert bluesky/operator-did",
         category="publication",
     ),
     ExpectedEntry(
-        name="osf/api-token",
+        name="osf-api-token",
         unblocks=(
             "osf-prereg-publisher",
             "osf-related-works-selection-daemon",
         ),
-        remediation="pass insert osf/api-token",
         category="publication",
     ),
     ExpectedEntry(
-        name="ia/access-key",
+        name="ia-access-key",
         unblocks=("internet-archive-ias3-publisher",),
-        remediation="pass insert ia/access-key",
         category="archival",
     ),
     ExpectedEntry(
-        name="ia/secret-key",
+        name="ia-secret-key",
         unblocks=("internet-archive-ias3-publisher",),
-        remediation="pass insert ia/secret-key",
         category="archival",
     ),
     ExpectedEntry(
-        name="crossref/depositor-credentials",
+        name="crossref-depositor-credentials",
         unblocks=("crossref-depositor",),
-        remediation="pass insert crossref/depositor-credentials",
         category="publication",
         notes="Membership-required; unlikely bottleneck.",
     ),
     ExpectedEntry(
-        name="philarchive/session-cookie",
+        name="philarchive-session-cookie",
         unblocks=("philarchive-deposit-publisher",),
-        remediation="pass insert philarchive/session-cookie",
         category="publication",
     ),
     ExpectedEntry(
-        name="philarchive/author-id",
+        name="philarchive-author-id",
         unblocks=("philarchive-deposit-publisher",),
-        remediation="pass insert philarchive/author-id",
         category="publication",
     ),
     # ── core infra (already typically present) ─────────────────────
     ExpectedEntry(
-        name="api/anthropic",
+        name="api-anthropic",
         unblocks=("litellm-claude-routes",),
-        remediation="pass insert api/anthropic",
         category="infra",
     ),
     ExpectedEntry(
-        name="api/google",
+        name="api-google",
         unblocks=("litellm-gemini-routes",),
-        remediation="pass insert api/google",
         category="infra",
     ),
     ExpectedEntry(
-        name="litellm/master-key",
+        name="litellm-master-key",
         unblocks=("litellm-gateway",),
-        remediation="pass insert litellm/master-key",
         category="infra",
     ),
     ExpectedEntry(
-        name="langfuse/public-key",
+        name="langfuse-public-key",
         unblocks=("langfuse-tracing",),
-        remediation="pass insert langfuse/public-key",
         category="infra",
     ),
     ExpectedEntry(
-        name="langfuse/secret-key",
+        name="langfuse-secret-key",
         unblocks=("langfuse-tracing",),
-        remediation="pass insert langfuse/secret-key",
         category="infra",
     ),
 )

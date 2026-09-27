@@ -482,7 +482,7 @@ def test_knobs_absent_uses_defaults_fail_safe() -> None:
     assert isinstance(knobs, EdtKnobs)
     assert knobs.expected_platform_set == 12
     assert knobs.depth_cap == 20
-    assert len(knobs.expected_platform_members) == 8
+    assert len(knobs.expected_platform_members) == 9
     assert "gemini" in knobs.expected_platform_members
     assert "claude" in knobs.expected_platform_members
 
@@ -494,7 +494,7 @@ def test_d0_platform_set_is_operator_assertion() -> None:
     payload = _fresh_payload()
     measures = score_edt(_registry(payload), knobs_path=_knobs_file(_OBSERVED_MEMBERS), now=NOW)
     m = measures[0]
-    assert m.observed_platform_count == 7  # the real live registry prefixes
+    assert m.observed_platform_count == 8  # the real live registry prefixes
     assert tuple(m.expected_platform_members) == tuple(
         _OBSERVED_MEMBERS
     )  # read verbatim from knobs

@@ -31,12 +31,16 @@ from shared.policy_decision import Decision, FailMode, Verdict
 # --- Irreversible-harm classifiers (executed program / edit path) -------------
 
 #: Constitutional + defense-in-depth governance surfaces — never mutate kernel-down.
-#: axioms/ and shared/governance/ are constitutional; CODEOWNERS / CLAUDE.md /
+#: axioms/ and shared/governance/ are constitutional; CODEOWNERS / agent instructions /
 #: pipewire configs are defense-in-depth (finding #11, low severity).
 _AXIOM_PATH_RE = re.compile(
     r"(?:^|/)(?:axioms|shared/governance)/"
     r"|(?:^|/)CODEOWNERS$"
-    r"|(?:^|/)CLAUDE\.md$"
+    r"|(?:^|/)(?:CLAUDE|AGENTS)\.md$"
+    r"|(?:^|/)config/agent-instructions/native/[^/]+\.md$"
+    r"|(?:^|/)config/agent-instructions/bindings\.json$"
+    r"|(?:^|/)docs/runbooks/council-domain-context\.md$"
+    r"|(?:^|/)scripts/install-agent-instructions\.py$"
     r"|config/pipewire/"
 )
 

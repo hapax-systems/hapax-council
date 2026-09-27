@@ -15,11 +15,17 @@ account-live observation (an evidence ref naming what was observed), NEVER a liv
 secret value and no prompt/response content, and the receipt is short-lived so it cannot stand as
 stale evidence. Fail-closed: an unsafe/invalid observation exits non-zero and writes nothing, so the
 route stays held.
+
+The account-live probe's own reply does carry the subscription's five-hour and seven-day
+utilization. When the scrubbed probe passes those windows, the receipt keeps them as
+``<window>_used_percent`` and ``<window>_resets_at`` beside the admission bit. The numbers never
+change admission; they are the quantity the quota ledger reads.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import sys
@@ -45,6 +51,13 @@ SECRET_SOURCE = "claude:operator-session-subscription"
 DEFAULT_STALE_AFTER_SECONDS = 900
 MIN_STALE_AFTER_SECONDS = 60
 MAX_STALE_AFTER_SECONDS = 3600
+PROBE_ENV_SCRUBBED = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+)
+PROBE_ENV_SCRUBBED_RECEIPT_VALUE = ",".join(PROBE_ENV_SCRUBBED)
 
 # The bounded observation kinds this writer will attest. Each names an account-live subscription
 # observation that is NOT lane/tmux/session presence: a real Claude invocation completed without a
@@ -54,6 +67,78 @@ ALLOWED_OBSERVATIONS = (
     "subscription_quota_headroom_observed",
     "operator_confirmed_subscription_headroom",
 )
+# Provider window names the probe reply reports under rate_limit_event.unifiedWindows.
+PROBE_WINDOWS = ("five_hour", "seven_day")
+
+#: The pacing governor and the marker that says it is ARMED. Armed comes from the explicit
+#: activation marker only — never from the ledger's existence (muse critical, 2026-09-26).
+PACE_SCRIPT = Path(__file__).resolve().parent / "hapax-claude-pool-pace"
+PACE_ACTIVATION_PATH = Path(
+    os.environ.get(
+        "HAPAX_CLAUDE_POOL_PACE_ACTIVATION",
+        str(Path.home() / ".cache" / "hapax" / "claude-pool-pace" / "activation.json"),
+    )
+)
+PACE_GATE_RECOVERY_HINT = (
+    "next action: the Claude 7-day pool is at or over its pace line, or the governor could not "
+    "produce a fresh ledgered reading, so the route holds. Wait for the line or the window "
+    "reset, then repair the reading with scripts/hapax-claude-pool-pace record. There is "
+    "deliberately no bypass flag."
+)
+
+
+def _pace_module() -> object:
+    """The governor module, loaded by path (scripts/ carries no package)."""
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+
+    loader = SourceFileLoader("hapax_claude_pool_pace_gate", str(PACE_SCRIPT))
+    spec = spec_from_loader(loader.name, loader)
+    if spec is None:  # pragma: no cover - the loader always provides a spec here
+        raise RuntimeError("the pacing governor module could not be loaded")
+    module = module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _pace_gate(
+    receipt_dir: Path, headless_glob: str, *, now: datetime, activation_path: Path
+) -> tuple[str, str]:
+    """Ask the pacing governor. Only ``armed_allow`` mints.
+
+    ``not_armed`` allows and is emitted visibly by the caller; ``armed_refuse`` and
+    ``gate_error`` refuse. With the governor armed, an absent, unreadable or empty ledger
+    REFUSES: armed is never inferred from the ledger, and absence of evidence is never
+    permission.
+    """
+    try:
+        module = _pace_module()
+    except Exception as exc:  # noqa: BLE001 — an unloadable governor refuses, never permits
+        return "gate_error", f"pacing governor unloadable: {exc}"
+    try:
+        is_armed, _marker = module.armed(Path(activation_path))
+    except (OSError, ValueError) as exc:
+        return "gate_error", f"activation marker unreadable: {exc}"
+    if not is_armed:
+        return "not_armed", f"no activation marker at {activation_path}: not armed"
+
+    ledger, _rows = module.ledger_state()
+    if ledger == "unreadable":
+        return "armed_refuse", "pace_ledger_unreadable"
+    if ledger == "absent":
+        return "armed_refuse", "pace_ledger_absent"
+    if ledger == "empty":
+        return "armed_refuse", "pace_ledger_empty"
+    try:
+        state = module.evaluate(
+            Path(receipt_dir), headless_glob, now=now, activation_path=Path(activation_path)
+        )
+    except Exception as exc:  # noqa: BLE001 — an unreadable evaluation refuses
+        return "armed_refuse", f"pace_evaluation_unreadable: {exc}"
+    if state.get("decision") == "allow":
+        return "armed_allow", str(state.get("reason"))
+    return "armed_refuse", str(state.get("reason"))
+
 
 VALIDATION_RECOVERY_HINT = (
     "next action: rerun with --help to confirm bounds, pass a sanitized --evidence-ref that names "
@@ -104,6 +189,15 @@ def _parse_utc(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC).replace(microsecond=0)
+
+
+class PaceRefused(RuntimeError):
+    """The Claude pool pacing governor refused this receipt; nothing is written."""
+
+
+def _instant(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def _iso(value: datetime) -> str:
@@ -172,6 +266,49 @@ def _receipt_name(args: argparse.Namespace, *, route_id: str, observed_at: datet
     return name
 
 
+def _probe_windows(
+    args: argparse.Namespace, *, observation: str, observed_at: datetime
+) -> list[tuple[str, object]]:
+    """Receipt fields for the windows the probe reply reported; none unless the probe sent them."""
+    fields: list[tuple[str, object]] = []
+    for name in PROBE_WINDOWS:
+        flag = name.replace("_", "-")
+        used = getattr(args, f"{name}_used_percent")
+        reset = getattr(args, f"{name}_resets_at")
+        if used is None and reset is None:
+            continue
+        if not args.probe_environment_scrubbed or observation != ALLOWED_OBSERVATIONS[0]:
+            raise ValueError(
+                "subscription windows come only from the scrubbed account-live probe's reply; "
+                "pass them with --probe-environment-scrubbed and the observed-headroom observation"
+            )
+        if used is None or reset is None:
+            raise ValueError(
+                f"--{flag}-used-percent and --{flag}-resets-at must be passed together"
+            )
+        try:
+            percent = float(used)
+        except ValueError:
+            percent = math.nan
+        if not math.isfinite(percent) or percent < 0:
+            raise ValueError(f"--{flag}-used-percent must be a finite, non-negative percent")
+        resets_at = _parse_utc(reset)
+        if resets_at is None or resets_at <= observed_at:
+            raise ValueError(
+                f"--{flag}-resets-at must be an ISO-8601 UTC time after the observation; "
+                "a window that already reset is not the current window"
+            )
+        fields += [(f"{name}_used_percent", percent), (f"{name}_resets_at", _iso(resets_at))]
+    if args.subscription_served:
+        if not args.probe_environment_scrubbed or observation != ALLOWED_OBSERVATIONS[0]:
+            raise ValueError(
+                "--subscription-served comes only from the scrubbed account-live probe's reply"
+            )
+        # The probe saw an allowed status and an explicit non-overage flag on every rate event.
+        fields.append(("subscription_served", True))
+    return fields
+
+
 def _write_flat_yaml_atomic(path: Path, fields: list[tuple[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
@@ -223,7 +360,34 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_STALE_AFTER_SECONDS,
     )
+    parser.add_argument(
+        "--probe-environment-scrubbed",
+        action="store_true",
+        help="Record the fixed provider-environment controls removed by the active probe",
+    )
+    parser.add_argument(
+        "--subscription-served",
+        action="store_true",
+        help="The probe's reply witnessed an allowed, explicitly non-overage serve (probe only)",
+    )
+    for name in PROBE_WINDOWS:
+        flag = name.replace("_", "-")
+        parser.add_argument(
+            f"--{flag}-used-percent",
+            help=f"Probe-reported {name} utilization as a percent (probe-backed receipts only)",
+        )
+        parser.add_argument(
+            f"--{flag}-resets-at",
+            help=f"Probe-reported {name} reset, ISO-8601 UTC (with --{flag}-used-percent)",
+        )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--pace-receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
+    parser.add_argument(
+        "--pace-headless-glob",
+        default=str(Path.home() / ".cache" / "hapax" / "claude-headless" / "*" / "output.jsonl"),
+    )
+    parser.add_argument("--pace-now")
+    parser.add_argument("--pace-activation", type=Path, default=PACE_ACTIVATION_PATH)
     return parser
 
 
@@ -240,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
         route_id = _route_id(args.route_id)
         evidence_ref = _safe_reference(args.evidence_ref, label="evidence-ref")
         receipt_name = _receipt_name(args, route_id=route_id, observed_at=observed_at)
+        windows = _probe_windows(args, observation=observation, observed_at=observed_at)
         path = args.receipt_dir / receipt_name
         fields: list[tuple[str, object]] = [
             ("schema", ADMISSION_SCHEMA),
@@ -249,6 +414,11 @@ def main(argv: list[str] | None = None) -> int:
             ("capacity_pool", CAPACITY_POOL),
             ("auth_surface", AUTH_SURFACE),
             ("observation", observation),
+            *(
+                [("probe_environment_scrubbed", PROBE_ENV_SCRUBBED_RECEIPT_VALUE)]
+                if args.probe_environment_scrubbed
+                else []
+            ),
             ("observed_at", _iso(observed_at)),
             ("stale_after_seconds", args.stale_after_seconds),
             ("evidence_ref", evidence_ref),
@@ -259,8 +429,27 @@ def main(argv: list[str] | None = None) -> int:
             ("account_live_quota_observed", True),
             ("lane_presence_used_as_quota_evidence", False),
             ("positive_admission", True),
+            *windows,
         ]
+        pace_state, pace_detail = _pace_gate(
+            args.pace_receipt_dir,
+            args.pace_headless_glob,
+            now=_now(args) if args.pace_now is None else _instant(args.pace_now),
+            activation_path=args.pace_activation,
+        )
+        if pace_state in {"armed_refuse", "gate_error"}:
+            raise PaceRefused(f"{pace_state}: {pace_detail}")
         _write_flat_yaml_atomic(path, fields)
+        # Emitted on the allow path too, never discarded (muse critical): an unarmed gate and
+        # its reason are visible to whoever reads this run.
+        print(f"pace: {pace_state}: {pace_detail}", file=sys.stderr)
+    except PaceRefused as exc:
+        print(
+            f"hapax-claude-subscription-quota-admission: refused by the Claude pool pacing "
+            f"governor ({exc}); {PACE_GATE_RECOVERY_HINT}",
+            file=sys.stderr,
+        )
+        return 3
     except ValueError as exc:
         print(
             f"hapax-claude-subscription-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}",
@@ -278,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = {
         "receipt_kind": "admission",
+        "pace_gate": pace_state,
+        "pace_gate_detail": pace_detail,
         "path": str(path),
         "route_id": route_id,
         "capacity_pool": CAPACITY_POOL,
@@ -291,6 +482,8 @@ def main(argv: list[str] | None = None) -> int:
         "account_live_quota_observed": True,
         "lane_presence_used_as_quota_evidence": False,
     }
+    if args.probe_environment_scrubbed:
+        summary["probe_environment_scrubbed"] = list(PROBE_ENV_SCRUBBED)
     if args.json:
         import json
 

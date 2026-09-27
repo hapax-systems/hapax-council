@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +14,10 @@ from pydantic import ValidationError
 
 from shared.quota_spend_ledger import (
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    GLMCP_ADMISSION_MODELS,
+    GLMCP_MODEL_IDS,
+    GLMCP_PAYG_PRICES_USD_PER_MTOK,
+    GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE,
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS,
@@ -27,6 +32,7 @@ from shared.quota_spend_ledger import (
     PaidRouteRequest,
     Quantization,
     QuotaSpendLedger,
+    QuotaSpendLedgerError,
     SpendGateDecisionState,
     SpendReceipt,
     SpendReconciliationState,
@@ -35,15 +41,22 @@ from shared.quota_spend_ledger import (
     SupportArtifactDisposition,
     build_dashboard,
     evaluate_paid_route_eligibility,
+    frozen_spend_receipt_payload,
+    glmcp_payg_reservation_usd,
+    glmcp_payg_usage_ceiling_usd,
+    glmcp_payg_usage_cost_usd,
     has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
+    settle_spend_covered_by_provider_balance,
     subscription_quota_state_for_route,
     successful_task_scoped_glmcp_payg_review_spend_receipts,
 )
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
 CURRENT_REFRESH_NOW = datetime(2026, 6, 4, 17, 10, 0, tzinfo=UTC)
+GLMCP_PAYG_BREAKGLASS_NOW = datetime(2026, 9, 17, 12, 0, 0, tzinfo=UTC)
+GLMCP_PAYG_BREAKGLASS_BUDGET_ID = "tb-20260916-zai-glmcp-payg-breakglass"
 GLMCP_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:glmcp-quota-admission.yaml:"
     "witness:supported-tool-usage-witness:"
@@ -398,6 +411,63 @@ def test_default_fixture_reconciles_expired_bootstrap_without_reopening_spend() 
         for decision in ledger.spend_gate_decisions
     )
     assert all(not budget.auto_top_up_allowed for budget in ledger.transition_budgets)
+
+
+def test_glmcp_payg_breakglass_budget_is_active_inside_its_window(
+    tmp_path: Path,
+) -> None:
+    ledger = load_quota_spend_ledger()
+    budget = ledger.budget_by_id(GLMCP_PAYG_BREAKGLASS_BUDGET_ID)
+    july_budget = ledger.budget_by_id("tb-20260706-zai-glmcp-payg-review")
+
+    assert budget.lifecycle_state is BudgetLifecycleState.ACTIVE
+    assert str(budget.total_cap_usd) == "78.81"
+    assert str(budget.per_task_cap_usd) == "2.00"
+    assert str(budget.daily_cap_usd) == "20.00"
+    assert budget.providers_allowed == ("z_ai",)
+    assert budget.profiles_allowed == ("glmcp-review-direct",)
+    assert budget.task_classes_allowed == ("independent-review",)
+    assert budget.quality_floors_allowed == ("frontier_review_required",)
+    assert budget.is_unexpired_at(GLMCP_PAYG_BREAKGLASS_NOW)
+    assert july_budget.is_unexpired_at(GLMCP_PAYG_BREAKGLASS_NOW) is False
+    assert GLMCP_PAYG_BREAKGLASS_BUDGET_ID in {
+        item.budget_id for item in ledger.active_paid_budgets(GLMCP_PAYG_BREAKGLASS_NOW)
+    }
+
+    payload = _payload()
+    payload["captured_at"] = "2026-09-17T12:00:00Z"
+    fresh = QuotaSpendLedger.model_validate(payload)
+    decision = evaluate_paid_route_eligibility(
+        fresh,
+        _request(
+            route_id="glmcp.review.direct",
+            provider="z_ai",
+            profile="glmcp-review-direct",
+            task_class="independent-review",
+            quality_floor="frontier_review_required",
+            estimated_cost_usd="0.05",
+            capacity_pool="api_paid_spend",
+        ),
+        now=GLMCP_PAYG_BREAKGLASS_NOW,
+    )
+    assert decision.eligible is True
+    assert decision.state == "eligible_active_budget"
+    assert decision.budget_id == GLMCP_PAYG_BREAKGLASS_BUDGET_ID
+
+    from shared.dispatcher_policy import load_dispatch_policy_sources
+
+    sources = load_dispatch_policy_sources(
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        receipt_dir=tmp_path,
+        now=GLMCP_PAYG_BREAKGLASS_NOW,
+    )
+    assert sources.quota_ledger is not None
+    dispatch_budget = sources.quota_ledger.budget_by_id(GLMCP_PAYG_BREAKGLASS_BUDGET_ID)
+    assert dispatch_budget.is_unexpired_at(GLMCP_PAYG_BREAKGLASS_NOW)
+    assert GLMCP_PAYG_BREAKGLASS_BUDGET_ID in {
+        item.budget_id
+        for item in sources.quota_ledger.active_paid_budgets(GLMCP_PAYG_BREAKGLASS_NOW)
+    }
 
 
 def test_paid_route_refuses_without_any_transition_budget() -> None:
@@ -898,6 +968,309 @@ def test_pending_task_scoped_glmcp_payg_review_spend_is_not_successful_witness()
 
     assert successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id) == ()
     assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is False
+
+
+def test_successful_task_scoped_glmcp_payg_review_spend_counts_the_glm_5_3_default() -> None:
+    """The reviewer calls glm-5.3 by default; its reconciled spend is the same witness."""
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt["model_or_engine"] = "glm-5.3"
+    receipt["model_id"] = "z_ai-glm-5.3"
+    receipt["actual_cost_usd"] = "0.002772"
+    receipt["cap_remaining_usd"] = "1.95"
+    receipt["reconciliation_state"] = "reconciled"
+    receipt["reconciled_at"] = "2026-05-17T08:00:00Z"
+    receipt["reconciliation_reason"] = "actual from provider-reported usage at list price"
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is True
+
+
+def test_glmcp_model_ids_name_one_structured_identity_each() -> None:
+    assert (
+        set(GLMCP_MODEL_IDS) == set(GLMCP_ADMISSION_MODELS) == set(GLMCP_PAYG_PRICES_USD_PER_MTOK)
+    )
+    assert {ModelId(value) for value in GLMCP_MODEL_IDS.values()} == {
+        ModelId.Z_AI_GLM_5_3,
+        ModelId.Z_AI_GLM_5_2,
+    }
+
+
+def test_glmcp_model_allowlist_has_one_source_across_ledger_writer_and_admission() -> None:
+    """Three copies of the allowlist drifted once (#4692): the scripts must use the ledger's."""
+    import runpy
+
+    scripts = Path(__file__).resolve().parents[2] / "scripts"
+    writer = runpy.run_path(str(scripts / "hapax-quota-telemetry-writer"))
+    admission = runpy.run_path(str(scripts / "hapax-glmcp-quota-admission"))
+
+    assert writer["GLMCP_ADMISSION_MODELS"] is GLMCP_ADMISSION_MODELS
+    assert admission["MODELS"] is GLMCP_ADMISSION_MODELS
+    assert admission["MODEL"] in GLMCP_ADMISSION_MODELS
+
+
+def test_glmcp_payg_probe_is_an_external_oracle_for_the_price_and_the_byte_bound() -> None:
+    """Provider-reported numbers from the 2026-09-24T19:20:12Z PAYG probe (not our arithmetic):
+    a 28-byte prompt came back as 20 prompt tokens and 57 completion tokens under max_tokens=512.
+    The bound's premises hold on real output; at runtime, a breach freezes the spend."""
+    prompt_bytes, prompt_tokens, completion_tokens, max_tokens = 28, 20, 57, 512
+    assert prompt_tokens <= prompt_bytes + GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE
+    assert completion_tokens <= max_tokens
+    # hand-computed from the docs.z.ai price page: (20 x 1.40 + 57 x 4.40) / 1M = 0.0002788
+    assert glmcp_payg_usage_cost_usd(
+        model="glm-5.3", prompt_tokens=20, cached_tokens=0, completion_tokens=57
+    ) == Decimal("0.000279")
+    assert glmcp_payg_reservation_usd(
+        model="glm-5.3", prompt_utf8_bytes=prompt_bytes, max_tokens=max_tokens
+    ) >= Decimal("0.000279")
+
+
+def test_glmcp_payg_usage_cost_prices_uncached_cached_and_output_tokens() -> None:
+    # (1000 x 1.40 + 200 x 0.26 + 300 x 4.40) / 1M, rounded up to the micro-dollar
+    assert glmcp_payg_usage_cost_usd(
+        model="glm-5.3", prompt_tokens=1200, cached_tokens=200, completion_tokens=300
+    ) == Decimal("0.002772")
+    # the 2026-09-24 identity probe: 20 in, 57 out (51 of them reasoning)
+    assert glmcp_payg_usage_cost_usd(
+        model="glm-5.3", prompt_tokens=20, cached_tokens=0, completion_tokens=57
+    ) == Decimal("0.000279")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"model": "glm-4.6", "prompt_tokens": 1, "cached_tokens": 0, "completion_tokens": 1},
+        {"model": "glm-5.3", "prompt_tokens": 1, "cached_tokens": 2, "completion_tokens": 1},
+        {"model": "glm-5.3", "prompt_tokens": -1, "cached_tokens": 0, "completion_tokens": 1},
+    ],
+)
+def test_glmcp_payg_usage_cost_refuses_unpriced_or_impossible_usage(kwargs: dict) -> None:
+    with pytest.raises(QuotaSpendLedgerError):
+        glmcp_payg_usage_cost_usd(**kwargs)
+
+
+PROVIDER_BALANCE_FIELDS = {
+    "provider_balance_usd": "100.00",
+    "provider_balance_observed_at": "2026-05-17T07:00:00Z",
+    "provider_balance_covers_spend_before": "2026-05-15T07:00:00Z",
+    "provider_balance_evidence_ref": "operator-console-balance-2026-05-17",
+}
+EARLIER_GLMCP_BUDGET_ID = "tb-20260510-zai-glmcp-payg-review"
+
+
+def _ledger_with_blocked_earlier_glmcp_budget(
+    *,
+    blocker: str,
+    blocker_created_at: str = "2026-05-11T07:59:00Z",
+    blocker_on_new_budget: bool = False,
+    provider_balance: bool = True,
+    blocker_provider: str | None = None,
+) -> QuotaSpendLedger:
+    """An expired earlier GLMCP budget holding one unresolved receipt, and a new budget."""
+    payload = _active_budget_payload()
+    for budget in payload["transition_budgets"]:  # only the budget under test carries evidence
+        for field in PROVIDER_BALANCE_FIELDS:
+            budget.pop(field, None)
+    new_budget_id = _add_glmcp_payg_budget(payload)
+    if provider_balance:
+        payload["transition_budgets"][-1].update(PROVIDER_BALANCE_FIELDS)
+    earlier = deepcopy(payload["transition_budgets"][-1])
+    for field in PROVIDER_BALANCE_FIELDS:
+        earlier.pop(field, None)
+    earlier.update(
+        budget_id=EARLIER_GLMCP_BUDGET_ID,
+        created_at="2026-05-10T07:00:00Z",
+        expires_at="2026-05-12T07:00:00Z",
+        subscription_path_checked_at="2026-05-10T07:00:00Z",
+    )
+    payload["transition_budgets"].append(earlier)
+    _add_glmcp_payg_spend_receipt(
+        payload,
+        new_budget_id if blocker_on_new_budget else EARLIER_GLMCP_BUDGET_ID,
+        spend_id="spend-20260511T075900Z-glmcp-payg-review-blocker",
+    )
+    receipt = payload["spend_receipts"][-1]
+    receipt["created_at"] = blocker_created_at
+    receipt["reconcile_by"] = "2026-05-17T07:30:00Z"  # after creation, before NOW: overdue
+    if blocker_provider is not None:
+        receipt["provider"] = blocker_provider
+    if blocker == "frozen":
+        receipt["reconciliation_state"] = "frozen_refused"
+        receipt["reconciled_at"] = "2026-05-12T08:00:00Z"
+        receipt["reconciliation_reason"] = "actual unknown; frozen for review"
+    return QuotaSpendLedger.model_validate(payload)
+
+
+def _glmcp_review_request() -> PaidRouteRequest:
+    return _request(
+        route_id="glmcp.review.direct",
+        task_id="review-task",
+        provider="z_ai",
+        profile="glmcp-review-direct",
+        task_class="independent-review",
+        quality_floor="frontier_review_required",
+        estimated_cost_usd="0.25",
+        capacity_pool="api_paid_spend",
+    )
+
+
+@pytest.mark.parametrize("blocker", ["frozen", "overdue_pending"])
+def test_unresolved_spend_blocks_until_settled_against_a_later_provider_balance(
+    blocker: str,
+) -> None:
+    """Review r2 item 5: the gate never looks past an unresolved receipt. Resolution is an
+    explicit act recorded on the receipt: a provider balance reported after the spend settled
+    already reflects it, so the receipt is settled against that evidence (no actual claimed,
+    the estimate still held), and only then does the new budget admit."""
+    ledger = _ledger_with_blocked_earlier_glmcp_budget(blocker=blocker)
+
+    before = evaluate_paid_route_eligibility(ledger, _glmcp_review_request(), now=NOW)
+    settled_ledger = settle_spend_covered_by_provider_balance(ledger)
+    after = evaluate_paid_route_eligibility(settled_ledger, _glmcp_review_request(), now=NOW)
+
+    assert not before.eligible
+    [settled] = [r for r in settled_ledger.spend_receipts if r.budget_id == EARLIER_GLMCP_BUDGET_ID]
+    assert settled.reconciliation_state is SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE
+    assert settled.actual_cost_usd is None
+    assert settled.cost_against_cap() == Decimal("0.05")
+    # review r3 (Muse N6): settled spend stays in the budget's cap arithmetic
+    earlier_budget = settled_ledger.budget_by_id(EARLIER_GLMCP_BUDGET_ID)
+    assert settled_ledger._budget_spent_usd(earlier_budget) == Decimal("0.05")
+    assert "operator-console-balance-2026-05-17" in (settled.reconciliation_reason or "")
+    assert after.eligible, after.blocking_reasons
+    assert after.budget_id == "tb-20260517-zai-glmcp-payg-review"
+
+
+@pytest.mark.parametrize(
+    ("case", "kwargs"),
+    [
+        ("no provider balance evidence", {"provider_balance": False}),
+        ("spend after the settlement cut-off", {"blocker_created_at": "2026-05-16T07:59:00Z"}),
+        ("the budget's own spend", {"blocker_on_new_budget": True}),
+        ("another provider's spend", {"blocker_provider": "opaque-provider-a"}),
+    ],
+)
+def test_provider_balance_never_settles_unsettled_own_or_foreign_spend(
+    case: str, kwargs: dict[str, Any]
+) -> None:
+    ledger = settle_spend_covered_by_provider_balance(
+        _ledger_with_blocked_earlier_glmcp_budget(blocker="frozen", **kwargs)
+    )
+
+    assert not any(
+        r.reconciliation_state is SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE
+        for r in ledger.spend_receipts
+    ), case
+    if kwargs.get("blocker_provider") is None:
+        decision = evaluate_paid_route_eligibility(ledger, _glmcp_review_request(), now=NOW)
+        assert not decision.eligible, case
+        assert any("frozen/refused" in reason for reason in decision.blocking_reasons), case
+
+
+def test_settled_by_provider_balance_claims_no_actual_and_names_its_evidence() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt.update(
+        reconciliation_state="settled_by_provider_balance",
+        reconciled_at="2026-05-17T07:00:00Z",
+    )
+
+    with pytest.raises(ValidationError):  # no reason naming the evidence
+        QuotaSpendLedger.model_validate(payload)
+    receipt["reconciliation_reason"] = "settled against provider balance evidence"
+    receipt["actual_cost_usd"] = "0.05"
+    receipt["cap_remaining_usd"] = "1.95"
+    with pytest.raises(ValidationError):  # an actual would be a claim nobody can back
+        QuotaSpendLedger.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"provider_balance_usd": "99.99"},  # cap 100.00 above the observed balance
+        {"provider_balance_covers_spend_before": "2026-05-17T08:00:00Z"},  # after observation
+        {"provider_balance_evidence_ref": None},  # partial evidence
+        {"provider_balance_evidence_ref": "/home/someone/console.png"},  # private path
+    ],
+)
+def test_provider_balance_evidence_is_complete_and_bounds_the_cap(
+    override: dict[str, Any],
+) -> None:
+    payload = _active_budget_payload()
+    _add_glmcp_payg_budget(payload)
+    payload["transition_budgets"][-1].update({**PROVIDER_BALANCE_FIELDS, **override})
+
+    with pytest.raises(ValidationError):
+        QuotaSpendLedger.model_validate(payload)
+
+
+def test_frozen_spend_receipt_payload_claims_no_actual_and_holds_the_higher_figure() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id, estimated_cost_usd="0.05")
+    receipt = payload["spend_receipts"][-1]
+    receipt.update(
+        actual_cost_usd="0.07",
+        cap_remaining_usd="1.93",
+        reconciliation_state="reconciled",
+        reconciled_at="2026-05-17T08:00:00Z",
+        reconciliation_reason="usage-priced actual",
+    )
+
+    for count, held in (("0.02", "0.07"), ("0.09", "0.09")):
+        frozen = SpendReceipt.model_validate(
+            frozen_spend_receipt_payload(
+                receipt,
+                count_usd=Decimal(count),
+                frozen_at="2026-05-17T08:01:00Z",
+                reason="actual exceeded the reservation",
+            )
+        )
+        assert frozen.reconciliation_state is SpendReconciliationState.FROZEN_REFUSED
+        assert frozen.actual_cost_usd is None
+        assert frozen.cost_against_cap() == Decimal(held)
+
+
+def test_glmcp_payg_usage_ceiling_prices_every_token_at_the_dearest_known_rate() -> None:
+    """For a served model with no recorded price: never below any known model's price."""
+    ceiling = glmcp_payg_usage_ceiling_usd(prompt_tokens=1200, completion_tokens=300)
+    for model in GLMCP_PAYG_PRICES_USD_PER_MTOK:
+        for cached in (0, 200, 1200):
+            assert ceiling >= glmcp_payg_usage_cost_usd(
+                model=model, prompt_tokens=1200, cached_tokens=cached, completion_tokens=300
+            )
+
+
+@pytest.mark.parametrize("prompt_bytes", [0, 1, 17_000, 250_000])
+@pytest.mark.parametrize("max_tokens", [1, 8192])
+def test_glmcp_payg_reservation_bounds_any_usage_the_call_can_bill(
+    prompt_bytes: int, max_tokens: int
+) -> None:
+    """Unsafe case: a reservation below the call's possible charge lets spend pass the cap.
+
+    Byte-level tokenization gives at most one input token per byte (+ template allowance);
+    output is capped by max_tokens. The worst billable usage, all uncached, stays under it."""
+    reserved = glmcp_payg_reservation_usd(
+        model="glm-5.3", prompt_utf8_bytes=prompt_bytes, max_tokens=max_tokens
+    )
+    worst = glmcp_payg_usage_cost_usd(
+        model="glm-5.3",
+        prompt_tokens=prompt_bytes + GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE,
+        cached_tokens=0,
+        completion_tokens=max_tokens,
+    )
+    assert reserved >= worst
+    assert (
+        glmcp_payg_reservation_usd(
+            model="glm-5.3", prompt_utf8_bytes=prompt_bytes, max_tokens=max_tokens, attempts=2
+        )
+        > reserved
+    )
 
 
 def test_receipt_bounded_route_rejects_payg_when_witness_task_cap_exhausted() -> None:

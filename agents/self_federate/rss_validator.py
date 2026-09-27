@@ -42,7 +42,11 @@ except ImportError:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
-DEFAULT_HAPAX_RSS_URL: str = "https://hapax.weblog.lol/rss"
+# The weblog serves the RSS document at /rss.xml (application/rss+xml). Its /rss path
+# returns the weblog's HTML page (measured 2026-09-05 from root: same bytes as the site
+# root, XML parsing fails), so a validator pointed at /rss reports the feed as broken while
+# subscribers on /rss.xml are fine. The public-event producer already reads /rss.xml.
+DEFAULT_HAPAX_RSS_URL: str = "https://hapax.weblog.lol/rss.xml"
 """Operator-owned omg.lol weblog RSS feed.
 
 Drop 5 §3: omg.lol weblog exposes RSS natively (via ytb-OMG8 shipped

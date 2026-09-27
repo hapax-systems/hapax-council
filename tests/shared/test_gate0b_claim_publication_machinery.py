@@ -194,8 +194,15 @@ def test_install_receipt_activates_only_claim_publication_root(tmp_path: Path) -
     assert receipt.operator_inflection_ref == GATE0B_SLICE1_RATIFIED_INFLECTION_REF
     descriptor = claim_publication_executor_descriptor(receipt)
     root_refs = {address.ref for address in descriptor.active_generation_roots}
-    assert module_file_address(Path("shared/sdlc_claim.py").resolve()).ref in root_refs
-    assert module_file_address(Path("shared/coord_projection.py").resolve()).ref in root_refs
+    # The old assertions encoded release-path coupling; require relative refs with real content hashes.
+    for relpath in (
+        "shared/sdlc_claim.py",
+        "shared/coord_projection.py",
+        "shared/content_address.py",
+    ):
+        address = module_file_address(Path(relpath).resolve())
+        assert f"file:{relpath}@sha256:{address.sha256}" in root_refs
+    assert all("file:/" not in ref for ref in root_refs)
     install.root.require_effect_activation()
     loaded = load_claim_publication_composition(Path(fixture.roots.invocation_store_root))
     assert loaded.receipt == receipt
@@ -217,6 +224,36 @@ def test_install_receipt_rejects_noncanonical_receipt_bytes(tmp_path: Path) -> N
 
     with pytest.raises(ExecutionAdmissionError, match="gate0b_install_receipt_noncanonical"):
         require_claim_publication_install_receipt(install.root)
+
+
+def test_extracted_reference_primitive_remains_bound_to_install_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primitive = Path("shared/content_address.py").resolve()
+    isolated = tmp_path / "reference-primitive.py"
+    isolated.write_bytes(primitive.read_bytes())
+    address = install_machinery.module_file_address
+    compared = 0
+
+    def bind_isolated_primitive(path):
+        nonlocal compared
+        if path.resolve() == primitive:
+            compared += 1
+            return address(isolated)
+        return address(path)
+
+    monkeypatch.setattr(install_machinery, "module_file_address", bind_isolated_primitive)
+    fixture = _fixture(tmp_path)
+    install = _install(tmp_path, fixture)
+    receipt = require_claim_publication_install_receipt(install.root)
+    claim_publication_executor_descriptor(receipt)
+    before = compared
+    isolated.write_bytes(isolated.read_bytes() + b"\n# Different source generation.\n")
+    with pytest.raises(ExecutionAdmissionError, match="executor_descriptor_mismatch"):
+        claim_publication_executor_descriptor(receipt)
+    assert compared > before > 0, (
+        "the primitive's bytes must reach installation and descriptor checks"
+    )
 
 
 def test_install_receipt_rejects_malformed_receipt_with_next_action(

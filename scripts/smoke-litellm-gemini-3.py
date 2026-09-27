@@ -16,7 +16,7 @@ LiteLLM provider path the runtime uses.
 
 Usage:
 
-    LITELLM_API_KEY=$(pass show hapax/litellm-api-key) \
+    LITELLM_API_KEY=$(hapax-secret litellm/master-key) \
         uv run python scripts/smoke-litellm-gemini-3.py
 
 By default, smokes the four new Gemini 3 aliases:

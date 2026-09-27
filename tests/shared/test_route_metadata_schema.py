@@ -263,6 +263,80 @@ def test_risk_flag_derivation_still_flags_go_live_with_real_egress_marker() -> N
     assert flags.audio_or_live_egress_sensitive is True
 
 
+def test_risk_flag_derivation_reads_communication_egress_as_outbound_message() -> None:
+    # The communication-pathway rows (#4768 et al.) are tagged `egress` in the
+    # outbound-message sense. That vocabulary derives the outbound-message
+    # class, never the audio/live class: the row is not re-tagged to get here.
+    flags = _derived_risk_flags(
+        "Communication pathway child, slice 3: retire the operator-account Gmail send path",
+        tags=["cc-task", "build", "p0", "communication", "egress", "communication-pathway-child"],
+    )
+    assert flags.audio_or_live_egress_sensitive is False
+    assert flags.outbound_message_egress_sensitive is True
+
+
+def test_risk_flag_derivation_keeps_live_egress_audio_class_beside_the_comms_sense() -> None:
+    # A live broadcast marker keeps the audio/live class even when the comms
+    # vocabulary is present too; both classes then gate the release.
+    flags = _derived_risk_flags(
+        "Live broadcast egress overlay for the communication pathway",
+        tags=["communication", "egress"],
+    )
+    assert flags.audio_or_live_egress_sensitive is True
+    assert flags.outbound_message_egress_sensitive is True
+
+
+def test_risk_flag_derivation_bare_egress_without_comms_sense_stays_audio_or_live() -> None:
+    # Fail closed: an `egress` with no outbound-message sense is still read as
+    # live egress, exactly as before the split.
+    flags = _derived_risk_flags("relay egress boundary hardening", tags=["egress"])
+    assert flags.audio_or_live_egress_sensitive is True
+    assert flags.outbound_message_egress_sensitive is False
+
+
+def test_risk_flag_derivation_comms_vocabulary_without_egress_is_not_outbound() -> None:
+    flags = _derived_risk_flags("communication pathway audience notes", tags=["mail"])
+    assert flags.outbound_message_egress_sensitive is False
+    assert flags.audio_or_live_egress_sensitive is False
+
+
+def test_risk_flag_derivation_audio_marker_is_never_carved_out_by_comms_sense() -> None:
+    flags = _derived_risk_flags("audio egress for the mail chime", tags=["communication"])
+    assert flags.audio_or_live_egress_sensitive is True
+
+
+def test_outbound_message_class_keeps_the_egress_routing_floor() -> None:
+    # The split must not lower routing for rows that used to derive audio/live:
+    # the outbound class gets the same DEEP hardening and failure_cost 5.
+    frontmatter = {
+        "type": "cc-task",
+        "task_id": "comms-routing-floor",
+        "title": "Communication pathway slice: retire a send path",
+        "kind": "implementation",
+        "risk_tier": "T1",
+        "authority_case": "CASE-TEST-001",
+        "parent_spec": "/tmp/spec.md",
+        "tags": ["communication", "egress"],
+    }
+    metadata = assess_route_metadata(frontmatter).metadata
+    assert metadata is not None
+    assert metadata.risk_flags.outbound_message_egress_sensitive is True
+    assert metadata.risk_flags.audio_or_live_egress_sensitive is False
+    demand = build_demand_vector(frontmatter)
+    assert demand.route_envelope.hardening_allocation.hardening_intensity == HardeningIntensity.DEEP
+    assert demand.task_demand.failure_cost == 5
+
+
+def test_outbound_message_egress_flag_is_an_authorable_risk_flag() -> None:
+    metadata = _explicit_metadata()
+    metadata["risk_flags"] = {
+        **metadata["risk_flags"],  # type: ignore[dict-item]
+        "outbound_message_egress_sensitive": True,
+    }
+    validated = validate_route_metadata(metadata)
+    assert validated.risk_flags.outbound_message_egress_sensitive is True
+
+
 def test_risk_flag_derivation_governance_substring_does_not_false_trip() -> None:
     # 'policy' must not match inside an unrelated compound like 'policyholder'.
     flags = _derived_risk_flags("policyholder records cleanup")
@@ -283,6 +357,38 @@ def test_missing_quality_floor_is_hold_not_permissive() -> None:
     assert "quality_floor" in assessment.missing_fields
     assert "missing_quality_floor" in assessment.hold_reasons
     assert assessment.dispatchable is False
+
+
+def test_known_stale_route_tokens_coerce_and_unknown_tokens_do_not() -> None:
+    renamed = _explicit_metadata()
+    renamed["mutation_surface"] = "docs"
+    renamed["context_shape"] = dict(renamed["context_shape"])
+    renamed["context_shape"]["codebase_locality"] = "single_module"
+    assessment = assess_route_metadata(renamed)
+    assert assessment.metadata is not None
+    assert assessment.metadata.mutation_surface.value == "vault_docs"
+    assert assessment.metadata.context_shape.codebase_locality.value == "module"
+
+    derived_floor = _explicit_metadata()
+    derived_floor["quality_floor"] = "verification_receipt"
+    derived_floor["risk_tier"] = "T1"
+    floored = assess_route_metadata(derived_floor)
+    assert floored.metadata is not None
+    assert floored.metadata.quality_floor.value == "frontier_required"
+
+    still_illegal = _explicit_metadata()
+    still_illegal["mutation_surface"] = "scripts_and_units"
+    refused = assess_route_metadata(still_illegal)
+    assert refused.status == RouteMetadataStatus.MALFORMED
+    assert refused.validation_errors
+
+
+def test_quality_floor_is_normalized_before_validation() -> None:
+    noisy = _explicit_metadata()
+    noisy["quality_floor"] = "  FRONTIER_REQUIRED  "
+    accepted = assess_route_metadata(noisy)
+    assert accepted.metadata is not None
+    assert accepted.metadata.quality_floor.value == "frontier_required"
 
 
 def test_mutation_surface_unknown_is_hold_condition() -> None:

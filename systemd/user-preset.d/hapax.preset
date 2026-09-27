@@ -48,7 +48,6 @@ enable hapax-audio-topology-verify.timer
 enable hapax-s4-arm.timer
 enable hapax-segment-prep.timer
 enable hapax-segment-prep-emit-health.timer
-enable hapax-obsidian-publish-sync.timer
 enable hapax-worktree-gc.timer
 enable hapax-backup-watchdog.timer
 enable hapax-container-cleanup.timer

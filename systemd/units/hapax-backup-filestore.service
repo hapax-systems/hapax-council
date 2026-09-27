@@ -1,0 +1,25 @@
+[Unit]
+Description=Hapax FileStore backup: this host's hapax-secret store into the tier-1 NAS restic repository, verified by path listing
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/nas/backups
+OnFailure=notify-failure@%n.service
+
+# Row filestore-secrets-backup-custody-all-hosts-20260927. Since the 2026-09-16 migration the FileStore holds the
+# estate's secrets; podium's tier-1 job backs its store up (#4813), and this unit covers the other hosts that run one.
+# Backup, then verify in the same script: the new snapshot must hold the store's .key and at least as many .bin
+# entries as the store, by names only. Tag tier1-filestore; retention is podium's tier-1 forget (--group-by host,tags).
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-filestore
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RESTIC_REPOSITORY=/mnt/nas/backups/restic
+Environment=HAPAX_FILESTORE_REPOSITORY_MOUNT=/mnt/nas/backups
+Environment=RESTIC_CACHE_DIR=%h/.cache/restic
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=1G
+TimeoutStartSec=30min
+SyslogIdentifier=hapax-backup-filestore

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import secrets
 import stat
+import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +46,14 @@ from shared.execution_admission import (
 
 INSTALL_RECEIPT_SCHEMA = "hapax.gate0b-claim-publication-install-receipt.v1"
 INSTALL_RECEIPT_FILENAME = "activation-receipt.json"
+#: Created exclusively before a re-provision moves anything, and retired by rename (never deleted)
+#: once the install is consistent again. While it exists, cc-claim holds instead of making a
+#: first-use install without a basis (gate0b-reprovision-inflight-hold-marker-20260927).
+REPROVISION_IN_FLIGHT_FILENAME = "reprovision-in-flight.json"
+#: The load results cc-claim answers with a first-use install (scripts/cc-claim).
+_FIRST_USE_REASON_CODES = frozenset(
+    {"gate0b_install_receipt_missing", "gate0b_install_manifest_missing"}
+)
 GATE0B_CLAIM_PUBLICATION_OPERATION = "claim.publish"
 GATE0B_CLAIM_PUBLICATION_CAPABILITY_ROLE = "claim_publisher"
 GATE0B_CLAIM_PUBLICATION_EXECUTION_HOST = "appendix"
@@ -466,17 +477,33 @@ def _build_port_descriptors(
     )
 
 
-def _generation_roots(activation_generation: ContentAddress) -> tuple[ContentAddress, ...]:
+#: The shared/ modules the executor descriptor binds by content. A merge that changes one of
+#: them correctly invalidates the install receipt (see reprovision_claim_publication_install).
+BOUND_EXECUTOR_MODULES = (
+    "coord_projection.py",
+    "content_address.py",
+    "execution_admission.py",
+    "gate0b_claim_publication_install.py",
+    "gate0b_claim_publication_lease.py",
+    "gate0b_claim_publication_effect.py",
+    "sdlc_claim.py",
+)
+
+
+def _generation_roots(
+    activation_generation: ContentAddress, module_sha256: Mapping[str, str] | None = None
+) -> tuple[ContentAddress, ...]:
     shared = Path(__file__).resolve().parent
-    roots = (
-        activation_generation,
-        module_file_address(shared / "coord_projection.py"),
-        module_file_address(shared / "execution_admission.py"),
-        module_file_address(Path(__file__)),
-        module_file_address(shared / "gate0b_claim_publication_lease.py"),
-        module_file_address(shared / "gate0b_claim_publication_effect.py"),
-        module_file_address(shared / "sdlc_claim.py"),
-    )
+    roots = [activation_generation]
+    for name in BOUND_EXECUTOR_MODULES:
+        # Keep stable, owner-bound file hashing; bind the source's repo-relative
+        # identity instead of its release/worktree-specific absolute location.
+        digest = (
+            module_sha256[name]
+            if module_sha256 is not None
+            else module_file_address(shared / name).sha256
+        )
+        roots.append(ContentAddress(ref=f"file:shared/{name}@sha256:{digest}", sha256=digest))
     return tuple(
         sorted({(item.ref, item.sha256): item for item in roots}.values(), key=lambda x: x.ref)
     )
@@ -486,6 +513,7 @@ def _build_executor_descriptor(
     activation_generation: ContentAddress,
     *,
     installed_at: str,
+    module_sha256: Mapping[str, str] | None = None,
 ) -> ExecutorDescriptor:
     return build_executor_descriptor(
         executor=_content_address(
@@ -500,7 +528,7 @@ def _build_executor_descriptor(
         runtime_identity=_content_address(
             "gate0b-claim-publication-runtime", {"installed_at": installed_at}
         ),
-        active_generation_roots=_generation_roots(activation_generation),
+        active_generation_roots=_generation_roots(activation_generation, module_sha256),
         execution_host=GATE0B_CLAIM_PUBLICATION_EXECUTION_HOST,
         platform="codex",
         mode="headless",
@@ -532,10 +560,13 @@ def _build_executor_registry_projection(
 
 def claim_publication_executor_descriptor(
     receipt: Gate0BClaimPublicationInstallReceipt,
+    *,
+    module_sha256: Mapping[str, str] | None = None,
 ) -> ExecutorDescriptor:
     descriptor = _build_executor_descriptor(
         receipt.activation_generation,
         installed_at=receipt.installed_at,
+        module_sha256=module_sha256,
     )
     if ContentAddress(ref=descriptor.descriptor_ref, sha256=descriptor.descriptor_hash) != (
         receipt.executor_descriptor
@@ -660,6 +691,7 @@ def build_claim_publication_composition(
     install_task_ref: str,
     operator_inflection_ref: str = GATE0B_SLICE1_RATIFIED_INFLECTION_REF,
     request_ref: str = GATE0B_SLICE1_REQUEST_REF,
+    module_sha256: Mapping[str, str] | None = None,
 ) -> ClaimPublicationCompositionInstall:
     checked_at = _canonical_timestamp(installed_at)
     checked_roots = roots or default_claim_publication_roots()
@@ -675,6 +707,7 @@ def build_claim_publication_composition(
     executor_descriptor = _build_executor_descriptor(
         activation_generation,
         installed_at=checked_at,
+        module_sha256=module_sha256,
     )
     registry_projection = _build_executor_registry_projection(
         executor_descriptor,
@@ -744,6 +777,7 @@ def install_claim_publication_composition(
     install_task_ref: str,
     operator_inflection_ref: str = GATE0B_SLICE1_RATIFIED_INFLECTION_REF,
     request_ref: str = GATE0B_SLICE1_REQUEST_REF,
+    module_sha256: Mapping[str, str] | None = None,
 ) -> ClaimPublicationCompositionInstall:
     install = build_claim_publication_composition(
         roots=roots,
@@ -751,6 +785,7 @@ def install_claim_publication_composition(
         install_task_ref=install_task_ref,
         operator_inflection_ref=operator_inflection_ref,
         request_ref=request_ref,
+        module_sha256=module_sha256,
     )
     assert install.root.invocation_store is not None
     _write_private_file(
@@ -765,20 +800,43 @@ def install_claim_publication_composition(
     return install
 
 
+def _in_flight(marker: Path, reason: str, detail: str | None = None) -> ExecutionAdmissionError:
+    return ExecutionAdmissionError(
+        reason,
+        f"a re-provision did not finish: read {marker}, put the *.quarantined-<stamp> pair it "
+        "names back in place if the live pair is not whole, then retire the marker by renaming "
+        "it to *.resolved-<stamp> (never delete it); see the fallback runbook's re-provision section",
+        detail or str(marker),
+    )
+
+
 def load_claim_publication_composition(
     invocation_store_root: Path,
 ) -> ClaimPublicationCompositionInstall:
     root_path = _absolute(invocation_store_root, label="claim-publication invocation store root")
-    receipt = _load_install_receipt(root_path / INSTALL_RECEIPT_FILENAME)
+    marker = root_path / REPROVISION_IN_FLIGHT_FILENAME
+    if marker.exists() or marker.is_symlink():
+        # Checked first: a missing receipt mid-re-provision must hold, never first-use install.
+        raise _in_flight(marker, "gate0b_install_reprovision_in_flight")
     try:
-        manifest_payload = _read_private_install_file(root_path / "composition-manifest.json")
-        manifest_record = json.loads(manifest_payload.decode("ascii"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ExecutionAdmissionError(
-            "gate0b_install_manifest_missing",
-            "restore the exact installed composition manifest",
-            str(root_path / "composition-manifest.json"),
-        ) from exc
+        receipt = _load_install_receipt(root_path / INSTALL_RECEIPT_FILENAME)
+        try:
+            manifest_payload = _read_private_install_file(root_path / "composition-manifest.json")
+            manifest_record = json.loads(manifest_payload.decode("ascii"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ExecutionAdmissionError(
+                "gate0b_install_manifest_missing",
+                "restore the exact installed composition manifest",
+                str(root_path / "composition-manifest.json"),
+            ) from exc
+    except ExecutionAdmissionError as exc:
+        # The check above can race a re-provision that starts between it and these reads. A
+        # missing file with the marker now present is that run, not a first use: hold. If the
+        # run has already finished, its receipt exists again, and a first-use install cannot
+        # overwrite it (gate0b_install_file_collision).
+        if exc.reason_code in _FIRST_USE_REASON_CODES and (marker.exists() or marker.is_symlink()):
+            raise _in_flight(marker, "gate0b_install_reprovision_in_flight") from exc
+        raise
     manifest = ExecutionCompositionManifest.model_validate(manifest_record)
     if manifest_payload != execution_composition_manifest_bytes(manifest):
         raise ExecutionAdmissionError(
@@ -874,7 +932,297 @@ def require_invocation_store_activation(
     )
 
 
+#: The seat's ruling that a reviewed, merged change to the bound files authorizes re-provision.
+REPROVISION_AUTHORITY = "lanebus/dev42/20260927T044035Z-dev1-gate0b-reprovision-authority-ruling.md"
+_REPROVISION_MAX_BOUND_CHANGES = 64
+
+
+@dataclass(frozen=True)
+class ClaimPublicationReprovision:
+    """What one post-deploy re-provision check did."""
+
+    action: Literal["absent", "current", "reprovisioned"]
+    head: str
+    source_commit: str | None = None
+    basis_commits: tuple[str, ...] = ()
+    receipt_ref: str | None = None
+
+
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True, check=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ExecutionAdmissionError(
+            "gate0b_reprovision_git_unavailable",
+            "run the re-provision from a release worktree that carries main's history",
+            " ".join(args),
+        ) from exc
+
+
+def _bound_state(repo: Path, commit: str) -> dict[str, str]:
+    return {
+        name: hashlib.sha256(_git_bytes(repo, "show", f"{commit}:shared/{name}")).hexdigest()
+        for name in BOUND_EXECUTOR_MODULES
+    }
+
+
+def reprovision_claim_publication_install(
+    *,
+    repo: Path,
+    head: str,
+    roots: ClaimPublicationCompositionRoots | None = None,
+    now: datetime | None = None,
+) -> ClaimPublicationReprovision:
+    """Re-provision the install after a deploy whose merges changed the bound modules.
+
+    ``repo`` is the activated release (a worktree of main) at commit ``head``. If the receipt
+    still matches the release's bound modules, nothing happens. Otherwise the receipt must be
+    explained by main's history: the bound-file state just before one of the recent commits
+    that changed those modules must reproduce the receipt's executor descriptor. Those later
+    commits are the reviewed, merged changes that authorize the re-provision (the seat's
+    ruling, REPROVISION_AUTHORITY). The receipt and manifest are then quarantined in place,
+    never deleted; a fresh install is made; and the basis is recorded beside it.
+
+    Anything unexplained raises ExecutionAdmissionError and changes nothing:
+    ``gate0b_reprovision_live_drift`` (live files differ from ``head``),
+    ``gate0b_reprovision_unexplained`` (no recent state of main reproduces the receipt),
+    ``gate0b_reprovision_quarantine_exists`` (a quarantine name is taken) and
+    ``gate0b_reprovision_git_unavailable`` (``repo`` carries no history). The basis is recorded
+    (``reprovision-basis-<stamp>.pending.json``) before anything moves. If the fresh install
+    fails (``gate0b_reprovision_install_failed``) or its basis cannot be recorded
+    (``gate0b_reprovision_basis_unrecorded``), or the quarantine itself fails part-way
+    (``gate0b_reprovision_quarantine_failed``), any fresh file is set aside as
+    ``*.unrecorded-<stamp>``, the quarantined pair is put back, and it holds. Claims then hold on
+    the old receipt, never on a first-use install without a basis, and the next activation retries.
+
+    The whole run is fenced by ``REPROVISION_IN_FLIGHT_FILENAME``, created exclusively before
+    anything moves and retired by rename once the install is consistent again. A second run
+    refuses on it (``gate0b_reprovision_in_flight``), and cc-claim's loader holds on it
+    (``gate0b_install_reprovision_in_flight``). If putting the pair back itself fails
+    (``gate0b_reprovision_rollback_failed``), the marker stays, so claims hold until a person
+    restores the pair and retires it. ``<stamp>`` carries microseconds.
+    """
+
+    checked_roots = roots or default_claim_publication_roots()
+    store = Path(checked_roots.invocation_store_root)
+    if (store / REPROVISION_IN_FLIGHT_FILENAME).exists():
+        raise _in_flight(store / REPROVISION_IN_FLIGHT_FILENAME, "gate0b_reprovision_in_flight")
+    receipt_path = store / INSTALL_RECEIPT_FILENAME
+    if not receipt_path.exists():
+        return ClaimPublicationReprovision("absent", head)
+    receipt = _load_install_receipt(receipt_path)
+    live = {
+        name: hashlib.sha256((repo / "shared" / name).read_bytes()).hexdigest()
+        for name in BOUND_EXECUTOR_MODULES
+    }
+    if live != _bound_state(repo, head):
+        raise ExecutionAdmissionError(
+            "gate0b_reprovision_live_drift",
+            "restore the release's bound modules to the commit it activated; a change that was "
+            "never merged cannot authorize a re-provision",
+            f"{repo} at {head}",
+        )
+
+    def reproduces(module_sha256: Mapping[str, str]) -> bool:
+        descriptor = _build_executor_descriptor(
+            receipt.activation_generation,
+            installed_at=receipt.installed_at,
+            module_sha256=module_sha256,
+        )
+        return (
+            ContentAddress(ref=descriptor.descriptor_ref, sha256=descriptor.descriptor_hash)
+            == receipt.executor_descriptor
+        )
+
+    if reproduces(live):
+        return ClaimPublicationReprovision("current", head, receipt_ref=receipt.receipt_ref)
+    changes = (
+        _git_bytes(
+            repo,
+            "log",
+            "--first-parent",
+            "--format=%H",
+            f"-n{_REPROVISION_MAX_BOUND_CHANGES}",
+            head,
+            "--",
+            *(f"shared/{name}" for name in BOUND_EXECUTOR_MODULES),
+        )
+        .decode("ascii")
+        .split()
+    )
+    source: str | None = None
+    basis: tuple[str, ...] = ()
+    for index, change in enumerate(changes):
+        try:
+            parent = _git_bytes(repo, "rev-parse", "--verify", f"{change}^1").decode().strip()
+        except ExecutionAdmissionError:
+            break  # the root commit: no earlier state
+        if reproduces(_bound_state(repo, parent)):
+            source, basis = parent, tuple(reversed(changes[: index + 1]))
+            break
+    if source is None:
+        raise ExecutionAdmissionError(
+            "gate0b_reprovision_unexplained",
+            "no recent state of main reproduces the installed receipt; inspect it before any "
+            "re-provision, and quarantine it by hand only on an operator decision",
+            receipt.receipt_ref,
+        )
+
+    moment = now or datetime.now(UTC)
+    stamp = moment.strftime("%Y%m%dT%H%M%S.%fZ")  # microseconds: a same-second rerun never collides
+    moves = [
+        (store / name, store / f"{name}.quarantined-{stamp}")
+        for name in (INSTALL_RECEIPT_FILENAME, "composition-manifest.json")
+    ]
+    if any(target.exists() or target.is_symlink() for _source, target in moves):
+        raise ExecutionAdmissionError(
+            "gate0b_reprovision_quarantine_exists",
+            "preserve both files and inspect the install directory",
+            stamp,
+        )
+    # Exclusive: one re-provision at a time, so the names above stay free until they are used.
+    marker = store / REPROVISION_IN_FLIGHT_FILENAME
+    try:
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise _in_flight(marker, "gate0b_reprovision_in_flight") from exc
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(
+            _canonical(
+                {
+                    "schema": "hapax.gate0b-claim-publication-reprovision-in-flight.v1",
+                    "stamp": stamp,
+                    "head": head,
+                    "quarantined_receipt_ref": receipt.receipt_ref,
+                    "pair": [str(target) for _source, target in moves],
+                }
+            )
+        )
+
+    def retire() -> None:
+        os.rename(marker, store / f"{REPROVISION_IN_FLIGHT_FILENAME}.resolved-{stamp}")
+
+    record = {
+        "schema": "hapax.gate0b-claim-publication-reprovision-basis.v1",
+        "status": "pending",
+        "head": head,
+        "source_commit": source,
+        "basis_commits": list(basis),
+        "quarantined_receipt_ref": receipt.receipt_ref,
+        "quarantined_receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+        "new_receipt_ref": None,
+        "authority": REPROVISION_AUTHORITY,
+        "reprovisioned_at": stamp,
+    }
+
+    def record_basis(name: str) -> None:
+        try:
+            _write_private_file(store / name, _canonical(record))
+        except (OSError, ExecutionAdmissionError) as exc:
+            raise ExecutionAdmissionError(
+                "gate0b_reprovision_basis_unrecorded",
+                "restore a writable install directory; the old receipt is kept, claims hold on "
+                "it, and the next activation retries",
+                name,
+            ) from exc
+
+    moved: list[tuple[Path, Path]] = []  # the pairs this run actually quarantined
+
+    def roll_back(*, installed: bool) -> None:
+        # No usable install without its complete basis, and no receipt-less gap for cc-claim's
+        # first-use install to fill without one: once the install has run, set any fresh file
+        # aside; put back only what this run moved (an unmoved live file is the original); and
+        # record the roll-back if the directory still takes it.
+        for source_path, target in moves:
+            if installed and source_path.exists():
+                os.rename(source_path, store / f"{source_path.name}.unrecorded-{stamp}")
+            if (source_path, target) in moved:
+                os.rename(target, source_path)
+        record.update(status="rolled_back", new_receipt_ref=None)
+        with contextlib.suppress(ExecutionAdmissionError):
+            record_basis(f"reprovision-basis-{stamp}.json")
+
+    def fail(reason: str, action: str, detail: str, *, installed: bool) -> ExecutionAdmissionError:
+        # Put the old pair back, then retire the marker. If putting it back fails, the marker
+        # stays, so claims hold rather than make a first-use install without a basis.
+        try:
+            roll_back(installed=installed)
+        except OSError as exc:
+            return _in_flight(marker, "gate0b_reprovision_rollback_failed", f"{reason}: {exc}")
+        retire()
+        return ExecutionAdmissionError(reason, action, detail)
+
+    # The authority basis is recorded before anything moves, so an install never exists
+    # without it; the complete record, naming the new receipt, follows the install.
+    try:
+        record_basis(f"reprovision-basis-{stamp}.pending.json")
+    except ExecutionAdmissionError:
+        retire()  # nothing has moved
+        raise
+    retry = "the old receipt is back and claims hold on it; repair the cause, and the next "
+    try:
+        for source_path, target in moves:
+            if source_path.exists():
+                os.rename(source_path, target)
+                moved.append((source_path, target))
+    except OSError as exc:
+        raise fail(
+            "gate0b_reprovision_quarantine_failed",
+            retry + "activation retries",
+            str(exc),
+            installed=False,
+        ) from exc
+    try:
+        installed = install_claim_publication_composition(
+            roots=checked_roots,
+            installed_at=moment,
+            install_task_ref=f"gate0b-post-deploy-reprovision:{head}",
+            module_sha256=live,  # the release's own verified modules, which cc-claim will load
+        )
+    except (OSError, ExecutionAdmissionError) as exc:
+        raise fail(
+            "gate0b_reprovision_install_failed",
+            retry + "activation retries",
+            getattr(exc, "reason_code", type(exc).__name__),
+            installed=True,
+        ) from exc
+    record |= {"status": "complete", "new_receipt_ref": installed.receipt.receipt_ref}
+    try:
+        record_basis(f"reprovision-basis-{stamp}.json")
+    except ExecutionAdmissionError as exc:
+        raise fail(exc.reason_code, retry + "activation retries", str(exc), installed=True) from exc
+    retire()
+    return ClaimPublicationReprovision(
+        "reprovisioned", head, source, basis, installed.receipt.receipt_ref
+    )
+
+
+def _main(argv: list[str] | None = None) -> int:
+    import argparse
+    from dataclasses import asdict
+
+    parser = argparse.ArgumentParser(prog="python -m shared.gate0b_claim_publication_install")
+    commands = parser.add_subparsers(dest="command", required=True)
+    reprovision = commands.add_parser("reprovision", help="post-deploy governed re-provision")
+    reprovision.add_argument("--repo", type=Path, required=True)
+    reprovision.add_argument("--head", required=True)
+    args = parser.parse_args(argv)
+    try:
+        outcome = reprovision_claim_publication_install(repo=args.repo, head=args.head)
+    except ExecutionAdmissionError as exc:
+        print(json.dumps({"action": "held", "reason_code": exc.reason_code, "detail": str(exc)}))
+        return 3
+    print(json.dumps(asdict(outcome)))
+    return 0
+
+
 __all__ = [
+    "BOUND_EXECUTOR_MODULES",
+    "REPROVISION_AUTHORITY",
+    "REPROVISION_IN_FLIGHT_FILENAME",
+    "ClaimPublicationReprovision",
     "GATE0B_CLAIM_PUBLICATION_CAPABILITY_ROLE",
     "GATE0B_CLAIM_PUBLICATION_OPERATION",
     "GATE0B_SLICE1_RATIFIED_INFLECTION_REF",
@@ -889,6 +1237,11 @@ __all__ = [
     "default_claim_publication_roots",
     "install_claim_publication_composition",
     "load_claim_publication_composition",
+    "reprovision_claim_publication_install",
     "require_claim_publication_install_receipt",
     "require_invocation_store_activation",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

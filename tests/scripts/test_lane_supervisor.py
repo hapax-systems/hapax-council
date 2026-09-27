@@ -56,6 +56,9 @@ def _write_fake_tmux(bin_dir: Path) -> None:
                 *) shift ;;
               esac
             done
+            # `=name` is tmux's exact-match anchor (a bare name also prefix-matches);
+            # the supervisor anchors every session target, so honour the syntax.
+            target="${target#=}"
             for live in ${TMUX_LIVE:-}; do
               [ "$live" = "$target" ] && exit 0
             done
@@ -252,6 +255,74 @@ def test_supervisor_respawns_dead_claude_lane_with_no_task(tmp_path: Path) -> No
     # "DEAD with no active task — not restarting"; the supervisor must not).
     assert "not restarting" not in result.stdout
     assert "respawning read-only" in result.stdout
+
+
+# ── hapax-claude's readiness witness inside the supervisor's cycle (PR #4729) ──
+# The launcher now waits for its witness before it returns, and the supervisor is a
+# oneshot under TimeoutStartSec=120 that respawns lanes one after another.
+
+
+def _slow_claude(env: dict[str, str], calls: Path, seconds: int) -> None:
+    """A fake hapax-claude that records its witness bound, then takes `seconds`."""
+    _write_executable(
+        Path(env["HAPAX_CLAUDE_BIN"]),
+        f"""
+        #!/usr/bin/env bash
+        printf 'role=%s ready_timeout=%s\\n' "$2" "${{HAPAX_CLAUDE_READY_TIMEOUT:-unset}}" >> "{calls / "claude.txt"}"
+        sleep {seconds}
+        """,
+    )
+
+
+def test_claude_respawn_witness_is_bounded_under_the_launch_timeout(tmp_path: Path) -> None:
+    env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="delta")
+    _make_worktree(env, "delta")
+    _slow_claude(env, calls, 0)
+    assert _run(env).returncode == 0
+    (line,) = _reads(calls, "claude.txt").splitlines()
+    bound = int(line.split("ready_timeout=")[1])
+    assert 0 < bound < 60, line  # 60 = the default LAUNCH_TIMEOUT_S around it
+
+
+def test_a_zero_witness_override_is_not_honoured(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="delta", HAPAX_SUPERVISOR_CLAUDE_READY_TIMEOUT_S="0"
+    )
+    _make_worktree(env, "delta")
+    _slow_claude(env, calls, 0)
+    assert _run(env).returncode == 0
+    assert "ready_timeout=30" in _reads(calls, "claude.txt")
+
+
+def test_respawns_that_would_overrun_the_cycle_are_deferred(tmp_path: Path) -> None:
+    """Two dead lanes, and a launcher that takes 6 s. With a 45 s cycle budget the
+    first respawn fits (0 + 30 + 10). The second would not (6 + 30 + 10), so it
+    waits for the next cycle instead of being launched unwitnessed or overrunning."""
+    env, calls = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta epsilon",
+        HAPAX_SUPERVISOR_CYCLE_BUDGET_S="45",
+    )
+    _make_worktree(env, "delta")
+    _make_worktree(env, "epsilon")
+    _slow_claude(env, calls, 6)
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    launched = _reads(calls, "claude.txt").splitlines()
+    assert [ln.split()[0] for ln in launched] == ["role=delta"], launched
+    assert "epsilon (claude): DEAD with no active task — respawn DEFERRED" in result.stdout
+
+
+def test_a_launcher_killed_by_timeout_is_reported_as_such(tmp_path: Path) -> None:
+    env, calls = _base(
+        tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="delta", HAPAX_SUPERVISOR_LAUNCH_TIMEOUT_S="1"
+    )
+    _make_worktree(env, "delta")
+    _slow_claude(env, calls, 5)
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    assert "killed by timeout after 1s (rc=124)" in result.stdout
+    assert "counted as NOT launched" in result.stdout
 
 
 def test_supervisor_does_not_respawn_over_pidfile_free_launcher(tmp_path: Path) -> None:
@@ -676,6 +747,7 @@ def test_supervisor_real_codex_launcher_blocks_wound_down_non_p0_lane(
         tmp_path,
         HAPAX_SUPERVISOR_CODEX_LANES="cx-amber",
         HAPAX_CODEX_BIN=str(REPO_ROOT / "scripts" / "hapax-codex"),
+        HAPAX_COUNCIL_DIR=str(REPO_ROOT),
     )
     fake_codex = tmp_path / "bin" / "codex"
     _write_recorder(fake_codex, tmp_path / "real-codex.txt")

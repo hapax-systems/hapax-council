@@ -78,6 +78,19 @@ def test_manifest_module_loader_validates() -> None:
         ),
         # self-protection: manifest rot is governance rot
         ("config/invariant-manifest.yaml", "invariant-manifest"),
+        ("AGENTS.md", "governance-meta"),
+        ("nested/AGENTS.md", "governance-meta"),
+        ("CLAUDE.md", "governance-meta"),
+        ("nested/CLAUDE.md", "governance-meta"),
+        ("config/agent-instructions/AGENTS.md", "governance-meta"),
+        ("config/agent-instructions/native/claude.md", "governance-meta"),
+        ("config/agent-instructions/native/grok.md", "governance-meta"),
+        ("config/agent-instructions/native/kimi.md", "governance-meta"),
+        ("config/agent-instructions/native/vibe.md", "governance-meta"),
+        ("config/agent-instructions/native/future-client.md", "governance-meta"),
+        ("config/agent-instructions/bindings.json", "governance-meta"),
+        ("docs/runbooks/council-domain-context.md", "governance-meta"),
+        ("scripts/install-agent-instructions.py", "governance-meta"),
         ("scripts/hapax-invariant-touch-report", "invariant-manifest"),
     ],
 )
@@ -88,6 +101,32 @@ def test_acceptance_coverage(sample_path: str, expected_invariant: str) -> None:
     touches = itr.classify_paths(manifest, [sample_path])
     touched_ids = {t.invariant.id for t in touches}
     assert expected_invariant in touched_ids
+
+
+@pytest.mark.parametrize(
+    "sample_path",
+    [
+        "docs/AGENTS.md.example",
+        "docs/CLAUDE.md.example",
+        "docs/runbooks/ordinary.md",
+        "config/ordinary.yaml",
+        "config/agent-instructions/README.md",
+        "config/agent-instructions/native/claude.md.example",
+        "config/agent-instructions/native-extra/claude.md",
+        "config/agent-instructions/bindings.json.example",
+        "config/agent-instructions-extra/bindings.json",
+        "docs/runbooks/council-domain-context.md.example",
+        "docs/runbooks/other-council-domain-context.md",
+        "scripts/install-agent-instructions.py.example",
+        "scripts/other-install-agent-instructions.py",
+    ],
+)
+def test_instruction_lookalikes_and_ordinary_docs_do_not_touch_governance(
+    sample_path: str,
+) -> None:
+    manifest = itr.load_manifest(MANIFEST_PATH)
+    touches = itr.classify_paths(manifest, [sample_path])
+    assert touches == []
 
 
 def test_operator_coupled_class_policy() -> None:

@@ -1,16 +1,16 @@
 """Shared Google OAuth2 credential management.
 
 All Google service sync agents use this module for authentication.
-Credentials stored in pass(1): ``google/client-secret`` + one or more
-token entries. ``google/token`` is the default (main Google account —
+Credentials live in the FileStore, read through ``shared.secrets``:
+``google/client-secret`` + one or more token entries. ``google/token`` is the default (main Google account —
 Gmail / Calendar / Drive / Obsidian).
 
 **Brand-channel / sub-channel tokens**: OAuth tokens are scoped to the
 YouTube channel the user picks at consent time, not just the Google
 account. When a brand-account sub-channel needs its own scoped token
 (e.g., ``liveBroadcasts.list(mine=true)`` must see the sub-channel,
-not the primary), the operator mints a second token at a different
-pass key (canonical: ``google/token-youtube-streaming``). Callers pass
+not the primary), the operator mints a second token under a different
+secret name (canonical: ``google/token-youtube-streaming``). Callers pass
 ``pass_key=`` to :func:`get_google_credentials` to opt into the scoped
 token; the default path remains the main-account token so gmail sync,
 calendar sync, obsidian, etc. are untouched.
@@ -19,23 +19,35 @@ Minting a new scoped token: run
 ``scripts/mint-google-token.py --pass-key google/token-youtube-streaming``
 which opens a browser with ``prompt=consent`` forcing the Google
 channel picker — the operator selects the sub-channel on the second
-screen, and the resulting token gets written to the specified pass key.
+screen, and the resulting token gets written to the specified secret name.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import subprocess
+import shlex
 
 from googleapiclient.discovery import build as discovery_build
 
+from shared.secrets import SecretIntegrityFailed, SecretUnavailable, get_secret, put_secret
+
 log = logging.getLogger(__name__)
+
+
+class GoogleCredentialsUnavailable(RuntimeError):
+    """No usable Google credential exists and the interactive consent flow is disabled.
+
+    Raised by :func:`build_service` for unattended callers so a missing or
+    unrefreshable token surfaces as a failed unit naming its remedy, never as a
+    process parked forever on a browser consent flow nobody will answer.
+    """
+
 
 TOKEN_PASS_KEY = "google/token"
 CLIENT_SECRET_PASS_KEY = "google/client-secret"
 
-# Pass key for the YouTube streaming sub-channel token. Minted by the
+# Secret name for the YouTube streaming sub-channel token. Minted by the
 # operator running ``scripts/mint-google-token.py`` after selecting the
 # sub-channel in the Google OAuth channel picker. Consumed by
 # ``scripts/youtube-video-id-publisher.py`` and
@@ -58,31 +70,40 @@ ALL_SCOPES = [
 ]
 
 
-def _load_token_from_pass(scopes: list[str], pass_key: str = TOKEN_PASS_KEY):
-    """Load OAuth2 credentials from the specified pass store entry.
+def _consent_scopes(scopes: list[str]) -> list[str]:
+    """Return every requested and shared scope once, in deterministic order."""
+    return list(dict.fromkeys([*scopes, *ALL_SCOPES]))
 
-    Returns Credentials or None. ``pass_key`` defaults to
-    :data:`TOKEN_PASS_KEY` (main Google account); callers that need a
-    scoped token (e.g., YouTube brand sub-channel) pass a different key.
+
+def _load_token(scopes: list[str], pass_key: str = TOKEN_PASS_KEY):
+    """Load OAuth2 credentials from the secret named ``pass_key`` (the FileStore; never pass).
+
+    Returns Credentials or None. ``pass_key`` defaults to :data:`TOKEN_PASS_KEY` (main Google
+    account); callers that need a scoped token (e.g., YouTube brand sub-channel) pass a
+    different name. An integrity failure on the stored blob propagates: a token that is
+    present but will not verify is not "no token yet".
     """
     from google.oauth2.credentials import Credentials
 
     try:
-        token_json = subprocess.check_output(
-            ["pass", "show", pass_key],
-            stderr=subprocess.DEVNULL,
-        ).decode()
+        token_json = get_secret(pass_key, required=False)
+    except SecretIntegrityFailed:
+        raise
+    except SecretUnavailable as exc:
+        log.debug("Could not load token %s: %s", pass_key, type(exc).__name__)
+        return None
+    if not token_json:
+        log.debug("No existing token at secret %s", pass_key)
+        return None
+    try:
         return Credentials.from_authorized_user_info(json.loads(token_json), scopes)
-    except subprocess.CalledProcessError:
-        log.debug("No existing token at pass key %s", pass_key)
-        return None
     except Exception as exc:
-        log.debug("Could not load token from %s: %s", pass_key, exc)
+        log.debug("Could not load token from %s: %s", pass_key, type(exc).__name__)
         return None
 
 
-def _save_token_to_pass(creds, pass_key: str = TOKEN_PASS_KEY) -> None:
-    """Save OAuth token to the specified pass store entry."""
+def _save_token(creds, pass_key: str = TOKEN_PASS_KEY) -> None:
+    """Save the OAuth token JSON under the secret named ``pass_key`` (the FileStore)."""
     token_data = json.dumps(
         {
             "token": creds.token,
@@ -93,13 +114,10 @@ def _save_token_to_pass(creds, pass_key: str = TOKEN_PASS_KEY) -> None:
             "scopes": list(creds.scopes or []),
         }
     )
-    proc = subprocess.run(
-        ["pass", "insert", "-m", pass_key],
-        input=token_data.encode(),
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        log.warning("Failed to save token to pass %s: %s", pass_key, proc.stderr.decode())
+    try:
+        put_secret(pass_key, token_data.encode("utf-8"))
+    except SecretUnavailable as exc:
+        log.warning("Failed to save token %s: %s", pass_key, type(exc).__name__)
 
 
 def get_google_credentials(
@@ -110,7 +128,7 @@ def get_google_credentials(
 ):
     """Load, refresh, or create OAuth2 credentials.
 
-    ``pass_key`` selects which pass entry to read/write. The default
+    ``pass_key`` selects which secret name to read/write. The default
     (:data:`TOKEN_PASS_KEY`) is the main-account token shared by gmail,
     calendar, drive, and obsidian services. To get a channel-scoped
     token for a brand sub-channel, pass
@@ -121,9 +139,7 @@ def get_google_credentials(
     daemons should pass ``interactive=False`` so a missing token logs
     a warning rather than hanging on browser-flow blocking IO.
     """
-    from google_auth_oauthlib.flow import InstalledAppFlow
-
-    creds = _load_token_from_pass(scopes, pass_key=pass_key)
+    creds = _load_token(scopes, pass_key=pass_key)
     if creds:
         if creds.valid:
             return creds
@@ -132,28 +148,29 @@ def get_google_credentials(
 
             try:
                 creds.refresh(Request())
-                _save_token_to_pass(creds, pass_key=pass_key)
+                _save_token(creds, pass_key=pass_key)
                 return creds
             except Exception as exc:
                 log.info("Token refresh failed for %s (scope change?): %s", pass_key, exc)
 
     if not interactive:
         log.warning(
-            "No valid credentials at pass key %s and interactive flow disabled",
+            "No valid credentials at secret %s and interactive flow disabled",
             pass_key,
         )
         return None
 
     # No valid token — run OAuth flow with all known scopes
     # so a single consent covers Drive, Calendar, Gmail, etc.
-    all_scopes = list(set(scopes) | set(ALL_SCOPES))
-    client_json = subprocess.check_output(
-        ["pass", "show", CLIENT_SECRET_PASS_KEY],
-        stderr=subprocess.DEVNULL,
-    ).decode()
+    # Imported here, not at the top of the function: unattended callers never
+    # reach the consent flow and must not need google_auth_oauthlib installed.
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    all_scopes = _consent_scopes(scopes)
+    client_json = get_secret(CLIENT_SECRET_PASS_KEY)
     flow = InstalledAppFlow.from_client_config(json.loads(client_json), all_scopes)
     creds = flow.run_local_server(port=0)
-    _save_token_to_pass(creds, pass_key=pass_key)
+    _save_token(creds, pass_key=pass_key)
     return creds
 
 
@@ -163,7 +180,49 @@ def build_service(
     scopes: list[str],
     *,
     pass_key: str = TOKEN_PASS_KEY,
+    interactive: bool = True,
 ):
-    """Build an authenticated Google API service client."""
-    creds = get_google_credentials(scopes, pass_key=pass_key)
+    """Build an authenticated Google API service client.
+
+    ``interactive=False`` is for unattended callers (systemd daemons, the
+    daimonion tools). When no usable token exists the call refuses with
+    :class:`GoogleCredentialsUnavailable`, naming the pass key and the consent
+    command, instead of blocking on a browser flow or building an
+    unauthenticated client.
+    """
+    creds = get_google_credentials(scopes, pass_key=pass_key, interactive=interactive)
+    if creds is None:
+        raise GoogleCredentialsUnavailable(
+            f"No usable Google credential for {api} {version} at pass key "
+            f"{pass_key!r} and the interactive consent flow is disabled. "
+            "Next action: mint the token once, interactively, on this host: "
+            f"{_recovery_command(pass_key, scopes)}"
+        )
     return discovery_build(api, version, credentials=creds)
+
+
+def _recovery_command(pass_key: str, scopes: list[str]) -> str:
+    """The shell-safe command that re-mints the token at ``pass_key``.
+
+    The main-account token is re-minted by this module's own interactive consent flow, never by
+    ``scripts/mint-google-token.py``. That script's prompt tells the operator to pick a YouTube
+    SUB-CHANNEL, and it promises never to touch ``google/token``; routing the main token through
+    it would replace the credential gmail, calendar and drive share with a sub-channel token.
+    Scoped sub-channel keys are what that script exists for, so they keep it.
+    """
+    consent = _consent_scopes(scopes)
+    if pass_key == TOKEN_PASS_KEY:
+        code = f"from shared.google_auth import get_google_credentials; get_google_credentials({consent!r})"
+        return shlex.join(["uv", "run", "python", "-c", code])
+    return shlex.join(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/mint-google-token.py",
+            "--pass-key",
+            pass_key,
+            "--scopes",
+            *consent,
+        ]
+    )

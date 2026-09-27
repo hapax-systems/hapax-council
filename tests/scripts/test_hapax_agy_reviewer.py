@@ -43,16 +43,18 @@ def test_agy_reviewer_invokes_sandboxed_print_mode(tmp_path: Path) -> None:
     calls = tmp_path / "calls.txt"
     cwd_file = tmp_path / "cwd.txt"
     home_file = tmp_path / "home.txt"
+    roots_file = tmp_path / "roots.txt"
     prompt_copy = tmp_path / "prompt.md"
     secret_file = tmp_path / "secret.txt"
     operator_home = tmp_path / "operator-home"
     fake_agy = bin_dir / "agy"
     fake_agy.write_text(
         f"""#!/usr/bin/env bash
-printf '%s\\n' "$@" > {calls}
+printf '%s\\0' "$@" > {calls}
 pwd > {cwd_file}
 cp review-dossier.md {prompt_copy}
 printf '%s\\n' "$HOME" > {home_file}
+printf '%s\\0' "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" > {roots_file}
 printf '%s\\n' "${{HAPAX_SHOULD_NOT_LEAK:-unset}}" > {secret_file}
 printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
 """,
@@ -63,7 +65,12 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     # the review runs, so leak resistance has to hold with it present.
     _seed_operator_token(operator_home)
 
-    env = {**os.environ, "HAPAX_SHOULD_NOT_LEAK": "secret", "HOME": str(operator_home)}
+    env = {
+        **os.environ,
+        "HAPAX_SHOULD_NOT_LEAK": "secret",
+        "HOME": str(operator_home),
+        "HAPAX_AGY_REVIEW_PRINT_TIMEOUT": "20m0s",
+    }
     result = subprocess.run(
         [str(WRAPPER), "--agy-bin", str(fake_agy), "--model", "gemini-3.1-pro-high"],
         input="diff --git a/x b/x\n+change\n",
@@ -103,6 +110,51 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert home_file.read_text(encoding="utf-8").strip() != str(operator_home)
     assert secret_file.read_text(encoding="utf-8").strip() == "unset"
 
+    # The wrapper constructs a temporary invocation, not a worker checkout.
+    # This stub observes child inputs, not native discovery or semantic use.
+    invocation_root = Path(cwd_file.read_text().strip())
+    invocation_home = Path(home_file.read_text().strip())
+    assert invocation_home == invocation_root / "home"
+    assert roots_file.read_text().split("\0")[:-1] == [
+        str(invocation_root / name) for name in ("home", "config", "cache", "state")
+    ]
+    argv = args.split("\0")[:-1]
+    assert argv == [
+        "--print-timeout",
+        "20m0s",
+        "--log-file",
+        str(invocation_root / "agy.log"),
+        "--sandbox",
+        "--dangerously-skip-permissions",
+        "--disable-slash-commands",
+        "--model",
+        "gemini-3.1-pro-high",
+        "--print",
+        argv[-1],
+    ]
+    assert argv[-1].startswith("Read ./review-dossier.md")
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "agy.review.direct")
+    declared = route["native_load_set"]
+    assert declared["native_home"] == ".gemini" and declared["home_env"] is None
+    assert len(declared["files"]) == 1
+    configured = declared["files"][0]
+    assert (configured["root"], configured["path"], configured["kind"]) == (
+        "native_home",
+        "antigravity-cli/settings.json",
+        "configuration",
+    )
+    assert configured["sha256"] is None and configured["required"] is False
+    assert declared["loading_flags"] == [
+        "--sandbox",
+        "--dangerously-skip-permissions",
+        "--disable-slash-commands",
+    ]
+    # Slash command disabling is not evidence that every extension is absent.
+    assert all(declared[name] is None for name in ("plugins", "skills", "hooks", "mcp"))
+    assert "per-invocation" in declared["memory_scope"]
+    assert "scripts/hapax-agy-reviewer" in declared["source_refs"]
+
 
 def test_agy_reviewer_seeds_only_the_oauth_token_into_sandbox_home(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator-home"
@@ -111,6 +163,8 @@ def test_agy_reviewer_seeds_only_the_oauth_token_into_sandbox_home(tmp_path: Pat
     (token_dir / "antigravity-oauth-token").write_bytes(b"token-bytes-not-a-secret-in-tests")
     (token_dir / "conversations").mkdir()
     (token_dir / "conversations" / "leak.json").write_text("nope", encoding="utf-8")
+    (token_dir / "settings.json").write_text("{}", encoding="utf-8")
+    (token_dir.parent / "GEMINI.md").write_text("worker-only instructions", encoding="utf-8")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -138,6 +192,8 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "antigravity-oauth-token" in seen
     assert "conversations" not in seen
     assert "leak.json" not in seen
+    assert "settings.json" not in seen
+    assert "GEMINI.md" not in seen
 
 
 def test_agy_reviewer_refuses_output_that_echoes_the_seeded_token(tmp_path: Path) -> None:

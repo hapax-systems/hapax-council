@@ -894,7 +894,8 @@ def _warn_missing_authority_secret() -> None:
     log.warning(
         "public-gate authority evidence cannot be verified because the signing "
         "credential is unset; next action: restore the public-gate authority signing "
-        "credential from pass before validating public-gate receipts",
+        "credential from the FileStore (hapax-public-gate-authority-hmac-key) before "
+        "validating public-gate receipts",
     )
 
 

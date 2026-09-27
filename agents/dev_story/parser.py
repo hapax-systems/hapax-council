@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agents.dev_story.models import (
+    CompactionEvent,
     FileChange,
     Message,
     Session,
@@ -25,6 +26,7 @@ class ParsedSession:
     messages: list[Message] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
     file_changes: list[FileChange] = field(default_factory=list)
+    compaction_events: list[CompactionEvent] = field(default_factory=list)
 
 
 def discover_archived_sessions(archive_dir: Path) -> list[Path]:
@@ -236,6 +238,7 @@ def parse_session(path: Path, project_path: str) -> ParsedSession:
     messages: list[Message] = []
     tool_calls: list[ToolCall] = []
     file_changes: list[FileChange] = []
+    compaction_events: list[CompactionEvent] = []
 
     session_id: str | None = None
     git_branch: str | None = None
@@ -273,6 +276,7 @@ def parse_session(path: Path, project_path: str) -> ParsedSession:
             if entry_type in ("user", "assistant"):
                 msg_data = entry.get("message", {})
                 uuid = entry.get("uuid", f"line-{line_num}")
+                is_compact_summary = entry.get("isCompactSummary") is True
                 content = msg_data.get("content", "")
                 content_text = _extract_content_text(content)
 
@@ -284,12 +288,28 @@ def parse_session(path: Path, project_path: str) -> ParsedSession:
                 if model:
                     model_counts[model] = model_counts.get(model, 0) + 1
 
+                # A compaction summary is agent-authored prose delivered on a user-role
+                # record. Left as "user" it is indistinguishable from an operator turn,
+                # which is how generated content acquires operator authority in the index.
+                role = msg_data.get("role", entry_type)
+                if is_compact_summary:
+                    role = "compaction_summary"
+                    compaction_events.append(
+                        CompactionEvent(
+                            session_id=session_id or path.stem,
+                            message_id=uuid,
+                            timestamp=ts or "",
+                            record_position=line_num,
+                            summary_chars=len(content_text),
+                        )
+                    )
+
                 messages.append(
                     Message(
                         id=uuid,
                         session_id=session_id or path.stem,
                         parent_id=entry.get("parentUuid"),
-                        role=msg_data.get("role", entry_type),
+                        role=role,
                         timestamp=ts or "",
                         content_text=content_text,
                         model=model,
@@ -302,7 +322,7 @@ def parse_session(path: Path, project_path: str) -> ParsedSession:
                 total_tokens_out += t_out
 
                 # Extract tool calls from assistant messages
-                if entry_type == "assistant":
+                if entry_type == "assistant" and not is_compact_summary:
                     tool_calls.extend(_extract_tool_calls(uuid, content))
 
             elif entry_type == "file-history-snapshot":
@@ -333,4 +353,5 @@ def parse_session(path: Path, project_path: str) -> ParsedSession:
         messages=messages,
         tool_calls=tool_calls,
         file_changes=file_changes,
+        compaction_events=compaction_events,
     )

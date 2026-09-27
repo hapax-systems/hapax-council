@@ -24,7 +24,17 @@ surface_lenses:
     globs: ["agents/hapax_daimonion/**"]
     lenses: [correctness, live-runtime-composition, voice-doctrine]
   - surface: governance
-    globs: ["shared/governance/**", "axioms/**"]
+    globs:
+      - "shared/governance/**"
+      - "axioms/**"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "CLAUDE.md"
+      - "**/CLAUDE.md"
+      - "config/agent-instructions/native/*.md"
+      - "config/agent-instructions/bindings.json"
+      - "docs/runbooks/council-domain-context.md"
+      - "scripts/install-agent-instructions.py"
     lenses: [axiom-compliance, formal-soundness, consent-provenance]
   - surface: audio
     globs: ["config/pipewire/**", "config/audio-*", "scripts/*audio*"]
@@ -68,6 +78,14 @@ sizing:
 t1_surface_globs:
   - "shared/governance/**"
   - "axioms/**"
+  - "AGENTS.md"
+  - "**/AGENTS.md"
+  - "CLAUDE.md"
+  - "**/CLAUDE.md"
+  - "config/agent-instructions/native/*.md"
+  - "config/agent-instructions/bindings.json"
+  - "docs/runbooks/council-domain-context.md"
+  - "scripts/install-agent-instructions.py"
   - "config/pipewire/**"
   - "systemd/**"
   - "scripts/*deploy*"
@@ -111,6 +129,31 @@ families:
     # bypass only under operator/governance authority).
     reviewer_command: ["scripts/hapax-glmcp-reviewer"]
     timeout_seconds: 1200
+  # Substitute families (review-constitution-walled-family-substitution-20260924, option (a),
+  # granted by the coordinator seat 2026-09-24T21:17:12Z). ``substitute: true`` means the
+  # family fills only seats the core families above cannot fill with distinct families. It is
+  # never part of t1's every-family requirement, and it never displaces a core family. These
+  # are static (no route_id), like codex. The quota readers in shared/quota_headroom.py
+  # (muse / vibe rows) still exclude a walled one. Route-backed seats with runtime receipts
+  # are a follow-up row. Substitutes are seated in the order listed here, most reliable first.
+  - family: muse
+    # Meta Muse via `muse exec`. Measured reliable up to 96 KB prompts (2026-09-24 panels).
+    reviewer_command: ["scripts/hapax-muse-reviewer"]
+    timeout_seconds: 1200
+    substitute: true
+  - family: local
+    # Local fleet: qwen3.8-flash-next on the spark-01df vLLM cluster, $0. Reliable, but twice
+    # (2026-09-24) its verdict line contradicted its own text; synthesize_dossier escalates
+    # verdict-contradicts-findings and a named critical blocks whatever the verdict says.
+    reviewer_command: ["scripts/hapax-local-reviewer"]
+    timeout_seconds: 1200
+    substitute: true
+  - family: vibe
+    # Mistral Medium 3.5 via `vibe -p`. It returned 0 B three times on 45-87 KB prompts and
+    # returned verdicts at 22 KB and 60 KB, so the wrapper refuses prompts above its ceiling.
+    reviewer_command: ["scripts/hapax-vibe-reviewer"]
+    timeout_seconds: 1200
+    substitute: true
 
 # Optional route-backed review-seat descriptors. These extend the roster only
 # when the named platform-capability route is admitted with fresh route,
@@ -147,7 +190,8 @@ route_backed_review_families:
     timeout_seconds: 1200
 
 # Authoring-lane -> model family (writer's family never holds the majority
-# alone). vibe lanes never review (off-limits surfaces per CLAUDE.md).
+# alone). vbe- lanes never author on off-limits surfaces (per CLAUDE.md); the
+# vibe family reviews only as a read-only substitute seat (see families above).
 # agy.review.direct is a read-only review route, not an authoring lane; agy
 # and retired Antigrav lane names fail closed here instead of mapping to Gemini.
 lane_families:

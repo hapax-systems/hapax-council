@@ -1,7 +1,7 @@
 """Extract assertions from prose/markdown sources.
 
 Three extraction strategies:
-1. CLAUDE.md directives containing MUST/NEVER/ALWAYS/MANDATORY/PROTECTED
+1. Authored instruction directives containing MUST/NEVER/ALWAYS/MANDATORY/PROTECTED
 2. Operator feedback memories (type: feedback in frontmatter)
 3. Relay artifact claims and decisions (section-based extraction)
 """
@@ -71,11 +71,33 @@ def _extract_deontic_lines(text: str) -> list[tuple[str, int, str]]:
     return results
 
 
+def instruction_source_paths(root: Path, *, recursive: bool = True) -> list[Path]:
+    """Discover named instruction sources, deduplicated by their canonical paths."""
+    patterns = (
+        "AGENTS.md",
+        "CLAUDE.md",
+        "config/agent-instructions/AGENTS.md",
+        "config/agent-instructions/native/*.md",
+        "docs/runbooks/council-domain-context.md",
+    )
+    discover = root.rglob if recursive else root.glob
+    sources: set[Path] = set()
+    for pattern in patterns:
+        for path in discover(pattern):
+            try:
+                if path.is_file():
+                    sources.add(path.resolve())
+            except (OSError, RuntimeError):
+                continue
+    return sorted(sources)
+
+
 def extract_from_claude_md(path: Path) -> list[Assertion]:
-    """Extract MUST/NEVER/ALWAYS/MANDATORY/PROTECTED directives from a CLAUDE.md file."""
+    """Extract instruction directives; retain the legacy entry point and method name."""
     try:
+        path = path.resolve()
         text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError, RuntimeError):
         return []
 
     _, body = _parse_frontmatter(text)
@@ -268,14 +290,14 @@ def extract_from_directory(
     """Recursively extract assertions from markdown files under root.
 
     source_kind controls extraction strategy:
-      - "claude_md": CLAUDE.md directive extraction
+      - "claude_md": authored instruction directives (legacy strategy name)
       - "memory": feedback memory extraction
       - "relay": relay artifact extraction
     """
     results: list[Assertion] = []
 
     if source_kind == "claude_md":
-        for md in sorted(root.rglob("CLAUDE.md")):
+        for md in instruction_source_paths(root):
             results.extend(extract_from_claude_md(md))
     elif source_kind == "memory":
         for md in sorted(root.rglob("*.md")):
@@ -411,7 +433,7 @@ def extract_from_directory_resumable(
             results.extend(extract_from_obsidian_note(md))
             state.mark_processed(md)
     elif source_kind == "claude_md":
-        for md in sorted(root.rglob("CLAUDE.md")):
+        for md in instruction_source_paths(root):
             if state.is_processed(md):
                 continue
             results.extend(extract_from_claude_md(md))

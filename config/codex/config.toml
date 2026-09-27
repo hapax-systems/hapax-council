@@ -1,5 +1,4 @@
-model = "gpt-5.5"
-model_reasoning_effort = "xhigh"
+# Execution identity is required from the capability registry by the launchers.
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
@@ -41,6 +40,3 @@ PostToolUse = [
 Stop = [
   { command = "__HAPAX_COUNCIL_DIR__/hooks/scripts/codex-hook-adapter.sh", timeout = 20, statusMessage = "Writing Hapax session summary" },
 ]
-
-[tui.model_availability_nux]
-"gpt-5.5" = 1

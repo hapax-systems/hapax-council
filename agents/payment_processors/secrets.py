@@ -1,20 +1,22 @@
 """Credential loader for payment receivers.
 
-All credentials are read from the ``pass`` store via ``pass show <key>``.
-Returns ``None`` on any failure (missing key, gpg-agent unavailable,
-pass not installed) so the calling receiver can disable itself
-gracefully and emit a refusal-brief annex rather than crash.
+All credentials are read through :mod:`shared.secrets` — environment, then the reins
+FileStore, then ``hapax-secret`` — never pass. A missing credential returns ``None`` so the
+calling receiver can disable itself gracefully and emit a refusal-brief annex rather than
+crash. A credential that is PRESENT but fails its integrity check is a different fact: that
+raises :class:`shared.secrets.SecretIntegrityFailed` out of the loader, because a tampered
+credential must not be reported as "operator has not bootstrapped this rail yet".
 
-The functions are NOT cached: each rail reads at startup and stores
-the value in its own runner. Rotating a credential via
-``pass insert`` followed by a ``systemctl restart`` is the supported
-update path; in-process caches would defeat that.
+The functions are NOT cached: each rail reads at startup and stores the value in its own
+runner. Rotating a credential is a put through ``hapax-secret`` (the TTY dialogue) followed by
+a ``systemctl restart``; in-process caches would defeat that.
 """
 
 from __future__ import annotations
 
 import logging
-import subprocess
+
+from shared.secrets import SecretIntegrityFailed, SecretUnavailable, get_secret
 
 log = logging.getLogger(__name__)
 
@@ -22,57 +24,48 @@ LIGHTNING_ALBY_KEY = "lightning/alby-access-token"
 NOSTR_NSEC_KEY = "nostr/nsec-hex"
 NOSTR_NPUB_KEY = "nostr/npub-hex"
 LIBERAPAY_USERNAME_KEY = "liberapay/username"
-LIBERAPAY_PASSWORD_KEY = "liberapay/password"
+LIBERAPAY_PASSWORD_KEY = "liberapay/password"  # pragma: allowlist secret
 
 
 def _credential_ref(key: str) -> str:
     refs = {
-        LIGHTNING_ALBY_KEY: "pass-key:lightning-alby-credential",
-        NOSTR_NSEC_KEY: "pass-key:nostr-private-credential",
-        NOSTR_NPUB_KEY: "pass-key:nostr-public-key",
-        LIBERAPAY_USERNAME_KEY: "pass-key:liberapay-username",
-        LIBERAPAY_PASSWORD_KEY: "pass-key:liberapay-credential",
+        LIGHTNING_ALBY_KEY: "secret-ref:lightning-alby-credential",
+        NOSTR_NSEC_KEY: "secret-ref:nostr-private-credential",
+        NOSTR_NPUB_KEY: "secret-ref:nostr-public-key",
+        LIBERAPAY_USERNAME_KEY: "secret-ref:liberapay-username",
+        LIBERAPAY_PASSWORD_KEY: "secret-ref:liberapay-credential",  # pragma: allowlist secret
     }
-    return refs.get(key, "pass-key:redacted")
+    return refs.get(key, "secret-ref:redacted")
 
 
-def pass_show(key: str, *, timeout_s: float = 5.0) -> str | None:
-    """Read ``pass show <key>`` and return the stripped first line.
+def read_secret(key: str) -> str | None:
+    """The stored value's first line, stripped, or ``None`` when the secret is absent.
 
-    Returns ``None`` on any failure. The shape mirrors
-    ``shared.orcid.operator_orcid`` / ``shared.omg_lol_client`` so the
-    pattern is recognizable to readers across the council codebase.
+    Mirrors ``agents.mail_monitor.oauth._read_secret`` so the pattern is recognizable to
+    readers across the council codebase. Only the redacted reference is ever logged — never
+    the name as stored, never the value, never the resolver's reason text.
     """
     try:
-        result = subprocess.run(
-            ["pass", "show", key],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.warning("pass show failed for %s (%s)", _credential_ref(key), type(exc).__name__)
+        value = get_secret(key, required=False)
+    except SecretIntegrityFailed:
+        raise
+    except SecretUnavailable as exc:
+        log.warning("secret unavailable for %s (%s)", _credential_ref(key), type(exc).__name__)
         return None
-    if result.returncode != 0:
-        log.debug(
-            "pass show returned %d for %s",
-            result.returncode,
-            _credential_ref(key),
-        )
+    if value is None:
         return None
-    value = result.stdout.strip().split("\n", 1)[0].strip()
-    return value or None
+    first = value.strip().split("\n", 1)[0].strip()
+    return first or None
 
 
 def load_alby_token() -> str | None:
     """Return Alby access token or ``None`` if unavailable."""
-    return pass_show(LIGHTNING_ALBY_KEY)
+    return read_secret(LIGHTNING_ALBY_KEY)
 
 
 def load_nostr_npub() -> str | None:
     """Return operator's Nostr public key (hex) or ``None``."""
-    return pass_show(NOSTR_NPUB_KEY)
+    return read_secret(NOSTR_NPUB_KEY)
 
 
 def load_nostr_nsec() -> str | None:
@@ -82,18 +75,18 @@ def load_nostr_nsec() -> str | None:
     receiver needs to publish kind-0 (metadata) for a public profile.
     Receive-only contract is preserved either way.
     """
-    return pass_show(NOSTR_NSEC_KEY)
+    return read_secret(NOSTR_NSEC_KEY)
 
 
 def load_liberapay_credentials() -> tuple[str, str] | None:
     """Return ``(username, password)`` or ``None`` if either missing.
 
     Liberapay's API uses HTTP Basic auth (no API token product). The
-    same credentials are used for the web UI; rotation requires
-    ``pass insert liberapay/password`` plus a service restart.
+    same credentials are used for the web UI; rotation is a put of
+    ``liberapay/password`` through ``hapax-secret`` plus a service restart.
     """
-    username = pass_show(LIBERAPAY_USERNAME_KEY)
-    password = pass_show(LIBERAPAY_PASSWORD_KEY)
+    username = read_secret(LIBERAPAY_USERNAME_KEY)
+    password = read_secret(LIBERAPAY_PASSWORD_KEY)
     if not username or not password:
         return None
     return (username, password)
@@ -109,5 +102,5 @@ __all__ = [
     "load_liberapay_credentials",
     "load_nostr_npub",
     "load_nostr_nsec",
-    "pass_show",
+    "read_secret",
 ]

@@ -530,6 +530,7 @@ record_post_merge_trace() {
     HAPAX_TRACE_RECOVERY_BUNDLE="$(_trace_join "${recovery_bundle_trace[@]}")" \
     HAPAX_TRACE_SCRIPTS="$(_trace_join "${SCRIPTS[@]}")" \
     HAPAX_TRACE_SCRIPT_PY="$(_trace_join "${SCRIPT_PY[@]}")" \
+    HAPAX_TRACE_AGENT_INSTRUCTIONS="$(_trace_join "${AGENT_INSTRUCTIONS[@]}")" \
     HAPAX_TRACE_QUAKE_ASSETS="$(_trace_join "${QUAKE_ASSETS[@]}")" \
     HAPAX_TRACE_CANONICAL_GATE="$(_trace_join "${CANONICAL_GATE[@]}")" \
     HAPAX_TRACE_AUDIO_SAFE_RESTARTS="$(_trace_join "${AUDIO_SAFE_RESTARTS[@]}")" \
@@ -576,6 +577,7 @@ deploy_groups = {
     "recovery_bundle": lines("HAPAX_TRACE_RECOVERY_BUNDLE"),
     "hapax_scripts": lines("HAPAX_TRACE_SCRIPTS"),
     "unit_backing_scripts": lines("HAPAX_TRACE_SCRIPT_PY"),
+    "agent_instructions": lines("HAPAX_TRACE_AGENT_INSTRUCTIONS"),
     "quake_assets": lines("HAPAX_TRACE_QUAKE_ASSETS"),
     "canonical_gate_closure": lines("HAPAX_TRACE_CANONICAL_GATE"),
 }
@@ -695,6 +697,7 @@ PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_D
 declare -A OOM_PACKAGE_PATHS=()
 declare -A APCUPSD_PACKAGE_PATHS=()
 GATE_CLOSURE=()
+AGENT_INSTRUCTIONS=()
 # Must stay a superset of hooks-doctor's CLOSURE_SIBLINGS (+ the impl):
 # deploy_canonical REFUSES an incomplete staged closure, so a missing sibling
 # here would make every drift redeploy fail (and, under set -e, kill the
@@ -1139,6 +1142,8 @@ while IFS= read -r f; do
             GATE_CLOSURE+=("$f") ;;
         assets/quake/maps/*|assets/quake/qc/*|assets/quake/csqc/*|assets/quake/models/*|assets/quake/sound/*|assets/quake/glsl/*|assets/quake/scripts/*|assets/quake/config/*|assets/quake/darkplaces/*)
             QUAKE_ASSETS+=("$f") ;;
+        config/agent-instructions/*|scripts/install-agent-instructions.py)
+            AGENT_INSTRUCTIONS+=("$f") ;;
         scripts/hapax-*)                  SCRIPTS+=("$f") ;;
         scripts/*.py|scripts/*.sh)        SCRIPT_PY+=("$f") ;;
         systemd/expected-timers.yaml)     ;; # frozen-baseline doc, not deployable
@@ -1146,6 +1151,7 @@ while IFS= read -r f; do
         systemd/units/*.md)               ;; # docs
         systemd/units/*.d/README.md)      ;; # drop-in dir docs (e.g. collapse ledgers)
         systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
+        systemd/units-pi6/*)              ;; # pi6 host units/wrappers; deployed on that host, not appendix post-merge
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac
 done <<< "$FILES"
@@ -1186,6 +1192,9 @@ if [ -z "$FILES" ]; then
 fi
 
 if [ "$DRY_RUN" = "1" ]; then
+    if [ "${#AGENT_INSTRUCTIONS[@]}" -gt 0 ]; then
+        echo "dry-run: would render and install native global instructions from $SHA"
+    fi
     reconcile_canonical_gate_closure
     record_post_merge_trace "dry_run" "0"
     TRACE_WRITTEN=1
@@ -1194,6 +1203,27 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 # --- PipeWire confs ---
+# Global instruction distribution is commit-addressed. The installer also binds
+# Grok's named-instruction switch; trust, credentials, plugins, hooks and running
+# sessions are unchanged.
+if [ "${#AGENT_INSTRUCTIONS[@]}" -gt 0 ]; then
+    instruction_stages="$HOME/.config/hapax/agent-instructions/staging"
+    install -d -m 700 "$instruction_stages"
+    instruction_stage="$(mktemp -d "$instruction_stages/deploy-XXXXXXXX")"
+    if git archive "$SHA" config/agent-instructions scripts/install-agent-instructions.py \
+        | tar -x -C "$instruction_stage" \
+        && python3 "$instruction_stage/scripts/install-agent-instructions.py" \
+            --source "$instruction_stage" --source-revision "$SHA" --home "$HOME" --apply; then
+        DID_ANYTHING=1
+        rm -rf "$instruction_stage"
+    else
+        # Keep the exact executable named by the installer's recovery command,
+        # including across reboot/temporary-directory cleanup.
+        echo "native instruction deployment failed; no deployment SHA will be stamped; retained deployment stage at $instruction_stage; next action: repair the reported archive or installer error, use any printed recovery command from this retained stage, then retry deployment" >&2
+        exit 1
+    fi
+fi
+
 if [ "${#PW[@]}" -gt 0 ]; then
     echo "pipewire confs changed (${#PW[@]}):"
     mkdir -p "$PW_CONF_DIR"

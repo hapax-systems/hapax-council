@@ -95,7 +95,10 @@ class InternetArchiveS3Publisher(Publisher):
         if not (self.access_key and self.secret_key):
             return PublisherResult(
                 refused=True,
-                detail="missing IA S3 credentials (operator-action queue: pass insert ia/access-key + ia/secret-key)",
+                detail=(
+                    "missing IA S3 credentials "
+                    "(operator-action: put ia/access-key and ia/secret-key with hapax-secret)"
+                ),
             )
         if requests is None:
             return PublisherResult(error=True, detail="requests library not available")

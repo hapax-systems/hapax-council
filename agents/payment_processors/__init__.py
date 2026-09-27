@@ -12,7 +12,7 @@ CONSTITUTIONAL CONTRACT — read-only rails:
     contract is enforced by ``tests/payment_processors/test_read_only_contract.py``,
     which scans the package source for forbidden verbs.
 
-Operator credentials (loaded via ``pass show <key>`` at startup):
+Operator credentials (loaded through ``shared.secrets`` at startup):
 
 - ``lightning/alby-access-token`` — Alby invoices/transactions API
 - ``nostr/nsec-hex`` — operator's Nostr private key (signing kind-0

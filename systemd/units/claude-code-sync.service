@@ -11,7 +11,6 @@ EnvironmentFile=-/run/user/1000/hapax-secrets.env
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=claude-code-sync

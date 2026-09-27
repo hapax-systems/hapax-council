@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Mistral Vibe substitute reviewer seat for the review-team registry (read-only).
+
+Runs `vibe -p` on the dispatcher's prompt in an empty temporary workdir with every tool
+disabled and one turn. Two refusals, each reported as a route outage:
+
+- Size. On 2026-09-24, `vibe -p` returned 0 B three times on 45-87 KB prompts and returned
+  verdicts at 22 KB and 60 KB. Prompts above the largest size measured below the smallest
+  failure (22 KB) are refused, so the seat never returns nothing silently.
+- Billing surface. The CLI can be bound to the metered API (`plan_type: api`) instead of the
+  Team allowance (`plan_type: chat`). The seat runs only when the configured key's own whoami
+  entry is the Team plan; otherwise it is refused rather than switching billing implicitly (next
+  action for the coordinator: rebind Vibe to the Team account).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
+
+WRAPPER = "hapax-vibe-reviewer"
+MAX_PROMPT_BYTES = 22_000
+MAX_PRICE_DOLLARS = "1.00"
+#: The Team allowance's plan_type, observed after the Team sign-in (frame/CAPABILITY-ROUTING-TABLE.md
+#: vibe row: "the new key's whoami reads plan_type chat instead of api").
+TEAM_PLAN_TYPE = "chat"
+KEY_VARIABLE = "MISTRAL_API_KEY"
+
+
+def configured_key(home: Path) -> str | None:
+    """The key vibe runs with: ~/.vibe/.env, unless the process sets a different one (refused).
+
+    The key stays in this process: it is only hashed, never logged, printed or passed on.
+    """
+
+    from_file = None
+    try:
+        for line in (home / ".vibe" / ".env").read_text(encoding="utf-8").splitlines():
+            name, sep, value = line.strip().partition("=")
+            if sep and name.strip() == KEY_VARIABLE:
+                from_file = value.strip().strip("\"'") or None
+    except OSError:
+        from_file = None
+    from_process = os.environ.get(KEY_VARIABLE, "").strip() or None
+    if from_process and from_file and from_process != from_file:
+        return None  # two different keys: which one bills is not established
+    return from_process or from_file
+
+
+def binding_plan_type(home: Path) -> str:
+    """plan_type of the configured key's own whoami entry, or a refusal reason code.
+
+    The whoami cache is keyed by the first 32 hex of sha256(key) (measured by the seat against
+    the live cache, 2026-09-24T21:59Z). Only the configured key's entry counts: a stale entry
+    for an old key (the 09-19 API key is still cached) says nothing about today's binding.
+    #4728's `read_other_family` reports "api" if ANY entry is api, which is why this does not
+    reuse it (that conflation is a follow-up on the reader's row).
+    """
+
+    key = configured_key(home)
+    if not key:
+        return "no_configured_key"
+    try:
+        cache = json.loads((home / ".vibe" / "whoami_cache.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "whoami_cache_unreadable"
+    if not isinstance(cache, dict):
+        return "whoami_cache_unreadable"
+    entry = cache.get(hashlib.sha256(key.encode("utf-8")).hexdigest()[:32])
+    if not isinstance(entry, dict) or not isinstance(entry.get("payload"), dict):
+        return "no_entry_for_configured_key"
+    return str(entry["payload"].get("plan_type") or "plan_type_missing")
+
+
+def vibe_bin() -> str | None:
+    return os.environ.get("HAPAX_VIBE_BIN") or shutil.which("vibe")
+
+
+def command(binary: str, prompt: str, workdir: Path) -> list[str]:
+    return [
+        binary,
+        "-p",
+        prompt,
+        "--agent",
+        "plan",
+        "--max-turns",
+        "1",
+        "--max-price",
+        MAX_PRICE_DOLLARS,
+        "--output",
+        "text",
+        "--enabled-tools",
+        "re:^$",  # matches no tool: with -p, every other tool is disabled
+        "--workdir",
+        str(workdir),
+    ]
+
+
+def main() -> int:
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
+    text = f"{SEAT_PREAMBLE}\n\n{prompt.strip()}\n"
+    size = len(text.encode("utf-8"))
+    if size > MAX_PROMPT_BYTES:
+        return refuse(
+            WRAPPER,
+            f"prompt of {size} bytes exceeds the measured vibe -p ceiling of {MAX_PROMPT_BYTES} "
+            "(0 B at 45-87 KB on 2026-09-24); the constitution substitutes another family",
+        )
+    plan = binding_plan_type(Path.home())
+    if plan != TEAM_PLAN_TYPE:
+        return refuse(
+            WRAPPER,
+            f"the configured vibe key's binding reads {plan}, not the Team allowance "
+            f"(plan_type={TEAM_PLAN_TYPE}); refusing to spend on the API meter. "
+            "Next action (coordinator): rebind Vibe to the Team account",
+        )
+    binary = vibe_bin()
+    if not binary:
+        return refuse(WRAPPER, "vibe binary not found; install vibe or set HAPAX_VIBE_BIN")
+    with tempfile.TemporaryDirectory(prefix="hapax-vibe-review-") as tmp:
+        try:
+            result = subprocess.run(
+                command(binary, text, Path(tmp)),
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            return refuse(WRAPPER, f"failed to launch vibe ({type(exc).__name__})")
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

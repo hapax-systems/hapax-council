@@ -27,6 +27,9 @@ from shared.jsonl_append import append_jsonl
 
 DEFAULT_STATE_PATH = Path.home() / ".cache" / "hapax" / "p0-incident-intake" / "state.json"
 DEFAULT_LEDGER_PATH = Path.home() / ".cache" / "hapax" / "p0-incident-intake" / "events.jsonl"
+DEFAULT_MIGRATION_ROOT = (
+    Path.home() / ".cache" / "hapax" / "p0-incident-intake" / "recurrence-migration"
+)
 DEFAULT_TASK_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_PARENT_REQUEST = "REQ-20260611-failure-ledger-longitudinal.md"
 DEFAULT_PARENT_SPEC = (
@@ -34,7 +37,6 @@ DEFAULT_PARENT_SPEC = (
 )
 DEFAULT_AUTHORITY_CASE = "CASE-SYSTEM-INTEGRITY-20260611"
 DEFAULT_VAULT_NAME = "Personal"
-LATEST_ALERT_BLOCK_RE = re.compile(r"(?s)## Latest Alert\n\n.*?\n## Evidence\n")
 
 log = logging.getLogger(__name__)
 
@@ -331,6 +333,8 @@ def _record_notification_locked(
                 "recurrence_count": recurrence_count,
                 "recurrence_of_task_id": recurrence_of_task_id,
                 "recurrence_of_task_path": str(recurrence_of_task_path),
+                # From the state: the prior note is written once, so its incident_count is stale.
+                "prior_incident_count": count - 1,
             }
         )
         _write_new_task(
@@ -356,7 +360,10 @@ def _record_notification_locked(
         )
         created = True
     else:
-        _update_existing_task(task_path, task_record, title=title, message=message, now=now)
+        # A repeat of an open incident is recorded in the state and the ledger below, never in
+        # its task note: rewriting the note on every repeat churned the task-store frontier under
+        # every concurrent cc-claim (p0-incident-intake-recurrence-to-sidecar-ledger-20260927).
+        # The note names the ledger and the state from its mint.
         updated = True
 
     task_record["task_path"] = str(task_path)
@@ -678,43 +685,99 @@ def _write_new_task(
     tmp.replace(path)
 
 
-def _update_existing_task(
-    path: Path, record: dict[str, Any], *, title: str, message: str, now: datetime
-) -> None:
-    text = path.read_text(encoding="utf-8")
-    text = _set_frontmatter_scalar(text, "updated_at", _iso(now))
-    text = _set_frontmatter_scalar(text, "last_incident_at", _iso(now))
-    text = _set_frontmatter_scalar(text, "incident_count", str(record["count"]))
-    text = _set_frontmatter_scalar(text, "last_incident_fingerprint", record["fingerprint"])
-    latest_block = _render_latest_alert(record, title=title, message=message)
-    text = _replace_latest_alert(text, latest_block)
-    log_line = (
-        f"- {_iso(now)} p0-incident-intake updated from `{_clip(title, 96)}` "
-        f"(count={record['count']})."
-    )
-    if "## Session Log\n" in text:
-        text = text.replace("## Session Log\n", f"## Session Log\n{log_line}\n", 1)
-    else:
-        text = text.rstrip() + f"\n\n## Session Log\n{log_line}\n"
-    tmp = _tmp_path_for(path)
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+#: The per-repeat session-log line the intake wrote into a task note before
+#: p0-incident-intake-recurrence-to-sidecar-ledger-20260927. The same repeats are in the ledger.
+_REPEAT_LOG_LINE_RE = re.compile(r"^- \S+ p0-incident-intake updated from `.*` \(count=\d+\)\.$")
 
 
-def _set_frontmatter_scalar(text: str, key: str, value: str) -> str:
-    if not text.startswith("---"):
-        return text
-    end = text.find("\n---", 4)
-    if end < 0:
-        return text
-    front = text[: end + 1]
-    body = text[end + 1 :]
-    line = f"{key}: {value}"
-    if re.search(rf"(?m)^{re.escape(key)}\s*:", front):
-        front = re.sub(rf"(?m)^{re.escape(key)}\s*:.*$", line, front)
-    else:
-        front = front.rstrip("\n") + f"\n{line}\n"
-    return front + body
+@dataclass(frozen=True)
+class RecurrenceMigration:
+    """One active incident note's per-repeat lines, moved (or, on a dry run, found)."""
+
+    note: str
+    moved_lines: int
+    before_sha256: str
+    after_sha256: str | None = None  # None on a dry run, or when the note changed underneath
+    skipped: str | None = None
+
+
+def migrate_recurrence_blocks(
+    *,
+    task_root: Path = DEFAULT_TASK_ROOT,
+    state_path: Path = DEFAULT_STATE_PATH,
+    archive_root: Path = DEFAULT_MIGRATION_ROOT,
+    lock_root: Path | None = None,
+    now: datetime | None = None,
+    apply: bool = False,
+) -> list[RecurrenceMigration]:
+    """One-time: move the per-repeat lines out of the active incident notes.
+
+    For each active ``p0-incident-*`` note that carries them, the note's original bytes and the
+    moved lines are archived, verified, under ``archive_root/<stamp>/`` first. Then the note is
+    rewritten once without them, with one pointer line in their place. The intake's state lock is
+    held throughout, so no intake write interleaves, and each rewrite holds the note's projection
+    lock, like every other task-note writer; a note that changed after it was read is skipped.
+    A dry run (the default) reports and changes nothing. A second run finds nothing.
+    """
+
+    from shared.task_note_lock import projected_path_lock  # lazily: keep notify's path cheap
+
+    moment = now or datetime.now(UTC)
+    run_dir = archive_root / moment.strftime("%Y%m%dT%H%M%SZ")
+    results: list[RecurrenceMigration] = []
+    with _state_file_lock(state_path):
+        for note in sorted((task_root / "active").glob("p0-incident-*.md")):
+            original = note.read_bytes()
+            lines = original.decode("utf-8").splitlines(keepends=True)
+            moved = [line for line in lines if _REPEAT_LOG_LINE_RE.match(line.rstrip("\n"))]
+            if not moved:
+                continue
+            before_sha = hashlib.sha256(original).hexdigest()
+            if not apply:
+                results.append(RecurrenceMigration(note.name, len(moved), before_sha))
+                continue
+            run_dir.mkdir(parents=True, exist_ok=True)
+            archived = run_dir / note.name
+            ledger = run_dir / f"{note.stem}.repeats.log"
+            archived.write_bytes(original)
+            ledger.write_text("".join(moved), encoding="utf-8")
+            if archived.read_bytes() != original or ledger.read_text(encoding="utf-8") != "".join(
+                moved
+            ):
+                raise OSError(f"archive verification failed for {note.name} in {run_dir}")
+            pointer = (
+                f"- {_iso(moment)} p0-incident-intake: moved {len(moved)} per-repeat lines to "
+                f"`{ledger}` (original note: `{archived}`); repeats now go to the incident "
+                "ledger only.\n"
+            )
+            kept = [line for line in lines if not _REPEAT_LOG_LINE_RE.match(line.rstrip("\n"))]
+            header = next((i for i, line in enumerate(kept) if line == "## Session Log\n"), None)
+            if header is None:
+                kept.append(pointer)
+            else:
+                kept.insert(header + 1, pointer)
+            rewritten = "".join(kept).encode("utf-8")
+            task_id = _frontmatter_value(original.decode("utf-8"), "task_id")
+            with projected_path_lock(task_id, [note], root=lock_root):
+                if note.read_bytes() != original:
+                    results.append(
+                        RecurrenceMigration(note.name, 0, before_sha, skipped="changed_since_read")
+                    )
+                    continue
+                tmp = _tmp_path_for(note)
+                tmp.write_bytes(rewritten)
+                tmp.replace(note)
+            results.append(
+                RecurrenceMigration(
+                    note.name, len(moved), before_sha, hashlib.sha256(rewritten).hexdigest()
+                )
+            )
+        if apply and results:
+            (run_dir / "manifest.json").write_text(
+                json.dumps([vars(item) for item in results], indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+    return results
 
 
 def _quote_yaml(text: str) -> str:
@@ -767,7 +830,6 @@ route_metadata:
     static_checks: [ruff]
     runtime_observation: true
   route_constraints:
-    preferred_platforms: [codex]
     allowed_platforms: [codex, claude]
     prohibited_platforms: []
   review_requirement:
@@ -870,16 +932,6 @@ def _render_latest_alert(record: dict[str, Any], *, title: str, message: str) ->
 """
 
 
-def _replace_latest_alert(text: str, latest_block: str) -> str:
-    replacement = f"{latest_block.rstrip()}\n\n## Evidence\n"
-    updated, count = LATEST_ALERT_BLOCK_RE.subn(lambda _: replacement, text, count=1)
-    if count:
-        return updated
-    if "## Evidence\n" in text:
-        return text.replace("## Evidence\n", replacement, 1)
-    return f"{text.rstrip()}\n\n{latest_block.rstrip()}\n"
-
-
 def _render_prior_incident_context(record: dict[str, Any]) -> str:
     prior_path_s = str(record.get("recurrence_of_task_path") or "").strip()
     prior_task_id = str(record.get("recurrence_of_task_id") or "").strip()
@@ -892,7 +944,7 @@ def _render_prior_incident_context(record: dict[str, Any]) -> str:
         prior_text = ""
     status = _frontmatter_value(prior_text, "status") or "unknown"
     completed_at = _frontmatter_value(prior_text, "completed_at") or "unknown"
-    prior_count = _frontmatter_value(prior_text, "incident_count") or "unknown"
+    prior_count = record.get("prior_incident_count", "unknown")
     pr = _frontmatter_value(prior_text, "pr") or "unknown"
     excerpt = _prior_resolution_excerpt(prior_text)
     recurrence_count = record.get("recurrence_count", 1)
@@ -979,3 +1031,29 @@ def _section_is_placeholder(text: str) -> bool:
             continue
         substantive.append(line)
     return not substantive
+
+
+def _main(argv: list[str] | None = None) -> int:
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(prog="python -m shared.p0_incident_intake")
+    commands = parser.add_subparsers(dest="command", required=True)
+    migrate = commands.add_parser(
+        "migrate-recurrences",
+        help="one-time: move per-repeat lines out of the active incident notes "
+        "(a dry run unless --apply)",
+    )
+    migrate.add_argument("--apply", action="store_true")
+    args = parser.parse_args(argv)
+    results = migrate_recurrence_blocks(apply=args.apply)
+    for item in results:
+        print(json.dumps(vars(item), sort_keys=True))
+    moved = sum(item.moved_lines for item in results)
+    verb = "moved" if args.apply else "would move"
+    print(f"{verb} {moved} per-repeat lines from {len(results)} notes", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

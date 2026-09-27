@@ -937,3 +937,63 @@ class TestAcceptanceReceiptEnforcement:
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+
+
+class TestDependencyFulfilledByAcceptance:
+    """M102: a dependency that is accepted but not yet closed blocked its successor's claim
+    with `status_not_fulfilling:in_progress` (E0 -> E1, dev16 2026-09-24). A valid acceptance
+    receipt now stands in for the status; nothing else is relaxed."""
+
+    VALID_RECEIPT = TestAcceptanceReceiptEnforcement.VALID_RECEIPT
+
+    def _dep(
+        self, tmp_path: Path, *, status: str = "in_progress", receipt: str | None = None, extra=""
+    ) -> Path:
+        note = tmp_path / "e0-dep.md"
+        note.write_text(
+            f"---\ntype: cc-task\ntask_id: e0-dep\nstatus: {status}\n{extra}---\n\n# E0\n",
+            encoding="utf-8",
+        )
+        if receipt is not None:
+            (tmp_path / "e0-dep.acceptance.yaml").write_text(receipt, encoding="utf-8")
+        return note
+
+    def _validity(self, note: Path, **kwargs):
+        return task_closure_validity(note.read_text(encoding="utf-8"), note_path=note, **kwargs)
+
+    def test_accepted_in_progress_dependency_fulfils(self, tmp_path: Path) -> None:
+        assert self._validity(self._dep(tmp_path, receipt=self.VALID_RECEIPT)).valid
+
+    @pytest.mark.parametrize(
+        "receipt",
+        [
+            None,
+            VALID_RECEIPT.replace("verdict: accepted", "verdict: rejected"),
+            VALID_RECEIPT.replace("acceptor: operator\n", ""),
+            "not: [a, receipt",
+        ],
+    )
+    def test_without_a_valid_receipt_status_still_blocks(
+        self, tmp_path: Path, receipt: str | None
+    ) -> None:
+        validity = self._validity(self._dep(tmp_path, receipt=receipt))
+        assert not validity.valid
+        assert "status_not_fulfilling:in_progress" in validity.blockers
+
+    @pytest.mark.parametrize("status", ["refused", "withdrawn", "superseded"])
+    def test_a_receipt_never_revives_a_terminal_non_fulfilling_status(
+        self, tmp_path: Path, status: str
+    ) -> None:
+        validity = self._validity(self._dep(tmp_path, status=status, receipt=self.VALID_RECEIPT))
+        assert not validity.valid
+        assert f"status_not_fulfilling:{status}" in validity.blockers
+
+    def test_a_receipt_does_not_relax_the_merged_pr_requirement(self, tmp_path: Path) -> None:
+        note = self._dep(tmp_path, receipt=self.VALID_RECEIPT, extra="pr: 4100\n")
+        validity = self._validity(note, pr_state_lookup=lambda _pr: "open")
+        assert validity.blockers == ("pr_open:4100",)
+
+    def test_without_a_note_path_behaviour_is_unchanged(self, tmp_path: Path) -> None:
+        note = self._dep(tmp_path, receipt=self.VALID_RECEIPT)
+        validity = task_closure_validity(note.read_text(encoding="utf-8"))
+        assert validity.blockers == ("status_not_fulfilling:in_progress",)

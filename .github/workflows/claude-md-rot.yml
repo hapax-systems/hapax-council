@@ -1,6 +1,6 @@
-name: CLAUDE.md rotation policy
+name: Agent instruction rotation policy
 
-# Runs on every PR that touches a CLAUDE.md file. Catches rot patterns the
+# Runs on every PR that touches an AGENTS.md or CLAUDE.md file. Catches rot patterns the
 # regular CI workflow misses because its paths-ignore filter excludes *.md.
 # Patterns enforced and rationale: see
 # docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md
@@ -12,12 +12,18 @@ on:
     branches: [main]
     paths:
       - "**/CLAUDE.md"
+      - "**/AGENTS.md"
+      - "config/agent-instructions/native/*.md"
+      - "docs/runbooks/council-domain-context.md"
       - "scripts/check-claude-md-rot.sh"
       - "tests/test_check_claude_md_rot.sh"
   pull_request:
     branches: [main]
     paths:
       - "**/CLAUDE.md"
+      - "**/AGENTS.md"
+      - "config/agent-instructions/native/*.md"
+      - "docs/runbooks/council-domain-context.md"
       - "scripts/check-claude-md-rot.sh"
       - "tests/test_check_claude_md_rot.sh"
 
@@ -33,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - name: Run rot check across all CLAUDE.md files
+      - name: Run rot check across all agent instruction files
         run: ./scripts/check-claude-md-rot.sh
       - name: Run rot script test suite
         run: bash tests/test_check_claude_md_rot.sh

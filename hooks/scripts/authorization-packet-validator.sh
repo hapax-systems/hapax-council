@@ -23,16 +23,41 @@ if [[ -f "$SCRIPT_DIR/agent-role.sh" ]]; then
   . "$SCRIPT_DIR/agent-role.sh"
 fi
 
+# Daemon-independent escape-grant substrate (reform Phase 4, NEW-2/INV-4) — the same
+# sibling the write gate (cc-task-gate) sources, so a signed EscapeGrant the operator
+# mints for THIS gate lifts its refusals the way one for cc-task-gate lifts a write
+# refusal. Measured 2026-09-03: this gate's own refusal text told the operator to
+# "mint a coord-grant, then re-run"; the grant was minted; nothing here read it.
+if [[ -f "$SCRIPT_DIR/escape-grant.sh" ]]; then
+  # shellcheck source=escape-grant.sh
+  . "$SCRIPT_DIR/escape-grant.sh"
+fi
+
+# This gate's scope name for escape grants (a grant must cover this exact gate, or "*").
+GATE_NAME="authorization-packet-validator"
+
+# _deny — every refusal in this gate exits through here. The refusal text has already
+# been printed; before failing closed, honor a signed EscapeGrant covering this gate
+# (a pure file read: no daemon, no RPC; the use is ledgered by escape-grant.sh).
+# Without a grant the exit code is the 2 it always was.
+_deny() {
+  if declare -F escape_grant_allows >/dev/null 2>&1 && escape_grant_allows "$GATE_NAME"; then
+    echo "authorization-packet-validator: escape grant honored for '$GATE_NAME' — the refusal above is lifted (logged, daemon-independent)." >&2
+    exit 0
+  fi
+  exit 2
+}
+
 INPUT="$(cat)"
 if ! TOOL="$(printf '%s' "$INPUT" | jq -er '.tool_name // empty' 2>/dev/null)"; then
   echo "authorization-packet-validator: BLOCKED — cannot parse hook payload tool_name." >&2
   echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
-  exit 2
+  _deny
 fi
 if [[ -z "$TOOL" ]]; then
   echo "authorization-packet-validator: BLOCKED — hook payload is missing tool_name." >&2
   echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
-  exit 2
+  _deny
 fi
 release_tool=false
 release_kind="none"
@@ -70,7 +95,7 @@ case "$TOOL" in
           *)
             echo "authorization-packet-validator: BLOCKED — MCP canonicalization failed for '$TOOL'." >&2
             echo "  Repair MCP canonicalization before retrying, or use HAPAX_METHODOLOGY_EMERGENCY=1 for an operator-approved emergency bypass." >&2
-            exit 2
+            _deny
             ;;
         esac
       fi
@@ -84,7 +109,7 @@ case "$TOOL" in
         *)
           echo "authorization-packet-validator: BLOCKED — python3 missing; cannot classify MCP tool '$TOOL'." >&2
           echo "  Install/restore python3 on PATH before retrying, or use HAPAX_METHODOLOGY_EMERGENCY=1 for an operator-approved emergency bypass." >&2
-          exit 2
+          _deny
           ;;
       esac
     fi
@@ -122,7 +147,7 @@ case "$TOOL" in
           *)
             echo "authorization-packet-validator: BLOCKED — MCP side-effect classification failed for '$TOOL'." >&2
             echo "  Repair shared.mcp_connector_policy or config/mcp-connector-tool-manifest.json before retrying." >&2
-            exit 2
+            _deny
             ;;
         esac
         ;;
@@ -276,7 +301,7 @@ if [[ -z "$role" ]]; then
   echo "authorization-packet-validator: BLOCKED — cannot determine role for push/PR validation." >&2
   echo "  Release actions require a governed task claim with authority_case." >&2
   echo "  Governed path: cc-claim <id> a task with authority_case, or mint a coord-grant, then re-run." >&2
-  exit 2
+  _deny
 fi
 
 # Read claim file — prefer the session-scoped claim, fall back to the legacy
@@ -296,12 +321,12 @@ elif [[ -f "$HOME/.cache/hapax/cc-active-task-$role" ]]; then
 else
   echo "authorization-packet-validator: BLOCKED — no claimed task for release/PR command." >&2
   echo "  Release actions require a governed task claim with authority_case." >&2
-  exit 2
+  _deny
 fi
 task_id="$(head -n1 "$claim_file" | tr -d '[:space:]')"
 if [[ -z "$task_id" ]]; then
   echo "authorization-packet-validator: BLOCKED — claim file is empty for release/PR command." >&2
-  exit 2
+  _deny
 fi
 
 # Locate task note
@@ -318,14 +343,14 @@ if [[ -z "$note_path" && -f "$vault_root/active/$task_id.md" ]]; then
 fi
 if [[ -z "$note_path" ]]; then
   echo "authorization-packet-validator: BLOCKED — claimed task '$task_id' not found for release/PR command." >&2
-  exit 2
+  _deny
 fi
 
 # Parse frontmatter
 if ! command -v python3 &>/dev/null; then
   echo "authorization-packet-validator: BLOCKED — python3 missing; cannot validate authorization packet." >&2
   echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
-  exit 2
+  _deny
 fi
 
 validation="$(python3 - "$note_path" "$release_kind" <<'PYEOF'
@@ -439,7 +464,7 @@ authorization-packet-validator: BLOCKED — release/PR command lacks governed ta
   Task: $task_id
   Note: $note_path
 EOF
-  exit 2
+  _deny
 fi
 
 # Emergency bypass
@@ -468,7 +493,7 @@ authorization-packet-validator: BLOCKED — implementation_authorized is not tru
   Create an Implementation Slice Authorization Packet (S5) first.
   To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
 EOF
-    exit 2
+    _deny
     ;;
   shadow_denial_violation:*)
     detail="${validation#shadow_denial_violation:}"
@@ -481,7 +506,7 @@ authorization-packet-validator: BLOCKED — shadow denial violation.
 
   To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
 EOF
-    exit 2
+    _deny
     ;;
   release_not_authorized:*)
     detail="${validation#release_not_authorized:}"
@@ -496,11 +521,11 @@ authorization-packet-validator: BLOCKED — release/merge command requires relea
   require explicit release authorization.
   To bypass for emergencies: HAPAX_METHODOLOGY_EMERGENCY=1
 EOF
-    exit 2
+    _deny
     ;;
   *)
     echo "authorization-packet-validator: BLOCKED — unexpected validation result '$validation'." >&2
     echo "  Bypass: HAPAX_METHODOLOGY_EMERGENCY=1" >&2
-    exit 2
+    _deny
     ;;
 esac

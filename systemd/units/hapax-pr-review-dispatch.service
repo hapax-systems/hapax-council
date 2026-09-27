@@ -2,11 +2,16 @@
 Description=Hapax PR review-team dispatch scan
 Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/cc-pr-review-dispatch.py
 After=network-online.target hapax-secrets.service
-Wants=network-online.target
+Wants=network-online.target hapax-secrets.service
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
+# Only the public-gate signing key, written alone by hapax-secrets; never the common
+# hapax-secrets.env, whose provider routing reviewer children would inherit. Manual
+# (seat-run) dispatch gets the same key from the FileStore via
+# scripts/hapax-pr-review-dispatch-signed.
+EnvironmentFile=-/run/user/%U/hapax-public-gate-authority.env
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree

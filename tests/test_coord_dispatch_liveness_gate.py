@@ -18,6 +18,7 @@ import pytest
 from shared.coord_dispatch import (
     CoordDispatchError,
     DispatchLaunchRequest,
+    replay_terminal_result,
     run_atomic_dispatch_launch,
 )
 
@@ -86,6 +87,30 @@ def test_non_retired_lane_proceeds_to_launch() -> None:
     with _mocked_internals(), mock.patch(f"{MOD}.lane_is_retired", return_value=False):
         run_atomic_dispatch_launch(_request(lane="cx-live"), launch)
         launch.assert_called_once()
+
+
+@pytest.mark.parametrize("payload_ref", [{}, {"result_ref": {"sha256": "invalid"}}])
+def test_terminal_replay_without_valid_reference_preserves_launch(payload_ref) -> None:
+    request = _request()
+    event = mock.Mock()
+    event.event_type = "coord_dispatch.launch_succeeded"
+    event.event_id = "terminal"
+    event.payload = {
+        "idempotency_key": request.effective_idempotency_key,
+        "message_id": request.message_id,
+        "outcome": "succeeded",
+        "returncode": 0,
+        **payload_ref,
+    }
+    request.event_log.replay.return_value.events = [event]
+
+    result = replay_terminal_result(request, idempotency_key=request.effective_idempotency_key)
+
+    assert result is not None
+    assert result.replayed is True
+    assert result.launched is True
+    assert result.launch_returncode == 0
+    assert result.result_ref is None
 
 
 def test_coordinator_relay_retired_delegates_to_shared_predicate() -> None:

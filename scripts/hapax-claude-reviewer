@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import signal
 import subprocess
 import sys
+import time
+from pathlib import Path
 
-PINNED_REVIEW_MODEL = "opus"
+REVIEW_EXECUTION_ROUTE = "claude.review.opus"
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
 DEFAULT_TIMEOUT_SECONDS = 1140.0
 MAX_TIMEOUT_SECONDS = 1140.0
@@ -76,9 +79,39 @@ The checklist value must be nested by lens id. Never put checklist item slugs
 directly under checklist. Finding objects must use severity, lens, file, line,
 title, and detail keys.
 
+You have no tools. You cannot read files, list directories, run commands, open
+a worktree or fetch anything. Any file, path, worktree or command the packet
+mentions is out of reach: the packet is the complete evidence. Never announce an
+inspection or plan a next step; this run has exactly one turn, and a reply that
+plans a read ends it with no verdict. Judge from the packet alone. Where it lacks
+the evidence a lens needs, record that as a finding.
+
 Do all reasoning silently. Reply with exactly one fenced yaml code block and no
 prose.
 """
+
+# M99: a reply that names no verdict at all (the model planned a read it cannot make, and its
+# one turn ended) is re-asked exactly once, under the same route and the same deadline. A reply
+# that names any verdict, however malformed, is never re-asked: the dispatcher's parser judges
+# it, and a second ask would shop for a different verdict. A nonzero exit is never re-asked.
+REPLY_NAMES_A_VERDICT_RE = re.compile(r"^\s*[\"']?verdict[\"']?\s*:", re.IGNORECASE | re.MULTILINE)
+REASK_MIN_REMAINING_SECONDS = 120.0
+REASK_CORRECTION = """
+
+## Correction from the review wrapper
+
+Your previous reply named no verdict. You have no tools, and this is your only
+turn: the packet above is the complete evidence. Reply now with exactly one
+fenced yaml code block (verdict, findings, checklist) and nothing else.
+"""
+REASK_DIAGNOSTIC = (
+    "hapax-claude-reviewer: first reply named no verdict (M99 tool-intent turn end); "
+    "re-asked once under the same route and deadline"
+)
+REASK_SKIPPED_DIAGNOSTIC = (
+    "hapax-claude-reviewer: first reply named no verdict; not re-asked because the shared "
+    "deadline leaves too little time; next action: rerun the review dispatch"
+)
 
 
 def _bounded_timeout_seconds(raw: str) -> float:
@@ -114,7 +147,7 @@ def _default_claude_bin() -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--claude-bin", default=_default_claude_bin())
-    parser.add_argument("--model", default=PINNED_REVIEW_MODEL)
+    parser.add_argument("--model", help="Compatibility assertion; must match the route descriptor")
     parser.add_argument(
         "--timeout-seconds",
         type=_bounded_timeout_seconds,
@@ -123,7 +156,64 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _review_env() -> dict[str, str]:
+def _execution_binding() -> dict:
+    # Use the same explicit source binding as the Codex launchers. Deployment
+    # installs a regular copy, so __file__ does not identify a Council release.
+    # Freeze the physical target before launching the isolated resolver.
+    root = Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or os.environ.get("HAPAX_COUNCIL_DIR")
+        or Path.home() / ".cache/hapax/source-activation/worktree"
+    ).resolve()
+    python = root / ".venv/bin/python"
+    if not python.is_file() or not os.access(python, os.X_OK):
+        raise ValueError(
+            f"missing descriptor runtime {python}; next action: use a provisioned Council release"
+        )
+    result = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); "
+            'runpy.run_module("shared.capability_execution",run_name="__main__")',
+            str(root),
+            "--harness",
+            "claude",
+            "--route",
+            REVIEW_EXECUTION_ROUTE,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "descriptor resolver failed without a diagnostic")
+    try:
+        binding = json.loads(result.stdout)
+        descriptor = binding["descriptor"]
+        model, effort = descriptor["model_id"], descriptor["effort"]
+        if (
+            not isinstance(model, str)
+            or not model.startswith("claude-")
+            or effort not in {"low", "medium", "high", "xhigh", "max"}
+            or any(char in model for char in "\n\r\0")
+            or descriptor.get("context_mode") != "standard"
+            or descriptor.get("fast_mode") != "off"
+            or descriptor.get("quantization") != "none"
+            or binding["argv"] != ["--model", model, "--effort", effort]
+            or binding["env"]
+            != {"CLAUDE_CODE_EFFORT_LEVEL": effort, "CLAUDE_CODE_DISABLE_FAST_MODE": "1"}
+        ):
+            raise ValueError("descriptor and invocation disagree")
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ValueError(
+            "malformed descriptor binding; next action: restore the selected release resolver"
+        ) from exc
+    return binding
+
+
+def _review_env(execution_env: dict[str, str]) -> dict[str, str]:
     env = dict(os.environ)
     env.update(
         {
@@ -132,11 +222,16 @@ def _review_env() -> dict[str, str]:
             "NO_UPDATE_NOTIFIER": "1",
         }
     )
+    env.update(execution_env)
     return env
 
 
 def _stdout_is_quota_wall(stdout: str) -> bool:
     return bool(STDOUT_QUOTA_WALL_RE.fullmatch(stdout.strip()))
+
+
+def _reply_names_no_verdict(stdout: str) -> bool:
+    return REPLY_NAMES_A_VERDICT_RE.search(stdout) is None
 
 
 def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
@@ -165,6 +260,7 @@ def _run_claude(
     *,
     prompt: str,
     timeout_seconds: float,
+    execution_env: dict[str, str],
 ) -> subprocess.CompletedProcess[str]:
     proc = subprocess.Popen(
         cmd,
@@ -172,7 +268,7 @@ def _run_claude(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=_review_env(),
+        env=_review_env(execution_env),
         start_new_session=True,
     )
     prior_handlers: dict[int, signal.Handlers] = {}
@@ -202,10 +298,19 @@ def _run_claude(
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.model != PINNED_REVIEW_MODEL:
+    try:
+        binding = _execution_binding()
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(
-            "hapax-claude-reviewer: review model is pinned to opus for registry family "
-            "traceability; rerun without --model or with --model opus",
+            f"hapax-claude-reviewer: refusing undeclared invocation: {exc}; "
+            "next action: repair the selected release descriptor/runtime and retry the review",
+            file=sys.stderr,
+        )
+        return 9
+    if args.model is not None and args.model != binding["descriptor"]["model_id"]:
+        print(
+            "hapax-claude-reviewer: model must match the review route descriptor; "
+            "next action: rerun without --model or update the governed route declaration",
             file=sys.stderr,
         )
         return 64
@@ -214,8 +319,7 @@ def main(argv: list[str] | None = None) -> int:
     cmd = [
         args.claude_bin,
         "-p",
-        "--model",
-        PINNED_REVIEW_MODEL,
+        *binding["argv"],
         "--tools",
         "",
         "--allowedTools",
@@ -233,12 +337,27 @@ def main(argv: list[str] | None = None) -> int:
         "--append-system-prompt",
         STRICT_REVIEW_SYSTEM_PROMPT,
     ]
+    deadline = time.monotonic() + args.timeout_seconds
     try:
         result = _run_claude(
             cmd,
             prompt=prompt,
             timeout_seconds=args.timeout_seconds,
+            execution_env=binding["env"],
         )
+        if result.returncode == 0 and _reply_names_no_verdict(result.stdout):
+            remaining = deadline - time.monotonic()
+            if remaining < REASK_MIN_REMAINING_SECONDS:
+                print(REASK_SKIPPED_DIAGNOSTIC, file=sys.stderr)
+            else:
+                print(REASK_DIAGNOSTIC, file=sys.stderr)
+                sys.stderr.write(result.stderr)
+                result = _run_claude(
+                    cmd,
+                    prompt=prompt + REASK_CORRECTION,
+                    timeout_seconds=remaining,
+                    execution_env=binding["env"],
+                )
     except OSError as exc:
         print(
             f"hapax-claude-reviewer: failed to launch {args.claude_bin}: {exc}; "

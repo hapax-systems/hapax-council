@@ -82,7 +82,7 @@ def test_main_dry_run_default(tmp_path: Path, capsys):
 def test_main_commit_without_token_aborts(tmp_path: Path, capsys, monkeypatch):
     from agents.publication_bus import refusal_brief_daemon as m
 
-    monkeypatch.setattr(m, "_read_pass_value", lambda _k: None)
+    monkeypatch.setattr(m, "_read_secret_value", lambda _k: None)
     rc = m.main(["--vault-base", str(tmp_path), "--commit"])
     assert rc == 2
     captured = capsys.readouterr()
@@ -93,7 +93,7 @@ def test_main_commit_without_token_aborts(tmp_path: Path, capsys, monkeypatch):
 def test_main_commit_with_token_acknowledges_unimplemented(tmp_path: Path, capsys, monkeypatch):
     from agents.publication_bus import refusal_brief_daemon as m
 
-    monkeypatch.setattr(m, "_read_pass_value", lambda _k: "fake-token")
+    monkeypatch.setattr(m, "_read_secret_value", lambda _k: "fake-token")
     rc = m.main(["--vault-base", str(tmp_path), "--commit"])
     assert rc == 0
     captured = capsys.readouterr()

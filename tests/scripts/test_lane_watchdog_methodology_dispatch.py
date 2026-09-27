@@ -7,6 +7,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IDLE_WATCHDOG = REPO_ROOT / "scripts" / "hapax-lane-idle-watchdog"
 RATE_LIMIT_WATCHDOG = REPO_ROOT / "scripts" / "hapax-lane-rate-limit-watchdog"
@@ -46,7 +48,10 @@ def _write_fake_tmux(bin_dir: Path) -> None:
             printf '%s\n' "$*" >> "${TMUX_SENT:?}"
             ;;
           has-session)
-            exit 1
+            exit "${TMUX_EXISTS:-1}"
+            ;;
+          display-message)
+            printf '%s\n' "${TMUX_PANE_COMMAND:-bash}"
             ;;
           *)
             exit 0
@@ -142,7 +147,7 @@ def test_idle_watchdog_sends_await_dispatch_when_no_claim(tmp_path: Path) -> Non
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
 
     result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
@@ -160,7 +165,7 @@ def test_idle_watchdog_appendix_only_skips_unclaimed_local_nudge(tmp_path: Path)
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
 
@@ -179,7 +184,7 @@ def test_idle_watchdog_appendix_only_preserves_active_task_resume_prompt(
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
     task_dir = (
@@ -206,7 +211,7 @@ def test_idle_watchdog_appendix_only_disables_required_claude_launch(
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
     home = Path(env["HOME"])
@@ -233,7 +238,7 @@ def test_idle_watchdog_does_not_dispatch_offered_task_from_idle_lane(tmp_path: P
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     task_dir = (
         Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
@@ -270,7 +275,7 @@ def test_idle_watchdog_preserves_active_task_resume_prompt(tmp_path: Path) -> No
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     task_dir = (
         Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
@@ -297,7 +302,7 @@ def test_idle_watchdog_does_not_raw_tmux_fallback_when_codex_ack_fails(
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     codex_send = Path(env["HOME"]) / "projects" / "hapax-council" / "scripts" / "hapax-codex-send"
     _write_executable(
@@ -411,3 +416,36 @@ def test_rate_limit_watchdog_delegates_dead_lane_restart_to_supervisor() -> None
     sup_text = supervisor.read_text(encoding="utf-8")
     assert "respawn" in sup_text
     assert "no active task" in sup_text  # the always-restart (idle-await) path
+
+
+@pytest.mark.parametrize(
+    ("pane", "pane_command", "skip_dead"),
+    [
+        ("model-name ~/projects/hapax-council", "bash", True),
+        ("gpt-5.5 ~/projects/hapax-council", "bash", True),
+        ("Working (12s)", "bash", False),
+        ("80% context left", "bash", False),
+        ("› ", "bash", False),
+        ("model-name ~/projects/hapax-council", "codex", False),
+    ],
+)
+def test_codex_maintenance_classification_does_not_use_model_footer(
+    tmp_path: Path, pane: str, pane_command: str, skip_dead: bool
+) -> None:
+    env = _base_env(tmp_path, session="hapax-codex-cx-red", pane=pane)
+    env.update(
+        TMUX_EXISTS="0",
+        TMUX_PANE_COMMAND=pane_command,
+        HAPAX_REQUIRED_CLAUDE_LANES=" ",
+        HAPAX_REQUIRED_CODEX_LANES="cx-red",
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="local",
+    )
+    launcher = Path(env["HOME"]) / "projects/hapax-council/scripts/hapax-codex"
+    _write_executable(launcher, "exit 99\n")
+    result = subprocess.run(
+        [str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 0, result.stderr
+    assert ("SKIPPING dead Codex revive" in result.stdout) is skip_dead
+    cooldown = Path(env["HAPAX_IDLE_STATE_DIR"]) / "_lane_launch_codex_cx-red.last"
+    assert cooldown.exists() is skip_dead

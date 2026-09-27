@@ -22,11 +22,18 @@ from agents.publish_orchestrator.orchestrator import (
 )
 from shared import public_gate_receipts
 from shared.preprint_artifact import PreprintArtifact
+from shared.publication_hardening.codebase import (
+    CodebaseDecision,
+    CodebaseVerificationReport,
+)
 from shared.publication_hardening.gate import (
     PublicationGateChildResult,
     PublicationGateDecision,
     PublicationGateResult,
+    PublicationHardeningGate,
+    lint_findings_report,
 )
+from shared.publication_hardening.lint import LintFinding
 from shared.publication_hardening.review import ReviewReport
 
 TASK_ID = "cc-task-public-gate-test"
@@ -298,6 +305,317 @@ def _make_orchestrator(
     )
 
 
+class _LintGate:
+    """A gate whose lint child uses the REAL finding serializer, so no test reimplements the
+    format. ``raw_findings`` are lines the report does not account for."""
+
+    def __init__(
+        self,
+        findings: tuple[tuple[str, str], ...],
+        *,
+        extra_children: tuple[PublicationGateChildResult, ...] = (),
+        raw_findings: tuple[str, ...] = (),
+    ) -> None:
+        self._findings = findings
+        self._extra_children = extra_children
+        self._raw_findings = raw_findings
+
+    def evaluate(self, _artifact: PreprintArtifact) -> PublicationGateResult:
+        lint_findings = tuple(
+            LintFinding(
+                file="artifact:x",
+                line=1,
+                level=level,
+                rule=rule,
+                message=(
+                    "Device 1 (fragments or verbless sentences used for effect): 'A proposition.'. "
+                    "Rewrite as a plain statement."
+                ),
+            )
+            for rule, level in self._findings
+        )
+        report = lint_findings_report(lint_findings)
+        rows = report["findings"]
+        assert isinstance(rows, list)
+        rendered = tuple(str(row["rendered"]) for row in rows) + tuple(self._raw_findings)
+        if any(level == "error" for _rule, level in self._findings):
+            decision = PublicationGateDecision.REJECT
+        elif self._findings:
+            decision = PublicationGateDecision.HOLD
+        else:
+            decision = PublicationGateDecision.PASS
+        children = (
+            PublicationGateChildResult(
+                name="lint", decision=decision, findings=rendered, report=report
+            ),
+            *self._extra_children,
+        )
+        if any(child.decision == PublicationGateDecision.REJECT for child in children):
+            decision = PublicationGateDecision.REJECT
+        elif any(child.decision == PublicationGateDecision.HOLD for child in children):
+            decision = PublicationGateDecision.HOLD
+        flagged_issues = tuple(
+            f"{child.name}: {finding}"
+            for child in children
+            if child.decision != PublicationGateDecision.PASS
+            for finding in child.findings
+        )
+        return PublicationGateResult(
+            decision=decision,
+            generated_at="2026-05-13T00:00:00+00:00",
+            child_results=children,
+            flagged_issues=flagged_issues,
+            review_report={
+                "schema_version": 1,
+                "reviewer_model": "test-reviewer",
+                "overall_confidence": 0.99,
+                "flagged_issues": [],
+            },
+        )
+
+
+def _publishing_orchestrator(
+    state_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gate: object,
+) -> tuple[Orchestrator, mock.Mock]:
+    fake_module = mock.Mock()
+    fake_module.publish_artifact = mock.Mock(return_value="ok")
+    monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+    orchestrator = Orchestrator(
+        state_root=state_root,
+        surface_registry={"fake": "fake_publisher:publish_artifact"},
+        publication_allowed_surfaces={"fake"},
+        public_event_path=state_root / "public-events.jsonl",
+        hardening_gate=gate,
+        registry=CollectorRegistry(),
+    )
+    return orchestrator, fake_module
+
+
+class TestRegisterCarriageSurfacing:
+    """R8's over-inclusive warning is surfaced for human disposition, never a publication hold."""
+
+    def _run(self, tmp_path, monkeypatch, slug: str, gate: object) -> tuple[object, dict]:
+        _drop_artifact(tmp_path, slug=slug, surfaces=["fake"])
+        orch, fake_module = _publishing_orchestrator(tmp_path, monkeypatch, gate)
+        orch.run_once()
+        log = json.loads(
+            (tmp_path / f"publish/log/{slug}.publication-hardening-gate.json").read_text()
+        )
+        return fake_module, log
+
+    def _document(self, tmp_path, slug: str) -> dict:
+        for area in ("published", "draft", "failed"):
+            path = tmp_path / f"publish/{area}/{slug}.json"
+            if path.exists():
+                return json.loads(path.read_text())
+        raise AssertionError(f"{slug} is in no publish area")
+
+    def test_a_register_warning_does_not_hold_and_is_recorded(self, tmp_path, monkeypatch):
+        fake_module, gate_log = self._run(
+            tmp_path,
+            monkeypatch,
+            "register-warn",
+            _LintGate((("Hapax.RegisterCarriage", "warning"),)),
+        )
+
+        fake_module.publish_artifact.assert_called_once()
+        assert self._document(tmp_path, "register-warn")
+        assert gate_log["result"] == "ok" and gate_log["publication_gate_decision"] == "pass"
+        dispositions = gate_log["register_carriage_dispositions"]
+        assert [d["disposition"] for d in dispositions] == ["surface_for_human_disposition"]
+        assert "Hapax.RegisterCarriage:warning" in dispositions[0]["finding"]
+
+        # The receipt carries the finding (rule, level, text) as well as the log.
+        lint_child = next(
+            child
+            for child in self._document(tmp_path, "register-warn")["publication_gate_result"][
+                "child_results"
+            ]
+            if child["name"] == "lint"
+        )
+        assert any("Hapax.RegisterCarriage" in f for f in lint_child["findings"])
+        assert any("surfaced for human disposition" in f for f in lint_child["findings"])
+
+    @pytest.mark.parametrize(
+        ("slug", "gate", "expected", "marker"),
+        (
+            (
+                "other-warn",
+                _LintGate(
+                    (
+                        ("Hapax.RegisterCarriage", "warning"),
+                        ("Hapax.PublicClaimOverreach", "warning"),
+                    )
+                ),
+                "operator_hold",
+                "Hapax.PublicClaimOverreach",
+            ),
+            (
+                "register-error",
+                _LintGate((("Hapax.RegisterCarriage", "error"),)),
+                "rejected",
+                None,
+            ),
+            (
+                "unreadable-finding",
+                _LintGate(
+                    (("Hapax.RegisterCarriage", "warning"),),
+                    raw_findings=("a lint finding with no parsable shape",),
+                ),
+                None,
+                None,
+            ),
+            (
+                "other-child-holds",
+                _LintGate(
+                    (("Hapax.RegisterCarriage", "warning"),),
+                    extra_children=(
+                        PublicationGateChildResult(
+                            name="codebase",
+                            decision=PublicationGateDecision.HOLD,
+                            findings=("numeric expectation unmet",),
+                        ),
+                    ),
+                ),
+                "operator_hold",
+                "codebase",
+            ),
+        ),
+    )
+    def test_a_hold_the_exemption_must_not_release(
+        self,
+        tmp_path,
+        monkeypatch,
+        slug: str,
+        gate: object,
+        expected: str | None,
+        marker: str | None,
+    ):
+        """An existing warning, a register error, an unreconcilable report and another holding child
+        each keep the HOLD, and none of them is recorded as a surfaced register warning."""
+        fake_module, gate_log = self._run(tmp_path, monkeypatch, slug, gate)
+
+        fake_module.publish_artifact.assert_not_called()
+        assert self._document(tmp_path, slug)["approval"] in {"withheld", "failed"}
+        assert gate_log["register_carriage_dispositions"] == []
+        if expected is not None:
+            assert gate_log["result"] == expected
+        if marker is not None:
+            assert any(marker in issue for issue in gate_log["flagged_issues"])
+
+
+def _real_gate() -> PublicationHardeningGate:
+    """The real gate with passing non-lint children, so only the lint child can hold."""
+    return PublicationHardeningGate(
+        review_pass=_ApprovingReviewPass(),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
+    )
+
+
+def test_an_unexplained_flag_keeps_the_hold_and_survives_unchanged() -> None:
+    """codex minors r7/r10: a flag no child carries is never dropped, and it keeps the HOLD."""
+    held = _LintGate((("Hapax.RegisterCarriage", "warning"),)).evaluate(
+        PreprintArtifact(slug="s", title="E", abstract="Brief.", body_md="Body.")
+    )
+    flagged = held.model_copy(
+        update={"flagged_issues": (*held.flagged_issues, "publication_override_invalid: x")}
+    )
+
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(flagged)
+
+    assert released.decision is PublicationGateDecision.HOLD
+    assert surfaced == ()
+    assert "publication_override_invalid: x" in released.flagged_issues
+
+
+def test_an_invalid_override_with_a_lone_register_warning_stays_a_hold() -> None:
+    """codex r10: the gate's own invalid-override flag must not survive a release. The REAL gate:
+    an unauthorized override flags ``operator_override_invalid`` while the lint child holds on
+    register warnings only, so the release path must refuse."""
+    artifact = PreprintArtifact(
+        slug="invalid-override",
+        title="E",
+        abstract="Brief.",
+        body_md="One front door. Many working parts.",
+        surfaces_targeted=["fake"],
+        publication_gate_override={"by_referent": "someone-unauthorized", "reason": "x"},
+    )
+    result = _real_gate().evaluate(artifact)
+    assert any("operator_override_invalid" in issue for issue in result.flagged_issues)
+
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(result)
+
+    assert released.decision is PublicationGateDecision.HOLD
+    assert surfaced == ()
+
+
+def test_a_hold_no_child_explains_stays_a_hold() -> None:
+    """codex r9: the helper assumed HOLD = a child holds. A HOLD with every child PASS must stay a
+    HOLD, even with exempt register rows: the HOLD's cause is elsewhere."""
+    held = _LintGate((("Hapax.RegisterCarriage", "warning"),)).evaluate(
+        PreprintArtifact(slug="s", title="E", abstract="Brief.", body_md="Body.")
+    )
+    unexplained = held.model_copy(
+        update={
+            "child_results": tuple(
+                child.model_copy(update={"decision": PublicationGateDecision.PASS})
+                for child in held.child_results
+            ),
+        }
+    )
+
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(unexplained)
+
+    assert released.decision is PublicationGateDecision.HOLD
+    assert surfaced == ()
+
+
+def test_a_colon_bearing_path_cannot_spoof_the_exempt_rule(tmp_path) -> None:
+    """codex critical: decide the exemption on structured fields, never the rendered string.
+
+    A path carrying ``:1:Hapax.RegisterCarriage:warning:`` makes a string parse read the next finding
+    as a register warning and can turn a real HOLD into a release; through the REAL gate this must
+    still HOLD."""
+    spoof_path = tmp_path / "spoof:1:Hapax.RegisterCarriage:warning:.md"
+    spoof_path.write_text("This is an existence proof.\n", encoding="utf-8")
+    artifact = PreprintArtifact(
+        slug="spoof-path",
+        title="E",
+        abstract="Brief.",
+        body_md="Body.",
+        surfaces_targeted=["fake"],
+        source_path=str(spoof_path),
+    )
+    gate = PublicationHardeningGate(
+        review_pass=_ApprovingReviewPass(),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
+    )
+
+    result = gate.evaluate(artifact)
+
+    lint_child = next(child for child in result.child_results if child.name == "lint")
+    # Pre-conditions: only the lint child fails, it holds a NON-register warning, and the
+    # colon-bearing label is present in the rendered findings (the spoof surface).
+    assert [
+        child.name
+        for child in result.child_results
+        if child.decision != PublicationGateDecision.PASS
+    ] == ["lint"]
+    assert any("Hapax.PublicClaimOverreach" in finding for finding in lint_child.findings)
+    assert any(":1:Hapax.RegisterCarriage:warning:" in finding for finding in lint_child.findings)
+
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(result)
+
+    assert released.decision is PublicationGateDecision.HOLD
+    assert surfaced == ()
+
+
 # ── Empty inbox ─────────────────────────────────────────────────────
 
 
@@ -412,7 +730,15 @@ class TestSingleSurface:
         )
         assert review_log["result"] == "operator_hold"
         assert review_log["publication_gate_decision"] == "hold"
-        assert review_log["flagged_issues"] == ["review: tone too promotional"]
+        # The review hold is the reason this artifact is withheld. R8's register carriage warning
+        # is also present (the fixture draft carries a short heading) and is flagged, not exempt:
+        # the exemption only releases an artifact that is held for nothing else.
+        assert "review: tone too promotional" in review_log["flagged_issues"]
+        assert all(
+            "Hapax.RegisterCarriage" in issue or issue == "review: tone too promotional"
+            for issue in review_log["flagged_issues"]
+        )
+        assert review_log["register_carriage_dispositions"] == []
 
     def test_publication_gate_reject_suppresses_surface_dispatch(self, tmp_path, monkeypatch):
         fake_module = mock.Mock()

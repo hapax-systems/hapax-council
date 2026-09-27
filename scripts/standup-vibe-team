@@ -50,17 +50,8 @@ ensure_lane() {
     fi
   fi
 
-  local agents_path="$workdir/AGENTS.md"
-  if [ ! -f "$agents_path" ] || head -1 "$agents_path" 2>/dev/null | grep -qF '<!-- HAPAX-VIBE-MANAGED'; then
-    cat > "$agents_path" <<EOF_AGENTS
-<!-- HAPAX-VIBE-MANAGED: regenerated on every hapax-vibe launch. Do not hand-edit. -->
-
-# Hapax Vibe Lane - $lane
-
-Read ~/.cache/hapax/relay/onboarding-vbe.md first, then invoke the
-relay-protocol skill. Worktree: $workdir.
-EOF_AGENTS
-  fi
+  # Repository instructions come from the checkout. Lane identity belongs in
+  # the relay below and the launcher's existing environment/context delivery.
 
   local status_file="$RELAY_DIR/$lane.yaml"
   if [ ! -f "$status_file" ] || [ "${HAPAX_STANDUP_FORCE_STATUS:-0}" = "1" ]; then

@@ -11,6 +11,7 @@ uncached when no scope is active.
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import patch
 
 from agents.deliberative_council import tools
@@ -117,10 +118,6 @@ async def test_nested_scope_reuses_outer_cache() -> None:
     assert calls["n"] == 1  # one expensive op across the whole segment's passes
 
 
-class _FakeWebOut:
-    output = "external evidence summary"
-
-
 def _admitted_web_verify() -> CapabilityAdmissionReceipt:
     return CapabilityAdmissionReceipt(
         receipt_id="cctv-test-web-verify",
@@ -151,31 +148,26 @@ def _refused_qdrant_lookup() -> CapabilityAdmissionReceipt:
     )
 
 
-def _counting_web_agent():
+def _counting_tavily_search():
     calls = {"n": 0}
 
-    class _FakeAgent:
-        def __init__(self, *_a, **_k) -> None:
-            pass
+    def _search(*_args: object, **_kwargs: object) -> str:
+        calls["n"] += 1
+        return "external evidence summary"
 
-        async def run(self, *_a, **_k):
-            calls["n"] += 1
-            return _FakeWebOut()
-
-    return calls, _FakeAgent
+    return calls, _search
 
 
 async def test_web_verify_memoized_within_scope() -> None:
     # web_verify is the dominant research cost (a 45s-bounded nested web agent). An
     # identical query asked twice within a deliberation/segment must short-circuit so the
     # same evidence is not re-fetched (and a slow/dead query is not re-paid).
-    calls, fake_agent = _counting_web_agent()
+    calls, fake_search = _counting_tavily_search()
     admission = _admitted_web_verify()
     events: list[CapabilityAdmissionReceipt] = []
     with (
         patch("agents.deliberative_council.tools.admit_tool", return_value=admission),
-        patch("pydantic_ai.Agent", fake_agent),
-        patch("shared.config.get_model", return_value="dummy-model"),
+        patch("shared.tavily_client.search_snippets", fake_search),
     ):
         with capability_admission_event_scope(events):
             with tool_memoization_scope():
@@ -192,14 +184,13 @@ async def test_web_verify_memoized_within_scope() -> None:
 
 
 async def test_governed_cache_records_admission_into_each_event_scope() -> None:
-    calls, fake_agent = _counting_web_agent()
+    calls, fake_search = _counting_tavily_search()
     admission = _admitted_web_verify()
     first_events: list[CapabilityAdmissionReceipt] = []
     second_events: list[CapabilityAdmissionReceipt] = []
     with (
         patch("agents.deliberative_council.tools.admit_tool", return_value=admission),
-        patch("pydantic_ai.Agent", fake_agent),
-        patch("shared.config.get_model", return_value="dummy-model"),
+        patch("shared.tavily_client.search_snippets", fake_search),
     ):
         with tool_memoization_scope():
             with capability_admission_event_scope(first_events):
@@ -214,11 +205,10 @@ async def test_governed_cache_records_admission_into_each_event_scope() -> None:
 
 
 async def test_web_verify_uncached_without_scope() -> None:
-    calls, fake_agent = _counting_web_agent()
+    calls, fake_search = _counting_tavily_search()
     with (
         patch("agents.deliberative_council.tools.admit_tool", return_value=_admitted_web_verify()),
-        patch("pydantic_ai.Agent", fake_agent),
-        patch("shared.config.get_model", return_value="dummy-model"),
+        patch("shared.tavily_client.search_snippets", fake_search),
     ):
         await web_verify(None, "q")
         await web_verify(None, "q")
@@ -246,19 +236,14 @@ async def test_web_verify_timeout_memoized_within_scope() -> None:
     # query stays dead for that window; it is re-checked on the next segment's fresh scope.
     calls = {"n": 0}
 
-    class _SlowAgent:
-        def __init__(self, *_a, **_k) -> None:
-            pass
-
-        async def run(self, *_a, **_k):
-            calls["n"] += 1
-            await asyncio.sleep(0.2)
-            return _FakeWebOut()
+    def _slow(*_args: object, **_kwargs: object) -> str:
+        calls["n"] += 1
+        time.sleep(0.2)
+        return "late"
 
     with (
         patch("agents.deliberative_council.tools.admit_tool", return_value=_admitted_web_verify()),
-        patch("pydantic_ai.Agent", _SlowAgent),
-        patch("shared.config.get_model", return_value="dummy-model"),
+        patch("shared.tavily_client.search_snippets", _slow),
         patch.object(tools, "_WEB_VERIFY_TIMEOUT_S", 0.01),
     ):
         with tool_memoization_scope():

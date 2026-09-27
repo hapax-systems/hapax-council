@@ -14,7 +14,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Bash does not resolve symlinks in BASH_SOURCE; cc-close is installed as a
+# symlink in ~/.local/bin. Without resolution, all seven SCRIPT_DIR-relative
+# sibling reads point at nonexistent paths, so the installed entrypoint has
+# never reached task closure: it refuses at the missing cc-task-root.sh helper.
+_cc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$_cc_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
 if [[ -f "$ROLE_HELPER" ]]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
@@ -171,11 +176,12 @@ if [[ "$final_status" == "done" ]]; then
   # (frontier_review_required) tasks close only with a signed acceptance
   # receipt (<task_id>.acceptance.yaml beside the note). The checker honors
   # HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1 directly; non-review-floor tasks
-  # pass through untouched.
+  # pass through untouched. --pr is forwarded so the receipt is bound to the
+  # head of the same PR the merge gate below checks, not to a PR-less reading.
   RECEIPT_CHECKER="$SCRIPT_DIR/cc-close-acceptance-receipt-check.py"
   if [[ -f "$RECEIPT_CHECKER" ]]; then
     set +e
-    python3 "$RECEIPT_CHECKER" "$note_path"
+    python3 "$RECEIPT_CHECKER" "$note_path" ${pr:+--pr "$pr"}
     receipt_rc=$?
     set -e
     if [[ "$receipt_rc" -ne 0 ]]; then
@@ -224,47 +230,93 @@ if [[ "$final_status" == "done" ]]; then
   fi
 fi
 
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
+# The close moves the note out of active/ and UNLINKS it. That makes this the only writer
+# that can remove a projected path's subject from under an in-flight transition, so the
+# whole read / rewrite / move / unlink runs under the projection lock — the same primitive
+# the transition takes. cc-close holds no other lock, so there is no ordering to reconcile.
+_cc_close_repo_root="$(cd "$SCRIPT_DIR/.." && pwd)" || exit 1
+PYTHONPATH="$_cc_close_repo_root:${PYTHONPATH:-}" \
+python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:])
-text = path.read_text(encoding="utf-8")
-now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
-text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)
-text = re.sub(
-    r"^completed_at:.*$", f"completed_at: {now}", text, count=1, flags=re.MULTILINE
-)
-text = re.sub(
-    r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
-)
-if pr:
-    text = re.sub(r"^pr:.*$", f"pr: {pr}", text, count=1, flags=re.MULTILINE)
-log_line = f"- {now} {role or 'session'} closed as {final_status}"
-if pr:
-    log_line += f" (PR #{pr})"
-log_line += " (cc-close)\n"
-text = text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
+path, task_id, final_status, pr, role, vault_root = (Path(sys.argv[1]), *sys.argv[2:])
+closed_dir = path.parent.parent / "closed"
+new_path = closed_dir / path.name
 
-# Move from active/ to closed/.
-new_path = path.parent.parent / "closed" / path.name
-new_path.parent.mkdir(parents=True, exist_ok=True)
-tmp = new_path.with_suffix(new_path.suffix + ".tmp")
-tmp.write_text(text, encoding="utf-8")
-tmp.replace(new_path)
-path.unlink()
-print(f"cc-close: moved '{task_id}' to closed/, status={final_status}")
+# Both names are locked: the source this unlinks and the destination it installs. Locking
+# only the source would leave a concurrent writer free to act on the closed/ name while
+# this close was creating it.
+try:
+    with projected_path_lock(task_id, (path, new_path)):
+        if not path.is_file():
+            # Re-checked under the lock: the note may have moved between the shell's resolution
+            # above and this acquisition. Closing a path that no longer names the task would
+            # recreate a stale copy at the old name.
+            #
+            # The overwhelmingly common way to land here is a second cc-close on a note that is
+            # already closed — and for that, "rerun" is a next action that fails identically
+            # forever. An error must name an action that can actually clear it.
+            if new_path.is_file():
+                print(
+                    f"cc-close: '{task_id}' is already closed (it is in closed/). "
+                    "Nothing to do; no action needed.",
+                    file=sys.stderr,
+                )
+                sys.exit(0)
+            # The recovery command names the root this tool actually resolved (shared/cc_task_root,
+            # via the shell above), not a literal: under a redirected root — the coverage tests, a
+            # moved work plane — a hardcoded path is confidently wrong in the one message an
+            # operator reaches when a note is genuinely lost (round 5, claude-1).
+            print(
+                f"cc-close: REFUSED — '{task_id}' is in neither active/ nor closed/; it moved "
+                "while acquiring its lock. Locate it with "
+                f"`ls {vault_root}/*/{task_id}*` before retrying",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        text = path.read_text(encoding="utf-8")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# The acceptance receipt (routing Phase 0.2) lives ALONGSIDE the note —
-# keep that invariant across the move so closed review-floor tasks stay
-# closure-valid for the autoqueue and audits.
-receipt = path.parent / f"{task_id}.acceptance.yaml"
-if receipt.is_file():
-    receipt.replace(new_path.parent / receipt.name)
-    print(f"cc-close: moved acceptance receipt '{receipt.name}' to closed/")
+        text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)
+        text = re.sub(
+            r"^completed_at:.*$", f"completed_at: {now}", text, count=1, flags=re.MULTILINE
+        )
+        text = re.sub(
+            r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
+        )
+        if pr:
+            text = re.sub(r"^pr:.*$", f"pr: {pr}", text, count=1, flags=re.MULTILINE)
+        log_line = f"- {now} {role or 'session'} closed as {final_status}"
+        if pr:
+            log_line += f" (PR #{pr})"
+        log_line += " (cc-close)\n"
+        text = text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
+
+        # Move from active/ to closed/ (both names already locked above).
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = new_path.with_suffix(new_path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(new_path)
+        path.unlink()
+        print(f"cc-close: moved '{task_id}' to closed/, status={final_status}")
+
+        # The acceptance receipt (routing Phase 0.2) lives ALONGSIDE the note —
+        # keep that invariant across the move so closed review-floor tasks stay
+        # closure-valid for the autoqueue and audits.
+        receipt = path.parent / f"{task_id}.acceptance.yaml"
+        if receipt.is_file():
+            receipt.replace(new_path.parent / receipt.name)
+            print(f"cc-close: moved acceptance receipt '{receipt.name}' to closed/")
+except TaskNoteLockError as exc:
+    print(f"cc-close: REFUSED — {exc}", file=sys.stderr)
+    # Exit 3 is lock contention, matching cc-claim and the gate stamp. Exit 1 is a
+    # lost note (neither active/ nor closed/ below). Flattening those was the defect.
+    sys.exit(3)
 PYEOF
 
 # Clear the claim file(s) that still name this task. cc-claim writes BOTH a

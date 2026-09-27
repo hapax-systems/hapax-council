@@ -162,11 +162,140 @@ Record why the fallback was used in the task session log or relay status. The
 verification proves only a legacy claim write; it is not admitted-publication
 evidence.
 
+## Install Re-Provision After A Bound-Module Merge
+
+The executor descriptor binds seven `shared/` modules by content (`BOUND_EXECUTOR_MODULES` in
+`shared/gate0b_claim_publication_install.py`). A merge that changes one of them correctly makes
+every claim hold on `gate0b_install_executor_descriptor_mismatch` until the install receipt is
+replaced. The install re-provision replaces it. `hapax-source-activate` runs it after every
+activation, and again on each already-activated timer tick, so a hold is retried once its cause
+is repaired. It never fails an activation. By hand, from the active release:
+
+```bash
+release="$HOME/.cache/hapax/source-activation/worktree"
+( cd "$release" && .venv/bin/python -m shared.gate0b_claim_publication_install \
+    reprovision --repo "$release" --head "$(git -C "$release" rev-parse HEAD)" )
+```
+
+It prints one JSON object. It exits 0 for `absent` (no receipt yet; cc-claim's first-use install
+applies), `current` (nothing to do) or `reprovisioned`. It exits 3 for `held`, with a
+`reason_code`. The activation keeps the last outcome in
+`~/.cache/hapax/source-activation/gate0b-reprovision-last.json`.
+
+**What a re-provision does.** It re-provisions only when the bound-file state just before one of
+main's recent bound-file commits reproduces the receipt's descriptor. Those later commits are the
+reviewed authority basis.
+
+1. It creates `reprovision-in-flight.json` exclusively. A second run refuses on it.
+2. It writes `reprovision-basis-<stamp>.pending.json`.
+3. It quarantines `activation-receipt.json` and `composition-manifest.json` in place as
+   `*.quarantined-<stamp>`.
+4. It installs fresh from the release's own modules.
+5. It completes `reprovision-basis-<stamp>.json`.
+6. It retires the marker by renaming it to `reprovision-in-flight.json.resolved-<stamp>`.
+
+All of these are in the install directory. `<stamp>` is `YYYYMMDDTHHMMSS.ffffffZ`. Nothing is
+deleted. While the marker exists, `cc-claim` holds on `gate0b_install_reprovision_in_flight`,
+even with no receipt: a first-use install never fills a re-provision's gap.
+
+| `reason_code` | Meaning | Next action |
+|---------------|---------|-------------|
+| `gate0b_reprovision_live_drift` | The release's bound modules differ from the commit it activated | Never edit a release in place; rerun governed source activation |
+| `gate0b_reprovision_unexplained` | No recent state of main reproduces the receipt | Inspect the receipt; quarantine it by hand only on an operator decision |
+| `gate0b_reprovision_quarantine_exists` | A quarantine name for this stamp is taken (a concurrent run) | Preserve both files, inspect, rerun |
+| `gate0b_reprovision_git_unavailable` | The repo given carries no history | Run it from the activated release worktree |
+| `gate0b_reprovision_basis_unrecorded` | A basis record could not be written | Restore a writable install directory; the next tick retries |
+| `gate0b_reprovision_quarantine_failed` | Moving the pair aside failed part-way | Repair the install directory; the next tick retries |
+| `gate0b_reprovision_install_failed` | The fresh install failed | Repair the cause named in the detail; the next tick retries |
+| `gate0b_reprovision_in_flight` | The marker exists: another run, or an unfinished one | Wait one tick. If it stays, follow "An unfinished re-provision" below |
+| `gate0b_reprovision_rollback_failed` | Putting the old pair back failed; the marker stays | Follow "An unfinished re-provision" below |
+
+After `basis_unrecorded`, `quarantine_failed` or `install_failed`:
+- the pair this run moved is put back, and the marker is retired;
+- once the install has run, any fresh file is also set aside as `*.unrecorded-<stamp>`.
+
+So claims keep holding on the old receipt. The final basis record reads `rolled_back` if the
+directory still accepts a write; after a `basis_unrecorded`, it may not, and then only the
+`.pending.json` record exists.
+
+**An unfinished re-provision.** The marker names its stamp and the quarantined pair. Recheck:
+
+```bash
+store="$HOME/.local/share/hapax/execution-invocations/gate0b-claim-publish-v1"
+cat "$store/reprovision-in-flight.json"            # the stamp, head and quarantined pair
+ls -la "$store" | grep -E "activation-receipt|composition-manifest|reprovision-"
+```
+
+If the live pair is whole and matches the `reprovision-basis-<stamp>.json` record, or the
+quarantined pair is back under its live names, retire the marker. Never delete it:
+
+```bash
+mv -n "$store/reprovision-in-flight.json" "$store/reprovision-in-flight.json.resolved-<stamp>"
+```
+
+Otherwise, first put the `*.quarantined-<stamp>` pair back under its live names, then retire the
+marker. Rerun `cc-claim`; it should no longer hold on `gate0b_install_reprovision_in_flight`.
+
+## Governed Release Of Claim Residue
+
+A role wedged by its own claim residue releases it itself, without operator scripts:
+
+```bash
+cc-claim --release-claim-residue <task-id>
+```
+
+Name the task the residue names; the claim HOLD prints the exact command. The release acts
+only on the calling role's residue for that task. Every file it touches must equal the
+after-image of a claim-publication journal of that role and task, and must be one of that
+journal's own session sidecars. It holds the role's publication lock. It moves each file out of
+its live name, and copies the moved bytes, verified, into
+`_lineage/<task-id>/claim-residue-release-<stamp>-<role>/` (with a README). It never unlinks
+anything, and never touches the task note. It covers four shapes:
+
+| Shape | What is left | What the release does |
+|-------|--------------|-----------------------|
+| `held_publication` (M166, M167) | A `recovery_required` journal whose note has moved past both of its images, so recovery holds on a projection conflict. Epoch and dispatch sidecars exist; the markers were never written. | Archives the sidecars, then quarantines the journal in place as `claim-pub-<sha>.quarantined-<stamp>`. |
+| `lapsed_lease` (M168) | Epoch and dispatch sidecars with no `cc-active-task-*` marker; the next claim holds on `claim_cache_missing`. | Archives the sidecars. |
+| `closed_task` (M173) | Markers, epochs and dispatch naming a row that another process closed (it is terminal and absent from `active/`); the next claim holds on `claim_task_mismatch`. | Archives all six sidecars. |
+| `reassigned_task` | Markers naming an active row whose note no longer names this role (re-offered or reassigned). Every other role's claim or resume of it refuses on them. | Archives all six sidecars, run by the lane that owns them. |
+
+It refuses, with exit 8 and a named `claim_residue_*` reason, before the first mutation (except
+`live-differed`, below):
+- on a live claim (a marker naming a task that is not closed, or another session's marker for it);
+- on a sidecar that differs from the journal;
+- on a journal that recovery can still finish, or whose admission evidence drifted;
+- when the calling role has no journal for the task.
+
+A released row whose note still reads `claimed` by the role stays that way; the release never
+edits it.
+
+Recheck after a release (the output decides the next step):
+
+```bash
+role="${HAPAX_AGENT_ROLE:?}"
+ls -la ~/.cache/hapax/ | grep -E "cc-(active-task|claim-epoch|claim-dispatch)-${role}(-|\.json|$)" || echo "no sidecars left for ${role}"
+ls ~/Documents/Personal/20-projects/hapax-cc-tasks/_lineage/<task-id>/ | grep claim-residue-release-
+cc-claim --recover-claim-publications <task-id>   # expect no hold; a quarantined journal is skipped
+cc-claim <next-task-id>                           # expect the claim to publish
+```
+
+Nothing is ever unlinked. Each sidecar is moved, atomically and inside the cache's own filesystem,
+into `~/.cache/hapax/claim-residue-release/<task-id>/<stamp>-<role>/`. The bytes actually moved are
+what is compared with the journal and what is copied, verified, into the lineage. The vault can be
+a different filesystem (on appendix it is an NFS mount), so it is never the rename target. A
+`<name>.live-differed-from-journal` file in the lineage means a sidecar changed during the
+release. The moved bytes are kept in both places, the README records it, and the release stopped
+before the journal; inspect them before rerunning.
+
+**Emergency path.** The release has no override flag and no bypass. If it refuses and the operator
+decides the residue must go anyway, the Manual Stale-Lease Release below is the emergency path,
+run with operator approval and recorded in the row's lineage.
+
 ## Manual Stale-Lease Release
 
-Governed release is scheduled for a later Gate-0B slice. Until then, use this
-manual procedure only with operator approval when a stale claim HOLD names an
-exact `cc-active-task-*` path:
+Use this manual procedure only with operator approval, and only for the shape the governed release
+refuses: an **expired** claim HOLD (exit 7) that names an exact `cc-active-task-*` path whose task
+is still live. For the four shapes above, use `cc-claim --release-claim-residue` instead.
 
 ```bash
 set -euo pipefail

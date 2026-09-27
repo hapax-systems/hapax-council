@@ -32,7 +32,6 @@ done
 # Run the agent
 export PATH="/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin"
 export GNUPGHOME="/home/hapax/.gnupg"
-export PASSWORD_STORE_DIR="/home/hapax/.password-store"
 export PYTHONPATH="$COUNCIL_DIR"
 cd "$COUNCIL_DIR"
 "$VENV" -m "agents.${AGENT}" --auto

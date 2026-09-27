@@ -203,14 +203,13 @@ def test_execute_requires_test_key_or_live_gate(tmp_path: Path, capsys: Any) -> 
     assert "test-mode execution requires" in err
 
 
-def test_write_pass_store_keeps_secrets_out_of_execution_record(tmp_path: Path) -> None:
+def test_write_secrets_keeps_secrets_out_of_execution_record(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
-    calls: list[tuple[list[str], str]] = []
+    calls: list[tuple[str, bytes]] = []
 
-    def pass_runner(cmd: list[str], *, input: str, text: bool, check: bool) -> None:
-        assert text is True
-        assert check is True
-        calls.append((cmd, input))
+    def secret_writer(key: str, value: bytes) -> None:
+        assert isinstance(value, bytes)
+        calls.append((key, value))
 
     code = stripe_bootstrap_runner.main(
         [
@@ -221,15 +220,15 @@ def test_write_pass_store_keeps_secrets_out_of_execution_record(tmp_path: Path) 
             "--webhook-url",
             "https://hapax.example/api/payment-rails/stripe-payment-link",
             "--execute",
-            "--write-pass-store",
+            "--write-secrets",
         ],
         env={"STRIPE_SECRET_KEY": "sk_test_123"},
         http=FakeHttp(),
-        pass_runner=pass_runner,
+        secret_writer=secret_writer,
     )
 
     assert code == 0
-    assert [call[0][-1] for call in calls] == ["api/stripe-secret", "api/stripe-webhook-secret"]
+    assert [key for key, _value in calls] == ["api/stripe-secret", "api/stripe-webhook-secret"]
     execution_path = next((tmp_path / "out").glob("*/stripe-bootstrap-execution.json"))
     execution_text = execution_path.read_text(encoding="utf-8")
     assert "sk_test_123" not in execution_text

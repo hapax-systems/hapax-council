@@ -52,7 +52,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import ClassVar, Literal, final
+from typing import TYPE_CHECKING, ClassVar, Literal, final
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -81,6 +81,9 @@ from shared.platform_capability_registry import (
     RegistryFreshnessCheck,
     check_registry_freshness,
 )
+
+if TYPE_CHECKING:
+    from shared.content_address import ContentAddress
 
 __all__ = [
     "AuthorityViolation",
@@ -296,6 +299,8 @@ class WorkerAdapter(CapabilityAdapter):
         decision: RouteDecision,
         request: DispatchLaunchRequest,
         launch_callable: Callable[[], int],
+        *,
+        collect_result_ref: Callable[[], ContentAddress | None] | None = None,
     ) -> DispatchLaunchResult:
         """Assert authority FIRST (the sole re-check point — coord_dispatch does not re-check),
         then delegate the atomic spawn. Overrides MUST preserve the authority assert (call
@@ -303,7 +308,9 @@ class WorkerAdapter(CapabilityAdapter):
         """
 
         _require_launch_authority(decision, op="launch")
-        return run_atomic_dispatch_launch(request, launch_callable)
+        return run_atomic_dispatch_launch(
+            request, launch_callable, collect_result_ref=collect_result_ref
+        )
 
 
 # --- SESSION-gate send: receipts bus + canonical relay table ------------------------------------
@@ -581,6 +588,34 @@ class ClaudeAdapter(WorkerAdapter, SendCapableAdapter):
         error_class: str | None = None,
         exit_code: int | None = None,
     ) -> FailureReceipt:
+        return FailureReceipt(
+            code=_classify_cli_failure(text, model_stdout),
+            raw_signal=text,
+            platform=self.PLATFORM.value,
+            route_id=route_id,
+            error_class=error_class,
+        )
+
+
+class KimiAdapter(WorkerAdapter, SendCapableAdapter):
+    """Kimi managed-service lanes: pure reuse + the shared CLI failure table (same shape as Claude)."""
+
+    PLATFORM: ClassVar[Platform] = Platform.KIMI
+
+    def classify_failure(
+        self,
+        text: str,
+        *,
+        process_failed: bool = False,
+        model_stdout: str = "",
+        route_id: str | None = None,
+        error_class: str | None = None,
+        exit_code: int | None = None,
+    ) -> FailureReceipt:
+        # Same receipt shape as Claude/Codex: the raw exit code is NOT a FailureReceipt
+        # field (extra-forbid) — callers that need it read it from the process result
+        # alongside this receipt. (Found by review round 2 tests: passing it here made
+        # every classify_failure call raise ValidationError.)
         return FailureReceipt(
             code=_classify_cli_failure(text, model_stdout),
             raw_signal=text,

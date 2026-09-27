@@ -7,19 +7,21 @@ Implements cc-task ``mail-monitor-002-oauth-bootstrap``.
 1. Operator creates a Google Cloud project (or reuses an existing one)
    and enables Gmail API + Cloud Pub/Sub API.
 2. Operator creates an OAuth 2.0 Client ID of type ``Desktop app`` and
-   inserts the resulting client id + secret into ``pass``::
+   puts the resulting client id + secret with ``hapax-secret`` (the TTY put
+   dialogue) under the names::
 
-       pass insert mail-monitor/google-client-id
-       pass insert mail-monitor/google-client-secret
+       mail-monitor/google-client-id
+       mail-monitor/google-client-secret
 
 3. Operator runs ``python -m agents.mail_monitor.oauth --first-consent``
    once. The CLI prints a Google consent URL. The operator opens that
    URL, approves the requested Gmail scopes, and Google redirects back
    to the CLI's temporary localhost callback. The refresh token that
-   Google returns is persisted to ``pass mail-monitor/google-refresh-token``.
+   Google returns is persisted to the FileStore as
+   ``mail-monitor/google-refresh-token``.
 
 After bootstrap, every daemon process loads the refresh token from
-``pass`` and exchanges it for a fresh access token on each call. Refresh
+the FileStore and exchanges it for a fresh access token on each call. Refresh
 tokens are valid indefinitely until the operator revokes them via
 Google Account → Security → Third-party access.
 
@@ -70,11 +72,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
 from prometheus_client import Counter
+
+from shared.secrets import SecretIntegrityFailed, SecretUnavailable, get_secret, put_secret
 
 if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
@@ -88,9 +91,9 @@ SCOPES: list[str] = [GMAIL_MODIFY_SCOPE, GMAIL_SETTINGS_BASIC_SCOPE]
 CLIENT_ID_PASS_KEY = "mail-monitor/google-client-id"
 CLIENT_SECRET_PASS_KEY = "mail-monitor/google-client-secret"
 REFRESH_TOKEN_PASS_KEY = "mail-monitor/google-refresh-token"
-CLIENT_ID_PASS_REF = "pass-key:mail-monitor-client-id"
-CLIENT_CREDENTIAL_PASS_REF = "pass-key:mail-monitor-client-credential"
-REFRESH_CREDENTIAL_PASS_REF = "pass-key:mail-monitor-refresh-credential"
+CLIENT_ID_PASS_REF = "secret-ref:mail-monitor-client-id"
+CLIENT_CREDENTIAL_PASS_REF = "secret-ref:mail-monitor-client-credential"
+REFRESH_CREDENTIAL_PASS_REF = "secret-ref:mail-monitor-refresh-credential"
 
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
@@ -113,74 +116,55 @@ def _credential_ref(key: str) -> str:
         CLIENT_SECRET_PASS_KEY: CLIENT_CREDENTIAL_PASS_REF,
         REFRESH_TOKEN_PASS_KEY: REFRESH_CREDENTIAL_PASS_REF,
     }
-    return refs.get(key, "pass-key:redacted")
+    return refs.get(key, "secret-ref:redacted")
 
 
-def _pass_show(key: str, *, timeout_s: float = 5.0) -> str | None:
-    """Return ``pass show <key>`` first line stripped, or ``None`` on failure.
+def _read_secret(key: str) -> str | None:
+    """The stored value's first line, stripped, or ``None`` when ``key`` is absent.
 
-    Mirrors :func:`agents.payment_processors.secrets.pass_show` so the
-    pattern is recognisable to readers across the council codebase.
+    Reads through :mod:`shared.secrets` (environment, FileStore, ``hapax-secret``); never
+    pass. Mirrors :func:`agents.payment_processors.secrets.read_secret` so the pattern is
+    recognisable across the council codebase. Only the redacted reference is ever logged. An
+    integrity failure propagates: a tampered credential is not "the operator has not
+    bootstrapped yet".
     """
     try:
-        result = subprocess.run(
-            ["pass", "show", key],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.warning("pass show failed for %s (%s)", _credential_ref(key), type(exc).__name__)
+        value = get_secret(key, required=False)
+    except SecretIntegrityFailed:
+        raise
+    except SecretUnavailable as exc:
+        log.warning("secret unavailable for %s (%s)", _credential_ref(key), type(exc).__name__)
         return None
-    if result.returncode != 0:
-        log.debug(
-            "pass show returned %d for %s",
-            result.returncode,
-            _credential_ref(key),
-        )
+    if value is None:
         return None
-    value = result.stdout.strip().split("\n", 1)[0].strip()
-    return value or None
+    first = value.strip().split("\n", 1)[0].strip()
+    return first or None
 
 
-def _pass_insert(key: str, value: str, *, timeout_s: float = 5.0) -> bool:
-    """Write ``value`` to ``pass <key>`` (replacing any prior content).
+def _write_secret(key: str, value: str) -> bool:
+    """Persist ``value`` under ``key`` through the FileStore. ``True`` on success.
 
-    Uses ``pass insert -m`` to allow multi-line input via stdin. Returns
-    ``True`` on success.
+    The only writer in this package: the first-consent flow persisting the refresh token.
+    Failure logs the redacted reference and the error type — never the value, and never the
+    resolver's reason text, which is entitled to name the store.
     """
     try:
-        result = subprocess.run(
-            ["pass", "insert", "-m", "-f", key],
-            input=value,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.error("pass insert failed for %s (%s)", _credential_ref(key), type(exc).__name__)
-        return False
-    if result.returncode != 0:
-        log.error(
-            "pass insert returned %d for %s",
-            result.returncode,
-            _credential_ref(key),
-        )
+        put_secret(key, value.encode("utf-8"))
+    except SecretUnavailable as exc:
+        log.error("secret write failed for %s (%s)", _credential_ref(key), type(exc).__name__)
         return False
     return True
 
 
 def _client_config() -> dict[str, dict[str, Any]] | None:
-    """Build an InstalledAppFlow ``client_config`` dict from pass-store.
+    """Build an InstalledAppFlow ``client_config`` dict from the FileStore.
 
     Returns ``None`` when either the client id or client secret is
     missing — caller should print a hint to the operator pointing at
     the bootstrap docs.
     """
-    client_id = _pass_show(CLIENT_ID_PASS_KEY)
-    client_secret = _pass_show(CLIENT_SECRET_PASS_KEY)
+    client_id = _read_secret(CLIENT_ID_PASS_KEY)
+    client_secret = _read_secret(CLIENT_SECRET_PASS_KEY)
     if not client_id or not client_secret:
         return None
     return {
@@ -212,11 +196,11 @@ def run_first_consent(*, port: int = 0, open_browser: bool = False) -> bool:
     Returns ``True`` on success. Returns ``False`` (with a logged error
     pointing at the bootstrap runbook) when:
 
-    - the OAuth client credentials are missing from ``pass``
+    - the OAuth client credentials are missing from the FileStore
     - the consent flow returned no refresh token (rare; happens when
       the user re-consents an already-authorized client without
       ``prompt=consent``)
-    - the refresh token could not be written back to ``pass``
+    - the refresh token could not be written to the FileStore
     """
     config = _client_config()
     if config is None:
@@ -249,11 +233,11 @@ def run_first_consent(*, port: int = 0, open_browser: bool = False) -> bool:
         )
         return False
 
-    if not _pass_insert(REFRESH_TOKEN_PASS_KEY, refresh_token):
+    if not _write_secret(REFRESH_TOKEN_PASS_KEY, refresh_token):
         return False
 
     log.info(
-        "OAuth bootstrap complete. Refresh token persisted to pass:%s.",
+        "OAuth bootstrap complete. Refresh token persisted to the FileStore as %s.",
         REFRESH_TOKEN_PASS_KEY,
     )
     return True
@@ -262,7 +246,7 @@ def run_first_consent(*, port: int = 0, open_browser: bool = False) -> bool:
 def load_credentials() -> Credentials | None:
     """Load the persisted refresh token and mint a fresh access token.
 
-    Uses the three pass-store entries written during bootstrap to
+    Uses the three FileStore entries written during bootstrap to
     construct a :class:`google.oauth2.credentials.Credentials`, then
     calls :meth:`Credentials.refresh` to exchange the refresh token
     for a short-lived access token at the Google token endpoint.
@@ -271,13 +255,13 @@ def load_credentials() -> Credentials | None:
     as "daemon should enter DEGRADED state and emit
     ``awareness.mail.degraded=true``" per spec §5.5.
     """
-    client_id = _pass_show(CLIENT_ID_PASS_KEY)
-    client_secret = _pass_show(CLIENT_SECRET_PASS_KEY)
-    refresh_token = _pass_show(REFRESH_TOKEN_PASS_KEY)
+    client_id = _read_secret(CLIENT_ID_PASS_KEY)
+    client_secret = _read_secret(CLIENT_SECRET_PASS_KEY)
+    refresh_token = _read_secret(REFRESH_TOKEN_PASS_KEY)
     if not client_id or not client_secret or not refresh_token:
         OAUTH_REFRESH_COUNTER.labels(result="missing_credential").inc()
         log.warning(
-            "OAuth credentials incomplete in pass: id=%s secret=%s refresh=%s. "
+            "OAuth credentials incomplete in the FileStore: id=%s secret=%s refresh=%s. "
             "Run python -m agents.mail_monitor.oauth --first-consent.",
             bool(client_id),
             bool(client_secret),
@@ -326,7 +310,7 @@ def build_gmail_service(*, creds: Credentials | None = None) -> Any | None:
 
     Mints credentials via :func:`load_credentials` when ``creds`` is
     ``None``. Tests pass a pre-built ``Credentials`` to avoid the
-    pass-store + token-refresh path.
+    FileStore + token-refresh path.
     """
     if creds is None:
         creds = load_credentials()
@@ -374,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument(
         "--first-consent",
         action="store_true",
-        help="Run InstalledAppFlow; persist refresh token to pass.",
+        help="Run InstalledAppFlow; persist refresh token to the FileStore.",
     )
     group.add_argument(
         "--verify",

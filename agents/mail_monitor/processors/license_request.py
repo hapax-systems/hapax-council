@@ -8,8 +8,8 @@ quote drafting can pick it up.
 Phase 1 (this PR): detect + file + chronicle + counter. Idempotent on
 ``messageId``.
 
-Phase 2 (cred-blocked on ``pass insert lightning/lnbits-token`` and
-``pass insert liberapay/api-token``): auto-reply with payment-rail-link
+Phase 2 (cred-blocked until ``lightning/lnbits-token`` and
+``liberapay/api-token`` are put through ``hapax-secret``): auto-reply with payment-rail-link
 template (Lightning invoice + Liberapay URL). Stripe Payment Link is
 explicitly REFUSED in sister task ``leverage-money-stripe-payment-link-
 REFUSED`` per refusal-as-data substrate.

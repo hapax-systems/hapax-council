@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Generate and optionally send the stakeholder revenue brief as a DOCX."""
+"""Generate the stakeholder revenue brief as a DOCX.
+
+Sending from this script is retired. It used to send the DOCX from the operator's own
+Gmail account, which is not a sending route for the network's outbound correspondence.
+It now only generates the document; delivery goes through the network's governed sender.
+"""
 
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -13,7 +17,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
-from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -27,7 +30,11 @@ DEFAULT_GENERATED_DIR = (
     Path.home() / "Documents/Personal/20-projects/hapax-research/briefs/stakeholder-revenue"
 )
 DEFAULT_STATE_DIR = Path.home() / ".local/state/hapax/stakeholder-revenue-brief"
-DEFAULT_SUBJECT = "Updated Hapax monetary/revenue brief (DOCX attached)"
+SEND_RETIRED = (
+    "sending from this script is retired: the operator's own mailbox is not a sending "
+    "route for the network's outbound correspondence. Next action: run without --send "
+    "to generate the DOCX, then deliver it through the network's governed sender."
+)
 
 
 @dataclass(frozen=True)
@@ -36,29 +43,9 @@ class BriefConfig:
     generated_dir: Path
     state_dir: Path
     timezone: ZoneInfo
-    send: bool
-    force: bool
-    min_hours_between: float
-    sender: str | None
-    recipients: tuple[str, ...]
-    cc: tuple[str, ...]
     recipient_name: str
-    subject: str
     delivery_note: str | None
     summary_lines: tuple[str, ...]
-
-
-def _split_csv(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
-    if not values:
-        return ()
-    result: list[str] = []
-    for value in values:
-        result.extend(part.strip() for part in value.split(",") if part.strip())
-    return tuple(result)
-
-
-def _env_csv(name: str) -> tuple[str, ...]:
-    return _split_csv([os.environ[name]]) if os.environ.get(name) else ()
 
 
 def _strip_frontmatter(text: str) -> tuple[list[str] | None, str]:
@@ -89,27 +76,6 @@ def _load_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
-
-
-def _last_send_inside_window(
-    *,
-    state: dict[str, Any],
-    now: datetime,
-    timezone: ZoneInfo,
-    min_hours_between: float,
-) -> tuple[bool, str | None]:
-    value = state.get("last_sent_at")
-    if not isinstance(value, str) or not value:
-        return False, None
-    try:
-        last_sent_at = datetime.fromisoformat(value)
-    except ValueError:
-        return False, None
-    if last_sent_at.tzinfo is None:
-        last_sent_at = last_sent_at.replace(tzinfo=timezone)
-    normalized = last_sent_at.astimezone(timezone)
-    elapsed_hours = (now - normalized).total_seconds() / 3600
-    return elapsed_hours < min_hours_between, normalized.isoformat()
 
 
 def _section_map(markdown: str) -> dict[str, str]:
@@ -235,139 +201,17 @@ def _write_docx(
     return markdown_path, docx_path
 
 
-def _build_gmail_service_from_pass() -> Any:
-    from agents.mail_monitor.oauth import build_gmail_service, load_credentials
-
-    creds = load_credentials()
-    return build_gmail_service(creds=creds)
-
-
-def _send_email(
-    *,
-    config: BriefConfig,
-    docx_path: Path,
-    summary_lines: list[str],
-    generated_at: datetime,
-) -> str:
-    service = _build_gmail_service_from_pass()
-    if service is None:
-        raise RuntimeError("could not build Gmail service from pass-backed credentials")
-
-    profile = service.users().getProfile(userId="me").execute()
-    from_addr = str(profile.get("emailAddress", ""))
-    expected_sender = config.sender or ""
-    if from_addr.lower() != expected_sender.lower():
-        raise RuntimeError(f"Gmail credential is for {from_addr!r}, expected {expected_sender!r}")
-
-    summary = "\n".join(f"- {line}" for line in summary_lines)
-    generated_stamp = generated_at.strftime("%Y-%m-%d %H:%M %Z")
-    body = f"""Attached is the updated Hapax monetary/revenue stakeholder brief as a formatted Word document.
-
-Changes since the last brief:
-{summary}
-
-The projections remain gross revenue planning scenarios before taxes, model/API spend, storage,
-hardware, payment fees, and normal business costs.
-
-Generated {generated_stamp}.
-"""
-    message = EmailMessage()
-    message["To"] = ", ".join(config.recipients)
-    if config.cc:
-        message["Cc"] = ", ".join(config.cc)
-    message["From"] = from_addr
-    message["Subject"] = config.subject
-    message.set_content(body)
-    message.add_attachment(
-        docx_path.read_bytes(),
-        maintype="application",
-        subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=docx_path.name,
-    )
-
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
-    sent = service.users().messages().send(userId="me", body={"raw": raw}).execute()
-    message_id = sent.get("id")
-    if not message_id:
-        raise RuntimeError(f"Gmail send returned no message id: {sent!r}")
-    return str(message_id)
-
-
-def _update_source_frontmatter(path: Path, fields: dict[str, str]) -> None:
-    text = path.read_text(encoding="utf-8")
-    frontmatter, body = _strip_frontmatter(text)
-    if frontmatter is None:
-        return
-
-    pending = dict(fields)
-    updated: list[str] = []
-    for line in frontmatter:
-        key = line.split(":", 1)[0].strip() if ":" in line and not line.startswith(" ") else None
-        if key in pending:
-            updated.append(f"{key}: {pending.pop(key)}")
-        else:
-            updated.append(line)
-
-    updated.extend(f"{key}: {value}" for key, value in pending.items())
-    path.write_text("---\n" + "\n".join(updated) + "\n---\n" + body, encoding="utf-8")
-
-
-def _save_state(
-    *,
-    config: BriefConfig,
-    state_path: Path,
-    source_body: str,
-    source_hash: str,
-    generated_markdown: Path,
-    docx_path: Path,
-    message_id: str,
-    sent_at: datetime,
-) -> None:
-    _assert_not_repo_output(config.state_dir, label="state_dir")
-    config.state_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_path = config.state_dir / "last-source-snapshot.md"
-    snapshot_path.write_text(source_body, encoding="utf-8")
-    state = {
-        "last_sent_at": sent_at.isoformat(),
-        "last_source_hash": source_hash,
-        "last_source_snapshot": str(snapshot_path),
-        "last_generated_markdown": str(generated_markdown),
-        "last_docx": str(docx_path),
-        "last_gmail_message_id": message_id,
-        "sender": config.sender,
-        "to": list(config.recipients),
-        "cc": list(config.cc),
-    }
-    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
 def run(config: BriefConfig, *, now: datetime | None = None) -> dict[str, Any]:
     generated_at = now or datetime.now(config.timezone)
     if generated_at.tzinfo is None:
         generated_at = generated_at.replace(tzinfo=config.timezone)
     generated_at = generated_at.astimezone(config.timezone)
 
-    state_path = config.state_dir / "state.json"
-    state = _load_json(state_path)
-    if config.send and not config.force:
-        should_skip, last_sent_at = _last_send_inside_window(
-            state=state,
-            now=generated_at,
-            timezone=config.timezone,
-            min_hours_between=config.min_hours_between,
-        )
-        if should_skip:
-            return {
-                "skipped": True,
-                "reason": "recently_sent",
-                "last_sent_at": last_sent_at,
-                "min_hours_between": config.min_hours_between,
-            }
+    state = _load_json(config.state_dir / "state.json")
 
     source_text = config.source_path.read_text(encoding="utf-8")
     _, source_body = _strip_frontmatter(source_text)
     source_body = source_body.strip() + "\n"
-    source_hash = _content_hash(source_body)
     previous_snapshot_value = str(state.get("last_source_snapshot", ""))
     previous_snapshot_path = Path(previous_snapshot_value) if previous_snapshot_value else None
     previous_snapshot = (
@@ -393,45 +237,10 @@ def run(config: BriefConfig, *, now: datetime | None = None) -> dict[str, Any]:
         generated_dir=config.generated_dir,
     )
 
-    if not config.send:
-        return {
-            "sent": False,
-            "generated_markdown": str(generated_md),
-            "docx": str(docx_path),
-        }
-
-    message_id = _send_email(
-        config=config,
-        docx_path=docx_path,
-        summary_lines=summary_lines,
-        generated_at=generated_at,
-    )
-    _save_state(
-        config=config,
-        state_path=state_path,
-        source_body=source_body,
-        source_hash=source_hash,
-        generated_markdown=generated_md,
-        docx_path=docx_path,
-        message_id=message_id,
-        sent_at=generated_at,
-    )
-    _update_source_frontmatter(
-        config.source_path,
-        {
-            "status": "sent-to-stakeholder",
-            "last_docx_sent_at": generated_at.isoformat(),
-            "last_docx_gmail_message_id": message_id,
-            "last_docx_path": str(docx_path),
-        },
-    )
     return {
-        "sent": True,
-        "sent_to": list(config.recipients),
-        "cc": list(config.cc),
-        "gmail_message_id": message_id,
-        "docx": str(docx_path),
+        "sent": False,
         "generated_markdown": str(generated_md),
+        "docx": str(docx_path),
     }
 
 
@@ -462,35 +271,11 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         help="State directory for send history and source snapshots.",
     )
-    parser.add_argument("--send", action="store_true", help="Actually send the generated DOCX.")
+    parser.add_argument("--send", action="store_true", help="Retired: refuses, with a next action.")
     parser.add_argument(
         "--no-send",
         action="store_true",
-        help="Compatibility no-op; generation without sending is the default.",
-    )
-    parser.add_argument("--force", action="store_true", help="Ignore recent-send suppression.")
-    parser.add_argument(
-        "--min-hours-between",
-        type=float,
-        default=float(os.environ.get("HAPAX_STAKEHOLDER_REVENUE_BRIEF_MIN_HOURS", "23")),
-        help="Minimum hours between non-forced sends.",
-    )
-    parser.add_argument(
-        "--sender",
-        default=os.environ.get("HAPAX_STAKEHOLDER_REVENUE_BRIEF_SENDER"),
-        help="Expected Gmail sender address. Required with --send.",
-    )
-    parser.add_argument(
-        "--to",
-        action="append",
-        default=list(_env_csv("HAPAX_STAKEHOLDER_REVENUE_BRIEF_TO")),
-        help="Recipient address. May be repeated or comma-separated. Required with --send.",
-    )
-    parser.add_argument(
-        "--cc",
-        action="append",
-        default=list(_env_csv("HAPAX_STAKEHOLDER_REVENUE_BRIEF_CC")),
-        help="CC address. May be repeated or comma-separated.",
+        help="Compatibility no-op; this script only generates.",
     )
     parser.add_argument(
         "--recipient-name",
@@ -499,11 +284,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "the stakeholder",
         ),
         help="Display name used in generated document metadata.",
-    )
-    parser.add_argument(
-        "--subject",
-        default=os.environ.get("HAPAX_STAKEHOLDER_REVENUE_BRIEF_SUBJECT", DEFAULT_SUBJECT),
-        help="Email subject used only with --send.",
     )
     parser.add_argument(
         "--timezone",
@@ -524,13 +304,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> BriefConfig:
-    recipients = _split_csv(args.to)
-    cc = _split_csv(args.cc)
-    send = bool(args.send and not args.no_send)
-    if send and not recipients:
-        parser.error("--send requires --to or HAPAX_STAKEHOLDER_REVENUE_BRIEF_TO")
-    if send and not args.sender:
-        parser.error("--send requires --sender or HAPAX_STAKEHOLDER_REVENUE_BRIEF_SENDER")
+    if args.send:
+        parser.error(SEND_RETIRED)
 
     try:
         timezone = ZoneInfo(args.timezone)
@@ -542,14 +317,7 @@ def _config_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser)
         generated_dir=args.generated_dir,
         state_dir=args.state_dir,
         timezone=timezone,
-        send=send,
-        force=args.force,
-        min_hours_between=args.min_hours_between,
-        sender=args.sender,
-        recipients=recipients,
-        cc=cc,
         recipient_name=args.recipient_name,
-        subject=args.subject,
         delivery_note=args.delivery_note,
         summary_lines=tuple(args.summary_line),
     )

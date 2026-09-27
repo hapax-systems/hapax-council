@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from shared.assertion_model import AssertionType, GovernanceStatus, SourceType
 from shared.prose_assertion_extractor import (
@@ -23,6 +26,18 @@ def _write_md(tmp_path: Path, name: str, content: str) -> Path:
 
 
 class TestClaudeMdExtraction:
+    def test_alias_uses_canonical_provenance(self, tmp_path: Path) -> None:
+        canonical = _write_md(tmp_path, "AGENTS.md", "MUST preserve canonical policy.\n")
+        alias = tmp_path / "CLAUDE.md"
+        alias.symlink_to("AGENTS.md")
+
+        canonical_results = extract_from_claude_md(canonical)
+        alias_results = extract_from_claude_md(alias)
+
+        assert len(alias_results) == 1
+        assert alias_results[0].source_uri == str(canonical.resolve())
+        assert alias_results[0].assertion_id == canonical_results[0].assertion_id
+
     def test_must_directive(self, tmp_path: Path) -> None:
         p = _write_md(
             tmp_path,
@@ -363,6 +378,63 @@ class TestRelayExtraction:
 
 
 class TestDirectoryExtraction:
+    @pytest.mark.parametrize("resumable", [False, True])
+    def test_authored_instruction_coverage(self, tmp_path: Path, resumable: bool) -> None:
+        policies = {
+            "council/AGENTS.md": "MUST preserve repository authority.",
+            "council/config/agent-instructions/AGENTS.md": "NEVER bypass shared policy.",
+            "council/config/agent-instructions/native/claude.md": "MUST retain native hooks.",
+            "council/config/agent-instructions/native/grok.md": "MUST observe native limits.",
+            "council/docs/runbooks/council-domain-context.md": "ALWAYS preserve domain rules.",
+            "council/nested/AGENTS.md": "MUST observe nested scope.",
+            "agents-only/AGENTS.md": "MUST include AGENTS-only repositories.",
+            "legacy/CLAUDE.md": "MUST include legacy repositories.",
+        }
+        excluded = (
+            "council/README.md",
+            "council/docs/ordinary.md",
+            "council/docs/runbooks/evidence/generated.md",
+            "council/config/agent-instructions/evidence/generated.md",
+            "council/config/agent-instructions/native/evidence/generated.md",
+        )
+        for relative, text in policies.items():
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text + "\n", encoding="utf-8")
+        for relative in excluded:
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("MUST NOT become an instruction assertion.\n", encoding="utf-8")
+        (tmp_path / "council/CLAUDE.md").symlink_to("AGENTS.md")
+        (tmp_path / "council/config/agent-instructions/native/alias.md").symlink_to("claude.md")
+
+        reader = extract_from_directory_resumable if resumable else extract_from_directory
+        results = reader(tmp_path, source_kind="claude_md")
+
+        assert len(results) == len(policies)
+        assert {result.source_uri: result.text for result in results} == {
+            str((tmp_path / relative).resolve()): text for relative, text in policies.items()
+        }
+        assert all(result.governance_status == GovernanceStatus.AUTHORITATIVE for result in results)
+        assert all(result.assertion_type == AssertionType.CONSTRAINT for result in results)
+
+        if resumable:
+            assert reader(tmp_path, source_kind="claude_md") == []
+            state = ProcessedState(tmp_path / ".prose-extractor-processed.json")
+            assert all(state.is_processed(tmp_path / relative) for relative in policies)
+            assert not state.is_processed(tmp_path / "council/CLAUDE.md")
+            assert all(not state.is_processed(tmp_path / relative) for relative in excluded)
+
+            canonical = tmp_path / "council/AGENTS.md"
+            modified = canonical.stat().st_mtime + 5
+            canonical.write_text("MUST preserve revised repository authority.\n", encoding="utf-8")
+            os.utime(canonical, (modified, modified))
+            updated = reader(tmp_path, source_kind="claude_md")
+            assert len(updated) == 1
+            assert updated[0].source_uri == str(canonical.resolve())
+            assert updated[0].text == "MUST preserve revised repository authority."
+            assert reader(tmp_path, source_kind="claude_md") == []
+
     def test_claude_md_directory(self, tmp_path: Path) -> None:
         _write_md(tmp_path, "CLAUDE.md", "MUST validate.\n")
         sub = tmp_path / "sub"

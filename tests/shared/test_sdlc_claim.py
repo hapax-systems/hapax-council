@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import multiprocessing as mp
@@ -7,7 +8,7 @@ import os
 import queue
 import stat
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1179,6 +1180,688 @@ def _resolve(fixture: ClaimFixture):
         transaction_root=fixture.transactions,
         lock_root=fixture.locks,
     )
+
+
+def _activation_fixture(tmp_path: Path):
+    fixture = _fixture(tmp_path, task_id="claim-activation-cache-rehydrate-fixture".ljust(54, "x"))
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt = sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    fixture.intent.note_path.write_bytes(
+        fixture.intent.note_after.replace(
+            b"updated_at: 2026-07-11T12:00:00Z", b"updated_at: 2026-09-05T02:30:00Z"
+        )
+        + b"\nLegitimate progress after publication.\n"
+    )
+    for path in fixture.cache.glob("cc-active-task-*"):
+        path.unlink()
+    return fixture, receipt
+
+
+def _rehydrate(fixture: ClaimFixture, receipt_root: Path):
+    return sdlc_claim.rehydrate_applied_activation_projections(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+
+
+@pytest.mark.parametrize("state", ["aborted", "applied"], ids=["aborted", "superseded"])
+@pytest.mark.parametrize("position", ["before", "after"])
+def test_rehydrate_selects_current_publication_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, position: str
+) -> None:
+    # Keep A away from the hash-space endpoints so both requested B orderings
+    # have a substantial probability on every attempt, regardless of tmp_path.
+    for attempt in range(128):
+        fixture, receipt = _activation_fixture(tmp_path / f"current-{attempt}")
+        if "claim-pub-4" <= receipt.publication_id < "claim-pub-c":
+            break
+    else:
+        pytest.fail("could not construct a central publication identity")
+    original = {
+        path: (path.read_bytes(), path.stat()) for path in tmp_path.rglob("*") if path.is_file()
+    }
+    fixture.intent.note_path.write_bytes(
+        fixture.intent.note_path.read_bytes().replace(b"status: claimed", b"status: pr_open")
+    )
+    # Publish a second genuine admission with the SAME lease vector. Only the
+    # exact publication named by the surviving receipt distinguishes A from B.
+    for attempt in range(128):
+        intent = ClaimPublicationIntent.create(
+            task=resolve_task_note(fixture.vault, fixture.intent.task_id),
+            cache_dir=fixture.cache,
+            note_after=fixture.intent.note_path.read_bytes()
+            + f"\nPublication B {attempt}\n".encode(),
+            binding=fixture.intent.binding,
+        )
+        proof_root = tmp_path / f"publication-b-{attempt}"
+        proof_root.mkdir()
+        active = _active_admission_fixture(proof_root, replace(fixture, intent=intent))
+        other_id = admitted_claim_publication_id(intent, active.consumption)
+        if (other_id < receipt.publication_id) == (position == "before"):
+            break
+    else:
+        pytest.fail("could not construct the requested publication ordering")
+    receipt.receipt_path.unlink()
+    for projection in sdlc_claim._projections(fixture.intent)[1:7]:
+        projection.path.unlink(missing_ok=True)
+    other = sdlc_claim._apply_admitted_claim_publication_transaction(
+        intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    record = json.loads(other.manifest_path.read_bytes())
+    record["state"] = state
+    record["reason_code"] = "retained-publication-b"
+    other.manifest_path.write_bytes(_canonical(record) + b"\n")
+    # Retain B's journal; A's receipt and surviving sidecars are the current plane.
+    for path, (content, metadata) in original.items():
+        path.write_bytes(content)
+        path.chmod(stat.S_IMODE(metadata.st_mode))
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+    paths = tuple(sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    for path in paths:
+        path.unlink()
+    before_paths = tuple(path for path in tmp_path.rglob("*") if path.is_file())
+    before = _file_identity_snapshot(before_paths)
+    list_names = sdlc_claim.ReadOnlyFsSnapshot.list_names
+    runs = []
+    for reverse in (False, True):
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                sdlc_claim.ReadOnlyFsSnapshot,
+                "list_names",
+                lambda self, directory: tuple(sorted(list_names(self, directory), reverse=reverse)),
+            )
+            results = _rehydrate(fixture, receipt.receipt_path.parent)
+        current = next(item for item in results if item.publication_id == receipt.publication_id)
+        ignored = next(item for item in results if item.publication_id == other.publication_id)
+        assert len(results) == 2
+        assert current.state == "rehydrated"
+        assert current.written_paths == paths
+        assert ignored.state == state
+        assert ignored.reason_code == "claim_publication_not_current"
+        assert "retained-publication-b" in ignored.detail
+        assert ignored.written_paths == ()
+        assert _file_identity_snapshot(before_paths) == before
+        assert {path for path in tmp_path.rglob("*") if path.is_file()} == set(before_paths) | set(
+            paths
+        )
+        writes = tuple(
+            (path, path.read_bytes(), stat.S_IMODE(path.stat().st_mode)) for path in paths
+        )
+        assert writes == tuple(
+            (path, f"{fixture.intent.task_id}\n".encode(), 0o644) for path in paths
+        )
+        runs.append((results, writes))
+        for path in paths:
+            path.unlink()
+    assert runs[0] == runs[1]
+
+
+@pytest.mark.parametrize("failure", ["race", "cas"])
+@pytest.mark.parametrize(
+    "first_exists", [False, True], ids=["installed_first", "preexisting_first"]
+)
+def test_rehydrate_second_install_retains_partial_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, first_exists: bool
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+    first, second = (sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    if first_exists:
+        first.write_bytes(f"{fixture.intent.task_id}\n".encode())
+        first.chmod(0o644)
+    before = _file_identity_snapshot((first,)) if first_exists else None
+    rename = projection_layer._renameat2
+    calls = []
+
+    def fail_second(src_fd, src_name, dst_fd, dst_name, flags):
+        calls.append(dst_name)
+        if dst_name == second.name:
+            if failure == "race":
+                second.write_bytes(b"concurrent-owner\n")
+                second.chmod(0o644)
+            else:
+                with monkeypatch.context() as patch:
+                    patch.setattr(projection_layer.ctypes, "CDLL", lambda *args, **kwargs: object())
+                    return rename(src_fd, src_name, dst_fd, dst_name, flags)
+        return rename(src_fd, src_name, dst_fd, dst_name, flags)
+
+    monkeypatch.setattr(projection_layer, "_renameat2", fail_second)
+    with pytest.raises(ClaimPublicationError) as raised:
+        _rehydrate(fixture, receipt.receipt_path.parent)
+    assert calls == ([second.name] if first_exists else [first.name, second.name])
+    assert first.read_bytes() == f"{fixture.intent.task_id}\n".encode()
+    if first_exists:
+        assert _file_identity_snapshot((first,)) == before
+    if failure == "race":
+        assert second.read_bytes() == b"concurrent-owner\n"
+    else:
+        assert not second.exists()
+    detail = json.loads(raised.value.detail)
+    assert detail["written_paths"] == ([] if first_exists else [str(first)])
+    assert detail["failed_path"] == str(second)
+    assert (str(first) in detail["retained_effects"]) is not first_exists
+    scratches = tuple(fixture.cache.glob("*.transition-scratch"))
+    assert len(scratches) == 1
+    assert str(scratches[0]) in detail["retained_effects"]
+    assert detail["failure_reason"] == (
+        "transition_precondition_changed"
+        if failure == "race"
+        else "transition_atomic_cas_unavailable"
+    )
+    assert raised.value.reason_code == (
+        "claim_activation_cache_conflict"
+        if failure == "race"
+        else "transition_atomic_cas_unavailable"
+    )
+    assert raised.value.repair_action == (
+        "preserve the activation cache and retry after the named path stabilizes"
+        if failure == "race"
+        else "run lifecycle projection only on Linux with renameat2 support"
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "remedy"),
+    [
+        (errno.ENOSPC, "free space on the named filesystem, preserve retained effects, then retry"),
+        (
+            errno.EIO,
+            "repair the named filesystem's I/O failure, preserve retained effects, then retry",
+        ),
+        (errno.EACCES, "restore access to the named path, preserve retained effects, then retry"),
+        (
+            errno.EPERM,
+            "restore permission for the named operation, preserve retained effects, then retry",
+        ),
+        (
+            errno.ENOTDIR,
+            "restore real parent directories for the named path, preserve retained effects, then retry",
+        ),
+    ],
+    ids=["ENOSPC", "EIO", "EACCES", "EPERM", "ENOTDIR"],
+)
+@pytest.mark.parametrize(
+    "phase", ["scratch_open", "scratch_write", "scratch_fsync", "rename", "after_rename"]
+)
+def test_rehydrate_filesystem_failure_is_actionable_and_retains_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: int, remedy: str, phase: str
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+    first, second = (sdlc_claim._projections(fixture.intent)[index].path for index in (1, 4))
+    original_open = projection_layer.os.open
+    write = projection_layer.os.write
+    rename = projection_layer._renameat2
+    fsync = projection_layer.os.fsync
+    renamed = False
+    injected = False
+    scratch_fd = None
+
+    def fail_open(path, flags, *args, **kwargs):
+        nonlocal injected, scratch_fd
+        target = str(path).startswith(f".{second.name}.") and flags & os.O_CREAT
+        if phase == "scratch_open" and target:
+            injected = True
+            raise OSError(error, os.strerror(error), str(path))
+        fd = original_open(path, flags, *args, **kwargs)
+        if target:
+            scratch_fd = fd
+        return fd
+
+    def fail_write(fd, payload):
+        nonlocal injected
+        if phase == "scratch_write" and fd == scratch_fd:
+            injected = True
+            write(fd, payload[:3])
+            raise OSError(error, os.strerror(error), str(second))
+        return write(fd, payload)
+
+    def fail_rename(src_fd, src_name, dst_fd, dst_name, flags):
+        nonlocal renamed, injected
+        if dst_name == second.name and phase == "rename":
+            injected = True
+            raise OSError(error, os.strerror(error), dst_name)
+        result = rename(src_fd, src_name, dst_fd, dst_name, flags)
+        if dst_name == second.name:
+            renamed = True
+        return result
+
+    def fail_fsync(fd):
+        nonlocal injected
+        if not injected and (
+            (phase == "after_rename" and renamed) or (phase == "scratch_fsync" and fd == scratch_fd)
+        ):
+            injected = True
+            raise OSError(error, os.strerror(error), str(second))
+        return fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(projection_layer.os, "open", fail_open)
+        patch.setattr(projection_layer.os, "write", fail_write)
+        patch.setattr(projection_layer, "_renameat2", fail_rename)
+        patch.setattr(projection_layer.os, "fsync", fail_fsync)
+        with pytest.raises(ClaimPublicationError) as raised:
+            _rehydrate(fixture, receipt.receipt_path.parent)
+    assert injected
+    assert raised.value.reason_code == f"claim_activation_cache_{errno.errorcode[error].lower()}"
+    assert raised.value.repair_action == remedy
+    detail = json.loads(raised.value.detail)
+    assert detail["written_paths"] == [str(first)]
+    assert detail["failed_path"] == str(second)
+    assert detail["failure_reason"] == errno.errorcode[error]
+    assert str(first) in detail["retained_effects"]
+    assert first.read_bytes() == f"{fixture.intent.task_id}\n".encode()
+    if phase == "after_rename":
+        assert second.read_bytes() == first.read_bytes()
+        assert str(second) in detail["retained_effects"]
+    else:
+        assert not second.exists()
+    scratches = tuple(fixture.cache.glob("*.transition-scratch"))
+    assert len(scratches) == (1 if phase in {"scratch_write", "scratch_fsync", "rename"} else 0)
+    for scratch in scratches:
+        assert str(scratch) in detail["retained_effects"]
+
+
+@pytest.mark.parametrize("operation", ["link", "unlink"])
+def test_rehydrate_creation_does_not_link_or_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    import shared.coord_projection as projection_layer
+
+    fixture, receipt = _activation_fixture(tmp_path)
+
+    def forbidden(*args, **kwargs):
+        raise OSError(errno.EIO, f"unexpected {operation} in activation creation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(projection_layer.os, operation, forbidden)
+        (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+    assert result.state == "rehydrated"
+    assert len(result.written_paths) == 2
+
+
+def test_rehydrate_applied_activation_preserves_evolved_note_and_survivors(tmp_path: Path) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    evolved = fixture.intent.note_path.read_bytes()
+    paths_before = tuple(sorted(path for path in tmp_path.rglob("*") if path.is_file()))
+    before = _file_identity_snapshot(paths_before)
+    with pytest.raises(ClaimPublicationError, match="claim_cache_missing"):
+        resolve_applied_claim_publication(
+            vault_root=fixture.vault,
+            cache_dir=fixture.cache,
+            role=fixture.intent.role,
+            session_id=fixture.intent.session_id,
+            task_id=fixture.intent.task_id,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt.receipt_path.parent,
+            lock_root=fixture.locks,
+        )
+    recovered = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [(item.state, item.reason_code) for item in recovered] == [
+        ("hold", "claim_publication_postimage_drift")
+    ]
+
+    results = _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert len(results) == 1
+    result = results[0]
+    expected = tuple(
+        fixture.cache / f"cc-active-task-{key}"
+        for key in (fixture.intent.role, f"{fixture.intent.role}-{fixture.intent.session_id}")
+    )
+    assert result.publication_id == receipt.publication_id
+    assert result.state == "rehydrated"
+    assert result.reason_code is None
+    assert result.written_paths == expected
+    assert result.observed_before == tuple((path, "absent") for path in expected)
+    for path in expected:
+        assert str(path) in result.detail
+        assert path.read_bytes() == f"{fixture.intent.task_id}\n".encode()
+        assert len(path.read_bytes()) == 55
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert fixture.intent.note_path.read_bytes() == evolved
+    assert _file_identity_snapshot(paths_before) == before
+    assert {path for path in tmp_path.rglob("*") if path.is_file()} == set(paths_before) | set(
+        expected
+    )
+    resolved = resolve_applied_claim_publication(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        role=fixture.intent.role,
+        session_id=fixture.intent.session_id,
+        task_id=fixture.intent.task_id,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+    )
+    assert resolved.receipt.publication_id == receipt.publication_id
+    assert resolved.current_task.content == evolved
+
+
+def _assert_rehydration_refused(fixture: ClaimFixture, receipt_root: Path, reason: str) -> None:
+    root = fixture.cache.parent
+    tree = _tree_snapshot(root)
+    files = tuple(
+        sorted(path for path in root.rglob("*") if path.is_file() and not path.is_symlink())
+    )
+    before = _file_identity_snapshot(files)
+    with pytest.raises(ClaimPublicationError) as raised:
+        _rehydrate(fixture, receipt_root)
+    assert raised.value.reason_code == reason
+    assert raised.value.repair_action
+    assert _tree_snapshot(root) == tree
+    assert _file_identity_snapshot(files) == before
+
+
+def test_rehydrate_idempotence_is_no_write(tmp_path: Path) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    _rehydrate(fixture, receipt.receipt_path.parent)
+    paths = tuple(sorted(path for path in tmp_path.rglob("*") if path.is_file()))
+    before = _file_identity_snapshot(paths)
+    tree = _tree_snapshot(tmp_path)
+
+    (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert result.state == "noop"
+    assert result.written_paths == ()
+    assert result.observed_before == ()
+    assert result.reason_code is None
+    assert _file_identity_snapshot(paths) == before
+    assert _tree_snapshot(tmp_path) == tree
+
+
+@pytest.mark.parametrize("index", [1, 4], ids=["role", "session"])
+def test_rehydrate_only_missing_activation(tmp_path: Path, index: int) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    projection = sdlc_claim._projections(fixture.intent)[index]
+    projection.path.write_bytes(projection.after)
+    projection.path.chmod(projection.after_mode)
+    before = _file_identity_snapshot((projection.path,))
+
+    (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert result.state == "rehydrated"
+    assert len(result.written_paths) == 1
+    assert projection.path not in result.written_paths
+    assert _file_identity_snapshot((projection.path,)) == before
+
+
+@pytest.mark.parametrize("change", ["owner", "authority_case", "mode", "path"])
+def test_rehydrate_refuses_current_identity_change(tmp_path: Path, change: str) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    note = fixture.intent.note_path
+    if change == "owner":
+        note.write_bytes(note.read_bytes().replace(b"assigned_to: cx-red", b"assigned_to: cx-blue"))
+    elif change == "authority_case":
+        note.write_bytes(note.read_bytes().replace(b"CASE-CLAIM-001", b"CASE-CLAIM-002"))
+    elif change == "mode":
+        note.chmod(0o600)
+    else:
+        note.rename(note.with_name(f"{fixture.intent.task_id}-renamed.md"))
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_publication_current_identity_mismatch"
+    )
+
+
+@pytest.mark.parametrize("index", [1, 4], ids=["role", "session"])
+@pytest.mark.parametrize("change", ["bytes", "mode"])
+def test_rehydrate_refuses_existing_activation_conflict(
+    tmp_path: Path, index: int, change: str
+) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    projection = sdlc_claim._projections(fixture.intent)[index]
+    projection.path.write_bytes(b"another-task\n" if change == "bytes" else projection.after)
+    projection.path.chmod(0o600 if change == "mode" else projection.after_mode)
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_activation_cache_conflict"
+    )
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    ["role_epoch", "role_dispatch", "session_epoch", "session_dispatch", "receipt", "manifest"],
+)
+@pytest.mark.parametrize("change", ["bytes", "mode", "missing"])
+def test_rehydrate_refuses_surviving_postimage_drift(
+    tmp_path: Path, sidecar: str, change: str
+) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    projections = sdlc_claim._projections(fixture.intent)
+    path = {
+        "role_epoch": projections[2].path,
+        "role_dispatch": projections[3].path,
+        "session_epoch": projections[5].path,
+        "session_dispatch": projections[6].path,
+        "receipt": receipt.receipt_path,
+        "manifest": receipt.manifest_path,
+    }[sidecar]
+    reason = "claim_publication_postimage_drift"
+    if change == "bytes":
+        # Semantically identical, byte-different: identity parsing alone is insufficient.
+        path.write_bytes(path.read_bytes() + b"\n")
+        if sidecar == "manifest":
+            reason = "claim_publication_journal_noncanonical"
+    elif change == "mode":
+        path.chmod(0o640)
+        if sidecar == "manifest":
+            reason = "fs_snapshot_file_unsafe"
+    else:
+        path.unlink()
+        if sidecar == "manifest":
+            reason = "claim_publication_manifest_unreadable"
+
+    _assert_rehydration_refused(fixture, receipt.receipt_path.parent, reason)
+
+
+@pytest.mark.parametrize(
+    "index",
+    range(7),
+    ids=[
+        "note",
+        "role_claim",
+        "role_epoch",
+        "role_dispatch",
+        "session_claim",
+        "session_epoch",
+        "session_dispatch",
+    ],
+)
+def test_rehydrate_refuses_projection_symlink(tmp_path: Path, index: int) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    projection = sdlc_claim._projections(fixture.intent)[index]
+    target = tmp_path / "symlink-target"
+    target.write_bytes(projection.after)
+    target.chmod(projection.after_mode)
+    projection.path.unlink(missing_ok=True)
+    projection.path.symlink_to(target)
+
+    _assert_rehydration_refused(fixture, receipt.receipt_path.parent, "fs_snapshot_file_unsafe")
+
+
+@pytest.mark.parametrize("artifact", ["receipt", "manifest", "blob", "proof"])
+def test_rehydrate_refuses_evidence_symlink(tmp_path: Path, artifact: str) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    if artifact == "receipt":
+        path = receipt.receipt_path
+    elif artifact == "manifest":
+        path = receipt.manifest_path
+    elif artifact == "blob":
+        path = receipt.manifest_path.parent / "0000.after"
+    else:
+        _, projections, _, _, _ = sdlc_claim._load_any_manifest(receipt.manifest_path)
+        path = projections[7].path
+    target = tmp_path / "symlink-target"
+    target.write_bytes(path.read_bytes())
+    target.chmod(stat.S_IMODE(path.stat().st_mode))
+    path.unlink()
+    path.symlink_to(target)
+
+    _assert_rehydration_refused(fixture, receipt.receipt_path.parent, "fs_snapshot_file_unsafe")
+
+
+@pytest.mark.parametrize(
+    "state", ["created", "projecting", "postimage_complete", "recovery_required", "aborted"]
+)
+def test_rehydrate_refuses_non_applied_journal(tmp_path: Path, state: str) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    record = json.loads(receipt.manifest_path.read_bytes())
+    record["state"] = state
+    receipt.manifest_path.write_bytes(_canonical(record) + b"\n")
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_publication_not_applied"
+    )
+
+
+@pytest.mark.parametrize("historical", [False, True], ids=["legacy", "historical"])
+def test_rehydrate_refuses_non_current_consumption(tmp_path: Path, historical: bool) -> None:
+    fixture = _fixture(tmp_path)
+    if historical:
+        active = _active_admission_fixture(tmp_path, fixture)
+        _materialize_admitted_history(fixture, _historical_consumption(fixture, active))
+        reason = "historical_claim_publication_recovery_forbidden"
+    else:
+        _materialize_v1_history(fixture)
+        reason = "legacy_claim_publication_recovery_forbidden"
+    with sdlc_claim._claim_publication_lock(fixture.intent, lock_root=fixture.locks):
+        pass
+    for path in fixture.cache.glob("cc-active-task-*"):
+        path.unlink()
+    receipt_root = claim_publication_receipt_path(fixture.cache, fixture.intent.binding).parent
+
+    _assert_rehydration_refused(fixture, receipt_root, reason)
+
+
+def test_rehydrate_refuses_unknown_task_without_writes(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    _assert_rehydration_refused(fixture, tmp_path / "receipts", "claim_publication_not_found")
+
+
+@pytest.mark.parametrize(
+    "field", ["task_id", "lane", "session_id", "claim_epoch", "authority_case"]
+)
+@pytest.mark.parametrize("both", [False, True], ids=["one_binding", "both_bindings"])
+def test_rehydrate_refuses_changed_binding_vector(tmp_path: Path, field: str, both: bool) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    binding = fixture.intent.binding
+    value = binding.claim_epoch + 1 if field == "claim_epoch" else "different-identity"
+    changed = replace(binding, **{field: value})
+    for index in (3, 6) if both else (6,):
+        sdlc_claim._projections(fixture.intent)[index].path.write_bytes(
+            _canonical(changed.to_record()) + b"\n"
+        )
+    if field == "claim_epoch" and both:
+        for index in (2, 5):
+            sdlc_claim._projections(fixture.intent)[index].path.write_bytes(
+                f"{value} {fixture.intent.task_id}\n".encode()
+            )
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_publication_postimage_drift"
+    )
+
+
+@pytest.mark.parametrize("artifact", ["receipt", "manifest", "proof"])
+def test_rehydrate_refuses_changed_evidence(tmp_path: Path, artifact: str) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    if artifact == "proof":
+        _, projections, _, _, _ = sdlc_claim._load_any_manifest(receipt.manifest_path)
+        projections[7].path.write_bytes(b"changed-proof\n")
+    else:
+        path = receipt.receipt_path if artifact == "receipt" else receipt.manifest_path
+        record = json.loads(path.read_bytes())
+        if artifact == "receipt":
+            record["publication_id"] = "claim-pub-" + "0" * 64
+            body = {key: value for key, value in record.items() if key != "receipt_hash"}
+            record["receipt_hash"] = hashlib.sha256(_canonical(body)).hexdigest()
+        else:
+            record["reason_code"] = "unexpected-reason"
+        path.write_bytes(_canonical(record) + b"\n")
+
+    _assert_rehydration_refused(
+        fixture, receipt.receipt_path.parent, "claim_publication_postimage_drift"
+    )
+
+
+def test_rehydrate_allows_retired_proof_sources(tmp_path: Path) -> None:
+    fixture, receipt = _activation_fixture(tmp_path)
+    _, projections, _, _, _ = sdlc_claim._load_any_manifest(receipt.manifest_path)
+    for projection in projections[7:]:
+        projection.path.unlink()
+
+    (result,) = _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert result.state == "rehydrated"
+    assert all(not projection.path.exists() for projection in projections[7:])
+
+
+def test_rehydrate_uses_publication_lock_and_cas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    fixture, receipt = _activation_fixture(tmp_path)
+    original_lock = sdlc_claim._claim_publication_lock
+    original_apply = sdlc_claim._apply_projections
+    locked = False
+    called = False
+
+    @contextmanager
+    def checked_lock(intent, *, lock_root):
+        nonlocal locked
+        assert intent == fixture.intent
+        assert lock_root == fixture.locks
+        with original_lock(intent, lock_root=lock_root):
+            locked = True
+            yield
+            locked = False
+
+    def racing_apply(projections, scratches, failure_hook):
+        nonlocal called
+        assert locked
+        called = True
+        projections[0].path.write_bytes(b"concurrent-owner\n")
+        projections[0].path.chmod(0o644)
+        original_apply(projections, scratches, failure_hook)
+
+    monkeypatch.setattr(sdlc_claim, "_claim_publication_lock", checked_lock)
+    monkeypatch.setattr(sdlc_claim, "_apply_projections", racing_apply)
+
+    with pytest.raises(ClaimPublicationError, match="claim_activation_cache_conflict"):
+        _rehydrate(fixture, receipt.receipt_path.parent)
+
+    assert called
+    assert (
+        fixture.cache / f"cc-active-task-{fixture.intent.role}"
+    ).read_bytes() == b"concurrent-owner\n"
+    assert not (
+        fixture.cache / f"cc-active-task-{fixture.intent.role}-{fixture.intent.session_id}"
+    ).exists()
 
 
 def _outcome_committer(
@@ -3420,6 +4103,77 @@ def test_inspection_holds_unknown_and_unsafe_journal_entries(tmp_path: Path) -> 
     assert symlink_results[0].reason_code == "fs_snapshot_directory_unsafe"
 
 
+def test_inspection_does_not_hold_on_a_journal_it_already_told_you_to_quarantine(
+    tmp_path: Path,
+) -> None:
+    """The remedy must not be the condition.
+
+    An unknown entry's repair action is "quarantine every entry outside the exact
+    claim publication grammar", and quarantining renames the journal to
+    ``claim-pub-<sha>.quarantined-<stamp>`` — which is outside that grammar. So the
+    hold demanded its own cause, and could only be cleared by moving the journal out
+    of the scan root by hand (measured 2026-09-13, cx-p0, twice).
+
+    All three stamp shapes that exist on disk are covered, because **no code
+    produces this name** — every "quarantine ..." string in the module is a repair
+    action addressed to a person, so the suffix is a hand convention and a matcher
+    pinned to one stamp grammar would leave the others holding forever.
+    """
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    transactions = tmp_path / "transactions"
+    transactions.mkdir(mode=0o700)
+    sha = "a" * 64
+    for stamp in ("20260821", "20260905T0041Z", "20260913T205924Z"):
+        quarantined = transactions / f"claim-pub-{sha}.quarantined-{stamp}"
+        quarantined.mkdir(mode=0o700)
+        (quarantined / "manifest.json").write_bytes(b"{}\n")
+        (quarantined / "manifest.json").chmod(0o600)
+
+    results = _inspect_without_effect(
+        tmp_path,
+        cache_dir=cache,
+        transaction_root=transactions,
+    )
+
+    assert results == ()
+
+    # Fail-open check: a genuinely foreign entry is still held, so the skip is a
+    # verdict about an already-remedied journal and not a hole in the grammar.
+    foreign = transactions / "claim-pub-not-a-journal"
+    foreign.mkdir(mode=0o700)
+    held = _inspect_without_effect(
+        tmp_path,
+        cache_dir=cache,
+        transaction_root=transactions,
+    )
+    assert [entry.publication_id for entry in held] == ["claim-pub-not-a-journal"]
+    assert held[0].reason_code == "claim_publication_transaction_entry_unknown"
+    assert foreign.is_dir()
+    foreign.rmdir()
+
+    # And the state cx-p0 ACTUALLY produced: the live journal still present beside its
+    # quarantined sibling, same sha. "The verdict drops, the evidence does not" has to mean the
+    # live journal is inspected normally while the sibling is skipped — so the skip must be
+    # narrow (this exact suffixed name) and not sha-wide. A reviewer noted the three stamp
+    # grammars above never put both forms on disk at once, which is the case that matters.
+    live = transactions / f"claim-pub-{sha}"
+    live.mkdir(mode=0o700)
+    both = _inspect_without_effect(
+        tmp_path,
+        cache_dir=cache,
+        transaction_root=transactions,
+    )
+    assert [entry.publication_id for entry in both] == [f"claim-pub-{sha}"], (
+        "the live journal was skipped along with its quarantined sibling — the skip is "
+        "sha-wide, so quarantining one attempt would hide the next one at the same sha"
+    )
+    assert live.is_dir()
+    for stamp in ("20260821", "20260905T0041Z", "20260913T205924Z"):
+        assert (transactions / f"claim-pub-{sha}.quarantined-{stamp}").is_dir()
+
+
 def test_publication_identity_is_deterministic_but_path_bound(tmp_path: Path) -> None:
     first = _fixture(tmp_path / "one")
     second = _fixture(tmp_path / "two")
@@ -3600,3 +4354,841 @@ def test_require_refuses_missing_blob_and_unsafe_receipt(tmp_path: Path) -> None
         )
     assert raised.value.reason_code == "fs_snapshot_file_unsafe"
     assert not unsafe.locks.exists()
+
+
+def _churning_transaction_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    churn: str,
+    transient: bool = False,
+) -> tuple[Path, Path, list[int]]:
+    """Make each inspection race a peer claim writing into the shared root."""
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    # The receipt root is absent, so the snapshot lists and watches the whole
+    # cache directory, as it does for the busy ~/.cache/hapax in production.
+    peer_state = cache / "cc-active-task-peer"
+    peer_state.write_bytes(b"peer-task-0\n")
+    transactions = tmp_path / "transactions"
+    transactions.mkdir(mode=0o700)
+    original = sdlc_claim.ReadOnlyFsSnapshot.seal
+    captures: list[int] = []
+
+    def racing(snapshot: object) -> object:
+        captures.append(len(captures) + 1)
+        if not transient or len(captures) == 1:
+            if churn == "concurrent_change":
+                # A peer lane rewrites its own claim file in place: no listing
+                # or directory stamp changes; only the watch guard sees it.
+                with peer_state.open("r+b") as handle:
+                    handle.write(f"peer-task-{len(captures)}\n".encode())
+            else:
+                (transactions / f"peer-{len(captures)}.tmp").write_bytes(b"peer")
+        return original(snapshot)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sdlc_claim.ReadOnlyFsSnapshot, "seal", racing)
+    return cache, transactions, captures
+
+
+def test_inspection_retake_is_only_for_concurrent_change_not_other_snapshot_holds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="root_entry_added"
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert [item.reason_code for item in results] == ["fs_snapshot_directory_changed"]
+    assert captures == [1]
+    assert sleeps == []
+
+
+def test_inspection_concurrent_change_retake_is_bounded_with_jitter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="concurrent_change"
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert [(item.disposition, item.reason_code) for item in results] == [
+        ("hold", "fs_snapshot_concurrent_change")
+    ]
+    assert results[0].publication_id == f"transaction-root:{transactions}"
+    assert len(captures) == sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+    assert len(sleeps) == sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS - 1
+    low, high = sdlc_claim.INSPECTION_CHURN_JITTER_SECONDS
+    assert all(low <= delay <= high for delay in sleeps)
+
+
+def test_inspection_concurrent_change_retake_stops_at_its_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="concurrent_change"
+    )
+    now = [0.0]
+
+    def clock() -> float:
+        now[0] += 20.0
+        return now[0]
+
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", lambda _seconds: None)
+    monkeypatch.setattr(sdlc_claim, "_churn_clock", clock)
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert [item.reason_code for item in results] == ["fs_snapshot_concurrent_change"]
+    assert 1 <= len(captures) < sdlc_claim.INSPECTION_CHURN_MAX_ATTEMPTS
+
+
+def test_inspection_recovers_from_a_transient_concurrent_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache, transactions, captures = _churning_transaction_root(
+        tmp_path, monkeypatch, churn="concurrent_change", transient=True
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(sdlc_claim, "_churn_sleep", sleeps.append)
+
+    results = inspect_claim_publications(cache_dir=cache, transaction_root=transactions)
+
+    assert results == ()
+    assert captures == [1, 2]
+    assert len(sleeps) == 1
+
+
+# ── governed release of a held claim publication (M166, M167) ────────────────
+# claim-cache-missing-governed-release-20260926
+
+
+_RELEASE_STAMP = "20260927T010000Z"
+
+
+def _held_publication(
+    tmp_path: Path, *, edit_note: bool = True
+) -> tuple[ClaimFixture, Path, tuple[object, ...]]:
+    """A real admitted publication interrupted before its markers (the frontier-churn HOLD
+    of M167), and then, unless ``edit_note`` is false, a legitimate note edit (M166)."""
+
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def interrupt(phase: str, _index: int | None) -> None:
+        if phase == "before_activation_projection":
+            raise RuntimeError("simulated HOLD after the note, epoch and dispatch")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=tmp_path / "receipts",
+            lock_root=fixture.locks,
+            now=active.checked_at,
+            failure_hook=interrupt,
+        )
+    journal = fixture.transactions / admitted_claim_publication_id(
+        fixture.intent, active.consumption
+    )
+    _intent, projections, _id, state, _consumption = sdlc_claim._load_admitted_manifest(
+        journal / "manifest.json"
+    )
+    assert state == "recovery_required"
+    if edit_note:
+        note = fixture.intent.note_path
+        note.write_bytes(note.read_bytes().replace(b"Body remains", b"Edited. Body remains"))
+    return fixture, journal, projections
+
+
+def _release_held(fixture: ClaimFixture) -> object:
+    return sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at=_RELEASE_STAMP,
+    )
+
+
+def _residue_projections(projections: tuple[object, ...]) -> list[object]:
+    return [
+        item
+        for item in projections[:7]
+        if item.path.name.startswith(("cc-claim-epoch-", "cc-claim-dispatch-"))
+    ]
+
+
+def test_release_quarantines_a_held_publication_and_archives_its_residue(
+    tmp_path: Path,
+) -> None:
+    fixture, journal, projections = _held_publication(tmp_path)
+    note_before = fixture.intent.note_path.read_bytes()
+    residue = _residue_projections(projections)
+    assert residue and all(item.path.read_bytes() == item.after for item in residue)
+
+    released = _release_held(fixture)
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+    quarantined = journal.with_name(f"{journal.name}.quarantined-{_RELEASE_STAMP}")
+    assert (quarantined / "manifest.json").is_file()
+    assert fixture.intent.note_path.read_bytes() == note_before
+    assert not any(item.path.exists() for item in residue)
+    for item in residue:
+        assert (released.archive_dir / item.path.name).read_bytes() == item.after
+    assert released.archive_dir.parent == fixture.vault / "_lineage" / "task-alpha"
+    # The quarantined journal is the completed remedy: recovery no longer holds on it.
+    assert (
+        recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            task_id="task-alpha",
+        )
+        == ()
+    )
+
+
+def test_release_refuses_a_held_publication_that_recovery_can_still_finish(
+    tmp_path: Path,
+) -> None:
+    fixture, journal, _projections = _held_publication(tmp_path, edit_note=False)
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_recoverable" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_held_publication_with_a_live_marker(tmp_path: Path) -> None:
+    fixture, _journal, projections = _held_publication(tmp_path)
+    marker = next(item for item in projections[:7] if item.path.name.startswith("cc-active-task-"))
+    marker.path.write_bytes(marker.after)
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_live_marker" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_held_publication_whose_residue_differs(tmp_path: Path) -> None:
+    fixture, _journal, projections = _held_publication(tmp_path)
+    epoch = next(item for item in projections[:7] if item.path.name.startswith("cc-claim-epoch-"))
+    epoch.path.write_bytes(b"1 task-alpha\n")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_hash_mismatch" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_held_publication_whose_admission_proof_drifted(
+    tmp_path: Path,
+) -> None:
+    fixture, _journal, projections = _held_publication(tmp_path)
+    proof = projections[7]
+    proof.path.write_bytes(proof.after + b" ")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_drift" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+@pytest.mark.parametrize("content", ["task-alpha\n", "junk\ntask-alpha\n"], ids=["first", "later"])
+def test_release_refuses_a_held_publication_while_another_session_holds_the_task(
+    tmp_path: Path, content: str
+) -> None:
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    (fixture.cache / "cc-active-task-cx-red-session-xyz").write_text(content)
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_live_marker" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_counts_an_unreadable_marker_as_a_live_claim(tmp_path: Path) -> None:
+    # codex, #4801 round 2: a marker that cannot be decoded may name the task.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    unreadable = fixture.cache / "cc-active-task-cx-red-session-xyz"
+    unreadable.write_bytes(b"\xff\xfe")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_live_marker" in raised.value.message
+    assert f"inspect the marker at {unreadable}" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_touches_only_the_cache_its_journal_projected_into(tmp_path: Path) -> None:
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    other_cache = tmp_path / "other-cache"
+    other_cache.mkdir()
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        sdlc_claim.release_claim_residue(
+            vault_root=fixture.vault,
+            cache_dir=other_cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            role="cx-red",
+            task_id="task-alpha",
+            observed_at=_RELEASE_STAMP,
+        )
+
+    assert "claim_residue_foreign_path" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+class _Killed(BaseException):
+    """A process kill: nothing after it runs, not even the journal's failure bookkeeping."""
+
+
+def test_release_refuses_a_journal_that_is_unfinished_but_not_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_persist = sdlc_claim._persist_admitted_manifest_state
+
+    def killed_before_recording_the_failure(*args: object, **kwargs: object) -> None:
+        if kwargs.get("state") == "recovery_required":
+            raise _Killed
+        original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sdlc_claim, "_persist_admitted_manifest_state", killed_before_recording_the_failure
+    )
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def interrupt(phase: str, _index: int | None) -> None:
+        if phase == "before_activation_projection":
+            raise RuntimeError("interrupted before the markers")
+
+    with pytest.raises(_Killed):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=tmp_path / "receipts",
+            lock_root=fixture.locks,
+            now=active.checked_at,
+            failure_hook=interrupt,
+        )
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_manifest_state", original_persist)
+    note = fixture.intent.note_path
+    note.write_bytes(note.read_bytes().replace(b"Body remains", b"Edited. Body remains"))
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_journal_not_held" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_a_stamp_outside_the_quarantine_grammar(tmp_path: Path) -> None:
+    fixture, journal, _projections = _held_publication(tmp_path)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        sdlc_claim.release_claim_residue(
+            vault_root=fixture.vault,
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            role="cx-red",
+            task_id="task-alpha",
+            observed_at="2026-09-27 01:00",
+        )
+
+    assert "claim_residue_stamp_invalid" in raised.value.message
+    assert journal.exists()
+
+
+def test_release_of_a_held_publication_finishes_after_an_interrupted_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A crash after the first file is archived; the rerun counts it as released, because the
+    # lineage holds exactly its after-image, archives the rest, and quarantines the journal.
+    fixture, journal, projections = _held_publication(tmp_path)
+    real_archive = sdlc_claim._archive_verified
+    calls = {"n": 0}
+
+    def killed_after_first(*args: object, **kwargs: object) -> Path:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise _Killed
+        return real_archive(*args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", killed_after_first)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", real_archive)
+    assert journal.exists()
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+    assert not any(item.path.exists() for item in _residue_projections(projections))
+
+
+def test_release_refuses_a_held_publication_missing_a_residue_file_never_archived(
+    tmp_path: Path,
+) -> None:
+    # codex, #4801 round 1: absent is not "at the after-image". Only an earlier release's
+    # archive of exactly those bytes makes an absent file count as released.
+    fixture, _journal, projections = _held_publication(tmp_path)
+    _residue_projections(projections)[0].path.unlink()
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_a_sidecar_rewritten_during_the_release_is_never_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # codex, #4801 round 1: a rewrite between the check and the removal must not be lost.
+    fixture, journal, projections = _held_publication(tmp_path)
+    target = _residue_projections(projections)[0].path
+    real_rename = os.rename
+
+    def rewrite_then_rename(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        if Path(src) == target:
+            target.write_bytes(b"rewritten by a concurrent claim\n")
+        real_rename(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", rewrite_then_rename)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+    monkeypatch.setattr(os, "rename", real_rename)
+
+    # Nothing is lost and nothing is unlinked: the rewritten bytes are the moved original in
+    # the cache staging directory and the lineage keeps a verified copy flagged as differing.
+    rewritten = b"rewritten by a concurrent claim\n"
+    assert "claim_residue_live_differed" in raised.value.message
+    staged = (
+        fixture.cache / "claim-residue-release" / "task-alpha" / f"{_RELEASE_STAMP}-cx-red"
+    ) / target.name
+    archive = (
+        fixture.vault / "_lineage" / "task-alpha" / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+    )
+    assert staged.read_bytes() == rewritten
+    assert (archive / f"{target.name}.live-differed-from-journal").read_bytes() == rewritten
+    assert "live differed from journal" in (archive / "README.md").read_text(encoding="utf-8")
+    assert not (archive / target.name).exists()  # the journal's image is never archived for it
+    assert journal.exists()  # the release stopped before the quarantine
+
+
+def test_release_refuses_an_archive_name_already_taken(tmp_path: Path) -> None:
+    fixture, _journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    taken = (
+        fixture.vault
+        / "_lineage"
+        / "task-alpha"
+        / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+        / first.path.name
+    )
+    taken.parent.mkdir(parents=True)
+    taken.write_bytes(b"an earlier file\n")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert taken.read_bytes() == b"an earlier file\n"
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_release_refuses_when_the_quarantine_name_is_taken(tmp_path: Path) -> None:
+    fixture, journal, _projections = _held_publication(tmp_path)
+    journal.with_name(f"{journal.name}.quarantined-{_RELEASE_STAMP}").mkdir()
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_quarantine_exists" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+# ── #4801 round-3 residuals (claim-plane-self-resume-own-lapsed-row-20260927 (5), (6)) ──
+
+
+def test_a_rerun_finishes_the_archive_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # (5): a crash between the staging rename and the lineage copy leaves the moved original
+    # only in the cache staging directory; the rerun recognises it and completes the archive.
+    fixture, journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+    assert not first.path.exists()
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+    assert (released.archive_dir / first.path.name).read_bytes() == first.after
+
+
+def test_a_file_archived_earlier_counts_after_its_staged_copy_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The lineage copy alone proves an earlier release, once the cache staging is cleaned.
+    fixture, journal, projections = _held_publication(tmp_path)
+    real_archive = sdlc_claim._archive_verified
+    calls = {"n": 0}
+
+    def killed_after_first(*args: object, **kwargs: object) -> Path:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise _Killed
+        return real_archive(*args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", killed_after_first)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+    for staged in (fixture.cache / "claim-residue-release").rglob("cc-claim-*"):
+        staged.rename(tmp_path / f"cleaned-{staged.name}")  # the cache staging was cleaned
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "held_publication"
+    assert not journal.exists()
+
+
+def test_an_earlier_archive_of_another_publication_does_not_count(tmp_path: Path) -> None:
+    # (6): the same file name and bytes under another publication's release prove nothing.
+    fixture, _journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    first.path.unlink()
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    other = lineage / "claim-residue-release-20260101T000000Z-cx-red"
+    other.mkdir(parents=True)
+    (other / first.path.name).write_bytes(first.after)
+    (other / "README.md").write_text(f"publication_id: claim-pub-{'0' * 64}\n", encoding="utf-8")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_a_same_stamp_rerun_keeps_its_own_earlier_readme(tmp_path: Path) -> None:
+    # Neither overwritten nor duplicated: a same-stamp rerun reuses its own journal's README.
+    fixture, journal, _projections = _held_publication(tmp_path)
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    archive = lineage / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+    archive.mkdir(parents=True)
+    earlier = f"an earlier run\npublication_id: {journal.name}\n"
+    (archive / "README.md").write_text(earlier, encoding="utf-8")
+
+    _release_held(fixture)
+
+    assert (archive / "README.md").read_text(encoding="utf-8") == earlier
+
+
+@pytest.mark.parametrize(
+    "readme",
+    [f"publication_id: claim-pub-{'0' * 64}\n", "an earlier run with no publication_id\n"],
+    ids=["another-publication", "no-publication"],
+)
+def test_a_same_stamp_rerun_refuses_a_readme_of_another_or_no_publication(
+    tmp_path: Path, readme: str
+) -> None:
+    # #4804 round 2 (codex critical): never archive under a receipt that is not this journal's.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    lineage = fixture.vault / "_lineage" / "task-alpha"
+    archive = lineage / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+    archive.mkdir(parents=True)
+    (archive / "README.md").write_text(readme, encoding="utf-8")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def _applied_publication(tmp_path: Path) -> ClaimFixture:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    return fixture
+
+
+@pytest.mark.parametrize(
+    ("assignment", "reassigned"),
+    [
+        (None, False),
+        ("assigned_to:", False),
+        ("assigned_to: cx-red  # still mine", False),
+        ("assigned_to: cx-other", True),
+        ("assigned_to: unassigned", True),
+    ],
+    ids=["absent", "empty", "own-role-with-comment", "other-role", "unassigned"],
+)
+def test_only_an_explicit_other_assignment_releases_live_markers(
+    tmp_path: Path, assignment: str | None, reassigned: bool
+) -> None:
+    # #4804 round 4 (codex critical): an absent, empty or commented own assignment is no proof.
+    fixture = _applied_publication(tmp_path)
+    note = fixture.intent.note_path
+    lines = [line for line in note.read_text().splitlines() if not line.startswith("assigned_to:")]
+    if assignment is not None:
+        lines.insert(3, assignment)
+    note.write_text("\n".join(lines) + "\n")
+    if reassigned:
+        assert _release_held(fixture).shape == "reassigned_task"
+        return
+    before = _tree_snapshot(fixture.cache)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+    assert "claim_residue_live_marker" in raised.value.message
+    assert _tree_snapshot(fixture.cache) == before
+
+
+def test_a_same_stamp_rerun_finishes_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #4804 round 4 (codex): the crashed run's staged original does not collide with its rerun.
+    fixture, journal, projections = _held_publication(tmp_path)
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+
+    assert _release_held(fixture).shape == "held_publication"
+    assert not journal.exists()
+
+
+def test_the_applied_path_refuses_another_journals_staged_copy(tmp_path: Path) -> None:
+    # #4804 round 4 (glm, claude): the applied path's staged rejection, pinned on its own.
+    fixture = _applied_publication(tmp_path)
+    for marker in fixture.cache.glob("cc-active-task-cx-red*"):
+        marker.unlink()
+    epoch = next(fixture.cache.glob("cc-claim-epoch-cx-red"))
+    content, mode = epoch.read_bytes(), stat.S_IMODE(epoch.stat().st_mode)
+    epoch.unlink()
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / "20260101T000000Z-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"claim-pub-{'0' * 64}\n", encoding="ascii")
+    (staging / epoch.name).write_bytes(content)
+    os.chmod(staging / epoch.name, mode)
+    before = _tree_snapshot(fixture.cache)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert _tree_snapshot(fixture.cache) == before
+
+
+@pytest.mark.parametrize("damaged", ["README", "PUBLICATION"])
+def test_an_unreadable_binding_is_a_collision_not_a_crash(tmp_path: Path, damaged: str) -> None:
+    # #4804 round 3 (codex): a damaged README or staging binding holds with the named reason.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    if damaged == "README":
+        target = (
+            fixture.vault
+            / "_lineage"
+            / "task-alpha"
+            / f"claim-residue-release-{_RELEASE_STAMP}-cx-red"
+            / "README.md"
+        )
+    else:
+        target = (
+            fixture.cache
+            / "claim-residue-release"
+            / "task-alpha"
+            / f"{_RELEASE_STAMP}-cx-red"
+            / "PUBLICATION"
+        )
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\xff\xfe undecodable")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_a_staging_directory_bound_to_another_publication_holds_before_any_move(
+    tmp_path: Path,
+) -> None:
+    # #4804 round 2 (claude): the staging-binding collision, pinned.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / f"{_RELEASE_STAMP}-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"claim-pub-{'0' * 64}\n", encoding="ascii")
+    trees = (fixture.cache, fixture.transactions, fixture.vault / "_lineage")
+    before = tuple(_tree_snapshot(tree) for tree in trees)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_archive_collision" in raised.value.message
+    assert tuple(_tree_snapshot(tree) for tree in trees) == before
+
+
+def _staged_copy(
+    fixture: ClaimFixture, publication_id: str, projection: object, content: bytes
+) -> None:
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / "20260101T000000Z-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"{publication_id}\n", encoding="utf-8")
+    staged = staging / projection.path.name
+    staged.write_bytes(content)
+    os.chmod(staged, projection.after_mode)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["another-journal-same-bytes", "this-journal-other-bytes"],
+    ids=["revert-of-another-journal", "rejection-path"],
+)
+def test_a_staged_file_of_another_journal_or_with_other_bytes_is_not_recovered(
+    tmp_path: Path, case: str
+) -> None:
+    # #4804 round 1 (codex critical; gemini): a staged original must be this journal's own.
+    # Another journal's staging with byte-identical content (a revert) proves nothing.
+    fixture, journal, projections = _held_publication(tmp_path)
+    first = _residue_projections(projections)[0]
+    first.path.unlink()
+    if case == "another-journal-same-bytes":
+        _staged_copy(fixture, f"claim-pub-{'0' * 64}", first, first.after)
+    else:
+        _staged_copy(fixture, journal.name, first, first.after + b" ")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_an_applied_release_finishes_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #4804 round 1 (claude, codex): the applied (lapsed-lease) path's crash-window recovery.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    for marker in fixture.cache.glob("cc-active-task-cx-red*"):
+        marker.unlink()  # the lease lapsed
+    root = fixture.cache / "claim-residue-release" / "task-alpha"
+    (root / "19990101T000000Z-cx-red").mkdir(parents=True)  # a stale, empty staging directory
+    (root / "stray-file").write_text("not a directory\n", encoding="utf-8")
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role="cx-red",
+        task_id="task-alpha",
+        observed_at="20260927T010500Z",
+    )
+
+    assert released.shape == "lapsed_lease"
+    assert not any(fixture.cache.glob("cc-claim-*-cx-red*"))
+    assert len(released.archived) == 4

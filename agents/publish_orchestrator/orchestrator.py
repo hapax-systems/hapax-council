@@ -43,6 +43,7 @@ solve).
 
 from __future__ import annotations
 
+import collections
 import importlib
 import json
 import logging
@@ -51,7 +52,7 @@ import re
 import signal as _signal
 import subprocess
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -82,12 +83,14 @@ from shared.publication_hardening.egress_safety import (
     EgressSafetyEnvelope,
 )
 from shared.publication_hardening.gate import (
+    LINT_FINDINGS_REPORT_SCHEMA,
     PublicationGateChildResult,
     PublicationGateDecision,
     PublicationGateResult,
     PublicationHardeningGate,
     publication_gate_fingerprint,
 )
+from shared.publication_hardening.lint import REGISTER_CARRIAGE_RULE
 from shared.publication_hardening.review import ReviewPass
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
@@ -470,6 +473,7 @@ class Orchestrator:
             gate_result,
             receipt_child=receipt_child,
         )
+        gate_result, register_dispositions = _surface_register_carriage_warnings(gate_result)
         artifact.publication_gate_result = gate_result.to_frontmatter()
         artifact.publication_review = gate_result.review_report
         self._attach_gate_frontmatter(artifact)
@@ -480,6 +484,14 @@ class Orchestrator:
             self._reject_for_gate(artifact, gate_result)
             return
 
+        if register_dispositions:
+            log.warning(
+                "publication hardening gate surfaced %d %s warning(s) for human disposition on "
+                "%s (not a hold)",
+                len(register_dispositions),
+                REGISTER_CARRIAGE_RULE,
+                artifact.slug,
+            )
         gate_fingerprint = publication_gate_fingerprint(gate_result)
         self._record_gate_result(
             artifact,
@@ -487,6 +499,7 @@ class Orchestrator:
             result="operator_overridden_hold"
             if gate_result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
             else "ok",
+            register_dispositions=register_dispositions,
         )
         artifact_fingerprint = _artifact_fingerprint(artifact)
         self._record_public_event(
@@ -976,6 +989,7 @@ class Orchestrator:
         gate_result: PublicationGateResult,
         *,
         result: str,
+        register_dispositions: Sequence[str] = (),
     ) -> None:
         log_path = (
             self._state_root
@@ -993,6 +1007,12 @@ class Orchestrator:
             "publication_gate_fingerprint": publication_gate_fingerprint(gate_result),
             "flagged_issues": list(gate_result.flagged_issues),
             "child_results": [child.model_dump(mode="json") for child in gate_result.child_results],
+            # Register carriage warnings do not hold publication; they are kept here, with their
+            # rule/level/text in the lint child above, so a human dispositions them per edition.
+            "register_carriage_dispositions": [
+                {"finding": finding, "disposition": REGISTER_CARRIAGE_DISPOSITION}
+                for finding in register_dispositions
+            ],
         }
         log_path.write_text(json.dumps(record, sort_keys=True))
 
@@ -1385,6 +1405,136 @@ class Orchestrator:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+
+#: How a surfaced register carriage finding is recorded: kept, never held, for a human to
+#: disposition (fix / keep-with-reason / carry) per the adopted amendment.
+REGISTER_CARRIAGE_DISPOSITION = "surface_for_human_disposition"
+
+
+def _lint_child_rows(
+    lint_child: PublicationGateChildResult,
+) -> tuple[Mapping[str, object], ...] | None:
+    """The lint child's STRUCTURED findings, or ``None`` when they are absent or malformed.
+
+    Read from the child's report (``gate.lint_findings_report``), never by re-parsing the rendered
+    ``file:line:rule:level:message`` string: the ``file`` label is free text, so a colon-bearing
+    source path (``…:1:Hapax.RegisterCarriage:warning:…``) makes a string parse ambiguous and can
+    spoof the exempt rule. A shape without the documented fields returns ``None``: fail narrow.
+    """
+    report = lint_child.report
+    if not isinstance(report, Mapping) or report.get("schema") != LINT_FINDINGS_REPORT_SCHEMA:
+        return None
+    rows = report.get("findings")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return None
+    parsed: list[Mapping[str, object]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return None
+        if not all(isinstance(row.get(field), str) for field in ("rule", "level", "rendered")):
+            return None
+        parsed.append(row)
+    return tuple(parsed)
+
+
+def _lint_child_decision(rows: Sequence[Mapping[str, object]]) -> PublicationGateDecision:
+    """The gate's own lint rule, re-applied to a narrowed set of STRUCTURED findings: an
+    ``error`` row rejects, any other row holds, no rows pass."""
+    if any(row["level"] == "error" for row in rows):
+        return PublicationGateDecision.REJECT
+    return PublicationGateDecision.HOLD if rows else PublicationGateDecision.PASS
+
+
+def _children_decision(
+    children: Sequence[PublicationGateChildResult],
+) -> PublicationGateDecision:
+    """The gate's own aggregate over child decisions: REJECT > HOLD > PASS."""
+    decisions = {child.decision for child in children}
+    if PublicationGateDecision.REJECT in decisions:
+        return PublicationGateDecision.REJECT
+    if PublicationGateDecision.HOLD in decisions:
+        return PublicationGateDecision.HOLD
+    return PublicationGateDecision.PASS
+
+
+def _surface_register_carriage_warnings(
+    gate_result: PublicationGateResult,
+) -> tuple[PublicationGateResult, tuple[str, ...]]:
+    """Let a HOLD that is only register carriage warnings proceed, recording them.
+
+    Only ``Hapax.RegisterCarriage`` **warning** findings are exempt; every other finding holds, and
+    the HOLD must be explained by the children. The decision reads STRUCTURED fields, never the
+    rendered string, whose free-text ``file`` label could spoof a warning into the exempt rule.
+    """
+    if gate_result.decision != PublicationGateDecision.HOLD:
+        return gate_result, ()
+    # The HOLD must be explained by the children (the gate's own aggregate): a HOLD no child
+    # explains, or a REJECT, is kept as it stands rather than read as a register-warning hold.
+    if _children_decision(gate_result.child_results) != PublicationGateDecision.HOLD:
+        return gate_result, ()
+    lint_child = next((child for child in gate_result.child_results if child.name == "lint"), None)
+    if lint_child is None:
+        return gate_result, ()
+    rows = _lint_child_rows(lint_child)
+    if rows is None:
+        return gate_result, ()
+    surfaced_rows = tuple(
+        row for row in rows if row["rule"] == REGISTER_CARRIAGE_RULE and row["level"] == "warning"
+    )
+    if not surfaced_rows:
+        return gate_result, ()
+    remaining_rows = tuple(row for row in rows if row not in surfaced_rows)
+    surfaced_rendered = [str(row["rendered"]) for row in surfaced_rows]
+    remaining_rendered = [str(row["rendered"]) for row in remaining_rows]
+    accounted = collections.Counter(surfaced_rendered)
+    accounted.update(remaining_rendered)
+    if accounted != collections.Counter(lint_child.findings):
+        # Rows and rendered findings disagree: never exempt on a report the receipt cannot show.
+        return gate_result, ()
+    rewired_lint = lint_child.model_copy(
+        update={
+            "decision": _lint_child_decision(remaining_rows),
+            "findings": (
+                *lint_child.findings,
+                f"{len(surfaced_rows)} {REGISTER_CARRIAGE_RULE} warning(s) surfaced for human "
+                "disposition (over-inclusive by design; not a hold)",
+            ),
+        }
+    )
+    children = tuple(
+        rewired_lint if child is lint_child else child for child in gate_result.child_results
+    )
+    if _children_decision(children) != PublicationGateDecision.PASS:
+        # Another child still holds or rejects: the register warnings are not what holds this.
+        return gate_result, ()
+    # Keep flagged issues that no child result carries (the gate adds operator-override errors),
+    # minus the surfaced lint lines, and union the re-aggregated child lines.
+    surfaced_flagged = {f"lint: {rendered}" for rendered in surfaced_rendered}
+    kept_flagged = tuple(
+        issue for issue in gate_result.flagged_issues if issue not in surfaced_flagged
+    )
+    child_flagged = tuple(
+        f"{child.name}: {finding}"
+        for child in children
+        if child.decision != PublicationGateDecision.PASS
+        for finding in child.findings
+    )
+    # A PASS release must not carry a flag no child explains (the gate's own invalid override).
+    if any(issue not in child_flagged for issue in kept_flagged):
+        return gate_result, ()
+    flagged = tuple(dict.fromkeys((*kept_flagged, *child_flagged)))
+    return (
+        PublicationGateResult(
+            decision=PublicationGateDecision.PASS,
+            generated_at=gate_result.generated_at,
+            child_results=children,
+            flagged_issues=flagged,
+            override=None,
+            review_report=gate_result.review_report,
+        ),
+        tuple(surfaced_rendered),
+    )
 
 
 def _default_state_root() -> Path:

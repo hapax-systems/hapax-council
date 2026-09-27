@@ -453,3 +453,32 @@ class TestMaybeStartSceneClassifier:
             if thread is not None:
                 thread.stop()
                 thread.join(timeout=2.0)
+
+
+class TestLitellmKeyOffPass:
+    """`_get_litellm_key` reads through shared.secrets: env first, FileStore next, never pass."""
+
+    def test_env_then_store_and_cached(self, monkeypatch):
+        import agents.studio_compositor.scene_classifier as sc
+
+        seen: list[tuple[str, str | None]] = []
+
+        def fake_get_secret(name, *, env=None, required=True):
+            seen.append((name, env))
+            return "store-key"
+
+        monkeypatch.setattr(sc, "_LITELLM_KEY_CACHE", {})
+        monkeypatch.setattr(sc, "get_secret", fake_get_secret)
+        assert sc._get_litellm_key() == "store-key"
+        assert sc._get_litellm_key() == "store-key"  # cached: one resolution
+        assert seen == [("litellm/master-key", "LITELLM_API_KEY")]
+
+    def test_unavailable_is_empty_not_a_crash(self, monkeypatch):
+        import agents.studio_compositor.scene_classifier as sc
+        from shared.secrets import SecretUnavailable
+
+        monkeypatch.setattr(sc, "_LITELLM_KEY_CACHE", {})
+        monkeypatch.setattr(
+            sc, "get_secret", lambda *a, **k: (_ for _ in ()).throw(SecretUnavailable("x", "y"))
+        )
+        assert sc._get_litellm_key() == ""

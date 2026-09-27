@@ -811,31 +811,34 @@ def check_public_currentness(witness: PublicCurrentnessWitness) -> list[str]:
     return issues
 
 
-# ── Estate mitigation extensions (post-Gate-0A canon freeze) ─────────────────
+# ── Estate mitigation extensions: the changed-file bound ─────────────────────
 #
-# shared/sdlc_lifecycle.py is a Gate 0A canon byte-hashed source: its sha256 is bound
-# into packages/hapax-context-canon/tests/fixtures/gate0-frame.json, so ANY edit —
-# comment included — fails the frozen fixture in the merge-queue full suite. The
-# release auto-arm mitigation map (RELEASE_MITIGATION_CHECKS) froze with it. The
-# map's own doctrine says "extend the map, never add a manual-arm path"; until
-# Gate 0B (REQ-20260807163000) folds extensions into the canon-hashed map with the
-# fixture supersession ceremony, extensions land HERE with mechanically identical
-# semantics, outside the hashed surface. cc-task-release-arm-held-sensitive-class-20260808.
-#
-# Self-retiring: when the canon map gains a class entry, the `unmitigable_risk_flag`
-# blocker stops appearing and this wrapper passes the canon assessment through
-# unchanged.
+# The audio/live-egress class's check tuple now lives in the canon map
+# (RELEASE_MITIGATION_CHECKS, shared/sdlc_lifecycle.py;
+# release-mitigation-gate-audio-or-live-egress-20260927). It used to be kept here
+# because the map was treated as byte-frozen by the Gate 0A fixture. That fixture
+# carries source hashes as data and does not compare them with the live file, and
+# the map's module has been edited since. What stays here is the part the canon
+# map cannot express, because it depends on the PR's changed files:
+# - an audio-routing surface needs the passive audio-graph validator;
+# - any other path the behavioural pins do not cover holds the release closed.
+# Every autoqueue arm read (decision, apply, release-head revalidation) goes
+# through assess_release_auto_arm_estate. None of them arms this class on the
+# canon map alone. cc-task-release-arm-held-sensitive-class-20260808.
 
+import re  # noqa: E402
 from dataclasses import replace as _dataclass_replace  # noqa: E402
 
 from shared.sdlc_lifecycle import (  # noqa: E402
-    REVIEW_TEAM_QUORUM_EVIDENCE,
+    RELEASE_MITIGATION_CHECKS,
     _effective_sensitive_flags,
     assess_release_auto_arm,
 )
 
-#: The audio/live-egress sensitive class's mitigation evidence, estate extension
-#: form. Five machine-verified evidences, three layers deep:
+_LIVE_EGRESS_FLAG = "audio_or_live_egress_sensitive"
+
+#: The audio/live-egress sensitive class's mitigation evidence (the canon map
+#: entry, single-sourced). Five machine-verified evidences, three layers deep:
 #: (1) BEHAVIORAL per-PR: the egress-boundary-pin CI job runs exactly the
 #:     egress-behavior pins (tests/test_capability_adapter_protocol.py) — and
 #:     carries NO docs-only sentinel: behavioral evidence must execute.
@@ -846,16 +849,87 @@ from shared.sdlc_lifecycle import (  # noqa: E402
 #:     mutation-kill witnesses for the semantic layer.
 #: (3) PROCEDURAL: authority-case binding, capability-surface declaration,
 #:     secrets scan, quorum-accept at the current head.
-#: Audio-routing changes (config/pipewire/) remain human-released through the
-#: sensitive-path gate (SENSITIVE_PATH_MARKERS), so this class in practice
-#: holds relay/send-boundary work — the shape this evidence covers.
-LIVE_EGRESS_MITIGATION_CHECKS: tuple[str, ...] = (
-    "egress-boundary-pin",
-    "authority-case-check",
-    "capability-surface-delta",
-    "secrets-scan",
-    REVIEW_TEAM_QUORUM_EVIDENCE,
+#: config/pipewire/ changes stay human-released through the sensitive-path gate
+#: (SENSITIVE_PATH_MARKERS). The other audio-routing surfaces
+#: (AUDIO_ROUTING_SURFACES) additionally need AUDIO_ROUTING_EVIDENCE.
+LIVE_EGRESS_MITIGATION_CHECKS: tuple[str, ...] = RELEASE_MITIGATION_CHECKS[_LIVE_EGRESS_FLAG]
+
+#: The audio-routing contract's CI form: the passive-validator job of
+#: .github/workflows/audio-graph-validate.yml. It runs the audio-graph schema and
+#: invariant suites, decomposes the in-tree PipeWire/WirePlumber confs, and checks
+#: generator freshness. This is the file-read half of scripts/hapax-audio-routing-check,
+#: which needs a live PipeWire graph and so cannot run in CI.
+AUDIO_ROUTING_EVIDENCE = "passive-validator"
+
+#: The paths whose change triggers that job, mirrored verbatim from its
+#: `on.pull_request.paths` filter. The CI composition suite pins the mirror. An
+#: audio/live-egress PR touching any of them needs AUDIO_ROUTING_EVIDENCE. Quorum
+#: alone never releases it. The filter runs the job on exactly these paths, so the
+#: evidence exists wherever it is required.
+AUDIO_ROUTING_SURFACES: tuple[str, ...] = (
+    "shared/audio_graph/**",
+    "shared/audio_topology*.py",
+    "shared/audio_loudness*.py",
+    "shared/audio_canary*.py",
+    "shared/audio_routing_policy.py",
+    "shared/audio_control_plane.py",
+    "shared/audio_restart_proof_gate.py",
+    "scripts/hapax-audio-*",
+    "scripts/hapax-wireplumber-*",
+    "scripts/check-audio-*.py",
+    "scripts/generate-pipewire-audio-confs.py",
+    "scripts/audit-audio-topology.sh",
+    "scripts/audio-*.sh",
+    "tests/audio_graph/**",
+    "config/audio-topology.yaml",
+    "config/audio-routing.yaml",
+    "config/audio-conf-*.yaml",
+    "config/audio-current-capsule.yaml",
+    "config/pipewire/**",
+    "config/wireplumber/**",
+    "config/hapax/audio-*.conf",
+    "config/hapax/audio-*.yaml",
+    "docs/audio-topology-reference.md",
+    "docs/audio/**",
+    "hooks/scripts/*audio*",
+    ".github/workflows/audio-graph-validate.yml",
+    # Audio key files (docs/audio-topology-reference.md §8) whose own suites the
+    # job executes. config/equipment/faderfox-mx12-controls.yaml is deliberately
+    # absent: no suite loads the real file, so it stays behind the coverage bound.
+    "shared/s4_scenes.py",
+    "tests/shared/test_s4_scenes.py",
+    "agents/faderfox_bridge.py",
+    "tests/agents/test_faderfox_bridge.py",
 )
+
+
+def _path_filter_regex(pattern: str) -> re.Pattern[str]:
+    """GitHub path-filter semantics: ``**`` crosses ``/``; ``*`` and ``?`` do not."""
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            out.append("[^/]*")
+            index += 1
+        elif pattern[index] == "?":
+            out.append("[^/]")
+            index += 1
+        else:
+            out.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(out))
+
+
+_AUDIO_ROUTING_SURFACE_RES = tuple(_path_filter_regex(p) for p in AUDIO_ROUTING_SURFACES)
+
+
+def _path_is_audio_routing_surface(path: str) -> bool:
+    token = path.strip()
+    return any(regex.fullmatch(token) for regex in _AUDIO_ROUTING_SURFACE_RES)
+
 
 #: The non-doc paths whose live-egress behavior the pin job actually covers. A
 #: live-egress-sensitive PR changing any other non-doc path has NO machine
@@ -874,7 +948,112 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
     "tests/test_cc_pr_autoqueue.py",
 )
 
-_LIVE_EGRESS_FLAG = "audio_or_live_egress_sensitive"
+#: The consent-containment lane: the estate's person-data consent/containment
+#: surfaces, enumerated EXACTLY for production sources — a future file added
+#: beside them is NOT admitted (fail-closed; extend the lane by another gate
+#: PR). Two directory classes remain, each deliberate: ``axioms/contracts``
+#: because the containment PR deletes person-named contract files whose names
+#: must not appear in public gate source, and everything under it is a consent
+#: contract by construction. The test trees carry their evidence differently:
+#: collected trees (``tests/*``) land through the merge-queue full suite
+#: (test-full-shard, pinned required by the composition suite's all-green
+#: aggregate test); the two trees the shard does NOT collect —
+#: ``tests/hapax_daimonion`` (ignored by the shard) and
+#: ``packages/agentgov/tests`` (outside the ``tests/`` root) — are pinned
+#: per PR instead: the egress-boundary-pin job executes
+#: tests/hapax_daimonion/test_conversational_policy.py and
+#: packages/agentgov/tests/test_carrier.py on every PR head, so no lane tree
+#: is admitted without executed behavioral evidence somewhere.
+#: A live-egress-sensitive PR confined to these paths (plus docs and the gate
+#: tuple above) is covered by the class's mitigation evidence: the per-PR
+#: consent pins added to the egress-boundary-pin job (consent reader pipeline,
+#: archive purge, face enrollment) execute the lane's core containment
+#: behavior on every PR head, and the merge-queue full suite (test-full-shard,
+#: required through all-green) executes every consent, revocation, custody and
+#: identifier suite in the tree at landing — the same three-layer evidence
+#: shape as the gate tuple, with the lane's suites as the behavioral layer.
+#: Rounds/custody suites absent at this head arrive with their own PRs and are
+#: substrate-coupled by
+#: test_consent_containment_lane_entries_exist_with_evidence_substrate.
+#: Ancillary mechanics (vulture whitelist, conftest) are enumerated because
+#: containment work legitimately requires them; they carry no egress surface.
+#: Admission by lane membership is ALLOWLIST evidence, not executed-evidence:
+#: a lane path passing the coverage bound without a per-PR pin passes because
+#: it is enumerated here. Escape path: a containment fix that must touch a
+#: path outside the lane and outside the gate tuple is not blocked forever —
+#: it requires another gate PR extending this map (the same doctrine as the
+#: gate tuple); the human-release path remains the authority boundary for the
+#: sensitive_path classes.
+#: Three round-2 entries extend the same doctrine to the containment PR's
+#: remaining shapes (each missed by the lane's first enumeration, each still
+#: fail-closed for future siblings): ``tests/test_consent_gate.py`` and
+#: ``tests/test_consent_label.py`` are collected trees — landing evidence is
+#: the merge-queue full suite, exactly the other enumerated test files'
+#: class; ``.github/workflows/ci.yml`` is ancillary mechanics in the vulture
+#: whitelist/conftest sense — it carries no egress surface and is itself the
+#: executor of the lane's evidence — and its consent-relevant wiring is
+#: pinned by the composition suite (egress-boundary-pin executes the lane's
+#: pins per PR; all-green requires the jobs), which runs in the required full
+#: shard on every PR head.
+LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
+    ".github/workflows/ci.yml",
+    "agents/_governance.py",
+    "agents/_governance/carrier.py",
+    "agents/_governance/consent.py",
+    "agents/_governance/consent_gate.py",
+    "agents/_governance/consent_label.py",
+    "agents/_governance/consent_reader.py",
+    "agents/_governance/provenance.py",
+    "agents/_governance/revocation.py",
+    "agents/hapax_daimonion/conversation_pipeline.py",
+    "agents/hapax_daimonion/conversational_policy.py",
+    "agents/studio_compositor/consent.py",
+    "agents/studio_compositor/consent_live_egress.py",
+    "axioms/contracts",
+    "logos/_governance.py",
+    "logos/api/deps/stream_redaction.py",
+    "logos/api/routes/consent.py",
+    "logos/api/routes/data.py",
+    "packages/agentgov/src/agentgov/carrier.py",
+    "packages/agentgov/src/agentgov/consent.py",
+    "packages/agentgov/src/agentgov/consent_label.py",
+    "packages/agentgov/src/agentgov/provenance.py",
+    "packages/agentgov/src/agentgov/revocation.py",
+    "packages/agentgov/tests",
+    "scripts/archive-purge.py",
+    "scripts/hapax-guest-consent",
+    "scripts/screwm-guest-source.py",
+    "scripts/vulture_whitelist.py",
+    "shared/face_enrollment_registry.py",
+    "shared/governance/consent.py",
+    "shared/governance/consent_gate.py",
+    "shared/governance/consent_reader.py",
+    "tests/conftest.py",
+    "tests/hapax_daimonion",
+    "tests/logos",
+    "tests/scripts",
+    "tests/shared",
+    "tests/test_affordance_pipeline.py",
+    "tests/test_archive_purge.py",
+    "tests/test_consent_gate.py",
+    "tests/test_consent_label.py",
+    "tests/test_consent_pipeline_reader.py",
+    "tests/test_revocation_wiring.py",
+)
+
+
+def _path_in_consent_containment_lane(path: str) -> bool:
+    """Exact-or-directory-prefix membership in the consent-containment lane.
+
+    A lane entry covers the entry path itself and everything strictly under it
+    (``entry + "/"``); ``agents/_governance`` does NOT match
+    ``agents/_governance.py`` — boundary-anchored, never substring.
+    """
+    token = path.strip()
+    return any(
+        token == entry or token.startswith(entry + "/")
+        for entry in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES
+    )
 
 
 def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
@@ -889,6 +1068,7 @@ def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
             if path.strip()
             and not _is_doc(path)
             and path.strip() not in LIVE_EGRESS_AUTO_ARM_COVERAGE
+            and not _path_in_consent_containment_lane(path)
         }
     )
 
@@ -900,42 +1080,43 @@ def assess_release_auto_arm_estate(
     verified_checks: set[str] | None = None,
     changed_files: Sequence[str] | None = None,
 ):
-    """assess_release_auto_arm with the estate's post-canon-freeze extensions.
+    """assess_release_auto_arm plus the audio/live-egress changed-file bound.
 
-    Applies LIVE_EGRESS_MITIGATION_CHECKS to the audio/live-egress sensitive
-    class when the canon map reports it unmitigable, plus the coverage bound
-    (LIVE_EGRESS_AUTO_ARM_COVERAGE) when the PR's changed files are supplied.
+    The canon map supplies the class's check tuple (LIVE_EGRESS_MITIGATION_CHECKS).
+    When the PR's verified checks are supplied, this adds what depends on the
+    changed files:
+    - a touched audio-routing surface (AUDIO_ROUTING_SURFACES) needs
+      AUDIO_ROUTING_EVIDENCE;
+    - once the class's evidence is complete, every other non-doc path must lie
+      inside LIVE_EGRESS_AUTO_ARM_COVERAGE or the consent-containment lane
+      (LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES).
+    With no changed-file list the bound is unevaluable and the class stays held.
     Everything else is the canon assessment verbatim.
 
-    Scope boundary: this wrapper governs the autoqueue's admission and
-    release-head REVALIDATION reads. The arm-time apply path
-    (apply_release_auto_arm, lane-death rescue) still runs the canon map and
-    holds this class — a deliberate fail-closed boundary until Gate 0B folds
-    the extension into the canon-hashed map.
+    Every autoqueue arm read goes through this function: the arm decision, the
+    apply-time pre-arm read and release-head revalidation. The canon map alone
+    never arms this class. It only narrows the canon result, never widens it.
     """
     base = assess_release_auto_arm(frontmatter, now=now, verified_checks=verified_checks)
     if not base.needs_arming:
         return base
-    unmitigable = f"unmitigable_risk_flag:{_LIVE_EGRESS_FLAG}"
-    if (
-        _LIVE_EGRESS_FLAG not in _effective_sensitive_flags(frontmatter)
-        or verified_checks is None
-        or unmitigable not in base.blockers
-    ):
+    if _LIVE_EGRESS_FLAG not in _effective_sensitive_flags(frontmatter) or verified_checks is None:
         return base
-    blockers = [blocker for blocker in base.blockers if blocker != unmitigable]
-    missing_evidence = False
-    for check in LIVE_EGRESS_MITIGATION_CHECKS:
-        if check not in verified_checks:
-            blockers.append(f"needs_mitigation:{_LIVE_EGRESS_FLAG}:{check}")
-            missing_evidence = True
-    if not missing_evidence:
+    blockers = list(base.blockers)
+    missing_prefix = f"needs_mitigation:{_LIVE_EGRESS_FLAG}:"
+    if changed_files is not None:
+        audio_paths = [path for path in changed_files if _path_is_audio_routing_surface(path)]
+        if audio_paths and AUDIO_ROUTING_EVIDENCE not in verified_checks:
+            blockers.append(missing_prefix + AUDIO_ROUTING_EVIDENCE)
+    if not any(blocker.startswith(missing_prefix) for blocker in blockers):
         if changed_files is None:
             # The coverage bound is unevaluable without the PR's real file list —
             # hold closed rather than arm on unbounded behavioral evidence.
             blockers.append("egress_evidence_coverage_unevaluable:no_changed_files")
         else:
-            uncovered = _egress_uncovered_paths(changed_files)
+            uncovered = _egress_uncovered_paths(
+                [path for path in changed_files if not _path_is_audio_routing_surface(path)]
+            )
             if uncovered:
                 blockers.append("egress_evidence_uncovered_paths:" + ",".join(uncovered))
     return _dataclass_replace(base, blockers=tuple(blockers), eligible=not blockers)

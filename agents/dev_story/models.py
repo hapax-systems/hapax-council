@@ -22,13 +22,32 @@ class Session(BaseModel):
 class Message(BaseModel):
     id: str
     session_id: str
-    role: str  # user | assistant
+    # user | assistant | compaction_summary. A compaction summary arrives on the wire as
+    # role "user" but is agent-authored; typing it separately keeps it out of operator counts.
+    role: str
     timestamp: str
     content_text: str
     parent_id: str | None = None
     model: str | None = None
     tokens_in: int = 0
     tokens_out: int = 0
+
+
+class CompactionEvent(BaseModel):
+    """A context-compaction boundary observed in a transcript.
+
+    Claude Code emits the post-compaction summary as a `type: "user"` record carrying
+    `isCompactSummary: true`. Without this record the summary is counted as an operator
+    turn and the boundary itself is invisible, so no question about session length or
+    compaction is answerable from the index.
+    """
+
+    session_id: str
+    message_id: str
+    timestamp: str
+    # 1-indexed line in the transcript, so a parse can be checked against known ground truth.
+    record_position: int
+    summary_chars: int = 0
 
 
 class ToolCall(BaseModel):

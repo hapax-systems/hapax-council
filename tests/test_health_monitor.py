@@ -15,7 +15,7 @@ import pytest
 from agents.health_monitor import (
     CHECK_REGISTRY,
     CORE_CONTAINERS,
-    PASS_ENTRIES,
+    EXPECTED_SECRETS,
     REQUIRED_QDRANT_COLLECTIONS,
     CheckResult,
     GroupResult,
@@ -607,36 +607,52 @@ class TestEndpointChecks:
 
 class TestCredentialChecks:
     @pytest.mark.asyncio
-    async def test_pass_store_exists(self):
-        from agents.health_monitor import check_pass_store
+    async def test_secret_store_answers_with_names(self):
+        from agents.health_monitor import check_secret_store
 
-        with patch("agents.health_monitor.constants.PASSWORD_STORE") as mock_path:
-            mock_path.is_dir.return_value = True
-            mock_path.__str__ = lambda self: "/home/test/.password-store"
-            results = await check_pass_store()
+        with (
+            patch(
+                "agents.health_monitor.checks.credentials.list_secret_names",
+                return_value=("api-anthropic",),
+            ),
+            patch(
+                "agents.health_monitor.checks.credentials.secret_store_root",
+                return_value=Path("/srv/reins-test/secrets"),
+            ),
+        ):
+            results = await check_secret_store()
         assert results[0].status == Status.HEALTHY
+        assert "1 names" in results[0].message
 
     @pytest.mark.asyncio
-    async def test_pass_entries_mixed(self):
-        from agents.health_monitor import check_pass_entries
+    async def test_secret_store_empty_is_failed_with_a_next_action(self):
+        from agents.health_monitor import check_secret_store
+
+        with (
+            patch("agents.health_monitor.checks.credentials.list_secret_names", return_value=()),
+            patch("agents.health_monitor.checks.credentials.secret_store_root", return_value=None),
+        ):
+            results = await check_secret_store()
+        assert results[0].status == Status.FAILED
+        assert results[0].remediation is not None
+
+    @pytest.mark.asyncio
+    async def test_secret_entries_mixed(self):
+        from agents.health_monitor import check_secret_entries
 
         existing = {"api/anthropic", "api/google", "litellm/master-key"}
 
-        with patch("agents.health_monitor.constants.PASSWORD_STORE") as mock_store:
-
-            def mock_div(self, entry):
-                p = MagicMock()
-                base = entry.replace(".gpg", "")
-                p.is_file.return_value = base in existing
-                return p
-
-            mock_store.__truediv__ = mock_div
-            results = await check_pass_entries()
+        with patch(
+            "agents.health_monitor.checks.credentials.has_secret",
+            side_effect=lambda entry: entry in existing,
+        ):
+            results = await check_secret_entries()
 
         healthy = [r for r in results if r.status == Status.HEALTHY]
         failed = [r for r in results if r.status == Status.FAILED]
         assert len(healthy) == 3
         assert len(failed) == 2
+        assert all("hapax-secret" in (r.remediation or "") for r in failed)
 
 
 class TestDiskChecks:
@@ -784,15 +800,15 @@ class TestRunner:
             patch("agents.health_monitor.utils.http_get", new_callable=AsyncMock) as mock_http,
             patch("agents.health_monitor.constants.COMPOSE_FILE") as mock_compose,
             patch("agents.health_monitor.constants.PROFILES_DIR") as mock_profiles,
-            patch("agents.health_monitor.constants.PASSWORD_STORE") as mock_pass,
+            patch("agents.health_monitor.checks.credentials.has_secret", return_value=True),
+            patch(
+                "agents.health_monitor.checks.credentials.list_secret_names",
+                return_value=("api-anthropic",),
+            ),
         ):
             mock_compose.is_file.return_value = True
             mock_compose.__str__ = lambda self: "/test/docker-compose.yml"
             mock_compose.parent = Path("/test")
-
-            mock_pass.is_dir.return_value = True
-            mock_pass.__str__ = lambda self: "/test/.password-store"
-            mock_pass.__truediv__ = lambda self, x: MagicMock(is_file=MagicMock(return_value=True))
 
             # Profile files exist
             def mock_profile_path(name):
@@ -1021,7 +1037,7 @@ class TestAuthChecks:
 
         with (
             patch.dict("os.environ", {"LITELLM_API_KEY": ""}, clear=False),
-            patch("agents.health_monitor.checks.secrets._pass_show", return_value=""),
+            patch("agents.health_monitor.checks.secrets._store_secret", return_value=""),
         ):
             results = await check_litellm_auth()
         assert results[0].status == Status.DEGRADED
@@ -1034,7 +1050,7 @@ class TestAuthChecks:
             patch.dict(
                 "os.environ", {"LANGFUSE_PUBLIC_KEY": "", "LANGFUSE_SECRET_KEY": ""}, clear=False
             ),
-            patch("agents.health_monitor.checks.secrets._pass_show", return_value=""),
+            patch("agents.health_monitor.checks.secrets._store_secret", return_value=""),
         ):
             results = await check_langfuse_auth()
         assert results[0].status == Status.DEGRADED
@@ -1077,7 +1093,7 @@ class TestRegistry:
         assert "qdrant" in CORE_CONTAINERS
         assert "ollama" in CORE_CONTAINERS
         assert "documents" in REQUIRED_QDRANT_COLLECTIONS
-        assert "api/anthropic" in PASS_ENTRIES
+        assert "api/anthropic" in EXPECTED_SECRETS
 
 
 # ── History rotation tests ──────────────────────────────────────────────────
@@ -1219,7 +1235,7 @@ class TestSecretChecks:
 
         with (
             patch.dict("os.environ", {"LITELLM_API_KEY": ""}, clear=False),
-            patch("agents.health_monitor.checks.secrets._pass_show", return_value=""),
+            patch("agents.health_monitor.checks.secrets._store_secret", return_value=""),
         ):
             results = await check_env_secrets()
         litellm = [r for r in results if "litellm_api_key" in r.name]

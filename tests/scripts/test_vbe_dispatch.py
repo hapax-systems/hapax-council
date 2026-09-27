@@ -7,6 +7,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-vibe"
 SENDER = REPO_ROOT / "scripts" / "hapax-vibe-send"
@@ -117,7 +119,10 @@ esac
     return log_path, sessions_dir, panes_dir
 
 
-def test_tmux_launch_claims_task_and_writes_spawn_record(tmp_path: Path) -> None:
+@pytest.mark.parametrize("authored_instructions", [False, True])
+def test_tmux_launch_claims_task_and_writes_spawn_record(
+    tmp_path: Path, authored_instructions: bool
+) -> None:
     env, bin_dir, spawns = _base_env(tmp_path)
     fake_vibe = _write_fake_vibe(bin_dir, tmp_path / "vibe.log")
     claim_log = tmp_path / "claim.log"
@@ -125,6 +130,11 @@ def test_tmux_launch_claims_task_and_writes_spawn_record(tmp_path: Path) -> None
     tmux_log, sessions_dir, _panes_dir = _write_fake_tmux(bin_dir, tmp_path)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
+    instructions = workdir / "AGENTS.md"
+    authored = b"# Authored repository policy\nPreserve this body and its file metadata.\n"
+    if authored_instructions:
+        instructions.write_bytes(authored)
+        before = instructions.stat()
 
     result = subprocess.run(
         [
@@ -175,7 +185,12 @@ def test_tmux_launch_claims_task_and_writes_spawn_record(tmp_path: Path) -> None
     assert "--max-turns 7" in runner_text
     assert "--output streaming" in runner_text
     assert "export HAPAX_AGENT_ROLE=vbe-1" in runner_text
-    assert "Hapax Vibe Lane - vbe-1" in (workdir / "AGENTS.md").read_text(encoding="utf-8")
+    if authored_instructions:
+        assert instructions.read_bytes() == authored
+        after = instructions.stat()
+        assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    else:
+        assert not instructions.exists()
 
 
 def test_sender_routes_message_to_tmux_session(tmp_path: Path) -> None:
@@ -247,12 +262,24 @@ def test_tmux_launch_polls_relay_inflections_into_headless_prompt(tmp_path: Path
     assert (inflections / "processed" / relay_file.name).exists()
 
 
-def test_standup_generates_relay_yaml_for_vbe_lanes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("authored_instructions", [False, True])
+def test_standup_generates_relay_yaml_for_vbe_lanes(
+    tmp_path: Path, authored_instructions: bool
+) -> None:
     env, bin_dir, _spawns = _base_env(tmp_path)
     _write_fake_vibe(bin_dir, tmp_path / "vibe.log")
     env["HAPAX_VIBE_CREATE_WORKTREE"] = "0"
     env["HAPAX_STANDUP_FORCE_STATUS"] = "1"
     env["HAPAX_VIBE_LAUNCHER"] = str(LAUNCHER)
+    prior = {}
+    if authored_instructions:
+        for lane in ("vbe-1", "vbe-2"):
+            instructions = (
+                Path(env["HAPAX_VIBE_WORKTREE_ROOT"]) / f"hapax-council--{lane}" / "AGENTS.md"
+            )
+            instructions.parent.mkdir(parents=True)
+            instructions.write_text(f"Authored policy for {lane}.\n")
+            prior[lane] = (instructions.read_bytes(), instructions.stat())
 
     result = subprocess.run(
         [str(STANDUP)],
@@ -274,7 +301,14 @@ def test_standup_generates_relay_yaml_for_vbe_lanes(tmp_path: Path) -> None:
         assert "interface: vibe" in text
         assert "tier: jr-plus" in text
         worktree = Path(env["HAPAX_VIBE_WORKTREE_ROOT"]) / f"hapax-council--{lane}"
-        assert (worktree / "AGENTS.md").exists()
+        instructions = worktree / "AGENTS.md"
+        if authored_instructions:
+            body, before = prior[lane]
+            assert instructions.read_bytes() == body
+            after = instructions.stat()
+            assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+        else:
+            assert not instructions.exists()
 
 
 def test_health_detects_tmux_pane_content(tmp_path: Path) -> None:

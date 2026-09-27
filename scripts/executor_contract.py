@@ -98,6 +98,19 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
             "The coding workhorse is a separate, bakeoff-gated route, not this one."
         ),
     ),
+    "kimi": ExecutorCapabilities(
+        platform="kimi",
+        modes=("interactive",),
+        profiles=("lane",),
+        mutates=True,
+        claims=True,
+        hooks_wired=True,
+        headless=False,
+        notes=(
+            "visible tmux interactive lane (hapax-kimi); headless dispatch is not "
+            "admitted. PreToolUse hooks chain into the canonical cc-task-gate."
+        ),
+    ),
     "claude": ExecutorCapabilities(
         platform="claude",
         modes=("headless", "interactive"),

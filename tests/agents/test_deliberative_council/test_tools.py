@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic_ai.messages import CachePoint, UserPromptPart
@@ -105,51 +104,67 @@ class TestGitProvenance:
 
 class TestWebVerify:
     @pytest.mark.asyncio
-    async def test_routes_through_perplexity(self) -> None:
-        mock_result = MagicMock()
-        mock_result.output = "Verified: claim is supported"
-        mock_agent = MagicMock()
-        mock_agent.run = AsyncMock(return_value=mock_result)
+    async def test_routes_through_tavily(self) -> None:
         with (
             patch(
                 "agents.deliberative_council.tools.admit_tool",
                 return_value=_tool_admission("web_verify"),
             ),
-            patch("pydantic_ai.Agent", return_value=mock_agent),
+            patch(
+                "shared.tavily_client.search_snippets",
+                return_value="Verified: claim is supported",
+            ) as search,
             patch("shared.config.get_model") as mock_get_model,
         ):
             result = await web_verify(None, "test claim")
-            mock_get_model.assert_called_once_with("web-research")
+            search.assert_called_once()
+            assert search.call_args.kwargs["lane"] == "research_reports"
+            mock_get_model.assert_not_called()
             assert "Verified" in result
             assert "capability_id=cctv.tool.web_verify" in result
 
     @pytest.mark.asyncio
     async def test_times_out_gracefully(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A slow Perplexity provider must degrade to "no external evidence", never
-        # starve the member's research budget into the TimeoutError cascade
+        # A slow search must degrade to "no external evidence", never starve the
+        # member's research budget into the TimeoutError cascade
         # (verified diagnosis 2026-06-14).
+        import time
+
         import agents.deliberative_council.tools as tools_mod
 
         monkeypatch.setattr(tools_mod, "_WEB_VERIFY_TIMEOUT_S", 0.05)
 
-        async def _hang(*_a: object, **_k: object) -> object:
-            import asyncio
+        def _hang(*_a: object, **_k: object) -> str:
+            time.sleep(5)
+            return "late"
 
-            await asyncio.sleep(5)
-            return MagicMock()
-
-        mock_agent = MagicMock()
-        mock_agent.run = _hang
         with (
             patch(
                 "agents.deliberative_council.tools.admit_tool",
                 return_value=_tool_admission("web_verify"),
             ),
-            patch("pydantic_ai.Agent", return_value=mock_agent),
-            patch("shared.config.get_model"),
+            patch("shared.tavily_client.search_snippets", _hang),
         ):
             result = await web_verify(None, "slow claim")
         assert "timed out" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_tavily_error_names_next_action(self) -> None:
+        from shared.tavily_client import TavilyRequestError
+
+        with (
+            patch(
+                "agents.deliberative_council.tools.admit_tool",
+                return_value=_tool_admission("web_verify"),
+            ),
+            patch(
+                "shared.tavily_client.search_snippets",
+                side_effect=TavilyRequestError("upstream refused"),
+            ),
+        ):
+            result = await web_verify(None, "broken claim")
+        assert "Web search unavailable" in result
+        assert "next_action=" in result
 
 
 class TestQdrantLookup:
@@ -213,39 +228,28 @@ class TestQdrantLookup:
         )
         with (
             patch("agents.deliberative_council.tools.admit_tool", return_value=refused),
-            patch("pydantic_ai.Agent") as agent_cls,
+            patch("shared.tavily_client.search_snippets") as search,
         ):
             result = await web_verify(None, "test claim")
 
-        agent_cls.assert_not_called()
+        search.assert_not_called()
         assert "action=refused" in result
         assert "refused before external research provider invocation" in result
 
     @pytest.mark.asyncio
-    async def test_web_verify_disables_litellm_fallbacks(self) -> None:
-        captured: dict[str, object] = {}
-
-        class _FakeAgent:
-            def __init__(self, model: str, **kwargs: object) -> None:
-                captured["model"] = model
-                captured.update(kwargs)
-
-            async def run(self, _prompt: str):
-                return SimpleNamespace(output="external evidence")
-
+    async def test_web_verify_does_not_call_litellm(self) -> None:
         with (
             patch(
                 "agents.deliberative_council.tools.admit_tool",
                 return_value=_tool_admission("web_verify"),
             ),
-            patch("pydantic_ai.Agent", _FakeAgent),
-            patch("shared.config.get_model", return_value="litellm_proxy/web-research"),
+            patch("shared.tavily_client.search_snippets", return_value="external evidence"),
+            patch("shared.config.get_model") as mock_get_model,
         ):
             result = await web_verify(None, "test claim")
 
         assert "external evidence" in result
-        assert captured["model"] == "litellm_proxy/web-research"
-        assert captured["model_settings"] == {"extra_body": {"disable_fallbacks": True}}
+        mock_get_model.assert_not_called()
 
 
 class TestVaultRead:

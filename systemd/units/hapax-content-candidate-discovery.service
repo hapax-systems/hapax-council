@@ -12,7 +12,6 @@ Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
 Environment=GNUPGHOME=%h/.gnupg
-Environment=PASSWORD_STORE_DIR=%h/.password-store
 MemoryMax=512M
 CPUQuota=50%
 StandardOutput=journal

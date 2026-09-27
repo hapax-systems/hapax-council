@@ -39,7 +39,7 @@ from agents.mail_monitor.label_bootstrap import (
     bootstrap_labels,
 )
 from agents.mail_monitor.oauth import (
-    _pass_show,
+    _read_secret,
     build_gmail_service,
     load_credentials,
 )
@@ -137,12 +137,12 @@ def _renew_once_unlocked() -> str:
         log.warning("watch renewal aborted: build_gmail_service returned None.")
         return "no_credentials"
 
-    project_id = _pass_show(PROJECT_ID_PASS_KEY)
+    project_id = _read_secret(PROJECT_ID_PASS_KEY)
     if not project_id:
         WATCH_RENEWAL_COUNTER.labels(result="no_project").inc()
         log.warning(
-            "watch renewal aborted: pass %s missing. "
-            "Run pass insert mail-monitor/google-project-id.",
+            "watch renewal aborted: secret %s missing. "
+            "Put it with hapax-secret (TTY dialogue) under that name.",
             PROJECT_ID_PASS_KEY,
         )
         return "no_project"

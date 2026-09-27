@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every PR, whatever its base: a PR stacked on another branch got no tests and no
+  # gitleaks while this was `branches: [main]` (M90). Base-aware steps below diff
+  # against the PR's own base ref/sha, which is right for a stack.
   pull_request:
-    branches: [main]
   merge_group:
     types: [checks_requested]
 
@@ -17,6 +19,33 @@ permissions:
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+env:
+  # tests/shared/test_coord_projection_nfs_integration.py verifies the rebuilt renameat2
+  # legs against a mount that actually refuses the flags, and it FAILS CLOSED when no mount
+  # is offered — a reviewer observed that nothing set the variable, so the witness could
+  # stay permanently and invisibly skipped while the repair's central claim rested on a
+  # one-off transcript.
+  #
+  # Declared at WORKFLOW level on purpose. It was first added to the `test-full-shard` step
+  # only, and a reviewer then found the separate non-sharded `test` job running the same
+  # suite with neither variable set, so that path errored. Two step-local copies that must
+  # stay in sync is the defect, not the missing copy — one declaration every job inherits
+  # cannot drift.
+  #
+  # Hosted runners cannot mount NFS4, so this declares the absence out loud rather than
+  # skipping in silence. Any runner that CAN reach such a mount sets
+  # HAPAX_NFS_INTEGRATION_DIR instead and this waiver comes out. Where such a lane should
+  # live is a governance question with its own deferred decision; this asserts no plan
+  # about it.
+  #
+  # The `*` in the row id below is an ELISION, not a glob: the literal runner-label word it
+  # stands in for is banned in this file by tests/ci/test_self_hosted_runner_experiment.py.
+  # The full id lives in tests/shared/test_coord_projection_nfs_integration.py as
+  # `_WAIVER_EXPIRY_ROW_ID`, and `test_the_waiver_expiry_row_is_resolvable` there fails if
+  # this elided form stops matching it — so the waiver is followable from where it is
+  # declared, which it was not.
+  HAPAX_NFS_INTEGRATION_WAIVED: "hosted runner cannot mount nfs4; live witness runs outside CI against the operator's vault export; expiry owned by row nfs-fallback-live-witness-*-ci-20260913"
 
 jobs:
   post_merge_duplicate_filter:
@@ -476,6 +505,19 @@ jobs:
     # time (test-full-shard). The pin set is structurally pinned with semantic
     # anchors by tests/ci/test_release_gate_ci_composition.py; semantic fidelity
     # is the quorum's layer, as for every test file in the repo.
+    # The consent-containment lane's core containment behavior (consent reader
+    # pipeline, archive purge, face enrollment) is pinned here per PR — the
+    # lane's rounds/custody suites arrive with their own PRs and are executed
+    # at landing via test-full-shard (three-layer evidence, as above). The
+    # shard does NOT collect two lane trees — tests/hapax_daimonion (ignored)
+    # and packages/agentgov/tests (outside tests/) — so those trees are pinned
+    # HERE per PR instead (conversational policy, agentgov carrier): no lane
+    # tree is admitted without executed behavioral evidence somewhere. The
+    # per-PR wiring is anchored by
+    # test_egress_boundary_pin_job_executes_the_consent_containment_pins_per_pr
+    # and the landing-time layer by
+    # test_consent_containment_lane_entries_exist_with_evidence_substrate plus
+    # test_composition_suite_itself_runs_in_the_required_full_shard.
     # Unlike sibling jobs this job has NO docs-only sentinel: the class's
     # behavioral evidence must always execute (~40s); a green check that ran
     # nothing is not evidence. The duplicate-merge-group sentinel stays — it
@@ -504,7 +546,11 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
         run: >
           uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
-          pytest --confcutdir=tests tests/test_capability_adapter_protocol.py -q --tb=short
+          pytest --confcutdir=tests tests/test_capability_adapter_protocol.py
+          tests/test_consent_pipeline_reader.py tests/test_archive_purge.py
+          tests/shared/test_face_enrollment_registry.py
+          tests/hapax_daimonion/test_conversational_policy.py
+          packages/agentgov/tests/test_carrier.py -q --tb=short
 
 
   typecheck:
@@ -613,6 +659,9 @@ jobs:
           LANGFUSE_HOST: "http://0.0.0.0:1"
           PYTEST_SHARD: ${{ matrix.shard }}
           PYTEST_SHARD_COUNT: ${{ matrix.shard_count }}
+          # HAPAX_NFS_INTEGRATION_WAIVED is declared once at workflow level so every job
+          # that runs the suite inherits it. It lived here, and the separate non-sharded
+          # `test` job then ran the same tests with it unset.
         run: |
           # pytest hangs post-session due to open sockets from module-level
           # LiteLLM/Qdrant clients. Root conftest.py has a pytest_sessionfinish
@@ -698,9 +747,12 @@ jobs:
             exit 0
           fi
           set +e
+          # Preserve the blocked test's Python stacks before the outer timeout
+          # kills a stalled shard. This emits diagnostics without ending tests.
           timeout -s KILL 1200 \
             xargs -d '\n' -a "$shard_files" uv run --no-sync pytest -q --tb=line \
               --durations=0 --durations-min=0 \
+              -o faulthandler_timeout=120 \
               --benchmark-disable \
               -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \
@@ -1462,6 +1514,57 @@ jobs:
             fi
           fi
           echo "No high-severity security issues found"
+
+  outbound-send-surface-scan:
+    # The outbound_message_egress_sensitive release class's arm-time evidence
+    # (RELEASE_MITIGATION_CHECKS, shared/sdlc_lifecycle.py). It names every
+    # outbound send surface the PR diff adds, removes or changes, and fails on a
+    # new or changed send path that config/outbound-send-surfaces.yaml does not
+    # list (shared/outbound_send_surface.py holds the vocabulary). Like
+    # secrets-scan it is an evidence producer, NOT a member of the all-green
+    # aggregate. The autoqueue reads its SUCCESS as mitigation evidence, and a
+    # finding fails only that evidence read. It has no job-level `if` and no
+    # docs-only sentinel: the class's evidence must EXECUTE on every diff.
+    # The duplicate-merge-group sentinel stays: it means the queue already
+    # validated the SHA. Pinned by tests/ci/test_outbound_send_surface_scan_ci.py.
+    needs: [post_merge_duplicate_filter]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post-merge duplicate required-check sentinel
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
+        run: echo "Merge queue already validated this SHA; outbound-send-surface-scan reports success."
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          # The three-dot diff needs the PR base commit present.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        with:
+          enable-cache: true
+          restore-cache: true
+          save-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+      - name: Name the diff's outbound send surfaces
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base="$PR_BASE"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$PR_HEAD^"
+            # A root commit has no parent: refuse rather than diff against nothing.
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "::error::outbound-send-surface-scan: no PR base and no parent of $PR_HEAD"
+              exit 1
+            fi
+          fi
+          uv run --no-project --with pyyaml==6.0.3 python scripts/check-outbound-send-surface-diff.py --base "$base" --head "$PR_HEAD"
 
   all-green:
     # Single aggregate required context (task reform-native-merge-queue). Collapses

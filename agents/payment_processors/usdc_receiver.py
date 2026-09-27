@@ -49,7 +49,7 @@ event.
 
 Credential bootstrap:
 
-    pass insert evm/operator-wallet-address  # one-time, address only
+    hapax-secret   # TTY put dialogue; name evm/operator-wallet-address (one-time, address only)
     # (NOT a private key — operator's hardware wallet is the sole
     # signer; this rail never sees the key.)
 """
@@ -285,8 +285,8 @@ class USDCReceiver:
 
     Constructs in ``disabled`` state when ``HAPAX_X402_OPERATOR_WALLET``
     is empty — :meth:`poll_once` is a no-op. Once the operator has
-    bootstrapped the wallet address (via ``pass insert
-    evm/operator-wallet-address`` flowed into the env via
+    bootstrapped the wallet address (put as
+    ``evm/operator-wallet-address`` and flowed into the env via
     ``hapax-secrets.service``), the rail becomes active and the daemon
     can run :meth:`run_forever` without any further wiring.
 

@@ -24,6 +24,10 @@ from agents.deliberative_council.models import (
     CouncilMode,
     CouncilVerdict,
 )
+from agents.deliberative_council.modes.disconfirmation import (
+    DisconfirmationVerdict,
+    derive_verdict,
+)
 from agents.deliberative_council.rubrics import DisconfirmationRubric
 
 _log = logging.getLogger(__name__)
@@ -194,6 +198,13 @@ def apply_council_verdicts(
     source_consequence_map: list[dict[str, Any]],
     claim_map: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Route claims by the mode disposition, preserving execution status in the digest.
+
+    Insufficient evidence degrades the claim: this includes REFUSED panels,
+    verdicts without valid scores, and HUNG panels even when they carry scores.
+    Contested claims narrow qualifiers and pass unless another claim is refuted
+    or degraded.
+    """
     survived: list[str] = []
     contested: list[str] = []
     refuted: list[str] = []
@@ -215,30 +226,29 @@ def apply_council_verdicts(
         # A panel that REFUSED (below the quorum / family-diversity floor, or all
         # members failed) could not be trusted to produce a verdict at all —
         # degraded, never a pass. cc-task cctv-council-perfect-health-faillloud.
-        if verdict.convergence_status == ConvergenceStatus.REFUSED:
-            degraded.append(claim_id)
-            continue
-
+        #
         # A verdict carrying NO valid scores is a panel that BROKE — e.g. every
         # member timed out and the engine RETURNED (not raised) a HUNG verdict
         # with scores={}. Previously this fell to else->contested, so
         # council_disconfirmation_passed could read True for a fully-timed-out
         # panel. Route it to degraded, never contested-pass.
-        if not any(s is not None for s in verdict.scores.values()):
+        # HUNG WITH real scores still records genuine execution disagreement,
+        # but the mode treats it as insufficient evidence, so it also degrades.
+        disposition = derive_verdict(verdict)
+        if disposition == DisconfirmationVerdict.INSUFFICIENT_EVIDENCE:
             degraded.append(claim_id)
             continue
 
-        if verdict.convergence_status == ConvergenceStatus.CONVERGED:
-            all_low = all(s is not None and s <= 2 for s in verdict.scores.values())
-            if all_low:
-                refuted.append(claim_id)
-                is_structural = _is_structural_claim(claim_id, claim_map)
-                if is_structural:
-                    no_candidate_triggered = True
-            else:
-                survived.append(claim_id)
+        if disposition == DisconfirmationVerdict.REFUTED:
+            refuted.append(claim_id)
+            is_structural = _is_structural_claim(claim_id, claim_map)
+            if is_structural:
+                no_candidate_triggered = True
 
-        elif verdict.convergence_status == ConvergenceStatus.CONTESTED:
+        elif disposition == DisconfirmationVerdict.SURVIVED:
+            survived.append(claim_id)
+
+        elif disposition == DisconfirmationVerdict.CONTESTED:
             contested.append(claim_id)
             updated_map.append(
                 {
@@ -251,11 +261,6 @@ def apply_council_verdicts(
                     "council_research_findings": verdict.research_findings,
                 }
             )
-
-        else:
-            # HUNG WITH real scores = genuine disagreement (the degraded/refused
-            # panels were already routed to degraded above). Treat as contested.
-            contested.append(claim_id)
 
     all_verdicts_json = json.dumps(
         [
@@ -275,7 +280,7 @@ def apply_council_verdicts(
         "no_candidate_triggered": no_candidate_triggered,
         "council_verdict_sha256": verdict_sha,
         "council_degraded": bool(degraded),
-        # R-A4: a degraded (non-executed) council can never report a pass.
+        # R-A4: a non-executed council cannot pass; neither can insufficient evidence.
         "council_disconfirmation_passed": len(refuted) == 0 and not degraded,
     }
 
@@ -288,7 +293,8 @@ def build_substance_gap_report(
 
     Identifies which claims were refuted, what sources were weak, and
     suggests search terms for replacement sources. Feeds back into the
-    composer for a repair pass.
+    composer for a repair pass. Omits unavailable and insufficient-evidence
+    claims; only the mode's REFUTED disposition supplies repair findings.
     """
     lines = ["## Substance Gap Report (Council Disconfirmation)"]
     refuted_claims: list[str] = []
@@ -299,8 +305,7 @@ def build_substance_gap_report(
         if verdict.receipt.get("council_unavailable"):
             continue
         scores = verdict.scores
-        mean = sum(s for s in scores.values() if s is not None) / max(1, len(scores))
-        if mean <= 2.0:
+        if derive_verdict(verdict) == DisconfirmationVerdict.REFUTED:
             claim_text = claim_input.text[:200]
             refuted_claims.append(claim_id)
             lines.append(f"\n### REFUTED: {claim_id}")

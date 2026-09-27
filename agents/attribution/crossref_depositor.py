@@ -17,7 +17,7 @@ Phase 1 ships:
 
 Phase 2 wires this into the citation-metadata builder
 (``leverage-attrib-cff-codemeta-zenodo-rollout-6-repos``); operator
-action: ``pass insert crossref/depositor-credentials`` (Crossref
+action: put ``crossref/depositor-credentials`` with ``hapax-secret`` (Crossref
 membership-required; per cc-task spec).
 
 The Crossref deposit servlet uses URL-encoded form parameters
@@ -131,7 +131,7 @@ class CrossrefDepositor:
                 outcome=DepositOutcome.MISSING_CREDS,
                 error=(
                     "missing Crossref credentials "
-                    "(operator-action: pass insert crossref/depositor-credentials)"
+                    "(operator-action: put crossref/depositor-credentials with hapax-secret)"
                 ),
             )
         if requests is None:

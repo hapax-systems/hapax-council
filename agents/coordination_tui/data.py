@@ -21,12 +21,15 @@ IDLE_STATE_DIR = Path("/tmp/hapax-lane-idle-state")
 CLAUDE_SEND = Path.home() / "projects/hapax-council/scripts/hapax-claude-send"
 CODEX_SEND = Path.home() / "projects/hapax-council/scripts/hapax-codex-send"
 
-Platform = Literal["claude", "codex", "gemini"]
+Platform = Literal["claude", "codex", "gemini", "kimi", "glmcp", "grok"]
 
 SESSION_PREFIXES: tuple[tuple[str, Platform], ...] = (
     ("hapax-claude-", "claude"),
     ("hapax-codex-", "codex"),
     ("hapax-gemini-", "gemini"),
+    ("hapax-kimi-", "kimi"),
+    ("hapax-glmcp-", "glmcp"),
+    ("hapax-grok-", "grok"),
 )
 
 

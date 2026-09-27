@@ -41,10 +41,17 @@ class TestWatchdogScript:
         text = SCRIPT.read_text()
         assert "set -euo pipefail" in text, "Script must use strict mode"
 
-    def test_script_uses_pass_for_secrets(self):
-        """Secrets must come from pass, never hardcoded."""
+    def test_script_reads_secrets_from_the_filestore(self):
+        """CONTRACT CHANGE 2026-09-16: secrets come from the reins FileStore through the one
+        shared helper, never from pass and never hardcoded. Operator ruling: pass and gopass
+        are not used to manage secrets going forward."""
         text = SCRIPT.read_text()
-        assert "pass show" in text, "Must use pass for restic password"
+        assert "lib/secret.sh" in text, "must source the shared secret helper"
+        assert "hapax_secret_read" in text, (
+            "must use hapax_secret_read, which keeps an EMPTY password distinguishable "
+            "from an UNREADABLE one"
+        )
+        assert "pass show" not in text
 
     def test_script_checks_tier1_and_not_retired_b2(self):
         text = SCRIPT.read_text()
@@ -83,15 +90,28 @@ class TestWatchdogScript:
         probe = tmp_path / "probe.sh"
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
-        (bin_dir / "restic").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "hapax-secret").write_text(
+            "#!/usr/bin/env bash\necho secret\n", encoding="utf-8"
+        )
+        # One tier-1 snapshot whose listing holds no dump: the check names it by id and fails.
+        (bin_dir / "restic").write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == snapshots ]]; then '
+            'echo \'[{"id":"t1snap","time":"2026-09-27T00:00:00Z"}]\'; fi\nexit 0\n',
+            encoding="utf-8",
+        )
+        (bin_dir / "hapax-secret").chmod(0o755)
         (bin_dir / "restic").chmod(0o755)
         probe.write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\n"
+            # The script sources the shared secret helper; a probe that extracts one of its
+            # functions must too, or `hapax_secret_read` is undefined and every extracted
+            # function fails for a reason that has nothing to do with what is under test.
+            f'. "{REPO_ROOT}/scripts/lib/secret.sh"\n'
+            f'. "{REPO_ROOT}/scripts/lib/tier1-snapshot.sh"\n'
             "FAILURES=()\nlog() { :; }\n"
             + text[start:end]
-            + "check_postgres_dump_in_snapshot repo lbl entry\n"
+            + "check_postgres_dump_in_snapshot repo lbl entry tier1\n"
             + 'printf "%s\\n" "${FAILURES[@]}"\n'
             + "exit ${#FAILURES[@]}\n",
             encoding="utf-8",
@@ -123,7 +143,9 @@ class TestGDriveCriticalScript:
         text = GDRIVE_SCRIPT.read_text()
         assert "rclone:gdrive:hapax-backups/restic-critical" in text
         assert "backblaze/restic-password" in text
-        assert "pass show" in text
+        # CONTRACT CHANGE 2026-09-16: the FileStore, not pass.
+        assert "hapax_secret_read" in text
+        assert "pass show" not in text
 
     def test_script_is_bounded_not_broad_b2(self):
         text = GDRIVE_SCRIPT.read_text()
@@ -146,14 +168,24 @@ class TestGDriveCriticalScript:
         end = text.index("\nappend_required() {", start)
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
-        (bin_dir / "restic").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "hapax-secret").write_text(
+            "#!/usr/bin/env bash\necho secret\n", encoding="utf-8"
+        )
+        (bin_dir / "restic").write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == snapshots ]]; then '
+            'echo \'[{"id":"t1snap","time":"2026-09-27T00:00:00Z"}]\'; fi\nexit 0\n',
+            encoding="utf-8",
+        )
+        (bin_dir / "hapax-secret").chmod(0o755)
         (bin_dir / "restic").chmod(0o755)
         dump = tmp_path / "postgres-dumps" / "postgres-all.sql"
         probe = tmp_path / "probe.sh"
         probe.write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\n"
+            # Same reason as the sibling probe: the script sources the shared secret helper.
+            f'. "{REPO_ROOT}/scripts/lib/secret.sh"\n'
+            f'. "{REPO_ROOT}/scripts/lib/tier1-snapshot.sh"\n'
             f"POSTGRES_DUMP_PATH={dump}\n"
             "TIER1_REPO=repo\nTIER1_PASSWORD_ENTRY=entry\n"
             "POSTGRES_DUMP_MIN_BYTES=1000000000\n"
@@ -172,20 +204,25 @@ class TestGDriveCriticalScript:
         end = text.index("\nappend_required() {", start)
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+        (bin_dir / "hapax-secret").write_text(
+            "#!/usr/bin/env bash\necho secret\n", encoding="utf-8"
+        )
         (bin_dir / "restic").write_text(
             "#!/usr/bin/env bash\n"
+            'if [[ "$1" == snapshots ]]; then '
+            'echo \'[{"id":"t1snap","time":"2026-09-27T00:00:00Z"}]\'; exit 0; fi\n'
             "if [[ \"$1\" == ls ]]; then echo '-rw- 1 1 2000000000 date /snap/postgres-all.sql'; exit 0; fi\n"
             "echo partial-bytes; exit 1\n",
             encoding="utf-8",
         )
-        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "hapax-secret").chmod(0o755)
         (bin_dir / "restic").chmod(0o755)
         durable = tmp_path / "postgres-all.sql"
         durable.write_text("keep-me", encoding="utf-8")
         probe = tmp_path / "probe.sh"
         probe.write_text(
             "#!/usr/bin/env bash\nset -euo pipefail\n"
+            f'. "{REPO_ROOT}/scripts/lib/tier1-snapshot.sh"\n'
             f"POSTGRES_DUMP_PATH={durable}\n"
             "TIER1_REPO=repo\nTIER1_PASSWORD_ENTRY=entry\n"
             "POSTGRES_DUMP_MIN_BYTES=1000000000\n"
@@ -204,7 +241,10 @@ class TestGDriveCriticalScript:
         assert "materialize_validated_dump" in text
         assert "/store/llm-data/postgres-dumps/postgres-all.sql" in text
         assert "/tmp/hapax-backup-dumps" not in text
-        assert "restic dump latest" in text
+        # CONTRACT CHANGE 2026-09-27: the tier-1 snapshot is named by host and tag, and dumped by id. A bare
+        # `latest` read a tier1-transcripts snapshot on the shared NAS repository (tests/test_tier1_snapshot_selection.py).
+        assert 'restic dump "$snap_id"' in text
+        assert "restic dump latest" not in text
 
     def test_script_names_the_pitr_rpo_decision_doc(self):
         text = GDRIVE_SCRIPT.read_text()

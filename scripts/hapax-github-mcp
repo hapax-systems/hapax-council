@@ -3,26 +3,15 @@
 
 set -euo pipefail
 
-pass_first_line() {
-  local name="$1"
-  command -v pass >/dev/null 2>&1 || return 1
-  pass show "$name" 2>/dev/null | sed -n '1p'
-}
-
-load_first_available_pass_secret() {
-  local env_name="$1"
-  shift
-  [ -n "${!env_name:-}" ] && return 0
-  local entry value
-  for entry in "$@"; do
-    value="$(pass_first_line "$entry" || true)"
-    if [ -n "$value" ]; then
-      export "$env_name=$value"
-      return 0
-    fi
-  done
-  return 1
-}
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+# The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
+# the symlink path — so the lib lives beside the TARGET and must be resolved first (measured:
+# invoked through the symlink, `${BASH_SOURCE[0]%/*}/lib` was ~/.local/bin/lib, absent, rc=1).
+# /usr/bin/readlink by absolute path keeps this independent of PATH; the fallback keeps a host
+# without coreutils on the direct-invocation behaviour rather than dying here.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
 
 load_bearer_from_claude_mcp() {
   local env_name="$1"
@@ -64,7 +53,7 @@ if [ -n "${CODEX_GITHUB_PERSONAL_ACCESS_TOKEN:-}" ] && [ -z "${GITHUB_PERSONAL_A
   export GITHUB_PERSONAL_ACCESS_TOKEN="$CODEX_GITHUB_PERSONAL_ACCESS_TOKEN"
 fi
 
-load_first_available_pass_secret GITHUB_PERSONAL_ACCESS_TOKEN \
+hapax_secret_into GITHUB_PERSONAL_ACCESS_TOKEN \
   github/codex-personal-access-token \
   github/personal-access-token \
   github/pat \
@@ -76,7 +65,7 @@ load_first_available_pass_secret GITHUB_PERSONAL_ACCESS_TOKEN \
   || true
 
 if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
-  echo "hapax-github-mcp: no GitHub token found in pass, gh auth, CODEX_GITHUB_PERSONAL_ACCESS_TOKEN, or Claude MCP config" >&2
+  echo "hapax-github-mcp: no GitHub token found. Next action: put one with \`hapax-secret github/personal-access-token\`, or authenticate \`gh auth login\`, or export GITHUB_PERSONAL_ACCESS_TOKEN." >&2
   exit 2
 fi
 

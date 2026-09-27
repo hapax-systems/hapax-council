@@ -145,6 +145,74 @@ def test_process_event_invalid_json_handled(tmp_path: Path):
     assert result["action"] == "allow"
 
 
+def test_operator_turn_reaches_the_rules(tmp_path: Path):
+    """M103: a UserPromptSubmit event must be routed to the rules.
+
+    process_event dispatched only pre/post tool events, so an event typed
+    `user_prompt` was answered `allow` without any rule seeing it. The spawn-intent
+    branch that #4748 gated on `event_type == "user_prompt"` therefore never ran:
+    the hazard was closed by making the capability unreachable rather than by
+    reading the operator's turn.
+    """
+    seen: list[HookEvent] = []
+
+    class RecordingRule(RuleBase):
+        def on_pre_tool_use(self, event: HookEvent) -> HookResponse | None:
+            return None
+
+        def on_post_tool_use(self, event: HookEvent) -> HookResponse | None:
+            return None
+
+        def on_user_prompt(self, event: HookEvent) -> HookResponse | None:
+            seen.append(event)
+            return None
+
+    registry = RuleRegistry()
+    registry.register(RecordingRule(TopologyConfig()))
+    server = _make_server(tmp_path, registry)
+
+    server.process_event(
+        {
+            "event_type": "user_prompt",
+            "tool_name": "",
+            "tool_input": {},
+            "session_id": "sess-alpha",
+            "user_message": "let's break this out into a separate session",
+        }
+    )
+
+    assert len(seen) == 1, "the operator turn never reached a rule"
+    assert seen[0].user_message == "let's break this out into a separate session"
+
+
+def test_operator_turn_mints_a_manifest_end_to_end(tmp_path: Path):
+    """The whole path: operator prose in, one pending manifest out."""
+    from agents.session_conductor.rules.spawn import SpawnRule
+
+    spawns = tmp_path / "spawns"
+    state = _make_state()
+    registry = RuleRegistry()
+    registry.register(SpawnRule(TopologyConfig(), state, spawns_dir=spawns))
+    server = ConductorServer(
+        state=state,
+        registry=registry,
+        state_path=tmp_path / "state.json",
+        sock_path=tmp_path / "conductor.sock",
+    )
+
+    server.process_event(
+        {
+            "event_type": "user_prompt",
+            "tool_name": "",
+            "tool_input": {},
+            "session_id": "sess-alpha",
+            "user_message": "let's hand off the relay work to a new session",
+        }
+    )
+
+    assert len(list(spawns.glob("*.yaml"))) == 1
+
+
 # ---------------------------------------------------------------------------
 # Async UDS roundtrip test
 # ---------------------------------------------------------------------------

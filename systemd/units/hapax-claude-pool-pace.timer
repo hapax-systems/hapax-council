@@ -1,0 +1,28 @@
+# Hapax-Parked: true
+# Merge is INERT, by design (seat ruling 2026-09-26T08:59Z, reversing the 23:39Z ruling that
+# merge was the arming act). Two mechanisms, both needed:
+#   - no `Hapax-Auto-Enable` marker, because the row carries `runtime_mutation_authorized:
+#     false` and arming this timer arms a refusal gate on the Claude admission choke point;
+#   - `Hapax-Parked: true`, which is what actually makes merge inert: hapax-post-merge-deploy
+#     `disable --now`s a parked unit, and its own back-compat rule ("unmarked new timers still
+#     auto-enable") would otherwise arm an unmarked timer anyway. Dropping the marker alone
+#     would NOT have honoured the ruling.
+# The SEAT activates, as a witnessed step: install + daemon-reload + enable --now + one
+# `hapax-claude-pool-pace record`, then `hapax-claude-pool-pace activate`, which writes the
+# activation marker the admission gate reads. The exact commands are in the PR body.
+[Unit]
+Description=Record the Claude 7-day pool pacing reading every 30m (line: 2% + 0.6%/h)
+
+[Timer]
+# Two fires inside the reading's own 60m freshness bound, so one slipped or failed run
+# cannot make the governor refuse on staleness alone. The observe probe fires every 10m,
+# so every 30m tick sees a fresh window reading.
+OnBootSec=4min
+OnUnitActiveSec=30min
+AccuracySec=1min
+# Deliberately NO Persistent=. systemd.timer(5): Persistent= only affects OnCalendar=
+# timers, so on a monotonic timer it is silently inert — and after downtime a FRESH
+# reading is wanted, not a replayed one; OnBootSec provides that.
+
+[Install]
+WantedBy=timers.target

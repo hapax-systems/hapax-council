@@ -22,13 +22,14 @@ import json
 import logging
 import os
 import re
-import subprocess
 import threading
 import time
 import unicodedata
 import urllib.request
 from collections import deque
 from pathlib import Path
+
+from shared.secrets import get_secret
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("chat-monitor")
@@ -48,18 +49,15 @@ CHAT_STATE_FILE = SHM_DIR / "chat-state.json"
 
 
 def _get_litellm_key() -> str:
+    """The LiteLLM master key via shared.secrets: env LITELLM_API_KEY, then the FileStore."""
     global LITELLM_KEY
     if not LITELLM_KEY:
         try:
-            result = subprocess.run(
-                ["pass", "show", "litellm/master-key"],
-                capture_output=True,
-                text=True,
-                timeout=5,
+            LITELLM_KEY = (
+                get_secret("litellm/master-key", env="LITELLM_API_KEY", required=False) or ""
             )
-            LITELLM_KEY = result.stdout.strip()
         except Exception:
-            pass
+            LITELLM_KEY = ""
     return LITELLM_KEY
 
 

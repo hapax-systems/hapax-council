@@ -82,7 +82,7 @@ def test_verify_authorization_fails_closed_without_config(
 ) -> None:
     monkeypatch.delenv(webhook_gmail.WEBHOOK_AUDIENCE_ENV, raising=False)
     monkeypatch.delenv(webhook_gmail.PUBSUB_SA_EMAIL_ENV, raising=False)
-    monkeypatch.setattr(webhook_gmail, "_pass_show", lambda _key: None)
+    monkeypatch.setattr(webhook_gmail, "_read_secret", lambda _key: None)
 
     with pytest.raises(webhook_gmail.WebhookAuthError, match="not configured"):
         webhook_gmail.verify_authorization("Bearer signed.jwt")

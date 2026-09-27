@@ -111,7 +111,7 @@ class BlueskyPublisher(Publisher):
                 refused=True,
                 detail=(
                     "missing Bluesky credentials "
-                    "(operator-action queue: pass insert bluesky/operator-app-password)"
+                    "(operator-action: put bluesky/operator-app-password with hapax-secret)"
                 ),
             )
         if requests is None:

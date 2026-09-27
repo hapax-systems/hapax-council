@@ -91,6 +91,31 @@ def test_never_persists_secret_or_content(tmp_path: Path) -> None:
     assert "prompt_or_output_persisted: false" in body
 
 
+def test_probe_receipt_records_the_fixed_environment_scrub(tmp_path: Path, capsys) -> None:
+    rc = _run(
+        [
+            "--receipt-dir",
+            str(tmp_path),
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260708t1400z",
+            "--probe-environment-scrubbed",
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    expected = [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_MODEL",
+    ]
+    assert summary["probe_environment_scrubbed"] == expected
+    body = Path(summary["path"]).read_text(encoding="utf-8")
+    assert f"probe_environment_scrubbed: {','.join(expected)}" in body
+
+
 def test_default_receipt_names_are_route_distinct_for_same_second(tmp_path: Path) -> None:
     receipt_dir = tmp_path / "receipts"
     base_args = [

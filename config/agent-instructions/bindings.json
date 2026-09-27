@@ -1,0 +1,10 @@
+{
+  "claude": {"path": ".claude/CLAUDE.md", "home_env": "CLAUDE_CONFIG_DIR", "filename": "CLAUDE.md", "fragment": "native/claude.md"},
+  "codex": {"path": ".codex/AGENTS.md", "home_env": "CODEX_HOME", "filename": "AGENTS.md", "shadow": "AGENTS.override.md", "max_bytes": 32768},
+  "grok": {"path": ".grok/AGENTS.md", "home_env": "GROK_HOME", "filename": "AGENTS.md", "fragment": "native/grok.md", "max_chars": 10000, "claude_named_instructions": false},
+  "kimi": {"path": ".kimi-code/AGENTS.md", "home_env": "KIMI_CODE_HOME", "filename": "AGENTS.md", "fragment": "native/kimi.md"},
+  "vibe": {"path": ".vibe/AGENTS.md", "home_env": "VIBE_HOME", "filename": "AGENTS.md", "fragment": "native/vibe.md"},
+  "opencode": {"path": ".config/opencode/AGENTS.md", "xdg": "opencode/AGENTS.md", "filename": "AGENTS.md"},
+  "agy": {"path": ".gemini/GEMINI.md", "filename": "GEMINI.md", "max_bytes": 24000},
+  "muse": {"path": ".config/muse/AGENTS.md", "xdg": "muse/AGENTS.md", "filename": "AGENTS.md"}
+}

@@ -15,13 +15,18 @@ from pathlib import Path
 
 import pytest
 
+from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
+    monkeypatch.delenv("HAPAX_NATIVE_LIFECYCLE_RECEIPT", raising=False)
     monkeypatch.setenv(
         "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
         str(_write_codex_access_token(tmp_path / "codex-oauth")),
@@ -256,7 +261,21 @@ def test_resolve_local_codex_bin_skips_directory_candidates(tmp_path: Path) -> N
     assert result.stdout.strip() == str(fallback_codex)
 
 
+def _write_descriptor_runtime(path: Path) -> None:
+    # The launcher now requires a provisioned registry/resolver before provider calls.
+    (path / "scripts").mkdir(parents=True, exist_ok=True)
+    for directory in ("shared", "config"):
+        (path / directory).symlink_to(REPO_ROOT / directory, target_is_directory=True)
+    runtime = Path(sys.executable).parent.parent
+    assert (runtime / "bin/python").is_file(), "fixture requires a provisioned Python runtime"
+    (path / ".venv").symlink_to(runtime, target_is_directory=True)
+    shutil.copy2(
+        REPO_ROOT / "scripts/capability-execution.sh", path / "scripts/capability-execution.sh"
+    )
+
+
 def _write_minimal_council(council_dir: Path, retire_log: Path) -> None:
+    _write_descriptor_runtime(council_dir)
     _write_executable(council_dir / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
     _write_executable(
         council_dir / "scripts" / "hapax-relay-retire",
@@ -266,8 +285,164 @@ exit 0
     )
 
 
+@pytest.mark.parametrize("activation_override", [False, True])
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize(
+    "case", ["current", "no_cli", "missing", "unsupported", "preexisting", "advance_activation"]
+)
+def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
+    tmp_path: Path, activation_override: bool, remote: bool, case: str
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    (home / "projects/hapax-mcp").mkdir(parents=True)
+    primary = home / "projects/hapax-council"
+    workdir = home / "projects/hapax-council--cx-amber"
+    _write_minimal_council(primary, tmp_path / "retire.log")
+    # This fixture deliberately poisons the primary observer. The descriptor
+    # fixture shares real modules by symlink; replace that link with an isolated
+    # copy before writing stale bytes, so the test cannot alter repository source.
+    (primary / "shared").unlink()
+    shutil.copytree(
+        REPO_ROOT / "shared", primary / "shared", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    stale_module = "# Historical module without a receipt CLI.\n"
+    for root in (primary, workdir):
+        (root / "shared").mkdir(parents=True, exist_ok=True)
+        (root / "shared/__init__.py").write_text("")
+        (root / "shared/execution_observer.py").write_text(stale_module)
+
+    default_activation = cache / "source-activation/worktree"
+    activation = tmp_path / "configured-activation" if activation_override else default_activation
+    if case == "advance_activation":
+        initial_release = tmp_path / "initial-release"
+        _write_descriptor_runtime(initial_release)
+        activation.parent.mkdir(parents=True, exist_ok=True)
+        activation.symlink_to(initial_release, target_is_directory=True)
+    else:
+        _write_descriptor_runtime(activation)
+    # The activated identity resolver is now an actual launch dependency. Keep
+    # it provisioned while independently varying only the lifecycle observer.
+    # Never poison the shared source symlink used by the resolver fixture.
+    (activation / "shared").unlink()
+    shutil.copytree(
+        REPO_ROOT / "shared",
+        activation / "shared",
+        ignore=shutil.ignore_patterns("__pycache__", "execution_observer.py"),
+    )
+    if activation_override:
+        (default_activation / "shared").mkdir(parents=True)
+        (default_activation / "shared/execution_observer.py").write_text(stale_module)
+    observer = activation / "shared/execution_observer.py"
+    if case in {"current", "unsupported", "advance_activation"}:
+        shutil.copy2(REPO_ROOT / "shared/execution_observer.py", observer)
+    elif case != "missing":
+        observer.write_text(stale_module)
+
+    # Exercise the complete installed-copy entry point, not an extracted
+    # function or a launcher rooted beside the current observer source.
+    bin_dir = home / ".local/bin"
+    bin_dir.mkdir(parents=True)
+    installed = bin_dir / SCRIPT.name
+    shutil.copy2(SCRIPT, installed)
+    events = (
+        [{"type": "future.unsupported_event"}]
+        if case == "unsupported"
+        else [
+            {"type": "thread.started", "thread_id": "activation-test"},
+            {"type": "turn.started"},
+            {"type": "turn.completed"},
+        ]
+    )
+    event_args = " ".join(f"'{json.dumps(event)}'" for event in events)
+    child_exit = 23 if case == "missing" else 0
+    advance = (
+        f'rm "{activation}"\nln -s "{primary}" "{activation}"\n'
+        if case == "advance_activation"
+        else ""
+    )
+    _write_executable(
+        bin_dir / "codex",
+        advance + f"printf '%s\\n' {event_args}\necho 'native diagnostic' >&2\nexit {child_exit}\n",
+    )
+    _write_executable(bin_dir / "getent", "exit 2\n")
+    _write_executable(
+        bin_dir / "ssh",
+        # A remote environment override must not move the caller's observer.
+        'export HAPAX_SOURCE_ACTIVATE_WORKTREE="$HAPAX_CODEX_HEADLESS_WORKDIR"\n'
+        'exec bash -c "${@: -1}"\n',
+    )
+    if remote:
+        _write_claim_epoch(cache, "cx-amber", "task-x")
+
+    receipt = tmp_path / "lifecycle.json"
+    predecessor = '{"complete": true, "stream_path": "predecessor.jsonl"}\n'
+    if case == "preexisting":
+        receipt.write_text(predecessor)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+        "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
+        "HAPAX_DISPATCH_HOST": "observer-test.invalid" if remote else "local",
+        "HAPAX_DISPATCH_HOST_FALLBACK": "",
+        "HAPAX_NATIVE_LIFECYCLE_RECEIPT": str(receipt),
+    }
+    env.pop("HAPAX_COUNCIL_DIR", None)
+    env.pop("HAPAX_SOURCE_ACTIVATE_WORKTREE", None)
+    if activation_override:
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(activation)
+
+    result = subprocess.run(
+        [str(installed), "--task", "task-x", "--no-claim", "cx-amber", "fixture"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+    )
+
+    assert result.returncode == child_exit, result.stderr
+    streams = list((cache / "codex-headless/cx-amber").glob("native-*.jsonl"))
+    assert len(streams) == 1
+    assert [json.loads(line) for line in streams[0].read_text().splitlines()] == events
+    diagnostic = streams[0].with_suffix(".stderr.log")
+    assert "native diagnostic" in diagnostic.read_text()
+    if case in {"no_cli", "missing", "preexisting"}:
+        assert "native lifecycle observation unavailable" in result.stderr
+        assert "hapax-source-activate" in result.stderr
+        assert str(activation) in result.stderr
+        assert str(receipt) in result.stderr
+        if case == "preexisting":
+            assert receipt.read_text() == predecessor
+        else:
+            assert not receipt.exists()
+        return
+
+    assert "native lifecycle observation unavailable" not in result.stderr
+    observed = json.loads(receipt.read_text())
+    assert observed["stream_path"] == str(streams[0])
+    assert observed["stream_sha256"] == hashlib.sha256(streams[0].read_bytes()).hexdigest()
+    assert observed["diagnostics_path"] == str(diagnostic)
+    assert observed["owned_native_process"] is (not remote)
+    assert observed["process_returncode"] == (None if remote else child_exit)
+    assert observed["complete"] is (case in {"current", "advance_activation"} and not remote)
+    assert observed["cancel_confirmed"] is False
+    assert observed["readiness"] == "unobserved"
+    assert observed["may_authorize"] is False
+    if case == "unsupported":
+        assert observed["session_identity"] == "unobserved"
+        assert observed["evidence"] == []
+        assert observed["phase"] == ("unobserved" if remote else "exited_unverified")
+    else:
+        assert observed["session_id"] == "activation-test"
+        assert observed["phase"] == ("turn_complete" if remote else "complete")
+
+
 def _init_primary_council_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    _write_descriptor_runtime(path)
     subprocess.run(
         ["git", "init", "-b", "main", str(path)],
         check=True,
@@ -559,13 +734,30 @@ exit 0
     assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
 
 
-def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Path) -> None:
+@pytest.mark.parametrize("predecessor", ["file", "symlink", "dangling"])
+def test_codex_headless_treats_appendix_alias_as_local_on_appendix(
+    tmp_path: Path, predecessor: str
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
+
+    # An older child checkout must not shadow the deployed receipt producer.
+    (workdir / "shared").mkdir()
+    (workdir / "shared/__init__.py").write_text("")
+    (workdir / "shared/execution_observer.py").write_text("raise SystemExit(0)\n")
+    log_dir = cache / "codex-headless/cx-amber"
+    log_dir.mkdir(parents=True)
+    previous_target = tmp_path / "previous-native-stream"
+    if predecessor == "file":
+        (log_dir / "output.jsonl").write_text("predecessor evidence\n")
+    else:
+        if predecessor == "symlink":
+            previous_target.write_text("predecessor evidence\n")
+        (log_dir / "output.jsonl").symlink_to(previous_target)
 
     bin_dir = tmp_path / "bin"
     ssh_called = tmp_path / "ssh-called"
@@ -589,6 +781,8 @@ exit 99
     _write_executable(
         bin_dir / "codex",
         f"""printf '%s\n' "$*" > "{codex_args}"
+printf '%s\\n' '{{"type":"thread.started","thread_id":"native-test"}}' '{{"type":"turn.started"}}' '{{"type":"turn.completed"}}'
+echo 'harmless native warning' >&2
 exit 0
 """,
     )
@@ -612,6 +806,305 @@ exit 0
     assert result.returncode == 0, result.stderr
     assert not ssh_called.exists()
     assert codex_args.exists()
+    receipts = list((cache / "codex-headless/cx-amber").glob("native-*.receipt.json"))
+    assert len(receipts) == 1
+    observed = json.loads(receipts[0].read_text())
+    assert observed["complete"] is True
+    assert observed["owned_native_process"] is True
+    assert observed["malformed_lines"] == 0
+    assert "harmless native warning" in Path(observed["diagnostics_path"]).read_text()
+    assert (log_dir / "output.jsonl").is_symlink()
+    assert [p.read_text() for p in log_dir.glob("*.predecessor.log")] == (
+        ["predecessor evidence\n"] if predecessor == "file" else []
+    )
+    if predecessor == "file":
+        assert str(next(log_dir.glob("*.predecessor.log"))) in result.stdout
+    assert (log_dir / "output.jsonl").resolve() == Path(observed["stream_path"]).resolve()
+    if predecessor == "symlink":
+        assert previous_target.read_text() == "predecessor evidence\n"
+    else:
+        assert not previous_target.exists()
+
+
+@pytest.mark.parametrize("termination", ["default", "ignore", "exit143"])
+def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, termination):
+    import signal
+
+    home = tmp_path / "home"
+    (home / ".cache/hapax").mkdir(parents=True)
+    (home / "projects/hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "hostname", "echo hapax-appendix\n")
+    # Replace the fake CLI shell with a real owned process, retaining the
+    # existing fixture's no-provider authentication sentinel.
+    native = tmp_path / "native.py"
+    native.write_text(
+        "import json,os,signal,time\n"
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if termination == "ignore" else "")
+        + (
+            "signal.signal(signal.SIGTERM, lambda *_: exit(143))\n"
+            if termination == "exit143"
+            else ""
+        )
+        + f"open({str(tmp_path / 'native-pid')!r}, 'w').write(str(os.getpid()))\n"
+        + "print(json.dumps({'type':'thread.started','thread_id':'cancel-test'}),flush=True)\n"
+        + "print(json.dumps({'type':'turn.started'}),flush=True)\ntime.sleep(60)\n"
+    )
+    _write_executable(bin_dir / "codex", f'exec python3 "{native}"\n')
+    receipt = tmp_path / "lifecycle.json"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+        "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
+        "HAPAX_DISPATCH_HOST": "appendix",
+        "HAPAX_NATIVE_LIFECYCLE_RECEIPT": str(receipt),
+    }
+    process = subprocess.Popen(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "fixture"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 8
+        while not (tmp_path / "native-pid").exists() and process.poll() is None:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        process.send_signal(signal.SIGTERM)
+        _, err = process.communicate(timeout=10)
+        assert process.returncode == 143, err
+        observed = json.loads(receipt.read_text())
+        assert observed["cancel_confirmed"] is False
+        assert observed["owned_exit_after_cancel"] is True
+        assert observed["wait_status_kind"] == "shell_wait"
+        assert observed["process_returncode"] == (137 if termination == "ignore" else 143)
+        pid = int((tmp_path / "native-pid").read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=2)
+
+
+def _fixture_process_running(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        # procfs can lose the process after open(), before read() completes.
+        return False
+    # Orphaned grandchildren need not be reaped promptly by container PID 1.
+    return stat.rsplit(")", 1)[1].split()[0] not in {"Z", "X"}
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
+def test_cancellation_probe_handles_process_disappearance(
+    monkeypatch: pytest.MonkeyPatch, error: type[OSError]
+) -> None:
+    def disappeared(path: Path) -> str:
+        assert path == Path("/proc/12345/stat")
+        raise error("fixture process exited during stat read")
+
+    monkeypatch.setattr(Path, "read_text", disappeared)
+    assert _fixture_process_running(12345) is False
+
+
+def test_cancellation_probe_does_not_treat_unreadable_process_as_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unreadable(path: Path) -> str:
+        raise PermissionError("fixture stat is unreadable")
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with pytest.raises(PermissionError):
+        _fixture_process_running(12345)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Uses /proc")
+def test_cancellation_probe_observes_live_process() -> None:
+    assert _fixture_process_running(os.getpid()) is True
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Uses /proc to distinguish exited zombies")
+@pytest.mark.parametrize("wrapper_mode", ["forward", "exit"])
+@pytest.mark.parametrize("cancel_at", ["running", "starting"])
+def test_codex_headless_cancels_wrapper_group(
+    tmp_path: Path, wrapper_mode: str, cancel_at: str
+) -> None:
+    import signal
+
+    def eventually(predicate, timeout=8):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+
+    home = tmp_path / "home"
+    (home / ".cache/hapax").mkdir(parents=True)
+    (home / "projects/hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    council = tmp_path / "council"
+    _write_minimal_council(council, tmp_path / "retire.log")
+    bin_dir = tmp_path / "bin"
+    native_ready = tmp_path / "native-ready.json"
+    wrapper_ready = tmp_path / "wrapper-ready.json"
+    term_seen = tmp_path / "wrapper-term"
+    starting = tmp_path / "starting"
+    cancel = tmp_path / "cancel"
+
+    native = tmp_path / "native.py"
+    native.write_text(
+        "import json, os, signal, time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "print(json.dumps({'type':'thread.started','thread_id':'group-test'}), flush=True)\n"
+        "print(json.dumps({'type':'turn.started'}), flush=True)\n"
+        f"ready = Path({str(native_ready)!r})\n"
+        "tmp = ready.with_suffix('.tmp')\n"
+        "tmp.write_text(json.dumps({'pid': os.getpid(), 'pgid': os.getpgrp()}))\n"
+        "tmp.replace(ready)\n"
+        "while True: time.sleep(1)\n"
+    )
+    wrapper = tmp_path / "wrapper.py"
+    wrapper.write_text(
+        "import json, os, signal, subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        f"child = subprocess.Popen([sys.executable, {str(native)!r}])\n"
+        "def forward(signum, frame):\n"
+        "    child.send_signal(signum)\n"
+        f"    Path({str(term_seen)!r}).touch()\n"
+        f"    if {wrapper_mode!r} == 'exit': raise SystemExit(143)\n"
+        "signal.signal(signal.SIGTERM, forward)\n"
+        f"while not Path({str(native_ready)!r}).exists(): time.sleep(0.01)\n"
+        f"ready = Path({str(wrapper_ready)!r})\n"
+        "tmp = ready.with_suffix('.tmp')\n"
+        "tmp.write_text(json.dumps({'pid': os.getpid(), 'pgid': os.getpgrp()}))\n"
+        "tmp.replace(ready)\n"
+        "raise SystemExit(child.wait())\n"
+    )
+    # Keep the existing fake auth witness, then run a real spawning wrapper.
+    _write_executable(bin_dir / "codex", f'exec python3 "{wrapper}"\n')
+    receipt = tmp_path / "lifecycle.json"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HAPAX_COUNCIL_DIR": str(council),
+        "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+        "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
+        "HAPAX_CODEX_BIN_PATH": str(bin_dir / "codex"),
+        "HAPAX_DISPATCH_HOST": "local",
+        "HAPAX_NATIVE_LIFECYCLE_RECEIPT": str(receipt),
+    }
+    env.pop("BASH_ENV", None)
+    if cancel_at == "starting":
+        # Exercise the full, unchanged launcher at the fork/$! boundary.
+        # This hook uses no background job, so it cannot replace $!.
+        startup_hook = tmp_path / "startup-hook.sh"
+        startup_hook.write_text(
+            r"""if [[ "$0" == "$HAPAX_TEST_LAUNCHER" ]]; then
+  trap 'if [[ "$BASH_COMMAND" == "CODEX_PID=\$!" ]]; then
+    trap - DEBUG
+    : > "$HAPAX_TEST_STARTING"
+    while [[ ! -e "$HAPAX_TEST_CANCEL" ]]; do sleep 0.01; done
+    kill -TERM "$$"
+  fi' DEBUG
+fi
+"""
+        )
+        env.update(
+            BASH_ENV=str(startup_hook),
+            HAPAX_TEST_LAUNCHER=str(SCRIPT),
+            HAPAX_TEST_STARTING=str(starting),
+            HAPAX_TEST_CANCEL=str(cancel),
+        )
+
+    peer = subprocess.Popen(["sleep", "60"])
+    process = None
+    try:
+        process = subprocess.Popen(
+            [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "fixture"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            # Keep a broken implementation from signaling pytest's group.
+            # The native group must still differ from this launcher's group.
+            start_new_session=True,
+        )
+        eventually(wrapper_ready.exists)
+        native_identity = json.loads(native_ready.read_text())
+        wrapper_identity = json.loads(wrapper_ready.read_text())
+        native_pid = native_identity["pid"]
+        wrapper_pid = wrapper_identity["pid"]
+        assert native_pid != wrapper_pid
+        assert wrapper_identity["pgid"] == wrapper_pid
+        assert native_identity["pgid"] == wrapper_pid
+        assert wrapper_pid != os.getpgid(process.pid)
+        assert wrapper_pid != os.getpgid(peer.pid)
+
+        pid_file = Path(env["HAPAX_CODEX_HEADLESS_PID_DIR"]) / "cx-amber.pid"
+        if cancel_at == "starting":
+            eventually(starting.exists)
+            cancel.touch()
+        else:
+            eventually(
+                lambda: pid_file.exists() and pid_file.read_text().strip() == str(wrapper_pid)
+            )
+            # Replacement coordination state must not redirect cancellation.
+            pid_file.write_text(f"{peer.pid}\n")
+            process.send_signal(signal.SIGTERM)
+
+        eventually(term_seen.exists, timeout=3)
+        if wrapper_mode == "exit":
+            eventually(lambda: not _fixture_process_running(wrapper_pid), timeout=3)
+            # Establish the exact regression: leader gone, native still live.
+            assert _fixture_process_running(native_pid)
+        else:
+            assert _fixture_process_running(wrapper_pid)
+            assert _fixture_process_running(native_pid)
+
+        _, err = process.communicate(timeout=10)
+        assert process.returncode == 143, err
+        eventually(lambda: not _fixture_process_running(native_pid), timeout=2)
+        assert not _fixture_process_running(wrapper_pid)
+        assert peer.poll() is None
+        if cancel_at == "running":
+            assert pid_file.read_text() == f"{peer.pid}\n"
+        else:
+            assert not pid_file.exists()
+
+        observed = json.loads(receipt.read_text())
+        assert observed["owned_native_process"] is True
+        assert observed["owned_exit_after_cancel"] is True
+        assert observed["cancel_signal_requested"] == 9
+        assert observed["cancel_confirmed"] is False
+        assert observed["wait_status_kind"] == "shell_wait"
+        assert observed["process_returncode"] == (143 if wrapper_mode == "exit" else 137)
+        assert observed["complete"] is False
+    finally:
+        # Clean up real fixture processes even when an old launcher leaks them.
+        for ready in (native_ready, wrapper_ready):
+            if ready.exists():
+                pid = json.loads(ready.read_text())["pid"]
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=3)
+        if peer.poll() is None:
+            peer.terminate()
+        peer.wait(timeout=3)
 
 
 def test_codex_headless_treats_appendix_local_ip_as_local(tmp_path: Path) -> None:
@@ -1832,6 +2325,7 @@ def test_codex_headless_remote_preflight_ignores_token_handoff_payload(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -1871,6 +2365,7 @@ def test_codex_headless_remote_preflight_ignores_invalid_token_handoff_ttl(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-invalid-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -1905,6 +2400,7 @@ def test_codex_headless_remote_preflight_ignores_world_readable_published_token(
     token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
     token.chmod(0o644)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": [],
@@ -1962,6 +2458,7 @@ exit 0
 """,
     )
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": [],
@@ -2080,6 +2577,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -2137,6 +2635,7 @@ def test_codex_headless_remote_preflight_does_not_fork_for_token_cleanup(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-fork-fail-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -2507,6 +3006,7 @@ def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
     _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
+    _write_descriptor_runtime(primary)
     _write_executable(primary / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)

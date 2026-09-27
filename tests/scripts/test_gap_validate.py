@@ -245,21 +245,13 @@ class TestAcademicSweep:
 
 
 class TestTradeArchiveSweep:
-    def test_ieee_key_prefers_pass_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ieee_key_prefers_env_over_store(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Env wins. FileStore / hapax-secret (and the retired pass path) are not consulted."""
         monkeypatch.setenv("IEEE_XPLORE_API_KEY", "env-key")
-        monkeypatch.setattr(
-            gap_validate.subprocess,
-            "run",
-            lambda *args, **kwargs: SimpleNamespace(
-                returncode=0,
-                stdout="pass-key\n",
-                stderr="",
-            ),
-        )
 
         api_key, error = gap_validate._resolve_ieee_xplore_api_key()
 
-        assert api_key == "pass-key"
+        assert api_key == "env-key"
         assert error is None
 
     def test_uses_ieee_when_api_key_present(
@@ -309,11 +301,7 @@ class TestTradeArchiveSweep:
         self, monkeypatch: pytest.MonkeyPatch, sample_gap: dict
     ) -> None:
         monkeypatch.delenv("IEEE_XPLORE_API_KEY", raising=False)
-        monkeypatch.setattr(
-            gap_validate.subprocess,
-            "run",
-            lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""),
-        )
+        monkeypatch.setattr(gap_validate, "get_secret", lambda *args, **kwargs: None)
         monkeypatch.setattr(
             gap_validate.httpx,
             "get",

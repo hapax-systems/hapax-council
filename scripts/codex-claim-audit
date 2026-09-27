@@ -56,13 +56,82 @@ NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
 NTFY_TOPIC="${NTFY_TOPIC:-hapax-ops}"
 RECONCILE_HOST="${HAPAX_RECONCILE_HOST:-}"
 RECONCILE_CACHE_DIR="${HAPAX_RECONCILE_CACHE_DIR:-$HOME/.cache/hapax}"
-# Two-host claim plane (opt-in; empty = reconciliation off). The reconcile target
+# Claim-plane reconcile (opt-in; empty = reconciliation off). INVARIANT: exactly
+# two hosts today (the peer derivation assumes a pair). The registry declaration
+# may name more, but the reconcile step is still pairwise â€” generalize the peer
+# derivation before admitting N>2. The reconcile target
 # is the PEER (the plane host that is not the one running the audit) so
 # reconciliation is symmetric/bidirectional — the preset enables this unit on
 # BOTH hosts, so a single hardcoded target would silently no-op to self on the
 # host it names, leaving the peer replica stale. The scheduled unit opts in by
-# setting HAPAX_CLAIM_PLANE_HOSTS to the host pair; ad-hoc runs default to off.
-CLAIM_PLANE_HOSTS="${HAPAX_CLAIM_PLANE_HOSTS:-}"
+# setting HAPAX_COUNCIL_DIR to the activation worktree whose registry declares
+# claim_plane; bare ad-hoc runs default to plane-less with reconciliation off.
+# Claim-plane membership is DECLARED, not derived from backup topology.
+# backup_policies is the wrong source: a backup peer is not a claim-plane host,
+# and a derivation nobody can verify is a privilege wearing a fact's clothes
+# (review 2026-09-23T00:03Z, dual-confirmed). The registry carries an explicit
+# `claim_plane` block with its own provenance (source / declared_at / hosts);
+# this function reads that block, logs a verifiable receipt (path + sha256 +
+# host count), and errors closed when the declaration is missing or empty.
+# HAPAX_CLAIM_PLANE_HOSTS remains a temporary operational override only.
+claim_plane_hosts() {
+  if [ -n "${HAPAX_CLAIM_PLANE_HOSTS:-}" ]; then
+    echo "claim-audit: claim-plane from OVERRIDE HAPAX_CLAIM_PLANE_HOSTS (operational, not the declaration)" >&2
+    printf '%s' "$HAPAX_CLAIM_PLANE_HOSTS"
+    return 0
+  fi
+  local registry="${HAPAX_HOST_STORAGE_REGISTRY:-}"
+  if [ -z "$registry" ] || [ ! -f "$registry" ]; then
+    if [ -z "${HAPAX_COUNCIL_DIR:-}" ]; then
+      echo "claim-audit: FATAL claim_plane_hosts: no HAPAX_CLAIM_PLANE_HOSTS override and HAPAX_COUNCIL_DIR unset; refusing to fall back to the mutable dev tree. Next action: set HAPAX_COUNCIL_DIR to the activation worktree (or set HAPAX_HOST_STORAGE_REGISTRY to a registry that declares claim_plane)" >&2
+      return 1
+    fi
+    registry="${HAPAX_COUNCIL_DIR}/config/infrastructure/host-storage-registry.json"
+  fi
+  if [ ! -f "$registry" ]; then
+    echo "claim-audit: FATAL claim_plane_hosts: registry not found at $registry. Next action: set HAPAX_HOST_STORAGE_REGISTRY to a readable registry, or declare claim_plane.hosts there" >&2
+    return 1
+  fi
+  local sha hosts
+  sha="$(python3 -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$registry")" || return 1
+  hosts="$(python3 -c "
+import json,sys
+reg=json.load(open(sys.argv[1],encoding='utf-8'))
+plane=reg.get('claim_plane')
+if not isinstance(plane, dict):
+    sys.stderr.write('claim-audit: FATAL claim_plane_hosts: registry has no claim_plane declaration (backup_policies is NOT a claim plane). Next action: declare claim_plane.hosts/source/declared_at in the registry\n')
+    sys.exit(1)
+hs=plane.get('hosts')
+if not isinstance(hs, list) or not hs:
+    sys.stderr.write('claim-audit: FATAL claim_plane_hosts: claim_plane.hosts is empty. Next action: declare at least one claim-plane host in claim_plane.hosts\n')
+    sys.exit(1)
+print(' '.join(str(h) for h in hs), end='')
+" "$registry")" || return 1
+  if [ -z "${hosts// /}" ]; then
+    echo "claim-audit: FATAL claim_plane_hosts: claim_plane.hosts resolved empty. Next action: declare at least one claim-plane host in claim_plane.hosts" >&2
+    return 1
+  fi
+  echo "claim-audit: claim-plane from DECLARATION registry=$registry sha256=$sha hosts=$(echo $hosts | wc -w) [$hosts]" >&2
+  printf '%s' "$hosts"
+}
+
+# The plane is required only when a plane context exists: the override env, an
+# explicit HAPAX_HOST_STORAGE_REGISTRY, or HAPAX_COUNCIL_DIR (the activation
+# worktree the scheduled unit always sets). A bare ad-hoc run with no plane
+# signal runs plane-less and reconciliation stays off — the audited surface
+# (vault notes + local cache) never consults the plane; only peer
+# reconciliation does. This keeps zero-config ad-hoc audits (CI full suite,
+# tests, operator runs) working while a declared context that cannot resolve a
+# plane still fails closed instead of silently skipping peer reconciliation.
+CLAIM_PLANE_HOSTS=""
+if [ -n "${HAPAX_CLAIM_PLANE_HOSTS:-}" ] || [ -n "${HAPAX_HOST_STORAGE_REGISTRY:-}" ] || [ -n "${HAPAX_COUNCIL_DIR:-}" ]; then
+  if ! CLAIM_PLANE_HOSTS="$(claim_plane_hosts)"; then
+    echo "claim-audit: FATAL: claim-plane host list unavailable in a declared-plane context; refusing to run with a broken declaration. Next action: declare claim_plane in the registry or set HAPAX_CLAIM_PLANE_HOSTS" >&2
+    exit 2
+  fi
+else
+  echo "claim-audit: no claim-plane signal (HAPAX_CLAIM_PLANE_HOSTS/HAPAX_HOST_STORAGE_REGISTRY/HAPAX_COUNCIL_DIR all unset); ad-hoc run, peer reconciliation off" >&2
+fi
 DRY_RUN=false
 GH_CMD="${HAPAX_GH_CMD:-gh}"  # overridable for testing
 GH_REPO_SLUG="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"

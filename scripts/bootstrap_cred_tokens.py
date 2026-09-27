@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Bootstrap pass-store credentials by browser automation.
+"""Bootstrap FileStore credentials by browser automation.
 
 Visits each service's token-creation page in a Playwright Chromium
 session that uses a persistent profile (so 2FA / SSO state survives
-across runs). Extracts the token via DOM scrape, pipes it directly into
-``pass insert -m <key>`` via subprocess stdin — token bytes never touch
-this script's stdout, never get printed, never reach Claude's tool
-output.
+across runs). Extracts the token via DOM scrape and writes it straight
+into the FileStore through ``shared.secrets.put_secret`` — token bytes
+never touch this script's stdout, never get printed, never reach Claude's
+tool output.
 
 Per-service status is reported with a redacted summary line; the actual
-token values stay in pass-store.
+token values stay in the FileStore.
 
 Usage::
 
     uv run python scripts/bootstrap_cred_tokens.py
     uv run python scripts/bootstrap_cred_tokens.py --only zenodo,osf
     uv run python scripts/bootstrap_cred_tokens.py --dry-run
-    uv run python scripts/bootstrap_cred_tokens.py --force  # overwrite existing pass entries
+    uv run python scripts/bootstrap_cred_tokens.py --force  # overwrite existing FileStore entries
 
 The persistent profile lives at ``~/.config/hapax/playwright-cred-bootstrap/``;
 delete it to force fresh logins. Browser runs headed (non-headless) so
@@ -32,12 +32,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from shared.secrets import has_secret, put_secret
 from shared.url_safety import host_matches_domain
 
 # Pass-store keys per service
@@ -66,31 +66,14 @@ log = logging.getLogger("bootstrap-cred-tokens")
 _PHILARCHIVE_HOST = "philarchive.org"
 
 
-def pass_has(key: str) -> bool:
-    """Return True if pass-store already has this key."""
-    rc = subprocess.run(
-        ["pass", "show", key],
-        capture_output=True,
-        check=False,
-    )
-    return rc.returncode == 0
+def secret_present(key: str) -> bool:
+    """Whether the FileStore already holds ``key`` — presence only, never the value."""
+    return has_secret(key)
 
 
-def pass_insert(key: str, token_bytes: bytes) -> None:
-    """Pipe ``token_bytes`` directly into ``pass insert -m <key>``.
-
-    ``-m`` is multi-line mode; reads stdin until EOF. No echo.
-    capture_output=True so any pass-side output doesn't leak via our stdout.
-    """
-    proc = subprocess.run(
-        ["pass", "insert", "-m", "-f", key],
-        input=token_bytes,
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        # Don't include stderr — it might echo token bytes
-        raise RuntimeError(f"pass insert failed for {key} (rc={proc.returncode})")
+def store_secret(key: str, token_bytes: bytes) -> None:
+    """Write ``token_bytes`` under ``key`` through the FileStore. No echo, no subprocess."""
+    put_secret(key, token_bytes)
 
 
 def _is_philarchive_cookie_domain(domain: object) -> bool:
@@ -102,8 +85,8 @@ def _is_philarchive_cookie_domain(domain: object) -> bool:
 
 async def bootstrap_zenodo(page, *, dry_run: bool, force: bool) -> ServiceResult:
     key = "zenodo/api-token"
-    if not force and pass_has(key):
-        return ServiceResult("zenodo", "skipped_exists", f"{key} already in pass-store")
+    if not force and secret_present(key):
+        return ServiceResult("zenodo", "skipped_exists", f"{key} already in the FileStore")
 
     if dry_run:
         await page.goto(
@@ -131,7 +114,7 @@ async def bootstrap_zenodo(page, *, dry_run: bool, force: bool) -> ServiceResult
         token = await page.eval_on_selector("code", "el => el.textContent.trim()")
         if not token or len(token) < 20:
             return ServiceResult("zenodo", "manual_fallback", "could not locate token in page")
-        pass_insert(key, token.encode())
+        store_secret(key, token.encode())
         del token
         return ServiceResult("zenodo", "ok", f"{key} provisioned")
     except Exception as exc:
@@ -140,8 +123,8 @@ async def bootstrap_zenodo(page, *, dry_run: bool, force: bool) -> ServiceResult
 
 async def bootstrap_osf(page, *, dry_run: bool, force: bool) -> ServiceResult:
     key = "osf/api-token"
-    if not force and pass_has(key):
-        return ServiceResult("osf", "skipped_exists", f"{key} already in pass-store")
+    if not force and secret_present(key):
+        return ServiceResult("osf", "skipped_exists", f"{key} already in the FileStore")
 
     if dry_run:
         await page.goto(
@@ -166,7 +149,7 @@ async def bootstrap_osf(page, *, dry_run: bool, force: bool) -> ServiceResult:
         )
         if not token or len(token) < 20:
             return ServiceResult("osf", "manual_fallback", "could not locate token")
-        pass_insert(key, token.encode())
+        store_secret(key, token.encode())
         del token
         return ServiceResult("osf", "ok", f"{key} provisioned")
     except Exception as exc:
@@ -175,8 +158,8 @@ async def bootstrap_osf(page, *, dry_run: bool, force: bool) -> ServiceResult:
 
 async def bootstrap_ia(page, *, dry_run: bool, force: bool) -> ServiceResult:
     keys = ["ia/access-key", "ia/secret-key"]
-    if not force and all(pass_has(k) for k in keys):
-        return ServiceResult("ia", "skipped_exists", "both ia keys already in pass-store")
+    if not force and all(secret_present(k) for k in keys):
+        return ServiceResult("ia", "skipped_exists", "both ia keys already in the FileStore")
 
     if dry_run:
         await page.goto(
@@ -205,8 +188,8 @@ async def bootstrap_ia(page, *, dry_run: bool, force: bool) -> ServiceResult:
                 "manual_fallback",
                 "could not locate access/secret keys (page layout drift?)",
             )
-        pass_insert("ia/access-key", access.encode())
-        pass_insert("ia/secret-key", secret.encode())
+        store_secret("ia/access-key", access.encode())
+        store_secret("ia/secret-key", secret.encode())
         del access, secret
         return ServiceResult("ia", "ok", "ia/access-key + ia/secret-key provisioned")
     except Exception as exc:
@@ -216,8 +199,10 @@ async def bootstrap_ia(page, *, dry_run: bool, force: bool) -> ServiceResult:
 async def bootstrap_bluesky(page, *, dry_run: bool, force: bool) -> ServiceResult:
     pwd_key = "bluesky/operator-app-password"
     did_key = "bluesky/operator-did"
-    if not force and pass_has(pwd_key) and pass_has(did_key):
-        return ServiceResult("bluesky", "skipped_exists", "both bluesky keys already in pass-store")
+    if not force and secret_present(pwd_key) and secret_present(did_key):
+        return ServiceResult(
+            "bluesky", "skipped_exists", "both bluesky keys already in the FileStore"
+        )
 
     if dry_run:
         await page.goto(
@@ -237,8 +222,8 @@ async def bootstrap_bluesky(page, *, dry_run: bool, force: bool) -> ServiceResul
 
 async def bootstrap_philarchive(page, *, dry_run: bool, force: bool) -> ServiceResult:
     key = "philarchive/session-cookie"
-    if not force and pass_has(key):
-        return ServiceResult("philarchive", "skipped_exists", f"{key} already in pass-store")
+    if not force and secret_present(key):
+        return ServiceResult("philarchive", "skipped_exists", f"{key} already in the FileStore")
 
     if dry_run:
         await page.goto("https://philarchive.org/", wait_until="networkidle", timeout=TIMEOUT_MS)
@@ -259,7 +244,7 @@ async def bootstrap_philarchive(page, *, dry_run: bool, force: bool) -> ServiceR
                 "manual_fallback",
                 "no philarchive.org cookies (not logged in?)",
             )
-        pass_insert(key, rendered.encode())
+        store_secret(key, rendered.encode())
         del rendered
         return ServiceResult("philarchive", "ok", f"{key} provisioned")
     except Exception as exc:
@@ -347,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite existing pass-store entries",
+        help="Overwrite existing FileStore entries",
     )
     parser.add_argument(
         "--cdp-url",

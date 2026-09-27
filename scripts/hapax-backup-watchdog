@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+# The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
+# the symlink path — so the lib lives beside the TARGET and must be resolved first (measured:
+# invoked through the symlink, `${BASH_SOURCE[0]%/*}/lib` was ~/.local/bin/lib, absent, rc=1).
+# /usr/bin/readlink by absolute path keeps this independent of PATH; the fallback keeps a host
+# without coreutils on the direct-invocation behaviour rather than dying here.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
+. "${_hapax_self%/*}/lib/tier1-snapshot.sh"
+
 # hapax-backup-watchdog — Verify backup health for Tier 1 and critical offsite
 #
 # Checks:
@@ -28,30 +39,42 @@ log() { echo "[$(date -Iseconds)] $1"; }
 restic_password() {
     local entry="$1" label="$2"
     local password
-    password="$(pass show "$entry" 2>/dev/null | sed -n '1p')" || {
-        FAILURES+=("$label: cannot read restic password from pass entry '$entry'")
+    # `hapax_secret_read`, not `_get`: an EMPTY password and an UNREADABLE one need
+    # different operator actions, and a backup that runs with an empty repository password
+    # is worse than one that refuses.
+    password="$(hapax_secret_read "$entry")" || {
+        FAILURES+=("$label: cannot read the restic password '$entry' from the FileStore; put it with \`hapax-secret $entry\`")
         return 1
     }
     if [[ -z "$password" ]]; then
-        FAILURES+=("$label: restic password entry '$entry' is empty")
+        FAILURES+=("$label: the restic password '$entry' is empty; re-put it with \`hapax-secret $entry\`")
         return 1
     fi
     printf '%s' "$password"
 }
 
 check_snapshot_age() {
-    local repo="$1" label="$2" max_hours="$3" password_entry="$4"
+    local repo="$1" label="$2" max_hours="$3" password_entry="$4" tier1="${5:-}"
     log "Checking $label snapshot age (max ${max_hours}h)..."
 
     local password
     password="$(restic_password "$password_entry" "$label")" || return
 
+    # Tier-1 age is the age of the newest tier-1 snapshot (host and tag), never of the repository: the NAS
+    # repository also takes tier1-transcripts and monocle snapshots, which would mask a stalled tier-1 job.
     local latest_time
-    latest_time=$(RESTIC_PASSWORD="$password" RESTIC_REPOSITORY="$repo" restic snapshots --no-lock --json 2>/dev/null \
-        | jq -r 'max_by(.time).time // empty' 2>/dev/null) || {
-        FAILURES+=("$label: cannot read snapshots")
-        return
-    }
+    if [[ -n "$tier1" ]]; then
+        latest_time="$(RESTIC_PASSWORD="$password" RESTIC_REPOSITORY="$repo" tier1_latest_snapshot_time)" || {
+            FAILURES+=("$label: cannot read tier-1 snapshots (restic or jq failed); check the NAS mount and \`restic snapshots\`")
+            return
+        }
+    else
+        latest_time=$(RESTIC_PASSWORD="$password" RESTIC_REPOSITORY="$repo" restic snapshots --no-lock --json 2>/dev/null \
+            | jq -r 'max_by(.time).time // empty' 2>/dev/null) || {
+            FAILURES+=("$label: cannot read snapshots")
+            return
+        }
+    fi
 
     if [[ -z "$latest_time" ]]; then
         FAILURES+=("$label: no snapshots found")
@@ -109,20 +132,39 @@ check_restic_integrity() {
 }
 
 # Run checks
-check_snapshot_age "$TIER1_REPO" "Tier1-NAS" "$TIER1_MAX_AGE_HOURS" "$TIER1_PASSWORD_ENTRY"
+check_snapshot_age "$TIER1_REPO" "Tier1-NAS" "$TIER1_MAX_AGE_HOURS" "$TIER1_PASSWORD_ENTRY" tier1
 check_snapshot_age "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_MAX_AGE_HOURS" "$GDRIVE_CRITICAL_PASSWORD_ENTRY"
 check_qdrant_snapshots
 check_postgres_dump_in_snapshot() {
-    local repo="$1" label="$2" entry="$3"
+    local repo="$1" label="$2" entry="$3" tier1="${4:-}"
     local pw
-    pw="$(pass show "$entry" 2>/dev/null | sed -n '1p')" || {
+    pw="$(hapax_secret_read "$entry")" || {
         FAILURES+=("$label: dump-check cannot read restic password")
         return
     }
     [[ -z "$pw" ]] && { FAILURES+=("$label: dump-check restic password empty"); return; }
+    # Name the snapshot by id, never by a bare `latest`: on the shared NAS repository that is the newest
+    # snapshot of any host and tag (scripts/lib/tier1-snapshot.sh).
+    local snap_id
+    if [[ -n "$tier1" ]]; then
+        snap_id="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" tier1_latest_snapshot_id)" || {
+            FAILURES+=("$label: dump-check cannot read tier-1 snapshots (restic or jq failed); check the NAS mount and \`restic snapshots\`")
+            return
+        }
+    else
+        snap_id="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic snapshots --no-lock --json 2>/dev/null \
+            | jq -r 'max_by(.time).id // empty' 2>/dev/null)" || true
+    fi
+    [[ -z "$snap_id" ]] && {
+        FAILURES+=("$label: dump-check found no snapshot; run the backup job, then \`restic snapshots\` to confirm")
+        return
+    }
     local listing
-    listing="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic ls --long latest 2>/dev/null | grep -F "postgres-all.sql" | head -1)" || true
-    [[ -z "$listing" ]] && { FAILURES+=("$label: newest snapshot contains NO postgres-all.sql"); return; }
+    # Match the file's listing line (a regular file: the mode starts with "-"), never the "snapshot … of [paths]"
+    # header, which names postgres-all.sql when the dump is itself a backup target (the R2 repository). The header
+    # made "could not parse dump size" a standing false failure (09-25, 09-26).
+    listing="$(RESTIC_REPOSITORY="$repo" RESTIC_PASSWORD="$pw" restic ls --long "$snap_id" 2>/dev/null | grep -E '^-.* /[^ ]*/postgres-all\.sql$' | head -1)" || true
+    [[ -z "$listing" ]] && { FAILURES+=("$label: snapshot $snap_id contains NO postgres-all.sql"); return; }
     local size
     size="$(echo "$listing" | tr -s " " | cut -d" " -f4)"
     case "$size" in
@@ -135,7 +177,7 @@ check_postgres_dump_in_snapshot() {
 
 check_restic_integrity "$TIER1_REPO" "Tier1-NAS" "$TIER1_PASSWORD_ENTRY"
 check_restic_integrity "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_PASSWORD_ENTRY" true
-check_postgres_dump_in_snapshot "$TIER1_REPO" "Tier1-NAS" "$TIER1_PASSWORD_ENTRY"
+check_postgres_dump_in_snapshot "$TIER1_REPO" "Tier1-NAS" "$TIER1_PASSWORD_ENTRY" tier1
 check_postgres_dump_in_snapshot "$GDRIVE_CRITICAL_REPO" "GDrive-Critical" "$GDRIVE_CRITICAL_PASSWORD_ENTRY"
 
 # Report

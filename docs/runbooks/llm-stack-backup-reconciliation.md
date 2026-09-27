@@ -10,9 +10,9 @@ Tier 1 local coverage:
 
 - Timer: `hapax-backup-local.timer`
 - Service: `hapax-backup-local.service`
-- Script: `$HOME/projects/distro-work/hapax-backup-local.sh`
+- Script: `scripts/hapax-backup-local`, run from the activation worktree (`~/.cache/hapax/source-activation/worktree`); recheck with `systemctl --user show hapax-backup-local.service -p ExecStart`
 - Restic repository: `/mnt/nas/backups/restic`
-- Staging: `/tmp/hapax-backup-dumps`
+- Staging: `/store/llm-data/backup-dumps-local` (tier 2: `/store/llm-data/backup-dumps-remote`); recheck with `ls -d /store/llm-data/backup-dumps-*` during a run
 
 Critical offsite safety baseline:
 
@@ -74,3 +74,45 @@ This intentionally removes the stale standalone script assumptions:
 `scripts/hapax-restore-verify` remains available for historical standalone
 `backup.sh` directory layouts. It is not the producer for the current
 service-native lanes.
+
+## FileStore (Secrets) Custody
+
+Since the 2026-09-16 migration, the estate's secrets live in each host's
+`hapax-secret` FileStore: `~/.config/reins/secrets/`, the `.key` plus one
+`.bin` per entry (`a/b` is stored as `a-b.bin`). Key and blobs travel together
+inside the encrypted restic repositories, like `~/.password-store/` and
+`~/.gnupg/`.
+
+- Podium: in the tier-1 local (NAS) and tier-2 remote (B2) snapshots
+  (`scripts/hapax-backup-{local,remote}`).
+- Every other host running a store: `hapax-backup-filestore.{service,timer}`
+  writes it to the tier-1 NAS repository with tag `tier1-filestore` and
+  `--host <host>`, then verifies the new snapshot by path listing: the `.key`,
+  and every `.bin` entry the store holds, by name. Retention is podium's
+  tier-1 forget (`--group-by host,tags`).
+- Recheck, names only: on the host, `scripts/hapax-backup-filestore --verify`
+  (from the activation worktree, with `RESTIC_REPOSITORY` set) re-checks its
+  latest `tier1-filestore` snapshot against the store by name and writes
+  nothing. By hand, find the snapshot with
+  `restic snapshots --tag tier1-filestore --host <host>`, then compare names:
+  `comm -23 <(ls ~/.config/reins/secrets | grep '\.bin$' | sort) <(restic ls <snapshot-id> | grep -oE '[^/]+\.bin$' | sort)`
+  prints every store entry the snapshot lacks; empty output means all are
+  present.
+
+Restore order: **the FileStore comes back before any service that reads a
+secret starts** (the backup units, logos-api, anything calling `hapax-secret`).
+
+1. From the snapshot for the host, restore `~/.config/reins/secrets/` (the
+   `.key` and every `.bin`) into place: `restic restore <snapshot-id> --target /
+   --include "$HOME/.config/reins/secrets"`, or copy it out of a staging tree.
+2. Set the modes: `chmod 700 ~/.config/reins/secrets` and `chmod 600` on every
+   file in it.
+3. Check the entries by name, never by value, for example
+   `hapax-secret --where backups/restic-password` prints `filestore`.
+4. Only then start the services.
+
+The hand-made preservation tarballs
+`/mnt/nas/archive/hapax-preservation/secret-store/reins-secrets-20260829.tar.gpg`
+and `reins-secrets-20260902.tar.gpg` are **superseded, not deleted**. They
+predate the migration and are kept as history; the scheduled snapshots above
+are the current copies.

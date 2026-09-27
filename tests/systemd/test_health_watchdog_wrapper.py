@@ -148,18 +148,15 @@ def _base_env(
     tmp_path: Path,
     *,
     status: str = "healthy",
-    pass_succeeds: bool = False,
     set_history_file: bool = True,
 ) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_uv = _write_fake_uv(bin_dir / "uv")
-    pass_body = (
-        "#!/usr/bin/env sh\nprintf 'fake-secret\\n'\n"
-        if pass_succeeds
-        else "#!/usr/bin/env sh\nexit 1\n"
+    fake_secret = _write_executable(
+        bin_dir / "hapax-secret",
+        "#!/usr/bin/env sh\nprintf 'fake-secret\\n'\n",
     )
-    _write_executable(bin_dir / "pass", pass_body)
     _write_executable(
         bin_dir / "notify-send",
         """
@@ -179,6 +176,7 @@ def _base_env(
             "FAKE_NOTIFY_SEND_LOG": str(tmp_path / "notify-send.log"),
             "FAKE_UV_LOG": str(tmp_path / "uv.jsonl"),
             "HAPAX_UV": str(fake_uv),
+            "HAPAX_SECRET": str(fake_secret),
             "N8N_HEALTH_WEBHOOK_URL": "",
             "PATH": f"{bin_dir}:{env.get('PATH', '')}",
             "PYTHONPATH": f"{stub_root}:{env.get('PYTHONPATH', '')}",
@@ -543,7 +541,7 @@ def test_failed_stack_timed_out_intake_cli_falls_back_to_notification(tmp_path: 
 
 def test_failed_stack_auto_fix_success_notifies_auto_fixed(tmp_path: Path) -> None:
     activation = _make_checkout(tmp_path / "source-activation")
-    env = _base_env(tmp_path, status="failed", pass_succeeds=True)
+    env = _base_env(tmp_path, status="failed")
     env["HAPAX_SOURCE_ACTIVATION_WORKTREE"] = str(activation)
     env["FAKE_APPLY_MARKER"] = str(tmp_path / "apply.marker")
     env["FAKE_HEALTH_STATUS_AFTER_APPLY"] = "healthy"

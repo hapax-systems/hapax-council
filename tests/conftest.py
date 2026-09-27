@@ -16,6 +16,19 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolate_publication_witness_log(tmp_path, monkeypatch):
+    """Keep publisher dispatch witnesses in per-test files, including children."""
+    from agents.publication_bus import witness_log
+
+    monkeypatch.setenv(
+        witness_log.PUBLICATION_LOG_PATH_ENV, str(tmp_path / "publication-log.jsonl")
+    )
+    witness_log.reset_idempotency_cache()
+    yield
+    witness_log.reset_idempotency_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_turn_timing_witness(tmp_path, monkeypatch):
     """Keep TurnBudget.emit() receipts out of the production /dev/shm witness.
 
@@ -119,3 +132,50 @@ if not _has_operator:
 if not Path.home().joinpath("projects", "hapaxromana").is_dir():
     for f in _LOCAL_ENV_FILES:
         collect_ignore_glob.append(f)
+
+
+# --- one implementation of "read the CODE, not the prose" -----------------------------
+#
+# Several suites assert that a migrated file contains no `pass`/`gopass` INVOCATION. They
+# must not assert on the bare string: these files legitimately quote the operator ruling
+# that names both tools, and `shared/stream_mode.py` keeps the password store in
+# DENY_PATH_PREFIXES precisely so it never renders on a stream surface — uninstalling pass
+# does not delete that directory. A gate that cannot tell a reference-as-the-point from a
+# call either gets disabled or gets obeyed wrongly.
+#
+# Lives here because three suites needed it and three private copies is the duplicated-
+# derivation defect this estate keeps paying for.
+
+
+def code_without_prose(text: str, *, language: str = "python") -> str:
+    """`text` with comments and (for Python) docstrings removed."""
+
+    if language == "python":
+        import ast
+
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            tree = None
+        doc_spans: set[tuple[int, int]] = set()
+        if tree is not None:
+            for node in ast.walk(tree):
+                body = getattr(node, "body", None)
+                if not isinstance(body, list) or not body:
+                    continue
+                first = body[0]
+                if (
+                    isinstance(first, ast.Expr)
+                    and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)
+                    and first.end_lineno is not None
+                ):
+                    doc_spans.add((first.lineno, first.end_lineno))
+        kept = [
+            line
+            for index, line in enumerate(text.splitlines(), start=1)
+            if not any(start <= index <= end for start, end in doc_spans)
+        ]
+    else:
+        kept = text.splitlines()
+    return "\n".join(line for line in kept if not line.lstrip().startswith("#"))

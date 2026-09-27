@@ -1,0 +1,1592 @@
+#!/usr/bin/env python3
+"""hapax-obsidian-sync-preflight — validate an Obsidian Sync exclusion list and
+predict the upload set BEFORE a seed sync runs.
+
+Why this exists (measured, 2026-09-14, task obsidian-sync-freshvault-headless-20260914):
+``ob sync-config --excluded-folders`` accepts any string. The client matches each
+entry as a literal prefix of the path it EMITS — in ``obsidian-headless`` 0.0.14,
+``_allowSyncFile(e, t)`` begins::
+
+    for (let r of this.ignoreFolders)
+        if (t && e === r || e.startsWith(r + "/")) return !1;
+
+so an entry that is not a real prefix in that emitted namespace matches nothing,
+reports no error, and the data uploads. The failure mode is **silent admission**,
+and the only witness is a size readback taken after the upload already happened.
+
+Three separate hand-transcriptions of one 14/15/17-entry exclusion list each
+introduced at least one unmatchable path: ``terrain1-chunks-lex`` and
+``terrain1-chunks-sem`` (neither directory exists), then
+``ingestion-gold/ocr/pages`` missing its ``30-areas/hapax/`` prefix — the last
+would have leaked 196 PNGs / 379.5 MiB past an exclusion the operator had
+explicitly accepted. A path list carried by hand is a transcription channel with
+no checksum; this is the checksum.
+
+The single predicate is: **does this entry name a directory in the namespace ob
+will compare against?** That subsumes every failure shape — a missing path, a
+wrong prefix, a file instead of a folder, a trailing slash (ob compares raw, so
+``x/`` probes ``x//``), a ``.``/``..`` component the filesystem resolves but ob
+never emits, and a Unicode form that exists on disk but not after ob's nonbreaking
+space rewrite and NFC normalization. Filesystem paths are kept separately from
+emitted paths precisely because those two namespaces are not the same.
+
+It also predicts the upload set by replaying the client's admission rules, so a
+seed has an expected byte/file count to verify against rather than one derived by
+subtracting estimates.
+
+Usage:
+    hapax-obsidian-sync-preflight VAULT --excluded-folders a,b,c [--file-types ...]
+    hapax-obsidian-sync-preflight VAULT --from-sync-config          # audit the LIVE list
+    hapax-obsidian-sync-preflight VAULT --from-sync-config --json
+
+Exit codes:
+
+* **0** — the list is appliable and the prediction is exact.
+* **2** — refused because the list would FAIL OPEN: an entry cannot match anything, or a
+  ``--from-sync-config`` audit found no exclusions configured at all.
+* **3** — refused because no exact prediction exists. Either the input is unusable (usage
+  error, not a directory, no sync config, a malformed or unrecognized config, an invalid
+  ``configDir`` or ``--file-types``), or the client's own outcome is not determinable:
+  an incomplete traversal (a partial total must never read as successful verification),
+  two symlinks racing for one target, or two files whose emitted paths are the same.
+
+The last group is the point of the tool as much as the first: where ob's result depends on
+scheduling or on a name it cannot find, saying so beats reporting a plausible number.
+
+Recheck every claim in this docstring — the exit statuses and each replayed rule:
+
+    uv run pytest tests/scripts/test_hapax_obsidian_sync_preflight.py -q
+
+Recheck the rules against the CLIENT (they are read off a minified bundle, so they
+can drift with any upgrade; `npm ls -g obsidian-headless` gives the pinned version):
+
+    scripts/hapax-obsidian-sync-preflight --recheck-client
+
+That locates the installed bundle itself (via ``npm root -g``), checks each rule this file
+depends on against it, prints one OK/DRIFT line per rule, and **exits non-zero if any rule
+drifted** — so it is usable in CI rather than something a human has to eyeball.
+
+Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
+  * emitted namespace — ``Ne(s) = Cs(_e(s)).normalize("NFC")``: ``_e`` collapses every
+    run of forward slashes or backslashes to one ``/`` and trims the ends, ``Cs``
+    rewrites U+00A0 and U+202F to ordinary spaces, then NFC runs. ``ignoreFolders``
+    entries are compared to the result literally, so all three steps matter. Because
+    U+005C is a legal Linux filename character, a file whose name contains one occupies
+    an emitted path with a separator there, so distinct on-disk names can collide in a
+    single remote path.
+  * entry trimming — ob trims each comma-separated CLI field with JavaScript
+    ``trim()`` semantics, which are NOT Python's ``str.strip()``. A PERSISTED list
+    is not trimmed at all; it is compared byte for byte.
+  * hidden pruning — ``Is(s)`` walks every path component and rejects the path if
+    ANY component starts with ``.``; the adapter treats such paths as absent.
+  * symlinks — ``reconcileSymbolicLinkCreation`` resolves the link and RETURNS when
+    the target overlaps an already-watched resolved path. The vault root is always
+    watched, so a link INTO the vault (or to a directory containing it) is skipped
+    entirely, while a link escaping to a disjoint subtree is followed. Only a
+    DIRECTORY link then becomes watched (the watcher is installed in the
+    ``isDirectory`` branch), so a file link is admitted without reserving its target.
+    The overlap rule is also what bounds the walk.
+  * the config scan is NOT a walk — it enumerates fixed shapes through
+    ``adapter.list``/``exists``/``stat``, which follow symlinks and never consult the
+    watcher set, so the overlap rule does not apply there and no deeper nesting is
+    reached. That queue only builds the local file index; admission still runs through
+    ``_allowSyncFile``, which is why the literal ``<cfg>/config`` file is enumerated
+    but never uploaded. ``ws``/``Ss`` also require ``configDir`` to be a dotfolder name
+    with no separators, and throw otherwise.
+  * per-file size — ``!m.folder && m.size > perFileMax`` is skipped with
+    ``File too large to sync``. The client's fallback is 199 MiB, but the SERVER may
+    send its own at login, which is not observable locally — hence ``--per-file-max``.
+  * ``--file-types`` is parsed by ``Kr``: split on ``,``, trim, lowercase, and throw
+    for any field not in ``us`` — an EMPTY field included, so ``,`` and ``image,`` are
+    rejected. Only the exact empty string restores the defaults.
+
+  * exclusions precede everything — the ``ignoreFolders`` loop runs before the
+    hidden-path check and before the config-dir branch, so an entry naming a hidden
+    or config-dir path does match.
+  * attachment classes — ``md``/``canvas``/``base`` always sync; the rest gate on
+    the selection, and anything in no class is ``unsupported`` (off by default).
+    ``webm`` counts as audio OR video.
+  * the empty selection — ``--file-types ""`` DELETES the stored key and so
+    restores the defaults, whereas a persisted ``allowTypes: []`` is honoured as
+    "no attachments" (``[] || me`` keeps ``[]``: an empty array is truthy in JS).
+  * config-dir uploads — when ``allowSpecialFiles`` is non-empty ob also uploads
+    matching files from the config dir (default ``.obsidian``) through a separate
+    hidden walk, so they are counted even though the main walk prunes dotted paths.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import unicodedata
+from pathlib import Path
+from stat import S_ISDIR, S_ISREG
+
+OK = 0
+REFUSED = 2
+ERROR = 3
+
+# obsidian-headless 0.0.14 cli.js: Vt, Wt, Ht, Gt, fo, ks, ho
+IMAGE = frozenset({"bmp", "png", "jpg", "jpeg", "gif", "svg", "webp", "avif"})
+AUDIO = frozenset({"mp3", "wav", "m4a", "3gp", "flac", "ogg", "oga", "opus"})
+VIDEO = frozenset({"mp4", "webm", "ogv", "mov", "mkv"})
+PDF = frozenset({"pdf"})
+ALWAYS = frozenset({"md", "canvas", "base"})  # native: never gated on the selection
+VALID_FILE_TYPES = ("image", "audio", "video", "pdf", "unsupported")
+DEFAULT_FILE_TYPES = ("image", "audio", "pdf", "video")  # cli.js `me`
+
+# The PERSISTED config.json and the `sync-status --json` OUTPUT use different key
+# names for the same settings. cli.js writes the live object (`ys(t.vaultId, t)`)
+# with `ignoreFolders` / `allowTypes` / `allowSpecialFiles`, and only the printer
+# `_r(t)` renames them: `excludedFolders: s.ignoreFolders||[]`,
+# `fileTypes: s.allowTypes||me`, `configs: s.allowSpecialFiles||[]`. Reading the
+# PRINTED names out of the FILE finds nothing — measured against a real config
+# holding 17 exclusions, which is why this mapping is pinned by tests.
+PERSISTED_EXCLUSIONS_KEY = "ignoreFolders"
+PERSISTED_FILE_TYPES_KEY = "allowTypes"
+# A config written by ob always carries these; used to tell "no exclusions
+# configured" apart from "this file is not an ob sync config / schema moved".
+PERSISTED_REQUIRED_KEYS = ("vaultId", "vaultPath", "conflictStrategy")
+# cli.js sync-config: bidirectional is stored by DELETING syncMode, so absence is it.
+SYNC_MODES = ("bidirectional", "pull-only", "mirror-remote")
+UPLOADING_SYNC_MODES = ("bidirectional",)
+# Populated below once the category list exists. Maps every persisted list field the
+# tool READS to its allowed values (None = any strings). Validation is driven by this
+# table so a newly-read field cannot silently bypass the shape check.
+PERSISTED_LIST_FIELDS: dict[str, tuple[str, ...] | None] = {}
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which would collide with REFUSED — and
+    REFUSED is the load-bearing status for scripting. Usage errors exit 3."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.print_usage(sys.stderr)
+        print(
+            f"{self.prog}: error: {message}. Next: pass the vault path plus exactly "
+            "one of --excluded-folders or --from-sync-config; see --help.",
+            file=sys.stderr,
+        )
+        raise SystemExit(ERROR)
+
+
+# cli.js: `Ne(s) = Cs(_e(s)).normalize("NFC")` where `Cs(s) = s.replace(Xc," ")` and
+# `Xc = / | /g` — so the emitted name has nonbreaking (U+00A0) and narrow
+# nonbreaking (U+202F) spaces rewritten to ORDINARY spaces before NFC runs. Held as
+# codepoints rather than literals because the characters are invisible in source.
+# `_e` runs FIRST and is replicated in full by `_e_path` below — it collapses runs of
+# forward slashes and U+005C alike, which is not a no-op on a filesystem where U+005C is
+# a legal filename character.
+_EMITTED_SPACE_CODEPOINTS = (0x00A0, 0x202F)
+_SLASH_RUN_RE = re.compile(r"[\\/]+")  # cli.js `_e`: /([\\/])+/g -> "/"
+
+
+def _e_path(rel: str) -> str:
+    """cli.js ``_e``: collapse every run of ``/`` or U+005C to one ``/``, trim the ends.
+
+    This is the form ob actually ``lstat``s in the main walk: ``listRecursiveChild``
+    computes ``i = _e(path)`` and ``n = Ne(i)``, then calls ``reconcileFileInternal(i, n)``
+    — so the LOOKUP uses ``_e`` only, while the remote KEY uses the fully emitted name.
+    The distinction is load-bearing: a name containing U+005C is looked up at a rewritten
+    path and dropped when that does not exist, whereas a nonbreaking space or an NFD
+    spelling is found on disk and merely keyed under its normalized name.
+    """
+    return _SLASH_RUN_RE.sub("/", rel).strip("/")
+
+
+def _emitted(rel: str) -> str:
+    """The path ob compares exclusions against — cli.js ``Ne(s) = Cs(_e(s)).NFC``.
+
+    ``_e`` collapses every run of ``/`` OR ``\\`` to a single ``/`` and trims the ends.
+    That is NOT a no-op on Linux, where a backslash is a legal filename character: a
+    directory literally named ``x\\y`` is emitted as ``x/y``, so it occupies the same
+    remote path as a real ``x/y``. An earlier revision skipped ``_e`` on the grounds
+    that walked paths have no doubled or leading slashes, which missed this.
+    """
+    rel = _e_path(rel)
+    for codepoint in _EMITTED_SPACE_CODEPOINTS:
+        rel = rel.replace(chr(codepoint), " ")
+    return unicodedata.normalize("NFC", rel) or "/"
+
+
+# ECMAScript WhiteSpace + LineTerminator, i.e. exactly what String.prototype.trim
+# removes. Python's str.strip() is NOT the same set — measured: it also strips
+# U+001C-U+001F and U+0085 (which JS keeps), and it does NOT strip U+FEFF (which JS
+# removes). Using str.strip() certified entries that ob then failed to match.
+_JS_TRIM_CHARS = "".join(
+    (
+        "\t\n\v\f\r ",
+        "      　﻿",
+        *(chr(c) for c in range(0x2000, 0x200B)),
+    )
+)
+
+
+def _js_trim(value: str) -> str:
+    """Reproduce cli.js's ``.map(n => n.trim())`` on comma-split CLI input."""
+    return value.strip(_JS_TRIM_CHARS)
+
+
+def _extension(name: str) -> str:
+    """Mirror cli.js ``$(s)``: last dot wins, lowercased, no leading-dot match."""
+    idx = name.rfind(".")
+    if idx in (-1, 0, len(name) - 1):
+        return ""
+    return name[idx + 1 :].lower()
+
+
+def _classify(ext: str) -> str:
+    if ext in ALWAYS:
+        return "native"
+    if ext in IMAGE:
+        return "image"
+    if ext == "webm":
+        return "audio_or_video"
+    if ext in AUDIO:
+        return "audio"
+    if ext in VIDEO:
+        return "video"
+    if ext in PDF:
+        return "pdf"
+    return "unsupported"
+
+
+def _admitted(klass: str, file_types: frozenset[str]) -> bool:
+    if klass == "native":
+        return True
+    if klass == "audio_or_video":
+        return bool({"audio", "video"} & file_types)
+    return klass in file_types
+
+
+def resolve_entry(vault: Path, entry: str) -> tuple[bool, str]:
+    """Can ``entry`` match anything ob emits? Returns (effective, detail).
+
+    Descends component by component, comparing each against the NFC form of the
+    real directory names, because that is the only namespace ob's literal prefix
+    test ever sees. Cheap: one listdir per component, never a full walk.
+    """
+    if not entry:
+        return False, "empty entry"
+    if entry.startswith("/") or Path(entry).is_absolute():
+        return False, "not vault-relative; ob emits relative paths only"
+    if entry.endswith("/") or "//" in entry:
+        return (
+            False,
+            "trailing or doubled slash — ob compares the raw string, so this "
+            "probes a path with an empty component and can never match",
+        )
+    parts = entry.split("/")
+    if any(part in (".", "..") for part in parts):
+        return (
+            False,
+            "contains a '.' or '..' component; the filesystem resolves it but ob "
+            "emits normalized relative paths that never contain dot segments",
+        )
+    # A dotted component is deliberately NOT refused here. ob runs the ignoreFolders
+    # loop before the hidden-path check, so a hidden entry does match, and that is
+    # load-bearing for the config dir, whose files do sync when `configs` is enabled.
+    # An earlier revision refused every dotted entry and thereby rejected valid
+    # config-dir exclusions. Entries that match but cannot change anything are
+    # annotated with `no_effect_reason` by validate_entries instead.
+
+    current = vault
+    for depth, part in enumerate(parts):
+        try:
+            children = os.listdir(current)
+        except OSError as exc:
+            return False, f"cannot read {'/'.join(parts[:depth]) or '.'}: {exc.strerror}"
+        # ob would compare against the NFC form of the on-disk name.
+        match = next((c for c in children if _emitted(c) == part), None)
+        if match is None:
+            literal = next((c for c in children if c == part), None)
+            if literal is not None:
+                return (
+                    False,
+                    f"component {part!r} exists on disk but not in ob's emitted "
+                    "namespace: ob rewrites nonbreaking spaces to ordinary ones and "
+                    "NFC-normalizes the path, then matches exclusions literally, so "
+                    f"this entry can never match. Use {_emitted(literal)!r}.",
+                )
+            return False, f"no such path in the vault (component {part!r} not found)"
+        current = current / match
+        if not os.path.isdir(current):
+            return (
+                False,
+                "names a file; ob's exclusion is a folder-prefix test, so this "
+                "entry excludes nothing",
+            )
+    return True, ""
+
+
+def validate_entries(
+    vault: Path,
+    entries: list[str],
+    *,
+    trim: bool,
+    config_dir: str = ".obsidian",
+    configs_enabled: bool = False,
+) -> list[dict]:
+    """Classify each exclusion entry. Anything not ``ok`` cannot match and so
+    fails OPEN — the data it names would upload.
+
+    ``trim`` reproduces what the client does to the input it is given, and nothing
+    more. ob trims each comma-separated CLI field, so a CLI list is trimmed with
+    JS semantics; but a PERSISTED list is compared byte for byte, so trimming it
+    here would certify an entry like ``"private "`` that ob can never match.
+    """
+    findings: list[dict] = []
+    for raw in entries:
+        entry = _js_trim(raw) if trim else raw
+        finding: dict = {"entry": raw, "normalized": entry}
+        effective, detail = resolve_entry(vault, entry)
+        if effective:
+            finding["verdict"] = "ok"
+        else:
+            finding.update(verdict="unmatchable", detail=detail)
+        findings.append(finding)
+
+    # Redundancy is not a refusal, but it hides intent — report it.
+    ok_entries = [f["normalized"] for f in findings if f["verdict"] == "ok"]
+    for finding in findings:
+        if finding["verdict"] != "ok":
+            continue
+        entry = finding["normalized"]
+        covered_by = [
+            other for other in ok_entries if other != entry and entry.startswith(other + "/")
+        ]
+        if covered_by:
+            finding["redundant_under"] = covered_by
+        parts = entry.split("/")
+        # ob's Is() rejects a path when ANY component is dotted, so a dotted
+        # component at any depth means nothing under this entry was going to sync —
+        # unless it is the config dir and config syncing is on, which is the one
+        # hidden subtree ob does reach.
+        if any(p.startswith(".") for p in parts) and not (
+            parts[0] == config_dir and configs_enabled
+        ):
+            finding["no_effect_reason"] = (
+                "config syncing is disabled, so nothing under the config dir syncs"
+                if parts[0] == config_dir
+                else "hidden path: nothing under it syncs anyway"
+            )
+    return findings
+
+
+def _excluded(rel: str, entries: list[str]) -> bool:
+    return any(rel == e or rel.startswith(e + "/") for e in entries)
+
+
+PERSISTED_CONFIGS_KEY = "allowSpecialFiles"
+_PLUGIN_FILES = frozenset({"manifest.json", "main.js", "styles.css", "data.json"})
+# cli.js `us` / `hs`: the categories `configs` may name.
+VALID_CONFIG_CATEGORIES = (
+    "app",
+    "appearance",
+    "appearance-data",
+    "hotkey",
+    "core-plugin",
+    "core-plugin-data",
+    "community-plugin",
+    "community-plugin-data",
+)
+PERSISTED_LIST_FIELDS.update(
+    {
+        PERSISTED_EXCLUSIONS_KEY: None,  # any string is a candidate path
+        PERSISTED_FILE_TYPES_KEY: VALID_FILE_TYPES,
+        PERSISTED_CONFIGS_KEY: VALID_CONFIG_CATEGORIES,
+    }
+)
+
+
+def _config_category(rel_in_config_dir: str) -> str | None:
+    """Which ``configs`` category a file under the config dir belongs to.
+
+    Mirrors the ``e.startsWith(configDir + "/")`` branch of cli.js
+    ``_allowSyncFile``. Returns None when the file is never synced.
+    """
+    parts = rel_in_config_dir.split("/")
+    if any(p == "node_modules" or p.startswith(".") for p in parts):
+        return None
+    if rel_in_config_dir in ("workspace.json", "workspace-mobile.json"):
+        return None
+    base = parts[-1]
+    ext = _extension(base)
+    if rel_in_config_dir in ("app.json", "types.json"):
+        return "app"
+    if rel_in_config_dir == "appearance.json":
+        return "appearance"
+    if rel_in_config_dir == "hotkeys.json":
+        return "hotkey"
+    if rel_in_config_dir in ("core-plugins.json", "core-plugins-migration.json"):
+        return "core-plugin"
+    if rel_in_config_dir == "community-plugins.json":
+        return "community-plugin"
+    if (parts[0] == "themes" and len(parts) == 3 and base in ("theme.css", "manifest.json")) or (
+        parts[0] == "snippets" and len(parts) == 2 and ext == "css"
+    ):
+        return "appearance-data"
+    if len(parts) == 1 and ext == "json":
+        return "core-plugin-data"
+    if parts[0] == "plugins" and len(parts) == 3 and base in _PLUGIN_FILES:
+        return "community-plugin-data"
+    return None
+
+
+def predict_config_uploads(
+    vault: Path,
+    config_dir: str,
+    configs: frozenset[str],
+    entries: list[str],
+    per_file_max: int,
+    namespace: _EmittedNamespace,
+) -> dict:
+    """The config-dir files ob uploads when ``configs`` is non-empty.
+
+    Without this, auditing a vault that HAS config syncing enabled under-predicts by
+    the whole config directory — the main walk prunes every dotted path, and the
+    config dir is dotted by default. ob reaches it through its own scan, which is a
+    bounded enumeration rather than a walk; see the comment below.
+    """
+    root = vault / config_dir
+    total_bytes = files = 0
+    by_category: dict[str, list[int]] = {}
+    # Errors flow to the SAME exit-3 guard the main walk uses; a partial total here
+    # must not read as successful verification either.
+    errors: list[dict] = []
+    too_large: list[dict] = []
+
+    def _on_error(exc: OSError) -> None:
+        errors.append({"path": str(exc.filename), "error": exc.strerror})
+
+    def _result() -> dict:
+        return {
+            "bytes": total_bytes,
+            "files": files,
+            "files_over_per_file_max": too_large,
+            "by_category": {
+                k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_category.items())
+            },
+            "config_dir": config_dir,
+            "traversal_errors": errors,
+        }
+
+    if not configs or not root.is_dir():
+        return _result()
+
+    class _EnumerationAborted(Exception):
+        """`adapter.list` stats every child, so one unstattable child kills the scan."""
+
+    def _list_children(path: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+        """Mirror cli.js ``adapter.list``: readdir, then ``stat`` EVERY child, and split
+        into (files, folders) by what that stat says. Returns names, not paths.
+
+        The stat FOLLOWS symlinks, which has two consequences this must reproduce: a
+        symlink to a directory is classified as a FOLDER and descended, and a single
+        dangling child raises — the throw propagating out of `list()` into the config
+        scan's one try/catch, which logs "Failed to scan config files" having indexed
+        NOTHING that cycle. A name-only listdir that dropped individual candidates
+        certified a prediction ob does not deliver.
+        """
+        try:
+            names = sorted(os.listdir(path))
+        except OSError as exc:
+            _on_error(exc)
+            raise _EnumerationAborted from exc
+        # Each entry is (emitted, on-disk). The emitted form is what ob pushes and what the
+        # next level is asked to list; the on-disk form is kept so two spellings of one
+        # emitted name remain distinguishable for identity purposes.
+        files: list[tuple[str, str]] = []
+        folders: list[tuple[str, str]] = []
+        for name in names:
+            # cli.js stats the `_e` form (`o`) but PUSHES the emitted form (`a = Ne(o)`).
+            # Both matter: the stat succeeds for a merely non-NFC name, while the pushed
+            # name is what the NEXT level is asked to list — and on a byte-preserving
+            # filesystem that path does not exist, so the descent fails there instead.
+            try:
+                info = os.stat(path / _e_path(name))  # follows links, as adapter.list does
+            except OSError as exc:
+                _on_error(exc)
+                raise _EnumerationAborted from exc
+            # cli.js pushes to `.files` on isFile() and `.folders` on isDirectory(), and to
+            # NEITHER for anything else (a fifo, a socket, a device) — such an entry simply
+            # does not appear in the listing.
+            if S_ISREG(info.st_mode):
+                files.append((_emitted(name), name))
+            elif S_ISDIR(info.st_mode):
+                folders.append((_emitted(name), name))
+        return files, folders
+
+    # The config scan is NOT a recursive walk. cli.js enumerates a fixed set of
+    # shapes through `adapter.list` / `exists` / `stat` (all of which FOLLOW symlinks,
+    # and none of which consult the watcher set, so the link-overlap rule does not
+    # apply here): the literal file `<cfg>/config`, top-level `*.json`,
+    # `themes/<dir>/{manifest.json,theme.css}`, `snippets/*.css`, and
+    # `plugins/<dir>/<isPluginFile>`. Modelling it as a recursive walk both invented
+    # depths ob never reaches and, via a shared link policy, suppressed aliases ob does
+    # upload — which is why _LinkPolicy is deliberately not used here. The emitted
+    # NAMESPACE is shared, though: ob has one remote keyspace for both trees.
+    # (emitted, on-disk) pairs. `<cfg>/config` is the one candidate ob SYNTHESISES, and for
+    # it the two forms coincide.
+    candidates: list[tuple[str, str]] = [("config", "config")]
+    try:
+        # `u.list()` splits into files and folders, and cli.js iterates `.folders` under
+        # themes/ and plugins/ and `.files` elsewhere. LISTING those subdirectories rather
+        # than synthesising the known filenames matters twice: a stray FILE in plugins/ is
+        # skipped rather than descended, and a bad child INSIDE a plugin or theme directory
+        # aborts the whole scan in ob — which synthesised names would never have noticed.
+        root_files, _ = _list_children(root)
+        candidates += [(e, r) for e, r in root_files if _extension(e) == "json"]
+
+        # cli.js gates each of these on `await u.exists(...)` and then calls `u.list(...)`
+        # unconditionally. `exists` is an access() check that does not care whether the path
+        # is a directory, so if `themes` is a FILE the following list() readdirs it, raises
+        # ENOTDIR and aborts the whole scan. Skipping on "not a directory" — as an earlier
+        # revision did — turned that abort into a silent success.
+        themes = root / "themes"
+        if os.path.exists(themes):
+            _, theme_dirs = _list_children(themes)
+            for theme_emitted, theme_raw in theme_dirs:
+                # Descend by the EMITTED name, as ob does with what list() pushed.
+                theme_files, _ = _list_children(themes / theme_emitted)
+                candidates += [
+                    (f"themes/{theme_emitted}/{e}", f"themes/{theme_raw}/{r}")
+                    for e, r in theme_files
+                    if e in ("manifest.json", "theme.css")
+                ]
+
+        snippets = root / "snippets"
+        if os.path.exists(snippets):
+            snippet_files, _ = _list_children(snippets)
+            candidates += [
+                (f"snippets/{e}", f"snippets/{r}")
+                for e, r in snippet_files
+                if _extension(e) == "css"
+            ]
+
+        plugins = root / "plugins"
+        if os.path.exists(plugins):
+            _, plugin_dirs = _list_children(plugins)
+            for plugin_emitted, plugin_raw in plugin_dirs:
+                plugin_files, _ = _list_children(plugins / plugin_emitted)
+                candidates += [
+                    (f"plugins/{plugin_emitted}/{e}", f"plugins/{plugin_raw}/{r}")
+                    for e, r in plugin_files
+                    if e in _PLUGIN_FILES
+                ]
+    except _EnumerationAborted:
+        # ob's scan is one try/catch around the whole thing: the throw aborts it, nothing
+        # is indexed, and it logs "Failed to scan config files". So no config file uploads
+        # this cycle — and the traversal error already recorded sends this to the exit-3
+        # guard, because a config sync that silently does nothing is not a clean result.
+        return _result()
+
+    for rel_emitted, rel_on_disk in candidates:
+        # ob runs the ignoreFolders loop BEFORE the config-dir branch, so an
+        # exclusion naming a config path excludes it.
+        if _excluded(f"{_emitted(config_dir)}/{rel_emitted}", entries):
+            continue
+        category = _config_category(rel_emitted)
+        if category is None or category not in configs:
+            continue
+        # ob stats the EMITTED path, not the on-disk one: the enumeration pushes
+        # normalized paths and the adapter looks them up. A name whose normalization
+        # changes it therefore points at something that does not exist and is dropped.
+        candidate = vault / _emitted(config_dir) / rel_emitted
+        try:
+            stat = os.stat(candidate)  # follows symlinks, as adapter.stat does
+        except FileNotFoundError:
+            continue  # `exists()` is false — ob drops it, not an error
+        except OSError as exc:
+            _on_error(exc)
+            continue
+        if not os.path.isfile(candidate):
+            continue  # ob requires stat().type === "file"
+        # Config files live in the SAME remote namespace as the main tree, so they
+        # register here too — a config path can collide with a main-tree path.
+        # KEY by the emitted path, but identify by the ON-DISK candidate: two spellings
+        # look the same path up, so using the lookup path as the identity would make them
+        # indistinguishable and count one file twice.
+        if not namespace.claim(
+            f"{_emitted(config_dir)}/{rel_emitted}",
+            str(root / rel_on_disk),
+            ambiguous_when_shared=False,
+        ):
+            continue  # two spellings of one emitted name index the same entry once
+        if stat.st_size > per_file_max:
+            # The size skip is in the shared sync loop, so it governs config files too.
+            too_large.append({"path": f"{config_dir}/{rel_emitted}", "bytes": stat.st_size})
+            continue
+        total_bytes += stat.st_size
+        files += 1
+        bucket = by_category.setdefault(category, [0, 0])
+        bucket[0] += stat.st_size
+        bucket[1] += 1
+    return _result()
+
+
+def _lookup_resolves(vault: Path, lookup_rel: str, source: str) -> bool:
+    """Does the path ob looks up lead back to the entry the walk found?
+
+    Measured against the real tree rather than assumed, because the answer depends on the
+    filesystem: a normalizing or case-insensitive one can resolve a rewritten name, while
+    a byte-preserving one cannot.
+    """
+    try:
+        want = os.lstat(vault / lookup_rel)
+        have = os.lstat(source)
+    except OSError:
+        return False
+    return (want.st_dev, want.st_ino) == (have.st_dev, have.st_ino)
+
+
+def _overlaps(a: str, b: str) -> bool:
+    """Whether two resolved paths are the same subtree, either way round."""
+    return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
+
+
+# cli.js `Zi`: `this.perFileMax = 199*1024*1024`, replaced by the server's
+# `perFileMax` in the login handshake when it sends one. The seed loop then does
+# `!m.folder && m.size > e.perFileMax` -> `logSkip("File too large to sync")`, so a
+# file STRICTLY larger than the limit never uploads. This is why the audit's "33 files
+# >= 200 MB were never synced" was true without anyone configuring it.
+DEFAULT_PER_FILE_MAX = 199 * 1024 * 1024
+
+
+class _EmittedNamespace:
+    """The paths ob keys remote entries by, shared across every scan.
+
+    ob has ONE remote keyspace and indexes local files into a dict keyed by the emitted
+    path, so two candidates arriving at one path are the same entry and the second does
+    not add anything — `adapter.list` already returns NORMALIZED names, so a directory
+    holding two spellings of one emitted name yields that name twice and the second
+    write simply overwrites the first.
+
+    A shared emitted path means different things in the two scans, so `claim` takes
+    `ambiguous_when_shared` rather than applying one rule to both:
+
+    * MAIN walk — two spellings are two separate reconciles writing the same key, and
+      `listRecursive` runs them concurrently, so whose CONTENT lands at that remote path
+      depends on scheduling. `main` refuses on these.
+    * CONFIG scan — both candidates look the SAME emitted path up, so they stat one file
+      and the duplicate adds nothing. Counted once, reported, not refused.
+
+    Note that a name whose normalization changes it is usually gone before it gets here:
+    in the main walk `_lookup_resolves` drops it when the `_e` lookup finds nothing, and
+    in the config scan the emitted lookup does the same. What reaches `claim` is the
+    residue where both spellings really are findable.
+
+    It lives here rather than inside a walk because that is the defect shape this file has
+    hit four times: a second scan silently bypassing a guard built for the first.
+    """
+
+    def __init__(self) -> None:
+        self.sources: dict[str, str] = {}
+        self.duplicates: list[dict] = []
+        self.ambiguous: list[dict] = []
+
+    def claim(self, emitted: str, source: str, *, ambiguous_when_shared: bool) -> bool:
+        """True if ``source`` owns ``emitted``; False if something else already does.
+
+        ``ambiguous_when_shared`` distinguishes the two scans, which genuinely differ.
+        In the MAIN walk two spellings are two separate reconciles writing the same key,
+        and `listRecursive` runs them concurrently, so WHOSE CONTENT lands at that remote
+        path depends on scheduling — not determinable, so the caller refuses. In the
+        CONFIG scan both queue entries look the SAME emitted path up, so they stat one
+        file and the duplicate is merely redundant.
+        """
+        previous = self.sources.get(emitted)
+        if previous is None:
+            self.sources[emitted] = source
+            return True
+        if previous == source:
+            return True
+        record = {"path": emitted, "kept_from": previous, "dropped_from": source}
+        (self.ambiguous if ambiguous_when_shared else self.duplicates).append(record)
+        return False
+
+
+class _LinkPolicy:
+    """ob's symlink rule, in ONE place for every walk and every entry kind.
+
+    ``reconcileSymbolicLinkCreation`` resolves the link and RETURNS when the target
+    overlaps the resolved path of an already-watched path — before it distinguishes a
+    file from a directory. The vault root is always watched, so a link into the vault
+    (or to a directory containing it) is reconciled through neither route; a link
+    escaping to a disjoint subtree is followed. Only a DIRECTORY link then becomes
+    watched — the watcher is installed in the `isDirectory` branch — so a file link is
+    admitted without reserving its target, though its target is still remembered
+    because a later directory link can install a watcher over it.
+
+    This governs the main tree only. The config scan reaches files through
+    `adapter.list`/`stat`, which never consult the watcher set, so it deliberately does
+    NOT use this policy.
+
+    Callers pass only links they have already decided are visible: ob rejects a hidden
+    path before registering its target, so registering one here would let a hidden link
+    suppress a visible upload of the same target and make the result depend on
+    traversal order.
+    """
+
+    def __init__(self, vault: Path) -> None:
+        # The root watcher is installed by `watch()` BEFORE `listAll()` runs, so
+        # overlap with it is deterministic. Overlap with another LINK's target is not:
+        # `listRecursive` pushes every child's scan and awaits Promise.all, so two
+        # aliases can both clear the overlap check before either installs its watcher.
+        self.root_targets = [os.path.realpath(vault)]
+        # Directory links install a watcher, so they make LATER links overlap. File
+        # links do not — but a later DIRECTORY link can still install a watcher over a
+        # file link's target, and then whether the file link was admitted depends on
+        # which resolved first. So file targets are remembered separately: they never
+        # suppress another file link, but they do make a later directory link ambiguous.
+        self.link_targets: list[str] = []
+        self.file_targets: list[str] = []
+        self.skipped: list[dict] = []
+        self.escaping: list[dict] = []
+        self.ambiguous: list[dict] = []
+
+    def follow(self, abspath: str, relpath: str, on_error, *, scan_root: str) -> bool:
+        """``scan_root`` has NO default on purpose: it is the resolved directory the
+        link was found in, and omitting it turns a deterministic ancestor-watcher skip
+        into a spurious race. A call site that forgets it should fail loudly.
+
+        No error handling around ``realpath``: with ``strict=False`` (the default) it does
+        not raise — not for a missing target, not even for a symlink loop — so a guard
+        there would be untestable dead code rather than robustness.
+        """
+        target = os.path.realpath(abspath)
+        if any(_overlaps(target, seen) for seen in self.root_targets):
+            self.skipped.append({"path": relpath, "target": target})
+            return False
+        is_dir = os.path.isdir(target)
+        racing = [t for t in self.link_targets if _overlaps(target, t)]
+        if is_dir:
+            # A new directory link would install a watcher over any earlier file
+            # link's target, so that earlier admission was order-dependent too.
+            racing += [t for t in self.file_targets if _overlaps(target, t)]
+        # An ANCESTOR watcher is not a competitor. If we only reached this link by
+        # descending through an accepted link, that link's watcher was installed before
+        # its descendants were scanned, so the skip is deterministic — the same reason
+        # the vault root is deterministic. Only a target claimed by something OUTSIDE
+        # the current descent is a genuine sibling race.
+        if racing and scan_root:
+            racing = [t for t in racing if not _overlaps(scan_root, t)]
+            if not racing:
+                self.skipped.append({"path": relpath, "target": target})
+                return False
+        if racing:
+            # Whether this alias uploads depends on which concurrent scan installs its
+            # watcher first. There is no exact answer to report.
+            self.ambiguous.append({"path": relpath, "target": target})
+            return False
+        # Only a DIRECTORY link becomes watched: cli.js installs the watcher in the
+        # `a.isDirectory()` branch (`Yi && startWatchPath(t)`), while the isFile branch
+        # goes straight to reconcileFileCreation. So a file link is admitted without
+        # reserving its target — reserving it would make one file link suppress a
+        # later, legitimate upload of the same or an overlapping path.
+        if is_dir:
+            self.link_targets.append(target)
+        else:
+            self.file_targets.append(target)
+        self.escaping.append({"path": relpath, "target": target})
+        return True
+
+
+def predict(
+    vault: Path,
+    entries: list[str],
+    file_types: frozenset[str],
+    links: _LinkPolicy,
+    per_file_max: int,
+    namespace: _EmittedNamespace,
+) -> dict:
+    by_class: dict[str, list[int]] = {}
+    by_ext: dict[str, list[int]] = {}
+    by_top: dict[str, list[int]] = {}
+    upload_bytes = upload_files = 0
+    largest: list[tuple[int, str]] = []
+    traversal_errors: list[dict] = []
+    too_large: list[dict] = []
+    unresolvable: list[dict] = []
+
+    def _on_error(exc: OSError) -> None:
+        # A skipped subtree makes every total below a floor, not a measurement.
+        traversal_errors.append({"path": str(exc.filename), "error": exc.strerror})
+
+    # ob's symlink rule, read off cli.js `reconcileSymbolicLinkCreation`: it resolves
+    # the link, and if the target OVERLAPS the resolved path of an already-watched
+    # path it RETURNS — reconciling nothing. The vault root is always watched
+    # (`startWatchPath("/")`), so a link whose target is inside the vault, or which
+    # contains the vault, is skipped entirely; only a link that escapes to a disjoint
+    # subtree is descended into, and it then becomes watched itself, so a later link
+    # overlapping IT is skipped too.
+    #
+    # Measured both halves: the live vault's `20-projects/hapax-research` escapes to
+    # a source repo and the seed uploaded 678 markdown files / 11.8 MiB from behind
+    # it, so escaping links must be followed. An earlier revision of this walk went
+    # further and counted a vault-INTERNAL alias under both routes; that over-predicts,
+    # because ob skips it. The overlap rule is also the cycle guard: any link back
+    # into the vault, or to an ancestor of it, overlaps and is pruned.
+    for dirpath, dirnames, filenames in os.walk(vault, followlinks=True, onerror=_on_error):
+        raw_rel_dir = os.path.relpath(dirpath, vault)
+        raw_rel_dir = "" if raw_rel_dir == "." else raw_rel_dir
+        rel_dir = _emitted(raw_rel_dir) if raw_rel_dir else ""
+
+        def _lookup_rel(name: str, _raw: str = raw_rel_dir) -> str:
+            """The `_e`-only path, i.e. what ob lstats in this walk."""
+            return _e_path(f"{_raw}/{name}" if _raw else name)
+
+        def _rel(name: str, _rel_dir: str = rel_dir) -> str:
+            return f"{_rel_dir}/{_emitted(name)}" if _rel_dir else _emitted(name)
+
+        # Hidden pruning is the ONLY pruning of this walk, and it comes first.
+        #
+        # Dropping every dotted directory at every level is equivalent to cli.js `Is(s)`
+        # ("hidden if ANY path component is dotted") because no descendant of a pruned
+        # directory is visited; dotted FILES are skipped by name below. It must precede
+        # link handling, since ob rejects a hidden path before registering its target —
+        # otherwise a hidden link could claim a target and suppress a visible link to
+        # the same place, making the result depend on traversal order.
+        #
+        # Exclusions do NOT prune here. `listRecursive` reconciles links and installs
+        # watchers without consulting ignoreFolders; `allowSyncFile` applies that later,
+        # when deciding what to upload. So links are discovered throughout the tree,
+        # including beneath excluded directories, and exclusions are applied per FILE
+        # below, where they decide what counts rather than what is scanned.
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        scan_root = os.path.realpath(dirpath)  # cannot raise: strict=False
+        for name in list(dirnames):
+            child = os.path.join(dirpath, name)
+            if os.path.islink(child) and not links.follow(
+                child, _rel(name), _on_error, scan_root=scan_root
+            ):
+                dirnames.remove(name)
+
+        # Register the emitted namespace for EVERY visible entry, directory or file, and
+        # before any admission filter: a directory, an excluded file or an oversized one
+        # still occupies the name, so registering only ADMITTED files missed collisions
+        # against them.
+        #
+        # Two on-disk names can normalize to one emitted path — an NFD and an NFC
+        # spelling, or a nonbreaking and an ordinary space — and ob keys remote entries by
+        # that path, so they are one remote entry. A U+005C name does NOT reach this point:
+        # the `_e` lookup above cannot find it, so it is dropped as unresolvable rather
+        # than competing for the name.
+        for name in list(dirnames) + list(filenames):
+            if name.startswith("."):
+                continue
+            emitted = _rel(name)
+            source = os.path.join(dirpath, name)
+            # ob lstats the `_e` form, so a name containing U+005C is looked up at a
+            # rewritten path; when that does not exist the entry is DROPPED, occupies no
+            # remote name, and must not be registered here either — otherwise it would
+            # displace a file that really does live at that path. A nonbreaking space or
+            # an NFD spelling does NOT trigger this: `_e` leaves those alone, so the
+            # lookup succeeds and the entry is merely keyed under its normalized name.
+            on_disk_rel = f"{raw_rel_dir}/{name}" if raw_rel_dir else name
+            lookup = _lookup_rel(name)
+            if lookup != on_disk_rel and not _lookup_resolves(vault, lookup, source):
+                unresolvable.append({"path": emitted, "source": source})
+                if name in dirnames:
+                    dirnames.remove(name)
+                continue
+            if (
+                not namespace.claim(emitted, source, ambiguous_when_shared=True)
+                and name in dirnames
+            ):
+                dirnames.remove(name)
+
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            rel = _rel(name)
+            if _excluded(rel, entries):
+                continue
+            child = os.path.join(dirpath, name)
+            if any(u["source"] == child for u in unresolvable):
+                continue  # ob cannot find the emitted path; nothing uploads
+            if namespace.sources.get(rel) not in (None, child):
+                continue  # another entry already owns this emitted path
+            # The overlap rule applies to FILE links too: ob rejects on overlap before
+            # it distinguishes a file from a directory, so an in-vault file alias is
+            # not uploaded even though os.stat would happily follow it.
+            if os.path.islink(child) and not links.follow(
+                child, rel, _on_error, scan_root=scan_root
+            ):
+                continue
+            try:
+                size = os.stat(child).st_size
+            except OSError as exc:
+                _on_error(exc)
+                continue
+            klass = _classify(_extension(name))
+            bucket = by_class.setdefault(klass, [0, 0])
+            bucket[0] += size
+            bucket[1] += 1
+            if not _admitted(klass, file_types):
+                continue
+            if size > per_file_max:
+                # cli.js logSkip("File too large to sync"): admitted by class, then
+                # dropped by size. Counting it would overstate the upload.
+                too_large.append({"path": rel, "bytes": size})
+                continue
+            upload_bytes += size
+            upload_files += 1
+            ext = by_ext.setdefault(_extension(name), [0, 0])
+            ext[0] += size
+            ext[1] += 1
+            top = rel.split("/")[0] if "/" in rel else "(root)"
+            tb = by_top.setdefault(top, [0, 0])
+            tb[0] += size
+            tb[1] += 1
+            largest.append((size, rel))
+
+    largest.sort(reverse=True)
+    return {
+        "predicted_upload": {
+            "bytes": upload_bytes,
+            "gib": round(upload_bytes / 1073741824, 3),
+            "files": upload_files,
+            "by_ext": {
+                k: {"bytes": v[0], "files": v[1]}
+                for k, v in sorted(by_ext.items(), key=lambda kv: -kv[1][0])
+            },
+            "by_top_dir": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_top.items())},
+        },
+        "after_pruning_all_classes": {
+            "bytes": sum(v[0] for v in by_class.values()),
+            "files": sum(v[1] for v in by_class.values()),
+            "by_class": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_class.items())},
+        },
+        "largest_included_files": [{"bytes": b, "path": p} for b, p in largest[:20]],
+        "symlinks_escaping_vault": links.escaping,
+        "symlinks_skipped_overlapping": links.skipped,
+        "symlinks_scheduling_dependent": links.ambiguous,
+        "files_over_per_file_max": too_large,
+        "emitted_paths_unresolvable": unresolvable,
+        "emitted_path_duplicates": namespace.duplicates,
+        "emitted_path_ambiguous": namespace.ambiguous,
+        "per_file_max_bytes": per_file_max,
+        "traversal_errors": traversal_errors,
+    }
+
+
+# Each entry is (label, needle-that-must-appear-in-cli.js). These are the exact rules this
+# file replays, so a drifted client shows up as a named DRIFT line rather than as a silently
+# wrong prediction. Kept as substrings of the minified bundle because that is what ships.
+CLIENT_RULES: tuple[tuple[str, str], ...] = (
+    ("emitted-name pipeline (Ne)", 'function Ne(s){return Cs(_e(s)).normalize("NFC")}'),
+    ("nonbreaking-space rewrite (Cs)", 'function Cs(s){return s.replace(Xc," ")}'),
+    ("nonbreaking-space set (Xc)", "Xc=/\\u00A0|\\u202F/g"),
+    ("slash/backslash collapsing (_e)", 'function _e(s){return s=s.replace(/([\\\\/])+/g,"/")'),
+    ("hidden-at-any-depth (Is)", 'function Is(s){for(;s;){if(W(s).startsWith("."))return!0'),
+    ("exclusion prefix test", 'if(t&&e===r||e.startsWith(r+"/"))return!1'),
+    ("symlink overlap rejection", "if(n===c||c.startsWith(n+r)||n.startsWith(c+r))return"),
+    ("default attachment set (me)", 'me=["image","audio","pdf","video"]'),
+    ("valid attachment types (us)", 'us=["image","audio","video","pdf","unsupported"]'),
+    ("attachment-type parser (Kr)", "if(!us.includes(t))throw new Error(`Invalid file type"),
+    ("config-dir validator (Ss)", 'function Ss(s){return s&&s.startsWith(".")&&!s.includes("/")'),
+    ("per-file maximum", "this.perFileMax=199*1024*1024"),
+    # The ADMISSION rules proper. An earlier revision pinned only loose markers here — a
+    # log message for the size skip and a bare `await Promise.all` — which would have kept
+    # saying OK while the logic that decides what uploads changed underneath. Each needle
+    # below is the decision itself.
+    ("extension class arrays", 'Vt=["bmp","png","jpg","jpeg","gif","svg","webp","avif"]'),
+    ("native classes always sync", 'if(i==="md"||i==="canvas"||i==="base")return!0'),
+    (
+        "attachment class dispatch",
+        'return Vt.includes(i)?n.has("image"):i==="webm"?n.has("audio")||n.has("video")',
+    ),
+    ("per-file size skip condition", "!m.folder&&m.size>e.perFileMax"),
+    ("lookup uses the _e form, key uses Ne", "reconcileFileInternal(i,n)"),
+    (
+        "concurrent sibling scan",
+        "n.push(this.listRecursiveChild(e,r));await Promise.all(n)",
+    ),
+    (
+        "sync-mode validation",
+        '"bidirectional"&&s.mode!=="pull-only"&&s.mode!=="mirror-remote"',
+    ),
+    # The class tables in FULL. Pinning only the image array let a change to the audio,
+    # video, pdf or native set pass unnoticed while upload behaviour moved.
+    ("audio class array", 'Wt=["mp3","wav","m4a","3gp","flac","ogg","oga","opus"]'),
+    ("video class array", 'Ht=["mp4","webm","ogv","mov","mkv"]'),
+    ("pdf and native class arrays", 'Gt=["pdf"],fo=["md"],ks=["canvas"],ho=["base"]'),
+    # The config-dir rules in FULL, both the ENUMERATION (which paths are candidates) and
+    # the CATEGORY chain (which category each maps to). Pinning one branch of each let a
+    # dropped `theme.css` candidate or a removed `data.json` admission pass unnoticed.
+    ("config queue seed", 'm.push(r+"config")'),
+    (
+        "config: top-level json enumeration",
+        'let g=await u.list(n);for(let F of g.files)$(F)==="json"&&m.push(F)',
+    ),
+    (
+        "config: themes enumeration",
+        'if(await u.exists(r+"themes")){let F=await u.list(r+"themes");for(let b of F.folders)'
+        '{let w=await u.list(b);for(let v of w.files){let A=W(v);(A==="manifest.json"||A==="theme.css")&&m.push(v)}}}',
+    ),
+    (
+        "config: snippets enumeration",
+        'if(await u.exists(r+"snippets")){let F=await u.list(r+"snippets");'
+        'for(let b of F.files)$(b)==="css"&&m.push(b)}',
+    ),
+    (
+        "config: plugins enumeration",
+        'if(await u.exists(r+"plugins")){let F=await u.list(r+"plugins");for(let b of F.folders)'
+        "{let w=await u.list(b);for(let v of w.files){let A=W(v);f.isPluginFile(A)&&m.push(v)}}}",
+    ),
+    ("config: workspace never syncs", 'r==="workspace.json"||r==="workspace-mobile.json"?!1'),
+    ("config category: app", 'r==="app.json"||r==="types.json"?c="app"'),
+    (
+        "config categories: appearance/hotkey/core-plugin/community-plugin",
+        'r==="appearance.json"?c="appearance":r==="hotkeys.json"?c="hotkey":'
+        'r==="core-plugins.json"||r==="core-plugins-migration.json"?c="core-plugin":'
+        'r==="community-plugins.json"?c="community-plugin"',
+    ),
+    (
+        "config category: appearance-data",
+        'o[0]==="themes"&&o.length===3&&(a==="theme.css"||a==="manifest.json")'
+        '||o[0]==="snippets"&&o.length===2&&l==="css"?c="appearance-data"',
+    ),
+    ("config category: core-plugin-data", 'o.length===1&&l==="json"?c="core-plugin-data"'),
+    (
+        "config category: community-plugin-data",
+        'o[0]==="plugins"&&o.length===3&&this.isPluginFile(a)&&(c="community-plugin-data")',
+    ),
+    (
+        "config: plugin file set",
+        'return e==="manifest.json"||e==="main.js"||e==="styles.css"||e==="data.json"',
+    ),
+    (
+        "config: node_modules and dot skip",
+        'if(o.some(f=>f==="node_modules"||f.startsWith(".")))return!1',
+    ),
+    ("config category gate", "c&&this.allowSpecialFiles.has(c)"),
+    # The ADAPTER semantics both scans depend on, and the asymmetry between them: `list`
+    # STATS each child (following links, so a symlinked dir counts as a folder and a
+    # dangling child throws and kills the enumeration), while reconcile uses LSTAT (so the
+    # main walk sees a link as a link and routes it to the overlap rule). Switching either
+    # call to the other would change predictions while leaving every other needle intact.
+    (
+        "adapter.list stats children (follows links)",
+        "l=await this.fsPromises.stat(this.getFullRealPath(o));"
+        "l.isFile()&&n.files.push(a),l.isDirectory()&&n.folders.push(a)",
+    ),
+    (
+        "reconcile lstats (does not follow)",
+        ",n=await this.fsPromises.lstat(i);n.isFile()?await this.reconcileFileCreation(e,t,n)"
+        ":n.isDirectory()?await this.reconcileFolderCreation(e,t):n.isSymbolicLink()",
+    ),
+)
+
+
+def recheck_client() -> int:
+    """Verify every replayed rule against the installed client. Exit 3 on any drift."""
+    try:
+        root = subprocess.run(
+            ["npm", "root", "-g"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(
+            f"cannot locate the global npm root: {exc}. Next: install node/npm, or run "
+            "this on the host that runs ob.",
+            file=sys.stderr,
+        )
+        return ERROR
+    bundle = Path(root) / "obsidian-headless" / "cli.js"
+    try:
+        source = bundle.read_text(encoding="utf-8", errors="replace")
+        metadata = json.loads((bundle.parent / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(
+            f"cannot read {bundle}: {exc}. Next: npm install -g obsidian-headless.", file=sys.stderr
+        )
+        return ERROR
+    # Valid JSON need not be an object holding a version string: subscripting a list or a
+    # null raises TypeError, which would escape as a traceback and exit 1 instead of the
+    # documented exit 3. Same shape as the config-schema check.
+    version = metadata.get("version") if isinstance(metadata, dict) else None
+    if not isinstance(version, str):
+        print(
+            f"{bundle.parent / 'package.json'} has no version string (got {version!r}); "
+            "refusing to report a recheck against an unidentifiable bundle. Next: "
+            "reinstall with npm install -g obsidian-headless.",
+            file=sys.stderr,
+        )
+        return ERROR
+
+    print(f"{bundle} (obsidian-headless {version})")
+    drifted = []
+    for label, needle in CLIENT_RULES:
+        present = needle in source
+        print(f"  [{'OK  ' if present else 'DRIFT'}] {label}")
+        if not present:
+            drifted.append(label)
+    if drifted:
+        print(
+            f"DRIFT: {len(drifted)} rule(s) no longer match this client "
+            f"({', '.join(drifted)}). Every prediction here replays those rules, so they "
+            "must be re-read from the bundle before the output is trusted. Next: re-read "
+            "the named functions in cli.js and update this file's model and its tests.",
+            file=sys.stderr,
+        )
+        return ERROR
+    return OK
+
+
+def _sync_config_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "obsidian-headless" / "sync"
+
+
+def load_live_config(vault: Path) -> dict:
+    """Find the ob sync config whose vaultPath is this vault (mirrors cli.js ``He``)."""
+    root = _sync_config_dir()
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"no ob sync state directory at {root}. Next: confirm XDG_CONFIG_HOME "
+            "points at the host that runs ob, and run 'ob sync-setup' if this vault "
+            "has never been connected."
+        )
+    unreadable: list[str] = []
+    try:
+        candidates = sorted(root.iterdir())
+    except OSError as exc:
+        raise ValueError(
+            f"cannot read the ob sync state directory {root}: {exc.strerror}. "
+            "Next: fix the permissions or run as the user ob runs as; pass "
+            "--excluded-folders explicitly to preflight a list meanwhile."
+        ) from exc
+    for entry in candidates:
+        config = entry / "config.json"
+        try:
+            if not config.is_file():
+                continue
+        except OSError as exc:
+            unreadable.append(f"{config} ({exc.strerror})")
+            continue
+        try:
+            data = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            unreadable.append(str(config))
+            continue
+        # Valid JSON is not necessarily an object. A corrupt config belonging to
+        # some OTHER vault must not break this vault's audit, so note and skip.
+        if not isinstance(data, dict):
+            unreadable.append(f"{config} (JSON is {type(data).__name__}, not an object)")
+            continue
+        if Path(str(data.get("vaultPath", ""))).resolve() == vault:
+            missing = [k for k in PERSISTED_REQUIRED_KEYS if k not in data]
+            if missing:
+                raise ValueError(
+                    f"{config} does not look like an ob sync config "
+                    f"(missing {', '.join(missing)}) — refusing to read an exclusion "
+                    "list out of an unrecognized schema. Next: check the "
+                    "obsidian-headless version, compare the file against the keys "
+                    f"ob persists ({', '.join(PERSISTED_REQUIRED_KEYS)}), and pass "
+                    "--excluded-folders explicitly to preflight a list meanwhile."
+                )
+            _validate_config_types(config, data)
+            return data
+    detail = ""
+    if unreadable:
+        detail = f" Unreadable config(s) skipped: {'; '.join(unreadable)}."
+    raise FileNotFoundError(
+        f"no ob sync configuration found for {vault}.{detail} Next: verify the vault "
+        f"path matches the 'vaultPath' in a config under {root}, and run "
+        "'ob sync-setup' if this vault is not connected yet."
+    )
+
+
+def resolve_sync_mode(value: object) -> str:
+    """The sync direction, which decides whether an upload happens AT ALL.
+
+    cli.js validates `--mode` against `bidirectional` (the default, and stored by DELETING
+    the key), `pull-only` ("only download, ignore local changes") and `mirror-remote`
+    ("only download, revert local changes"). Under either download-only mode no local file
+    is uploaded, so predicting an upload set as though it were would be a confident wrong
+    number — and `mirror-remote` additionally REVERTS local changes, which is a data-risk
+    the operator should hear about from a preflight rather than afterwards.
+    """
+    if not value:
+        return "bidirectional"
+    if value not in SYNC_MODES:
+        raise ValueError(
+            f'Invalid sync mode: "{value}". ob accepts {", ".join(SYNC_MODES)} and refuses '
+            "to start otherwise, so this config could not be in use as written. Next: "
+            "re-apply it with 'ob sync-config --mode bidirectional'."
+        )
+    return str(value)
+
+
+def resolve_config_dir(value: object) -> str:
+    """Mirror cli.js ``ws(s)``/``Ss(s)``: a config dir must be a dotfolder NAME.
+
+    ``Ss(s) = s && s.startsWith(".") && !s.includes("/") && !s.includes("\\")``, and
+    ``ws`` THROWS ``Invalid config directory`` otherwise; a falsy value means the
+    default. Accepting anything else here would scan a directory the client never
+    looks at and report a confident total for it.
+    """
+    if not value:
+        return ".obsidian"
+    if not isinstance(value, str):
+        raise ValueError(
+            f"configDir is {value!r}, but ob stores a dotfolder name. Next: re-apply "
+            "it with 'ob sync-config --config-dir .obsidian'."
+        )
+    if not (value.startswith(".") and "/" not in value and "\\" not in value):
+        raise ValueError(
+            f'Invalid config directory: "{value}". ob requires a dotfolder name '
+            "(e.g. .obsidian) with no path separators, and refuses to start "
+            "otherwise — so this config could not be in use as written. Next: fix it "
+            "with 'ob sync-config --config-dir .obsidian'."
+        )
+    return value
+
+
+def _validate_config_types(config: Path, data: dict) -> None:
+    """Refuse a config whose fields are the wrong SHAPE or name unknown values.
+
+    Without this a ``null``, a string or a nested list where a list-of-strings
+    belongs escapes as a TypeError traceback and exit 1 — an undocumented status
+    with no next action, which is the failure mode this tool exists to prevent.
+    A bare string is worse than a crash: ``frozenset("app")`` is ``{'a','p'}``,
+    which matches nothing and reports a confident zero.
+
+    Driven by PERSISTED_LIST_FIELDS rather than an inline list of keys, so a field
+    added to the reader cannot bypass validation. A test asserts the table covers
+    every persisted key the tool reads.
+    """
+    for key, allowed in PERSISTED_LIST_FIELDS.items():
+        if key not in data:
+            continue
+        value = data[key]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(
+                f"{config}: '{key}' is {value!r}, but ob persists a list of strings "
+                "there. Refusing to guess. Next: inspect the file, re-apply the "
+                "setting with 'ob sync-config', or pass --excluded-folders and "
+                "--file-types explicitly to preflight a list meanwhile."
+            )
+        if allowed is None:
+            continue
+        unknown = [v for v in value if v not in allowed]
+        if unknown:
+            raise ValueError(
+                f"{config}: '{key}' names unknown value(s) {', '.join(unknown)}; ob "
+                f"recognizes {', '.join(allowed)}. An unrecognized value silently "
+                "matches nothing, so refusing rather than under-predicting. Next: "
+                "re-apply the setting with 'ob sync-config' using a recognized value."
+            )
+
+
+def _resolve_file_types(args: argparse.Namespace, live: dict) -> tuple[str, ...] | None:
+    """Resolve the attachment selection, honouring ob's three distinct cases."""
+    if args.file_types is not None:
+        if args.file_types == "":
+            # cli.js: `s.fileTypes===""? delete t.allowTypes : ...` — the EXACT empty
+            # string restores the defaults. " " is not it: that goes to Kr and throws.
+            return DEFAULT_FILE_TYPES
+        # Mirror cli.js `Kr`: split, JS-trim, lowercase, and reject ANY field that is
+        # not a known type — including the empty field that "," or "image," produces.
+        # Dropping empties instead would certify a selection ob refuses to apply.
+        fields = tuple(_js_trim(t).lower() for t in args.file_types.split(","))
+        invalid = [t for t in fields if t not in VALID_FILE_TYPES]
+        if invalid:
+            raise ValueError(
+                f'Invalid file type: "{invalid[0]}". Valid values: '
+                f"{', '.join(VALID_FILE_TYPES)}. ob rejects empty comma-separated "
+                "fields too, so ',' and 'image,' are invalid. Next: pass a "
+                "comma-separated list with no empty fields, or the empty string to "
+                "restore ob's defaults."
+            )
+        return fields
+    if PERSISTED_FILE_TYPES_KEY in live:
+        # An empty persisted array is honoured as "no attachments": JS `[] || me`
+        # keeps `[]`. Absence is the default set. These are NOT the same state.
+        return tuple(live[PERSISTED_FILE_TYPES_KEY])
+    return DEFAULT_FILE_TYPES
+
+
+def main(argv: list[str] | None = None) -> int:
+    # --recheck-client is a standalone mode with no vault argument, so it is handled
+    # before the parser that requires one.
+    supplied = list(sys.argv[1:] if argv is None else argv)
+    if "--recheck-client" in supplied:
+        if len(supplied) != 1:
+            print(
+                "--recheck-client takes no other arguments. Next: run it alone to check "
+                "the installed client, or drop it to preflight a vault.",
+                file=sys.stderr,
+            )
+            return ERROR
+        return recheck_client()
+
+    parser = _Parser(
+        prog="hapax-obsidian-sync-preflight",
+        description="Validate an Obsidian Sync exclusion list and predict the upload set.",
+    )
+    parser.add_argument(
+        "--recheck-client",
+        action="store_true",
+        help="verify every replayed rule against the installed obsidian-headless bundle "
+        "and exit non-zero on drift (takes no other arguments)",
+    )
+    parser.add_argument("vault", help="local vault path")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--excluded-folders",
+        help="comma-separated list to validate before applying it",
+    )
+    source.add_argument(
+        "--from-sync-config",
+        action="store_true",
+        help="audit the list ob already holds for this vault",
+    )
+    parser.add_argument(
+        "--file-types",
+        default=None,
+        help=f"comma-separated subset of {','.join(VALID_FILE_TYPES)} "
+        f"(empty string restores ob's defaults: {','.join(DEFAULT_FILE_TYPES)})",
+    )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="report unmatchable entries but exit 0 anyway",
+    )
+    parser.add_argument(
+        "--per-file-max",
+        type=int,
+        default=DEFAULT_PER_FILE_MAX,
+        help="bytes above which ob skips a file (default %(default)s, the client's "
+        "fallback; the SERVER may send a different perFileMax at login, which is not "
+        "observable locally — pass it here if you know it)",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    args = parser.parse_args(argv)
+
+    vault = Path(args.vault).expanduser()
+    if not vault.is_dir():
+        print(
+            f"not a directory: {vault}. Next: pass the local vault root "
+            "(the folder ob syncs), not a note or a remote vault name.",
+            file=sys.stderr,
+        )
+        return ERROR
+    vault = vault.resolve()
+
+    live: dict = {}
+    if args.from_sync_config:
+        try:
+            live = load_live_config(vault)
+        except (FileNotFoundError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return ERROR
+        # Persisted key, not the printed one — see PERSISTED_EXCLUSIONS_KEY.
+        entries = list(live.get(PERSISTED_EXCLUSIONS_KEY) or [])
+    else:
+        entries = args.excluded_folders.split(",")
+
+    try:
+        file_types = _resolve_file_types(args, live)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return ERROR
+
+    configs = frozenset(live.get(PERSISTED_CONFIGS_KEY) or ())
+    try:
+        config_dir = resolve_config_dir(live.get("configDir"))
+        sync_mode = resolve_sync_mode(live.get("syncMode"))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return ERROR
+    uploads_enabled = sync_mode in UPLOADING_SYNC_MODES
+    findings = validate_entries(
+        vault,
+        entries,
+        trim=not args.from_sync_config,
+        config_dir=config_dir,
+        configs_enabled=bool(configs),
+    )
+    bad = [f for f in findings if f["verdict"] != "ok"]
+    effective = [f["normalized"] for f in findings if f["verdict"] == "ok"]
+    # The link policy governs the MAIN walk only — the config scan reaches files through
+    # `adapter.list`/`stat`, which never consult the watcher set. The emitted NAMESPACE is
+    # shared, because ob has one remote keyspace for both trees.
+    links = _LinkPolicy(vault)
+    namespace = _EmittedNamespace()
+    prediction = predict(
+        vault, effective, frozenset(file_types), links, args.per_file_max, namespace
+    )
+
+    config_uploads = predict_config_uploads(
+        vault, config_dir, configs, effective, args.per_file_max, namespace
+    )
+    prediction["config_uploads"] = config_uploads
+    prediction["traversal_errors"].extend(config_uploads["traversal_errors"])
+    prediction["files_over_per_file_max"].extend(config_uploads["files_over_per_file_max"])
+    prediction["predicted_upload"]["bytes"] += config_uploads["bytes"]
+    prediction["predicted_upload"]["files"] += config_uploads["files"]
+    prediction["predicted_upload"]["gib"] = round(
+        prediction["predicted_upload"]["bytes"] / 1073741824, 3
+    )
+    if not uploads_enabled:
+        # A download-only mode uploads nothing, so the predicted upload IS zero. The
+        # admitted set is kept under its own key because it is still the answer to "what
+        # would go if this were bidirectional" — but it must not be reported as the
+        # prediction, which is the confident-wrong-number failure this tool exists to stop.
+        prediction["admitted_if_bidirectional"] = dict(prediction["predicted_upload"])
+        prediction["predicted_upload"] = {"bytes": 0, "gib": 0.0, "files": 0, "by_ext": {}}
+
+    report = {
+        "vault": str(vault),
+        "source": "sync-config" if args.from_sync_config else "argument",
+        "vault_name": live.get("vaultName"),
+        "file_types": list(file_types),
+        "entries_total": len(findings),
+        "entries_effective": len(effective),
+        "entries_unmatchable": len(bad),
+        "sync_mode": sync_mode,
+        "uploads_enabled": uploads_enabled,
+        "configs": sorted(configs),
+        "findings": findings,
+        **prediction,
+    }
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(f"vault: {vault}" + (f"  ({live['vaultName']})" if live.get("vaultName") else ""))
+        print(f"file types: {','.join(file_types) or '(none — attachments will not sync)'}")
+        if not uploads_enabled:
+            print(
+                f"sync mode: {sync_mode} — DOWNLOAD ONLY, so nothing uploads; the "
+                f"{prediction['admitted_if_bidirectional']['files']} admitted files are "
+                "reported under admitted_if_bidirectional"
+                + (
+                    "\n  WARNING: mirror-remote also REVERTS local changes to match the "
+                    "remote, so local edits can be lost"
+                    if sync_mode == "mirror-remote"
+                    else ""
+                )
+            )
+        print(f"exclusion entries: {len(findings)} total, {len(effective)} effective")
+        for finding in findings:
+            mark = "ok  " if finding["verdict"] == "ok" else "FAIL"
+            line = f"  [{mark}] {finding['normalized']}"
+            if finding["verdict"] != "ok":
+                line += f"  <- {finding['detail']}"
+            elif finding.get("redundant_under"):
+                line += f"  (redundant under {', '.join(finding['redundant_under'])})"
+            print(line)
+        upload = prediction["predicted_upload"]
+        print(
+            f"predicted upload: {upload['bytes']} B = {upload['gib']} GiB / {upload['files']} files"
+        )
+        for ext, stats in list(upload["by_ext"].items())[:8]:
+            print(f"  .{ext or '(none)'}: {stats['bytes']} B / {stats['files']} files")
+        for item in prediction["emitted_paths_unresolvable"]:
+            print(
+                f"  NOTE: {item['source']} is NOT uploaded — its emitted path "
+                f"{item['path']} does not exist on disk, so ob looks for it and drops "
+                "the entry (normalization rewrote the name)"
+            )
+        for item in prediction["emitted_path_duplicates"]:
+            print(
+                f"  NOTE: {item['dropped_from']} shares the emitted path {item['path']} "
+                f"with {item['kept_from']} and is indexed once, not twice"
+            )
+        if prediction["files_over_per_file_max"]:
+            skipped = prediction["files_over_per_file_max"]
+            print(
+                f"  {len(skipped)} file(s) exceed per-file max "
+                f"{prediction['per_file_max_bytes']} B and are NOT counted "
+                f"(largest: {max(s['bytes'] for s in skipped)} B)"
+            )
+        if config_uploads["files"]:
+            print(
+                f"  config dir {config_uploads['config_dir']}/: "
+                f"{config_uploads['bytes']} B / {config_uploads['files']} files "
+                f"({', '.join(sorted(configs))}) — included above"
+            )
+        for link in prediction["symlinks_escaping_vault"]:
+            print(
+                f"  NOTE: {link['path']} is a symlink OUT of the vault -> "
+                f"{link['target']}; ob follows it, so everything admitted beneath "
+                "it uploads. Counted above."
+            )
+
+    if prediction["emitted_path_ambiguous"]:
+        first = prediction["emitted_path_ambiguous"][0]
+        print(
+            f"REFUSED: {len(prediction['emitted_path_ambiguous'])} pair(s) of files "
+            f"normalize to one emitted path (e.g. {first['path']}, from "
+            f"{first['kept_from']} and {first['dropped_from']}). ob keys remote entries "
+            "by that path, and `listRecursive` reconciles concurrently, so WHICH file's "
+            "content ends up there depends on scheduling. Next: rename one of them so "
+            "the emitted paths differ — normalization rewrites nonbreaking spaces to "
+            "ordinary ones and applies NFC, so those spellings are not distinct.",
+            file=sys.stderr,
+        )
+        return ERROR
+
+    if prediction["symlinks_scheduling_dependent"]:
+        first = prediction["symlinks_scheduling_dependent"][0]
+        print(
+            f"REFUSED: {len(prediction['symlinks_scheduling_dependent'])} symlink(s) "
+            f"(e.g. {first['path']} -> {first['target']}) resolve to a target another "
+            "link already claimed. ob scans siblings CONCURRENTLY (listRecursive awaits "
+            "Promise.all), so whether one alias uploads or both do depends on which scan "
+            "installs its watcher first — there is no exact prediction to give. Next: "
+            "DELETE the duplicate link, or retarget it somewhere disjoint, or give it a "
+            "name starting with '.' (hidden paths are rejected before a target is "
+            "registered). A plain rename does NOT help — the target is unchanged — and "
+            "neither does excluding it: ob reconciles links while scanning and applies "
+            "exclusions only afterwards, so an excluded alias still competes.",
+            file=sys.stderr,
+        )
+        return ERROR
+
+    if prediction["traversal_errors"]:
+        first = prediction["traversal_errors"][0]
+        print(
+            f"REFUSED: {len(prediction['traversal_errors'])} path(s) could not be "
+            f"read (e.g. {first['path']}: {first['error']}), so every total above is "
+            "a FLOOR, not a measurement, and must not be used as verification "
+            "evidence. Next: fix the permissions or run as the user ob runs as.",
+            file=sys.stderr,
+        )
+        return ERROR
+
+    if args.from_sync_config and not findings and not args.allow_missing:
+        # An audit that finds no list must not read as a clean bill of health: the
+        # key is absent precisely when exclusions were cleared or never set, and
+        # every admitted file then uploads.
+        print(
+            f"REFUSED: the live sync config for {vault} configures NO exclusions "
+            f"('{PERSISTED_EXCLUSIONS_KEY}' absent or empty), so nothing is excluded "
+            f"and all {prediction['predicted_upload']['files']} admitted files would "
+            "upload. Next: set them with 'ob sync-config --excluded-folders', or pass "
+            "--allow-missing if an empty exclusion list is intended.",
+            file=sys.stderr,
+        )
+        return REFUSED
+
+    if bad and not args.allow_missing:
+        print(
+            f"REFUSED: {len(bad)} exclusion entr{'y' if len(bad) == 1 else 'ies'} "
+            "cannot match anything. ob accepts them silently and the data they name "
+            "WOULD UPLOAD. Next: fix the paths shown above, or pass --allow-missing "
+            "if that is intended.",
+            file=sys.stderr,
+        )
+        return REFUSED
+    return OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())
