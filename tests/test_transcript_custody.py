@@ -832,6 +832,32 @@ def test_every_host_checks_windows_freshness_so_a_silent_puller_fails(tmp_path: 
     )  # contents only on the puller
 
 
+def test_windows_unreadable_tar_is_a_reported_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A tar that cannot be listed from its snapshot fails with a next action, not a traceback."""
+
+    from datetime import UTC, datetime
+
+    cli = _cli_module()
+    snap = {
+        "id": "abc",
+        "short_id": "abc",
+        "time": datetime.now(UTC).isoformat(),
+        "paths": ["/win-a-transcripts.tar"],
+    }
+    monkeypatch.setattr(cli, "_restic_json", lambda _env, *_cmd: json.dumps([snap]))
+
+    def broken(_env: dict, _snapshot: dict) -> list:
+        raise subprocess.CalledProcessError(1, ["restic", "dump"])
+
+    monkeypatch.setattr(cli, "_tar_listing", broken)
+    assert cli._verify_windows({}, "win-a", 26.0) == 1
+    err = capsys.readouterr().err
+    assert "FAIL win-a: unreadable: the tar in snapshot abc could not be listed" in err
+    assert "restic check" in err and "next action" in err
+
+
 @_needs_restic
 def test_inventory_asks_named_windows_hosts(tmp_path: Path) -> None:
     env, _ = _windows_env(tmp_path)
