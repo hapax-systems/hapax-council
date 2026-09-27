@@ -6241,9 +6241,14 @@ def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Pa
     return None
 
 
-def _frontmatter_value(note: Path, key: str) -> str:
-    match = re.search(rf"^{key}:[ \t]*(.*)$", note.read_text(encoding="utf-8"), re.MULTILINE)
-    return match.group(1).strip().strip("\"'") if match else ""
+def _assigned_elsewhere(note: Path, role: str) -> bool:
+    """Whether the note's parsed frontmatter explicitly assigns the task away from ``role``:
+    to ``unassigned`` or to another named role. An absent, empty or unparseable assignment is
+    no proof, so the caller holds."""
+
+    frontmatter = parse_frontmatter_with_diagnostics(note).frontmatter
+    value = frontmatter.get("assigned_to") if isinstance(frontmatter, dict) else None
+    return isinstance(value, str) and bool(value.strip()) and value.strip() != role
 
 
 def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
@@ -6472,11 +6477,11 @@ def _other_live_markers(
         ):
             continue
         try:
-            named = path.read_text(encoding="utf-8").splitlines()[:1]
+            named = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeError):
             hits.append(path)  # unreadable: it may name the task, so it counts as live
             continue
-        if named == [task_id]:
+        if task_id in named:
             hits.append(path)
     return hits
 
@@ -6674,7 +6679,8 @@ def _archive_residue(
             archive_dir / projection.path.name,
             archive_dir / f"{projection.path.name}.live-differed-from-journal",
         )
-        if path.exists() or path.is_symlink()
+        # A same-stamp rerun's own staged original is the file it recovers, not a collision.
+        if (path.exists() or path.is_symlink()) and path != staged.get(projection.path)
     ]
     # A same-stamp rerun may reuse the lineage README and the staging binding, but only this
     # journal's: archiving under another publication's receipt would be untraceable.
@@ -6890,10 +6896,13 @@ def _release_applied_residue(
     if any(_is_claim_activation_projection(projection) for projection in present):
         status = _task_status_for_any_state(vault_root, task_id)
         note = _task_note_path_for_any_state(vault_root, task_id)
-        assignee = _frontmatter_value(note, "assigned_to") if note is not None else None
         if status in TASK_TERMINAL_STATUSES and not _task_in_active(vault_root, task_id):
             shape = "closed_task"
-        elif note is not None and note.parent.name == "active" and assignee != journal.intent.role:
+        elif (
+            note is not None
+            and note.parent.name == "active"
+            and _assigned_elsewhere(note, journal.intent.role)
+        ):
             # Re-offered or reassigned: the note no longer names this role. Publication writes
             # the note before the markers, so these markers cannot be a live claim.
             shape = "reassigned_task"

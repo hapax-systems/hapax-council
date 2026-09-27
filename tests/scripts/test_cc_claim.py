@@ -2053,8 +2053,9 @@ def test_a_working_row_of_another_role_is_still_refused(tmp_path: Path, status: 
         ("cc-active-task-cx-other", b"own-row\n"),
         ("cc-active-task-cx-test-77777777-1111-2222-3333-444455556666", b"own-row\n"),
         ("cc-active-task-cx-other", b"\xff\xfe"),  # unreadable: it may name the row
+        ("cc-active-task-cx-other", b"garbage\nown-row\n"),  # names it on a later line
     ],
-    ids=["other-role", "other-session", "unreadable"],
+    ids=["other-role", "other-session", "unreadable", "later-line"],
 )
 def test_own_row_is_not_resumed_while_another_claim_marker_names_it(
     tmp_path: Path, marker: str, content: bytes

@@ -4618,11 +4618,12 @@ def test_release_refuses_a_held_publication_whose_admission_proof_drifted(
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
 
 
+@pytest.mark.parametrize("content", ["task-alpha\n", "junk\ntask-alpha\n"], ids=["first", "later"])
 def test_release_refuses_a_held_publication_while_another_session_holds_the_task(
-    tmp_path: Path,
+    tmp_path: Path, content: str
 ) -> None:
     fixture, _journal, _projections = _held_publication(tmp_path)
-    (fixture.cache / "cc-active-task-cx-red-session-xyz").write_text("task-alpha\n")
+    (fixture.cache / "cc-active-task-cx-red-session-xyz").write_text(content)
     before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
 
     with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
@@ -4977,6 +4978,91 @@ def test_a_same_stamp_rerun_refuses_a_readme_of_another_or_no_publication(
 
     assert "claim_residue_archive_collision" in raised.value.message
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def _applied_publication(tmp_path: Path) -> ClaimFixture:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    return fixture
+
+
+@pytest.mark.parametrize(
+    ("assignment", "reassigned"),
+    [
+        (None, False),
+        ("assigned_to:", False),
+        ("assigned_to: cx-red  # still mine", False),
+        ("assigned_to: cx-other", True),
+        ("assigned_to: unassigned", True),
+    ],
+    ids=["absent", "empty", "own-role-with-comment", "other-role", "unassigned"],
+)
+def test_only_an_explicit_other_assignment_releases_live_markers(
+    tmp_path: Path, assignment: str | None, reassigned: bool
+) -> None:
+    # #4804 round 4 (codex critical): an absent, empty or commented own assignment is no proof.
+    fixture = _applied_publication(tmp_path)
+    note = fixture.intent.note_path
+    lines = [line for line in note.read_text().splitlines() if not line.startswith("assigned_to:")]
+    if assignment is not None:
+        lines.insert(3, assignment)
+    note.write_text("\n".join(lines) + "\n")
+    if reassigned:
+        assert _release_held(fixture).shape == "reassigned_task"
+        return
+    before = _tree_snapshot(fixture.cache)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+    assert "claim_residue_live_marker" in raised.value.message
+    assert _tree_snapshot(fixture.cache) == before
+
+
+def test_a_same_stamp_rerun_finishes_from_its_own_staged_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #4804 round 4 (codex): the crashed run's staged original does not collide with its rerun.
+    fixture, journal, projections = _held_publication(tmp_path)
+
+    def killed_before_the_copy(*_args: object, **_kwargs: object) -> None:
+        raise _Killed
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", killed_before_the_copy)
+    with pytest.raises(_Killed):
+        _release_held(fixture)
+    monkeypatch.undo()
+
+    assert _release_held(fixture).shape == "held_publication"
+    assert not journal.exists()
+
+
+def test_the_applied_path_refuses_another_journals_staged_copy(tmp_path: Path) -> None:
+    # #4804 round 4 (glm, claude): the applied path's staged rejection, pinned on its own.
+    fixture = _applied_publication(tmp_path)
+    for marker in fixture.cache.glob("cc-active-task-cx-red*"):
+        marker.unlink()
+    epoch = next(fixture.cache.glob("cc-claim-epoch-cx-red"))
+    content, mode = epoch.read_bytes(), stat.S_IMODE(epoch.stat().st_mode)
+    epoch.unlink()
+    staging = fixture.cache / "claim-residue-release" / "task-alpha" / "20260101T000000Z-cx-red"
+    staging.mkdir(parents=True)
+    (staging / "PUBLICATION").write_text(f"claim-pub-{'0' * 64}\n", encoding="ascii")
+    (staging / epoch.name).write_bytes(content)
+    os.chmod(staging / epoch.name, mode)
+    before = _tree_snapshot(fixture.cache)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_projection_missing" in raised.value.message
+    assert _tree_snapshot(fixture.cache) == before
 
 
 @pytest.mark.parametrize("damaged", ["README", "PUBLICATION"])

@@ -838,11 +838,11 @@ def _other_claim_markers(cache: Path) -> list[Path]:
         if marker.name in own:
             continue
         try:
-            named = marker.read_text(encoding="utf-8").splitlines()[:1]
+            named = marker.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeError):
             hits.append(marker)  # unreadable: it may name the task, so it counts as live
             continue
-        if named == [task_id]:
+        if task_id in named:
             hits.append(marker)
     return hits
 
