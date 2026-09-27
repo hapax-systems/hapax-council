@@ -770,12 +770,14 @@ def test_a_second_slip_on_the_same_day_gets_its_own_candidate(tmp_path: Path) ->
     ]
 
 
-def _date_only_note(directory: Path, name: str, due_literal: str) -> Path:
+def _date_only_note(directory: Path, name: str, due_literal: str | None) -> Path:
     # The shape #4798 wrote before the full-instant identity; E3 may have re-quoted it.
+    # None writes a note with no due line at all.
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.md"
+    due_line = "" if due_literal is None else f"due: {due_literal}\n"
     path.write_text(
-        f'---\ntype: "hapax-request"\nrequest_id: "{name}"\ndue: {due_literal}\n---\n\n# before\n',
+        f'---\ntype: "hapax-request"\nrequest_id: "{name}"\n{due_line}---\n\n# before\n',
         encoding="utf-8",
     )
     return path
@@ -831,6 +833,58 @@ def test_a_failed_content_write_leaves_no_temporary_file(tmp_path: Path) -> None
     assert rc == sweep.EXIT_SWEEP_FAILED
     assert json.loads(state.read_text())["reason"].startswith("write_failed:UnicodeEncodeError")
     assert list(requests_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "due_literal",
+    ['"not a date"', '"2026-10-01T23:59:59"', None],
+    ids=["garbled", "naive", "absent"],
+)
+def test_a_date_only_note_whose_due_cannot_be_read_is_not_the_same_note(
+    tmp_path: Path, due_literal: str | None
+) -> None:
+    # A second demand is the safe error; a lost one is not.
+    _date_only_note(
+        tmp_path / "hapax-requests" / "active",
+        "REQ-REGISTER-DUE-com-2026-0004-20261001",
+        due_literal,
+    )
+    rc, _, state = _run(tmp_path, FakeWeb(_register(_commitment())), "2026-09-30T06:10:00Z")
+    assert rc == 0
+    assert json.loads(state.read_text())["created"] == [
+        "REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"
+    ]
+
+
+def test_the_switch_over_matches_what_podium_wrote_for_an_offset_deadline(
+    tmp_path: Path,
+) -> None:
+    # A +02:00 deadline whose local date (10-02) is the day after its UTC date (10-01).
+    offset = _commitment(deadline="2026-10-02T01:30:00+02:00")
+    now = "2026-09-30T06:10:00Z"
+    [finding] = sweep.classify(sweep.parse_register(_register(offset)), sweep.parse_instant(now))
+    # The identity #4798 shipped, verbatim: finding.due.strftime('%Y%m%d'). Due points are UTC
+    # before they reach any identity, so podium named this note by its UTC date.
+    shipped = f"REQ-REGISTER-DUE-{finding.commitment_id}-{finding.due.strftime('%Y%m%d')}"
+    assert shipped == "REQ-REGISTER-DUE-com-2026-0004-20261001"
+    assert shipped == sweep.date_only_request_id_for(finding)
+    legacy = _date_only_note(
+        tmp_path / "hapax-requests" / "active", shipped, '"2026-10-01T23:30:00Z"'
+    )
+    rc, _, state = _run(tmp_path, FakeWeb(_register(offset)), now)
+    assert rc == 0
+    recorded = json.loads(state.read_text())
+    assert recorded["created"] == []
+    assert recorded["skipped_existing"] == [legacy.stem]
+    # A standing due point stays UTC through review_every, from a check stamped +05:00.
+    standing = _standing("P1D")
+    check = _attestation("att-1", "com-2026-0011", "check", True, "2026-09-30T23:00:00+05:00")
+    [moved] = sweep.classify(
+        sweep.parse_register(_register(standing, check)),
+        sweep.parse_instant("2026-09-30T19:00:00Z"),
+    )
+    assert moved.due == datetime(2026, 10, 1, 18, 0, tzinfo=UTC)
+    assert moved.due.utcoffset() == timedelta(0)
 
 
 SLIPPED_NOTE = "REQ-REGISTER-SLIPPED-com-2026-0004-20261001T235959Z.md"
@@ -907,4 +961,54 @@ def test_the_race_check_removes_only_the_runs_own_note(tmp_path: Path, monkeypat
     rc, _, state = _run(tmp_path, web, "2026-10-03T00:30:00Z")
     assert rc == 0
     assert (active / SLIPPED_NOTE).read_text(encoding="utf-8") == "reopened by E3\n"
+    assert json.loads(state.read_text())["created"] == []
+
+
+def test_a_note_the_closer_moves_before_the_recheck_is_treated_as_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # gemini, #4799: the closer takes the run's own new note into closed/ between the link
+    # and the re-check, so there is no path left to compare or remove.
+    active = tmp_path / "hapax-requests" / "active"
+    closed = tmp_path / "hapax-requests" / "closed"
+    closed.mkdir(parents=True)
+    real_link = os.link
+
+    def link_then_close(src, dst, *args, **kwargs):
+        result = real_link(src, dst, *args, **kwargs)
+        if Path(dst).name == SLIPPED_NOTE:
+            Path(dst).rename(closed / SLIPPED_NOTE)
+        return result
+
+    monkeypatch.setattr(os, "link", link_then_close)
+    rc, _, state = _run(tmp_path, FakeWeb(_register(_commitment())), "2026-10-02T00:30:00Z")
+    assert rc == 0
+    assert not (active / SLIPPED_NOTE).exists()
+    assert (closed / SLIPPED_NOTE).exists()
+    recorded = json.loads(state.read_text())
+    assert recorded["created"] == ["REQ-REGISTER-DUE-com-2026-0004-20261001T235959Z"]
+    assert recorded["skipped_existing"] == [Path(SLIPPED_NOTE).stem]
+
+
+def test_a_note_gone_between_the_comparison_and_the_removal_is_not_an_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    web = FakeWeb(_register(_commitment()))
+    _run(tmp_path, web, "2026-10-02T00:30:00Z")
+    active = tmp_path / "hapax-requests" / "active"
+    closed = tmp_path / "hapax-requests" / "closed"
+    closed.mkdir()
+    monkeypatch.setattr(os, "link", _close_during_link(active, closed))
+    real_samefile = os.path.samefile
+
+    def samefile_then_gone(a, b):
+        result = real_samefile(a, b)
+        if Path(b).name == SLIPPED_NOTE:
+            Path(b).unlink()  # the closer disposes of the re-created note first
+        return result
+
+    monkeypatch.setattr(os.path, "samefile", samefile_then_gone)
+    rc, _, state = _run(tmp_path, web, "2026-10-03T00:30:00Z")
+    assert rc == 0
+    assert not (active / SLIPPED_NOTE).exists()
     assert json.loads(state.read_text())["created"] == []

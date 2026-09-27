@@ -34,6 +34,7 @@ moved to closed/ is never re-created, even when it closes while a run is creatin
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -472,7 +473,8 @@ def create_note(path: Path, content: str, *, closed_path: Path | None = None) ->
 
     ``closed_path`` is where the note goes when it is closed. If it exists once the link is
     made, the note was closed while this run created it, so the run removes its own link
-    again (and only its own: a file someone else put at ``path`` since is left alone).
+    again (and only its own: a file someone else put at ``path`` since is left alone). If
+    the closer has already moved the new note on, that is the same outcome: it is closed.
     """
 
     tmp = _write_temp_beside(path, content)
@@ -482,8 +484,10 @@ def create_note(path: Path, content: str, *, closed_path: Path | None = None) ->
         except FileExistsError:
             return False
         if closed_path is not None and closed_path.exists():
-            if os.path.samefile(tmp, path):
-                path.unlink()
+            # A closer may already have moved the note on; then there is nothing to remove.
+            with contextlib.suppress(FileNotFoundError):
+                if os.path.samefile(tmp, path):
+                    path.unlink()
             return False
         return True
     finally:
