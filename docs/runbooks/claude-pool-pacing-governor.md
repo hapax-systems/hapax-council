@@ -33,8 +33,11 @@ a row past that tolerance, or no row at all still refuses; a failed ledger appen
 probe exits nonzero without minting.
 
 The governor also READS its own ledger (`ledger_readings`), so a reading the probe ledgered is a reading `check`
-evaluates. Without that, a held governor could not see the pool recover: while the gate holds the probe's admission
-mint there is no new receipt, and receipts plus headless traces were the only sources.
+evaluates — **probe-origin rows only**, the ones carrying the probe's producer identity; another producer's row (or an
+unmarked one) is ignored, because `record`'s rows are derived from receipts that are already a source. Without this, a
+held governor could not see the pool recover: while the gate holds the probe's admission mint there is no new receipt,
+and receipts plus headless traces were the only sources. Staleness is unchanged — a row past the reading's own reset,
+or older than the reading bound, does not reopen an armed governor.
 
 Recheck the claims above:
 

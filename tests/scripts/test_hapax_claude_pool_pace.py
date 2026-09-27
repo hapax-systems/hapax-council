@@ -7,7 +7,6 @@ failure refuses rather than releases (fail narrow); no probe runs without a ledg
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime, timedelta
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
@@ -229,6 +228,93 @@ def test_a_ledger_row_without_a_receipt_is_still_a_reading(
 
     assert rc == 0
     assert payload["weekly_used_percent"] == pytest.approx(4.0)
+
+
+def test_a_row_from_another_producer_is_not_a_reading_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """Only probe-origin rows are readings (seat ruling 07:55Z): another producer's row is ignored."""
+    _sink_root(tmp_path, monkeypatch)
+    pace = _pace()
+    empty = tmp_path / "no-receipts"
+    empty.mkdir()
+    pace.append_reading(
+        pace.reading_payload(
+            {
+                "now": NOW.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "weekly_observed_at": NOW.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "weekly_used_percent": 4.0,
+                "weekly_resets_at": WEEKLY_RESET.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "five_hour_used_percent": 1.0,
+                "five_hour_resets_at": (NOW + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "line_percent": LINE_AT_NOW,
+                "reading_age_seconds": 0,
+                "over_line": False,
+                "weekly_source": "test",
+            }
+        ),
+        now=NOW,
+    )
+    capsys.readouterr()
+
+    rc = _run(["check", *_base_args(tmp_path, empty), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == pace.EXIT_REFUSE_UNKNOWN
+    assert payload["reason"] == "no_claude_window_reading"
+
+
+def test_a_stale_probe_row_does_not_reopen_the_governor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """Staleness still governs: a probe row older than the reading bound does not reopen anything."""
+    _sink_root(tmp_path, monkeypatch)
+    pace = _pace()
+    empty = tmp_path / "no-receipts"
+    empty.mkdir()
+    old = NOW - timedelta(minutes=90)
+    pace.append_observed_reading(
+        observed_at=old,
+        weekly_used_percent=4.0,
+        weekly_resets_at=WEEKLY_RESET,
+        five_hour_used_percent=1.0,
+        five_hour_resets_at=old + timedelta(hours=3),
+        source_ref="probe",
+        now=old,
+    )
+    capsys.readouterr()
+
+    rc = _run(["check", *_base_args(tmp_path, empty), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == pace.EXIT_REFUSE_UNKNOWN
+    assert payload["reason"] == "reading_stale"
+
+
+def test_an_over_line_probe_row_keeps_the_governor_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """A probe row over the line holds exactly as a receipt over the line does."""
+    _sink_root(tmp_path, monkeypatch)
+    pace = _pace()
+    empty = tmp_path / "no-receipts"
+    empty.mkdir()
+    pace.append_observed_reading(
+        observed_at=NOW,
+        weekly_used_percent=40.0,
+        weekly_resets_at=WEEKLY_RESET,
+        five_hour_used_percent=1.0,
+        five_hour_resets_at=NOW + timedelta(hours=3),
+        source_ref="probe",
+        now=NOW,
+    )
+    capsys.readouterr()
+
+    rc = _run(["check", *_base_args(tmp_path, empty), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == pace.EXIT_REFUSE_OVER_PACE
+    assert payload["reason"] == "pace_line_exceeded"
 
 
 def test_a_launch_mint_over_the_line_is_still_refused(
@@ -766,21 +852,25 @@ def test_deactivate_reports_an_absent_marker_and_refuses_a_malformed_one(
     assert marker.exists() is True
 
 
-def test_deactivate_creates_the_archive_atomically(
+def test_deactivate_creates_the_archive_with_an_exclusive_create(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:  # noqa: ANN001
-    """codex round 2: the archive is created with O_EXCL, not by checking then writing.
+    """codex round 2 (twice): the archive is opened with mode "x" (O_EXCL), not created by a check.
 
-    A check-then-write left a race another deactivation could win. Patching the exclusive open to
-    fail reaches only a create-once implementation, and the live marker must survive it.
+    Mode "x" is what makes a concurrent deactivation impossible to overwrite. This pins that the
+    implementation USES it: a patched exclusive create that fails must leave the live marker armed,
+    which a check-then-write implementation never reaches.
     """
     marker = _marker(tmp_path)
     pace = _pace()
+    real_open = open
 
-    def _exists(*_args: Any, **_kwargs: Any) -> int:
-        raise FileExistsError("already created")
+    def _exclusive_only(path, mode="r", *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if "x" in str(mode):
+            raise FileExistsError("exclusive create refused by the test")
+        return real_open(path, mode, *args, **kwargs)
 
-    monkeypatch.setattr(os, "open", _exists)
+    monkeypatch.setattr("builtins.open", _exclusive_only)
     rc = _run(["deactivate", "--activation", str(marker), "--json"])
     capsys.readouterr()
 

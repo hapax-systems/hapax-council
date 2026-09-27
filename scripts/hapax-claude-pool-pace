@@ -100,6 +100,13 @@ READING_MAX_AGE: Final = timedelta(minutes=60)
 #: allow). A ledger row within one cadence of the reading is durable evidence for it; an older row,
 #: or none, is not — stale and unknown readings still refuse.
 PROBE_CADENCE: Final = timedelta(minutes=10)
+#: The producer identity the LEDGER-AS-READING-SOURCE rule keys on. A ledger row is a reading
+#: source only when the account-live probe's own path wrote it (the seat's ruling of
+#: 2026-09-27T07:55Z): the probe is the measurement's producer, while ``record``'s rows are derived
+#: from the receipts that are already a source, and an unmarked row is not evidence for anything.
+PROBE_LEDGER_PRODUCER: Final = "claude-account-live-observe"
+#: The governor's own producer identity for rows its ``record`` command writes.
+GOVERNOR_LEDGER_PRODUCER: Final = "hapax-claude-pool-pace"
 
 EXIT_ALLOW: Final = 0
 EXIT_REFUSE_OVER_PACE: Final = 3
@@ -222,14 +229,10 @@ def deactivate(activation_path: Path, *, now: datetime, reason: str, by: str) ->
     archive = activation_path.with_name(f"{activation_path.name}.deactivated-{stamp}")
     payload = {**original, "deactivated_at": _stamp(now), "by": by, "reason": reason}
     try:
-        # Create-once ATOMICALLY (O_EXCL): a check-then-write left a race another deactivation could
-        # win, and write_text would then overwrite the existing archive (codex, round 2). The live
-        # marker is retired only after the archive exists.
-        with os.fdopen(
-            os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),
-            "w",
-            encoding="utf-8",
-        ) as handle:
+        # Create-once ATOMICALLY: mode "x" is O_EXCL, so a concurrent deactivation cannot be
+        # overwritten, which an exists()-then-write_text left open (codex, twice; the seat's ruling
+        # names `open(path, "x")`). The live marker is retired only after the archive exists.
+        with open(archive, "x", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
     except FileExistsError:
         print(
@@ -280,6 +283,10 @@ def ledger_readings(*, now: datetime) -> list[Any]:
     critical, round 2 of the fix PR). A ledger row carries the same numbers from the same producer.
     Staleness is unchanged: a reading past its own reset is not current, and the caller still
     refuses an old one.
+
+    Only PROBE-ORIGIN rows count (the seat's ruling 2026-09-27T07:55Z): the probe is the
+    measurement's producer, so its rows are readings, while another producer's rows — ``record``'s
+    are derived from the receipts that are already a source — and unmarked rows are ignored.
     """
     state_name, rows = ledger_state()
     if state_name != "ok":
@@ -287,6 +294,8 @@ def ledger_readings(*, now: datetime) -> list[Any]:
     readings: list[Any] = []
     for row in rows:
         payload = row.get("payload", {})
+        if payload.get("producer") != PROBE_LEDGER_PRODUCER:
+            continue
         at = _stamp_instant(payload.get("weekly_observed_at"))
         weekly_reset = _stamp_instant(payload.get("weekly_resets_at"))
         used = payload.get("weekly_used_percent")
@@ -473,6 +482,7 @@ def sink_root_env() -> str:
 def reading_payload(state: dict[str, Any]) -> dict[str, Any]:
     """The sink row's payload from a pace state — the one shape ``record`` and the probe both use."""
     return {
+        "producer": GOVERNOR_LEDGER_PRODUCER,
         "captured_at": state["now"],
         "weekly_observed_at": state.get("weekly_observed_at"),
         "weekly_used_percent": state["weekly_used_percent"],
@@ -516,6 +526,7 @@ def append_observed_reading(
         "reading_age_seconds": int((now - observed_at).total_seconds()),
         "over_line": float(weekly_used_percent) > line,
         "source_ref": source_ref,
+        "producer": PROBE_LEDGER_PRODUCER,
     }
     append_reading(payload, now=now)
     return payload
