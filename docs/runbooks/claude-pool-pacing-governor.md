@@ -39,19 +39,24 @@ held governor could not see the pool recover: while the gate holds the probe's a
 and receipts plus headless traces were the only sources. Staleness is unchanged — a row past the reading's own reset,
 or older than the reading bound, does not reopen an armed governor.
 
-Recheck the claims above:
+Recheck the claims above with the ISOLATED test command — it binds its own sink root and its own
+markers, so it arms and disarms nothing on this host:
 
 ```bash
 uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic --with prometheus-client --with httpx \
   pytest tests/scripts/test_hapax_claude_pool_pace.py tests/scripts/test_hapax_claude_account_live_observe.py
-scripts/hapax-claude-pool-pace deactivate --reason "<why>" --by seat   # archive is create-once, marker retired
-scripts/hapax-claude-pool-pace status --json                          # armed + decision consistent with the line
+scripts/hapax-claude-pool-pace status --json   # read-only: armed state + decision consistent with the line
 ```
+
+**Arming and disarming are the SEAT's acts.** Do not run `activate` or `deactivate` from this
+section: either one changes the live governor's armed state, which holds or releases real Claude
+lanes. The `deactivate` example below documents the verb; the seat runs it when disarming is the
+intended act, not as a recheck.
 
 ## Disarming, and the interim drop-in
 
 Disarming is the marker's removal, which the armed gate refuses through a shell `mv`. Use the
-governed verb:
+governed verb — **the seat's act, not a recheck step**:
 
 ```bash
 scripts/hapax-claude-pool-pace deactivate --reason "<why>" --by seat
