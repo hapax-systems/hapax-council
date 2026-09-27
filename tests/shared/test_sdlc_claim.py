@@ -4632,6 +4632,21 @@ def test_release_refuses_a_held_publication_while_another_session_holds_the_task
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
 
 
+def test_release_counts_an_unreadable_marker_as_a_live_claim(tmp_path: Path) -> None:
+    # codex, #4801 round 2: a marker that cannot be decoded may name the task.
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    unreadable = fixture.cache / "cc-active-task-cx-red-session-xyz"
+    unreadable.write_bytes(b"\xff\xfe")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_live_marker" in raised.value.message
+    assert f"inspect the marker at {unreadable}" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
 def test_release_touches_only_the_cache_its_journal_projected_into(tmp_path: Path) -> None:
     fixture, _journal, _projections = _held_publication(tmp_path)
     other_cache = tmp_path / "other-cache"

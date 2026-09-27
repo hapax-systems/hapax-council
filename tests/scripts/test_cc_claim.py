@@ -3,7 +3,6 @@ import os
 import re
 import subprocess
 import textwrap
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1882,33 +1881,22 @@ def test_release_reports_when_nothing_remains(tmp_path: Path) -> None:
     assert _release_archives(home, "gone-row") == []
 
 
-def test_release_refuses_residue_two_journals_both_explain(tmp_path: Path) -> None:
-    # A claim and a later ready-state resume leave two applied journals; markers alone are
-    # byte-identical across them, so the release cannot tell whose they are.
+def test_release_refuses_a_lapsed_lease_missing_a_sidecar_never_archived(tmp_path: Path) -> None:
+    # codex, #4801 round 2: a missing epoch beside a matching dispatch is not accounted for.
     home = tmp_path / "home"
-    note = _write_task(home, "active", "twice-row")
-    assert _claim(home, "twice-row").returncode == 0
-    note.write_text(
-        note.read_text(encoding="utf-8").replace("status: claimed", "status: pr_open", 1),
-        encoding="utf-8",
-    )
+    _write_task(home, "active", "lapsed-row")
+    assert _claim(home, "lapsed-row").returncode == 0
     sidecars = _role_sidecars(home)
-    for group in sidecars.values():
-        for path in group:
-            path.unlink()
-    first_second = int(time.time())
-    while int(time.time()) == first_second:  # a fresh claim epoch for the second journal
-        time.sleep(0.05)
-    assert _claim(home, "twice-row").returncode == 0
-    for path in (*sidecars["epoch"], *sidecars["dispatch"]):
-        path.unlink()
-    before = _bytes_of(sidecars["marker"])
+    for marker in sidecars["marker"]:
+        marker.unlink()
+    sidecars["epoch"][1].unlink()
+    before = _bytes_of((*sidecars["epoch"], *sidecars["dispatch"]))
 
-    released = _release(home, "twice-row")
+    released = _release(home, "lapsed-row")
 
     assert released.returncode == 8
-    assert "claim_residue_ambiguous" in released.stderr
-    assert _bytes_of(sidecars["marker"]) == before
+    assert "claim_residue_projection_missing" in released.stderr
+    assert _bytes_of((*sidecars["epoch"], *sidecars["dispatch"])) == before
 
 
 def test_release_touches_no_other_role_or_session(tmp_path: Path) -> None:

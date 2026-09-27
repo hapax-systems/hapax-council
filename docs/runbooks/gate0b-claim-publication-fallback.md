@@ -184,7 +184,8 @@ anything, and never touches the task note. It covers three shapes:
 | `lapsed_lease` (M168) | Epoch and dispatch sidecars with no `cc-active-task-*` marker; the next claim holds on `claim_cache_missing`. | Archives the sidecars. |
 | `closed_task` (M173) | Markers, epochs and dispatch naming a row that another process closed (it is terminal and absent from `active/`); the next claim holds on `claim_task_mismatch`. | Archives all six sidecars. |
 
-It refuses, with exit 8 and a named `claim_residue_*` reason, before the first mutation:
+It refuses, with exit 8 and a named `claim_residue_*` reason, before the first mutation (except
+`live-differed`, below):
 - on a live claim (a marker naming a task that is not closed, or another session's marker for it);
 - on a sidecar that differs from the journal;
 - on a journal that recovery can still finish, or whose admission evidence drifted;

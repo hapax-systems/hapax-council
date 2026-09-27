@@ -6465,6 +6465,7 @@ def _other_live_markers(
         try:
             named = path.read_text(encoding="utf-8").splitlines()[:1]
         except (OSError, UnicodeError):
+            hits.append(path)  # unreadable: it may name the task, so it counts as live
             continue
         if named == [task_id]:
             hits.append(path)
@@ -6710,8 +6711,8 @@ def _release_held_publication(
     if others := _other_live_markers(cache_dir, journal.intent.role, task_id, residue):
         raise _release_hold(
             "claim_residue_live_marker",
-            f"{others[0]} names {task_id}",
-            "treat the claim as live: finish it and run cc-close",
+            f"{others[0]} names {task_id} or cannot be read",
+            f"inspect the marker at {others[0]}; until then treat the claim as live",
         )
     journal_dir = journal.manifest_path.parent
     quarantined = journal_dir.with_name(f"{journal_dir.name}.quarantined-{observed_at}")
@@ -6743,7 +6744,7 @@ def _release_applied_residue(
     observed_at: str,
 ) -> ClaimResidueRelease:
     candidates: list[tuple[_RoleTaskJournal, tuple[FileProjection, ...], list[FileProjection]]] = []
-    mismatched = False
+    mismatched = unaccounted = False
     for journal in journals:
         residue = _journal_residue(journal, cache_dir)
         states = [_residue_state(projection) for projection in residue]
@@ -6751,9 +6752,23 @@ def _release_applied_residue(
             mismatched = True
             continue
         present = [item for item, state in zip(residue, states, strict=True) if state == "after"]
-        if present:
+        # As on the held path: an absent epoch or dispatch sidecar must already be archived.
+        if present and any(
+            state == "absent"
+            and not _is_claim_activation_projection(item)
+            and not _previously_archived(item, journal, vault_root)
+            for item, state in zip(residue, states, strict=True)
+        ):
+            unaccounted = True
+        elif present:
             candidates.append((journal, residue, present))
     if not candidates:
+        if unaccounted:
+            raise _release_hold(
+                "claim_residue_projection_missing",
+                f"a sidecar of {task_id} is absent and no earlier release archived it",
+                "preserve the sidecars and inspect the journal",
+            )
         if mismatched:
             raise _release_hold(
                 "claim_residue_hash_mismatch",
@@ -6776,8 +6791,8 @@ def _release_applied_residue(
     if others := _other_live_markers(cache_dir, journal.intent.role, task_id, residue):
         raise _release_hold(
             "claim_residue_live_marker",
-            f"{others[0]} names {task_id}",
-            "treat the claim as live: finish it and run cc-close",
+            f"{others[0]} names {task_id} or cannot be read",
+            f"inspect the marker at {others[0]}; until then treat the claim as live",
         )
     shape: Literal["lapsed_lease", "closed_task"] = "lapsed_lease"
     if any(_is_claim_activation_projection(projection) for projection in present):
@@ -6821,7 +6836,8 @@ def release_claim_residue(
     - ``closed_task``: markers present, but the task is terminal and absent from ``active/``
       (it was closed from another process).
 
-    Anything else raises :class:`ClaimResidueArchiveHold` before the first mutation.
+    Anything else raises :class:`ClaimResidueArchiveHold` before the first mutation, except
+    ``claim_residue_live_differed``, which stops mid-run keeping every byte moved.
     """
 
     if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
