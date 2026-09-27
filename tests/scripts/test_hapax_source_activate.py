@@ -4602,3 +4602,72 @@ def test_cumulative_since_passed_when_previous_success_is_ancestor(tmp_path: Pat
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "completed"
     assert receipt["origin_main_sha"] == sha2
+
+
+# ── post-deploy governed re-provision of the Gate-0B install ─────────────────
+# gate0b-post-deploy-governed-reprovision-20260927
+
+
+def _fake_reprovision(tmp_path: Path, *, exit_code: int, outcome: str) -> tuple[Path, Path]:
+    record = tmp_path / "reprovision-args.txt"
+    fake = tmp_path / "fake-reprovision"
+    fake.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {record}\necho '{outcome}'\nexit {exit_code}\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake, record
+
+
+def test_a_successful_activation_reprovisions_the_claim_install(tmp_path: Path) -> None:
+    canonical, _origin, sha = _make_repos(tmp_path)
+    fake, record = _fake_reprovision(tmp_path, exit_code=0, outcome='{"action": "reprovisioned"}')
+
+    result = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert record.read_text(encoding="utf-8").split() == [
+        "reprovision",
+        "--repo",
+        str(tmp_path / "active-source"),
+        "--head",
+        sha,
+    ]
+    last = tmp_path / "state" / "gate0b-reprovision-last.json"
+    assert '"reprovisioned"' in last.read_text(encoding="utf-8")
+    assert _current_receipt(tmp_path)["status"] == "completed"
+
+
+def test_a_held_reprovision_is_reported_and_never_fails_the_activation(tmp_path: Path) -> None:
+    canonical, _origin, _sha = _make_repos(tmp_path)
+    fake, _record = _fake_reprovision(
+        tmp_path,
+        exit_code=3,
+        outcome='{"action": "held", "reason_code": "gate0b_reprovision_unexplained"}',
+    )
+
+    result = _run_activate(
+        tmp_path, canonical, env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "gate0b re-provision HELD" in result.stderr
+    assert "gate0b_reprovision_unexplained" in result.stderr
+    assert _current_receipt(tmp_path)["status"] == "completed"
+
+
+def test_a_failed_deploy_never_reprovisions(tmp_path: Path) -> None:
+    canonical, _origin, _sha = _make_repos(tmp_path)
+    fake, record = _fake_reprovision(tmp_path, exit_code=0, outcome='{"action": "current"}')
+
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        deploy_exit=1,
+        env_overrides={"HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD": str(fake)},
+    )
+
+    assert result.returncode != 0
+    assert not record.exists()
