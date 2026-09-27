@@ -27,7 +27,7 @@ if [[ -f "$ROLE_HELPER" ]]; then
 fi
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]" >&2
+  echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded] [--expect-sha256 HEX]" >&2
   echo "       active blocked evidence stays in active/: status=blocked, blocked_reason, blocked_witness" >&2
   exit 1
 fi
@@ -41,6 +41,9 @@ while [[ $# -gt 0 ]]; do
     --status) final_status="$2"; shift 2 ;;
     --debt) debt_reason="$2"; shift 2 ;;
     --retroactive) retroactive=1; shift ;;
+    # The caller decided on these exact note bytes (the PR merge watcher's no-witness
+    # decision); the close re-checks them under the note lock and refuses (exit 4) if they moved.
+    --expect-sha256) expect_sha256="$2"; shift 2 ;;
     *) echo "cc-close: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
@@ -236,7 +239,8 @@ fi
 # the transition takes. cc-close holds no other lock, so there is no ordering to reconcile.
 _cc_close_repo_root="$(cd "$SCRIPT_DIR/.." && pwd)" || exit 1
 PYTHONPATH="$_cc_close_repo_root:${PYTHONPATH:-}" \
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" <<'PYEOF'
+python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" "${expect_sha256:-}" <<'PYEOF'
+import hashlib
 import re
 import sys
 from datetime import datetime, timezone
@@ -244,7 +248,10 @@ from pathlib import Path
 
 from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
-path, task_id, final_status, pr, role, vault_root = (Path(sys.argv[1]), *sys.argv[2:])
+path, task_id, final_status, pr, role, vault_root, expect_sha256 = (
+    Path(sys.argv[1]),
+    *sys.argv[2:],
+)
 closed_dir = path.parent.parent / "closed"
 new_path = closed_dir / path.name
 
@@ -279,7 +286,16 @@ try:
                 file=sys.stderr,
             )
             sys.exit(1)
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        if expect_sha256 and hashlib.sha256(raw).hexdigest() != expect_sha256:
+            print(
+                f"cc-close: REFUSED — '{task_id}' changed after its closure was decided (the "
+                f"caller expected sha256 {expect_sha256[:12]}…); nothing was closed. Next action: "
+                "none by hand; the caller decides again from the current note",
+                file=sys.stderr,
+            )
+            sys.exit(4)
+        text = raw.decode("utf-8")
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)

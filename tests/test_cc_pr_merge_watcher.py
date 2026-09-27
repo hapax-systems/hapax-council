@@ -7,8 +7,10 @@ its own vault + cursor under ``tmp_path`` and injects a fake ``gh`` /
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1190,9 +1192,14 @@ class TestRuntimeWitnessRows:
             vault, task_id="task-E", pr=100, surface="    runtime_observation: []"
         )
 
+        decided = hashlib.sha256(note.read_bytes()).hexdigest()
+
         counters, runner, _cursor = _merged_cursor_run(tmp_path, vault)
 
-        assert any(cmd[1:3] == ["task-E", "--pr"] for cmd in runner.cc_close_invocations)
+        # cc-close gets the decided bytes' hash, to re-check under its own lock (#4828 round 2)
+        assert [cmd[1:4] for cmd in runner.cc_close_invocations] == [
+            ["task-E", "--expect-sha256", decided]
+        ]
         assert _status_of(note) == "pr_open"  # the (faked) cc-close owns that transition
         assert (counters["closed"], counters["awaiting"]) == (1, 0)
 
@@ -1322,3 +1329,143 @@ class TestRuntimeWitnessRows:
         assert note.read_bytes() == before
         assert (counters["awaiting"], counters["failed"]) == (0, 1)
         assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 0, tzinfo=UTC)
+
+    def test_settling_an_awaiting_row_again_writes_nothing(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        # gemini's round-1 critical: a retried cursor cycle re-ran the writer and prepended a
+        # duplicate log line. An already-awaiting row is settled with no write.
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-I", pr=100, surface=_WITNESSES)
+        task = watcher.LinkedTask(task_id="task-I", note_path=note, pr_number=100)
+
+        assert watcher.settle_merged_task(task, repo_root=tmp_path) == "awaiting"
+        after_first = note.read_bytes()
+        assert watcher.settle_merged_task(task, repo_root=tmp_path) == "awaiting"
+
+        assert note.read_bytes() == after_first
+        assert after_first.decode().count("merge-watcher: PR #100 merged") == 1
+
+    def test_a_retried_cursor_cycle_leaves_an_awaiting_row_unchanged(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(vault, task_id="task-J", pr=100, surface=_WITNESSES)
+        _merged_cursor_run(tmp_path, vault)
+        after_first = note.read_bytes()
+
+        counters, runner, _cursor = _merged_cursor_run(tmp_path, vault)  # the cursor is reset
+
+        assert note.read_bytes() == after_first
+        assert runner.cc_close_invocations == []
+        assert (counters["closed"], counters["failed"]) == (0, 0)
+
+    @pytest.mark.parametrize(
+        "front",
+        [
+            "route_metadata: not a mapping",
+            "route_metadata:\n- runtime_observation\n- watch it",
+            "verification_surface: a sentence, not a mapping",
+        ],
+        ids=["route_metadata_string", "route_metadata_list", "top_level_surface_string"],
+    )
+    def test_a_container_that_is_not_a_mapping_owes_a_witness(
+        self, tmp_path: Path, monkeypatch: Any, front: str
+    ) -> None:
+        # codex's round-1 major: route_metadata_payload_from_frontmatter drops a non-mapping
+        # route_metadata, which read as "declares none" and closed the row done.
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+        vault = _make_vault(tmp_path)
+        note = vault / "active" / "task-N-test.md"
+        note.write_text(
+            f"---\ntype: cc-task\ntask_id: task-N\ntitle: x\nstatus: pr_open\n"
+            f"pr_repo: {FIXTURE_PR_REPO}\npr: 100\n{front}\n---\n\n## Session log\n- fixture\n"
+        )
+
+        counters, runner, _cursor = _merged_cursor_run(tmp_path, vault)
+
+        assert runner.cc_close_invocations == []
+        assert _status_of(note) == "merged_awaiting_runtime_witness"
+        assert "cannot be read (not a mapping)" in note.read_text()
+        assert counters["awaiting"] == 1
+
+    def test_cc_close_closes_only_the_bytes_that_were_decided(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        # codex's round-1 major: the done path decided on an unlocked read. The real cc-close
+        # now re-checks the decided bytes under its own lock and refuses (4) if they moved.
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(
+            vault, task_id="task-S", pr=100, surface="    runtime_observation: []"
+        )
+        decided = hashlib.sha256(note.read_bytes()).hexdigest()
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path),
+            "HAPAX_CC_TASKS_ROOT": str(vault),
+            "HAPAX_COORD_DIR": str(tmp_path / "coord"),
+            "HAPAX_CC_TASK_CLOSURE_GATE_OFF": "1",
+            "HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF": "1",
+            "HAPAX_PR_MERGE_GATE_OFF": "1",
+            "CLAUDE_ROLE": "watcher",
+        }
+        cc_close = _SCRIPTS / "cc-close"
+        close = [
+            str(cc_close),
+            "task-S",
+            "--expect-sha256",
+            decided,
+            "--pr",
+            "100",
+            "--retroactive",
+        ]
+        note.write_text(
+            note.read_text().replace("runtime_observation: []", "runtime_observation: [w]")
+        )
+
+        moved = subprocess.run(close, env=env, capture_output=True, text=True, timeout=120)
+
+        assert moved.returncode == 4, moved.stderr
+        assert "changed after its closure was decided" in moved.stderr
+        assert note.is_file() and not (vault / "closed" / note.name).exists()
+
+        close[3] = hashlib.sha256(note.read_bytes()).hexdigest()
+        exact = subprocess.run(close, env=env, capture_output=True, text=True, timeout=120)
+
+        assert exact.returncode == 0, exact.stderr
+        assert (vault / "closed" / note.name).is_file()
+
+    def test_a_witness_added_after_the_decision_is_never_closed_done(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        # End to end through the real cc-close: a peer adds a witness between the watcher's
+        # read and cc-close. The close refuses, the row stays active, and the next cycle
+        # decides again from the current note.
+        vault = _make_vault(tmp_path)
+        note = _write_witness_note(
+            vault, task_id="task-R2", pr=100, surface="    runtime_observation: []"
+        )
+        for name, value in {
+            "HOME": str(tmp_path),
+            "HAPAX_CC_TASKS_ROOT": str(vault),
+            "HAPAX_COORD_DIR": str(tmp_path / "coord"),
+            "HAPAX_PR_MERGE_GATE_OFF": "1",
+        }.items():
+            monkeypatch.setenv(name, value)
+        original = watcher.unmet_runtime_witnesses
+
+        def decide_then_peer_writes(text: str) -> tuple[str, ...]:
+            owed = original(text)
+            note.write_text(note.read_text().replace("observation: []", "observation: [w]"))
+            return owed
+
+        monkeypatch.setattr(watcher, "unmet_runtime_witnesses", decide_then_peer_writes)
+        task = watcher.LinkedTask(task_id="task-R2", note_path=note, pr_number=100)
+
+        settled = watcher.settle_merged_task(task, repo_root=_SCRIPTS.parent, runner=subprocess.run)
+
+        assert settled is None
+        assert note.is_file() and not (vault / "closed" / note.name).exists()
+        assert _status_of(note) == "pr_open"

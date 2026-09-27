@@ -6254,12 +6254,12 @@ def _assigned_elsewhere(note: Path, role: str) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value.strip() != role
 
 
-class _UniqueKeyLoader(yaml.SafeLoader):
+class UniqueKeyLoader(yaml.SafeLoader):
     """A SafeLoader that refuses any mapping stating one key twice, by YAML key identity, so
     ``status:`` and ``"status":`` are the same key; PyYAML otherwise keeps the last silently."""
 
 
-def _construct_unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) -> dict:
+def _construct_unique_mapping(loader: UniqueKeyLoader, node: yaml.MappingNode) -> dict:
     mapping: dict = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=True)
@@ -6275,9 +6275,12 @@ def _construct_unique_mapping(loader: _UniqueKeyLoader, node: yaml.MappingNode) 
     return mapping
 
 
-_UniqueKeyLoader.add_constructor(
+UniqueKeyLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
 )
+#: The name #4826's tests import. One class, public since a second module depends on it (the PR
+#: merge watcher's fail-closed witness read, glm on #4828).
+_UniqueKeyLoader = UniqueKeyLoader
 
 
 def _release_frontmatter(note: Path) -> dict | None:
@@ -6296,7 +6299,7 @@ def _release_frontmatter(note: Path) -> dict | None:
     text = note.read_text(encoding="utf-8")
     block = text[3 : text.find("\n---", 3)]
     try:
-        fields = yaml.load(block, Loader=_UniqueKeyLoader)  # noqa: S506 - a SafeLoader subclass
+        fields = yaml.load(block, Loader=UniqueKeyLoader)  # noqa: S506 - a SafeLoader subclass
     except yaml.YAMLError:
         return None
     if not isinstance(fields, dict) or len(re.findall(r"(?m)^status[ \t]*:", block)) != 1:
@@ -7177,6 +7180,7 @@ __all__ = [
     "release_pipeline_held_residue",
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
+    "UniqueKeyLoader",
     "resolve_claim_publication_admission_provenance",
     "require_applied_admitted_claim_publication",
     "require_applied_claim_publication",

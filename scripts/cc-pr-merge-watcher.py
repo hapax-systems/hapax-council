@@ -24,6 +24,7 @@ staggered cadence declared in ``systemd/units/hapax-cc-pr-merge-watcher.timer``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -419,14 +420,20 @@ def unmet_runtime_witnesses(text: str) -> tuple[str, ...]:
         return ("the task's frontmatter cannot be read (no frontmatter block)",)
     # The one duplicate-key definition (#4826): YAML keeps the last of two keys, so a later
     # `runtime_observation: []` would otherwise hide the declared witnesses.
-    from shared.sdlc_claim import _UniqueKeyLoader
+    from shared.sdlc_claim import UniqueKeyLoader
 
     try:
-        fields = yaml.load(text[span[0] : span[1]], Loader=_UniqueKeyLoader)  # noqa: S506
+        fields = yaml.load(text[span[0] : span[1]], Loader=UniqueKeyLoader)  # noqa: S506
     except yaml.YAMLError as exc:
         return (f"the task's frontmatter cannot be read ({type(exc).__name__})",)
     if not isinstance(fields, dict):
         return ("the task's frontmatter cannot be read (not a mapping)",)
+    # route_metadata_payload_from_frontmatter drops a container that is not a mapping, which
+    # would read as "declares none" and close the row done (codex on #4828).
+    for name in ("route_metadata", "verification_surface"):
+        container = fields.get(name)
+        if container not in (None, "", [], {}) and not isinstance(container, dict):
+            return (f"{name} cannot be read (not a mapping)",)
     try:
         surface = route_metadata_payload_from_frontmatter(fields).get("verification_surface")
         if surface is None:
@@ -458,9 +465,18 @@ def await_runtime_witnesses(task: LinkedTask, *, dry_run: bool = False) -> bool:
     try:
         with projected_path_lock(task.task_id, (note,)):
             text = note.read_text(encoding="utf-8")
-            witnesses = unmet_runtime_witnesses(text)
             span = _frontmatter_span(text)
             lines = list(_STATUS_KEY_LINE.finditer(text, *span)) if span else []
+            if (
+                len(lines) == 1
+                and not lines[0].group(1)
+                and lines[0].group(0).split(":", 1)[1].strip()
+                == TASK_MERGED_AWAITING_WITNESS_STATUS
+            ):
+                # Already held (a retried cursor cycle): settled, with nothing written (#4828).
+                LOG.info("task %s is already %s", task.task_id, TASK_MERGED_AWAITING_WITNESS_STATUS)
+                return True
+            witnesses = unmet_runtime_witnesses(text)
             if not witnesses or len(lines) != 1 or lines[0].group(1):
                 LOG.error(
                     "task %s owes runtime witnesses but was NOT moved to %s: its frontmatter must "
@@ -520,8 +536,9 @@ def settle_merged_task(
     the runtime. Only a task that declares none is closed done through ``cc-close``.
     """
     try:
-        owed = unmet_runtime_witnesses(task.note_path.read_text(encoding="utf-8"))
-    except OSError as exc:
+        decided = task.note_path.read_bytes()
+        owed = unmet_runtime_witnesses(decided.decode("utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
         LOG.error("task %s: cannot read %s: %s", task.task_id, task.note_path, exc)
         return None
     if owed:
@@ -529,7 +546,15 @@ def settle_merged_task(
     if dry_run:
         LOG.info("[dry-run] would cc-close task %s for PR #%d", task.task_id, task.pr_number)
         return "closed"
-    return "closed" if close_linked_task(task, repo_root=repo_root, runner=runner) else None
+    # cc-close takes the note lock itself, so this decision cannot be held under it; instead
+    # cc-close closes done only the exact bytes decided here, checked under its lock (#4828).
+    closed = close_linked_task(
+        task,
+        repo_root=repo_root,
+        runner=runner,
+        expect_sha256=hashlib.sha256(decided).hexdigest(),
+    )
+    return "closed" if closed else None
 
 
 def close_linked_task(
@@ -538,8 +563,12 @@ def close_linked_task(
     repo_root: Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
     role: str = "watcher",
+    expect_sha256: str | None = None,
 ) -> bool:
-    """Invoke ``scripts/cc-close`` on the matched task. Returns True on success."""
+    """Invoke ``scripts/cc-close`` on the matched task. Returns True on success.
+
+    With ``expect_sha256``, cc-close refuses (exit 4) unless the note still has those bytes.
+    """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     cc_close = repo_root / "scripts" / "cc-close"
@@ -558,6 +587,8 @@ def close_linked_task(
     env["HAPAX_CC_TASK_CLOSURE_GATE_OFF"] = "1"
     env["HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF"] = "1"
     cmd = [str(cc_close), task.task_id, "--pr", str(task.pr_number), "--retroactive"]
+    if expect_sha256:
+        cmd[2:2] = ["--expect-sha256", expect_sha256]
     LOG.info("closing task %s for PR #%d", task.task_id, task.pr_number)
     try:
         proc = runner(
