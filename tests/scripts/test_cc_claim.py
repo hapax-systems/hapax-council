@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import textwrap
 import time
 from datetime import UTC, datetime
@@ -2498,17 +2499,157 @@ def test_the_lease_checks_release_vocabulary_is_the_ssot() -> None:
     )
 
 
-def test_the_claim_preflight_and_hold_are_shared_sdlc_claims() -> None:
-    # The preflight's embedded Python runs isolated (-I), so no test can race churn into it.
-    # Its logic is shared.sdlc_claim.prepare_claim_publication_intent, tested there through
-    # churn; this pins only the delegation, and that no bare resolve is left here (M95, M180).
-    source = SCRIPT.read_text(encoding="utf-8")
+_STUB_SDLC_CLAIM = """
+import json
+from pathlib import Path
 
-    assert "intent = prepare_claim_publication_intent(" in source
-    assert "claim_publication_hold_message(exc, intent_ref=intent.intent_ref)" in source
-    assert "resolve_task_note(" not in source
-    assert "resolve_task_note_through_churn(" not in source, (
-        "scripts/cc-claim must delegate its preflight to prepare_claim_publication_intent"
+_LOG = Path(__file__).resolve().parent.parent / "calls.jsonl"
+
+
+def _record(call, **fields):
+    with _LOG.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"call": call, **fields}, default=str) + "\\n")
+
+
+class ClaimPublicationError(RuntimeError):
+    def __init__(self, reason_code, repair_action, detail=None):
+        self.reason_code, self.repair_action, self.detail = reason_code, repair_action, detail
+        super().__init__(f"{reason_code}: {repair_action} ({detail})")
+
+
+class _Intent:
+    intent_ref = "intent-ref-canned"
+
+
+def prepare_claim_publication_intent(*, note_path, note_before, note_after, cache_dir, binding):
+    _record(
+        "prepare",
+        note_path=str(note_path),
+        note_before=note_before.decode(),
+        note_after=note_after.decode(),
+        cache_dir=str(cache_dir),
+        binding_task=binding.task_id,
+    )
+    return _Intent()
+
+
+def claim_publication_hold_message(exc, *, intent_ref):
+    _record("hold", detail=exc.detail, intent_ref=intent_ref)
+    return f"STUB-HOLD {exc.detail} {intent_ref}"
+"""
+
+_STUB_SDLC_TASK_STORE = """
+class TaskStoreError(RuntimeError):
+    pass
+
+
+class _Binding:
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+
+class ClaimDispatchBinding:
+    @classmethod
+    def create(cls, **fields):
+        return _Binding(**fields)
+"""
+
+_DELEGATION_PRELUDE = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from types import SimpleNamespace
+
+from shared.sdlc_claim import (
+    ClaimPublicationError,
+    claim_publication_hold_message,
+    prepare_claim_publication_intent,
+)
+from shared.sdlc_task_store import ClaimDispatchBinding, TaskStoreError
+
+
+class ExecutionAdmissionError(Exception):
+    reason_code = "unused"
+
+
+task_id, role, session_id, claim_epoch = "task-d", "cx-test", "sid-d", 1720700000
+dispatch_message_id = dispatch_platform = dispatch_mode = dispatch_profile = "x"
+dispatch_authority_case, dispatch_binding_hash, dispatch_idempotency_key = "CASE-D", "b" * 64, ""
+path = Path(sys.argv[1]) / "active" / "task-d.md"
+note_before, text = b"before-bytes", "after-text"
+cache_dir = Path(sys.argv[1]) / "cache"
+gate0b_roots, now = SimpleNamespace(invocation_store_root="/nonexistent"), None
+
+
+def load_claim_publication_composition(_root):
+    return SimpleNamespace(root="root")
+
+
+def install_claim_publication_composition(**_fields):
+    raise AssertionError("not reached")
+
+
+def publish_gate0b_claim(_intent, *, root, now):
+    raise ClaimPublicationError(
+        "claim_publication_task_resolution_refused",
+        "retry after the task-store frontier settles",
+        "task_store_frontier_changed_during_index_build",
+    )
+"""
+
+
+def _cc_claim_block(source: str, start: str) -> str:
+    """One try/except block of cc-claim's claim heredoc, verbatim, through its sys.exit(8)."""
+    begin = source.index(start)
+    end = source.index("    sys.exit(8)\n", begin) + len("    sys.exit(8)\n")
+    return source[begin:end]
+
+
+def test_cc_claims_preflight_and_hold_delegate_to_shared_sdlc_claim(tmp_path: Path) -> None:
+    # gemini on #4829 round 4 (and the seat's 21:32:47Z path 1): the source-text pin is replaced.
+    # cc-claim's own preflight and publish blocks run verbatim under `python -I` against a stub
+    # `shared` package that records the delegated calls; no race, so it discriminates.
+    stub = tmp_path / "stub"
+    (stub / "shared").mkdir(parents=True)
+    (stub / "shared" / "__init__.py").write_text("", encoding="utf-8")
+    (stub / "shared" / "sdlc_claim.py").write_text(_STUB_SDLC_CLAIM, encoding="utf-8")
+    (stub / "shared" / "sdlc_task_store.py").write_text(_STUB_SDLC_TASK_STORE, encoding="utf-8")
+    source = SCRIPT.read_text(encoding="utf-8")
+    program = (
+        _DELEGATION_PRELUDE
+        + _cc_claim_block(source, "try:\n    binding = ClaimDispatchBinding.create(\n")
+        + _cc_claim_block(source, "try:\n    try:\n        install = load_claim_publication_")
+    )
+
+    ran = subprocess.run(
+        [sys.executable, "-I", "-c", program, str(stub)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert ran.returncode == 8, ran.stderr
+    calls = [
+        json.loads(line) for line in (stub / "calls.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert calls == [
+        {
+            "call": "prepare",
+            "note_path": str(stub / "active" / "task-d.md"),
+            "note_before": "before-bytes",
+            "note_after": "after-text",
+            "cache_dir": str(stub / "cache"),
+            "binding_task": "task-d",
+        },
+        {
+            "call": "hold",
+            "detail": "task_store_frontier_changed_during_index_build",
+            "intent_ref": "intent-ref-canned",
+        },
+    ]
+    assert (
+        "STUB-HOLD task_store_frontier_changed_during_index_build intent-ref-canned" in ran.stderr
     )
 
 

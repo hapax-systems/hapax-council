@@ -4715,9 +4715,11 @@ def test_each_lock_holder_gives_every_locked_resolution_one_deadline(
     else:
         monkeypatch.setattr(sdlc_claim, "resolve_task_note_through_churn", recording)
         transaction()
-        assert len(seen) == 4  # two locked preflights, two postimage checks
 
-    assert seen and None not in seen  # every locked resolution got the holder's deadline
+    # publication: two locked preflights and two postimage checks; recovery: its two postimage
+    # checks (glm on #4829 round 4: a dropped locked resolution must turn this red)
+    assert len(seen) == {"publication": 4, "recovery": 2}[holder]
+    assert None not in seen  # every locked resolution got the holder's deadline
     assert len(set(seen)) == 1  # and it is one deadline, taken once per lock hold
 
 

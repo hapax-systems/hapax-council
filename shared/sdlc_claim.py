@@ -3553,6 +3553,10 @@ def claim_publication_hold_message(exc: BaseException, *, intent_ref: str) -> st
     retry (M180 class); every other refusal keeps the Gate-0B install action.
     """
 
+    # Both attributes are load-bearing (glm on #4829 round 4): the locked sites wrap the store's
+    # refusal, so the churn reason is the ClaimPublicationError's `detail` (its reason_code is
+    # claim_publication_task_resolution_refused or _projection_invalid); the preflight and a raw
+    # TaskStoreError carry it as `reason_code`.
     churned = getattr(exc, "detail", None) in _TASK_FRONTIER_CHURN_REASONS or (
         getattr(exc, "reason_code", None) in _TASK_FRONTIER_CHURN_REASONS
     )
