@@ -34,6 +34,7 @@ fi
 
 force=false
 recover_claim_publications_only=false
+release_claim_residue_only=false
 rehydrate_activation_cache_only=false
 # Default mode publishes through the admitted Gate-0B claim-publication path.
 # The legacy note/cache writer is available only as an explicit slice-1 fallback.
@@ -44,6 +45,7 @@ usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim [--force] [--dispatch-* VALUE ...] -- <task_id>
        cc-claim --recover-claim-publications [<task_id>]
        cc-claim --rehydrate-activation-cache <task_id>
+       cc-claim --release-claim-residue <task_id>
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
 Every --dispatch-* option requires one VALUE from the dispatcher receipt.
@@ -75,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --force) force=true; shift ;;
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
     --rehydrate-activation-cache) rehydrate_activation_cache_only=true; shift ;;
+    --release-claim-residue) release_claim_residue_only=true; shift ;;
     --dispatch-message-id) require_option_value "$1" "${2:-}"; dispatch_message_id="$2"; shift 2 ;;
     --dispatch-binding-hash) require_option_value "$1" "${2:-}"; dispatch_binding_hash="$2"; shift 2 ;;
     --dispatch-platform) require_option_value "$1" "${2:-}"; dispatch_platform="$2"; shift 2 ;;
@@ -89,6 +92,10 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ "$rehydrate_activation_cache_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$force" == "true" ) ]]; then
   echo "cc-claim: activation_cache_usage_invalid: supply one task id without --force or --recover-claim-publications. Next action: rerun cc-claim --rehydrate-activation-cache <task_id>." >&2
+  exit 1
+fi
+if [[ "$release_claim_residue_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$rehydrate_activation_cache_only" == "true" || "$force" == "true" ) ]]; then
+  echo "cc-claim: release_usage_invalid: supply one task id and no other mode. Next action: rerun cc-claim --release-claim-residue <task_id>, naming the task the role's residue names." >&2
   exit 1
 fi
 if [[ -z "$task_id" && "$recover_claim_publications_only" != "true" ]]; then
@@ -285,6 +292,51 @@ fi
 . "$ROOT_HELPER"
 cc_task_root_resolve || exit $?
 vault_root_check="$CC_TASK_ROOT"
+# Governed release of this role's claim residue for one task (M166-M173). It runs before the
+# lease scan, because the residue it releases is what that scan and the claim path hold on.
+if [[ "$release_claim_residue_only" == "true" ]]; then
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" <<'PYEOF'
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+repo_root, vault_root, role, task_id = Path(sys.argv[1]).resolve(), Path(sys.argv[2]), *sys.argv[3:5]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.sdlc_claim import (  # noqa: E402
+    ClaimPublicationError,
+    ClaimResidueArchiveHold,
+    release_claim_residue,
+)
+
+roots = default_claim_publication_roots(home=Path.home())
+try:
+    released = release_claim_residue(
+        vault_root=vault_root,
+        cache_dir=Path(roots.claim_cache_dir),
+        transaction_root=Path(roots.claim_transaction_root),
+        lock_root=Path(roots.claim_lock_root),
+        role=role,
+        task_id=task_id,
+        observed_at=datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
+    )
+except ClaimResidueArchiveHold as exc:
+    print(f"cc-claim: {exc.message}", file=sys.stderr)
+    sys.exit(8)
+except ClaimPublicationError as exc:
+    print(f"cc-claim: HOLD - {exc}. Next action: repair the named root, then rerun.", file=sys.stderr)
+    sys.exit(8)
+print(
+    f"cc-claim: released {released.shape} residue of {role} for {task_id} "
+    f"(publication {released.publication_id}); archived {len(released.archived)} file(s) to "
+    f"{released.archive_dir}"
+    + (f"; journal quarantined as {released.quarantined_journal}" if released.quarantined_journal else "")
+)
+PYEOF
+  exit $?
+fi
 now_epoch="$(date +%s 2>/dev/null || echo 0)"
 legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
 # Only this run's lease scan may set the charter-keep grant; a value inherited
@@ -675,6 +727,24 @@ if canon_enforced:
                 "then rerun cc-claim.",
                 file=sys.stderr,
             )
+            if exc.reason_code in {
+                "claim_cache_missing",
+                "claim_epoch_missing",
+                "claim_dispatch_binding_missing",
+                "claim_task_mismatch",
+            }:
+                try:
+                    residue_task = json.loads(
+                        (cache_dir / f"cc-claim-dispatch-{role}.json").read_text(encoding="utf-8")
+                    )["task_id"]
+                except (OSError, ValueError, KeyError, TypeError):
+                    residue_task = "<the task the role's residue names>"
+                print(
+                    "cc-claim: if that residue is this role's lapsed lease, a held publication, "
+                    "or markers of a row closed from another process, release it with "
+                    f"`cc-claim --release-claim-residue {residue_task}` (it refuses a live claim).",
+                    file=sys.stderr,
+                )
             sys.exit(8)
         binding = applied.intent.binding
         expected_dispatch = {

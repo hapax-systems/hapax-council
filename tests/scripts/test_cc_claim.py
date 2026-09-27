@@ -1688,3 +1688,244 @@ def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
     cache_dir = home / ".cache" / "hapax"
     leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
     assert leaked == [], f"claim caches must not be written on a failed stamp: {leaked}"
+
+
+# ── governed release of a role's claim residue ───────────────────────────────
+# claim-cache-missing-governed-release-20260926: M166-M173. Each shape once needed an
+# operator-run shell script, because the cc-task-gate refuses shell cp/mv/rm (M160).
+
+
+def _release(
+    home: Path, task_id: str, *, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        extra_env=extra_env,
+        extra_args=["--release-claim-residue"],
+    )
+
+
+def _role_sidecars(
+    home: Path, *, role: str = "cx-test", session: str = _SESSION_ID
+) -> dict[str, tuple[Path, Path]]:
+    cache = home / ".cache" / "hapax"
+    keys = (role, f"{role}-{session}")
+    return {
+        "marker": tuple(cache / f"cc-active-task-{key}" for key in keys),
+        "epoch": tuple(cache / f"cc-claim-epoch-{key}" for key in keys),
+        "dispatch": tuple(cache / f"cc-claim-dispatch-{key}.json" for key in keys),
+    }
+
+
+def _bytes_of(paths: tuple[Path, ...]) -> dict[Path, bytes | None]:
+    return {path: path.read_bytes() if path.exists() else None for path in paths}
+
+
+def _release_archives(home: Path, task_id: str) -> list[Path]:
+    return sorted((_task_root(home) / "_lineage" / task_id).glob("claim-residue-release-*"))
+
+
+def test_release_frees_a_role_wedged_by_its_own_lapsed_lease(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    lapsed = _write_task(home, "active", "lapsed-row")
+    assert _claim(home, "lapsed-row").returncode == 0
+    sidecars = _role_sidecars(home)
+    for marker in sidecars["marker"]:
+        marker.unlink()  # the lease lapsed; its epoch and dispatch sidecars survive (M168)
+    _write_task(home, "active", "next-row")
+    wedged = _claim(home, "next-row")
+    assert wedged.returncode == 8
+    assert "claim_cache_missing" in wedged.stderr
+    assert "cc-claim --release-claim-residue lapsed-row" in wedged.stderr
+    note_before = lapsed.read_bytes()
+
+    released = _release(home, "lapsed-row")
+
+    assert released.returncode == 0, released.stderr
+    assert "lapsed_lease" in released.stdout
+    assert lapsed.read_bytes() == note_before  # the live row is never touched
+    [archive] = _release_archives(home, "lapsed-row")
+    residue = (*sidecars["epoch"], *sidecars["dispatch"])
+    assert sorted(path.name for path in archive.iterdir()) == sorted(
+        [*(path.name for path in residue), "README.md"]
+    )
+    assert not any(path.exists() for path in residue)
+    retried = _claim(home, "next-row")
+    assert retried.returncode == 0, retried.stderr
+
+
+def test_release_frees_markers_that_name_a_row_now_in_closed(tmp_path: Path) -> None:
+    # M173, twice: dev33 on frame-reduction, grok-sonar on sonar-alias-retirement. The PR-merge
+    # watcher closed the row from another process, and the claimant's markers stayed behind.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "commission-row")
+    assert _claim(home, "commission-row").returncode == 0
+    closed = _task_root(home) / "closed" / note.name
+    closed.write_text(
+        note.read_text(encoding="utf-8").replace("status: claimed", "status: done", 1),
+        encoding="utf-8",
+    )
+    note.unlink()
+    _write_task(home, "active", "next-row")
+    stranded = _claim(home, "next-row")
+    assert stranded.returncode == 8
+    assert "cc-claim --release-claim-residue commission-row" in stranded.stderr
+    closed_before = closed.read_bytes()
+
+    released = _release(home, "commission-row")
+
+    assert released.returncode == 0, released.stderr
+    assert "closed_task" in released.stdout
+    assert closed.read_bytes() == closed_before
+    sidecars = _role_sidecars(home)
+    assert not any(path.exists() for group in sidecars.values() for path in group)
+    [archive] = _release_archives(home, "commission-row")
+    assert len([path for path in archive.iterdir() if path.name != "README.md"]) == 6
+    retried = _claim(home, "next-row")
+    assert retried.returncode == 0, retried.stderr
+
+
+def test_release_refuses_a_live_claim_and_moves_nothing(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "live-row")
+    assert _claim(home, "live-row").returncode == 0
+    sidecars = _role_sidecars(home)
+    everything = tuple(path for group in sidecars.values() for path in group)
+    before, note_before = _bytes_of(everything), note.read_bytes()
+
+    released = _release(home, "live-row")
+
+    assert released.returncode == 8
+    assert "claim_residue_live_marker" in released.stderr
+    assert _bytes_of(everything) == before
+    assert note.read_bytes() == note_before
+    assert _release_archives(home, "live-row") == []
+
+
+def test_release_refuses_markers_of_a_row_still_in_active_mid_close(tmp_path: Path) -> None:
+    # A terminal status alone is not enough: until cc-close moves the row out of active/, its
+    # markers may still be in use.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "closing-row")
+    assert _claim(home, "closing-row").returncode == 0
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("status: claimed", "status: done", 1),
+        encoding="utf-8",
+    )
+    sidecars = _role_sidecars(home)
+    everything = tuple(path for group in sidecars.values() for path in group)
+    before = _bytes_of(everything)
+
+    released = _release(home, "closing-row")
+
+    assert released.returncode == 8
+    assert "claim_residue_live_marker" in released.stderr
+    assert _bytes_of(everything) == before
+
+
+def test_release_refuses_residue_that_differs_from_the_journal(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "lapsed-row")
+    assert _claim(home, "lapsed-row").returncode == 0
+    sidecars = _role_sidecars(home)
+    for marker in sidecars["marker"]:
+        marker.unlink()
+    sidecars["epoch"][1].write_text("1 lapsed-row\n", encoding="utf-8")
+    residue = (*sidecars["epoch"], *sidecars["dispatch"])
+    before = _bytes_of(residue)
+
+    released = _release(home, "lapsed-row")
+
+    assert released.returncode == 8
+    assert "claim_residue_hash_mismatch" in released.stderr
+    assert _bytes_of(residue) == before
+    assert _release_archives(home, "lapsed-row") == []
+
+
+def test_release_refuses_while_another_session_of_the_role_holds_the_task(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "lapsed-row")
+    assert _claim(home, "lapsed-row").returncode == 0
+    sidecars = _role_sidecars(home)
+    for marker in sidecars["marker"]:
+        marker.unlink()
+    live = home / ".cache" / "hapax" / "cc-active-task-cx-test-77777777-1111-2222-3333-444455556666"
+    live.write_text("lapsed-row\n", encoding="utf-8")
+    residue = (*sidecars["epoch"], *sidecars["dispatch"], live)
+    before = _bytes_of(residue)
+
+    released = _release(home, "lapsed-row")
+
+    assert released.returncode == 8
+    assert "claim_residue_live_marker" in released.stderr
+    assert _bytes_of(residue) == before
+
+
+def test_release_reports_when_nothing_remains(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "gone-row")
+    assert _claim(home, "gone-row").returncode == 0
+    for group in _role_sidecars(home).values():
+        for path in group:
+            path.unlink()
+
+    released = _release(home, "gone-row")
+
+    assert released.returncode == 8
+    assert "claim_residue_none" in released.stderr
+    assert _release_archives(home, "gone-row") == []
+
+
+def test_release_refuses_a_lapsed_lease_missing_a_sidecar_never_archived(tmp_path: Path) -> None:
+    # codex, #4801 round 2: a missing epoch beside a matching dispatch is not accounted for.
+    home = tmp_path / "home"
+    _write_task(home, "active", "lapsed-row")
+    assert _claim(home, "lapsed-row").returncode == 0
+    sidecars = _role_sidecars(home)
+    for marker in sidecars["marker"]:
+        marker.unlink()
+    sidecars["epoch"][1].unlink()
+    before = _bytes_of((*sidecars["epoch"], *sidecars["dispatch"]))
+
+    released = _release(home, "lapsed-row")
+
+    assert released.returncode == 8
+    assert "claim_residue_projection_missing" in released.stderr
+    assert _bytes_of((*sidecars["epoch"], *sidecars["dispatch"])) == before
+
+
+def test_release_touches_no_other_role_or_session(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "lapsed-row")
+    assert _claim(home, "lapsed-row").returncode == 0
+    for marker in _role_sidecars(home)["marker"]:
+        marker.unlink()
+    cache = home / ".cache" / "hapax"
+    other_session = "77777777-1111-2222-3333-444455556666"
+    foreign = (
+        cache / f"cc-claim-epoch-cx-test-{other_session}",  # this role, another session
+        cache / "cc-claim-epoch-cx-other",  # another role
+        cache / "cc-active-task-cx-other",
+    )
+    for path in foreign:
+        path.write_text("1 lapsed-row\n" if "epoch" in path.name else "lapsed-row\n")
+    before = _bytes_of(foreign)
+
+    # Released from a new session of the same role; another role cannot release it at all.
+    new_session = "88888888-1111-2222-3333-444455556666"
+    other_role = _release(
+        home,
+        "lapsed-row",
+        extra_env={"HAPAX_AGENT_ROLE": "cx-other", "HAPAX_AGENT_NAME": "cx-other"},
+    )
+    released = _release(home, "lapsed-row", extra_env={"HAPAX_SESSION_ID": new_session})
+
+    assert other_role.returncode == 8
+    assert "claim_residue_no_journal" in other_role.stderr
+    assert released.returncode == 0, released.stderr
+    assert _bytes_of(foreign) == before
