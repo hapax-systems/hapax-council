@@ -118,6 +118,8 @@ def test_a_bound_file_merge_reprovisions_with_the_merge_as_its_basis(release) ->
     assert pending["status"] == "pending" and pending["new_receipt_ref"] is None
     assert (final["status"], final["new_receipt_ref"]) == ("complete", new.receipt_ref)
     assert final["authority"] == install.REPROVISION_AUTHORITY
+    assert not (store / _MARKER).exists()  # retired, by rename, once the install is consistent
+    assert json.loads((store / f"{_MARKER}.resolved-{STAMP}").read_text())["stamp"] == STAMP
 
 
 def test_the_fresh_install_binds_the_release_modules_not_the_checkout_running_it(release) -> None:
@@ -150,15 +152,17 @@ def test_the_basis_is_recorded_before_anything_is_quarantined_or_installed(
         store = _store(roots)
         seen["pending"] = (store / f"reprovision-basis-{STAMP}.pending.json").exists()
         seen["quarantined"] = (store / f"activation-receipt.json.quarantined-{STAMP}").exists()
+        seen["marker"] = (store / _MARKER).exists()
         return real_install(**kwargs)
 
     monkeypatch.setattr(install, "install_claim_publication_composition", observing_install)
     _reprovision(repo, roots, commits["C"])
 
-    assert seen == {"pending": True, "quarantined": True}
+    assert seen == {"pending": True, "quarantined": True, "marker": True}
 
 
 _PAIR = ("activation-receipt.json", "composition-manifest.json")
+_MARKER = "reprovision-in-flight.json"
 
 
 def _fail_the_install(monkeypatch: pytest.MonkeyPatch, store: Path, *, partial: bool) -> None:
@@ -188,6 +192,8 @@ def test_a_failed_fresh_install_restores_the_old_pair_and_holds(
     assert raised.value.reason_code == "gate0b_reprovision_install_failed"
     assert {name: (store / name).read_bytes() for name in _PAIR} == old
     assert not list(store.glob("*.quarantined-*"))
+    assert not (store / _MARKER).exists()  # the pair is verified back, so the marker is retired
+    assert (store / f"{_MARKER}.resolved-{STAMP}").exists()
     final = json.loads((store / f"reprovision-basis-{STAMP}.json").read_text())
     assert (final["status"], final["new_receipt_ref"]) == ("rolled_back", None)
     set_aside = store / f"activation-receipt.json.unrecorded-{STAMP}"
@@ -235,6 +241,117 @@ def test_two_reprovisions_in_the_same_second_do_not_collide(release) -> None:
     assert len(list(store.glob("activation-receipt.json.quarantined-*"))) == 2
 
 
+# gate0b-reprovision-inflight-hold-marker-20260927
+
+
+def _fail_renames(monkeypatch: pytest.MonkeyPatch, *, when) -> None:
+    """Fail the renames that ``when(source name, target name)`` selects; the rest proceed."""
+    real_rename = os.rename
+
+    def rename(source, target, *args, **kwargs):
+        if when(Path(source).name, Path(target).name):
+            raise OSError(5, "Input/output error (injected)")
+        return real_rename(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(install.os, "rename", rename)
+
+
+def test_a_rollback_that_fails_leaves_the_marker_so_claims_hold(
+    release, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # codex's major on #4814: if putting the quarantined pair back itself fails, no receipt
+    # exists, and a following cc-claim's first-use install would run without a basis.
+    repo, roots, commits, a_hashes = release
+    home = tmp_path / "home"
+    _install_from(roots, a_hashes)
+    store = _store(roots)
+    _fail_the_install(monkeypatch, store, partial=False)
+    _fail_renames(monkeypatch, when=lambda source, _target: ".quarantined-" in source)
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _reprovision(repo, roots, commits["C"])
+
+    assert raised.value.reason_code == "gate0b_reprovision_rollback_failed"
+    assert (store / _MARKER).exists()
+    assert not (store / "activation-receipt.json").exists()
+    monkeypatch.undo()
+    with pytest.raises(ExecutionAdmissionError) as loader:
+        install.load_claim_publication_composition(store)
+    assert loader.value.reason_code == "gate0b_install_reprovision_in_flight"
+    with pytest.raises(ExecutionAdmissionError) as rerun:
+        _reprovision(repo, roots, commits["C"])
+    assert rerun.value.reason_code == "gate0b_reprovision_in_flight"
+    _write_task(home, "active", "during-an-unfinished-reprovision")
+
+    held = _claim(home, "during-an-unfinished-reprovision", install_gate0b=False)
+
+    assert held.returncode == 8
+    assert "gate0b_install_reprovision_in_flight" in held.stderr
+    assert not (store / "activation-receipt.json").exists()  # no first-use install
+
+
+def test_a_partial_quarantine_is_rolled_back_and_holds(
+    release, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gemini on #4814: the receipt was moved, then moving the manifest failed.
+    repo, roots, commits, a_hashes = release
+    _install_from(roots, a_hashes)
+    store = _store(roots)
+    old = {name: (store / name).read_bytes() for name in _PAIR}
+    _fail_renames(
+        monkeypatch,
+        when=lambda source, target: (
+            source == "composition-manifest.json" and "quarantined" in target
+        ),
+    )
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _reprovision(repo, roots, commits["C"])
+
+    assert raised.value.reason_code == "gate0b_reprovision_quarantine_failed"
+    assert {name: (store / name).read_bytes() for name in _PAIR} == old
+    assert not list(store.glob("*.quarantined-*"))
+    assert not (store / _MARKER).exists()
+
+
+def test_a_second_reprovision_refuses_on_the_marker_and_changes_nothing(release) -> None:
+    repo, roots, commits, a_hashes = release
+    _install_from(roots, a_hashes)
+    (_store(roots) / _MARKER).write_text('{"stamp": "another run"}\n', encoding="utf-8")
+    before = _snapshot(roots)
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _reprovision(repo, roots, commits["C"])
+
+    assert raised.value.reason_code == "gate0b_reprovision_in_flight"
+    assert _snapshot(roots) == before
+
+
+def test_a_run_that_starts_between_the_check_and_the_marker_loses_the_race(
+    release, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The early check is advice; the exclusive create is what makes the fence hold.
+    repo, roots, commits, a_hashes = release
+    _install_from(roots, a_hashes)
+    store = _store(roots)
+    real_bound_state = install._bound_state
+
+    def other_run_starts(*args, **kwargs):
+        if not (store / _MARKER).exists():
+            (store / _MARKER).write_text('{"stamp": "the other run"}\n', encoding="utf-8")
+        return real_bound_state(*args, **kwargs)
+
+    monkeypatch.setattr(install, "_bound_state", other_run_starts)
+    before_pair = {name: (store / name).read_bytes() for name in _PAIR}
+
+    with pytest.raises(ExecutionAdmissionError) as raised:
+        _reprovision(repo, roots, commits["C"])
+
+    assert raised.value.reason_code == "gate0b_reprovision_in_flight"
+    assert json.loads((store / _MARKER).read_text())["stamp"] == "the other run"
+    assert {name: (store / name).read_bytes() for name in _PAIR} == before_pair
+
+
 @pytest.mark.parametrize("record", ["pending", "complete"])
 def test_a_basis_that_cannot_be_recorded_holds_with_no_usable_install(
     release, monkeypatch: pytest.MonkeyPatch, record: str
@@ -260,7 +377,9 @@ def test_a_basis_that_cannot_be_recorded_holds_with_no_usable_install(
 
     assert raised.value.reason_code == "gate0b_reprovision_basis_unrecorded"
     if record == "pending":
-        assert _snapshot(roots) == before  # nothing moved
+        after = _snapshot(roots)
+        after.pop(f"{_MARKER}.resolved-{STAMP}")  # nothing moved; the marker was retired
+        assert after == before
     else:
         # The fresh install is set aside, and the old pair is back (recovery-paths item 2).
         assert {name: (store / name).read_bytes() for name in _PAIR} == {
