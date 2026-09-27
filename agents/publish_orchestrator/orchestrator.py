@@ -51,7 +51,7 @@ import re
 import signal as _signal
 import subprocess
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -88,6 +88,7 @@ from shared.publication_hardening.gate import (
     PublicationHardeningGate,
     publication_gate_fingerprint,
 )
+from shared.publication_hardening.lint import REGISTER_CARRIAGE_RULE
 from shared.publication_hardening.review import ReviewPass
 from shared.research_vehicle_public_event import ResearchVehiclePublicEvent
 
@@ -470,6 +471,7 @@ class Orchestrator:
             gate_result,
             receipt_child=receipt_child,
         )
+        gate_result, register_dispositions = _surface_register_carriage_warnings(gate_result)
         artifact.publication_gate_result = gate_result.to_frontmatter()
         artifact.publication_review = gate_result.review_report
         self._attach_gate_frontmatter(artifact)
@@ -480,6 +482,14 @@ class Orchestrator:
             self._reject_for_gate(artifact, gate_result)
             return
 
+        if register_dispositions:
+            log.warning(
+                "publication hardening gate surfaced %d %s warning(s) for human disposition on "
+                "%s (not a hold)",
+                len(register_dispositions),
+                REGISTER_CARRIAGE_RULE,
+                artifact.slug,
+            )
         gate_fingerprint = publication_gate_fingerprint(gate_result)
         self._record_gate_result(
             artifact,
@@ -487,6 +497,7 @@ class Orchestrator:
             result="operator_overridden_hold"
             if gate_result.decision == PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
             else "ok",
+            register_dispositions=register_dispositions,
         )
         artifact_fingerprint = _artifact_fingerprint(artifact)
         self._record_public_event(
@@ -976,6 +987,7 @@ class Orchestrator:
         gate_result: PublicationGateResult,
         *,
         result: str,
+        register_dispositions: Sequence[str] = (),
     ) -> None:
         log_path = (
             self._state_root
@@ -993,6 +1005,12 @@ class Orchestrator:
             "publication_gate_fingerprint": publication_gate_fingerprint(gate_result),
             "flagged_issues": list(gate_result.flagged_issues),
             "child_results": [child.model_dump(mode="json") for child in gate_result.child_results],
+            # Register carriage warnings do not hold publication; they are kept here, with their
+            # rule/level/text in the lint child above, so a human dispositions them per edition.
+            "register_carriage_dispositions": [
+                {"finding": finding, "disposition": REGISTER_CARRIAGE_DISPOSITION}
+                for finding in register_dispositions
+            ],
         }
         log_path.write_text(json.dumps(record, sort_keys=True))
 
@@ -1385,6 +1403,114 @@ class Orchestrator:
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+
+#: How a surfaced register carriage finding is recorded in the publish log: kept, never held, for
+#: a human to disposition (fix / keep-with-reason / carry) per the adopted amendment.
+REGISTER_CARRIAGE_DISPOSITION = "surface_for_human_disposition"
+
+#: A gate lint finding string: ``file:line:rule:level:message``. Anchored on the line digits and the
+#: ``error|warning`` level so a label with a colon in it (``artifact:<slug>``) still parses.
+_LINT_FINDING_RE = re.compile(
+    r"\A(?P<file>.+?):(?P<line>\d+):(?P<rule>[A-Za-z0-9_.]+):(?P<level>error|warning):(?P<message>.*)\Z"
+)
+
+
+def _lint_finding_rule_and_level(finding: str) -> tuple[str, str] | None:
+    """``(rule, level)`` from a gate lint finding string, or ``None`` when it does not parse.
+
+    The hardening gate's lint child renders findings as ``file:line:rule:level:message``
+    (:func:`shared.publication_hardening.gate._lint_finding_text`). Parsing is anchored on the line
+    digits and the ``error|warning`` level rather than split from the left: the ``file`` field is a
+    label that can itself contain colons (``lint_text`` labels an artifact ``artifact:<slug>``), and
+    the message can contain them too. Only the rule and level are read here; the message stays in
+    the receipt. A string that does not match is never exempted — an unreadable finding holds, which
+    is the fail-narrow direction.
+    """
+    match = _LINT_FINDING_RE.match(finding)
+    if match is None:
+        return None
+    return match.group("rule"), match.group("level")
+
+
+def _lint_child_decision(findings: Sequence[str]) -> PublicationGateDecision:
+    """The gate's own lint rule, re-applied to a narrowed finding set: error rejects, else hold."""
+    if any(
+        parsed is None or parsed[1] == "error"
+        for parsed in (_lint_finding_rule_and_level(finding) for finding in findings)
+    ):
+        return PublicationGateDecision.REJECT
+    return PublicationGateDecision.HOLD if findings else PublicationGateDecision.PASS
+
+
+def _surface_register_carriage_warnings(
+    gate_result: PublicationGateResult,
+) -> tuple[PublicationGateResult, tuple[str, ...]]:
+    """Let a HOLD that is only register carriage warnings proceed, recording them.
+
+    Returns the (possibly unchanged) gate result and the surfaced finding strings. Only
+    ``Hapax.RegisterCarriage`` **warning**-severity findings are exempt: the R8 lint is
+    over-inclusive by design and its warning is meant to be dispositioned by a human, so holding
+    publication on it would stall every artifact with a short fragment. Everything else holds
+    exactly as before — a register *error* still rejects, any other warning or error still holds,
+    an unreadable finding holds, and if another child holds or rejects nothing is released.
+
+    The surfaced findings stay in the lint child's findings, so the artifact's gate receipt carries
+    the rule, level, and text; the caller records them in the publish log too.
+    """
+    if gate_result.decision != PublicationGateDecision.HOLD:
+        return gate_result, ()
+    lint_child = next((child for child in gate_result.child_results if child.name == "lint"), None)
+    if lint_child is None or not lint_child.findings:
+        return gate_result, ()
+    surfaced = tuple(
+        finding
+        for finding in lint_child.findings
+        if _lint_finding_rule_and_level(finding) == (REGISTER_CARRIAGE_RULE, "warning")
+    )
+    if not surfaced:
+        return gate_result, ()
+    remaining = tuple(
+        finding
+        for finding in lint_child.findings
+        if _lint_finding_rule_and_level(finding) != (REGISTER_CARRIAGE_RULE, "warning")
+    )
+    rewired_lint = lint_child.model_copy(
+        update={
+            "decision": _lint_child_decision(remaining),
+            "findings": (
+                *lint_child.findings,
+                f"{len(surfaced)} {REGISTER_CARRIAGE_RULE} warning(s) surfaced for human "
+                "disposition (over-inclusive by design; not a hold)",
+            ),
+        }
+    )
+    children = tuple(
+        rewired_lint if child is lint_child else child for child in gate_result.child_results
+    )
+    decisions = {child.decision for child in children}
+    if PublicationGateDecision.REJECT in decisions:
+        return gate_result, ()
+    if PublicationGateDecision.HOLD in decisions:
+        # Another child is holding: the register warnings are not what holds this artifact.
+        return gate_result, ()
+    flagged = tuple(
+        f"{child.name}: {finding}"
+        for child in children
+        if child.decision != PublicationGateDecision.PASS
+        for finding in child.findings
+    )
+    return (
+        PublicationGateResult(
+            decision=PublicationGateDecision.PASS,
+            generated_at=gate_result.generated_at,
+            child_results=children,
+            flagged_issues=flagged,
+            override=None,
+            review_report=gate_result.review_report,
+        ),
+        surfaced,
+    )
 
 
 def _default_state_root() -> Path:
