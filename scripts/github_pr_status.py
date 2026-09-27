@@ -713,7 +713,12 @@ def _files_payload_from_rest(files: list[dict[str, Any]]) -> list[dict[str, Any]
     for item in files:
         filename = item.get("filename") or item.get("path")
         if filename:
-            out.append({"path": str(filename)})
+            entry: dict[str, Any] = {"path": str(filename)}
+            status = item.get("status")
+            if isinstance(status, str) and status:
+                # REST `removed` is GraphQL/gh `DELETED`; the rest share names.
+                entry["changeType"] = "DELETED" if status == "removed" else status.upper()
+            out.append(entry)
     return out
 
 
