@@ -1446,18 +1446,32 @@ def _lint_child_decision(rows: Sequence[Mapping[str, object]]) -> PublicationGat
     return PublicationGateDecision.HOLD if rows else PublicationGateDecision.PASS
 
 
+def _children_decision(
+    children: Sequence[PublicationGateChildResult],
+) -> PublicationGateDecision:
+    """The gate's own aggregate over child decisions: REJECT > HOLD > PASS."""
+    decisions = {child.decision for child in children}
+    if PublicationGateDecision.REJECT in decisions:
+        return PublicationGateDecision.REJECT
+    if PublicationGateDecision.HOLD in decisions:
+        return PublicationGateDecision.HOLD
+    return PublicationGateDecision.PASS
+
+
 def _surface_register_carriage_warnings(
     gate_result: PublicationGateResult,
 ) -> tuple[PublicationGateResult, tuple[str, ...]]:
     """Let a HOLD that is only register carriage warnings proceed, recording them.
 
-    Only ``Hapax.RegisterCarriage`` **warning** findings are exempt; a register error, any other
-    warning or error, and an unreconcilable finding still hold, and another holding child releases
-    nothing. The decision reads STRUCTURED fields, never the rendered string, whose free-text
-    ``file`` label could spoof a warning into the exempt rule. Surfaced findings stay in the lint
-    child's findings (the receipt) and in the log.
+    Only ``Hapax.RegisterCarriage`` **warning** findings are exempt; every other finding holds, and
+    the HOLD must be explained by the children. The decision reads STRUCTURED fields, never the
+    rendered string, whose free-text ``file`` label could spoof a warning into the exempt rule.
     """
     if gate_result.decision != PublicationGateDecision.HOLD:
+        return gate_result, ()
+    # The HOLD must be explained by the children (the gate's own aggregate): a HOLD no child
+    # explains, or a REJECT, is kept as it stands rather than read as a register-warning hold.
+    if _children_decision(gate_result.child_results) != PublicationGateDecision.HOLD:
         return gate_result, ()
     lint_child = next((child for child in gate_result.child_results if child.name == "lint"), None)
     if lint_child is None:
@@ -1491,11 +1505,8 @@ def _surface_register_carriage_warnings(
     children = tuple(
         rewired_lint if child is lint_child else child for child in gate_result.child_results
     )
-    decisions = {child.decision for child in children}
-    if PublicationGateDecision.REJECT in decisions:
-        return gate_result, ()
-    if PublicationGateDecision.HOLD in decisions:
-        # Another child is holding: the register warnings are not what holds this artifact.
+    if _children_decision(children) != PublicationGateDecision.PASS:
+        # Another child still holds or rejects: the register warnings are not what holds this.
         return gate_result, ()
     # Keep flagged issues that no child result carries (the gate adds operator-override errors),
     # minus the surfaced lint lines, and union the re-aggregated child lines.

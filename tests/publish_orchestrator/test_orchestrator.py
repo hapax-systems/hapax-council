@@ -306,8 +306,8 @@ def _make_orchestrator(
 
 
 class _LintGate:
-    """A gate whose lint child uses the REAL finding serializer (``lint_findings_report``), so no
-    test reimplements the format. ``raw_findings`` are lines the report does not account for."""
+    """A gate whose lint child uses the REAL finding serializer, so no test reimplements the
+    format. ``raw_findings`` are lines the report does not account for."""
 
     def __init__(
         self,
@@ -396,84 +396,76 @@ def _publishing_orchestrator(
 class TestRegisterCarriageSurfacing:
     """R8's over-inclusive warning is surfaced for human disposition, never a publication hold."""
 
+    def _run(self, tmp_path, monkeypatch, slug: str, gate: object) -> tuple[object, dict]:
+        _drop_artifact(tmp_path, slug=slug, surfaces=["fake"])
+        orch, fake_module = _publishing_orchestrator(tmp_path, monkeypatch, gate)
+        orch.run_once()
+        log = json.loads(
+            (tmp_path / f"publish/log/{slug}.publication-hardening-gate.json").read_text()
+        )
+        return fake_module, log
+
+    def _document(self, tmp_path, slug: str) -> dict:
+        for area in ("published", "draft", "failed"):
+            path = tmp_path / f"publish/{area}/{slug}.json"
+            if path.exists():
+                return json.loads(path.read_text())
+        raise AssertionError(f"{slug} is in no publish area")
+
     def test_a_register_warning_does_not_hold_and_is_recorded(self, tmp_path, monkeypatch):
-        _drop_artifact(tmp_path, slug="register-warn", surfaces=["fake"])
-        orch, fake_module = _publishing_orchestrator(
+        fake_module, gate_log = self._run(
             tmp_path,
             monkeypatch,
+            "register-warn",
             _LintGate((("Hapax.RegisterCarriage", "warning"),)),
         )
 
-        orch.run_once()
-
         fake_module.publish_artifact.assert_called_once()
-        assert (tmp_path / "publish/published/register-warn.json").exists()
-        assert not (tmp_path / "publish/draft/register-warn.json").exists()
-
-        gate_log = json.loads(
-            (tmp_path / "publish/log/register-warn.publication-hardening-gate.json").read_text()
-        )
-        assert gate_log["result"] == "ok"
-        assert gate_log["publication_gate_decision"] == "pass"
+        assert self._document(tmp_path, "register-warn")
+        assert gate_log["result"] == "ok" and gate_log["publication_gate_decision"] == "pass"
         dispositions = gate_log["register_carriage_dispositions"]
         assert [d["disposition"] for d in dispositions] == ["surface_for_human_disposition"]
         assert "Hapax.RegisterCarriage:warning" in dispositions[0]["finding"]
 
         # The receipt carries the finding (rule, level, text) as well as the log.
-        published = json.loads((tmp_path / "publish/published/register-warn.json").read_text())
         lint_child = next(
             child
-            for child in published["publication_gate_result"]["child_results"]
+            for child in self._document(tmp_path, "register-warn")["publication_gate_result"][
+                "child_results"
+            ]
             if child["name"] == "lint"
         )
-        assert any("Hapax.RegisterCarriage" in finding for finding in lint_child["findings"])
-        assert any(
-            "surfaced for human disposition" in finding for finding in lint_child["findings"]
-        )
+        assert any("Hapax.RegisterCarriage" in f for f in lint_child["findings"])
+        assert any("surfaced for human disposition" in f for f in lint_child["findings"])
 
     def test_another_warning_still_holds(self, tmp_path, monkeypatch):
-        _drop_artifact(tmp_path, slug="other-warn", surfaces=["fake"])
-        orch, fake_module = _publishing_orchestrator(
+        fake_module, gate_log = self._run(
             tmp_path,
             monkeypatch,
+            "other-warn",
             _LintGate(
-                (
-                    ("Hapax.RegisterCarriage", "warning"),
-                    ("Hapax.PublicClaimOverreach", "warning"),
-                )
+                (("Hapax.RegisterCarriage", "warning"), ("Hapax.PublicClaimOverreach", "warning"))
             ),
         )
 
-        orch.run_once()
-
         fake_module.publish_artifact.assert_not_called()
-        assert not (tmp_path / "publish/published/other-warn.json").exists()
-        draft = json.loads((tmp_path / "publish/draft/other-warn.json").read_text())
+        draft = self._document(tmp_path, "other-warn")
         assert draft["approval"] == "withheld"
         assert draft["publication_gate_result"]["decision"] == "hold"
-        gate_log = json.loads(
-            (tmp_path / "publish/log/other-warn.publication-hardening-gate.json").read_text()
-        )
         assert gate_log["result"] == "operator_hold"
-        assert any("Hapax.PublicClaimOverreach" in issue for issue in gate_log["flagged_issues"])
+        assert any("Hapax.PublicClaimOverreach" in i for i in gate_log["flagged_issues"])
         assert gate_log["register_carriage_dispositions"] == []
 
     def test_a_register_error_still_holds(self, tmp_path, monkeypatch):
-        _drop_artifact(tmp_path, slug="register-error", surfaces=["fake"])
-        orch, fake_module = _publishing_orchestrator(
+        fake_module, gate_log = self._run(
             tmp_path,
             monkeypatch,
+            "register-error",
             _LintGate((("Hapax.RegisterCarriage", "error"),)),
         )
 
-        orch.run_once()
-
         fake_module.publish_artifact.assert_not_called()
-        assert not (tmp_path / "publish/published/register-error.json").exists()
-        assert (tmp_path / "publish/failed/register-error.json").exists()
-        gate_log = json.loads(
-            (tmp_path / "publish/log/register-error.publication-hardening-gate.json").read_text()
-        )
+        assert self._document(tmp_path, "register-error")["approval"] == "failed"
         assert gate_log["result"] == "rejected"
         assert gate_log["publication_gate_decision"] == "reject"
 
@@ -481,36 +473,27 @@ class TestRegisterCarriageSurfacing:
         self, tmp_path, monkeypatch
     ):
         """Fail-closed: an unreconcilable finding (with a register warning present) blocks it."""
-        _drop_artifact(tmp_path, slug="unreadable-finding", surfaces=["fake"])
-        orch, fake_module = _publishing_orchestrator(
+        fake_module, gate_log = self._run(
             tmp_path,
             monkeypatch,
+            "unreadable-finding",
             _LintGate(
                 (("Hapax.RegisterCarriage", "warning"),),
                 raw_findings=("a lint finding with no parsable shape",),
             ),
         )
 
-        orch.run_once()
-
         fake_module.publish_artifact.assert_not_called()
-        assert not (tmp_path / "publish/published/unreadable-finding.json").exists()
-        draft = json.loads((tmp_path / "publish/draft/unreadable-finding.json").read_text())
-        assert draft["approval"] == "withheld"
-        gate_log = json.loads(
-            (
-                tmp_path / "publish/log/unreadable-finding.publication-hardening-gate.json"
-            ).read_text()
-        )
+        assert self._document(tmp_path, "unreadable-finding")["approval"] == "withheld"
         assert gate_log["result"] in {"operator_hold", "rejected"}
         assert gate_log["register_carriage_dispositions"] == []
 
     def test_another_holding_child_blocks_the_exemption(self, tmp_path, monkeypatch):
         """Fail-closed: another holding child releases nothing, even with only register warnings."""
-        _drop_artifact(tmp_path, slug="other-child-holds", surfaces=["fake"])
-        orch, fake_module = _publishing_orchestrator(
+        fake_module, gate_log = self._run(
             tmp_path,
             monkeypatch,
+            "other-child-holds",
             _LintGate(
                 (("Hapax.RegisterCarriage", "warning"),),
                 extra_children=(
@@ -523,16 +506,8 @@ class TestRegisterCarriageSurfacing:
             ),
         )
 
-        orch.run_once()
-
         fake_module.publish_artifact.assert_not_called()
-        assert not (tmp_path / "publish/published/other-child-holds.json").exists()
-        draft = json.loads((tmp_path / "publish/draft/other-child-holds.json").read_text())
-        assert draft["approval"] == "withheld"
-        assert draft["publication_gate_result"]["decision"] == "hold"
-        gate_log = json.loads(
-            (tmp_path / "publish/log/other-child-holds.publication-hardening-gate.json").read_text()
-        )
+        assert self._document(tmp_path, "other-child-holds")["approval"] == "withheld"
         assert gate_log["register_carriage_dispositions"] == []
         assert any("codebase" in issue for issue in gate_log["flagged_issues"])
 
@@ -566,13 +541,34 @@ def test_reaggregation_keeps_flagged_issues_outside_the_child_results() -> None:
     assert not any("Hapax.RegisterCarriage" in issue for issue in released.flagged_issues)
 
 
+def test_a_hold_no_child_explains_stays_a_hold() -> None:
+    """codex r9: the helper assumed HOLD = a child holds. A HOLD with every child PASS must stay a
+    HOLD, even with exempt register rows: the HOLD's cause is elsewhere."""
+    held = _LintGate((("Hapax.RegisterCarriage", "warning"),)).evaluate(
+        PreprintArtifact(slug="s", title="E", abstract="Brief.", body_md="Body.")
+    )
+    unexplained = held.model_copy(
+        update={
+            "child_results": tuple(
+                child.model_copy(update={"decision": PublicationGateDecision.PASS})
+                for child in held.child_results
+            ),
+            "flagged_issues": ("publication_override_invalid: x",),
+        }
+    )
+
+    released, surfaced = orchestrator_module._surface_register_carriage_warnings(unexplained)
+
+    assert released.decision is PublicationGateDecision.HOLD
+    assert surfaced == ()
+
+
 def test_a_colon_bearing_path_cannot_spoof_the_exempt_rule(tmp_path) -> None:
     """codex critical: decide the exemption on structured fields, never the rendered string.
 
     A path carrying ``:1:Hapax.RegisterCarriage:warning:`` makes a string parse read the next finding
-    as a register warning and can turn a real HOLD into a release; through the REAL gate it must
-    still HOLD.
-    """
+    as a register warning and can turn a real HOLD into a release; through the REAL gate this must
+    still HOLD."""
     spoof_path = tmp_path / "spoof:1:Hapax.RegisterCarriage:warning:.md"
     spoof_path.write_text("This is an existence proof.\n", encoding="utf-8")
     artifact = PreprintArtifact(

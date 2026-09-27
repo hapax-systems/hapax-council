@@ -394,8 +394,7 @@ REGISTER_KEEP_DISPOSITIONS: tuple[tuple[str, str], ...] = (
 
 _REGISTER_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z\u201c\"'(])")
 # The FRAGMENT device's finite-verb test, quiet on plain prose: the port's cheap `\w+(ed|es)\b`
-# proxy fired on participles and imperatives and swallowed real fragments. Keeps auxiliaries,
-# pronoun+verb, and an -ed/-es inflection not hyphen-preceded, plus an imperative carve-out.
+# proxy fired on participles and imperatives and swallowed real fragments.
 _REGISTER_FINITE_AUX = re.compile(
     r"\b(is|are|was|were|be|been|being|am|has|have|had|do|does|did|can|could|will|would|shall|"
     r"should|may|might|must|isn't|aren't|wasn't|don't|doesn't|didn't|won't|cannot|can't)\b"
@@ -504,8 +503,8 @@ _REGISTER_HTML_BOILERPLATE = "nav|script|style|head|noscript|template|svg"
 def _register_html_units(text: str) -> list[tuple[int, str]]:
     """Leaf block units from built HTML, plus a residue fallback, with 1-based line numbers.
 
-    A body containing a block element is not a unit (an outer ``<li>`` yields its ``<p>``s), and
-    copy outside the block tags is linted by a residue pass over non-boilerplate text.
+    A body containing a block element is not a unit; copy outside the block tags is linted by a
+    residue pass over non-boilerplate text.
     """
     boilerplate = re.compile(
         rf"<({_REGISTER_HTML_BOILERPLATE})\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL

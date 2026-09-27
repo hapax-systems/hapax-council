@@ -1180,9 +1180,9 @@ def scan_public_surface_paths(
 ) -> list[LintFinding]:
     """The gate's per-file hardening scan, one scanned file at a time.
 
-    R8's register carriage lint (``Hapax.RegisterCarriage``) is wired in through ``lint_file``,
-    which runs ``check_register_carriage_text`` for every file this loop reads — including built
-    ``.html``/``.htm`` pages. Named so a test can drive exactly what the gate runs on an emission.
+    R8's register carriage lint (``Hapax.RegisterCarriage``) is wired in through ``lint_file`` for
+    every file this loop reads, including built ``.html``/``.htm`` pages. Named so a test can drive
+    exactly what the gate runs on an emission.
     """
     findings: list[LintFinding] = []
     for path in iter_files(paths):

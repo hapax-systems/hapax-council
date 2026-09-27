@@ -603,8 +603,8 @@ def test_public_surface_gate_register_carriage_escalates_under_warnings_fail(
 def test_public_surface_gate_scans_built_site_pages_by_block_units(tmp_path: Path) -> None:
     """codex: built site pages must be scanned, not only the registry's sources.
 
-    `--built-site-dir` names a built output (R8's spec call-out for the site's `verify-dist`); the
-    page is linted by block units, and nav anchors are not merged into the paragraph's unit.
+    `--built-site-dir` names a built output; the page is linted by block units, and nav anchors are
+    not merged into the paragraph's unit.
     """
     dist = tmp_path / "dist"
     dist.mkdir()
@@ -677,8 +677,7 @@ def test_public_surface_gate_scans_built_htm_pages(tmp_path: Path) -> None:
 
 
 def test_an_explicit_missing_built_site_dir_fails_loudly(tmp_path: Path) -> None:
-    """claude: a missing named built output must exit non-zero with a next action, never pass by
-    scanning nothing."""
+    """claude: a missing named built output must exit non-zero, never pass by scanning nothing."""
     doc = tmp_path / "copy.md"
     doc.write_text("Scoped public copy.\n", encoding="utf-8")
     token_report = _write_token_report(tmp_path / "token-report.json")
@@ -738,7 +737,7 @@ def test_a_mixed_built_site_env_default_fails_on_the_missing_path(
 
 
 def test_a_built_site_dir_that_is_not_a_directory_refuses(tmp_path: Path) -> None:
-    """codex: a non-directory --built-site-dir passed and scanned a file, not the built output."""
+    """codex: a non-directory --built-site-dir scanned a file, not the built output."""
     page = tmp_path / "page.html"
     page.write_text("<p>One front door. Many working parts.</p>\n", encoding="utf-8")
     doc = tmp_path / "copy.md"
