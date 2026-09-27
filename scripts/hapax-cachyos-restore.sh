@@ -107,7 +107,7 @@ rm -rf "$RESTORE_DIR"
 mkdir -p "$RESTORE_DIR"
 
 log "Restoring latest snapshot..."
-restic restore latest --target "$RESTORE_DIR" --no-lock --verbose 2>&1 | tail -3
+restic restore latest --tag tier2-remote --target "$RESTORE_DIR" --no-lock --verbose 2>&1 | tail -3
 ok "Snapshot restored"
 
 # Determine restored home path (username may differ)

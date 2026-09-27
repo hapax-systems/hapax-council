@@ -23,12 +23,13 @@ BACKUP_SCRIPTS = ("hapax-backup-local", "hapax-backup-remote")
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 # The DR script is podium's ~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, whose own
-# sha256 is fa0dafc7…), changed in exactly five hunks by the seat's exceptions (2026-09-27 10:29Z, 12:03Z, 12:12Z,
-# 12:24Z): the bootstrap clone (lines 22–23), Phase 3's FileStore restore (after line 153), Phase 12's dump search
-# (613ff), Phase 13's council remote (684) and the manual-steps checklist (829–830: the activator from the council
-# checkout, unit reinstall, first backup). DR_SCRIPT_SHA256 below is the digest of that result, not of the live blob.
-# These were the last exceptions; any other change belongs to the follow-up row, never to a silent edit.
-DR_SCRIPT_SHA256 = "30d678e44078aca22501eab11371b343009ebddcac400c0ed04b47156739f32f"
+# sha256 is fa0dafc7…), changed in exactly six hunks by the seat's exceptions (2026-09-27 10:29Z, 12:03Z, 12:12Z,
+# 12:24Z, 12:33Z): the bootstrap clone (lines 22–23), Phase 2's restore selecting --tag tier2-remote (110), Phase 3's
+# FileStore restore (after line 153), Phase 12's dump search (613ff), Phase 13's council remote (684) and the
+# manual-steps checklist (829–830: the activator from the council checkout, unit reinstall, first backup).
+# DR_SCRIPT_SHA256 below is the digest of that result, not of the live blob. The seat grants no further exception;
+# any other change belongs to the follow-up row, never to a silent edit.
+DR_SCRIPT_SHA256 = "09bb495f062d54f79bc5ed2c019c042fd6845b176972017efbc597a19c2b37e2"
 
 
 @pytest.mark.parametrize("name", ["hapax-backup-local.service", "hapax-backup-remote.service"])
@@ -394,6 +395,17 @@ def test_dr_steps_run_the_activator_from_the_council_checkout() -> None:
     assert (
         SCRIPTS / "hapax-source-activate"
     ).is_file()  # the path the step names exists in council
+
+
+def test_dr_restore_selects_the_tier2_snapshot_by_tag() -> None:
+    """Exception 8 (seat 2026-09-27 12:33Z): a bare `latest` is the newest snapshot of any tag, the #4803 class. B2's
+    only writer tags tier2-remote, so this is a guard, not a behaviour change."""
+
+    text = (SCRIPTS / "hapax-cachyos-restore.sh").read_text(encoding="utf-8")
+    restores = re.findall(r"^restic restore .*$", text, re.M)
+    assert restores == [
+        'restic restore latest --tag tier2-remote --target "$RESTORE_DIR" --no-lock --verbose 2>&1 | tail -3'
+    ]
 
 
 def test_dr_phase13_clones_council_from_hapax_systems() -> None:
