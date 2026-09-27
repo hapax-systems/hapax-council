@@ -40,6 +40,10 @@ class PublicationGateDecision(StrEnum):
     OPERATOR_OVERRIDDEN_HOLD = "operator_overridden_hold"
 
 
+#: Schema marker for the lint child's structured findings report: read these fields, never re-parse.
+LINT_FINDINGS_REPORT_SCHEMA = "hapax.publication_lint_findings.v1"
+
+
 class PublicationGateModel(BaseModel):
     """Strict immutable base for publication gate models."""
 
@@ -205,6 +209,7 @@ class PublicationHardeningGate:
             name="lint",
             decision=decision,
             findings=tuple(_lint_finding_text(finding) for finding in findings),
+            report=lint_findings_report(findings),
         )
 
     def _entity_child(self, text: str) -> PublicationGateChildResult:
@@ -330,6 +335,29 @@ class PublicationHardeningGate:
             report=report.to_frontmatter(),
         )
         return child, report
+
+
+def lint_findings_report(findings: Sequence[LintFinding]) -> dict[str, object]:
+    """The lint child's findings as a STRUCTURED report, beside its rendered strings.
+
+    A consumer deciding on a rule or level reads these fields, never the rendered
+    ``file:line:rule:level:message`` text: the ``file`` label is free text, so a string parse is
+    spoofable. ``rendered`` maps a row back to the child's own finding string.
+    """
+    return {
+        "schema": LINT_FINDINGS_REPORT_SCHEMA,
+        "findings": [
+            {
+                "file": finding.file,
+                "line": finding.line,
+                "rule": finding.rule,
+                "level": finding.level,
+                "message": finding.message,
+                "rendered": _lint_finding_text(finding),
+            }
+            for finding in findings
+        ],
+    }
 
 
 def publication_gate_fingerprint(result: PublicationGateResult | Mapping[str, object]) -> str:
@@ -532,11 +560,13 @@ def _lint_finding_text(finding: LintFinding) -> str:
 
 
 __all__ = [
+    "LINT_FINDINGS_REPORT_SCHEMA",
     "PublicationGateChildResult",
     "PublicationGateContext",
     "PublicationGateDecision",
     "PublicationGateOverride",
     "PublicationGateResult",
     "PublicationHardeningGate",
+    "lint_findings_report",
     "publication_gate_fingerprint",
 ]
