@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from shared.frontmatter import parse_frontmatter_with_diagnostics
+from shared.task_note_lock import projected_path_lock
 
 # --------------------------------------------------------------------------- #
 # Contract constants
@@ -835,6 +836,24 @@ def stamp_request_row(
     citation_count: int,
 ) -> None:
     """Stamp the row while preserving unrelated frontmatter."""
+    with projected_path_lock(path.stem, (path,)):
+        _stamp_request_row_unlocked(
+            path,
+            receipt_id=receipt_id,
+            delivered_at=delivered_at,
+            drop_relpath=drop_relpath,
+            citation_count=citation_count,
+        )
+
+
+def _stamp_request_row_unlocked(
+    path: Path,
+    *,
+    receipt_id: str,
+    delivered_at: str,
+    drop_relpath: str,
+    citation_count: int,
+) -> None:
     try:
         original = _read_request_file(path)
     except (OSError, UnicodeDecodeError):

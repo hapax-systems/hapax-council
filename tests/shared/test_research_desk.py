@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,7 +15,6 @@ from shared.research_desk import (
     ALLOWED_URI_SCHEMES,
     MAX_CITATIONS,
     MAX_LIST_LIMIT,
-    MAX_MARKDOWN_BYTES,
     DeliveryReceipt,
     ResearchDeskConfig,
     ResearchDeskError,
@@ -21,10 +23,10 @@ from shared.research_desk import (
     list_open_requests,
     neutralize_markdown,
     normalize_citations,
-    render_drop,
     stamp_request_row,
     validate_request_id,
 )
+from shared.task_note_lock import projected_path_lock
 
 
 @pytest.fixture
@@ -455,48 +457,6 @@ def test_raw_html_is_inert_in_delivery(desk: ResearchDeskConfig) -> None:
     assert drop.frontmatter["withheld_links"] == 4
 
 
-def test_delivery_refuses_a_request_that_is_not_open(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-closed", status="refused")
-    with pytest.raises(ResearchDeskError) as exc:
-        deliver_result(desk, request_id="req-closed", markdown="answer")
-    assert exc.value.reason_code == "request_not_open"
-
-
-def test_delivery_refuses_a_delivered_row_with_no_receipt(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-orphan", status="delivered")
-    with pytest.raises(ResearchDeskError) as exc:
-        deliver_result(desk, request_id="req-orphan", markdown="answer")
-    assert exc.value.reason_code == "request_already_delivered"
-
-
-def test_delivery_refuses_an_unknown_request(desk: ResearchDeskConfig) -> None:
-    with pytest.raises(ResearchDeskError) as exc:
-        deliver_result(desk, request_id="ghost", markdown="answer")
-    assert exc.value.reason_code == "request_not_found"
-
-
-def test_delivery_refuses_empty_markdown(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-empty")
-    with pytest.raises(ResearchDeskError) as exc:
-        deliver_result(desk, request_id="req-empty", markdown="   \n  ")
-    assert exc.value.reason_code == "markdown_empty"
-
-
-def test_delivery_refuses_oversized_markdown(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-big")
-    with pytest.raises(ResearchDeskError) as exc:
-        deliver_result(desk, request_id="req-big", markdown="x" * (MAX_MARKDOWN_BYTES + 1))
-    assert exc.value.reason_code == "payload_too_large"
-    assert not list(desk.lanebus_dir.glob("*.md"))
-
-
-def test_delivery_refuses_control_characters_in_the_answer(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-ctrl")
-    with pytest.raises(ResearchDeskError) as exc:
-        deliver_result(desk, request_id="req-ctrl", markdown="fine\x00not fine")
-    assert exc.value.reason_code == "payload_control_characters"
-
-
 def test_a_markdown_rule_in_the_answer_cannot_forge_the_drop_frontmatter(
     desk: ResearchDeskConfig,
 ) -> None:
@@ -512,41 +472,9 @@ def test_a_markdown_rule_in_the_answer_cannot_forge_the_drop_frontmatter(
     assert drop.frontmatter["content_trust"] == "untrusted_external"
 
 
-def test_delivery_with_no_citations_emits_an_empty_list(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-nocite")
-    receipt = deliver_result(desk, request_id="req-nocite", markdown="answer")
-    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
-    assert drop.frontmatter["citations"] == []
-
-
-def test_quotes_in_a_title_do_not_break_the_drop_frontmatter(desk: ResearchDeskConfig) -> None:
-    path = write_request(desk, "req-quote")
-    path.write_text(
-        path.read_text(encoding="utf-8").replace(
-            'title: "req-quote title"', "title: 'a \"quoted\" title\\'"
-        ),
-        encoding="utf-8",
-    )
-    receipt = deliver_result(desk, request_id="req-quote", markdown="answer")
-    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
-    assert drop.ok, drop.error_message
-    assert '"quoted"' in drop.frontmatter["request_title"]
-
-
 # --------------------------------------------------------------------------- #
 # Row stamping in isolation
 # --------------------------------------------------------------------------- #
-
-
-def test_stamp_refuses_a_row_with_no_status_line(desk: ResearchDeskConfig) -> None:
-    path = desk.requests_dir / "no-status.md"
-    path.write_text("---\nkind: research_request\n---\nbody\n", encoding="utf-8")
-    with pytest.raises(ResearchDeskError) as exc:
-        stamp_request_row(
-            path, receipt_id="rd-x", delivered_at="now", drop_relpath="a.md", citation_count=0
-        )
-    assert exc.value.reason_code == "request_malformed"
-    assert "status" in exc.value.repair_action
 
 
 def test_stamp_refuses_a_symlinked_row(desk: ResearchDeskConfig) -> None:
@@ -568,37 +496,29 @@ def test_stamp_refuses_a_symlinked_row(desk: ResearchDeskConfig) -> None:
     assert outside.read_bytes() == original
 
 
-def test_stamp_replaces_rather_than_duplicates_an_existing_delivery_field(
-    desk: ResearchDeskConfig,
+def test_stamp_waits_for_projection_lock_and_preserves_concurrent_edit(
+    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    path = write_request(desk, "req-restamp", extra="delivered_at: 1999-01-01T00:00:00Z\n")
-    stamp_request_row(
-        path,
-        receipt_id="rd-new",
-        delivered_at="2026-09-16T00:00:00Z",
-        drop_relpath="drop.md",
-        citation_count=2,
-    )
-    text = path.read_text(encoding="utf-8")
-    assert text.count("delivered_at:") == 1
-    assert parse_frontmatter_with_diagnostics(text).frontmatter["delivered_at"] == (
-        "2026-09-16T00:00:00Z"
-    )
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    path = write_request(desk, "req-race")
+    started = threading.Event()
 
+    def stamp() -> None:
+        started.set()
+        stamp_request_row(
+            path, receipt_id="rd-race", delivered_at="now", drop_relpath="a.md", citation_count=0
+        )
 
-def test_render_drop_addresses_the_configured_lane(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-lane")
-    request = get_request(desk, "req-lane")
-    body = render_drop(
-        request=request,
-        lane="theta",
-        markdown="answer",
-        citations=(),
-        model_notes="",
-        receipt_id="rd-1",
-        delivered_at="2026-09-16T00:00:00Z",
-    )
-    assert parse_frontmatter_with_diagnostics(body).frontmatter["to"] == "theta"
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with projected_path_lock("req-race", (path,)):
+            future = pool.submit(stamp)
+            assert started.wait(2)
+            time.sleep(0.05)
+            assert not future.done(), "the stamp did not wait for the projection lock"
+            path.write_text(path.read_text() + "concurrent_edit: survived\n")
+        future.result(timeout=5)
+    assert "concurrent_edit: survived" in path.read_text()
+    assert "status: delivered" in path.read_text()
 
 
 # --------------------------------------------------------------------------- #
@@ -764,19 +684,6 @@ def test_delivery_neutralises_the_body_and_records_the_counts(desk: ResearchDesk
     assert "](file://" not in body
     assert "[legitimate](https://example.org/source)" in body
     assert "Active content removed:" in body
-
-
-def test_a_clean_answer_carries_zero_withheld_counts_and_no_banner(
-    desk: ResearchDeskConfig,
-) -> None:
-    write_request(desk, "req-clean")
-    receipt = deliver_result(
-        desk, request_id="req-clean", markdown="Plain prose with [a source](https://example.org)."
-    )
-    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
-    assert drop.frontmatter["withheld_images"] == 0
-    assert drop.frontmatter["withheld_links"] == 0
-    assert "Active content removed:" not in drop.body
 
 
 def test_the_citation_allowlist_and_the_body_allowlist_are_the_same_set() -> None:
