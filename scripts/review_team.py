@@ -146,12 +146,9 @@ DIFF_FULL_BYTES_FIELD = "diff_full_bytes"
 DIFF_DELIVERED_BYTES_FIELD = "diff_delivered_bytes"
 DIFF_FULL_FETCH_WITNESSED_FIELD = "diff_full_fetch_witnessed"
 
-#: The dispatcher's diff-truncation threshold (``MAX_DIFF_CHARS`` in
-#: scripts/cc-pr-review-dispatch.py), in chars — the measure ``truncate_diff``
-#: applies. review_team cannot import the dispatcher (it is the lower-level
-#: module), so the value is mirrored here and pinned equal by test. The gate's
-#: derivation boundary ("the seats saw the whole diff") IS the dispatcher's
-#: truncation point; the two must never drift apart.
+#: Historical derivation for unstamped dossiers written before per-seat byte
+#: coverage existed. New dossiers carry dispatcher-measured coverage and never
+#: derive it from this legacy character threshold.
 DIFF_FULL_COVERAGE_MAX_CHARS = 80_000
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
@@ -489,6 +486,65 @@ def load_lens_registry(path: Path | None = None) -> dict[str, Any]:
     if not isinstance(loaded, dict) or loaded.get("registry_schema") != 1:
         raise ValueError(f"lens registry at {registry_path} is not a registry_schema:1 mapping")
     return loaded
+
+
+class DiffCapacityConfigError(ValueError):
+    """The declared review diff or prompt capacity is invalid."""
+
+
+def seat_diff_capacity(seat_id: str, registry: Mapping[str, Any]) -> dict[str, Any]:
+    """Declared byte limit and evidence for a seat; new seats inherit unmeasured 80 KB."""
+
+    capacity = registry.get("diff_capacity")
+    if not isinstance(capacity, Mapping):
+        raise DiffCapacityConfigError("review diff_capacity config missing")
+    default = capacity.get("default")
+    seats = capacity.get("seats")
+    if not isinstance(default, Mapping) or not isinstance(seats, Mapping):
+        raise DiffCapacityConfigError("review diff_capacity default/seats malformed")
+    override = seats.get(seat_id, {})
+    if not isinstance(override, Mapping):
+        raise DiffCapacityConfigError(f"review diff_capacity seat {seat_id} malformed")
+    entry = {**default, **override}
+    limit = entry.get("limit_bytes")
+    prompt_limit = entry.get("prompt_limit_bytes")
+    status = entry.get("status")
+    if type(limit) is not int or limit <= 0 or status not in {"measured", "unmeasured"}:
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} has invalid limit/status"
+        )
+    if type(prompt_limit) is not int or prompt_limit <= 0:
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} has invalid prompt limit"
+        )
+    if status == "unmeasured" and limit != 80_000:
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} must use 80000 unmeasured"
+        )
+    if status == "unmeasured":
+        measured_prompt_limits = []
+        for measured_id, measured in seats.items():
+            if not isinstance(measured, Mapping):
+                raise DiffCapacityConfigError(f"review diff_capacity seat {measured_id} malformed")
+            if measured.get("status") == "measured":
+                measured_prompt_limit = measured.get("prompt_limit_bytes")
+                if type(measured_prompt_limit) is not int or measured_prompt_limit <= 0:
+                    raise DiffCapacityConfigError(
+                        f"review diff_capacity seat {measured_id} has invalid prompt limit"
+                    )
+                measured_prompt_limits.append(measured_prompt_limit)
+        if not measured_prompt_limits:
+            raise DiffCapacityConfigError("review diff_capacity has no measured prompt limit")
+        entry["prompt_limit_bytes"] = min(prompt_limit, min(measured_prompt_limits))
+    if (
+        not isinstance(entry.get("measurement_file"), str)
+        or not isinstance(entry.get("measurement_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", entry["measurement_sha256"])
+    ):
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} lacks measurement citation"
+        )
+    return dict(entry)
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -1005,6 +1061,7 @@ def constitute_team(
     available_families: Sequence[str] | None = None,
     outage_families: frozenset[str] | set[str] = frozenset(),
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    size_excluded_families: frozenset[str] | set[str] = frozenset(),
 ) -> Constitution:
     """Constitute the review team for a class — deterministic, fail-closed.
 
@@ -1059,8 +1116,9 @@ def constitute_team(
         if sizing.get("require_all_families"):
             missing = [f for f in roster if f not in available and f not in substitutes]
             degradable = set(outage_families) | set(route_blocked)
-            if missing and all(f in degradable for f in missing):
-                degraded = sorted(missing)
+            other_missing = [f for f in missing if f not in size_excluded_families]
+            if other_missing and all(f in degradable for f in other_missing):
+                degraded = sorted(other_missing)
                 route_degraded = {
                     family: route_blocked[family]
                     for family in sorted(missing)
@@ -1076,10 +1134,10 @@ def constitute_team(
                     )
                 )
                 notes.append("degraded_to:t2_standard")
-            elif missing:
+            elif other_missing:
                 raise ValueError(
                     "t1_critical requires every model family on the team; "
-                    f"unavailable family: {','.join(missing)}"
+                    f"unavailable family: {','.join(other_missing)}"
                 )
     else:
         size = int(sizing["team_size"])
@@ -1703,8 +1761,8 @@ def _with_derived_diff_coverage(
     """Inject derived coverage into UNSTAMPED review records (pre-coverage dossiers).
 
     ``full_diff_chars`` is the dispatcher-measured full diff size at the dossier
-    head, in chars — the measure ``truncate_diff`` applies
-    ``DIFF_FULL_COVERAGE_MAX_CHARS`` to — or None when unmeasurable. At or under
+    head, in chars — the historical dispatcher applied
+    ``DIFF_FULL_COVERAGE_MAX_CHARS`` to this value — or None when unmeasurable. At or under
     the threshold the seats saw the whole diff; over it the seat's packet was
     truncated at the threshold (delivered is recorded as the cap, an upper
     bound). Unmeasurable returns the records unchanged, so unstamped accepts
@@ -1793,6 +1851,12 @@ def synthesize_dossier(
         if str(n).startswith("degraded_family_route_blocked:")
     )
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
+    size_replaced = sorted(
+        n.split(":", 1)[1]
+        for n in constitution_notes
+        if str(n).startswith("family_replaced_for_size:")
+    )
+    roster = [f for f in roster if f not in size_replaced]
     if degraded_families:
         # roster shrinks for ANY outage-degraded class; the t1->t2 sizing
         # swap applies only when the constitution actually degraded sizing
@@ -1935,6 +1999,7 @@ def synthesize_dossier(
         "constitution_notes": list(constitution_notes),
         "degraded_family_outage": degraded_outage,
         "degraded_family_route_blocked": degraded_route_blocked,
+        "size_replaced_families": size_replaced,
         "post_recovery_rereview_required": bool(degraded_outage),
         "post_route_receipt_rereview_required": bool(degraded_route_blocked),
         "lenses": list(lenses),
@@ -2060,6 +2125,10 @@ def _dossier_validity_blockers(
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
     floor_release_out: dict[str, Any] | None = None,
     diff_size_measurer: Callable[[int, str], int | None] | None = None,
+    capacity_evidence_measurer: Callable[
+        [int, str, tuple[str, ...]], tuple[int, Mapping[str, int]] | None
+    ]
+    | None = None,
 ) -> tuple[str, ...]:
     """Blockers for a recorded dossier; ``floor_release_out`` receives the T2 rule's evidence
     when the rule stood in for the family floor (the dossier may still carry other blockers).
@@ -2119,6 +2188,12 @@ def _dossier_validity_blockers(
     _field_route_blocked = sorted(
         str(f) for f in (dossier.get("degraded_family_route_blocked") or [])
     )
+    _note_size_replaced = sorted(
+        n.split(":", 1)[1] for n in _notes if n.startswith("family_replaced_for_size:")
+    )
+    _field_size_replaced = sorted(str(f) for f in (dossier.get("size_replaced_families") or []))
+    if _note_size_replaced != _field_size_replaced:
+        blockers.append("review_dossier_size_replacements_inconsistent")
     _note_route_block_reasons, malformed_reason_notes = _route_block_reason_notes(_notes)
     degraded_outage: list[str] = []
     degraded_route_blocked: list[str] = []
@@ -2304,6 +2379,83 @@ def _dossier_validity_blockers(
         blockers.append(
             "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
         )
+    stamped_sizes = {
+        r.get(DIFF_FULL_BYTES_FIELD) for r in reviews if type(r.get(DIFF_FULL_BYTES_FIELD)) is int
+    }
+    substitution = dossier.get("family_substitution") or {}
+    if not isinstance(substitution, Mapping):
+        substitution = {}
+    if (
+        _note_size_replaced
+        or _field_size_replaced
+        or substitution.get("excluded_for_size")
+        or substitution.get("excluded_for_prompt")
+        or substitution.get("size_replaced_seats")
+        or ("size_replaced_families" in dossier and len(stamped_sizes) > 1)
+    ):
+        size_excluded = substitution.get("excluded_for_size", {})
+        prompt_excluded = substitution.get("excluded_for_prompt") or {}
+        prompt_bytes = substitution.get("prompt_bytes_by_seat") or {}
+        prompt_over: set[str] = set()
+        prompt_invalid = (
+            not isinstance(size_excluded, Mapping)
+            or not isinstance(prompt_excluded, Mapping)
+            or not isinstance(prompt_bytes, Mapping)
+        )
+        measure_pr = pr_number if pr_number is not None else None
+        measured = None
+        if (
+            capacity_evidence_measurer is not None
+            and measure_pr is not None
+            and pr_head_sha is not None
+            and isinstance(prompt_excluded, Mapping)
+        ):
+            try:
+                measured = capacity_evidence_measurer(
+                    measure_pr,
+                    pr_head_sha,
+                    tuple(f"{family}-1" for family in prompt_excluded),
+                )
+            except (OSError, ValueError, TypeError, RuntimeError):
+                pass  # unmeasurable capacity evidence refuses below
+        if measured is None:
+            blockers.append("review_dossier_capacity_evidence_unavailable")
+        live_full, live_prompts = measured if measured is not None else (None, {})
+        if live_full is not None and stamped_sizes != {live_full}:
+            blockers.append("review_dossier_diff_size_unverified")
+        if not prompt_invalid:
+            for family, evidence in prompt_excluded.items():
+                capacity = seat_diff_capacity(f"{family}-1", registry)
+                if (
+                    not isinstance(evidence, Mapping)
+                    or type(evidence.get("prompt_bytes")) is not int
+                    or evidence["prompt_bytes"] <= capacity["prompt_limit_bytes"]
+                    or evidence.get("prompt_limit_bytes") != capacity["prompt_limit_bytes"]
+                    or prompt_bytes.get(f"{family}-1") != evidence["prompt_bytes"]
+                ):
+                    prompt_invalid = True
+                    break
+                seat_id = f"{family}-1"
+                if (
+                    type(live_prompts.get(seat_id)) is not int
+                    or live_prompts[seat_id] <= capacity["prompt_limit_bytes"]
+                ):
+                    blockers.append(f"review_dossier_prompt_size_unverified:{family}")
+                else:
+                    prompt_over.add(str(family))
+        if len(stamped_sizes) != 1 or prompt_invalid or live_full is None:
+            blockers.append("review_dossier_size_replacements_wrong_for_diff")
+        else:
+            expected_size_excluded = {
+                family
+                for family in roster
+                if seat_diff_capacity(f"{family}-1", registry)["limit_bytes"] < live_full
+            }
+            expected_excluded = sorted(expected_size_excluded | prompt_over)
+            if _note_size_replaced != expected_excluded or (
+                "excluded_for_size" in substitution and set(size_excluded) != expected_size_excluded
+            ):
+                blockers.append("review_dossier_size_replacements_wrong_for_diff")
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
     if degraded_families:
         seated_degraded = sorted({str(r.get("family")) for r in reviews} & degraded_families)
@@ -2454,7 +2606,7 @@ def _dossier_validity_blockers(
             f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
         )
     if sizing.get("require_all_families"):
-        missing_families = (roster - substitute_families(registry)) - {
+        missing_families = (roster - substitute_families(registry) - set(_note_size_replaced)) - {
             str(r.get("family")) for r in accepts
         }
         if missing_families:

@@ -317,6 +317,31 @@ class TestLensRegistry:
         assert "antigrav-" in lane_families["retired_prefixes"]
         assert lane_families["default"] == "claude"
 
+    def test_measured_review_seat_has_cited_byte_limit(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        capacity = rt.seat_diff_capacity("gemini-1", registry)
+        assert capacity["limit_bytes"] == 39_974
+        assert capacity["prompt_limit_bytes"] == 70_205
+        assert capacity["status"] == "measured"
+        assert len(capacity["measurement_sha256"]) == 64
+        assert {
+            seat: rt.seat_diff_capacity(seat, registry)["prompt_limit_bytes"]
+            for seat in ("claude-1", "codex-1", "gemini-1", "glm-1", "muse-1", "vibe-1")
+        } == {
+            "claude-1": 391_347,
+            "codex-1": 391_345,
+            "gemini-1": 70_205,
+            "glm-1": 70_199,
+            "muse-1": 95_534,
+            "vibe-1": 22_000,
+        }
+        registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = "bad"
+        with pytest.raises(rt.DiffCapacityConfigError, match="invalid prompt limit"):
+            rt.seat_diff_capacity("gemini-1", registry)
+        registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = 30_000
+        assert rt.seat_diff_capacity("new-family-1", registry)["prompt_limit_bytes"] == 30_000
+
 
 def _load_review_team_module():
     import importlib.util
@@ -755,6 +780,25 @@ class TestConstitution:
             rt.constitute_team(
                 "t1_critical", "claude", reg, pr_number=5, available_families=("claude", "codex")
             )
+
+    def test_t1_size_excluded_families_can_be_replaced(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        eligible = ("claude", "codex", "muse", "vibe", "local")
+        with pytest.raises(ValueError, match="unavailable family"):
+            rt.constitute_team(
+                "t1_critical", "claude", registry, pr_number=5, available_families=eligible
+            )
+        team = rt.constitute_team(
+            "t1_critical",
+            "claude",
+            registry,
+            pr_number=5,
+            available_families=eligible,
+            size_excluded_families={"gemini", "glm"},
+        )
+        assert len(team.seats) >= 4
+        assert {seat.family for seat in team.seats}.isdisjoint({"gemini", "glm"})
 
     def test_writer_family_from_lane(self) -> None:
         rt = _load_review_team_module()
@@ -1290,6 +1334,126 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs
         constituted_at="2026-06-11T20:00:00+00:00",
         **kwargs,
     )
+
+
+class TestSizeReplacementNoteValidity:
+    def test_empty_substitution_does_not_claim_capacity_exclusion(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [_review(f"{family}-1", family) for family in ("claude", "codex", "gemini")],
+        )
+        dossier["family_substitution"] = {"excluded_for_size": {}, "excluded_for_prompt": {}}
+        assert (
+            rt._dossier_validity_blockers(
+                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+            )
+            == ()
+        )
+
+    @pytest.mark.parametrize(
+        ("case", "blocker"),
+        [
+            ("inconsistent", "review_dossier_size_replacements_inconsistent"),
+            ("wrong_for_diff", "review_dossier_size_replacements_wrong_for_diff"),
+        ],
+    )
+    def test_valid_dossier_passes_and_invalid_dossier_blocks(self, case: str, blocker: str) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=50_000),
+                _review("codex-1", "codex", diff_full_bytes=50_000),
+                _review("muse-1", "muse", diff_full_bytes=50_000),
+            ],
+            constitution_notes=(
+                "family_replaced_for_size:gemini",
+                "family_replaced_for_size:glm",
+            ),
+        )
+
+        def blockers() -> tuple[str, ...]:
+            return rt._dossier_validity_blockers(
+                dossier,
+                pr_head_sha="a" * 40,
+                pr_number=99,
+                registry=registry,
+                route_blocked_families={},
+                capacity_evidence_measurer=lambda _pr, _sha, _seats: (50_000, {}),
+            )
+
+        assert blockers() == ()
+        if case == "inconsistent":
+            dossier["size_replaced_families"] = ["gemini"]
+        else:
+            dossier["constitution_notes"] = ["family_replaced_for_size:gemini"]
+            dossier["size_replaced_families"] = ["gemini"]
+        assert blocker in blockers()
+
+    def test_forged_size_replacement_note_cannot_remove_core_family(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=10_000),
+                _review("codex-1", "codex", diff_full_bytes=10_000),
+                _review("muse-1", "muse", diff_full_bytes=10_000),
+            ],
+            team_class="t1_critical",
+            constitution_notes=("family_replaced_for_size:gemini",),
+        )
+        blockers = rt._dossier_validity_blockers(
+            dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+        )
+        assert "review_dossier_size_replacements_wrong_for_diff" in blockers
+
+    def test_forged_prompt_size_cannot_remove_core_family(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=10_000),
+                _review("codex-1", "codex", diff_full_bytes=10_000),
+                _review("glm-1", "glm", diff_full_bytes=10_000),
+            ],
+            constitution_notes=("family_replaced_for_size:gemini",),
+        )
+        ceiling = rt.seat_diff_capacity("gemini-1", registry)["prompt_limit_bytes"]
+        dossier["family_substitution"] = {
+            "excluded_for_prompt": {
+                "gemini": {"prompt_bytes": ceiling + 1, "prompt_limit_bytes": ceiling}
+            },
+            "prompt_bytes_by_seat": {"gemini-1": ceiling + 1},
+        }
+
+        def blockers(live_prompt_bytes: int, live_diff_bytes: int = 10_000) -> tuple[str, ...]:
+            return rt._dossier_validity_blockers(
+                dossier,
+                pr_head_sha="a" * 40,
+                pr_number=99,
+                registry=registry,
+                route_blocked_families={},
+                capacity_evidence_measurer=lambda _pr, _sha, _seats: (
+                    live_diff_bytes,
+                    {"gemini-1": live_prompt_bytes},
+                ),
+            )
+
+        assert blockers(ceiling + 1) == ()
+        assert "review_dossier_prompt_size_unverified:gemini" in blockers(ceiling - 1)
+        assert "review_dossier_diff_size_unverified" in blockers(ceiling + 1, 10_001)
+        assert "review_dossier_capacity_evidence_unavailable" in rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            pr_number=99,
+            registry=registry,
+            route_blocked_families={},
+        )
 
 
 class TestSynthesizeDossier:

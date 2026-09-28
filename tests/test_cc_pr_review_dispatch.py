@@ -6425,7 +6425,10 @@ class TestWalledFamilySubstitution:
         substituted = plan["family_substitution"]["substitute_families_seated"]
         assert len(substituted) == 1 and substituted[0] in {"muse", "vibe", "local"}
 
-    def test_empty_output_is_an_outage_not_a_vote(self, tmp_path: Path) -> None:
+    def test_empty_output_is_an_outage_not_a_vote(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dispatch, "_glmcp_payg_review_route_eligible", lambda _now: False)
         reviewers = RecordingReviewers(replies={"glm": "   \n"})
         result, _, _, _ = _review(tmp_path, reviewers=reviewers)
         glm = [r for r in result["dossier"]["reviewers"] if r["family"] == "glm"]
@@ -6434,13 +6437,19 @@ class TestWalledFamilySubstitution:
         state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
         assert state["glm"]["cause"] == "seat_output"
 
-    def test_invalid_output_latches_its_family_out(self, tmp_path: Path) -> None:
+    def test_invalid_output_latches_its_family_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dispatch, "_glmcp_payg_review_route_eligible", lambda _now: False)
         dispatch.update_family_outage([{"family": "glm", "verdict": "invalid-output"}], _WALL_NOW)
         state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
         assert state["glm"]["cause"] == "seat_output"
         assert state["glm"]["observed_at"] == _WALL_NOW
 
-    def test_invalid_output_never_clears_an_outage_latch(self, tmp_path: Path) -> None:
+    def test_invalid_output_never_clears_an_outage_latch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(dispatch, "_glmcp_payg_review_route_eligible", lambda _now: False)
         dispatch.FAMILY_OUTAGE_STATE.write_text(
             json.dumps({"glm": {"observed_at": _WALL_NOW, "outage_started_at": _WALL_NOW}}),
             encoding="utf-8",
