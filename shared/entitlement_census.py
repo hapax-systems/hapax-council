@@ -52,6 +52,7 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shared.capability_inventory_contract import CapabilityInventoryBaselineV2, InventoryDisposition
 from shared.capability_surface_delta import (
     CAPABILITY_SURFACE_DELTA_SCHEMA_REF,
     AuthorityCeiling,
@@ -67,6 +68,7 @@ from shared.entitlement_capability import EntitlementShape, classify_entitlement
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENTITLEMENT_CENSUS_CONFIG = REPO_ROOT / "config" / "entitlement-census.json"
+INVENTORY_BASELINE_PATH = REPO_ROOT / "config" / "capability-inventory-baseline.json"
 DEFAULT_OUTPUT_ROOT = Path.home() / ".cache" / "hapax" / "entitlement-census"
 PRODUCER_REF = "scripts/hapax-entitlement-census"
 TASK_REF = "entitlement-census-producer-20260924"
@@ -504,6 +506,40 @@ def load_registry(path: Path) -> dict[str, Any]:
                 "action: restore the registry file from origin/main, then rerun the producer"
             )
     return payload
+
+
+def load_inventory_dispositions(
+    path: Path = INVENTORY_BASELINE_PATH,
+) -> dict[str, InventoryDisposition]:
+    """Read the existing tagged baseline; evidence-only shapes never count as supply."""
+    try:
+        baseline = CapabilityInventoryBaselineV2.model_validate_json(
+            path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise CensusConfigError(
+            f"capability inventory baseline {path} is unreadable or invalid; nothing was written. "
+            "Next action: restore the tagged baseline from origin/main, then rerun the producer"
+        ) from exc
+    return {key: record.inventory_disposition for key, record in baseline.records.items()}
+
+
+def validate_registry_inventory_join(
+    registry: Mapping[str, Any], dispositions: Mapping[str, InventoryDisposition]
+) -> None:
+    """Refuse a registry identity whose supply disposition is unknown before host I/O."""
+    ids = {
+        str(row[key])
+        for section, key in (("routes", "route_id"), ("omitted_capability_shapes", "shape_id"))
+        for row in _registry_rows(registry, section)
+        if row.get(key)
+    }
+    missing = ids - dispositions.keys()
+    if missing:
+        raise CensusConfigError(
+            f"registry identities absent from capability inventory baseline: {', '.join(sorted(missing))}; "
+            "nothing was written. Next action: update and validate the tagged baseline, then rerun"
+        )
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -1480,6 +1516,7 @@ def _decl_row(
     readbacks: Mapping[tuple[str, str | None], ReadbackResult],
     cache: VendorCacheReading | None,
     registry: Mapping[str, Any],
+    inventory_dispositions: Mapping[str, InventoryDisposition],
     ledger: Mapping[str, Any] | None,
     prior: _Prior | None,
 ) -> CensusRow:
@@ -1605,6 +1642,22 @@ def _decl_row(
         or r.get("route_id") in decl.registry_route_ids
     ]
     declared_shapes = [s for s in shapes if s.get("shape_id") in decl.registry_shape_ids]
+    supply_routes = [
+        r
+        for r in declared_routes
+        if inventory_dispositions.get(str(r.get("route_id")))
+        is InventoryDisposition.ADMITTED_SUPPLY
+    ]
+    supply_shapes = [
+        s
+        for s in declared_shapes
+        if inventory_dispositions.get(str(s.get("shape_id")))
+        is InventoryDisposition.ADMITTED_SUPPLY
+    ]
+    for entry in [*declared_routes, *declared_shapes]:
+        identity = str(entry.get("route_id") or entry.get("shape_id"))
+        if inventory_dispositions.get(identity) is InventoryDisposition.EVIDENCE_ONLY_NON_SUPPLY:
+            reasons.append(f"inventory {identity} is evidence-only, not admitted supply")
     route_ids = {str(r.get("route_id")) for r in routes}
     for missing in sorted(set(decl.registry_route_ids) - route_ids):
         reasons.append(f"declared route {missing} is absent from the registry")
@@ -1635,8 +1688,8 @@ def _decl_row(
         freshness=_FRESHNESS[state],
         recruitment_stage=_recruitment(
             state,
-            declared_routes=declared_routes,
-            declared=bool(declared_routes or declared_shapes),
+            declared_routes=supply_routes,
+            declared=bool(supply_routes or supply_shapes),
             measured=bool(measurements) or ledger_fresh,
         ),
         observed_at=observed_at,
@@ -1772,6 +1825,7 @@ def _serving_row(
     now: datetime,
     http_get: Callable[[str, dict[str, str], float], HttpResponse],
     registry: Mapping[str, Any],
+    inventory_dispositions: Mapping[str, InventoryDisposition],
     prior: _Prior | None,
     remaining: float | None = None,
 ) -> CensusRow:
@@ -1793,7 +1847,11 @@ def _serving_row(
             else (result.reason or "no answer")
         )
     local_routes = [
-        r for r in _registry_rows(registry, "routes") if r.get("platform") == "local_tool"
+        r
+        for r in _registry_rows(registry, "routes")
+        if r.get("platform") == "local_tool"
+        and inventory_dispositions.get(str(r.get("route_id")))
+        is InventoryDisposition.ADMITTED_SUPPLY
     ]
     return CensusRow(
         entitlement_id=row_id,
@@ -1872,6 +1930,7 @@ def census_surface_deltas(
     config: CensusConfig,
     rows: Sequence[CensusRow],
     registry: Mapping[str, Any],
+    inventory_dispositions: Mapping[str, InventoryDisposition],
     *,
     now: datetime,
 ) -> tuple[list[CapabilitySurfaceDescriptor], list[CapabilitySurfaceDelta]]:
@@ -1913,7 +1972,11 @@ def census_surface_deltas(
         if row is None or decl.kind not in _DELTA_KINDS:
             continue
         money = decl.cost_class in {CostClass.PREPAID, CostClass.PAYG}
-        if not (row.declared_routes or row.declared_shapes) and row.state in held:
+        admitted = any(
+            inventory_dispositions.get(identity) is InventoryDisposition.ADMITTED_SUPPLY
+            for identity in (*row.declared_routes, *row.declared_shapes)
+        )
+        if not admitted and row.state in held:
             emit(
                 None,
                 _descriptor(
@@ -1927,7 +1990,8 @@ def census_surface_deltas(
                 ),
             )
         for route_id in row.declared_routes:
-            route_backers.setdefault(route_id, []).append(row)
+            if inventory_dispositions.get(route_id) is InventoryDisposition.ADMITTED_SUPPLY:
+                route_backers.setdefault(route_id, []).append(row)
         if decl.expected_shape_class:
             for shape_id in row.declared_shapes:
                 shape_class = str(shapes.get(shape_id, {}).get("shape_class") or "")
@@ -2096,6 +2160,7 @@ def run_census(
     now: datetime,
     holdings: Sequence[HostHoldings],
     registry: Mapping[str, Any],
+    inventory_dispositions: Mapping[str, InventoryDisposition],
     ledger: Mapping[str, Any] | None,
     prior_view: Mapping[str, Any] | None,
     resolve_secret: Callable[[str], str | None],
@@ -2105,7 +2170,6 @@ def run_census(
     gpu_probe: Callable[[str], tuple[bool, list[str]]] | None = None,
     deadline: float | None = None,
     clock: Callable[[], float] = time.monotonic,
-    provider_calls: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> CensusRun:
     """``deadline`` is a ``clock()`` instant bounding every network step (secret resolution,
     readbacks, serving GETs, the GPU probe). Past it, the remaining probes are not made and their
@@ -2170,6 +2234,7 @@ def run_census(
             readbacks=readbacks,
             cache=caches.get(decl.vendor_cache) if decl.vendor_cache else None,
             registry=registry,
+            inventory_dispositions=inventory_dispositions,
             ledger=ledger,
             prior=priors.get(decl.entitlement_id),
         )
@@ -2190,6 +2255,7 @@ def run_census(
             now=now,
             http_get=http_get,
             registry=registry,
+            inventory_dispositions=inventory_dispositions,
             prior=priors.get(f"serving.{ep.endpoint_id}"),
             remaining=remaining(),
         )
@@ -2199,7 +2265,9 @@ def run_census(
         config, now=now, holdings=holdings, priors=priors
     )
     all_rows = [*rows, *serving, *unidentified]
-    descriptors, deltas = census_surface_deltas(config, rows, registry, now=now)
+    descriptors, deltas = census_surface_deltas(
+        config, rows, registry, inventory_dispositions, now=now
+    )
     measurements: dict[str, dict[str, Any]] = {}
     for row in rows:
         for m in row.measurements:
@@ -2230,7 +2298,6 @@ HISTORY_STREAM = "entitlement-census.history"
 PRE_SINK_HISTORY_FILE = "history.jsonl"
 #: dev22's direct-API channel writes one write-ahead pair per call here (attempted, then final);
 #: E1 only reads it (contract lanebus/dev16/20260925T102149Z-dev22-provider-calls-contract-accepted).
-PROVIDER_CALLS_STREAM = "provider-calls"
 #: Underuse thresholds. A window is judged only after a fifth of it has elapsed; use below half of
 #: pace is underuse. Flat-price slot capacity below 5 % busy is underuse; zero recorded calls in a
 #: paid period is always underuse.
@@ -2371,80 +2438,6 @@ def _jsonl_payloads(path: Path) -> list[dict[str, Any]]:
             value = value["payload"]
         if isinstance(value, dict):
             out.append(value)
-    return out
-
-
-def read_provider_calls(
-    path: Path, *, since: datetime, until: datetime
-) -> dict[str, dict[str, Any]]:
-    """Per-entitlement call counts from the per-call ledger stream, counts only.
-
-    The channel writes a write-ahead pair per call (``attempted`` then ``final``, one ``call_id``). A
-    call counts once, from its final row when there is one. An attempted call with no final (a crash
-    mid-call) still counts, with unknown tokens and duration, so utilization never under-reports.
-    Rows without a ``call_id`` count as final rows of their own."""
-    calls: dict[str, dict[str, Any]] = {}
-    for index, row in enumerate(_jsonl_payloads(path)):
-        key = str(row.get("call_id") or f"row-{index}")
-        entry = calls.setdefault(key, {})
-        if row.get("phase") == "attempted" and "final" not in entry:
-            entry["attempted"] = row
-        else:
-            entry["final"] = row
-    out: dict[str, dict[str, Any]] = {}
-    for entry in calls.values():
-        row = entry.get("final") or entry.get("attempted") or {}
-        entitlement = _safe_fact(row.get("entitlement_id"))
-        started = _instant(row.get("started_at"))
-        if not isinstance(entitlement, str) or started is None or not since <= started <= until:
-            continue
-        agg = out.setdefault(
-            entitlement,
-            {
-                "calls": 0,
-                "tokens": 0,
-                "busy_seconds": 0.0,
-                "errors": 0,
-                "incomplete": 0,
-                "last_at": None,
-            },
-        )
-        agg["calls"] += 1
-        ended = _instant(row.get("ended_at"))
-        if "final" not in entry:
-            agg["incomplete"] += 1
-        else:
-            for field_name in ("tokens_in", "tokens_out"):
-                agg["tokens"] += int(_number(row.get(field_name)) or 0)
-            if ended is not None and ended >= started:
-                agg["busy_seconds"] += (ended - started).total_seconds()
-            if row.get("status") not in (None, "ok"):
-                agg["errors"] += 1
-        latest = max(t for t in (started, ended) if t is not None)
-        if agg["last_at"] is None or latest > _instant(agg["last_at"]):
-            agg["last_at"] = _iso(latest)
-    for agg in out.values():
-        if not agg["incomplete"]:
-            del agg["incomplete"]
-    return out
-
-
-def provider_calls_for(
-    config: CensusConfig, path: Path, *, now: datetime
-) -> dict[str, dict[str, Any]]:
-    """Each per-call-ledger entitlement's counts over its own current billing period."""
-    out: dict[str, dict[str, Any]] = {}
-    for renewal_day in sorted(
-        {d.renewal_day for d in config.entitlements if d.usage_ledger and d.renewal_day}
-    ):
-        counts = read_provider_calls(path, since=_period_start(now, renewal_day), until=now)
-        for decl in config.entitlements:
-            if (
-                decl.usage_ledger
-                and decl.renewal_day == renewal_day
-                and decl.entitlement_id in counts
-            ):
-                out[decl.entitlement_id] = counts[decl.entitlement_id]
     return out
 
 

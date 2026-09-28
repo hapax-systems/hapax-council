@@ -1,5 +1,6 @@
 """A census run retains declared rows and stops probing at the configured budget."""
 
+import json
 from datetime import UTC, datetime
 
 from shared.entitlement_census import (
@@ -43,17 +44,18 @@ def _config(*, terms=False, metal=None):
     )
 
 
-def _run(config, holdings, **kwargs):
+def _run(config, holdings, *, home_files=None, **kwargs):
     return run_census(
         config,
         now=NOW,
         holdings=holdings,
         registry={},
+        inventory_dispositions={},
         ledger=None,
         prior_view=None,
         resolve_secret=lambda _: "fixture-secret-value",
         http_get=lambda *_: (_ for _ in ()).throw(AssertionError("network probe forbidden")),
-        read_home_file=lambda _: None,
+        read_home_file=lambda path: (home_files or {}).get(path),
         **kwargs,
     )
 
@@ -122,3 +124,26 @@ def test_projection_names_paid_unjudged_and_absent_trend():
     view = render_view(result, now=NOW)
     assert view["trend"]["points"] == 1
     assert view["trend"]["availability"]["direction"] == "insufficient_history"
+
+
+def test_vendor_cache_past_its_bound_is_stale_not_live():
+    config = _config()
+    decl = config.entitlements[0].model_copy(update={"vendor_cache": "grok_settings_cache"})
+    config = config.model_copy(update={"entitlements": (decl,)})
+    cache = {
+        "payload": json.dumps(
+            {
+                "fetched_at": "2026-09-20T00:00:00Z",
+                "settings": {"subscription_tier_display": "tier"},
+            }
+        )
+    }
+    run = _run(
+        config,
+        [HostHoldings(host_id="appendix", reachable=True, observed_at=NOW)],
+        home_files={".grok/settings_cache.json": json.dumps(cache).encode()},
+    )
+    row = run.rows[0]
+    assert row.state is EntitlementState.STALE
+    assert any("past its" in reason for reason in row.reasons)
+    assert row.fresh_until is not None and row.fresh_until < NOW

@@ -49,6 +49,7 @@ from shared.entitlement_census import (  # noqa: E402
     DEFAULT_OUTPUT_ROOT,
     ENTITLEMENT_CENSUS_CONFIG,
     HISTORY_STREAM,
+    INVENTORY_BASELINE_PATH,
     PRE_SINK_HISTORY_FILE,
     CensusConfig,
     CensusConfigError,
@@ -60,12 +61,14 @@ from shared.entitlement_census import (  # noqa: E402
     default_resolve_secret,
     load_census_config,
     load_history,
+    load_inventory_dispositions,
     load_registry,
     read_dispatched_demand,
     read_queued_demand,
     read_wall_witness,
     render_view,
     run_census,
+    validate_registry_inventory_join,
     write_outputs,
 )
 from shared.platform_capability_registry import PLATFORM_CAPABILITY_REGISTRY  # noqa: E402
@@ -239,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         "--no-projection-md", action="store_true", help="Do not write the Markdown projection"
     )
     parser.add_argument("--registry", type=Path, default=PLATFORM_CAPABILITY_REGISTRY)
+    parser.add_argument("--inventory-baseline", type=Path, default=INVENTORY_BASELINE_PATH)
     parser.add_argument("--ledger", type=Path, default=None)
     parser.add_argument(
         "--no-intake", action="store_true", help="Write deltas but do not run the intake"
@@ -267,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_census_config(args.config)
         registry = load_registry(args.registry)
+        inventory_dispositions = load_inventory_dispositions(args.inventory_baseline)
+        validate_registry_inventory_join(registry, inventory_dispositions)
     except CensusConfigError as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_REFUSED
@@ -324,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         now=now,
         holdings=holdings,
         registry=registry,
+        inventory_dispositions=inventory_dispositions,
         ledger=_read_json(ledger_path),
         prior_view=_read_json(args.output_root / "view.json"),
         resolve_secret=default_resolve_secret,

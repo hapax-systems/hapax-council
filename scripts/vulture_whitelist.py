@@ -5558,9 +5558,6 @@ from shared.entitlement_census import (
     load_history as _census_load_history,
 )
 from shared.entitlement_census import (
-    provider_calls_for as _census_provider_calls_for,
-)
-from shared.entitlement_census import (
     read_dispatched_demand as _census_read_dispatched_demand,
 )
 from shared.entitlement_census import (
@@ -5573,7 +5570,6 @@ from shared.entitlement_census import (
 _ = (
     _census_compute_trend,
     _census_load_history,
-    _census_provider_calls_for,
     _census_read_dispatched_demand,
     _census_read_queued_demand,
     _census_read_wall_witness,
@@ -5588,3 +5584,13 @@ from shared.entitlement_census import (
 )
 
 _ = (_census_attach_history, _census_render_view)
+
+# The extensionless E1 CLI loads and joins the tagged capability inventory before host I/O.
+from shared.entitlement_census import (  # noqa: E402
+    load_inventory_dispositions as _census_load_inventory_dispositions,
+)
+from shared.entitlement_census import (
+    validate_registry_inventory_join as _census_validate_registry_inventory_join,
+)
+
+_ = (_census_load_inventory_dispositions, _census_validate_registry_inventory_join)
