@@ -1198,15 +1198,82 @@ def build_task_identity_index(vault_root: Path) -> TaskIdentityIndex:
         for state in _TASK_STATES
         for path, stat_vector in frontier[state]
     )
-    post_frontier = _complete_frontier(root)
-    if post_frontier != frontier:
+    return _reconcile_nonidentity_frontier(
+        _make_identity_index(root, frontier, entries),
+        reason_code="task_store_frontier_changed_during_index_build",
+    )
+
+
+def _reconcile_nonidentity_frontier(
+    index: TaskIdentityIndex,
+    *,
+    reason_code: str,
+    protected_task_ids: frozenset[str] = frozenset(),
+) -> TaskIdentityIndex:
+    """Refresh changed rows only while refusing a changed identity or target.
+
+    A fresh claim resolution needs current identity content, not stable stat metadata for
+    unrelated session logs. Explicitly supplied indexes and write guards keep their stricter
+    exact-frontier contract; callers use this only for a freshly built implicit index.
+    """
+
+    current = _complete_frontier(index.vault_root)
+    for _ in range(3):
+        if current == index.manifest:
+            return index
+        before = _frontier_map(index.manifest)
+        after = _frontier_map(current)
+        if before.keys() != after.keys() or any(
+            before[path][0] != after[path][0] for path in before
+        ):
+            _raise_frontier_changed(
+                reason_code=reason_code,
+                vault_root=index.vault_root,
+                before=index.manifest,
+                after=current,
+            )
+        refreshed: list[TaskIdentityEntry] = []
+        for entry in index.entries:
+            state, stat_vector = after[entry.path]
+            if stat_vector == entry.stat_vector:
+                refreshed.append(entry)
+                continue
+            if entry.task_id in protected_task_ids:
+                _raise_frontier_changed(
+                    reason_code=reason_code,
+                    vault_root=index.vault_root,
+                    before=index.manifest,
+                    after=current,
+                )
+            latest = _index_entry(entry.path, state=state, stat_vector=stat_vector)
+            if (
+                latest.task_id,
+                latest.error_reason_code,
+                latest.legacy_classification,
+                latest.legacy_status,
+            ) != (
+                entry.task_id,
+                entry.error_reason_code,
+                entry.legacy_classification,
+                entry.legacy_status,
+            ):
+                _raise_frontier_changed(
+                    reason_code=reason_code,
+                    vault_root=index.vault_root,
+                    before=index.manifest,
+                    after=current,
+                )
+            refreshed.append(latest)
+        index = _make_identity_index(index.vault_root, current, tuple(refreshed))
+        current = _complete_frontier(index.vault_root)
+    if current != index.manifest:
         _raise_frontier_changed(
-            reason_code="task_store_frontier_changed_during_index_build",
-            vault_root=root,
-            before=frontier,
-            after=post_frontier,
+            reason_code=reason_code,
+            vault_root=index.vault_root,
+            before=index.manifest,
+            after=current,
         )
-    return _make_identity_index(root, frontier, entries)
+    return index
 
 
 def validate_task_identity_index(index: TaskIdentityIndex) -> None:
@@ -1768,7 +1835,14 @@ def resolve_task_note(
             "build the identity index from the exact requested task vault root",
             f"index={index.vault_root};requested={root}",
         )
-    validate_task_identity_index(index)
+    if identity_index is None:
+        index = _reconcile_nonidentity_frontier(
+            index,
+            reason_code="task_store_frontier_changed_since_index",
+            protected_task_ids=frozenset((normalized,)),
+        )
+    else:
+        validate_task_identity_index(index)
 
     exact_name = f"{normalized}.md"
     for entry in index.entries:
@@ -1828,12 +1902,19 @@ def resolve_task_note(
             "build a fresh identity index before lifecycle mutation",
             str(selected.path),
         )
-    post_frontier = _complete_frontier(root)
-    if post_frontier != index.manifest:
-        _raise_frontier_changed(
+    if identity_index is None:
+        _reconcile_nonidentity_frontier(
+            index,
             reason_code="task_store_frontier_changed_during_resolution",
-            vault_root=root,
-            before=index.manifest,
-            after=post_frontier,
+            protected_task_ids=frozenset((normalized,)),
         )
+    else:
+        post_frontier = _complete_frontier(root)
+        if post_frontier != index.manifest:
+            _raise_frontier_changed(
+                reason_code="task_store_frontier_changed_during_resolution",
+                vault_root=root,
+                before=index.manifest,
+                after=post_frontier,
+            )
     return snapshot
