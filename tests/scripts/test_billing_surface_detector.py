@@ -72,6 +72,41 @@ def test_text_classes_cover_credential_host_and_payg_paths_without_ast() -> None
     assert "capacity-pool-payg" in _text_classes('capacity_pool = "api_paid_spend"')
 
 
+def test_provider_host_with_explicit_port_is_detected_without_prefix_false_positive() -> None:
+    assert "provider-api-endpoint" in _pattern_only_classes('url = "https://api.openai.com:443/v1"')
+    assert "provider-api-endpoint" in _text_classes('url = "https://api.openai.com:443/v1"')
+    assert "provider-api-endpoint" not in _pattern_only_classes(
+        'url = "https://api.openai.com:443.evil/v1"'
+    )
+
+
+def test_provider_constructor_with_other_arguments_requires_same_call_proxy() -> None:
+    source = (
+        "OpenAI(timeout=30)\n"
+        "Anthropic(max_retries=1)\n"
+        "OpenAI(timeout=30, base_url=host)\n"
+        'OpenAI(timeout=30, base_url="http://127.0.0.1:4000")\n'
+        "OpenAI()\n"
+    )
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1, 2, 3, 4, 5})
+    assert parsed
+    assert [(f.line, f.kind) for f in findings] == [
+        (1, "provider-api-endpoint"),
+        (2, "provider-api-endpoint"),
+        (3, "provider-api-endpoint"),
+        (5, "provider-api-endpoint"),
+    ]
+    assert [(f.line, f.kind) for f in allowed] == [(4, "governed-proxy-route")]
+    assert "provider-api-endpoint" in _text_classes("OpenAI(timeout=30)")
+
+
+def test_non_provider_call_still_reports_nested_credential_read() -> None:
+    source = 'value = os.getenv("OPENAI_API_KEY")\n'
+    findings, _, parsed = _node_findings_for_postimage("app.py", source, {1})
+    assert parsed
+    assert [(f.line, f.kind) for f in findings] == [(1, "credential-env-read")]
+
+
 def test_unparseable_python_yields_no_structural_exemption_and_text_still_flags() -> None:
     source = 'OpenAI(api_key=os.environ["OPENAI_API_KEY"]\n'
     findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1})
@@ -164,7 +199,7 @@ def test_strip_target_is_only_the_literal_removed_by_a_governed_strip() -> None:
     ("line", "expected"),
     [
         ('url = "https://api.openai.com/v1"', ("provider-api-endpoint",)),
-        ("client = OpenAI()", ("provider-api-endpoint",)),
+        ("client = OpenAI()", ()),
         ('capacity_pool = "api_paid_spend"', ("capacity-pool-payg",)),
         ("plan_type = 'api'", ("capacity-pool-payg",)),
         ("ordinary = 1", ()),
