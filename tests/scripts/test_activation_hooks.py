@@ -138,3 +138,27 @@ def test_precommit_uses_activation_config_even_when_branch_config_differs(tmp_pa
     args = log.read_text().splitlines()
     assert f"--config={scripts.parent / '.pre-commit-config.yaml'}" in args
     assert "--hook-type=pre-commit" in args
+
+
+def test_precommit_prefers_activation_framework_over_branch_path(tmp_path: Path):
+    old, scripts, _secret_log, env = _fixture(tmp_path)
+    shutil.copy2(REPO_ROOT / "scripts" / "pre-commit", scripts / "pre-commit")
+    (scripts.parent / ".pre-commit-config.yaml").write_text("repos: []\n")
+    active_cli = scripts.parent / ".venv" / "bin" / "pre-commit"
+    active_cli.parent.mkdir(parents=True)
+    active_log = tmp_path / "active-framework.log"
+    active_cli.write_text(f"#!/bin/sh\nprintf 'active\\n' > {active_log}\n")
+    active_cli.chmod(0o755)
+    branch_bin = tmp_path / "branch-bin"
+    branch_bin.mkdir()
+    branch_log = tmp_path / "branch-framework.log"
+    branch_cli = branch_bin / "pre-commit"
+    branch_cli.write_text(f"#!/bin/sh\nprintf 'branch\\n' > {branch_log}\n")
+    branch_cli.chmod(0o755)
+    env["PATH"] = f"{branch_bin}:{env['PATH']}"
+    (old / "new.txt").write_text("clean\n")
+    assert _git(old, "add", "new.txt").returncode == 0
+    committed = _git(old, "commit", "-qm", "framework-selection", env=env)
+    assert committed.returncode == 0, committed.stderr
+    assert active_log.read_text() == "active\n"
+    assert not branch_log.exists()

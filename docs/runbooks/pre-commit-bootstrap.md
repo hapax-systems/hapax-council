@@ -47,7 +47,8 @@ underlying repository.
 
 ## Shared hooks (council)
 
-The tracked `scripts/pre-commit` delegates to the framework using the
+The tracked `scripts/pre-commit` delegates first to the activation worktree's
+`.venv/bin/pre-commit` (then to a CLI on PATH if that is absent), using the
 activation worktree's `.pre-commit-config.yaml`. The pushing branch's config
 does not select the checks: the hook passes an absolute config path from its
 own directory. `scripts/pre-push` runs both scanners, looking in that same
