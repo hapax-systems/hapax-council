@@ -5469,3 +5469,9 @@ _agents_governance.ConsentRegistry.subject_data_categories
 _agents_governance.ConsentRegistry.purge_subject
 _logos_governance.ConsentRegistry.subject_data_categories
 _logos_governance.ConsentRegistry.purge_subject
+
+# FastAPI keeps these endpoint callables through route decorators.
+from logos.api.routes import consent as _consent_routes  # noqa: E402
+
+_consent_routes.revoke_consent
+_consent_routes.retry_consent_purge
