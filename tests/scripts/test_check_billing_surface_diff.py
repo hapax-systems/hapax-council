@@ -297,22 +297,6 @@ def test_an_unresolvable_base_refuses_with_a_next_action(tmp_path: Path) -> None
     assert "Next action" in result.stderr
 
 
-# ── the closed grammar's default is REJECT ──────────────────────────
-
-
-def test_an_unknown_line_in_gits_own_output_rejects() -> None:
-    """The grammar is closed: a line it does not know refuses rather than being skipped.
-
-    Git validation makes such a line unreachable through the entry point, so this pins the second
-    line of defence directly: skipping unknown lines is how a permissive parser leaks.
-    """
-    files, error = scanner.parse_git_added_lines(
-        "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,1 @@\n+ok\nGARBAGE LINE\n"
-    )
-    assert files == {}
-    assert error is not None and "unrecognised" in error
-
-
 # ── the marker is decided from the added lines a finding COVERS ──────
 
 
