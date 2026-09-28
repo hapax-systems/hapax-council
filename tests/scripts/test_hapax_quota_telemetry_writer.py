@@ -7479,6 +7479,21 @@ def test_writer_emitted_refs_fullmatch_ledger_regex_bound_and_unbound(
     assert _is_claude_admission_evidence_ref(ref) is True
 
 
+@pytest.mark.parametrize("credential_binding", ["not-hex", "a" * 63, "A" * 64])
+def test_writer_rejects_malformed_credential_binding(
+    tmp_path: Path, credential_binding: str
+) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        credential_binding=credential_binding,
+    )
+
+    _assert_claude_admission_ignored(tmp_path, "credential-binding-malformed")
+
+
 def test_fractional_second_claude_admission_ref_is_normalized_for_ledger(
     tmp_path: Path,
 ) -> None:
