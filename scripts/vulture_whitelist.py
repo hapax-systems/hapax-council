@@ -5454,3 +5454,29 @@ from scripts.billing_surface_input import (
 )
 
 _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
+
+# billing-scan-detector-core-20260928: scripts/check-billing-surface-diff.py
+# calls these detector APIs after the scanner layer lands; removed by #4844.
+from scripts.billing_surface_detector import (  # noqa: E402
+    _is_doc_path as _billing_is_doc_path,
+)
+from scripts.billing_surface_detector import (
+    _marker_is_allowed_on as _billing_marker_is_allowed_on,
+)
+from scripts.billing_surface_detector import (
+    _marker_outside_fixtures_finding as _billing_marker_outside_fixtures_finding,
+)
+from scripts.billing_surface_detector import (
+    _node_findings_for_postimage as _billing_node_findings_for_postimage,
+)
+from scripts.billing_surface_detector import (
+    _text_classes as _billing_text_classes,
+)
+
+_ = (
+    _billing_is_doc_path,
+    _billing_marker_is_allowed_on,
+    _billing_marker_outside_fixtures_finding,
+    _billing_node_findings_for_postimage,
+    _billing_text_classes,
+)
