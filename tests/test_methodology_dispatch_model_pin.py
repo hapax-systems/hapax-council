@@ -129,7 +129,7 @@ def test_descriptor_reaches_native_child_through_real_claude_launcher(tmp_path, 
         json.dumps(
             {
                 "claudeAiOauth": {
-                    "accessToken": "synthetic-model-pin-token",
+                    "accessToken": "synthetic-subscription-access-token",
                     "subscriptionType": "max",
                     "scopes": ["user:inference"],
                     "expiresAt": int(datetime.now(UTC).timestamp() * 1000) + 3600000,
