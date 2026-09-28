@@ -486,6 +486,34 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
 
 
 class TestDryRun:
+    @pytest.mark.parametrize("blocked", [False, True])
+    def test_plan_diff_source_never_fetches_local(
+        self, monkeypatch: pytest.MonkeyPatch, blocked: bool
+    ) -> None:
+        gh = FakeGh()
+        info = dispatch.fetch_pr(42, repo="owner/repo", repo_root=REPO_ROOT, runner=gh)
+        original = dispatch._run_gh
+
+        def remote(cmd: list[str], **kwargs: Any) -> str:
+            if "application/vnd.github.v3.diff" in str(cmd) or cmd[:3] == ["gh", "pr", "diff"]:
+                if blocked:
+                    pytest.fail("blocked REST diff was attempted")
+                raise RuntimeError("remote diff unavailable")
+            return original(cmd, **kwargs)
+
+        monkeypatch.setattr(dispatch, "_run_gh", remote)
+        route = dispatch.ListingRoute("graphql", True, "REST blocked") if blocked else None
+        with pytest.raises(RuntimeError, match="local fetch requires --apply"):
+            dispatch.fetch_pr_diff(
+                info,
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                runner=gh,
+                route=route,
+                allow_local=False,
+            )
+        assert not any(cmd[0] == "git" for cmd in gh.calls)
+
     def test_dry_run_plans_without_dispatching(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

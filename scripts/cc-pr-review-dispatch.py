@@ -1783,6 +1783,7 @@ def fetch_pr_diff(
     repo_root: Path,
     runner: Any,
     route: ListingRoute | None = None,
+    allow_local: bool = True,
 ) -> PrDiff:
     """Fetch the PR diff, avoiding the REST pool when the cycle measured it empty.
 
@@ -1793,7 +1794,14 @@ def fetch_pr_diff(
     is measured empty it becomes the first choice.
     """
     pr_number = pr_info.number
-    if route is not None and route.transport == "graphql":
+    if (
+        route is not None
+        and route.transport == "graphql"
+        and not allow_local
+        and route.rest_blocked
+    ):
+        raise RuntimeError("plan diff unavailable: remote blocked; local fetch requires --apply")
+    if allow_local and route is not None and route.transport == "graphql":
         try:
             return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
         except RuntimeError as exc:
@@ -1838,6 +1846,10 @@ def fetch_pr_diff(
             )
             return PrDiff(text, source="gh-pr-diff", comparison_base=_GITHUB_DIFF_BASE)
         except RuntimeError as diff_exc:
+            if not allow_local:
+                raise RuntimeError(
+                    "plan diff unavailable: local fetch requires --apply"
+                ) from diff_exc
             LOG.warning(
                 "`gh pr diff` failed for PR #%d; falling back to local git diff: %s",
                 pr_number,
@@ -4125,7 +4137,14 @@ def review_pr(
             "next_action": "repair or split source evidence, then retry",
         }
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
-    pr_diff = fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
+    pr_diff = fetch_pr_diff(
+        pr_info,
+        repo=repo,
+        repo_root=repo_root,
+        runner=gh_runner,
+        route=route,
+        allow_local=apply,
+    )
     diff = truncate_diff(pr_diff)
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
