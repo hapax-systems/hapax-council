@@ -119,6 +119,7 @@ def test_egress_boundary_pin_job_executes_the_consent_containment_pins_per_pr() 
         "tests/hapax_daimonion/test_conversational_policy.py",
         "packages/agentgov/tests/test_carrier.py",
         "packages/agentgov/tests/test_consent_binding.py",
+        "packages/agentgov/tests/test_revocation_cascade.py",
         "tests/shared/test_consent_custody_boundary.py",
     ):
         assert re.search(rf"uv run\b.*\bpytest\b.*{re.escape(pin_file)}", joined), (
