@@ -488,32 +488,62 @@ def load_lens_registry(path: Path | None = None) -> dict[str, Any]:
     return loaded
 
 
+class DiffCapacityConfigError(ValueError):
+    """The declared review diff or prompt capacity is invalid."""
+
+
 def seat_diff_capacity(seat_id: str, registry: Mapping[str, Any]) -> dict[str, Any]:
     """Declared byte limit and evidence for a seat; new seats inherit unmeasured 80 KB."""
 
     capacity = registry.get("diff_capacity")
     if not isinstance(capacity, Mapping):
-        raise ValueError("review diff_capacity config missing")
+        raise DiffCapacityConfigError("review diff_capacity config missing")
     default = capacity.get("default")
     seats = capacity.get("seats")
     if not isinstance(default, Mapping) or not isinstance(seats, Mapping):
-        raise ValueError("review diff_capacity default/seats malformed")
+        raise DiffCapacityConfigError("review diff_capacity default/seats malformed")
     override = seats.get(seat_id, {})
     if not isinstance(override, Mapping):
-        raise ValueError(f"review diff_capacity seat {seat_id} malformed")
+        raise DiffCapacityConfigError(f"review diff_capacity seat {seat_id} malformed")
     entry = {**default, **override}
     limit = entry.get("limit_bytes")
+    prompt_limit = entry.get("prompt_limit_bytes")
     status = entry.get("status")
     if type(limit) is not int or limit <= 0 or status not in {"measured", "unmeasured"}:
-        raise ValueError(f"review diff_capacity seat {seat_id} has invalid limit/status")
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} has invalid limit/status"
+        )
+    if type(prompt_limit) is not int or prompt_limit <= 0:
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} has invalid prompt limit"
+        )
     if status == "unmeasured" and limit != 80_000:
-        raise ValueError(f"review diff_capacity seat {seat_id} must use 80000 unmeasured")
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} must use 80000 unmeasured"
+        )
+    if status == "unmeasured":
+        measured_prompt_limits = []
+        for measured_id, measured in seats.items():
+            if not isinstance(measured, Mapping):
+                raise DiffCapacityConfigError(f"review diff_capacity seat {measured_id} malformed")
+            if measured.get("status") == "measured":
+                measured_prompt_limit = measured.get("prompt_limit_bytes")
+                if type(measured_prompt_limit) is not int or measured_prompt_limit <= 0:
+                    raise DiffCapacityConfigError(
+                        f"review diff_capacity seat {measured_id} has invalid prompt limit"
+                    )
+                measured_prompt_limits.append(measured_prompt_limit)
+        if not measured_prompt_limits:
+            raise DiffCapacityConfigError("review diff_capacity has no measured prompt limit")
+        entry["prompt_limit_bytes"] = min(prompt_limit, min(measured_prompt_limits))
     if (
         not isinstance(entry.get("measurement_file"), str)
         or not isinstance(entry.get("measurement_sha256"), str)
         or not re.fullmatch(r"[0-9a-f]{64}", entry["measurement_sha256"])
     ):
-        raise ValueError(f"review diff_capacity seat {seat_id} lacks measurement citation")
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} lacks measurement citation"
+        )
     return dict(entry)
 
 

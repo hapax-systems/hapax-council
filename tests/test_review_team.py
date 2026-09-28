@@ -319,10 +319,28 @@ class TestLensRegistry:
 
     def test_measured_review_seat_has_cited_byte_limit(self) -> None:
         rt = _load_review_team_module()
-        capacity = rt.seat_diff_capacity("gemini-1", rt.load_lens_registry())
+        registry = rt.load_lens_registry()
+        capacity = rt.seat_diff_capacity("gemini-1", registry)
         assert capacity["limit_bytes"] == 39_974
+        assert capacity["prompt_limit_bytes"] == 70_205
         assert capacity["status"] == "measured"
         assert len(capacity["measurement_sha256"]) == 64
+        assert {
+            seat: rt.seat_diff_capacity(seat, registry)["prompt_limit_bytes"]
+            for seat in ("claude-1", "codex-1", "gemini-1", "glm-1", "muse-1", "vibe-1")
+        } == {
+            "claude-1": 391_347,
+            "codex-1": 391_345,
+            "gemini-1": 70_205,
+            "glm-1": 70_199,
+            "muse-1": 95_534,
+            "vibe-1": 22_000,
+        }
+        registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = "bad"
+        with pytest.raises(rt.DiffCapacityConfigError, match="invalid prompt limit"):
+            rt.seat_diff_capacity("gemini-1", registry)
+        registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = 30_000
+        assert rt.seat_diff_capacity("new-family-1", registry)["prompt_limit_bytes"] == 30_000
 
 
 def _load_review_team_module():
