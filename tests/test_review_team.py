@@ -4349,6 +4349,7 @@ class TestDispatcherRepoThreading:
             return ()
 
         class _PrInfo:
+            number = 7
             is_draft = False
             files = ["scripts/review_team.py"]
             changed_file_count = 1
@@ -4356,6 +4357,11 @@ class TestDispatcherRepoThreading:
 
         monkeypatch.setattr(rt, "find_task_notes", fake_find_task_notes)
         monkeypatch.setattr(dispatch, "fetch_pr", lambda *a, **k: _PrInfo())
+        monkeypatch.setattr(
+            dispatch,
+            "fetch_pr_diff",
+            lambda *a, **k: dispatch.PrDiff("", source="test", comparison_base="test"),
+        )
         result = dispatch.review_pr(
             7,
             repo="hapax-systems/reins",

@@ -310,6 +310,7 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
         "gh_runner": gh,
         "reviewer_runner": reviewers,
         "wake_dir": tmp_path / "wake",
+        "lanebus_root": tmp_path / "lanebus",
         "send_runner": lambda cmd: None,
         "now_iso": "2026-06-11T21:00:00+00:00",
         "route_blocked_families": {},
@@ -699,9 +700,8 @@ class TestDryRun:
 
 class TestApply:
     @pytest.mark.parametrize("field", ["diff_source", "comparison_base", "diff_sha256"])
-    @pytest.mark.parametrize("truncated", [False, True])
     def test_persisted_dossier_records_refreshed_diff_provenance(
-        self, tmp_path: Path, field: str, truncated: bool
+        self, tmp_path: Path, field: str
     ) -> None:
         comparison_base = "d" * 40
 
@@ -720,9 +720,6 @@ class TestApply:
 
         gh = LocalDiffGh(base_sha="b" * 40)
         gh.diff += "+café\n"
-        if truncated:
-            gh.diff += "+more\n" * 100_000
-            assert dispatch.truncate_diff(gh.diff) != gh.diff
         result, _, _, note = _review(
             tmp_path,
             gh=gh,
@@ -762,40 +759,139 @@ class TestApply:
             (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
         )
         full = len(gh.diff.encode("utf-8"))
-        assert full <= dispatch.MAX_DIFF_CHARS  # the fixture diff is delivered whole
+        assert full <= min(
+            dispatch.review_team.seat_diff_capacity(
+                r["id"], dispatch.review_team.load_lens_registry()
+            )["limit_bytes"]
+            for r in dossier["reviewers"]
+        )
         for review in dossier["reviewers"]:
             assert review["diff_full_bytes"] == full
             assert review["diff_delivered_bytes"] == full
             assert review["diff_full_fetch_witnessed"] is False
         assert dossier["review_team_verdict"] == "quorum-accept"
 
-    def test_coverage_derivation_threshold_matches_the_dispatcher_cap(self) -> None:
-        # review_team cannot import the dispatcher (it is the lower-level module), so
-        # the derivation threshold is mirrored there and pinned equal here: the gate's
-        # "the seats saw the whole diff" boundary IS the dispatcher's truncation point.
-        assert dispatch.review_team.DIFF_FULL_COVERAGE_MAX_CHARS == dispatch.MAX_DIFF_CHARS
+    def test_per_seat_capacity_and_unmeasured_fallback(self) -> None:
+        registry = dispatch.review_team.load_lens_registry()
+        measured = dispatch.review_team.seat_diff_capacity("gemini-1", registry)
+        assert measured["limit_bytes"] == 39_974
+        unmeasured = dispatch.review_team.seat_diff_capacity("new-family-1", registry)
+        assert unmeasured["limit_bytes"] == 80_000
+        assert unmeasured["status"] == "unmeasured"
 
-    def test_oversize_diff_marks_seats_partial_and_denies_quorum(self, tmp_path: Path) -> None:
+    def test_bad_diff_capacity_returns_named_status(self, tmp_path: Path) -> None:
+        registry = dispatch.review_team.load_lens_registry()
+        registry["diff_capacity"]["seats"]["gemini-1"]["limit_bytes"] = "bad"
+        path = tmp_path / "registry.yaml"
+        path.write_text(yaml.safe_dump(registry))
+        result, _, reviewers, _ = _review(tmp_path, registry_path=path)
+        assert result["status"] == "diff_capacity_config_invalid"
+        assert "diff_capacity" in result["next_action"]
+        assert reviewers.invocations == []
+
+    def test_size_replaces_ineligible_seats_and_preserves_full_coverage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lookups: list[str] = []
+        lookup = dispatch.review_team.seat_diff_capacity
+
+        def tracked(seat_id: str, registry: dict) -> dict:
+            lookups.append(seat_id)
+            return lookup(seat_id, registry)
+
+        monkeypatch.setattr(dispatch.review_team, "seat_diff_capacity", tracked)
         gh = FakeGh()
         gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "".join(
-            f"+line {i} of an oversize diff payload\n" for i in range(4000)
+            f"+line {i} of a middle-sized diff payload\n" for i in range(1300)
         )
-        assert len(gh.diff.encode("utf-8")) > dispatch.MAX_DIFF_CHARS
-        result, _, _, note = _review(tmp_path, gh=gh)
+        assert 39_974 < len(gh.diff.encode("utf-8")) < 61_494
+        result, _, reviewers, note = _review(tmp_path, gh=gh)
         assert result["status"] == "dispatched"
+        assert "gemini-1" in lookups and "gemini" not in lookups
+        assert reviewers.invocations
         dossier = yaml.safe_load(
             (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
         )
         full = len(gh.diff.encode("utf-8"))
-        for review in dossier["reviewers"]:
-            assert review["diff_full_bytes"] == full
-            assert review["diff_delivered_bytes"] < full
-            assert review["diff_full_fetch_witnessed"] is False
-        assert dossier["accept_count"] == 0
-        assert dossier["review_team_verdict"] == "no-quorum"
-        partial = [e for e in dossier["escalations"] if e["kind"] == "partial-coverage"]
-        assert {e["reviewer"] for e in partial} == {r["id"] for r in dossier["reviewers"]}
-        assert dossier["no_quorum_cause"].startswith("partial diff coverage")
+        assert {"gemini", "glm"} <= set(dossier["size_replaced_families"])
+        assert {"gemini", "glm"}.isdisjoint({r["family"] for r in dossier["reviewers"]})
+        assert dossier["size_replaced_seats"]
+        assert all(r["diff_delivered_bytes"] == full for r in dossier["reviewers"])
+        assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_t1_size_replacement_keeps_four_independent_seats(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+        gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 6_000
+        result, _, reviewers, note = _review(tmp_path, gh=gh, task_kwargs={"risk_tier": "T1"})
+        assert result["status"] == "dispatched"
+        assert len({family for _, family, _ in reviewers.invocations}) == 4
+        assert result["dossier"]["review_team_verdict"] == "quorum-accept"
+
+    def test_large_docs_round_sends_whole_diff_to_eligible_seats(self, tmp_path: Path) -> None:
+        gh = FakeGh(files=["docs/guide.md"])
+        gh.diff = (
+            "diff --git a/docs/guide.md b/docs/guide.md\n"
+            + "+payload\n" * 10_000
+            + "+TAIL_SENTINEL_REVIEW_CAPACITY\n"
+        )
+        result, _, reviewers, _ = _review(tmp_path, gh=gh, task_kwargs={"risk_tier": "T3"})
+        assert result["status"] == "dispatched"
+        assert all(
+            "+TAIL_SENTINEL_REVIEW_CAPACITY" in prompt for _, _, prompt in reviewers.invocations
+        )
+
+    def test_non_size_failure_keeps_constitution_blocked(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+        gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 11_000
+        blocked = {
+            f: ("unavailable",)
+            for f in ("claude", "codex", "gemini", "glm", "muse", "local", "vibe")
+        }
+        result, _, reviewers, note = _review(tmp_path, gh=gh, route_blocked_families=blocked)
+        assert result["status"] == "constitution_blocked"
+        assert len(result["plan"]["constitution_causes"]) == 2
+        assert "without_size_exclusion" in result["plan"]["constitution_causes"][1]
+        assert result["notice_paths"] == [] and reviewers.invocations == []
+        assert "Review split required" not in note.read_text()
+
+    def test_no_eligible_team_refuses_without_spending_and_writes_split_notices(
+        self, tmp_path: Path
+    ) -> None:
+        gh = FakeGh()
+        gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 42_000
+        result, _, reviewers, note = _review(tmp_path, gh=gh)
+        assert result["status"] == "split_required"
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        mails = list((tmp_path / "lanebus").glob("*/*.md"))
+        assert len(mails) == 1
+        assert result["notice_paths"] == [str(note), str(mails[0])]
+        first_note, first_mail = note.read_text(), mails[0].read_text()
+        again = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            lanebus_root=tmp_path / "lanebus",
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+        assert again["status"] == "split_required"
+        assert again["notice_paths"] == result["notice_paths"]
+        assert note.read_text() == first_note and mails[0].read_text() == first_mail
+
+    def test_split_notice_write_failure_spends_no_review_quota(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+        gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 42_000
+        root = tmp_path / "not-a-directory"
+        root.write_text("blocked")
+        result, _, reviewers, note = _review(tmp_path, gh=gh, lanebus_root=root)
+        assert result["status"] == "split_notice_failed"
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
 
     def test_reseat_pairing_mismatch_returns_named_failure(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1963,7 +2059,7 @@ checklist:
         assert result["status"] == "dispatched"
         assert reviewers.invocations
         rendered_expected_diff = dispatch.render_untrusted_block(
-            "PR diff", expected_diff, limit=dispatch.MAX_DIFF_CHARS + 500
+            "PR diff", expected_diff, limit=len(expected_diff)
         )
         for _, _, prompt in reviewers.invocations:
             assert rendered_expected_diff in prompt

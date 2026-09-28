@@ -94,16 +94,17 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
     requires_acceptance_receipt,
 )
+from shared.task_note_lock import TaskNoteLockError, projected_path_lock  # noqa: E402
 
 LOG = logging.getLogger("cc-pr-review-dispatch")
 
 DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 DEFAULT_WAKE_DIR = Path.home() / ".cache" / "hapax" / "review-team" / "wake"
+DEFAULT_LANEBUS_ROOT = Path.home() / "Documents" / "Personal" / "30-areas" / "hapax" / "lanebus"
 KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
-MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 #: An invalid-output reply is kept (redacted) up to this size so it can be classified
@@ -125,7 +126,7 @@ SEAT_OUTPUT_OUTAGE_CAUSE = "seat_output"
 QUOTA_WALL_OUTAGE_CAUSE = "quota_wall"
 #: The artifact a vault-only row is reviewed as must fit a reviewer prompt whole: acceptance of
 #: bytes no reviewer saw is refused rather than truncated.
-MAX_ARTIFACT_CHARS = MAX_DIFF_CHARS
+MAX_ARTIFACT_CHARS = 80_000
 DEFAULT_ARTIFACT_ROOT = DEFAULT_VAULT_ROOT.parent.parent
 ROUTE_ADMISSION_OBSERVED_AT_RE = re.compile(
     r"observed_at:(?P<observed_at>"
@@ -418,20 +419,6 @@ def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
     )
 
 
-_LOW_SIGNAL_DIFF_PREFIXES = (
-    "docs/architecture/system-dynamics-map",
-    "tests/",
-)
-_LOW_SIGNAL_DIFF_PATHS = {
-    "config/capability-inventory-baseline.json",
-    "config/capability-surface-delta-fixtures.json",
-    "config/quota-spend-ledger-fixtures.json",
-}
-_HIGH_SIGNAL_DIFF_PREFIXES = (
-    "scripts/",
-    "shared/",
-    "schemas/",
-)
 _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
     "agents/publication_bus/omg_rss_fanout.py": (
         "_effective_required_gates",
@@ -468,7 +455,6 @@ _REVIEW_SOURCE_EXCERPT_SYMBOLS: dict[str, tuple[str, ...]] = {
         "_payg_reservation_suffix",
     ),
     "scripts/cc-pr-review-dispatch.py": (
-        "truncate_diff",
         "render_reviewer_prompt",
         "dispatch_reviews",
         "review_pr",
@@ -2109,51 +2095,81 @@ def _ensure_local_ref(
     _run_gh(["git", "rev-parse", "--verify", ref], repo_root=repo_root, runner=runner)
 
 
-def _diff_span_path(span: str) -> str:
-    first_line = span.splitlines()[0] if span.splitlines() else ""
-    match = re.match(r"diff --git a/(.*?) b/", first_line)
-    return match.group(1) if match else ""
+def largest_diff_files(diff: str, count: int = 5) -> list[dict[str, Any]]:
+    """Full unified-diff file spans, ordered by delivered byte size."""
 
-
-def _diff_span_weight(path: str) -> int:
-    if path in _LOW_SIGNAL_DIFF_PATHS or any(
-        path.startswith(prefix) for prefix in _LOW_SIGNAL_DIFF_PREFIXES
-    ):
-        return 1
-    if any(path.startswith(prefix) for prefix in _HIGH_SIGNAL_DIFF_PREFIXES):
-        return 4
-    return 2
-
-
-def truncate_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> str:
-    if len(diff) <= limit:
-        return diff
-    marker = (
-        f"[diff truncated to balanced per-file excerpts at {limit} chars — "
-        "fetch the full diff via the REST pull diff endpoint]\n"
-    )
-    starts = [match.start() for match in re.finditer(r"(?m)^diff --git ", diff)]
-    if not starts:
-        return diff[:limit] + "\n" + marker
+    starts = list(re.finditer(r"(?m)^diff --git a/(.*?) b/.*$", diff))
     spans = [
-        diff[start : starts[index + 1] if index + 1 < len(starts) else len(diff)]
-        for index, start in enumerate(starts)
+        {
+            "file": match.group(1),
+            "bytes": len(
+                diff[
+                    match.start() : starts[i + 1].start() if i + 1 < len(starts) else len(diff)
+                ].encode("utf-8")
+            ),
+        }
+        for i, match in enumerate(starts)
     ]
-    body_budget = max(1, limit - len(marker) - (80 * len(spans)))
-    weights = [_diff_span_weight(_diff_span_path(span)) for span in spans]
-    total_weight = max(1, sum(weights))
-    chunks: list[str] = [marker]
-    for span, weight in zip(spans, weights, strict=True):
-        file_budget = max(1, (body_budget * weight) // total_weight)
-        if len(span) <= file_budget:
-            chunks.append(span)
-        else:
-            first_line = span.splitlines()[0] if span.splitlines() else "diff --git <unknown>"
-            chunks.append(
-                span[:file_budget]
-                + f"\n[file diff truncated at {file_budget} chars for {first_line}]\n"
-            )
-    return "\n".join(chunks)
+    return sorted(spans, key=lambda row: (-row["bytes"], row["file"]))[:count]
+
+
+def write_split_required_notices(
+    *,
+    pr_info: PRInfo,
+    repo: str,
+    matches: list[tuple[Path, dict[str, Any], str]],
+    diff_bytes: int,
+    substitution: dict[str, Any],
+    largest_files: list[dict[str, Any]],
+    now_iso: str,
+    lanebus_root: Path,
+) -> list[str]:
+    """Idempotently notify each linked task row and its authoring lane."""
+
+    limits = substitution["seat_limits"]
+    lines = [
+        f"PR #{pr_info.number} ({repo}) at {pr_info.head_sha}: full diff {diff_bytes:,} bytes.",
+        "No review round was dispatched: eligible seats cannot meet the required quorum and family independence.",
+        "Seat limits (bytes; measured status):",
+        *(
+            f"- {seat}: {value['limit_bytes']:,} ({value['status']})"
+            for seat, value in sorted(limits.items())
+        ),
+        "Largest diff files:",
+        *(f"- {row['file']}: {row['bytes']:,} bytes" for row in largest_files),
+        "Next action: split the PR into reviewable pieces, with hold on every stacked piece at creation.",
+    ]
+    message = "\n".join(lines)
+    written: list[str] = []
+    for note_path, frontmatter, task_id in matches:
+        marker = (
+            f"<!-- review-split-required:{repo}#{pr_info.number}:{pr_info.head_sha}:{task_id} -->"
+        )
+        with projected_path_lock(task_id, (note_path,)):
+            if marker not in note_path.read_text(encoding="utf-8"):
+                with note_path.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        f"\n\n## Review split required ({now_iso})\n\n{marker}\n\n{message}\n"
+                    )
+        written.append(str(note_path))
+        lane = str(frontmatter.get("assigned_to") or "")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", lane):
+            raise ValueError(f"task {task_id} has no safe writer lane for split notice")
+        inbox = lanebus_root / lane
+        inbox.mkdir(parents=True, exist_ok=True)
+        mail = (
+            inbox / f"review-split-required-pr{pr_info.number}-{pr_info.head_sha[:12]}-{task_id}.md"
+        )
+        try:
+            with mail.open("x", encoding="utf-8") as handle:
+                handle.write(f"# Review split required\n\n{now_iso}\n\n{marker}\n\n{message}\n")
+        except FileExistsError:
+            if marker not in mail.read_text(encoding="utf-8"):
+                raise ValueError(
+                    f"split notice mail already exists with different content: {mail}"
+                ) from None
+        written.append(str(mail))
+    return written
 
 
 def truncate_context(text: str, limit: int = MAX_TASK_NOTE_CHARS) -> str:
@@ -2254,7 +2270,7 @@ Apply EVERY lens charter below. Address every checklist item explicitly (pass / 
 
 {charters}
 
-{prior_block}{prior_file_excerpts}{render_untrusted_block("PR diff", diff, limit=MAX_DIFF_CHARS + 500)}
+{prior_block}{prior_file_excerpts}{render_untrusted_block("PR diff", diff, limit=len(diff))}
 
 {REVIEWER_OUTPUT_CONTRACT}"""
 
@@ -3733,6 +3749,7 @@ def review_pr(
     gh_runner: Any = None,
     reviewer_runner: Any = None,
     wake_dir: Path = DEFAULT_WAKE_DIR,
+    lanebus_root: Path = DEFAULT_LANEBUS_ROOT,
     send_runner: Any = None,
     registry_path: Path | None = None,
     now_iso: str | None = None,
@@ -3915,22 +3932,66 @@ def review_pr(
         "",
     )
     writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
+    pr_diff = fetch_pr_diff(
+        pr_info, repo=repo, repo_root=repo_root, runner=gh_runner,
+        route=route, allow_local=apply,
+    )
+    diff_bytes = len(pr_diff.encode("utf-8"))
     if outage_families:
         LOG.warning(
             "family outage active (%s) — constitution may degrade (never seals)",
             ",".join(sorted(outage_families)),
         )
-    constitution, substitution, constitution_error = constitute_with_substitution(
-        team_class,
-        writer_family,
-        registry,
-        inputs,
-        effective_route_blocked_families,
-        pr_number=pr_number,
-    )
-    if constitution is None:
+    try:
+        constitution, substitution, constitution_error = constitute_with_substitution(
+            team_class,
+            writer_family,
+            registry,
+            inputs,
+            effective_route_blocked_families,
+            pr_number=pr_number,
+            diff_bytes=diff_bytes,
+        )
+    except ValueError as exc:
         return {
-            "status": "constitution_blocked",
+            "status": "diff_capacity_config_invalid",
+            "pr": pr_number,
+            "reason": str(exc),
+            "next_action": "Repair diff_capacity in config/review-lenses/registry.yaml, then retry.",
+        }
+    if constitution is None:
+        causes = [f"eligible_team:{constitution_error}"]
+        split_required = bool(substitution["excluded_for_size"])
+        if split_required:
+            baseline, _, baseline_error = constitute_with_substitution(
+                team_class,
+                writer_family,
+                registry,
+                inputs,
+                effective_route_blocked_families,
+                pr_number=pr_number,
+            )
+            if baseline is None:
+                split_required = False
+                causes.append(f"without_size_exclusion:{baseline_error}")
+        notice_paths: list[str] = []
+        if split_required and apply:
+            try:
+                notice_paths = write_split_required_notices(
+                    pr_info=pr_info,
+                    repo=repo,
+                    matches=keyed_matches,
+                    diff_bytes=diff_bytes,
+                    substitution=substitution,
+                    largest_files=largest_diff_files(pr_diff),
+                    now_iso=now_iso,
+                    lanebus_root=lanebus_root,
+                )
+            except (OSError, ValueError, TaskNoteLockError) as exc:
+                return {"status": "split_notice_failed", "pr": pr_number, "reason": str(exc)}
+        return {
+            "status": "split_required" if split_required else "constitution_blocked",
+            "notice_paths": notice_paths,
             "plan": {
                 "pr": pr_number,
                 "task_id": task_ids[0] if len(task_ids) == 1 else task_ids,
@@ -3945,6 +4006,9 @@ def review_pr(
                 },
                 "family_substitution": substitution,
                 "constitution_error": constitution_error,
+                "constitution_causes": causes,
+                "diff_bytes": diff_bytes,
+                "largest_diff_files": largest_diff_files(pr_diff),
             },
         }
     plan = {
@@ -3962,6 +4026,7 @@ def review_pr(
             for family, reasons in sorted(effective_route_blocked_families.items())
         },
         "family_substitution": substitution,
+        "diff_bytes": diff_bytes,
     }
     if not apply:
         return {"status": "planned", "plan": plan}
@@ -3985,15 +4050,7 @@ def review_pr(
         changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
     )
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
-    pr_diff = fetch_pr_diff(
-        pr_info,
-        repo=repo,
-        repo_root=repo_root,
-        runner=gh_runner,
-        route=route,
-        allow_local=apply,
-    )
-    diff = truncate_diff(pr_diff)
+    diff = pr_diff
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
@@ -4084,6 +4141,7 @@ def review_pr(
             repo_root=repo_root,
         )
         dossier["family_substitution"] = substitution
+        dossier["size_replaced_seats"] = substitution["size_replaced_seats"]
         dossier["diff_source"] = pr_diff.source
         dossier["comparison_base"] = pr_diff.comparison_base
         dossier["diff_sha256"] = hashlib.sha256(pr_diff.encode("utf-8")).hexdigest()
