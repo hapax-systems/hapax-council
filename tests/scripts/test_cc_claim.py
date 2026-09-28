@@ -3125,3 +3125,26 @@ def test_an_archive_failure_after_the_note_names_the_recovery(
     assert "claim_return_archive_incomplete" in held.value.message
     assert "cc-claim --release-claim-residue unstarted-row" in held.value.message
     assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_a_note_other_than_the_locked_one_is_never_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The return writes only the note the role lock's own projection lock covers (the lock
+    # containment pin in tests/shared/test_task_note_lock.py): a note resolved at another path
+    # holds, and neither copy is written.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    elsewhere = note.with_name("unstarted-row-moved.md")
+    elsewhere.write_bytes(note.read_bytes())
+    before = note.read_bytes()
+    monkeypatch.setattr(sdlc_claim, "_task_note_path_for_any_state", lambda *_a, **_k: elsewhere)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as held:
+        _return_in_process(home)
+
+    assert "claim_return_note_moved" in held.value.message
+    assert note.read_bytes() == before
+    assert elsewhere.read_bytes() == before

@@ -7419,7 +7419,8 @@ def return_claim(
             f"{role} has no claim publication for {task_id}",
             "only the role that holds the claim can return it",
         )
-    with _claim_publication_lock(journals[0].intent, lock_root=lock_root):
+    lock_intent = journals[0].intent
+    with _claim_publication_lock(lock_intent, lock_root=lock_root):
         journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
         if any(item.state not in {"applied", "aborted"} for item in journals):
             raise _release_hold(
@@ -7466,59 +7467,67 @@ def return_claim(
                 "rerun after a second (the archive is named by the second); if it persists, "
                 "preserve every file and inspect the lineage and staging directories",
             )
-        with projected_path_lock(task_id, (note,)):
-            text = note.read_text(encoding="utf-8")
-            fields = _release_fields(text)
-            if fields is None:
-                raise _release_hold(
-                    "claim_return_note_malformed",
-                    f"{task_id}'s frontmatter does not parse, states a key twice, or does not "
-                    "spell status plainly once",
-                    "repair the note's frontmatter by hand, then rerun",
-                )
-            status = str(fields.get("status") or "").strip()
-            # The estate's one definition of absent (shared.cc_task_pr_link.NULLISH): YAML null,
-            # or a string spelling of it such as "null", "~" or "nil". Anything else names
-            # started work (the seat's clause 7; no fourth copy of the set).
-            started = [
-                key
-                for key in ("pr", "branch")
-                if not (fields.get(key) is None or is_nullish(str(fields[key])))
-            ]
-            if status not in {"claimed", "in_progress"} or started:
-                raise _release_hold(
-                    "claim_return_started",
-                    f"{task_id} is {status or 'unknown'}"
-                    + (f" and names {', '.join(started)}" if started else ""),
-                    "work that has started is not returned: finish it and run cc-close, or close "
-                    "it as withdrawn",
-                )
-            if str(fields.get("assigned_to") or "").strip() != role:
-                raise _release_hold(
-                    "claim_return_not_holder",
-                    f"{task_id} is assigned to {fields.get('assigned_to')!r}, not {role}",
-                    "only the role that holds the claim can return it",
-                )
-            returned_at = (
-                f"{observed_at[0:4]}-{observed_at[4:6]}-{observed_at[6:8]}T"
-                f"{observed_at[9:11]}:{observed_at[11:13]}:{observed_at[13:15]}Z"
+        # The role lock already holds the projection lock on the note it was taken for; the
+        # note rewritten here must be that one, so this adds no second projection-lock site
+        # (the containment pin in tests/shared/test_task_note_lock.py).
+        if _normalized(note) != _normalized(lock_intent.note_path):
+            raise _release_hold(
+                "claim_return_note_moved",
+                f"{task_id}'s note is {note}, not the path its claim locked",
+                "inspect the row; a moved note is not returned",
             )
-            returned = _returned_note_text(text, role=role, returned_at=returned_at)
-            after = _release_fields(returned)
-            if (
-                after is None
-                or after.get("status") != "offered"
-                or after.get("assigned_to") != "unassigned"
-                or after.get("claimed_at") is not None
-            ):
-                raise _release_hold(
-                    "claim_return_rewrite_unverified",
-                    f"{task_id}'s returned note does not read back as offered and unassigned",
-                    "repair the note's frontmatter by hand, then rerun; nothing was written",
-                )
-            tmp = note.with_suffix(note.suffix + ".tmp")  # as cc-close writes a note
-            tmp.write_text(returned, encoding="utf-8")
-            tmp.replace(note)
+        text = note.read_text(encoding="utf-8")
+        fields = _release_fields(text)
+        if fields is None:
+            raise _release_hold(
+                "claim_return_note_malformed",
+                f"{task_id}'s frontmatter does not parse, states a key twice, or does not "
+                "spell status plainly once",
+                "repair the note's frontmatter by hand, then rerun",
+            )
+        status = str(fields.get("status") or "").strip()
+        # The estate's one definition of absent (shared.cc_task_pr_link.NULLISH): YAML null,
+        # or a string spelling of it such as "null", "~" or "nil". Anything else names
+        # started work (the seat's clause 7; no fourth copy of the set).
+        started = [
+            key
+            for key in ("pr", "branch")
+            if not (fields.get(key) is None or is_nullish(str(fields[key])))
+        ]
+        if status not in {"claimed", "in_progress"} or started:
+            raise _release_hold(
+                "claim_return_started",
+                f"{task_id} is {status or 'unknown'}"
+                + (f" and names {', '.join(started)}" if started else ""),
+                "work that has started is not returned: finish it and run cc-close, or close "
+                "it as withdrawn",
+            )
+        if str(fields.get("assigned_to") or "").strip() != role:
+            raise _release_hold(
+                "claim_return_not_holder",
+                f"{task_id} is assigned to {fields.get('assigned_to')!r}, not {role}",
+                "only the role that holds the claim can return it",
+            )
+        returned_at = (
+            f"{observed_at[0:4]}-{observed_at[4:6]}-{observed_at[6:8]}T"
+            f"{observed_at[9:11]}:{observed_at[11:13]}:{observed_at[13:15]}Z"
+        )
+        returned = _returned_note_text(text, role=role, returned_at=returned_at)
+        after = _release_fields(returned)
+        if (
+            after is None
+            or after.get("status") != "offered"
+            or after.get("assigned_to") != "unassigned"
+            or after.get("claimed_at") is not None
+        ):
+            raise _release_hold(
+                "claim_return_rewrite_unverified",
+                f"{task_id}'s returned note does not read back as offered and unassigned",
+                "repair the note's frontmatter by hand, then rerun; nothing was written",
+            )
+        tmp = note.with_suffix(note.suffix + ".tmp")  # as cc-close writes a note
+        tmp.write_text(returned, encoding="utf-8")
+        tmp.replace(note)
         try:
             archive_dir, archived = _archive_residue(
                 list(residue),
