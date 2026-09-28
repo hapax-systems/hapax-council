@@ -79,6 +79,12 @@ REQUIRED_ROUTE_IDS = frozenset(
         "agy.review.direct",
         "glmcp.review.direct",
         "local_tool.local.worker",
+        "local_tool.headless.worker",
+        "local_tool.local.lite",
+        "local_tool.review.direct",
+        "local_tool.local.full",
+        "local_tool.headless.flash",
+        "local_tool.headless.lane",
         "vibe.headless.full",
     }
 )
@@ -235,6 +241,11 @@ class ModelId(StrEnum):
     GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
     QWEN3_5_9B = "qwen3.5-9b"
+    QWEN3_6_35B_A3B = "qwen3.6-35b-a3b"
+    QWEN3_30B_A3B_INSTRUCT_2507 = "qwen3-30b-a3b-instruct-2507"
+    QWEN3_8_FLASH_NEXT = "qwen3.8-flash-next"
+    QWEN38_27B_CODER = "qwen38-27b-coder"
+    GPT_OSS_20B = "gpt-oss-20b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
