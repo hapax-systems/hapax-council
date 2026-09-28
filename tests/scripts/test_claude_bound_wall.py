@@ -17,6 +17,7 @@ from shared.quota_spend_ledger import (
     subscription_quota_state_for_route,
 )
 from tests.scripts.test_claude_account_live_observe_per_route import obs
+from tests.scripts.test_claude_interactive_installed_copy import installed_fixture, run_installed
 from tests.scripts.test_claude_interactive_launch_auth import dispatch, launch_fixture
 from tests.scripts.test_hapax_quota_telemetry_writer import _run_writer, _wall_receipt
 
@@ -309,3 +310,15 @@ def test_wall_publication_failure_reports_no_durable_revocation(tmp_path, monkey
     assert payload["wall_receipt_write_failed"] is True
     assert "earlier telemetry is not revoked" in payload["hint"]
     assert "receipt-directory permissions" in payload["hint"]
+
+
+@pytest.mark.parametrize("terminal", ["none", "tmux"])
+def test_installed_copy_refuses_new_bound_wall(tmp_path, monkeypatch, capsys, terminal):
+    env, installed, _, _, workdir, child, _ = installed_fixture(tmp_path, explicit=True)
+    env["HAPAX_RELAY_RECEIPT_DIR"] = str(tmp_path / "relay-receipts")
+    rc, _ = observe(tmp_path, monkeypatch, capsys, env, datetime.now(UTC), "wall")
+    assert rc == 3
+    result = run_installed(env, installed, workdir, terminal=terminal)
+    assert result.returncode != 0
+    assert "current quota evidence does not bind the launch credential" in result.stderr
+    assert not child.exists()
