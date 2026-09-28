@@ -30,7 +30,7 @@ from tests.scripts.test_hapax_quota_telemetry_writer import _run_writer
 NOW = datetime.now(UTC)
 
 
-def bound_ledger(tmp_path):
+def bound_ledger(tmp_path, *, token="synthetic-subscription-access-token"):
     """Synthetic fresh A observation, independently construct the opaque proof."""
     path = _fresh_claude_subscription_quota_ledger(tmp_path, route_id="claude.interactive.full")
     payload = json.loads(path.read_text())
@@ -43,7 +43,7 @@ def bound_ledger(tmp_path):
                 ref.split(":observed_at:")[1].split(":fresh_until:")[0]
             ).isoformat()
             proof = hmac.new(
-                b"synthetic-subscription-access-token",
+                token.encode(),
                 f"hapax:claude:subscription:first-party:credential-binding:v1:{stamp}".encode(),
                 hashlib.sha256,
             ).hexdigest()
