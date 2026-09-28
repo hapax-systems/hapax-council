@@ -133,7 +133,15 @@ def matches(line: str, names: list[str]) -> bool:
 def added_lines(root: Path, base: str, head: str) -> list[tuple[str, int, str]]:
     """(path, line number at head, text) for every line the range ADDS."""
     diff = _git(
-        "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=0", base, head, root=root
+        "diff",
+        "--text",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--unified=0",
+        base,
+        head,
+        root=root,
     )
     if diff.returncode != 0:
         raise SystemExit(2)

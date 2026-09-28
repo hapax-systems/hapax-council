@@ -488,6 +488,19 @@ def test_tracked_pre_push_stops_before_the_secret_scan_on_a_name_refusal(tmp_pat
     assert not log.exists()
 
 
+def test_tracked_pre_push_scans_binary_classified_added_lines(tmp_path: Path):
+    repo, log = _wrapper_repo(tmp_path, with_secret=True)
+    registry = _valid_registry(tmp_path)
+    (repo / "binary.dat").write_bytes(b"\0" + f"author: {NAME_A}\n".encode())
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "binary")
+    parent, head = _git(repo, "rev-parse", "HEAD^"), _git(repo, "rev-parse", "HEAD")
+    result = _run_wrapper(repo, registry, f"refs/heads/x {head} refs/heads/x {parent}\n")
+    assert result.returncode == 1, result.stderr
+    assert _refusal("binary.dat", 1) in result.stderr
+    assert not log.exists()
+
+
 def test_tracked_pre_push_passes_the_pushing_worktree_root_to_the_name_scan(tmp_path: Path):
     repo, _log = _wrapper_repo(tmp_path, with_secret=True)
     registry = _valid_registry(tmp_path)

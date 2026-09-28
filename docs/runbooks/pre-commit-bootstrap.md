@@ -46,23 +46,15 @@ underlying repository.
 
 ## Shared hooks (council)
 
-`scripts/pre-commit` and `scripts/pre-push` are tracked. The pre-commit hook
-delegates to the pre-commit framework, so the commit-time gates in
-`.pre-commit-config.yaml` still run under the shared setting. The pre-push hook
-chains the registered-principal name scan and the existing secret/home-path
-scan, and refuses when either scanner is missing. Enable both once per clone
-with the relative value the hook headers name:
+The tracked `scripts/pre-commit` delegates to the framework; `scripts/pre-push`
+runs both scanners and refuses if either is missing. After merge, the seat
+enables the relative setting below. It resolves per worktree; update branches
+missing the tracked hooks before relying on it.
 
 ```bash
 git config core.hooksPath scripts
 git config --get core.hooksPath   # scripts
 ```
-
-On the council host, after this lands, the seat sets that relative value and
-reads it back from a Codex worktree.
-
-The relative value resolves in each worktree. Update any branch missing the
-tracked hooks before relying on them; keep the pre-commit CLI on `PATH`.
 
 ## Verify
 
@@ -93,8 +85,5 @@ scope.
 
 ## Why this is a bootstrap step, not a committed hook
 
-The framework's generated hook is per-clone and outside version control, so it
-cannot ship in a PR. The tracked `scripts/pre-commit` and `scripts/pre-push`
-are what let the relative `core.hooksPath` setting cover linked worktrees. Run
-the framework install once per clone, and again after any `git config` change
-that affects hook resolution.
+The framework's `.git/hooks/` hook is local; tracked wrappers ship in the repo.
+Install the framework per clone so the pre-commit wrapper can delegate to it.
