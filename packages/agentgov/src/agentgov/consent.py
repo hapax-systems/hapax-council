@@ -8,9 +8,15 @@ contract_check() before persisting state.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from functools import wraps
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +25,159 @@ import yaml
 log = logging.getLogger(__name__)
 
 
+class IdentityMigrationUnavailable(RuntimeError):
+    def __init__(
+        self, reason: str, *, cause_class: str | None = None, missing_module: str | None = None
+    ) -> None:
+        remedies = {
+            "identity_unconfigured": "configure_identity_binding",
+            "compat_missing": "restore_compat_custody",
+            "compat_unreadable": "restore_compat_custody",
+            "compat_malformed": "repair_compat_document",
+            "compat_conflict": "reconcile_compat_conflict",
+            "compat_incomplete": "complete_compat_inventory",
+        }
+        self.reason = reason if reason in remedies else "compat_unreadable"
+        self.cause_class = (
+            cause_class
+            if isinstance(cause_class, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cause_class)
+            else None
+        )
+        self.remedy = remedies[self.reason]
+        module = (
+            missing_module
+            if isinstance(missing_module, str) and re.fullmatch(r"[A-Za-z_][\w.]*", missing_module)
+            else "unavailable"
+        )
+        log.warning(
+            "%s: cause_class=%s missing_module=%s remedy=%s",
+            self.reason,
+            self.cause_class or "unavailable",
+            module,
+            self.remedy,
+        )
+        super().__init__(self.reason)
+
+
+def custody_read_failure(exc: Exception) -> IdentityMigrationUnavailable:
+    module = getattr(exc, "name", None) if isinstance(exc, ImportError) else None
+    return IdentityMigrationUnavailable(
+        "compat_unreadable", cause_class=type(exc).__name__, missing_module=module
+    )
+
+
+@dataclass(frozen=True)
+class IdentityMigrationBinding:
+    mode: str
+    provider: str | None = None
+
+
+_configured_binding: IdentityMigrationBinding | None = None
+_identity_snapshot: ContextVar[tuple[IdentityMigrationBinding, Any] | None] = ContextVar(
+    "identity_snapshot", default=None
+)
+
+
+def configure_identity_migration(mode: str, provider: str | None = None) -> None:
+    global _configured_binding
+    _configured_binding = IdentityMigrationBinding(mode, provider)
+
+
+def _installation_binding() -> IdentityMigrationBinding:
+    return _configured_binding or IdentityMigrationBinding(
+        os.environ.get("AGENTGOV_IDENTITY_MIGRATION", ""),
+        os.environ.get("AGENTGOV_IDENTITY_PROVIDER"),
+    )
+
+
+@contextmanager
+def identity_operation(binding: IdentityMigrationBinding | None = None):
+    active = _identity_snapshot.get()
+    if active is not None and (binding is None or active[0] == binding):
+        yield active[1]
+        return
+    selected = binding or _installation_binding()
+    if selected.mode == "none":
+        snapshot = None
+    elif selected.mode == "required" and selected.provider:
+        try:
+            provider = import_module(selected.provider)
+        except Exception as exc:
+            raise IdentityMigrationUnavailable(
+                "identity_unconfigured", cause_class=type(exc).__name__
+            ) from None
+        try:
+            snapshot = provider.load_identity_snapshot()
+            if not all(
+                callable(getattr(snapshot, name, None))
+                for name in ("resolve_principal_id", "resolve_contract_id")
+            ):
+                raise IdentityMigrationUnavailable("compat_malformed")
+        except IdentityMigrationUnavailable as exc:
+            raise IdentityMigrationUnavailable(exc.reason, cause_class=exc.cause_class) from None
+        except Exception as exc:
+            raise custody_read_failure(exc) from None
+    else:
+        raise IdentityMigrationUnavailable("identity_unconfigured")
+    token = _identity_snapshot.set((selected, snapshot))
+    try:
+        yield snapshot
+    finally:
+        _identity_snapshot.reset(token)
+
+
+def _registry_operation(function):
+    @wraps(function)
+    def wrapped(self, *args, **kwargs):
+        with identity_operation(self._identity_binding):
+            return function(self, *args, **kwargs)
+
+    return wrapped
+
+
+def _resolve_identifier(candidate: str, kind: str) -> str:
+    with identity_operation() as snapshot:
+        if snapshot is None:
+            return candidate
+        try:
+            result = getattr(snapshot, f"resolve_{kind}_id")(candidate)
+            if result is not None and not isinstance(result, str):
+                raise IdentityMigrationUnavailable("compat_malformed")
+            return candidate if result is None else result
+        except IdentityMigrationUnavailable as exc:
+            raise IdentityMigrationUnavailable(exc.reason, cause_class=exc.cause_class) from None
+        except Exception as exc:
+            raise custody_read_failure(exc) from None
+
+
+def resolve_principal_id(candidate: str) -> str:
+    return _resolve_identifier(candidate, "principal")
+
+
+def resolve_contract_id(candidate: str) -> str:
+    return _resolve_identifier(candidate, "contract")
+
+
 class ConsentContractLoadError(Exception):
     """Raised when a contract YAML file fails to parse in strict mode."""
+
+
+def _private_load_error(path: Path, error: Exception) -> bool:
+    with identity_operation() as snapshot:
+        if snapshot is None:
+            return False
+        if (
+            resolve_contract_id(path.stem) != path.stem
+            or resolve_principal_id(path.stem) != path.stem
+        ):
+            return True
+        contains_predecessor = getattr(snapshot, "contains_predecessor", None)
+        if not callable(contains_predecessor):
+            return True
+        try:
+            return bool(contains_predecessor(f"{path}: {error}"))
+        except Exception:
+            return True
 
 
 @dataclass(frozen=True)
@@ -46,6 +203,15 @@ class ConsentContract:
         return self.revoked_at is None
 
 
+def _grant_identity(contract: ConsentContract) -> ConsentContract:
+    return replace(
+        contract,
+        id=resolve_contract_id(contract.id),
+        parties=tuple(resolve_principal_id(party) for party in contract.parties),
+        guardian=resolve_principal_id(contract.guardian) if contract.guardian else None,
+    )
+
+
 @dataclass
 class ConsentRegistry:
     """Runtime registry of consent contracts.
@@ -54,10 +220,12 @@ class ConsentRegistry:
     ingestion boundary enforcement.
     """
 
+    _identity_binding: IdentityMigrationBinding | None = field(default=None, repr=False)
     _contracts: dict[str, ConsentContract] = field(default_factory=dict)
     _fail_closed: bool = field(default=False)
     _loaded_at: float = field(default=0.0)
     _contracts_dir: Path | None = field(default=None)
+    _contract_paths: dict[str, Path] = field(default_factory=dict)
 
     @property
     def fail_closed(self) -> bool:
@@ -69,6 +237,7 @@ class ConsentRegistry:
             return False
         return time.time() - self._loaded_at > stale_threshold_s
 
+    @_registry_operation
     def load(self, contracts_dir: Path | None = None, *, strict: bool = False) -> int:
         """Load all contract files from the contracts directory.
 
@@ -92,30 +261,42 @@ class ConsentRegistry:
                 self._fail_closed = True
                 return 0
 
-            count = 0
+            self._contracts_dir = directory
+            self._contracts.clear()
+            self._contract_paths.clear()
             for path in sorted(directory.glob("*.yaml")):
                 try:
                     data = yaml.safe_load(path.read_text())
                     if data is None:
                         continue
                     contract = parse_contract(data)
+                    existing = self._contracts.get(contract.id)
+                    if existing is not None:
+                        if _grant_identity(existing) != _grant_identity(contract):
+                            self._contracts[contract.id] = replace(
+                                existing,
+                                revoked_at=existing.revoked_at
+                                or contract.revoked_at
+                                or datetime.now(UTC).isoformat(),
+                            )
+                        continue
                     self._contracts[contract.id] = contract
+                    self._contract_paths[contract.id] = path
                     if contract.active:
-                        count += 1
-                        log.info(
-                            "Loaded contract %s: %s <-> %s (scope: %s)",
-                            contract.id,
-                            contract.parties[0],
-                            contract.parties[1],
-                            ", ".join(sorted(contract.scope)),
-                        )
+                        log.info("consent_contract_loaded")
                 except Exception as exc:
+                    if _private_load_error(path, exc):
+                        if strict:
+                            raise ConsentContractLoadError("consent_contract_malformed") from None
+                        log.warning("consent_contract_malformed")
+                        continue
                     if strict:
                         raise ConsentContractLoadError(
                             f"Failed to load contract from {path}: {exc}"
                         ) from exc
                     log.exception("Failed to load contract from %s", path)
 
+            count = sum(1 for contract in self._contracts.values() if contract.active)
             self._fail_closed = False
             self._loaded_at = time.time()
             return count

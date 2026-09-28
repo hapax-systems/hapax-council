@@ -5435,7 +5435,6 @@ _ = (
     _cp_url_punctuation_flags,
     _cp_within_window,
 )
-
 # billing-scan-input-validation-20260928: scripts/check-billing-surface-diff.py
 # calls this after the scanner layer lands; removed by #4844.
 from scripts.billing_surface_input import (  # noqa: E402
@@ -5460,3 +5459,13 @@ _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
 from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
 
 _EnvelopeOpenWatch.overflowed
+
+from agents import _governance as _agents_governance  # noqa: E402
+from logos import _governance as _logos_governance  # noqa: E402
+from shared.governance import consent as _estate_consent  # noqa: E402
+
+_estate_consent.load_identity_snapshot
+_agents_governance.ConsentRegistry.subject_data_categories
+_agents_governance.ConsentRegistry.purge_subject
+_logos_governance.ConsentRegistry.subject_data_categories
+_logos_governance.ConsentRegistry.purge_subject
