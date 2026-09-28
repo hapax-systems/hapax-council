@@ -382,13 +382,6 @@ def test_neutralisation_is_total_on_ordinary_prose() -> None:
     ],
 )
 def test_no_commonmark_destination_spelling_smuggles_a_live_scheme(body: str) -> None:
-    """Found by the parametrised defang test, not by reading the regex.
-
-    CommonMark allows whitespace between ``(`` and the destination, a title after it,
-    and angle-bracket destinations. A target pattern that stops at the first ``)`` or
-    that does not skip leading whitespace reads the destination as empty — which
-    scores as "no scheme" and passes a live ``javascript:`` link straight through.
-    """
     result = neutralize_markdown(body)
     assert result.links == 1, f"{body!r} was not recognised as a link at all"
     assert "](javascript:" not in result.markdown

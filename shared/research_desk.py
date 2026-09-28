@@ -1,25 +1,8 @@
-"""Research-desk request queue and lookup domain.
+"""Read-only research request queue and lookup domain.
 
-The estate mints typed **research requests** as rows in the cc-task vault; an
-external, subscription-funded agent lists them, fetches one, and delivers an
-answer. Delivery lands at the dominator the coordinator already reads — a lanebus
-drop — and stamps the request row.
-
-Delete-the-estate statement: a queue of typed questions, a read surface over it,
-and a write surface that files exactly one answer per question at a place the
-reader already watches, with a receipt. The vault, the lanebus and Perplexity are
-**bindings**: swap the row store for any keyed document store and the drop
-directory for any append-only inbox and nothing in this module's shape changes.
-
-Two boundaries are enforced here rather than at the transport:
-
-* **Untrusted content.** The markdown an external agent delivers is written into
-  the operator's vault. It is length-capped, control-character-screened, and
-  labelled ``content_trust: untrusted_external`` in the drop's own frontmatter so
-  a later reader cannot mistake it for estate-authored text.
-* **Identity.** A request id is a filename stem matched against a strict pattern
-  and resolved only inside the active-requests directory. There is no path the
-  caller can spell that escapes it.
+Typed requests are parsed from active task rows. This queue slice screens
+untrusted markdown but writes neither task notes nor delivery drops. The vault
+path is a replaceable binding.
 """
 
 from __future__ import annotations

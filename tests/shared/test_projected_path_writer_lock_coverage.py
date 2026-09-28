@@ -1106,6 +1106,7 @@ NOT_A_TASK_NOTE_WRITER = {
     "shared/github_public_surface.py": "reads notes for the public surface",
     "shared/scheduler_readiness_reconciler.py": "reads notes; writes no note",
     "shared/sdlc_invariants.py": "read-only invariant monitor",
+    "shared/research_desk.py": "reads active request notes; writes no files in this queue slice",
     "shared/cc_task_root.py": "resolver only",
     "hooks/scripts/sense_reissue_capture.py": "writes its own capture JSONL",
     "hooks/scripts/cc-task-root.sh": "resolver only",
