@@ -1412,6 +1412,54 @@ class TestSizeReplacementNoteValidity:
             is None
         )
 
+    def test_public_validity_gate_uses_live_prompt_measurer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        ceiling = rt.seat_diff_capacity("gemini-1", registry)["prompt_limit_bytes"]
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=10_000),
+                _review("codex-1", "codex", diff_full_bytes=10_000),
+                _review("glm-1", "glm", diff_full_bytes=10_000),
+            ],
+            constitution_notes=("family_replaced_for_size:gemini",),
+        )
+        dossier["family_substitution"] = {
+            "excluded_for_prompt": {
+                "gemini": {"prompt_bytes": ceiling + 1, "prompt_limit_bytes": ceiling}
+            },
+            "prompt_bytes_by_seat": {"gemini-1": ceiling + 1},
+        }
+        note = tmp_path / "task-x.md"
+        note.write_text("task context", encoding="utf-8")
+        rt.review_dossier_path(note, "task-x").write_text(yaml.safe_dump(dossier), encoding="utf-8")
+        calls: list[tuple[int, str, tuple[str, ...]]] = []
+        live_prompt_bytes = ceiling - 1
+
+        def measure(pr: int, sha: str, seats: tuple[str, ...], **_kwargs):
+            calls.append((pr, sha, seats))
+            return 10_000, {"gemini-1": live_prompt_bytes}
+
+        monkeypatch.setattr(rt, "_live_capacity_evidence", measure)
+        frontmatter = {"task_id": "task-x", "pr": 99, "pr_repo": "hapax-systems/hapax-council"}
+
+        def blockers() -> tuple[str, ...]:
+            return rt.review_dossier_validity_blockers(
+                frontmatter,
+                note,
+                pr_head_sha="a" * 40,
+                registry=registry,
+                route_blocked_families={},
+            )
+
+        assert "review_dossier_prompt_size_unverified:gemini" in blockers()
+        assert calls == [(99, "a" * 40, ("gemini-1",))]
+        live_prompt_bytes = ceiling + 1
+        assert blockers() == ()
+
     @pytest.mark.parametrize(
         ("case", "blocker"),
         [
