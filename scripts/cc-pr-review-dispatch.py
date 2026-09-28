@@ -3098,6 +3098,7 @@ _REL_DISPLAY_SAFE_RE = re.compile(r"[^A-Za-z0-9_./-]")
 _EXCERPT_TOTAL_BYTES = 7_000
 _EXCERPT_SYMBOL_BYTES = 1_200
 _EXCERPT_MAX_SYMBOLS = 64
+_EXCERPT_PARSE_BYTES = 512_000
 _IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*\b")
 
 
@@ -3123,8 +3124,7 @@ def _prior_symbol_hints(finding: dict[str, Any]) -> tuple[str, ...]:
 
 def _claim_ranked_symbols(
     symbols: tuple[str, ...], detail: str, parsed: ast.Module | None, cited_line: int
-) -> tuple[str, ...]:
-    """Put the asserted callee ahead of incidental names in critical prose."""
+) -> tuple[tuple[int, str], ...]:
     claim_targets = set(re.findall(r"\b(?:to|of|in)\s+([A-Za-z_]\w*)\b", detail))
     cited_calls = set()
     if parsed is not None:
@@ -3141,7 +3141,9 @@ def _claim_ranked_symbols(
             return 0 if symbol in claim_targets else 1
         return 2 if symbol in claim_targets else 3
 
-    return tuple(sorted(symbols, key=priority))
+    return tuple(
+        sorted(((priority(symbol), symbol) for symbol in symbols), key=lambda pair: pair[0])
+    )
 
 
 def _source_tree(source_lines: list[str]) -> ast.Module | None:
@@ -3190,7 +3192,6 @@ def _select_definition(
 
 
 def _imported_module_path(source_rel: str, node: ast.ImportFrom) -> str | None:
-    """Resolve one direct local import relative to its pinned source path."""
     package = list(Path(source_rel).parts[:-1]) if node.level else []
     if node.level:
         if node.level > len(package):
@@ -3204,7 +3205,6 @@ def _imported_module_path(source_rel: str, node: ast.ImportFrom) -> str | None:
 def _definition_excerpt(
     lines: list[str], node: ast.AST, *, max_bytes: int = _EXCERPT_SYMBOL_BYTES
 ) -> tuple[str, int, bool]:
-    """Include the complete signature, then as much body as the byte cap permits."""
     start = node.lineno
     end = min(len(lines), getattr(node, "end_lineno", start))
     header_end = max(start, node.body[0].lineno - 1) if node.body else start
@@ -3246,13 +3246,16 @@ def build_prior_file_excerpts(
     """
 
     repo_root = repo_root.resolve()
-    seen: set[tuple[str, int]] = set()
-    seen_definitions: set[tuple[str, int]] = set()
     sections: list[str] = []
     records: list[dict[str, Any]] = []
+    call_sites: list[tuple[str, dict[str, Any]]] = []
+    claims: list[tuple[int, int, str, str, int]] = []
+    cited_files: list[str] = []
+    seen_calls: set[tuple[str, int]] = set()
+    skipped: set[str] = set()
     source_cache: dict[str, list[str] | None] = {}
     tree_cache: dict[str, ast.Module | None] = {}
-    used_bytes = 180  # heading and separators
+    used_bytes = 180
 
     def source(rel: str) -> list[str] | None:
         if rel not in source_cache:
@@ -3265,24 +3268,47 @@ def build_prior_file_excerpts(
     def tree(rel: str) -> ast.Module | None:
         if rel not in tree_cache:
             lines = source(rel)
-            tree_cache[rel] = _source_tree(lines) if lines is not None else None
+            tree_cache[rel] = (
+                _source_tree(lines)
+                if lines is not None and len("\n".join(lines).encode()) <= _EXCERPT_PARSE_BYTES
+                else None
+            )
         return tree_cache[rel]
+
+    def skip(rel: str, status: str) -> None:
+        if rel not in skipped:
+            records.append({"file": rel, "status": status, "refusal": True})
+            skipped.add(rel)
+
+    def parsed_source(rel: str) -> tuple[list[str], ast.Module] | None:
+        lines = source(rel)
+        if lines is None:
+            skip(rel, "evidence_unavailable")
+        elif len("\n".join(lines).encode()) > _EXCERPT_PARSE_BYTES:
+            skip(rel, "source_parse_cost_exceeded")
+        else:
+            parsed = tree(rel)
+            if parsed is not None:
+                return lines, parsed
+            skip(rel, "source_parse_error")
+        return None
 
     def append_section(section: str, record: dict[str, Any]) -> bool:
         nonlocal used_bytes
+        status = None
         if len(sections) >= limit:
-            records.append({**record, "status": "excerpt_limit_exhausted"})
-            return False
-        size = len(section.encode())
-        if used_bytes + size > max_bytes:
-            records.append({**record, "status": "excerpt_budget_exhausted"})
+            status = "excerpt_limit_exhausted"
+        elif used_bytes + len(section.encode()) > max_bytes:
+            status = "excerpt_budget_exhausted"
+        if status:
+            records.append({**record, "status": status, "refusal": True})
             return False
         sections.append(section)
         records.append(record)
-        used_bytes += size
+        used_bytes += len(section.encode())
         return True
 
-    for finding in prior_criticals:
+    for finding_index, finding in enumerate(prior_criticals):
         rel = str(finding.get("file") or "").strip()
         try:
             line = int(finding.get("line") or 0)
@@ -3290,54 +3316,47 @@ def build_prior_file_excerpts(
             line = 0
         if not rel or line <= 0:
             continue
-        rel_path = Path(rel)
-        if rel_path.is_absolute() or ".." in rel_path.parts:
-            continue
-        key = (rel, line)
-        if key in seen:
-            continue
-        seen.add(key)
         shown = _rel_for_display(rel)
-        if shown is None:
+        if shown is None or Path(rel).is_absolute() or ".." in Path(rel).parts:
             append_section(
                 f"## (invalid prior-finding path omitted) @ {head_sha[:9]}\n\n"
-                "(evidence_unavailable: the prior finding's file path is not a valid repo\n"
-                "path — its text is untrusted and has been omitted; verify via the diff only)\n",
-                {"file": "<omitted:invalid_path>", "line": line, "status": "invalid_path"},
+                "(evidence_unavailable: invalid prior-finding path omitted)\n",
+                {
+                    "file": "<omitted:invalid_path>",
+                    "line": line,
+                    "status": "invalid_path",
+                    "refusal": True,
+                },
             )
-            if len(sections) >= limit:
-                break
             continue
+        cited_files.append(rel)
         source_lines = source(rel)
         if source_lines is None:
             append_section(
-                f"## {shown}:{line} @ {head_sha[:9]}\n\n"
-                f"(evidence_unavailable: {shown} unreadable at {head_sha[:9]} — do NOT treat any\n"
-                "worktree copy as current source; verify via the diff only)\n",
-                {"file": shown, "line": line, "status": "evidence_unavailable"},
+                f"## {shown}:{line} @ {head_sha[:9]}\n\n(evidence_unavailable at pinned head)\n",
+                {"file": shown, "line": line, "status": "evidence_unavailable", "refusal": True},
             )
-            if len(sections) >= limit:
-                break
             continue
         if line > len(source_lines):
-            # Prior finding cites a line past EOF at this head (the file shrank,
-            # or the finding was always out of range). Do NOT emit an empty
-            # section recorded as 'shown' with an inverted range.
             append_section(
                 f"## {shown}:{line} @ {head_sha[:9]}\n\n"
-                f"(evidence_unavailable: {shown}:{line} is outside the file "
-                f"({len(source_lines)} lines) at {head_sha[:9]} — verify via the diff only)\n",
+                f"(evidence_unavailable: line outside the file; {len(source_lines)} lines)\n",
                 {
                     "file": shown,
                     "line": line,
                     "status": "line_out_of_range",
+                    "refusal": True,
                     "file_lines": len(source_lines),
                 },
             )
-            if len(sections) >= limit:
-                break
             continue
         symbols = _prior_symbol_hints(finding)
+        ranked = _claim_ranked_symbols(symbols, str(finding.get("detail") or ""), tree(rel), line)
+        claims.extend((rank, finding_index, symbol, rel, line) for rank, symbol in ranked)
+        key = (rel, line)
+        if key in seen_calls:
+            continue
+        seen_calls.add(key)
         context_radius = min(radius, 8) if symbols else radius
         start = max(1, line - context_radius)
         end = min(len(source_lines), line + context_radius)
@@ -3345,102 +3364,90 @@ def build_prior_file_excerpts(
             f"{number:04d}| {source_lines[number - 1].replace('```', '<BACKTICK_FENCE>')}"
             for number in range(start, end + 1)
         )
-        callsite_section = f"## {shown}:{line} @ {head_sha[:9]}\n\n{body}\n"
-        callsite_record = {
-            "file": shown,
-            "line": line,
-            "status": "shown",
-            "lines": f"{start}-{end}",
-        }
-        if not symbols:
-            append_section(callsite_section, callsite_record)
-            continue
-        symbols = _claim_ranked_symbols(
-            symbols,
-            str(finding.get("detail") or ""),
-            tree(rel),
-            line,
-        )
-        candidates = tuple(dict.fromkeys((rel, *changed_files)))[:24]
-        resolved_symbols: set[str] = set()
-        cut_symbols: set[str] = set()
-        for candidate in candidates:
-            candidate_shown = _rel_for_display(candidate)
-            if (
-                candidate_shown is None
-                or Path(candidate).is_absolute()
-                or ".." in Path(candidate).parts
-            ):
-                continue
-            candidate_lines = source(candidate)
-            if candidate_lines is None:
-                records.append({"file": candidate, "status": "evidence_unavailable"})
-                continue
-            candidate_tree = tree(candidate)
-            if candidate_tree is None:
-                records.append({"file": candidate, "status": "source_parse_error"})
-                continue
-            definitions = _definition_nodes(candidate_tree)
-            imports = {
-                alias.asname or alias.name: (_imported_module_path(candidate, node), alias.name)
-                for node in ast.walk(candidate_tree)
-                if isinstance(node, ast.ImportFrom)
-                for alias in node.names
-            }
-            for symbol in symbols:
-                resolved_rel = candidate
-                resolved_lines = candidate_lines
-                node = _select_definition(definitions, symbol, candidate_tree, line)
-                if node is None and symbol in imports:
-                    imported_rel, original = imports[symbol]
-                    if imported_rel and _rel_for_display(imported_rel) is not None:
-                        imported_tree = tree(imported_rel)
-                        resolved_lines = source(imported_rel)
-                        if imported_tree is None:
-                            records.append(
-                                {
-                                    "file": imported_rel,
-                                    "symbol": symbol,
-                                    "status": "source_parse_error"
-                                    if resolved_lines is not None
-                                    else "evidence_unavailable",
-                                }
-                            )
-                        else:
-                            node = _definition_nodes(imported_tree).get(original)
-                            resolved_rel = imported_rel
-                if node is None or resolved_lines is None:
-                    continue
-                if symbol not in resolved_symbols and len(resolved_symbols) >= _EXCERPT_MAX_SYMBOLS:
-                    cut_symbols.add(symbol)
-                    continue
-                resolved_symbols.add(symbol)
-                symbol_key = (resolved_rel, node.lineno)
-                if symbol_key in seen_definitions:
-                    continue
-                snippet, symbol_end, truncated = _definition_excerpt(resolved_lines, node)
-                definition_record = {
-                    "file": resolved_rel,
-                    "line": node.lineno,
-                    "symbol": symbol,
-                    "status": "definition_truncated" if truncated else "definition_shown",
-                    "lines": f"{node.lineno}-{symbol_end}",
-                }
-                if append_section(
-                    f"## {resolved_rel}:{node.lineno} ({symbol}) @ {head_sha[:9]}\n\n{snippet}",
-                    definition_record,
-                ):
-                    seen_definitions.add(symbol_key)
-        unresolved = [symbol for symbol in symbols if symbol not in resolved_symbols]
-        if unresolved:
-            records.append({"file": shown, "status": "symbols_unresolved", "symbols": unresolved})
-        if cut_symbols:
-            records.append(
-                {"file": shown, "status": "symbols_cap_exceeded", "symbols": sorted(cut_symbols)}
+        call_sites.append(
+            (
+                f"## {shown}:{line} @ {head_sha[:9]}\n\n{body}\n",
+                {"file": shown, "line": line, "status": "shown", "lines": f"{start}-{end}"},
             )
-        append_section(callsite_section, callsite_record)
-        if len(sections) >= limit:
-            break
+        )
+
+    candidates = (
+        tuple(
+            dict.fromkeys(
+                (*cited_files, *(str(p) for p in changed_files if str(p).endswith(".py")))
+            )
+        )
+        if claims
+        else ()
+    )
+    required: dict[tuple[str, int], set[str]] = {}
+    resolved: list[tuple[int, int, str, str, ast.AST, list[str]]] = []
+    for candidate in candidates:
+        if (
+            _rel_for_display(candidate) is None
+            or Path(candidate).is_absolute()
+            or ".." in Path(candidate).parts
+        ):
+            skip("<omitted:invalid_path>", "invalid_path")
+            continue
+        parsed_pair = parsed_source(candidate)
+        if parsed_pair is None:
+            continue
+        candidate_lines, candidate_tree = parsed_pair
+        definitions = _definition_nodes(candidate_tree)
+        imports = {
+            alias.asname or alias.name: (_imported_module_path(candidate, node), alias.name)
+            for node in ast.walk(candidate_tree)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        }
+        for rank, finding_index, symbol, rel, line in claims:
+            resolved_rel = candidate
+            resolved_lines = candidate_lines
+            node = _select_definition(
+                definitions, symbol, candidate_tree, line if candidate == rel else 0
+            )
+            if node is None and symbol in imports:
+                imported_rel, original = imports[symbol]
+                if imported_rel and source(imported_rel) is not None:
+                    imported_pair = parsed_source(imported_rel)
+                    if imported_pair is not None:
+                        resolved_lines, imported_tree = imported_pair
+                        node = _definition_nodes(imported_tree).get(original)
+                        resolved_rel = imported_rel
+            if node is None:
+                continue
+            required.setdefault((resolved_rel, node.lineno), set()).add(symbol)
+            resolved.append((rank, finding_index, symbol, resolved_rel, node, resolved_lines))
+
+    rendered_definitions: set[tuple[str, int]] = set()
+    for _, _, symbol, rel, node, lines in sorted(resolved, key=lambda item: item[:2]):
+        key = (rel, node.lineno)
+        if key in rendered_definitions or len(rendered_definitions) >= _EXCERPT_MAX_SYMBOLS:
+            continue
+        snippet, symbol_end, truncated = _definition_excerpt(lines, node)
+        record = {
+            "file": rel,
+            "line": node.lineno,
+            "symbol": symbol,
+            "status": "definition_truncated" if truncated else "definition_shown",
+            "lines": f"{node.lineno}-{symbol_end}",
+        }
+        if append_section(
+            f"## {rel}:{node.lineno} ({symbol}) @ {head_sha[:9]}\n\n{snippet}", record
+        ):
+            rendered_definitions.add(key)
+    for section, record in call_sites:
+        append_section(section, record)
+    missing = required.keys() - rendered_definitions
+    if missing:
+        records.append(
+            {
+                "status": "definitions_not_rendered",
+                "symbols": sorted({symbol for key in missing for symbol in required[key]}),
+                "refusal": True,
+            }
+        )
     if not sections:
         return "", records
     rendered = (
@@ -3486,15 +3493,23 @@ def build_changed_file_excerpts(
             continue
         source_lines = _git_show_at_head(repo_root, head_sha, rel)
         if source_lines is None:
-            records.append({"file": shown, "status": "evidence_unavailable"})
+            records.append({"file": shown, "status": "evidence_unavailable", "refusal": True})
             continue
         parsed = _source_tree(source_lines)
         if parsed is None:
-            records.append({"file": shown, "status": "source_parse_error"})
+            records.append({"file": shown, "status": "source_parse_error", "refusal": True})
             continue
         definitions = _definition_nodes(parsed)
-        for symbol in symbols:
+        for index, symbol in enumerate(symbols):
             if len(sections) >= limit:
+                records.append(
+                    {
+                        "file": shown,
+                        "symbols": symbols[index:],
+                        "status": "excerpt_limit_exhausted",
+                        "refusal": True,
+                    }
+                )
                 break
             node = definitions.get(symbol)
             if node is None:
@@ -3509,7 +3524,12 @@ def build_changed_file_excerpts(
             section = f"## {shown}:{start} ({symbol}) @ {head_sha[:9]}\n\n{body}\n"
             if used_bytes + len(section.encode()) > max_bytes:
                 records.append(
-                    {"file": shown, "symbol": symbol, "status": "excerpt_budget_exhausted"}
+                    {
+                        "file": shown,
+                        "symbol": symbol,
+                        "status": "excerpt_budget_exhausted",
+                        "refusal": True,
+                    }
                 )
                 continue
             sections.append(section)
@@ -3523,8 +3543,6 @@ def build_changed_file_excerpts(
                     "lines": f"{start}-{end}",
                 }
             )
-        if len(sections) >= limit:
-            break
     if not sections:
         return "", records
     rendered = (
@@ -4120,30 +4138,17 @@ def review_pr(
         head_sha=pr_info.head_sha,
         max_bytes=max(0, _EXCERPT_TOTAL_BYTES - len(prior_file_excerpts.encode())),
     )
-    cut_symbols = [
-        symbol
-        for record in prior_evidence_records
-        if record.get("status") == "symbols_cap_exceeded"
-        for symbol in record["symbols"]
-    ]
-    if cut_symbols:
-        return {
-            "status": "source_symbol_cap_exceeded",
-            "pr": pr_number,
-            "cut_symbols": cut_symbols,
-            "next_action": "split the PR or reduce prior critical scope before review",
-        }
-    exhausted_excerpts = [
+    refused_excerpts = [
         record
         for record in (*prior_evidence_records, *changed_source_evidence_records)
-        if record.get("status") in {"excerpt_budget_exhausted", "excerpt_limit_exhausted"}
+        if record.get("refusal")
     ]
-    if exhausted_excerpts:
+    if refused_excerpts:
         return {
-            "status": "source_excerpt_capacity_exceeded",
+            "status": "source_evidence_incomplete",
             "pr": pr_number,
-            "unshown_excerpts": exhausted_excerpts,
-            "next_action": "split the PR or increase eligible prompt capacity before review",
+            "refusals": refused_excerpts,
+            "next_action": "repair or split source evidence, then retry",
         }
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
     pr_diff = fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)

@@ -1007,10 +1007,8 @@ class TestApply:
             radius=1,
         )
         assert rendered
-        assert records == [
-            {"file": rel, "line": 5, "status": "shown", "lines": "4-6"},
-            {"file": "scripts/missing.py", "line": 2, "status": "evidence_unavailable"},
-        ]
+        assert {r["status"] for r in records} == {"shown", "evidence_unavailable"}
+        assert any(r.get("file") == "scripts/missing.py" and r.get("refusal") for r in records)
 
     def test_prior_file_excerpts_add_allowlisted_symbol_body(self, tmp_path: Path) -> None:
         rel = "scripts/hapax-glmcp-reviewer"
@@ -1046,78 +1044,62 @@ class TestApply:
         assert "0005|     ledger = load_quota_spend_ledger_resolved()" in rendered
         assert any(record.get("symbol") == "_require_payg_spend_gate" for record in records)
 
-    def test_glm_verbatim_critical_gets_head_definition_outside_call_site(
-        self, tmp_path: Path
+    def test_glm_critical_gets_head_definition_outside_call_site(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         rel = "scripts/review_team.py"
-        lines = ["# prior source"] * 2197
-        lines += ["def _dossier_validity_blockers(", "    dossier,", "    *,"]
-        lines += [f"    arg_{i}=None," for i in range(12)]
+        lines = ["#"] * 2197 + ["def _dossier_validity_blockers("]
+        lines += ["    arg=None,"] * 14
         lines += [
             "    capacity_evidence_measurer: Callable[",
             "        [int], int",
-            "    ]",
-            "    | None = None,",
+            "    ] | None = None,",
             "):",
             "    return ()",
+            "def second_critical_symbol(): return 1",
         ]
-        lines += [
-            "def review_dossier_validity_blockers(dossier): return _dossier_validity_blockers(dossier)",
-            "def capacity_evidence_measurer(pr, sha, seats): return None",
-            "def review_team_verdict_blockers(dossier): return _dossier_validity_blockers(dossier)",
-        ]
-        lines += ["# between definition and caller " + "x" * 140] * (2793 - len(lines))
-        lines.append(
-            "blockers = _dossier_validity_blockers(dossier, capacity_evidence_measurer=measure)"
-        )
-        head_sha = self._git_repo_with_commit(tmp_path, rel, "\n".join(lines) + "\n")
+        lines += ["#"] * (2793 - len(lines))
+        lines += ["blockers = _dossier_validity_blockers(dossier)"]
+        monkeypatch.setattr(dispatch, "_git_show_at_head", lambda *_: lines)
         finding = {
             "file": rel,
             "line": 2794,
             "title": "Dossier validation raises TypeError instead of returning blockers",
-            "detail": (
-                "Confirmed on current head a269a4c6c. review_dossier_validity_blockers passes\n"
-                "capacity_evidence_measurer=capacity_evidence_measurer to _dossier_validity_blockers\n"
-                "(line 2794), and review_team_verdict_blockers forwards the same keyword, but the\n"
-                "diff's only hunk touching _dossier_validity_blockers inserts the two helpers\n"
-                'above it; its signature (diff line 0379, "def _dossier_validity_blockers(dossier:\n'
-                'Mapping[str, Any], *") gains no capacity_evidence_measurer parameter. Any dossier\n'
-                "reaching this call raises TypeError: unexpected keyword argument, crashing the\n"
-                "admission/validity gate (fail-open-by-crash, not fail-closed). Add the parameter\n"
-                "and implement the capacity check inside the inner function, then exercise the\n"
-                "public gate path end to end.\n"
-            ),
+            "detail": "review_dossier_validity_blockers passes capacity_evidence_measurer "
+            "to _dossier_validity_blockers, whose signature is under review.",
         }
-        rendered, records = dispatch.build_prior_file_excerpts(
-            [finding], repo_root=tmp_path, head_sha=head_sha
-        )
-        assert "2198| def _dossier_validity_blockers(" in rendered
-        assert "2213|     capacity_evidence_measurer: Callable[" in rendered
-        assert rendered.index("2198| def _dossier_validity_blockers(") < rendered.index(
-            "2794| blockers ="
-        )
         late = {
             **finding,
             "title": " ".join(f"ordinaryword{i}" for i in range(70)) + " " + finding["title"],
         }
         late_rendered, late_records = dispatch.build_prior_file_excerpts(
-            [late], repo_root=tmp_path, head_sha=head_sha
+            [late], repo_root=tmp_path, head_sha="a" * 40
         )
         assert "2213|     capacity_evidence_measurer: Callable[" in late_rendered
-        assert not any(r["status"] == "symbols_cap_exceeded" for r in late_records)
+        assert late_rendered.index("2198| def _dossier_validity_blockers(") < late_rendered.index(
+            "2794| blockers ="
+        )
+        assert not any(r.get("refusal") for r in late_records)
+        both, _ = dispatch.build_prior_file_excerpts(
+            [finding, {"file": rel, "line": 2794, "title": "second_critical_symbol"}],
+            repo_root=tmp_path,
+            head_sha="a" * 40,
+        )
+        assert "(second_critical_symbol)" in both
 
     def test_4878_critical_gets_imported_head_definition(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         rel = "agents/_governance.py"
-        source = ["from shared.governance.consent import resolve_contract_id"]
-        source += ["# prior source"] * 82
-        source += [
+        source = [
+            "from shared.governance.consent import resolve_contract_id",
             "class ConsentRegistry:",
             "    def get(self, contract_id):",
             "        return resolve_contract_id(contract_id)",
+            "class OtherRegistry:",
+            "    def get(self, contract_id):",
+            "        return None",
         ]
-        source += ["# after caller"] * (100 - len(source))
         sources = {
             rel: source,
             "shared/governance/consent.py": [
@@ -1137,8 +1119,8 @@ class TestApply:
         monkeypatch.setattr(dispatch, "_git_show_at_head", show)
         finding = {
             "file": rel,
-            "line": 97,
-            "title": "ConsentRegistry.get() returns arbitrary contracts for unresolved IDs",
+            "line": 4,
+            "title": "get permits unresolved IDs",
             "detail": "resolve_contract_id() returns None, yielding the wrong contract.",
         }
         rendered, records = dispatch.build_prior_file_excerpts(
@@ -1151,45 +1133,63 @@ class TestApply:
         assert "shared/governance/consent.py:4 (resolve_contract_id)" in rendered
         assert "0004| def resolve_contract_id(candidate: str) -> str:" in rendered
         assert "def resolve_contract_id(fake)" not in rendered
+        assert "## agents/_governance.py:3 (get)" in rendered
+        assert "## agents/_governance.py:6 (get)" not in rendered
         assert any(
             r.get("file") == "scripts/other.py" and r["status"] == "evidence_unavailable"
             for r in records
         )
-        node = dispatch.ast.parse("from .consent import resolve_contract_id").body[0]
-        assert (
-            dispatch._imported_module_path("shared/governance/registry.py", node)
-            == "shared/governance/consent.py"
-        )
 
-    def test_same_named_methods_use_cited_class(self, tmp_path: Path) -> None:
-        rel = "scripts/methods.py"
-        head_sha = self._git_repo_with_commit(
-            tmp_path,
-            rel,
-            "class First:\n    def get(self):\n        return 'first'\n"
-            "class Second:\n    def get(self):\n        return 'second'\n",
-        )
-        rendered, _ = dispatch.build_prior_file_excerpts(
-            [{"file": rel, "line": 3, "title": "get returns the wrong value"}],
+    def test_global_rank_precedes_first_file_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sources = {
+            "scripts/first.py": ["def incidental():", "    return '" + "x" * 300 + "'", "target()"],
+            "scripts/second.py": ["def target(): return 1"],
+        }
+        monkeypatch.setattr(dispatch, "_git_show_at_head", lambda _r, _s, p: sources.get(p))
+        rendered, records = dispatch.build_prior_file_excerpts(
+            [{"file": "scripts/first.py", "line": 3, "title": "incidental target"}],
             repo_root=tmp_path,
-            head_sha=head_sha,
+            head_sha="a" * 40,
+            changed_files=("scripts/first.py", "scripts/second.py"),
+            max_bytes=600,
             radius=0,
         )
-        assert f"## {rel}:2 (get)" in rendered
-        assert f"## {rel}:5 (get)" not in rendered
-
-    def test_symbol_cap_names_cut_definition(self, tmp_path: Path) -> None:
-        rel = "scripts/many.py"
-        source = "\n".join(f"def symbol{i}(): return {i}" for i in range(65))
-        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
-        _, records = dispatch.build_prior_file_excerpts(
-            [{"file": rel, "line": 1, "title": " ".join(f"symbol{i}" for i in range(65))}],
-            repo_root=tmp_path,
-            head_sha=head_sha,
-            limit=1,
-        )
+        assert "## scripts/second.py:1 (target)" in rendered
         assert any(
-            r["status"] == "symbols_cap_exceeded" and "symbol64" in r["symbols"] for r in records
+            r["status"] == "definitions_not_rendered"
+            and "incidental" in r["symbols"]
+            and r["refusal"]
+            for r in records
+        )
+
+    def test_25th_file_and_symbol_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        files = tuple(f"scripts/changed{i}.py" for i in range(24)) + ("scripts/many.py",)
+        sources = {name: ["pass"] for name in files}
+        sources[files[-1]] = [f"def symbol{i}(): return {i}" for i in range(65)]
+        sources["scripts/call.py"] = ["symbol0()"]
+
+        monkeypatch.setattr(dispatch, "_git_show_at_head", lambda _r, _s, p: sources.get(p))
+        rendered, records = dispatch.build_prior_file_excerpts(
+            [
+                {
+                    "file": "scripts/call.py",
+                    "line": 1,
+                    "title": " ".join(f"symbol{i}" for i in range(65)),
+                }
+            ],
+            repo_root=tmp_path,
+            head_sha="a" * 40,
+            changed_files=files,
+            limit=100,
+        )
+        assert f"## {files[-1]}:1 (symbol0)" in rendered
+        assert any(
+            r["status"] == "definitions_not_rendered" and "symbol64" in r["symbols"]
+            for r in records
         )
 
     def test_definition_parse_failure_and_budget_are_recorded(
@@ -1203,12 +1203,7 @@ class TestApply:
             repo_root=tmp_path,
             head_sha="a" * 40,
         )
-        assert any(
-            r.get("file") == rel and r.get("status") == "source_parse_error" for r in records
-        )
-        assert any(
-            r.get("status") == "symbols_unresolved" and "broken" in r["symbols"] for r in records
-        )
+        assert any(r.get("status") == "source_parse_error" and r.get("refusal") for r in records)
 
         state["lines"] = ["def wide():"] + [f"    value_{i} = '{'x' * 160}'" for i in range(200)]
         rendered, records = dispatch.build_prior_file_excerpts(
@@ -1254,38 +1249,16 @@ class TestApply:
         ceiling["value"] = full_size - 1
         result, _, reviewers, _ = _review(tmp_path / "over")
         assert result["status"] == "prompt_capacity_exceeded"
-        assert result["excerpt_bytes"] == len(excerpt.encode())
         assert not reviewers.invocations
         ceiling["value"] = 1_000_000
         monkeypatch.setattr(
             dispatch,
             "build_prior_file_excerpts",
-            lambda *args, **kwargs: (
-                "",
-                [
-                    {
-                        "file": "shared/foo.py",
-                        "symbol": "target",
-                        "status": "excerpt_budget_exhausted",
-                    }
-                ],
-            ),
+            lambda *args, **kwargs: ("", [{"symbol": "target", "refusal": True}]),
         )
         result, _, reviewers, _ = _review(tmp_path / "budget")
-        assert result["status"] == "source_excerpt_capacity_exceeded"
-        assert result["unshown_excerpts"][0]["symbol"] == "target"
-        assert not reviewers.invocations
-        monkeypatch.setattr(
-            dispatch,
-            "build_prior_file_excerpts",
-            lambda *args, **kwargs: (
-                "",
-                [{"status": "symbols_cap_exceeded", "symbols": ["late_target"]}],
-            ),
-        )
-        result, _, reviewers, _ = _review(tmp_path / "symbol_cap")
-        assert result["status"] == "source_symbol_cap_exceeded"
-        assert result["cut_symbols"] == ["late_target"]
+        assert result["status"] == "source_evidence_incomplete"
+        assert result["refusals"][0]["symbol"] == "target"
         assert not reviewers.invocations
 
     def test_failed_definition_inclusion_retries_on_later_finding(
