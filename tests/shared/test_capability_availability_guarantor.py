@@ -6,6 +6,8 @@ import json
 import subprocess
 from datetime import UTC, datetime
 
+import pytest
+
 import shared.capability_availability_guarantor as guarantor
 from shared.dispatcher_policy import _capability_state
 from shared.platform_capability_registry import (
@@ -22,6 +24,7 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
     "witness:claude-subscription-headroom-observed-20260708t1400z:"
     "observation:subscription_quota_headroom_observed:"
+    "route_id:claude.headless.full:"
     "observed_at:2026-07-08T14:00:00Z:"
     "fresh_until:2026-07-08T14:15:00Z:"
     "account-live-quota:observed"
@@ -598,15 +601,16 @@ def test_non_oauth_subscription_route_requires_account_live_quota_evidence() -> 
     assert "account_live_quota_evidence_absent" not in observed.reason_codes
 
 
-def test_claude_generic_quota_status_ref_does_not_attest_account_live_quota() -> None:
+@pytest.mark.parametrize("route_id", ["claude.headless.full", "claude.interactive.full"])
+def test_claude_generic_quota_status_ref_does_not_attest_account_live_quota(route_id: str) -> None:
     payload = _payload()
-    route_payload = _route_payload(payload, "claude.headless.full")
+    route_payload = _route_payload(payload, route_id)
     _mark_fresh(route_payload)
     route_payload["freshness"]["evidence"]["quota"]["evidence_refs"].append(
         "test:claude:quota-status-observed"
     )
     registry = PlatformCapabilityRegistry.model_validate(payload)
-    route = registry.require("claude.headless.full")
+    route = registry.require(route_id)
     freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[0]
 
     receipt = guarantor.evaluate_route_availability(

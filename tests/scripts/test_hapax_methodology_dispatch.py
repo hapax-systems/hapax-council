@@ -4529,7 +4529,10 @@ def test_sliced_call_preserves_dispatch_env_and_marks_attached(monkeypatch) -> N
     assert env["HAPAX_SDLC_SLICE_ATTACHED"] == "1"
 
 
-def test_launches_claude_interactive_visible_lane_with_task_binding(tmp_path: Path) -> None:
+@pytest.mark.parametrize("quota_admitted", [False, True])
+def test_launches_claude_interactive_visible_lane_with_task_binding(
+    tmp_path: Path, quota_admitted: bool
+) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(
@@ -4552,6 +4555,12 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     fake_launcher.chmod(0o755)
 
+    env = {"HAPAX_METHODOLOGY_CLAUDE_LAUNCHER": str(fake_launcher)}
+    if quota_admitted:
+        env["HAPAX_QUOTA_SPEND_LEDGER"] = str(
+            _fresh_claude_subscription_quota_ledger(tmp_path, route_id="claude.interactive.full")
+        )
+
     result = _run(
         tmp_path,
         "--task",
@@ -4563,15 +4572,22 @@ printf '%s\\n' "$@" > {launcher_args}
         "--mode",
         "interactive",
         "--launch",
-        extra_env={
-            "HAPAX_METHODOLOGY_CLAUDE_LAUNCHER": str(fake_launcher),
-            "HAPAX_QUOTA_SPEND_LEDGER": str(
-                _fresh_claude_subscription_quota_ledger(
-                    tmp_path, route_id="claude.interactive.full"
-                )
-            ),
-        },
+        extra_env=env,
     )
+
+    if not quota_admitted:
+        assert result.returncode == 10, result.stderr
+        assert "subscription_route_quota_not_fresh" in result.stderr
+        assert "Next action:" in result.stderr
+        assert "genuine Opus-family account-live observation" in result.stderr
+        assert (
+            "hapax-claude-subscription-quota-admission --route-id claude.interactive.full"
+            in result.stderr
+        )
+        assert "hapax-quota-telemetry-writer --json" in result.stderr
+        assert "retry" in result.stderr
+        assert not launcher_args.exists()
+        return
 
     assert result.returncode == 0, result.stderr
     args = launcher_args.read_text(encoding="utf-8").splitlines()
