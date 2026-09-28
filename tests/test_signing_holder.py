@@ -1,7 +1,4 @@
-"""The signing holder signs only for the system witness-rota unit.
-
-A refused caller gets no signature, every act is logged without the key, and failure narrows.
-"""
+"""Holder admission, refusals, signing and packaging."""
 
 from __future__ import annotations
 
@@ -41,9 +38,6 @@ REFUSED = Admission(
 BLOCKING_CLIENT = (
     "import socket, sys; s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.recv(1)"
 )
-
-
-# --- which cgroups are admitted ---
 
 
 def test_the_system_rota_unit_is_admitted() -> None:
@@ -86,9 +80,6 @@ def test_a_cgroup_file_without_a_unified_line_reads_empty(tmp_path: Path) -> Non
     (tmp_path / "42").mkdir()
     (tmp_path / "42" / "cgroup").write_text(f"12:cpu:{ROTA}\n")
     assert cgroup_of(42, proc_root=tmp_path) == ""
-
-
-# --- admission uses the peer's pidfd from the socket itself ---
 
 
 @pytest.fixture
@@ -151,9 +142,6 @@ def test_a_pid_reused_by_the_rota_unit_is_refused(listener) -> None:
 def test_a_socket_without_a_peer_pidfd_is_refused() -> None:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unconnected:
         assert not admit(unconnected, read_cgroup=lambda pid: ROTA).ok
-
-
-# --- the service: sign only when admitted, log every act, never the key ---
 
 
 def exchange(
@@ -228,9 +216,6 @@ def test_each_refusal_is_logged() -> None:
     assert len(lines) == 1 and lines[0].startswith("refused")
 
 
-# --- the key comes only from the unit's credential ---
-
-
 def test_the_key_is_read_from_the_units_credentials_directory(tmp_path: Path) -> None:
     (tmp_path / CREDENTIAL_NAME).write_text(SAMPLE + "\n")
     assert load_secret({"CREDENTIALS_DIRECTORY": str(tmp_path)}) == SAMPLE
@@ -267,9 +252,6 @@ def test_main_without_a_credential_refuses_and_names_the_next_action() -> None:
     assert rc != 0 and response.startswith("refused:") and "next action:" in response
 
 
-# --- the client ---
-
-
 def _serve_once(server: socket.socket, admission: Admission) -> threading.Thread:
     def run() -> None:
         try:
@@ -298,8 +280,6 @@ def test_the_client_raises_when_refused(listener) -> None:
         request_signature(PAYLOAD, path)
     thread.join(timeout=10)
 
-
-# --- packaging: system-scoped, socket-activated, credential-only ---
 
 # Installer-owned system units live in systemd/system/, which post-merge deploy leaves to the
 # installer ("system-scoped configs; require sudo install").

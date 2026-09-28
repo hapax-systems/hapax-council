@@ -1,19 +1,7 @@
-"""Witness receipt producer: the existing review-dossier shape, bound to one artifact.
+"""Produce a create-once review dossier bound to one artifact and nonce.
 
-A pre-submission record (a lanebus drop) names one artifact by its canonical digest
-(``artifact_fingerprint``, the estate's existing binding key) and a nonce, with its audience,
-channel, policy ref, validity window, caller-owned expected head, author and evidence. A witness
-receipt says that witnesses other than the author, from independent model families, judged the
-record ``VALIDATED`` within its window.
-
-The receipt is a ``<task_id>.review-dossier.yaml`` that the existing public-gate resolver
-accepts: ``dossier_schema: 1``, the gate, the policy receipt ref, the artifact bindings, a
-``quorum-accept`` verdict with ``quorum_required`` (1 for tier B, 2 for tier A) met by distinct
-independent families, a ``review-team:`` issuer, and an HMAC signature from the signing holder.
-
-The system checks the witness's identity, independence, timing and signature. It does not check
-the witness's judgment. Every refusal writes nothing, and a receipt is written once.
-"""
+Only independent, non-author VALIDATED witnesses in the recorded window count.
+The protected holder signs; the existing public-gate resolver verifies."""
 
 from __future__ import annotations
 
@@ -117,7 +105,6 @@ def _evidence_problems(record: Mapping[str, Any], root: Path) -> list[str]:
 
 
 def _qualifying(record: Mapping[str, Any], verdicts: Sequence[Verdict]) -> list[Verdict]:
-    """VALIDATED verdicts by non-authors from independent families other than the author's."""
     author, author_family = record["author"], record["author_family"].casefold()
     return [
         v
@@ -138,7 +125,6 @@ def produce(
     now: datetime,
     sign: Callable[[Mapping[str, Any]], str] | None = None,
 ) -> Produced:
-    """Write one signed witness receipt for the record, or refuse and write nothing."""
     sign = sign or request_signature
     refusals = _record_problems(record)
     window = _window(record)

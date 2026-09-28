@@ -1,9 +1,5 @@
 #!/usr/bin/python3 -I
-"""Sign one witness receipt for the system witness-rota unit (socket-activated, Accept=yes).
-
-Installed to /usr/local/sbin by operator act O3. Isolated mode (-I) ignores PYTHON* variables,
-the user site and the script's directory, so only the root-owned library copy below is imported.
-"""
+"""Socket-activated witness signer. O3 installs this isolated entry and its root-owned library."""
 
 import sys
 

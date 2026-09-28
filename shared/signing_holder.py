@@ -1,20 +1,8 @@
-"""Signing holder: signs witness receipts only for the system witness-rota unit.
+"""Sign for live peers in the system witness-rota cgroup, using SO_PEERPIDFD.
 
-The public-gate authority key signs witness receipts (the existing dossier shape). Lanes all run
-as one uid, so a key they can read, or a holder that signs for any caller, cannot tell a witness
-from an author. This holder runs as a socket-activated system service (``DynamicUser=``, the key
-from ``LoadCredentialEncrypted=``). It admits a caller only when the caller's cgroup is the
-**system** unit ``hapax-witness-rota@<instance>.service``, which a non-escalating lane cannot
-create or attach to (``kernel.yama.ptrace_scope`` 1).
-
-Admission reads the peer's pidfd from the socket itself (``SO_PEERPIDFD``), so there is no window
-between learning a pid and opening a pidfd. It reads that pid's cgroup, and then requires the
-pidfd to still be alive: a peer that exited meanwhile, whose pid another process may now hold,
-is refused.
-
-Bound: lanes are in the ``docker`` and ``wheel`` groups, so any lane is root-equivalent until O5.
-Until then this holds against non-escalating lanes only. Installing the units and the key is O3.
-"""
+The socket-activated DynamicUser service reads only its encrypted credential.
+This excludes non-escalating lanes; root-equivalent lanes remain outside that bound.
+The seat installs the holder under operator act O3."""
 
 from __future__ import annotations
 
@@ -54,12 +42,10 @@ class Admission:
 
 
 def cgroup_admitted(path: str) -> bool:
-    """True only for a system-slice instance of the witness-rota template unit."""
     return _ROTA_CGROUP.fullmatch(path) is not None
 
 
 def cgroup_of(pid: int, *, proc_root: Path = Path("/proc")) -> str:
-    """The pid's cgroup v2 path, or "" when there is no unified-hierarchy line."""
     for line in (proc_root / str(pid) / "cgroup").read_text().splitlines():
         if line.startswith("0::"):
             return line[3:]
@@ -80,7 +66,6 @@ def _exited(pidfd: int) -> bool:
 
 
 def admit(sock: socket.socket, *, read_cgroup: Callable[[int], str] | None = None) -> Admission:
-    """Admit the connected peer only if it is a live process in the system witness-rota unit."""
     read_cgroup = read_cgroup or cgroup_of
     try:
         raw = sock.getsockopt(socket.SOL_SOCKET, SO_PEERPIDFD, struct.calcsize("i"))
@@ -104,11 +89,7 @@ def admit(sock: socket.socket, *, read_cgroup: Callable[[int], str] | None = Non
 
 
 def _read_request(conn: socket.socket) -> bytes | None:
-    """The request, or None when it exceeds the limit.
-
-    It reads to EOF (discarding past the limit, up to a hard cap) so that closing never resets
-    the caller before it reads the reply.
-    """
+    """Read to EOF up to the hard cap, discarding overflow so refusals can reach callers."""
     chunks: list[bytes] = []
     size = 0
     while size <= 16 * MAX_REQUEST_BYTES and (chunk := conn.recv(65536)):
@@ -138,7 +119,6 @@ def serve(
     admit_fn: Callable[[socket.socket], Admission] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> int:
-    """Answer one connection: a signature line when admitted, else a refusal line."""
     admit_fn = admit_fn or admit
     log = log or (lambda line: print(line, file=sys.stderr))
     admission = admit_fn(conn)
@@ -159,7 +139,6 @@ def serve(
 
 
 def load_secret(env: Mapping[str, str]) -> str | None:
-    """The key from the unit's credentials directory only, never from the environment."""
     directory = env.get("CREDENTIALS_DIRECTORY")
     if not directory:
         return None
@@ -171,7 +150,6 @@ def load_secret(env: Mapping[str, str]) -> str | None:
 
 
 def request_signature(payload: Mapping[str, Any], socket_path: Path = SOCKET_PATH) -> str:
-    """Ask the holder to sign; raise SigningRefused with its reason otherwise."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(30)
         sock.connect(str(socket_path))

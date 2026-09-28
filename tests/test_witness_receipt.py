@@ -1,8 +1,4 @@
-"""A witness receipt is produced only for a validated, independent, in-window, signed witness act.
-
-The receipt is the existing review-dossier shape, so the existing public-gate resolver accepts it,
-bound to one artifact's fingerprint and nonce. Every refusal writes nothing.
-"""
+"""Independent, time-bound, artifact-bound witness receipts."""
 
 from __future__ import annotations
 
@@ -93,9 +89,6 @@ def assert_refused(result: Produced, out_dir: Path) -> None:
     assert list(out_dir.iterdir()) == []
 
 
-# --- a validated, independent witness produces a signed dossier ---
-
-
 def test_a_validated_non_author_witness_produces_a_signed_receipt(evidence_root, out_dir) -> None:
     result = run(evidence_root, out_dir)
     assert result.refusals == [] and result.path is not None
@@ -154,9 +147,6 @@ def test_the_resolver_refuses_the_receipt_for_another_artifact(
     assert not _resolves(tmp_path / "receipts", out_dir, OTHER_DIGEST)
 
 
-# --- U3: the witness is independent of the author ---
-
-
 def test_the_author_cannot_witness_their_own_record(evidence_root, out_dir) -> None:
     own = Verdict("claude/dev32", "gemini", "VALIDATED", NOW)
     assert_refused(run(evidence_root, out_dir, [own]), out_dir)
@@ -186,9 +176,6 @@ def test_a_seen_verdict_produces_nothing(evidence_root, out_dir) -> None:
     assert_refused(run(evidence_root, out_dir, [seen]), out_dir)
 
 
-# --- quorum per tier ---
-
-
 def test_tier_a_needs_two_independent_families(evidence_root, out_dir) -> None:
     rec = record(evidence_root, tier="A")
     assert_refused(run(evidence_root, out_dir, [GEMINI], rec=rec), out_dir)
@@ -211,9 +198,6 @@ def test_tier_b_needs_one(evidence_root, out_dir) -> None:
     assert data["quorum_required"] == 1 and data["accept_count"] == 1
 
 
-# --- U4: the validity window ---
-
-
 @pytest.mark.parametrize("now", [T0 - timedelta(seconds=1), T0 + timedelta(hours=12, seconds=1)])
 def test_a_record_outside_its_window_produces_nothing(evidence_root, out_dir, now) -> None:
     late = Verdict("gemini/rota-1", "gemini", "VALIDATED", T0 + timedelta(hours=1))
@@ -233,9 +217,6 @@ def test_a_verdict_after_the_production_time_is_refused(evidence_root, out_dir) 
 def test_an_inverted_window_is_refused(evidence_root, out_dir) -> None:
     rec = record(evidence_root, not_before="2026-09-25T20:00:00Z", not_after="2026-09-25T08:00:00Z")
     assert_refused(run(evidence_root, out_dir, rec=rec), out_dir)
-
-
-# --- the evidence the witness saw is the evidence recorded ---
 
 
 def test_evidence_changed_since_the_record_is_refused(evidence_root, out_dir) -> None:
@@ -262,9 +243,6 @@ def test_a_record_without_evidence_is_refused(evidence_root, out_dir) -> None:
     )
 
 
-# --- a malformed record is refused ---
-
-
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -285,9 +263,6 @@ def test_a_record_without_evidence_is_refused(evidence_root, out_dir) -> None:
 )
 def test_a_malformed_record_is_refused(evidence_root, out_dir, overrides) -> None:
     assert_refused(run(evidence_root, out_dir, rec=record(evidence_root, **overrides)), out_dir)
-
-
-# --- signing and writing ---
 
 
 def test_a_refused_signature_writes_nothing(evidence_root, out_dir) -> None:
