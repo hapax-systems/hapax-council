@@ -126,6 +126,12 @@ def test_unbound_wall_is_diagnostic_while_subscription_probe_decides(
             assert receipt["status"] == "quota_available"
             assert receipt["auth_surface"] == "subscription"
             assert receipt["observed_at"] == NOW
+    elif outcome in {"wall", "wall-text"}:
+        assert len(written) == 1
+        receipt = yaml.safe_load(written[0].read_text())
+        assert receipt["status"] == "quota_blocked"
+        assert receipt["credential_binding"]
+        assert not payload.get("receipts")
     else:
         assert not written
         assert not payload.get("receipts")

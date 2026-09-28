@@ -4443,12 +4443,23 @@ def _wall_receipt(
     failure_class: str = "quota_exhausted",
     route_id: str | None = None,
     detected_at: str | None = "2026-06-09T23:00:00Z",
+    subscription_bound: bool = False,
 ) -> None:
     route_line = f"route_id: {route_id}\n" if route_id is not None else ""
     detected_at_line = f"detected_at: {detected_at}\n" if detected_at is not None else ""
+    binding_lines = (
+        "provider: anthropic-claude-subscription\n"
+        "auth_surface: subscription\n"
+        "source: scripts/hapax-claude-account-live-observe\n"
+        "observation: subscription_quota_wall_observed\n"
+        f"credential_binding: {'a' * 64}\n"
+        if subscription_bound
+        else ""
+    )
     (relay / f"{role}-quota-wall.yaml").write_text(
         f"""role: {role}
 status: quota_blocked
+{binding_lines}\
 {detected_at_line}\
 signal_kind: rate_limit_event
 failure_class: {failure_class}
@@ -5231,7 +5242,7 @@ def test_governance_records_carry_over_unchanged(tmp_path: Path) -> None:
 def test_unexpired_quota_wall_marks_platform_exhausted(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
-    _wall_receipt(relay, "theta", "2026-06-10T06:00:00Z")
+    _wall_receipt(relay, "theta", "2026-06-10T06:00:00Z", subscription_bound=True)
     _wall_receipt(relay, "cx-amber", "2026-06-09T06:00:00Z")  # expired -> ignored
 
     result, out = _run_writer(tmp_path)
@@ -5258,6 +5269,7 @@ def test_claude_route_wall_inhibits_shared_subscription_pool(
         relay,
         "theta",
         "2026-06-10T06:00:00Z",
+        subscription_bound=True,
         route_id="claude.headless.full",
         detected_at="2026-06-09T23:57:00Z",
     )
@@ -5314,6 +5326,7 @@ def test_claude_headless_wall_route_id_is_derived_from_role(tmp_path: Path) -> N
         relay,
         "beta",
         "2026-06-10T06:00:00Z",
+        subscription_bound=True,
         route_id="claude.review.opus",
     )
 
@@ -5396,6 +5409,7 @@ def test_claude_quota_wall_beats_earlier_admission_receipt(tmp_path: Path) -> No
         relay,
         "theta",
         "2026-06-10T06:00:00Z",
+        subscription_bound=True,
         detected_at="2026-06-09T23:57:00Z",
     )
     _claude_admission(
@@ -5418,13 +5432,14 @@ def test_claude_quota_wall_beats_earlier_admission_receipt(tmp_path: Path) -> No
     assert summary["claude_admissions"] == 1
 
 
-def test_claude_future_reset_wall_blocks_later_admission_receipt(tmp_path: Path) -> None:
+def test_claude_newer_admission_supersedes_future_reset_prediction(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     _wall_receipt(
         relay,
         "theta",
         "2026-06-10T06:00:00Z",
+        subscription_bound=True,
         detected_at="2026-06-09T23:00:00Z",
     )
     _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
@@ -5433,9 +5448,9 @@ def test_claude_future_reset_wall_blocks_later_admission_receipt(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr
     snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
-    assert snapshot["subscription_quota_state"] == "exhausted"
+    assert snapshot["subscription_quota_state"] == "fresh"
     assert any("theta-quota-wall.yaml" in ref for ref in snapshot["evidence_refs"])
-    assert not any(
+    assert any(
         "claude-subscription-quota-admission.yaml" in ref for ref in snapshot["evidence_refs"]
     )
     summary = json.loads(result.stdout)
@@ -5452,6 +5467,7 @@ def test_claude_resetless_after_wall_admission_recovers_shared_subscription_pool
         relay,
         "theta",
         "unknown",
+        subscription_bound=True,
         detected_at="2026-06-09T23:00:00Z",
     )
     _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
@@ -5471,7 +5487,7 @@ def test_claude_resetless_after_wall_admission_recovers_shared_subscription_pool
     assert summary["claude_admissions"] == 1
 
 
-def test_claude_after_wall_admission_blocks_on_legacy_reset_wall(
+def test_claude_after_wall_admission_ignores_unbound_legacy_wall(
     tmp_path: Path,
 ) -> None:
     relay = tmp_path / "relay-receipts"
@@ -5480,6 +5496,7 @@ def test_claude_after_wall_admission_blocks_on_legacy_reset_wall(
         relay,
         "theta",
         "2026-06-10T06:00:00Z",
+        subscription_bound=True,
         detected_at="2026-06-09T23:57:00Z",
     )
     _wall_receipt(
@@ -5494,10 +5511,10 @@ def test_claude_after_wall_admission_blocks_on_legacy_reset_wall(
 
     assert result.returncode == 0, result.stderr
     snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
-    assert snapshot["subscription_quota_state"] == "exhausted"
+    assert snapshot["subscription_quota_state"] == "fresh"
     assert any("theta-quota-wall.yaml" in ref for ref in snapshot["evidence_refs"])
-    assert any("theta-legacy-quota-wall.yaml" in ref for ref in snapshot["evidence_refs"])
-    assert not any(
+    assert not any("theta-legacy-quota-wall.yaml" in ref for ref in snapshot["evidence_refs"])
+    assert any(
         "claude-subscription-quota-admission.yaml" in ref for ref in snapshot["evidence_refs"]
     )
     summary = json.loads(result.stdout)
@@ -5505,7 +5522,7 @@ def test_claude_after_wall_admission_blocks_on_legacy_reset_wall(
     assert summary["claude_admissions"] == 1
 
 
-def test_claude_after_wall_admission_blocks_when_only_wall_lacks_detected_at(
+def test_claude_admission_ignores_wall_without_detected_at(
     tmp_path: Path,
 ) -> None:
     relay = tmp_path / "relay-receipts"
@@ -5522,9 +5539,9 @@ def test_claude_after_wall_admission_blocks_when_only_wall_lacks_detected_at(
 
     assert result.returncode == 0, result.stderr
     snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
-    assert snapshot["subscription_quota_state"] == "exhausted"
-    assert any("theta-legacy-quota-wall.yaml" in ref for ref in snapshot["evidence_refs"])
-    assert not any(
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert not any("theta-legacy-quota-wall.yaml" in ref for ref in snapshot["evidence_refs"])
+    assert any(
         "claude-subscription-quota-admission.yaml" in ref for ref in snapshot["evidence_refs"]
     )
     summary = json.loads(result.stdout)
