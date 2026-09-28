@@ -5506,3 +5506,29 @@ _ = _census_read_vendor_cache
 from shared.entitlement_census import run_readback as _census_run_readback  # noqa: E402
 
 _ = _census_run_readback
+
+# E1 joined rows are consumed by run_census in the integration slice. Until then the staged
+# code's direct tests run but vulture does not scan tests or extensionless producer scripts.
+from shared.entitlement_census import (  # noqa: E402
+    CensusRun as _census_CensusRun,
+)
+from shared.entitlement_census import (
+    _decl_row as _census_decl_row,
+)
+from shared.entitlement_census import (
+    _prior_rows as _census_prior_rows,
+)
+from shared.entitlement_census import (
+    _serving_row as _census_serving_row,
+)
+from shared.entitlement_census import (
+    _unidentified_rows as _census_unidentified_rows,
+)
+
+_ = (
+    _census_CensusRun,
+    _census_decl_row,
+    _census_prior_rows,
+    _census_serving_row,
+    _census_unidentified_rows,
+)

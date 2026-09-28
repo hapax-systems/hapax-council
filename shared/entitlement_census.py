@@ -51,6 +51,13 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from shared.capability_surface_delta import (
+    CapabilitySurfaceDelta,
+    CapabilitySurfaceDescriptor,
+    FreshnessState,
+)
+from shared.entitlement_capability import EntitlementShape, classify_entitlement
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ENTITLEMENT_CENSUS_CONFIG = REPO_ROOT / "config" / "entitlement-census.json"
 DEFAULT_OUTPUT_ROOT = Path.home() / ".cache" / "hapax" / "entitlement-census"
@@ -94,6 +101,16 @@ class EntitlementKind(StrEnum):
     MODALITY = "modality"
     RESOURCE = "resource"
     LOCAL = "local"
+
+
+class EntitlementState(StrEnum):
+    LIVE = "live"  # the entitlement's own surface answered 200 in this run
+    HELD = "held"  # present (name, login file, binary, fresh cache, live record); not read back
+    DEAD = "dead"  # its readback rejected the credential (401)
+    STALE = "stale"  # the only evidence is a cache or record past its bound
+    UNOBSERVED = "unobserved"  # no observation was possible this run
+    ABSENT = "absent"  # seen before, not seen now on any reachable host; retained, never deleted
+    TERMS_RESTRICTED = "terms_restricted"  # held, and never probed by design
 
 
 class EvidenceClass(StrEnum):
@@ -1213,6 +1230,17 @@ def _outcome(
     )
 
 
+def _past_deadline(readback_id: str, now: datetime) -> ReadbackResult:
+    """The run's network budget is spent: nothing more is probed, and the row says so."""
+    return ReadbackResult(
+        readback_id=readback_id,
+        outcome="unobserved",
+        http_status=None,
+        observed_at=now,
+        reason="run_deadline_reached",
+    )
+
+
 def run_readback(
     ref: ReadbackRef,
     *,
@@ -1298,6 +1326,506 @@ def read_vendor_cache(
     return VendorCacheReading(
         cache_id, fetched_at, {k: v for k, v in facts.items() if v is not None}
     )
+
+
+# --- the joined row -------------------------------------------------------------------------------
+
+
+class CensusRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entitlement_id: str
+    provider: str
+    kind: EntitlementKind
+    identified: bool
+    entitlement_shape: str
+    cost_class: CostClass
+    state: EntitlementState
+    evidence_class: EvidenceClass
+    freshness: FreshnessState
+    recruitment_stage: RecruitmentStage
+    observed_at: datetime | None = None
+    fresh_until: datetime | None = None
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
+    hosts: tuple[str, ...] = ()
+    credential_names: tuple[str, ...] = ()
+    login_files: tuple[str, ...] = ()
+    harnesses: tuple[str, ...] = ()
+    readbacks: tuple[dict[str, Any], ...] = ()
+    facts: dict[str, FactValue] = Field(default_factory=dict)
+    measurements: tuple[dict[str, Any], ...] = ()
+    declared_routes: tuple[str, ...] = ()
+    declared_shapes: tuple[str, ...] = ()
+    ledger: tuple[str, ...] = ()
+    reasons: tuple[str, ...] = ()
+    notes: str | None = None
+    utilization: dict[str, Any] | None = None
+
+
+_FRESHNESS = {
+    EntitlementState.LIVE: FreshnessState.FRESH,
+    EntitlementState.DEAD: FreshnessState.FRESH,
+    EntitlementState.HELD: FreshnessState.HELD,
+    EntitlementState.STALE: FreshnessState.STALE,
+    EntitlementState.ABSENT: FreshnessState.ABSENT,
+    EntitlementState.UNOBSERVED: FreshnessState.UNKNOWN,
+    EntitlementState.TERMS_RESTRICTED: FreshnessState.DARK,
+}
+
+_SHAPE_KIND = {
+    EntitlementShape.COGNITION_WAREHOUSE: EntitlementKind.COGNITION,
+    EntitlementShape.COGNITION_PROVIDER: EntitlementKind.COGNITION,
+    EntitlementShape.WEB_GROUNDING: EntitlementKind.GROUNDING,
+    EntitlementShape.MODALITY: EntitlementKind.MODALITY,
+}
+
+
+@dataclass(frozen=True)
+class _Prior:
+    first_seen: datetime | None
+    last_seen: datetime | None
+    hosts: tuple[str, ...]
+    provider: str
+    kind: str
+    shape: str
+
+
+def _prior_rows(prior_view: Mapping[str, Any] | None) -> dict[str, _Prior]:
+    out: dict[str, _Prior] = {}
+    for row in (prior_view or {}).get("rows") or []:
+        if not isinstance(row, dict) or not isinstance(row.get("entitlement_id"), str):
+            continue
+        out[row["entitlement_id"]] = _Prior(
+            first_seen=_instant(row.get("first_seen")),
+            last_seen=_instant(row.get("last_seen")),
+            hosts=tuple(h for h in row.get("hosts") or [] if isinstance(h, str)),
+            provider=str(row.get("provider") or "unknown"),
+            kind=str(row.get("kind") or EntitlementKind.RESOURCE.value),
+            shape=str(row.get("entitlement_shape") or EntitlementShape.NON_CAPABILITY.value),
+        )
+    return out
+
+
+def _recruitment(
+    state: EntitlementState,
+    *,
+    declared_routes: Sequence[Mapping[str, Any]],
+    declared: bool,
+    measured: bool,
+) -> RecruitmentStage:
+    """The routing table's ladder (also ``QuotaSnapshot.stage``). Recruitment, never admission."""
+    if state in {EntitlementState.DEAD, EntitlementState.ABSENT, EntitlementState.TERMS_RESTRICTED}:
+        return "unusable"
+    if not declared:
+        return "unusable" if state is EntitlementState.UNOBSERVED else "usable-undeclared"
+    if measured and any(r.get("route_state") in ROUTABLE_ROUTE_STATES for r in declared_routes):
+        return "routable"
+    return "declared-measured" if measured else "declared-unmeasured"
+
+
+def _retained(
+    entitlement_id: str,
+    prior: _Prior | None,
+    unreachable: set[str],
+) -> tuple[EntitlementState, list[str]]:
+    """No evidence now: unobserved if a host it lived on could not be read, else absent or unobserved."""
+    if prior is not None:
+        blind = sorted(set(prior.hosts) & unreachable)
+        if blind:
+            return EntitlementState.UNOBSERVED, [
+                f"host {h} unreachable this run; last seen there" for h in blind
+            ]
+        if prior.last_seen is not None:
+            return EntitlementState.ABSENT, [
+                "not seen on any reachable host; retained with last_seen"
+            ]
+    return EntitlementState.UNOBSERVED, ["no evidence on any observed host"]
+
+
+@dataclass
+class CensusRun:
+    now: datetime
+    config: CensusConfig
+    rows: list[CensusRow]
+    holdings: list[HostHoldings]
+    unclassified: dict[str, Any]
+    potential: dict[str, Any]
+    descriptors: list[CapabilitySurfaceDescriptor]
+    deltas: list[CapabilitySurfaceDelta]
+    measurements: list[dict[str, Any]]
+    secrets: SecretRegister
+    #: Set by attach_history: this run's line in the append-only series, and the trend it implies.
+    history_record: dict[str, Any] | None = None
+    trend: dict[str, Any] | None = None
+
+
+def _registry_rows(registry: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
+    return [r for r in registry.get(key) or [] if isinstance(r, dict)]
+
+
+def _decl_row(
+    decl: EntitlementDecl,
+    *,
+    now: datetime,
+    config: CensusConfig,
+    holdings: Sequence[HostHoldings],
+    readbacks: Mapping[tuple[str, str | None], ReadbackResult],
+    cache: VendorCacheReading | None,
+    registry: Mapping[str, Any],
+    ledger: Mapping[str, Any] | None,
+    prior: _Prior | None,
+) -> CensusRow:
+    reasons: list[str] = []
+    hosts: set[str] = set()
+    creds: set[str] = set()
+    logins: dict[str, datetime] = {}
+    bins: set[str] = set()
+    presence_at: datetime | None = None
+    for h in holdings:
+        if not h.reachable:
+            continue
+        found = False
+        for name in h.credential_names() & set(decl.credential_names):
+            creds.add(name)
+            found = True
+        for env in set(h.env_names) & set(decl.env_names):
+            creds.add(f"env:{env}")
+            found = True
+        for rel in set(h.login_files) & set(decl.login_files):
+            logins[rel] = max(logins.get(rel, h.login_files[rel]), h.login_files[rel])
+            found = True
+        for binary in set(h.harness_bins) & set(decl.harness_bins):
+            bins.add(binary)
+            found = True
+        if found:
+            hosts.add(h.host_id)
+            if h.observed_at is not None:
+                presence_at = max(presence_at or h.observed_at, h.observed_at)
+    unreachable = {h.host_id for h in holdings if not h.reachable}
+
+    results = [
+        readbacks[(r.readback_id, r.secret)]
+        for r in decl.readbacks
+        if (r.readback_id, r.secret) in readbacks
+    ]
+    live = [r for r in results if r.outcome == "live"]
+    dead = [r for r in results if r.outcome == "dead"]
+    for r in results:
+        if r.reason:
+            reasons.append(f"{r.readback_id}: {r.reason}")
+    facts: dict[str, FactValue] = {}
+    measurements: list[dict[str, Any]] = []
+    for r in live:
+        facts.update(r.facts)
+        measurements.extend(r.measurements)
+    if decl.measurement_prefixes:
+        measurements = [
+            m for m in measurements if m["capacity_id"].startswith(decl.measurement_prefixes)
+        ]
+    if cache is not None:
+        if cache.reason:
+            reasons.append(f"{cache.cache_id}: {cache.reason}")
+        facts.update({f"cache_{k}" if k in facts else k: v for k, v in cache.facts.items()})
+    refs_live = [r for r in decl.declared_refs if r.expires_at > now]
+    refs_expired = [r for r in decl.declared_refs if r.expires_at <= now]
+    for ref in refs_expired:
+        reasons.append(f"declared reference expired {_iso(ref.expires_at)}: {ref.fact}")
+    held_now = bool(creds or logins or bins)
+    max_age = timedelta(seconds=config.vendor_cache_max_age_seconds)
+
+    observed_at: datetime | None = None
+    fresh_until: datetime | None = None
+    if decl.terms_restricted and (held_now or decl.declared_refs):
+        state = EntitlementState.TERMS_RESTRICTED
+        evidence = EvidenceClass.NAME_ONLY if held_now else EvidenceClass.RECORDED
+        observed_at = presence_at or max((r.recorded_at for r in decl.declared_refs), default=None)
+        reasons.append("terms restrict scripted calls: never probed")
+    elif live:
+        state, evidence = EntitlementState.LIVE, EvidenceClass.LIVE
+        observed_at = max(r.observed_at for r in live)
+        fresh_until = observed_at + MEASUREMENT_TTL
+    elif dead:
+        state, evidence = EntitlementState.DEAD, EvidenceClass.LIVE
+        observed_at = max(r.observed_at for r in dead)
+        fresh_until = observed_at + MEASUREMENT_TTL
+    elif cache is not None and cache.fetched_at is not None:
+        evidence = EvidenceClass.VENDOR_CACHE
+        observed_at = cache.fetched_at
+        fresh_until = cache.fetched_at + max_age
+        if now - cache.fetched_at > max_age:
+            state = EntitlementState.STALE
+            reasons.append(
+                f"vendor cache fetched {_iso(cache.fetched_at)}, past its {max_age} bound"
+            )
+        else:
+            state = EntitlementState.HELD
+    elif held_now:
+        state = EntitlementState.HELD
+        evidence = EvidenceClass.NATIVE_RECORD if logins else EvidenceClass.NAME_ONLY
+        observed_at = presence_at
+        fresh_until = presence_at + PRESENCE_TTL if presence_at else None
+    elif refs_live:
+        state, evidence = EntitlementState.HELD, EvidenceClass.RECORDED
+        observed_at = max(r.recorded_at for r in refs_live)
+        fresh_until = min(r.expires_at for r in refs_live)
+    elif refs_expired:
+        state, evidence = EntitlementState.STALE, EvidenceClass.RECORDED
+        observed_at = max(r.recorded_at for r in refs_expired)
+    else:
+        state, retained = _retained(decl.entitlement_id, prior, unreachable)
+        evidence = EvidenceClass.NONE
+        reasons.extend(retained)
+    if held_now and unreachable:
+        reasons.append(f"not observed on unreachable host(s): {', '.join(sorted(unreachable))}")
+
+    present_now = (
+        held_now or bool(live or dead) or (cache is not None and cache.fetched_at is not None)
+    )
+    last_seen = now if present_now else (prior.last_seen if prior else None)
+    first_seen = (prior.first_seen if prior and prior.first_seen else None) or (
+        now if present_now else None
+    )
+    if not present_now and prior is not None:
+        hosts = set(prior.hosts)
+
+    routes = _registry_rows(registry, "routes")
+    shapes = _registry_rows(registry, "omitted_capability_shapes")
+    declared_routes = [
+        r
+        for r in routes
+        if r.get("platform") in decl.registry_platforms
+        or r.get("route_id") in decl.registry_route_ids
+    ]
+    declared_shapes = [s for s in shapes if s.get("shape_id") in decl.registry_shape_ids]
+    route_ids = {str(r.get("route_id")) for r in routes}
+    for missing in sorted(set(decl.registry_route_ids) - route_ids):
+        reasons.append(f"declared route {missing} is absent from the registry")
+    ledger_rows = [
+        s
+        for s in ((ledger or {}).get("quota_snapshots") or [])
+        if isinstance(s, dict) and s.get("provider") in decl.ledger_providers
+    ]
+    ledger_summary = tuple(
+        f"{s.get('route_id') or s.get('capacity_id') or s.get('snapshot_id')}:{s.get('subscription_quota_state')}"
+        for s in ledger_rows
+    )
+    ledger_fresh = any(s.get("subscription_quota_state") == "fresh" for s in ledger_rows)
+    if measurements and any(s.get("subscription_quota_state") == "unknown" for s in ledger_rows):
+        reasons.append(
+            "ledger reads unknown; this run measured it (quantities handed to the ledger)"
+        )
+
+    return CensusRow(
+        entitlement_id=decl.entitlement_id,
+        provider=decl.provider,
+        kind=decl.kind,
+        identified=True,
+        entitlement_shape=_decl_shape(decl).value,
+        cost_class=decl.cost_class,
+        state=state,
+        evidence_class=evidence,
+        freshness=_FRESHNESS[state],
+        recruitment_stage=_recruitment(
+            state,
+            declared_routes=declared_routes,
+            declared=bool(declared_routes or declared_shapes),
+            measured=bool(measurements) or ledger_fresh,
+        ),
+        observed_at=observed_at,
+        fresh_until=fresh_until,
+        first_seen=first_seen,
+        last_seen=last_seen,
+        hosts=tuple(sorted(hosts)),
+        credential_names=tuple(sorted(creds)),
+        login_files=tuple(f"{rel} (mtime {_iso(at)})" for rel, at in sorted(logins.items())),
+        harnesses=tuple(sorted(bins)),
+        readbacks=tuple(
+            {
+                "readback_id": r.readback_id,
+                "outcome": r.outcome,
+                "http_status": r.http_status,
+                "observed_at": _iso(r.observed_at),
+            }
+            for r in results
+        ),
+        facts={k: v for k, v in facts.items() if v is not None},
+        measurements=tuple(measurements),
+        declared_routes=tuple(sorted(str(r.get("route_id")) for r in declared_routes)),
+        declared_shapes=tuple(sorted(str(s.get("shape_id")) for s in declared_shapes)),
+        ledger=ledger_summary,
+        reasons=tuple(reasons),
+        notes=decl.notes,
+    )
+
+
+def _decl_shape(decl: EntitlementDecl) -> EntitlementShape:
+    for name in decl.credential_names:
+        shape = classify_entitlement(name)
+        if shape is not EntitlementShape.NON_CAPABILITY:
+            return shape
+    return {
+        EntitlementKind.COGNITION: EntitlementShape.COGNITION_PROVIDER,
+        EntitlementKind.GROUNDING: EntitlementShape.WEB_GROUNDING,
+        EntitlementKind.MODALITY: EntitlementShape.MODALITY,
+    }.get(decl.kind, EntitlementShape.NON_CAPABILITY)
+
+
+def _withheld(name: str, tokens: Sequence[str]) -> bool:
+    lowered = name.lower()
+    return any(token.lower() in lowered for token in tokens)
+
+
+def _unidentified_rows(
+    config: CensusConfig,
+    *,
+    now: datetime,
+    holdings: Sequence[HostHoldings],
+    priors: Mapping[str, _Prior],
+) -> tuple[list[CensusRow], dict[str, Any]]:
+    claimed = {n for d in config.entitlements for n in (*d.credential_names, *d.env_names)}
+    seen: dict[str, set[str]] = {}
+    observed: dict[str, datetime] = {}
+    for h in holdings:
+        if not h.reachable:
+            continue
+        for name in h.credential_names() | set(h.env_names):
+            if name in claimed:
+                continue
+            seen.setdefault(name, set()).add(h.host_id)
+            if h.observed_at is not None:
+                observed[name] = max(observed.get(name, h.observed_at), h.observed_at)
+    rows: list[CensusRow] = []
+    listed: list[dict[str, Any]] = []
+    withheld = 0
+    for name in sorted(seen):
+        shape = classify_entitlement(name)
+        if shape is EntitlementShape.NON_CAPABILITY:
+            if _withheld(name, config.withheld_name_tokens):
+                withheld += 1
+            else:
+                listed.append({"name": name, "hosts": sorted(seen[name])})
+            continue
+        row_id = f"unidentified.{name.lower()}"
+        prior = priors.get(row_id)
+        rows.append(
+            CensusRow(
+                entitlement_id=row_id,
+                provider="unidentified",
+                kind=_SHAPE_KIND.get(shape, EntitlementKind.RESOURCE),
+                identified=False,
+                entitlement_shape=shape.value,
+                cost_class=CostClass.UNOBSERVED,
+                state=EntitlementState.HELD,
+                evidence_class=EvidenceClass.NAME_ONLY,
+                freshness=FreshnessState.HELD,
+                recruitment_stage="usable-undeclared",
+                observed_at=observed.get(name),
+                fresh_until=observed[name] + PRESENCE_TTL if name in observed else None,
+                first_seen=(prior.first_seen if prior else None) or now,
+                last_seen=now,
+                hosts=tuple(sorted(seen[name])),
+                credential_names=(name,),
+                reasons=("credential name not in the census catalogue; classified by name only",),
+            )
+        )
+    present = {row.entitlement_id for row in rows}
+    unreachable = {h.host_id for h in holdings if not h.reachable}
+    for row_id, prior in sorted(priors.items()):
+        if not row_id.startswith("unidentified.") or row_id in present:
+            continue
+        state, reasons = _retained(row_id, prior, unreachable)
+        rows.append(
+            CensusRow(
+                entitlement_id=row_id,
+                provider=prior.provider,
+                kind=EntitlementKind(prior.kind)
+                if prior.kind in EntitlementKind._value2member_map_
+                else EntitlementKind.RESOURCE,
+                identified=False,
+                entitlement_shape=prior.shape,
+                cost_class=CostClass.UNOBSERVED,
+                state=state,
+                evidence_class=EvidenceClass.NONE,
+                freshness=_FRESHNESS[state],
+                recruitment_stage="unusable",
+                first_seen=prior.first_seen,
+                last_seen=prior.last_seen,
+                hosts=prior.hosts,
+                credential_names=(row_id.removeprefix("unidentified."),),
+                reasons=tuple(reasons),
+            )
+        )
+    return rows, {"count": len(listed) + withheld, "withheld": withheld, "names": listed}
+
+
+def _serving_row(
+    endpoint: ServingEndpoint,
+    *,
+    now: datetime,
+    http_get: Callable[[str, dict[str, str], float], HttpResponse],
+    registry: Mapping[str, Any],
+    prior: _Prior | None,
+    remaining: float | None = None,
+) -> CensusRow:
+    if remaining is not None and remaining <= 0:
+        result = _past_deadline(f"serving:{endpoint.endpoint_id}", now)
+    else:
+        timeout = SERVING_TIMEOUT_S if remaining is None else min(SERVING_TIMEOUT_S, remaining)
+        response = http_get(endpoint.base_url + endpoint.models_path, {}, timeout)
+        result = _outcome(f"serving:{endpoint.endpoint_id}", response, "model_list", now=now)
+    row_id = f"serving.{endpoint.endpoint_id}"
+    reasons: list[str] = []
+    if result.outcome == "live":
+        state, evidence = EntitlementState.LIVE, EvidenceClass.LIVE
+    else:
+        state, evidence = EntitlementState.UNOBSERVED, EvidenceClass.NONE
+        reasons.append(
+            "auth required on a model listing"
+            if result.outcome == "dead"
+            else (result.reason or "no answer")
+        )
+    local_routes = [
+        r for r in _registry_rows(registry, "routes") if r.get("platform") == "local_tool"
+    ]
+    return CensusRow(
+        entitlement_id=row_id,
+        provider="owned",
+        kind=EntitlementKind.LOCAL,
+        identified=True,
+        entitlement_shape="local_serving",
+        cost_class=CostClass.LOCAL,
+        state=state,
+        evidence_class=evidence,
+        freshness=_FRESHNESS[state],
+        recruitment_stage=_recruitment(
+            state,
+            declared_routes=local_routes,
+            declared=bool(local_routes),
+            measured=state is EntitlementState.LIVE,
+        ),
+        observed_at=now,
+        fresh_until=now + MEASUREMENT_TTL if state is EntitlementState.LIVE else None,
+        first_seen=(prior.first_seen if prior and prior.first_seen else None)
+        or (now if state is EntitlementState.LIVE else None),
+        last_seen=now if state is EntitlementState.LIVE else (prior.last_seen if prior else None),
+        hosts=(endpoint.host_id,),
+        readbacks=(
+            {
+                "readback_id": row_id,
+                "outcome": result.outcome,
+                "http_status": result.http_status,
+                "observed_at": _iso(now),
+            },
+        ),
+        facts={k: v for k, v in result.facts.items() if v is not None},
+        declared_routes=tuple(sorted(str(r.get("route_id")) for r in local_routes)),
+        reasons=tuple(reasons),
+        notes="a serving binding of owned compute, not an entitlement of its own",
+    )
+
+
+# --- the potential face ---------------------------------------------------------------------------
 
 
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.
