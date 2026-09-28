@@ -2217,6 +2217,310 @@ def run_census(
     )
 
 
+HISTORY_STREAM = "entitlement-census.history"
+#: The two runs of 2026-09-25 before the sink wrote this plain file beside the view. It is frozen:
+#: read into the trend, never written, and past TREND_WINDOW after 2026-10-02 it contributes nothing.
+PRE_SINK_HISTORY_FILE = "history.jsonl"
+#: dev22's direct-API channel writes one write-ahead pair per call here (attempted, then final);
+#: E1 only reads it (contract lanebus/dev16/20260925T102149Z-dev22-provider-calls-contract-accepted).
+PROVIDER_CALLS_STREAM = "provider-calls"
+#: Underuse thresholds. A window is judged only after a fifth of it has elapsed; use below half of
+#: pace is underuse. Flat-price slot capacity below 5 % busy is underuse; zero recorded calls in a
+#: paid period is always underuse.
+MIN_ELAPSED_PCT_TO_JUDGE = 20.0
+UNDERUSE_PACE_RATIO = 0.5
+UNDERUSE_CAPACITY_PCT = 5.0
+
+TREND_WINDOW = timedelta(days=7)
+DEMAND_WINDOW = timedelta(hours=24)
+#: The route recorder ran at ~27 decisions/h (648 in the 24 h to 2026-09-24T14:07Z). Silent for
+#: longer than this, it is not recording dispatch, whatever the counting window still holds.
+DISPATCH_STALE_AFTER = timedelta(hours=1)
+MIN_TREND_SPAN = timedelta(hours=1)
+_ROUTE_TAIL_BYTES = 8_000_000
+_QUEUED_STATUSES = frozenset({"offered", "ready"})
+_IN_FLIGHT_STATUSES = frozenset({"claimed", "in_progress", "pr_open"})
+_STATUS_RE = re.compile(r"^status:\s*([a-z_]+)\s*$", re.MULTILINE)
+
+
+def read_queued_demand(active_dir: Path) -> dict[str, Any]:
+    """Status counts of active task rows (the first ``status:`` line of each row's frontmatter)."""
+    counts: dict[str, int] = {}
+    try:
+        paths = sorted(active_dir.glob("*.md"))
+    except OSError:
+        return {
+            "by_status": {},
+            "queued": None,
+            "in_flight": None,
+            "error": "task_store_unreadable",
+        }
+    for path in paths:
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
+        except OSError:
+            continue
+        frontmatter = head.split("\n---", 1)[0] if head.startswith("---") else ""
+        match = _STATUS_RE.search(frontmatter)
+        if match:
+            counts[match.group(1)] = counts.get(match.group(1), 0) + 1
+    return {
+        "by_status": dict(sorted(counts.items())),
+        "queued": sum(n for s, n in counts.items() if s in _QUEUED_STATUSES),
+        "in_flight": sum(n for s, n in counts.items() if s in _IN_FLIGHT_STATUSES),
+    }
+
+
+def read_dispatched_demand(
+    path: Path, *, now: datetime, window: timedelta = DEMAND_WINDOW
+) -> dict[str, Any]:
+    """Route decisions per platform in the trailing window, with the record's own freshness.
+
+    The record is stale when its newest decision is older than the window: dispatch is then not
+    being recorded, which is itself a finding, never a zero."""
+    counts: dict[str, int] = {}
+    last: datetime | None = None
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - _ROUTE_TAIL_BYTES))
+            tail = stream.read()
+    except OSError:
+        return {
+            "by_platform": {},
+            "total": 0,
+            "last_record_at": None,
+            "stale": True,
+            "error": "route_decisions_unreadable",
+        }
+    lines = tail.splitlines()
+    if size > _ROUTE_TAIL_BYTES:
+        lines = lines[1:]  # the read began mid-line
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        at = _instant(record.get("created_at")) if isinstance(record, dict) else None
+        if at is None:
+            continue
+        last = max(last or at, at)
+        platform = _safe_fact(record.get("platform"))
+        if now - window <= at <= now and isinstance(platform, str):
+            counts[platform] = counts.get(platform, 0) + 1
+    return {
+        "by_platform": dict(sorted(counts.items())),
+        "total": sum(counts.values()),
+        "last_record_at": _iso(last),
+        "last_record_age_hours": round((now - last).total_seconds() / 3600, 2) if last else None,
+        "stale": last is None or now - last > DISPATCH_STALE_AFTER,
+    }
+
+
+def read_wall_witness(path: Path) -> dict[str, dict[str, Any]]:
+    """The estate's per-family outage witness, projected to timestamps and cause only."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    witness: dict[str, dict[str, Any]] = {}
+    for family, value in payload.items() if isinstance(payload, dict) else ():
+        if not isinstance(family, str) or not _SAFE_TEXT.match(family):
+            continue
+        if isinstance(value, str):
+            at = _instant(value)
+            witness[family] = {"observed_at": _iso(at)} if at else {}
+        elif isinstance(value, dict):
+            entry: dict[str, Any] = {}
+            for key in ("observed_at", "outage_started_at", "until"):
+                at = _instant(value.get(key))
+                if at is not None:
+                    entry[key] = _iso(at)
+            cause = _safe_fact(value.get("cause"))
+            if isinstance(cause, str):
+                entry["cause"] = cause
+            witness[family] = entry
+    return witness
+
+
+def _jsonl_payloads(path: Path) -> list[dict[str, Any]]:
+    """Each line's durable-sink ``payload``, or the line itself when it is not a sink envelope."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            isinstance(value, dict)
+            and "stream_id" in value
+            and isinstance(value.get("payload"), dict)
+        ):
+            value = value["payload"]
+        if isinstance(value, dict):
+            out.append(value)
+    return out
+
+
+def load_history(
+    path: Path, *, now: datetime, window: timedelta = TREND_WINDOW
+) -> list[dict[str, Any]]:
+    """The records of the series inside the trend window (a torn tail line is skipped).
+
+    Reads durable-sink envelopes (the record is the ``payload``) and, for the two pre-sink runs of
+    2026-09-25, plain records."""
+    records: list[dict[str, Any]] = []
+    for record in _jsonl_payloads(path):
+        at = _instant(record.get("ts"))
+        if at is not None and now - window <= at <= now:
+            records.append(record)
+    return records
+
+
+def _direction(
+    first: float | None, last: float | None, span: timedelta, points: int, tolerance: float = 0.0
+) -> str:
+    if first is None or last is None or points < 2 or span < MIN_TREND_SPAN:
+        return "insufficient_history"
+    if last - first > tolerance:
+        return "up"
+    if first - last > tolerance:
+        return "down"
+    return "flat"
+
+
+def _walls_of(record: Mapping[str, Any]) -> set[str]:
+    return {
+        w[0]
+        for w in record.get("windows") or []
+        if isinstance(w, list)
+        and len(w) >= 3
+        and w[2] == "percent_used"
+        and isinstance(w[1], int | float)
+        and w[1] >= 100
+    }
+
+
+def compute_trend(
+    records: Sequence[Mapping[str, Any]], *, now: datetime, window: timedelta = TREND_WINDOW
+) -> dict[str, Any]:
+    series = sorted(
+        (
+            r
+            for r in records
+            if (at := _instant(r.get("ts"))) is not None and now - window <= at <= now
+        ),
+        key=lambda r: str(r.get("ts")),
+    )
+    points = len(series)
+    if not series:
+        return {"points": 0, "window_days": window.days, "note": "no history yet"}
+    first, last = series[0], series[-1]
+    span = (_instant(last["ts"]) or now) - (_instant(first["ts"]) or now)
+
+    def available(record: Mapping[str, Any]) -> int:
+        return sum(1 for s in (record.get("states") or {}).values() if s in {"live", "held"})
+
+    def readings(record: Mapping[str, Any]) -> dict[str, float]:
+        return {
+            w[0]: float(w[1])
+            for w in record.get("windows") or []
+            if isinstance(w, list)
+            and len(w) >= 3
+            and w[2] == "percent_used"
+            and isinstance(w[1], int | float)
+        }
+
+    shared = sorted(set(readings(first)) & set(readings(last)))
+    usage_first = sum(readings(first)[c] for c in shared) / len(shared) if shared else None
+    usage_last = sum(readings(last)[c] for c in shared) / len(shared) if shared else None
+
+    windows: dict[str, dict[str, Any]] = {}
+    for record in series:
+        for capacity_id, quantity in readings(record).items():
+            entry = windows.setdefault(
+                capacity_id, {"first": quantity, "min": quantity, "max": quantity}
+            )
+            entry["last"] = quantity
+            entry["min"] = min(entry["min"], quantity)
+            entry["max"] = max(entry["max"], quantity)
+    for entry in windows.values():
+        entry["direction"] = _direction(entry["first"], entry["last"], span, points, tolerance=0.5)
+
+    by_window: dict[str, dict[str, Any]] = {}
+    previous: set[str] = set()
+    for record in series:
+        walls = _walls_of(record)
+        for capacity_id in walls:
+            entry = by_window.setdefault(
+                capacity_id, {"episodes": 0, "records_at_wall": 0, "first_at": record["ts"]}
+            )
+            entry["records_at_wall"] += 1
+            entry["last_at"] = record["ts"]
+            if capacity_id not in previous:
+                entry["episodes"] += 1
+        previous = walls
+    for capacity_id, entry in by_window.items():
+        entry["at_wall_now"] = capacity_id in _walls_of(last)
+    by_pool: dict[str, int] = {}
+    for capacity_id, entry in by_window.items():
+        pool = ".".join(capacity_id.split(".")[:2])
+        by_pool[pool] = by_pool.get(pool, 0) + entry["episodes"]
+
+    def demand(record: Mapping[str, Any], key: str, field_name: str) -> float | None:
+        value = ((record.get("demand") or {}).get(key) or {}).get(field_name)
+        return float(value) if isinstance(value, int | float) else None
+
+    dispatched_last = (last.get("demand") or {}).get("dispatched") or {}
+    return {
+        "window_days": window.days,
+        "points": points,
+        "since": first["ts"],
+        "until": last["ts"],
+        "span_hours": round(span.total_seconds() / 3600, 2),
+        "availability": {
+            "first": available(first),
+            "last": available(last),
+            "direction": _direction(available(first), available(last), span, points),
+        },
+        "usage": {
+            "first_mean_used_pct": usage_first,
+            "last_mean_used_pct": usage_last,
+            "windows_compared": len(shared),
+            "direction": _direction(usage_first, usage_last, span, points, tolerance=0.5),
+        },
+        "demand": {
+            "queued_first": demand(first, "queued", "queued"),
+            "queued_last": demand(last, "queued", "queued"),
+            "queued_direction": _direction(
+                demand(first, "queued", "queued"), demand(last, "queued", "queued"), span, points
+            ),
+            "dispatched_24h_first": demand(first, "dispatched", "total"),
+            "dispatched_24h_last": demand(last, "dispatched", "total"),
+            "dispatch_record_stale": dispatched_last.get("stale"),
+            "dispatch_record_last_at": dispatched_last.get("last_record_at"),
+        },
+        "walls": {
+            "by_window": dict(sorted(by_window.items())),
+            "by_pool": dict(sorted(by_pool.items())),
+            "witness": last.get("witness") or {},
+        },
+        "windows": dict(sorted(windows.items())),
+    }
+
+
+# --- utilization per entitlement ------------------------------------------------------------------
+#
+# Operator-accepted 2026-09-25T10:15Z: the census reports utilization per entitlement, and underuse is
+# the failure to surface. Each row states its basis, from the best evidence available:
+# window pace, then the per-call ledger, then nothing. It never defaults to fine.
+
+
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     ReadbackRef._allow_listed,
