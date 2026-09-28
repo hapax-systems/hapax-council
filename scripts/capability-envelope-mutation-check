@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""Mutation check for the capability envelope: break each invariant, and the suite must go red.
+
+Each mutation below removes or inverts one guarantee of shared/capability_envelope (a mask, a
+refusal, a read-only bind, the cleared environment). The check runs tests/capability_envelope
+against a temporary copy of the package with the mutation applied, and fails unless every mutation
+turns the suite red and the unmutated copy is green. The working tree is never modified.
+
+Set HAPAX_ENVELOPE_REQUIRE_BWRAP=1, as the CI job capability-envelope-containment does, so the
+runtime tests fail rather than skip where the sandbox cannot run; without bubblewrap most mutations
+would survive by skipping, and the check would (correctly) fail.
+
+usage: python scripts/capability-envelope-mutation-check [--only ID ...] [--out FILE]
+Exit status: 0 every mutation killed and the baseline green; 1 otherwise.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RENDER = "shared/capability_envelope/render.py"
+DECLARATION = "shared/capability_envelope/declaration.py"
+STAGED = (
+    "shared/__init__.py",
+    "shared/capability_envelope",
+    "tests/__init__.py",
+    "tests/capability_envelope",
+)
+
+
+@dataclass(frozen=True)
+class Mutation:
+    id: str
+    target: str
+    invariant: str
+    old: str
+    new: str
+
+
+MUTATIONS: tuple[Mutation, ...] = (
+    Mutation(
+        "M1",
+        RENDER,
+        "checkout instruction files are masked",
+        "        masked = _masks(workdir, decl.declared_work_files)\n",
+        "        masked = []\n",
+    ),
+    Mutation(
+        "M2",
+        RENDER,
+        "the host root is never bound whole",
+        '    a += ["--bind", str(run_home), JOB_HOME]\n',
+        '    a += ["--ro-bind", "/", "/", "--bind", str(run_home), JOB_HOME]\n',
+    ),
+    Mutation(
+        "M3", RENDER, "the environment is cleared", '    a += ["--clearenv"]\n', "    a += []\n"
+    ),
+    Mutation(
+        "M4",
+        RENDER,
+        "declared hooks are rendered",
+        '        settings["hooks"] = events\n',
+        "        pass\n",
+    ),
+    Mutation(
+        "M5",
+        RENDER,
+        "declared MCP servers are rendered",
+        '        state["mcpServers"][server.name] = {\n',
+        "        {}[server.name] = {\n",
+    ),
+    Mutation(
+        "M6",
+        RENDER,
+        "a run root is create-once",
+        "        run_root.mkdir(parents=True, exist_ok=False)\n",
+        "        run_root.mkdir(parents=True, exist_ok=True)\n",
+    ),
+    Mutation(
+        "M7",
+        RENDER,
+        "--bare needs declared API billing",
+        '    if "--bare" in decl.argv and decl.billing_surface != "api":\n',
+        "    if False:\n",
+    ),
+    Mutation(
+        "M8",
+        RENDER,
+        "secret-shaped env is refused",
+        "        if _SECRET_ENV_RE.search(key):\n",
+        "        if False:\n",
+    ),
+    Mutation(
+        "M9",
+        RENDER,
+        "hooks need a renderer for the harness",
+        "    if decl.hooks and not profile.renders_hooks:\n",
+        "    if False:\n",
+    ),
+    Mutation("M10", RENDER, "AGENTS.md is a masked name", '    "AGENTS.md",\n', ""),
+    Mutation(
+        "M11",
+        RENDER,
+        "the operator home is never bound whole",
+        '    a += ["--bind", str(run_home), JOB_HOME]\n',
+        '    a += ["--bind", str(run_home), JOB_HOME, "--ro-bind", str(Path.home()), '
+        "str(Path.home())]\n",
+    ),
+    Mutation(
+        "M12",
+        RENDER,
+        "missing bubblewrap is a carrier error",
+        "    if carrier is None:\n",
+        "    if False:\n",
+    ),
+    Mutation(
+        "M13",
+        RENDER,
+        "a bubblewrap failure is a carrier error",
+        '    if result.returncode != 0 and result.stderr.startswith("bwrap:"):\n',
+        "    if False:\n",
+    ),
+    Mutation(
+        "M14",
+        RENDER,
+        "a writable credential is bound writable",
+        '        mode = "--bind" if cred.writable else "--ro-bind"\n',
+        '        mode = "--ro-bind"\n',
+    ),
+    Mutation(
+        "M15",
+        RENDER,
+        "credentials are read-only unless declared writable",
+        '        mode = "--bind" if cred.writable else "--ro-bind"\n',
+        '        mode = "--bind"\n',
+    ),
+    Mutation(
+        "M16",
+        RENDER,
+        "declared home files are read-only",
+        '        a += ["--ro-bind", str(item.source.resolve()), f"{JOB_HOME}/{item.target}"]\n',
+        '        a += ["--bind", str(item.source.resolve()), f"{JOB_HOME}/{item.target}"]\n',
+    ),
+    Mutation(
+        "M17",
+        RENDER,
+        "a symlink's ordinary-named target is masked",
+        "                rel = target_rel\n",
+        "                continue\n",
+    ),
+    Mutation(
+        "M18",
+        RENDER,
+        "MCP servers need a renderer for the harness",
+        "    if decl.mcp_servers and not profile.renders_mcp:\n",
+        "    if False:\n",
+    ),
+    Mutation(
+        "M19",
+        RENDER,
+        "an instruction symlink leaving the checkout is refused",
+        "                except ValueError as exc:\n",
+        "                except ValueError:\n                    continue\n"
+        "                except OSError as exc:\n",
+    ),
+    Mutation(
+        "M20",
+        RENDER,
+        "a declared home directory is placed as a directory",
+        "        _placeholder(run_home, item.target, directory=item.source.is_dir())\n",
+        "        _placeholder(run_home, item.target, directory=False)\n",
+    ),
+    Mutation(
+        "D1",
+        DECLARATION,
+        "names are validated",
+        "    if not _NAME_RE.fullmatch(value):\n",
+        "    if False:\n",
+    ),
+    Mutation(
+        "D2",
+        DECLARATION,
+        "relative paths are validated",
+        '    if path.is_absolute() or ".." in path.parts or not path.parts:\n',
+        "    if False:\n",
+    ),
+    Mutation(
+        "D3",
+        DECLARATION,
+        "a name refusal names the next action",
+        "; next action: use a lowercase name of ",
+        "; use a lowercase name of ",
+    ),
+    Mutation(
+        "D4",
+        DECLARATION,
+        "a path refusal names the next action",
+        "'..'; next action: \"\n",
+        "'..'; \"\n",
+    ),
+)
+
+
+def stage(repo_root: Path, into: Path) -> Path:
+    """Copy the package and its tests into ``into`` (a fresh directory)."""
+    for rel in STAGED:
+        source = repo_root / rel
+        destination = into / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__"))
+        else:
+            shutil.copy2(source, destination)
+    return into
+
+
+def run_suite(tree: Path) -> tuple[int, list[str]]:
+    env = {**os.environ, "PYTHONPATH": str(tree)}
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/capability_envelope",
+            "-q",
+            "-rf",
+            "-p",
+            "no:cacheprovider",
+            "--import-mode=importlib",
+            "--rootdir",
+            str(tree),
+            f"--basetemp={tree / '.pytest-tmp'}",
+        ],
+        cwd=tree,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    failed = sorted(set(re.findall(r"^FAILED \S+::(\S+)", proc.stdout, re.M)))
+    return proc.returncode, failed
+
+
+def check(mutations: tuple[Mutation, ...], repo_root: Path) -> dict:
+    with tempfile.TemporaryDirectory(prefix="envelope-mutation-") as tmp:
+        tree = stage(repo_root, Path(tmp) / "tree")
+        baseline_rc, baseline_failed = run_suite(tree)
+        results = []
+        for mutation in mutations:
+            target = tree / mutation.target
+            original = target.read_bytes()
+            text = original.decode("utf-8")
+            count = text.count(mutation.old)
+            if count != 1:
+                results.append(
+                    {
+                        "id": mutation.id,
+                        "invariant": mutation.invariant,
+                        "outcome": f"not-applied (pattern found {count} times)",
+                    }
+                )
+                continue
+            target.write_text(text.replace(mutation.old, mutation.new, 1), encoding="utf-8")
+            try:
+                rc, failed = run_suite(tree)
+            finally:
+                target.write_bytes(original)
+            outcome = "killed" if rc != 0 and failed else "survived"
+            results.append(
+                {
+                    "id": mutation.id,
+                    "invariant": mutation.invariant,
+                    "outcome": outcome,
+                    "red_tests": failed,
+                }
+            )
+    return {
+        "baseline": {"returncode": baseline_rc, "failed": baseline_failed},
+        "mutations": results,
+        "ok": baseline_rc == 0 and all(r["outcome"] == "killed" for r in results),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    parser.add_argument("--only", nargs="*", default=None, help="mutation ids to run")
+    parser.add_argument("--out", type=Path, default=None, help="write the JSON report here")
+    args = parser.parse_args(argv)
+    mutations = tuple(m for m in MUTATIONS if not args.only or m.id in args.only)
+    report = check(mutations, REPO_ROOT)
+    if args.out:
+        args.out.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
+    print(f"baseline: returncode {report['baseline']['returncode']}")
+    for result in report["mutations"]:
+        print(f"{result['id']:>4} {result['outcome']:<10} {result['invariant']}")
+    print("ALL KILLED" if report["ok"] else "FAILED: a mutation survived or the baseline is red")
+    return 0 if report["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

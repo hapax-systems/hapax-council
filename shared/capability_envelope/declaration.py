@@ -84,7 +84,8 @@ class CredentialBind(BaseModel):
 
 
 class DeclaredFile(BaseModel):
-    """A file placed read-only in the job home, for example a declared instruction file."""
+    """A file or directory placed read-only in the job home, for example a declared instruction
+    file or a harness's own helper directory."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 

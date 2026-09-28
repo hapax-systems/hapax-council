@@ -80,31 +80,45 @@ and it sees opens through bind mounts. What the model says it saw is complementa
   (`clean-no-control` — a run whose control proved nothing is not evidence); the baseline itself failed, so its
   coverage of the sentinels is unknown; or the watch queue **overflowed**, which means the kernel dropped events and
   an open can be missing from the record.
-- Vibe runs only on the Team allowance.
+- It refuses when a binary or credential is missing, and never copies a credential or a config that carries one:
+  opencode's declared config drops secret-named fields, and kimi's is rebuilt from an allowlist.
+- Vibe runs only on the Team allowance; GLM is not offered while its dispatch is on hold.
 
 ```bash
 TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json
+# harnesses: agy claude codex grok kimi muse opencode vibe
 ```
 
-The recipe for a harness is in this script's `LAUNCHES`; the same recipes for the other harnesses in use — opencode,
-grok, agy, codex and kimi — travel with the mutation-check and recipes PR, stacked on this one.
+Every row below is backed by a stored report, and claims only what that report shows. All eight harnesses the audit
+supports are measured; seven are `clean` and codex was re-run clean on 2026-09-28 after its subscription wall ended
+(its 2026-09-26 run is kept as the `inconclusive` predecessor).
 
 | harness | report (each row claims only what its report shows) | recheck |
 |---|---|---|
 | claude | `frame/harness-import-scrub-20260925/measure/audit-claude.json` (`clean`, 20260925T104357Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json` |
 | vibe | `frame/harness-import-scrub-20260925/measure/audit-vibe.json` (`clean`, 20260925T104411Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness vibe --out /tmp/vibe.json` |
 | muse | `frame/harness-import-scrub-20260925/measure/audit-muse.json` (`clean`, 20260925T104432Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness muse --out /tmp/muse.json` |
+| opencode | `frame/harness-import-scrub-20260925/measure/audit-opencode.json` (`clean`, 20260926T004840Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness opencode --out /tmp/opencode.json` |
+| grok | `frame/harness-import-scrub-20260925/measure/audit-grok.json` (`clean`, 20260926T004855Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness grok --out /tmp/grok.json` |
+| agy | `frame/harness-import-scrub-20260925/measure/audit-agy.json` (`clean`, 20260926T004926Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness agy --out /tmp/agy.json` |
+| kimi | `frame/harness-import-scrub-20260925/measure/audit-kimi.json` (`clean`, 20260926T004945Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness kimi --out /tmp/kimi.json` |
+| codex | `frame/harness-import-scrub-20260925/measure/codex-import-audit-20260928T022438Z.json` (`clean`, 20260928T022438Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness codex --out /tmp/codex.json` |
 
-| harness | baseline launch (origin/main wrapper argv) imported | enveloped |
+One harness is inventoried rather than measured by this script: GLM, whose dispatch is on hold. No row here asserts
+anything about it.
+
+| harness | baseline launch imported (by the audit's inotify watch) | enveloped |
 |---|---|---|
 | Claude Code 2.1.281 (`-p`, tools off) | ancestor and checkout `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, user `CLAUDE.md` and rules, a skill, both settings files, user and project hooks **run**, user and project MCP servers **started** | nothing: `clean` |
 | Mistral Vibe (the `hapax-vibe-reviewer` argv) | `~/.vibe/AGENTS.md`, and it reached the model | nothing: `clean` |
 | Meta Muse 1.4.0 (the `hapax-muse-reviewer` argv) | `~/.config/muse/AGENTS.md`, and it reached the model | nothing: `clean` |
+| opencode (local model, $0) | `~/.config/opencode/AGENTS.md`, ancestor and checkout `AGENTS.md`, checkout `CLAUDE.md` and `CLAUDE.local.md` | nothing: `clean` |
+| grok CLI (`--single`) | `~/.grok/AGENTS.md` | nothing: `clean` |
+| agy (Gemini, `-p`) | `~/.gemini/GEMINI.md`, checkout `AGENTS.md` | nothing: `clean` |
+| kimi (K3, `-p`) | `~/.kimi-code/AGENTS.md`, a user skill, checkout `AGENTS.md` | nothing: `clean` |
+| codex (`exec`) | `~/.codex/AGENTS.md`, checkout `AGENTS.md` | nothing: `clean` (2026-09-28 rerun; the 2026-09-26 run is `inconclusive` — the subscription was walled) |
 
-Codex, agy, grok and kimi are inventoried in ENCOUNTERED-MACHINERY M153; opencode's default imports are measured in
-the vault at `frame/harness-import-scrub-20260925/HARNESS-IMPORTS.md`. Their **recipes** — the machinery that
-measures them with this script — are in the stacked mutation-check and recipes PR, which is also where their reports
-are claimed.
+The full table is in the vault at `frame/harness-import-scrub-20260925/HARNESS-IMPORTS.md`.
 
 ## Not covered here
 
@@ -125,3 +139,13 @@ The runtime tests need bubblewrap with unprivileged user namespaces. The require
 - runs the suite with `HAPAX_ENVELOPE_REQUIRE_BWRAP=1`.
 
 So CI cannot pass by skipping. `tests/ci/test_capability_envelope_ci.py` pins that job.
+
+**Mutation check:** the same job runs `scripts/capability-envelope-mutation-check`.
+- It breaks each envelope invariant in a temporary copy of the package: a mask, a refusal, a read-only bind, the
+  cleared environment, and so on.
+- It fails unless every mutation turns `tests/capability_envelope` red and the unmutated copy stays green.
+- `tests/scripts/test_capability_envelope_mutation_check.py` checks, in every suite, that each mutation still applies.
+
+```bash
+HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run python scripts/capability-envelope-mutation-check   # prints "ALL KILLED"
+```
