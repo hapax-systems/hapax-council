@@ -45,6 +45,7 @@ Reviewer CLIs (claude/codex/agy-backed gemini/glm) are configured in
 from __future__ import annotations
 
 import argparse
+import ast
 import fcntl
 import hashlib
 import json
@@ -55,6 +56,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -3093,12 +3095,10 @@ def ensure_head_object(repo_root: Path, head_sha: str, pr_number: int) -> bool:
 
 
 _REL_DISPLAY_SAFE_RE = re.compile(r"[^A-Za-z0-9_./-]")
-_PRIOR_CRITICAL_SYMBOL_HINTS = (
-    "_require_payg_spend_gate",
-    "_valid_coding_plan_primary_base_url",
-    "_reserve_payg_spend_receipt",
-    "_payg_reservation_suffix",
-)
+_EXCERPT_TOTAL_BYTES = 7_000
+_EXCERPT_SYMBOL_BYTES = 1_200
+_EXCERPT_MAX_SYMBOLS = 64
+_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z_0-9]*\b")
 
 
 def _rel_for_display(rel: str) -> str | None:
@@ -3115,39 +3115,81 @@ def _rel_for_display(rel: str) -> str | None:
 
 def _prior_symbol_hints(finding: dict[str, Any]) -> tuple[str, ...]:
     text = f"{finding.get('title') or ''}\n{finding.get('detail') or ''}"
-    hints = [symbol for symbol in _PRIOR_CRITICAL_SYMBOL_HINTS if symbol in text]
+    hints = list(dict.fromkeys(_IDENTIFIER_RE.findall(text)))
     if "PAYG endpoint" in text or "primary URL" in text:
         hints.append("_valid_coding_plan_primary_base_url")
     return tuple(dict.fromkeys(hints))
 
 
-def _function_excerpt_range(source_lines: list[str], symbol: str) -> tuple[int, int] | None:
-    needle = f"def {symbol}("
-    start = None
-    start_indent = 0
-    for index, line in enumerate(source_lines):
-        stripped = line.lstrip()
-        if not stripped.startswith(needle):
-            continue
-        start = index + 1
-        start_indent = len(line) - len(stripped)
-        break
-    if start is None:
+def _claim_ranked_symbols(
+    symbols: tuple[str, ...], detail: str, parsed: ast.Module | None, cited_line: int
+) -> tuple[str, ...]:
+    """Put the asserted callee ahead of incidental names in critical prose."""
+    claim_targets = set(re.findall(r"\b(?:to|of|in)\s+([A-Za-z_]\w*)\b", detail))
+    cited_calls = set()
+    if parsed is not None:
+        cited_calls = {
+            node.func.id
+            for node in ast.walk(parsed)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.lineno <= cited_line <= node.end_lineno
+        }
+
+    def priority(symbol: str) -> int:
+        if symbol in cited_calls:
+            return 0 if symbol in claim_targets else 1
+        return 2 if symbol in claim_targets else 3
+
+    return tuple(sorted(symbols, key=priority))
+
+
+def _source_tree(source_lines: list[str]) -> ast.Module | None:
+    try:
+        return ast.parse("\n".join(source_lines))
+    except SyntaxError:
         return None
-    end = min(len(source_lines), start + 90)
-    for number in range(start + 1, min(len(source_lines), start + 90) + 1):
-        line = source_lines[number - 1]
-        stripped = line.lstrip()
-        indent = len(line) - len(stripped)
-        if (
-            number > start
-            and stripped
-            and indent <= start_indent
-            and (stripped.startswith("def ") or stripped.startswith("class "))
-        ):
-            end = number - 1
+
+
+def _definition_nodes(tree: ast.Module) -> dict[str, ast.AST]:
+    return {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+
+
+def _imported_module_path(source_rel: str, node: ast.ImportFrom) -> str | None:
+    """Resolve one direct local import relative to its pinned source path."""
+    package = list(Path(source_rel).parts[:-1]) if node.level else []
+    if node.level:
+        if node.level > len(package):
+            return None
+        package = package[: len(package) - node.level + 1]
+    if node.module:
+        package.extend(node.module.split("."))
+    return "/".join(package) + ".py" if package else None
+
+
+def _definition_excerpt(
+    lines: list[str], node: ast.AST, *, max_bytes: int = _EXCERPT_SYMBOL_BYTES
+) -> tuple[str, int, bool]:
+    """Include the complete signature, then as much body as the byte cap permits."""
+    start = node.lineno
+    end = min(len(lines), getattr(node, "end_lineno", start))
+    header_end = max(start, node.body[0].lineno - 1) if node.body else start
+    parts: list[str] = []
+    shown_end = start - 1
+    for number in range(start, end + 1):
+        part = f"{number:04d}| {lines[number - 1].replace('```', '<BACKTICK_FENCE>')}\n"
+        if number > header_end and len(("".join(parts) + part).encode()) > max_bytes:
             break
-    return start, end
+        parts.append(part)
+        shown_end = number
+    truncated = shown_end < end
+    if truncated:
+        parts.append("(definition truncated; inspect current source at the pinned head)\n")
+    return "".join(parts), shown_end, truncated
 
 
 def build_prior_file_excerpts(
@@ -3157,6 +3199,8 @@ def build_prior_file_excerpts(
     head_sha: str,
     radius: int = 35,
     limit: int = 12,
+    changed_files: Sequence[str] = (),
+    max_bytes: int = _EXCERPT_TOTAL_BYTES,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Bounded current-source excerpts around prior critical file:line claims.
 
@@ -3173,8 +3217,41 @@ def build_prior_file_excerpts(
 
     repo_root = repo_root.resolve()
     seen: set[tuple[str, int]] = set()
+    seen_definitions: set[tuple[str, int]] = set()
     sections: list[str] = []
     records: list[dict[str, Any]] = []
+    source_cache: dict[str, list[str] | None] = {}
+    tree_cache: dict[str, ast.Module | None] = {}
+    used_bytes = 180  # heading and separators
+
+    def source(rel: str) -> list[str] | None:
+        if rel not in source_cache:
+            try:
+                source_cache[rel] = _git_show_at_head(repo_root, head_sha, rel)
+            except (OSError, subprocess.TimeoutExpired):
+                source_cache[rel] = None
+        return source_cache[rel]
+
+    def tree(rel: str) -> ast.Module | None:
+        if rel not in tree_cache:
+            lines = source(rel)
+            tree_cache[rel] = _source_tree(lines) if lines is not None else None
+        return tree_cache[rel]
+
+    def append_section(section: str, record: dict[str, Any]) -> bool:
+        nonlocal used_bytes
+        if len(sections) >= limit:
+            records.append({**record, "status": "excerpt_limit_exhausted"})
+            return False
+        size = len(section.encode())
+        if used_bytes + size > max_bytes:
+            records.append({**record, "status": "excerpt_budget_exhausted"})
+            return False
+        sections.append(section)
+        records.append(record)
+        used_bytes += size
+        return True
+
     for finding in prior_criticals:
         rel = str(finding.get("file") or "").strip()
         try:
@@ -3192,28 +3269,23 @@ def build_prior_file_excerpts(
         seen.add(key)
         shown = _rel_for_display(rel)
         if shown is None:
-            sections.append(
+            append_section(
                 f"## (invalid prior-finding path omitted) @ {head_sha[:9]}\n\n"
                 "(evidence_unavailable: the prior finding's file path is not a valid repo\n"
-                "path — its text is untrusted and has been omitted; verify via the diff only)\n"
-            )
-            records.append(
-                {"file": "<omitted:invalid_path>", "line": line, "status": "invalid_path"}
+                "path — its text is untrusted and has been omitted; verify via the diff only)\n",
+                {"file": "<omitted:invalid_path>", "line": line, "status": "invalid_path"},
             )
             if len(sections) >= limit:
                 break
             continue
-        try:
-            source_lines = _git_show_at_head(repo_root, head_sha, rel)
-        except (OSError, subprocess.TimeoutExpired):
-            source_lines = None
+        source_lines = source(rel)
         if source_lines is None:
-            sections.append(
+            append_section(
                 f"## {shown}:{line} @ {head_sha[:9]}\n\n"
                 f"(evidence_unavailable: {shown} unreadable at {head_sha[:9]} — do NOT treat any\n"
-                "worktree copy as current source; verify via the diff only)\n"
+                "worktree copy as current source; verify via the diff only)\n",
+                {"file": shown, "line": line, "status": "evidence_unavailable"},
             )
-            records.append({"file": shown, "line": line, "status": "evidence_unavailable"})
             if len(sections) >= limit:
                 break
             continue
@@ -3221,57 +3293,112 @@ def build_prior_file_excerpts(
             # Prior finding cites a line past EOF at this head (the file shrank,
             # or the finding was always out of range). Do NOT emit an empty
             # section recorded as 'shown' with an inverted range.
-            sections.append(
+            append_section(
                 f"## {shown}:{line} @ {head_sha[:9]}\n\n"
                 f"(evidence_unavailable: {shown}:{line} is outside the file "
-                f"({len(source_lines)} lines) at {head_sha[:9]} — verify via the diff only)\n"
-            )
-            records.append(
+                f"({len(source_lines)} lines) at {head_sha[:9]} — verify via the diff only)\n",
                 {
                     "file": shown,
                     "line": line,
                     "status": "line_out_of_range",
                     "file_lines": len(source_lines),
-                }
+                },
             )
             if len(sections) >= limit:
                 break
             continue
-        start = max(1, line - radius)
-        end = min(len(source_lines), line + radius)
+        symbols = _prior_symbol_hints(finding)
+        context_radius = min(radius, 8) if symbols else radius
+        start = max(1, line - context_radius)
+        end = min(len(source_lines), line + context_radius)
         body = "\n".join(
             f"{number:04d}| {source_lines[number - 1].replace('```', '<BACKTICK_FENCE>')}"
             for number in range(start, end + 1)
         )
-        sections.append(f"## {shown}:{line} @ {head_sha[:9]}\n\n{body}\n")
-        records.append({"file": shown, "line": line, "status": "shown", "lines": f"{start}-{end}"})
-        for symbol in _prior_symbol_hints(finding):
-            if len(sections) >= limit:
-                break
-            symbol_range = _function_excerpt_range(source_lines, symbol)
-            if symbol_range is None:
+        callsite_section = f"## {shown}:{line} @ {head_sha[:9]}\n\n{body}\n"
+        callsite_record = {
+            "file": shown,
+            "line": line,
+            "status": "shown",
+            "lines": f"{start}-{end}",
+        }
+        if len(symbols) > _EXCERPT_MAX_SYMBOLS:
+            records.append({"file": shown, "status": "symbols_truncated", "count": len(symbols)})
+            symbols = symbols[:_EXCERPT_MAX_SYMBOLS]
+        if not symbols:
+            append_section(callsite_section, callsite_record)
+            continue
+        symbols = _claim_ranked_symbols(symbols, str(finding.get("detail") or ""), tree(rel), line)
+        resolved_symbols: set[str] = set()
+        candidates = tuple(dict.fromkeys((rel, *changed_files)))[:24]
+        for candidate in candidates:
+            candidate_shown = _rel_for_display(candidate)
+            if (
+                candidate_shown is None
+                or Path(candidate).is_absolute()
+                or ".." in Path(candidate).parts
+            ):
                 continue
-            symbol_start, symbol_end = symbol_range
-            symbol_key = (rel, symbol_start)
-            if symbol_key in seen:
+            candidate_lines = source(candidate)
+            if candidate_lines is None:
+                records.append({"file": candidate, "status": "evidence_unavailable"})
                 continue
-            seen.add(symbol_key)
-            symbol_body = "\n".join(
-                f"{number:04d}| {source_lines[number - 1].replace('```', '<BACKTICK_FENCE>')}"
-                for number in range(symbol_start, symbol_end + 1)
-            )
-            sections.append(
-                f"## {shown}:{symbol_start} ({symbol}) @ {head_sha[:9]}\n\n{symbol_body}\n"
-            )
-            records.append(
-                {
-                    "file": shown,
-                    "line": symbol_start,
-                    "status": "shown",
+            candidate_tree = tree(candidate)
+            if candidate_tree is None:
+                records.append({"file": candidate, "status": "source_parse_error"})
+                continue
+            definitions = _definition_nodes(candidate_tree)
+            imports = {
+                alias.asname or alias.name: (_imported_module_path(candidate, node), alias.name)
+                for node in ast.walk(candidate_tree)
+                if isinstance(node, ast.ImportFrom)
+                for alias in node.names
+            }
+            for symbol in symbols:
+                resolved_rel = candidate
+                resolved_lines = candidate_lines
+                node = definitions.get(symbol)
+                if node is None and symbol in imports:
+                    imported_rel, original = imports[symbol]
+                    if imported_rel and _rel_for_display(imported_rel) is not None:
+                        imported_tree = tree(imported_rel)
+                        resolved_lines = source(imported_rel)
+                        if imported_tree is None:
+                            records.append(
+                                {
+                                    "file": imported_rel,
+                                    "symbol": symbol,
+                                    "status": "source_parse_error"
+                                    if resolved_lines is not None
+                                    else "evidence_unavailable",
+                                }
+                            )
+                        else:
+                            node = _definition_nodes(imported_tree).get(original)
+                            resolved_rel = imported_rel
+                if node is None or resolved_lines is None:
+                    continue
+                resolved_symbols.add(symbol)
+                symbol_key = (resolved_rel, node.lineno)
+                if symbol_key in seen_definitions:
+                    continue
+                snippet, symbol_end, truncated = _definition_excerpt(resolved_lines, node)
+                definition_record = {
+                    "file": resolved_rel,
+                    "line": node.lineno,
                     "symbol": symbol,
-                    "lines": f"{symbol_start}-{symbol_end}",
+                    "status": "definition_truncated" if truncated else "definition_shown",
+                    "lines": f"{node.lineno}-{symbol_end}",
                 }
-            )
+                if append_section(
+                    f"## {resolved_rel}:{node.lineno} ({symbol}) @ {head_sha[:9]}\n\n{snippet}",
+                    definition_record,
+                ):
+                    seen_definitions.add(symbol_key)
+        unresolved = [symbol for symbol in symbols if symbol not in resolved_symbols]
+        if unresolved:
+            records.append({"file": shown, "status": "symbols_unresolved", "symbols": unresolved})
+        append_section(callsite_section, callsite_record)
         if len(sections) >= limit:
             break
     if not sections:
@@ -3291,6 +3418,7 @@ def build_changed_file_excerpts(
     repo_root: Path,
     head_sha: str,
     limit: int = 18,
+    max_bytes: int = _EXCERPT_TOTAL_BYTES,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Bounded current-source excerpts for review-critical changed files.
 
@@ -3305,6 +3433,7 @@ def build_changed_file_excerpts(
     sections: list[str] = []
     records: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
+    used_bytes = 180
     for raw_rel in changed_files:
         rel = str(raw_rel).strip()
         symbols = _REVIEW_SOURCE_EXCERPT_SYMBOLS.get(rel)
@@ -3319,28 +3448,37 @@ def build_changed_file_excerpts(
         if source_lines is None:
             records.append({"file": shown, "status": "evidence_unavailable"})
             continue
+        parsed = _source_tree(source_lines)
+        if parsed is None:
+            records.append({"file": shown, "status": "source_parse_error"})
+            continue
+        definitions = _definition_nodes(parsed)
         for symbol in symbols:
             if len(sections) >= limit:
                 break
-            symbol_range = _function_excerpt_range(source_lines, symbol)
-            if symbol_range is None:
+            node = definitions.get(symbol)
+            if node is None:
                 records.append({"file": shown, "status": "symbol_missing", "symbol": symbol})
                 continue
-            start, end = symbol_range
+            start = node.lineno
             key = (shown, start)
             if key in seen:
                 continue
             seen.add(key)
-            body = "\n".join(
-                f"{number:04d}| {source_lines[number - 1].replace('```', '<BACKTICK_FENCE>')}"
-                for number in range(start, end + 1)
-            )
-            sections.append(f"## {shown}:{start} ({symbol}) @ {head_sha[:9]}\n\n{body}\n")
+            body, end, truncated = _definition_excerpt(source_lines, node)
+            section = f"## {shown}:{start} ({symbol}) @ {head_sha[:9]}\n\n{body}\n"
+            if used_bytes + len(section.encode()) > max_bytes:
+                records.append(
+                    {"file": shown, "symbol": symbol, "status": "excerpt_budget_exhausted"}
+                )
+                continue
+            sections.append(section)
+            used_bytes += len(section.encode())
             records.append(
                 {
                     "file": shown,
                     "line": start,
-                    "status": "shown",
+                    "status": "definition_truncated" if truncated else "definition_shown",
                     "symbol": symbol,
                     "lines": f"{start}-{end}",
                 }
@@ -3931,11 +4069,29 @@ def review_pr(
     if prior_criticals or changed_source_excerpt_files:
         ensure_head_object(repo_root, pr_info.head_sha, pr_number)
     prior_file_excerpts, prior_evidence_records = build_prior_file_excerpts(
-        prior_criticals, repo_root=repo_root, head_sha=pr_info.head_sha
+        prior_criticals,
+        repo_root=repo_root,
+        head_sha=pr_info.head_sha,
+        changed_files=pr_info.files,
     )
     changed_file_excerpts, changed_source_evidence_records = build_changed_file_excerpts(
-        changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
+        changed_source_excerpt_files,
+        repo_root=repo_root,
+        head_sha=pr_info.head_sha,
+        max_bytes=max(0, _EXCERPT_TOTAL_BYTES - len(prior_file_excerpts.encode())),
     )
+    exhausted_excerpts = [
+        record
+        for record in (*prior_evidence_records, *changed_source_evidence_records)
+        if record.get("status") in {"excerpt_budget_exhausted", "excerpt_limit_exhausted"}
+    ]
+    if exhausted_excerpts:
+        return {
+            "status": "source_excerpt_capacity_exceeded",
+            "pr": pr_number,
+            "unshown_excerpts": exhausted_excerpts,
+            "next_action": "split the PR or increase eligible prompt capacity before review",
+        }
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
     pr_diff = fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
     diff = truncate_diff(pr_diff)
@@ -3944,21 +4100,52 @@ def review_pr(
         for path, _, _ in keyed_matches
     )
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
+    prompt_inputs = {
+        "pr_info": pr_info,
+        "diff_source": pr_diff.source,
+        "comparison_base": pr_diff.comparison_base,
+        "task_id": task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
+        "team_class": team_class,
+        "lenses": lenses,
+        "charters": charters,
+        "pr_body": pr_info.body,
+        "task_note_text": task_note_text,
+        "diff": diff,
+        "prior_criticals": prior_criticals,
+    }
+    if reviewer_source_excerpts:
+        try:
+            prompt_headroom = min(
+                review_team.seat_diff_capacity(seat.id, registry)["prompt_limit_bytes"]
+                - len(
+                    render_reviewer_prompt(
+                        seat=seat, prior_file_excerpts="", **prompt_inputs
+                    ).encode()
+                )
+                for seat in constitution.seats
+            )
+        except (review_team.DiffCapacityConfigError, KeyError) as exc:
+            return {
+                "status": "diff_capacity_config_invalid",
+                "pr": pr_number,
+                "reason": str(exc),
+                "next_action": "repair the declared seat prompt capacity and retry",
+            }
+        excerpt_bytes = len(reviewer_source_excerpts.encode())
+        if excerpt_bytes > prompt_headroom:
+            return {
+                "status": "prompt_capacity_exceeded",
+                "pr": pr_number,
+                "reason": "Complete source evidence exceeds a seated measured prompt ceiling",
+                "excerpt_bytes": excerpt_bytes,
+                "available_bytes": prompt_headroom,
+                "next_action": "split the PR or reconstitute with eligible seats",
+            }
     prompts = [
         render_reviewer_prompt(
             seat=seat,
-            pr_info=pr_info,
-            diff_source=pr_diff.source,
-            comparison_base=pr_diff.comparison_base,
-            task_id=task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
-            team_class=team_class,
-            lenses=lenses,
-            charters=charters,
-            pr_body=pr_info.body,
-            task_note_text=task_note_text,
-            diff=diff,
-            prior_criticals=prior_criticals,
             prior_file_excerpts=reviewer_source_excerpts,
+            **prompt_inputs,
         )
         for seat in constitution.seats
     ]
