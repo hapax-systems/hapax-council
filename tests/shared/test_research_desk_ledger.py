@@ -65,6 +65,15 @@ def test_unknown_outcome_is_a_loud_failure(outcome: str) -> None:
         ledger.build_record(tool="fetch_request", outcome=outcome, caller_ip=None)
 
 
+def test_delivery_pending_is_a_closed_schema_intent() -> None:
+    row = ledger.build_record(
+        tool="deliver_result", outcome="pending", caller_ip=None, request_id="req-1"
+    )
+    assert row["outcome"] == "pending"
+    assert row["request_id"] == "req-1"
+    assert row["receipt_id"] is None
+
+
 def test_append_and_read_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "ledger.jsonl"
     for index in range(3):

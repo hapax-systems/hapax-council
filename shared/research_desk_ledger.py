@@ -1,6 +1,7 @@
 """Per-call receipt ledger for the Perplexity research desk MCP server.
 
-Every tool call on the desk writes exactly one JSONL row here. The ledger is the
+Every tool call writes a JSONL row here; delivery writes an intent before the
+vault mutation and an outcome afterward. The ledger is the
 capability's **receipt surface**: the desk spends a subscription entitlement we do
 not meter directly (Perplexity Computer credits), so the only thing the estate can
 count is the calls it served and the bytes it returned.
@@ -12,12 +13,12 @@ Two properties are load-bearing and pinned by tests:
    and drops nothing into it that was not named. There is no ``**extra`` path and
    no request-header capture, so there is no route by which the credential could
    arrive here.
-2. **A delivery receipt is durable or the call fails.** ``append`` raises on IO
+2. **A delivery intent is durable before mutation or the call fails.** ``append`` raises on IO
    failure rather than swallowing it (the opposite of
    :mod:`shared.jsonl_append`'s default advisory posture), because the caller
-   returns a receipt id to an external agent and a receipt with no row behind it
+   returns a receipt id to an external agent and a delivery with no row behind it
    is a lie. Delivery is idempotent on request id, so a client retry after a
-   ledger failure is safe.
+   missing outcome row is safe.
 
 Delete-the-estate statement: an append-only record of each authenticated call an
 external agent made against a local tool surface, carrying enough to count calls,
@@ -46,12 +47,12 @@ LEDGER_SCHEMA = 1
 DEFAULT_LEDGER_PATH = Path.home() / ".cache" / "hapax" / "research-desk" / "ledger.jsonl"
 
 ToolName = Literal["list_open_research_requests", "fetch_request", "deliver_result"]
-Outcome = Literal["ok", "duplicate", "refused", "error"]
+Outcome = Literal["pending", "ok", "duplicate", "refused", "error"]
 
 _TOOL_NAMES: frozenset[str] = frozenset(
     ("list_open_research_requests", "fetch_request", "deliver_result")
 )
-_OUTCOMES: frozenset[str] = frozenset(("ok", "duplicate", "refused", "error"))
+_OUTCOMES: frozenset[str] = frozenset(("pending", "ok", "duplicate", "refused", "error"))
 
 
 def ledger_path_from_env(env: dict[str, str] | os._Environ[str] | None = None) -> Path:
