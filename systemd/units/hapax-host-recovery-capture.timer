@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh host lane recovery manifest
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=hapax-host-recovery-capture.service
+
+[Install]
+WantedBy=timers.target

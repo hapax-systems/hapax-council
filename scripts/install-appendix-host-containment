@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Apply the measured appendix host budget without an operator-side root step.
+set -euo pipefail
+
+SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILE="$SOURCE/systemd/units/host-recovery/appendix"
+MODE=check
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --source) SOURCE="${2:?}"; PROFILE="$SOURCE/systemd/units/host-recovery/appendix"; shift 2 ;;
+        --install) MODE=install; shift ;;
+        --check) MODE=check; shift ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [ "$(hostname -s)" != hapax-appendix ]; then
+    echo "appendix containment refused on another host" >&2
+    exit 2
+fi
+mem_kib="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+if [ "$mem_kib" -lt 61865984 ] || [ "$mem_kib" -gt 63963136 ]; then
+    echo "appendix containment refused: MemTotal outside measured 59..61 GiB interval" >&2
+    exit 2
+fi
+
+if [ "$MODE" = install ]; then
+    sudo -n true
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    for spec in \
+        "user@1000.service.conf:/etc/systemd/system/user@1000.service.d/oom.conf" \
+        "user-1000.slice.conf:/etc/systemd/system/user-1000.slice.d/oom-containment.conf" \
+        "system.slice.conf:/etc/systemd/system/system.slice.d/oom-containment.conf" \
+        "99-hapax-zram-swappiness.rules:/etc/udev/rules.d/99-hapax-zram-swappiness.rules"; do
+        name="${spec%%:*}"
+        dest="${spec#*:}"
+        sudo -n install -d -m 755 "$(dirname "$dest")"
+        if sudo -n test -e "$dest"; then
+            sudo -n cp -a "$dest" "$dest.pre-host-recovery-$stamp"
+        fi
+        sudo -n install -m 644 "$PROFILE/$name" "$dest"
+    done
+    sudo -n systemctl daemon-reload
+    # set-property updates the live cgroups without restarting a user manager.
+    sudo -n systemctl set-property user@1000.service MemoryHigh=32G MemoryMax=38G MemorySwapMax=8G
+    sudo -n systemctl set-property user-1000.slice MemoryHigh=32G MemoryMax=38G MemorySwapMax=8G
+    sudo -n systemctl set-property system.slice MemoryHigh=16G MemoryMax=20G MemoryLow=12G MemoryMin=12G
+    sudo -n sysctl -w vm.swappiness=10 >/dev/null
+    sudo -n udevadm control --reload
+    sudo -n udevadm trigger --action=change --sysname-match=zram0
+    # The container uses a restart policy and no Compose labels. Docker update
+    # persists these limits in HostConfig across its automatic restart.
+    docker update --memory 8g --memory-swap 10g hapax-llama-gptoss >/dev/null
+fi
+
+for spec in \
+    "user@1000.service.conf:/etc/systemd/system/user@1000.service.d/oom.conf" \
+    "user-1000.slice.conf:/etc/systemd/system/user-1000.slice.d/oom-containment.conf" \
+    "system.slice.conf:/etc/systemd/system/system.slice.d/oom-containment.conf" \
+    "99-hapax-zram-swappiness.rules:/etc/udev/rules.d/99-hapax-zram-swappiness.rules"; do
+    name="${spec%%:*}"
+    dest="${spec#*:}"
+    sudo -n cmp -s "$PROFILE/$name" "$dest" || {
+        echo "appendix containment differs: $dest" >&2; exit 1;
+    }
+done
+
+property() { systemctl show "$1" -p "$2" --value; }
+test "$(property user@1000.service MemoryHigh)" = 34359738368
+test "$(property user@1000.service MemoryMax)" = 40802189312
+test "$(property user-1000.slice MemoryMax)" = 40802189312
+test "$(property system.slice MemoryHigh)" = 17179869184
+test "$(property system.slice MemoryMax)" = 21474836480
+test "$(sysctl -n vm.swappiness)" = 10
+docker inspect hapax-llama-gptoss --format '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}' \
+    | rg -q '^8589934592 10737418240$'
+echo "appendix containment installed and read back"

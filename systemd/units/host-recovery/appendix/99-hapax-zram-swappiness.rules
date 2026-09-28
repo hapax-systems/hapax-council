@@ -1,0 +1,2 @@
+# Later than cachyos-settings 30-zram.rules; zram initialization must not restore 150.
+ACTION=="change", KERNEL=="zram0", ATTR{initstate}=="1", SYSCTL{vm.swappiness}="10"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Retry any incomplete host lane recovery
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=10s
+Persistent=true
+Unit=hapax-host-recovery-restore.service
+
+[Install]
+WantedBy=timers.target

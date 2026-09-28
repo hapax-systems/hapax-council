@@ -1,0 +1,548 @@
+#!/usr/bin/env python3
+"""Keep a host's live coding lanes recoverable across an unplanned reboot.
+
+The manifest contains identities, never a captured shell command. Restores build
+commands from an allowlist and run each lane in its own bounded user scope.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from datetime import UTC, datetime
+from pathlib import Path
+
+UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
+ROLE = re.compile(r"^(?:codex-[a-z0-9-]+|dev[0-9]*|dev1-seat)$")
+UNIT = re.compile(r"^[a-z0-9][a-z0-9@_.-]*\.(?:service|timer|socket)$")
+MEMORY = {"high": "5G", "max": "7G", "swap": "1G"}
+ROOT = Path.home() / "Documents/Personal/30-areas/hapax/lanebus"
+STATE = Path.home() / ".local/state/hapax/host-recovery"
+
+
+class ReportError(RuntimeError):
+    """The recovery result exists locally but independent delivery failed."""
+
+
+def now() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def boot_id() -> str:
+    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+
+
+def run(*args: str) -> str:
+    return subprocess.check_output(args, text=True, timeout=30).strip()
+
+
+def manifest_path(state: Path = STATE) -> Path:
+    return state / f"{socket.gethostname().split('.')[0]}.json"
+
+
+def atomic_json(path: Path, data: dict) -> None:
+    payload = dict(data)
+    payload.pop("sha256", None)
+    payload["sha256"] = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def read_manifest(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    if path.is_symlink() or path.stat().st_mode & 0o077:
+        raise ValueError(f"unsafe recovery manifest: {path}")
+    data = json.loads(path.read_text())
+    recorded_hash = data.pop("sha256", None)
+    actual_hash = hashlib.sha256(
+        json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if recorded_hash != actual_hash:
+        raise ValueError("recovery manifest hash mismatch")
+    data["sha256"] = recorded_hash
+    if data.get("schema") != 1 or data.get("host") != socket.gethostname().split(".")[0]:
+        raise ValueError("recovery manifest host/schema mismatch")
+    for entry in data.get("lanes", []):
+        validate(entry)
+    for unit in data.get("units", []):
+        validate_unit(unit)
+    if len({e["tmux"] for e in data.get("lanes", [])}) != len(data.get("lanes", [])):
+        raise ValueError("duplicate recovery lane")
+    return data
+
+
+def validate_unit(unit: dict) -> None:
+    if unit.get("scope") not in {"user", "system"} or not UNIT.fullmatch(unit.get("name", "")):
+        raise ValueError("invalid recovery unit identity")
+    if unit.get("enabled") not in {"enabled", "static", "indirect", "generated", "disabled"}:
+        raise ValueError("invalid recovery unit enablement")
+
+
+def unit_cmd(scope: str, *args: str) -> list[str]:
+    return (["systemctl", "--user"] if scope == "user" else ["sudo", "-n", "systemctl"]) + list(
+        args
+    )
+
+
+def unit_property(unit: dict, prop: str) -> str:
+    return run(*unit_cmd(unit["scope"], "show", unit["name"], "-p", prop, "--value"))
+
+
+def unit_readback(unit: dict) -> bool:
+    validate_unit(unit)
+    if unit_property(unit, "UnitFileState") != unit["enabled"]:
+        raise ValueError(f"unit enablement differs: {unit['name']}")
+    return unit_property(unit, "ActiveState") == "active"
+
+
+def declare_unit(spec: str) -> dict:
+    scope, separator, name = spec.partition(":")
+    if not separator:
+        raise ValueError("unit declaration needs user: or system: scope")
+    unit = {"scope": scope, "name": name, "enabled": "static"}
+    validate_unit(unit)
+    if unit_property(unit, "ActiveState") != "active":
+        raise ValueError(f"refusing to declare inactive unit: {spec}")
+    unit["enabled"] = unit_property(unit, "UnitFileState")
+    validate_unit(unit)
+    return unit
+
+
+def validate(entry: dict) -> None:
+    role = entry["role"]
+    provider = entry["provider"]
+    expected = f"hapax-{provider}-{role.removeprefix('codex-') if provider == 'codex' else role}"
+    if provider not in {"codex", "claude"} or not ROLE.fullmatch(role) or entry["tmux"] != expected:
+        raise ValueError("invalid recovery lane identity")
+    if (provider == "codex") != role.startswith("codex-"):
+        raise ValueError("recovery provider/role mismatch")
+    if not UUID.fullmatch(entry["transcript"]) or not UUID.fullmatch(entry["session_id"]):
+        raise ValueError("invalid recovery session identifier")
+    cwd = Path(entry["cwd"])
+    if not cwd.is_absolute() or not cwd.is_dir() or cwd.is_symlink():
+        raise ValueError(f"recovery workdir unavailable: {cwd}")
+    inbox = ROOT / ("dev1" if role == "dev1-seat" else role)
+    if entry["inbox"] != str(inbox) or not inbox.is_dir():
+        raise ValueError(f"recovery inbox unavailable: {inbox}")
+    if entry["memory"] != MEMORY:
+        raise ValueError("unapproved lane memory ceiling")
+
+
+def proc_fields(pid: str) -> tuple[list[str], dict[str, str]]:
+    if not pid.isdigit():
+        raise ValueError("invalid tmux pane pid")
+    base = Path("/proc") / pid
+    argv = [s.decode() for s in (base / "cmdline").read_bytes().split(b"\0") if s]
+    wanted = {"HAPAX_AGENT_ROLE", "HAPAX_SESSION_ID"}
+    env: dict[str, str] = {}
+    for item in (base / "environ").read_bytes().split(b"\0"):
+        key, _, value = item.partition(b"=")
+        if key.decode(errors="replace") in wanted:
+            env[key.decode()] = value.decode()
+    return argv, env
+
+
+def scope_readback(
+    pid: str, proc_root: Path = Path("/proc"), cgroup_root: Path = Path("/sys/fs/cgroup")
+) -> None:
+    group = (proc_root / pid / "cgroup").read_text().strip().split(":")[-1]
+    if (
+        not group.startswith("/user.slice/")
+        or "/app.slice/" not in group
+        or not group.endswith(".scope")
+    ):
+        raise ValueError("lane is not in a dedicated user scope")
+    root = cgroup_root / group.lstrip("/")
+    expected = {
+        "memory.high": "5368709120",
+        "memory.max": "7516192768",
+        "memory.swap.max": "1073741824",
+    }
+    for name, value in expected.items():
+        if (root / name).read_text().strip() != value:
+            raise ValueError(f"lane scope {name} differs from desired ceiling")
+
+
+def transcript_id(provider: str, argv: list[str]) -> str:
+    if not argv or Path(argv[0]).name != provider:
+        raise ValueError("pane process is not its declared provider")
+    if provider == "codex":
+        if len(argv) < 3 or argv[1] != "resume":
+            raise ValueError("Codex pane has no explicit resume identity")
+        candidate = argv[2]
+    else:
+        ids = [
+            argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg in {"--resume", "--session-id"}
+        ]
+        ids += [arg.split("=", 1)[1] for arg in argv if arg.startswith("--resume=")]
+        if len(ids) != 1:
+            raise ValueError("Claude pane has no unique explicit transcript identity")
+        candidate = ids[0]
+    if not UUID.fullmatch(candidate):
+        raise ValueError("invalid transcript UUID")
+    return candidate.lower()
+
+
+def live_lanes() -> list[dict]:
+    listed = subprocess.run(
+        ["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    if listed.returncode and not any(
+        phrase in listed.stderr for phrase in ("no server running", "error connecting to ")
+    ):
+        raise subprocess.CalledProcessError(
+            listed.returncode, listed.args, listed.stdout, listed.stderr
+        )
+    panes = listed.stdout
+    entries: list[dict] = []
+    for row in panes.splitlines():
+        tmux, pid, cwd = row.split("\t", 2)
+        if tmux.startswith("hapax-codex-"):
+            provider, role = "codex", "codex-" + tmux.removeprefix("hapax-codex-")
+        elif tmux.startswith("hapax-claude-"):
+            provider, role = "claude", tmux.removeprefix("hapax-claude-")
+        else:
+            continue
+        argv, env = proc_fields(pid)
+        if env.get("HAPAX_AGENT_ROLE", role) != role:
+            raise ValueError(f"lane role mismatch: {tmux}")
+        transcript = transcript_id(provider, argv)
+        scope_readback(pid)
+        session_id = env.get("HAPAX_SESSION_ID", transcript)
+        entry = {
+            "tmux": tmux,
+            "provider": provider,
+            "role": role,
+            "transcript": transcript,
+            "session_id": session_id,
+            "cwd": cwd,
+            "inbox": str(ROOT / ("dev1" if role == "dev1-seat" else role)),
+            "memory": MEMORY.copy(),
+        }
+        validate(entry)
+        entries.append(entry)
+    return sorted(entries, key=lambda e: e["tmux"])
+
+
+def readback(entry: dict) -> None:
+    pid = run("tmux", "list-panes", "-t", f"={entry['tmux']}", "-F", "#{pane_pid}")
+    argv, env = proc_fields(pid)
+    if env.get("HAPAX_AGENT_ROLE") != entry["role"]:
+        raise ValueError("restored role differs from manifest")
+    if transcript_id(entry["provider"], argv) != entry["transcript"]:
+        raise ValueError("restored transcript differs from manifest")
+    if env.get("HAPAX_SESSION_ID", entry["transcript"]) != entry["session_id"]:
+        raise ValueError("restored session id differs from manifest")
+    scope_readback(pid)
+
+
+def capture(path: Path, requested_units: tuple[str, ...] = ()) -> dict:
+    old = read_manifest(path)
+    current = boot_id()
+    if old and old["boot_id"] != current:
+        raise ValueError("previous boot has not been restored; capture refused")
+    lanes = live_lanes()
+    units = {(u["scope"], u["name"]): u for u in (old or {}).get("units", [])}
+    for spec in requested_units:
+        declared = declare_unit(spec)
+        units[(declared["scope"], declared["name"])] = declared
+    if not lanes and not units:
+        raise ValueError("no live lanes or declared units; refusing empty desired state")
+    if old:
+        # A crashed pane must not disappear from the manifest during a timer tick.
+        by_name = {e["tmux"]: e for e in old["lanes"]}
+        by_name.update({e["tmux"]: e for e in lanes})
+        lanes = sorted(by_name.values(), key=lambda e: e["tmux"])
+    data = {
+        "schema": 1,
+        "host": socket.gethostname().split(".")[0],
+        "boot_id": current,
+        "captured_at": now(),
+        "lanes": lanes,
+        "units": sorted(units.values(), key=lambda u: (u["scope"], u["name"])),
+    }
+    atomic_json(path, data)
+    return data
+
+
+def launch_args(entry: dict) -> list[str]:
+    validate(entry)
+    if entry["provider"] == "codex":
+        command = [
+            "codex",
+            "resume",
+            entry["transcript"],
+            "-s",
+            "danger-full-access",
+            "-a",
+            "never",
+            "-c",
+            "model_reasoning_effort=high",
+        ]
+    else:
+        command = ["claude", "--resume", entry["transcript"], "--dangerously-skip-permissions"]
+    env = [
+        "env",
+        f"HAPAX_AGENT_ROLE={entry['role']}",
+        f"HAPAX_AGENT_NAME={entry['role']}",
+        f"HAPAX_SESSION_ID={entry['session_id']}",
+        f"HAPAX_AGENT_INTERFACE={entry['provider']}",
+        "HAPAX_IDLE_UPDATE_SECONDS=270",
+    ]
+    if entry["provider"] == "codex":
+        env.append(f"CODEX_THREAD_NAME={entry['role']}")
+    else:
+        env.append(f"CLAUDE_ROLE={entry['role']}")
+    return [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "-p",
+        "MemoryHigh=5G",
+        "-p",
+        "MemoryMax=7G",
+        "-p",
+        "MemorySwapMax=1G",
+        *env,
+        *command,
+    ]
+
+
+def report(result: dict, mail_root: Path = ROOT / "dev1") -> None:
+    remote_host = os.environ.get("HAPAX_RECOVERY_REPORT_HOST", "")
+    if remote_host and not re.fullmatch(r"[a-z0-9-]+", remote_host):
+        raise ValueError("invalid recovery report host")
+    if remote_host:
+        mail_root = STATE / "mail"
+    mail_root.mkdir(parents=True, exist_ok=True)
+    stamp = now()
+    file = mail_root / f"{stamp}-host-recovery-{result['host']}-{os.getpid()}.md"
+    text = (
+        f"# Host recovery: {result['host']}\n\nBoot: {result['boot_id']}\n"
+        f"Restored: {', '.join(result['restored']) or 'none'}\n"
+        f"Already live: {', '.join(result['already_live']) or 'none'}\n"
+        f"Units started: {', '.join(result['units_started']) or 'none'}\n"
+        f"Failed: {json.dumps(result['failed'], sort_keys=True)}\n"
+    )
+    with file.open("x") as stream:
+        stream.write(text)
+    errors: list[str] = []
+    if remote_host:
+        remote_code = (
+            "import os,pathlib,sys; "
+            "root=pathlib.Path.home()/'Documents/Personal/30-areas/hapax/lanebus/dev1'; "
+            "root.mkdir(parents=True,exist_ok=True); "
+            "fd=os.open(root/sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600); "
+            "f=os.fdopen(fd,'w'); f.write(sys.stdin.read()); f.close()"
+        )
+        sent = subprocess.run(
+            [
+                "tailscale",
+                "ssh",
+                f"hapax@{remote_host}",
+                shlex.join(["python3", "-c", remote_code, file.name]),
+            ],
+            input=text,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+        if sent.returncode:
+            errors.append(f"lanebus delivery failed: {sent.stderr.strip()[:200]}")
+    topic = os.environ.get("HAPAX_RECOVERY_NTFY_TOPIC", "hapax-ops")
+    url = os.environ.get("HAPAX_RECOVERY_NTFY_URL", "https://ntfy.sh").rstrip("/")
+    if topic:
+        request = urllib.request.Request(
+            f"{url}/{topic}",
+            data=text.encode(),
+            headers={"Title": "Host recovery", "Priority": "high"},
+        )
+        try:
+            urllib.request.urlopen(request, timeout=10).close()
+        except Exception as exc:
+            errors.append(f"ntfy delivery failed: {exc}")
+    if errors:
+        raise ReportError("; ".join(errors))
+
+
+def restore(path: Path, *, dry_run: bool = False) -> dict:
+    data = read_manifest(path)
+    if data is None:
+        raise ValueError("host recovery manifest missing; capture before host-affecting work")
+    current = boot_id()
+    result: dict = {
+        "host": data["host"],
+        "boot_id": current,
+        "restored": [],
+        "already_live": [],
+        "units_started": [],
+        "failed": {},
+    }
+    all_units_live = True
+    for unit in data.get("units", []):
+        try:
+            all_units_live = unit_readback(unit) and all_units_live
+        except (OSError, ValueError, subprocess.SubprocessError):
+            all_units_live = False
+    if (
+        data["boot_id"] == current
+        and all_units_live
+        and all(
+            subprocess.run(
+                ["tmux", "has-session", "-t", f"={entry['tmux']}"], capture_output=True, check=False
+            ).returncode
+            == 0
+            for entry in data["lanes"]
+        )
+    ):
+        try:
+            for entry in data["lanes"]:
+                readback(entry)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+        else:
+            result["already_live"] = [entry["tmux"] for entry in data["lanes"]]
+            return result
+    for unit in data.get("units", []):
+        label = f"{unit['scope']}:{unit['name']}"
+        try:
+            if not unit_readback(unit):
+                if not dry_run:
+                    subprocess.run(
+                        unit_cmd(unit["scope"], "start", unit["name"]), check=True, timeout=60
+                    )
+                    if not unit_readback(unit):
+                        raise RuntimeError("unit did not become active")
+                result["units_started"].append(label)
+        except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:
+            result["failed"][label] = str(exc)
+    for entry in data["lanes"]:
+        name = entry["tmux"]
+        if (
+            subprocess.run(
+                ["tmux", "has-session", "-t", f"={name}"], capture_output=True, check=False
+            ).returncode
+            == 0
+        ):
+            try:
+                readback(entry)
+                result["already_live"].append(name)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                result["failed"][name] = f"live session readback: {exc}"
+            continue
+        try:
+            command = launch_args(entry)
+            if not dry_run:
+                subprocess.run(
+                    [
+                        "tmux",
+                        "new-session",
+                        "-d",
+                        "-s",
+                        name,
+                        "-c",
+                        entry["cwd"],
+                        shlex.join(command),
+                    ],
+                    check=True,
+                    timeout=30,
+                )
+                deadline = time.monotonic() + 20
+                while True:
+                    try:
+                        readback(entry)
+                        break
+                    except (OSError, ValueError, subprocess.SubprocessError):
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError(
+                                "restored lane failed identity/scope readback"
+                            ) from None
+                        time.sleep(0.5)
+            result["restored"].append(name)
+        except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
+            result["failed"][name] = str(exc)
+    if not dry_run:
+        report(result)
+        if not result["failed"]:
+            data["boot_id"] = current
+            data["restored_at"] = now()
+            atomic_json(path, data)
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("capture", "restore"))
+    parser.add_argument("--manifest", type=Path, default=manifest_path())
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--unit", action="append", default=[], help="declare an active user: or system: unit"
+    )
+    args = parser.parse_args()
+    try:
+        if args.action == "capture":
+            if args.dry_run:
+                result = {
+                    "lanes": live_lanes(),
+                    "units": [declare_unit(u) for u in args.unit],
+                    "boot_id": boot_id(),
+                }
+            else:
+                result = capture(args.manifest, tuple(args.unit))
+        else:
+            result = restore(args.manifest, dry_run=args.dry_run)
+        print(json.dumps(result, sort_keys=True))
+        return 1 if result.get("failed") else 0
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(
+            f"host recovery refused: {exc}; next: repair the manifest or live lane evidence",
+            file=sys.stderr,
+        )
+        if args.action == "restore" and not args.dry_run and not isinstance(exc, ReportError):
+            try:
+                report(
+                    {
+                        "host": socket.gethostname().split(".")[0],
+                        "boot_id": boot_id(),
+                        "restored": [],
+                        "already_live": [],
+                        "units_started": [],
+                        "failed": {"manifest_or_report": str(exc)},
+                    }
+                )
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as report_exc:
+                print(f"host recovery refusal report failed: {report_exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
