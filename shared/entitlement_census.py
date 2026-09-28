@@ -35,13 +35,14 @@ The complete producer pins these safety properties in its integration tests:
 from __future__ import annotations
 
 import json
+import math
 import re
 import shlex
 import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -769,6 +770,372 @@ def collect_holdings(
 
 
 # --- holds now: readbacks and their extractors --------------------------------------------------
+
+
+def _measurement(
+    capacity_id: str,
+    *,
+    quantity: float,
+    unit: str,
+    window: str | None,
+    observed_at: datetime,
+    resets_at: datetime | None,
+    source: str,
+    details: dict[str, FactValue] | None = None,
+) -> dict[str, Any]:
+    """The quota ledger's measurement fields (A1's ``QuotaMeasurement``), as plain JSON."""
+    fresh_until = observed_at + MEASUREMENT_TTL
+    if resets_at is not None:
+        fresh_until = min(fresh_until, resets_at)
+    return {
+        "capacity_id": capacity_id,
+        "quantity": float(quantity),
+        "unit": unit,
+        "window": window,
+        "resets_at": _iso(resets_at),
+        "label": "observed",
+        "source": source,
+        "observed_at": _iso(observed_at),
+        "measurement_fresh_until": _iso(fresh_until),
+        "reason_code": None,
+        "details": details or {},
+    }
+
+
+@dataclass
+class Extracted:
+    facts: dict[str, FactValue] = field(default_factory=dict)
+    measurements: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _pct(used: Any, limit: Any) -> float | None:
+    u, lim = _number(used), _number(limit)
+    if u is None or lim is None or lim <= 0:
+        return None
+    return round(u / lim * 100, 4)
+
+
+def _x_kimi(payload: Any, at: datetime, src: str) -> Extracted:
+    out = Extracted()
+    weekly = _pct(_get(payload, "usage", "used"), _get(payload, "usage", "limit"))
+    if weekly is not None:
+        out.facts["weekly_used_pct"] = weekly
+        out.measurements.append(
+            _measurement(
+                "kimi.subscription.weekly",
+                quantity=weekly,
+                unit="percent_used",
+                window="10080m",
+                observed_at=at,
+                resets_at=_instant(_get(payload, "usage", "resetTime")),
+                source=src,
+            )
+        )
+    for limit in _get(payload, "limits") or []:
+        minutes = _number(_get(limit, "window", "duration"))
+        pct = _pct(_get(limit, "detail", "used"), _get(limit, "detail", "limit"))
+        if (
+            minutes is None
+            or pct is None
+            or _get(limit, "window", "timeUnit") != "TIME_UNIT_MINUTE"
+        ):
+            continue
+        name = "five_hour" if int(minutes) == 300 else f"{int(minutes)}m"
+        out.facts[f"{name}_used_pct"] = pct
+        out.measurements.append(
+            _measurement(
+                f"kimi.subscription.{name}",
+                quantity=pct,
+                unit="percent_used",
+                window=f"{int(minutes)}m",
+                observed_at=at,
+                resets_at=_instant(_get(limit, "detail", "resetTime")),
+                source=src,
+            )
+        )
+    amount = _number(_get(payload, "booster_wallet", "balance", "amount"))
+    unit = _safe_fact(_get(payload, "booster_wallet", "balance", "unit"))
+    if amount is not None:
+        # Unit scale unverified (E0): recorded raw, never converted.
+        out.measurements.append(
+            _measurement(
+                "kimi.booster.balance",
+                quantity=amount,
+                unit=f"raw:{unit or 'unknown'}",
+                window=None,
+                observed_at=at,
+                resets_at=None,
+                source=src,
+                details={"scale": "unverified"},
+            )
+        )
+    return out
+
+
+_GLM_WINDOWS = {(3, 5): ("five_hour", "300m"), (6, 1): ("weekly", "10080m")}
+
+
+def _x_glm(payload: Any, at: datetime, src: str) -> Extracted:
+    out = Extracted(facts={"plan": _safe_fact(_get(payload, "data", "level"))})
+    for limit in _get(payload, "data", "limits") or []:
+        pct = _number(_get(limit, "percentage"))
+        if pct is None:
+            continue
+        unit, number = _get(limit, "unit"), _get(limit, "number")
+        reset = _instant(_get(limit, "nextResetTime"))
+        if _get(limit, "type") == "TOKENS_LIMIT" and (unit, number) in _GLM_WINDOWS:
+            name, window = _GLM_WINDOWS[(unit, number)]
+            out.facts[f"{name}_used_pct"] = pct
+            out.measurements.append(
+                _measurement(
+                    f"glm.subscription.{name}",
+                    quantity=pct,
+                    unit="percent_used",
+                    window=window,
+                    observed_at=at,
+                    resets_at=reset,
+                    source=src,
+                )
+            )
+        elif _get(limit, "type") == "TIME_LIMIT":
+            out.measurements.append(
+                _measurement(
+                    "glm.mcp_tools.period",
+                    quantity=pct,
+                    unit="percent_used",
+                    window=f"unit{unit}x{number}",
+                    observed_at=at,
+                    resets_at=reset,
+                    source=src,
+                    details={
+                        "limit": _number(_get(limit, "usage")),
+                        "used": _number(_get(limit, "currentValue")),
+                    },
+                )
+            )
+    return out
+
+
+def _x_sakana(payload: Any, at: datetime, src: str) -> Extracted:
+    out = Extracted(
+        facts={
+            "plan": _safe_fact(_get(payload, "plan")),
+            "billing_mode": _safe_fact(_get(payload, "billing_mode")),
+        }
+    )
+    seconds = _number(_get(payload, "window_seconds")) or 18000
+    for key, name, window in (
+        (
+            "window_usage",
+            "five_hour" if int(seconds) == 18000 else f"{int(seconds // 60)}m",
+            f"{int(seconds // 60)}m",
+        ),
+        ("weekly_usage", "weekly", "10080m"),
+    ):
+        pct = _number(_get(payload, key, "usage_percent"))
+        if pct is None:
+            continue
+        out.facts[f"{name}_used_pct"] = pct
+        out.measurements.append(
+            _measurement(
+                f"fugu.subscription.{name}",
+                quantity=pct,
+                unit="percent_used",
+                window=window,
+                observed_at=at,
+                resets_at=_instant(_get(payload, key, "reset_at")),
+                source=src,
+            )
+        )
+    micro = _number(_get(payload, "pay_as_you_go", "available_amount_micro_usd"))
+    if micro is not None:
+        out.measurements.append(
+            _measurement(
+                "fugu.payg.balance",
+                quantity=micro / 1_000_000,
+                unit="USD",
+                window=None,
+                observed_at=at,
+                resets_at=None,
+                source=src,
+            )
+        )
+    return out
+
+
+def _x_openrouter_credits(payload: Any, at: datetime, src: str) -> Extracted:
+    out = Extracted()
+    credits, usage = (
+        _number(_get(payload, "data", "total_credits")),
+        _number(_get(payload, "data", "total_usage")),
+    )
+    if credits is not None and usage is not None:
+        balance = round(credits - usage, 4)
+        out.facts["balance_usd"] = balance
+        out.measurements.append(
+            _measurement(
+                "openrouter.prepaid.balance",
+                quantity=balance,
+                unit="USD",
+                window=None,
+                observed_at=at,
+                resets_at=None,
+                source=src,
+            )
+        )
+    return out
+
+
+def _x_openrouter_key(payload: Any, at: datetime, src: str) -> Extracted:
+    data = _get(payload, "data") if isinstance(_get(payload, "data"), dict) else payload
+    out = Extracted(
+        facts={
+            "key_limit_usd": _number(_get(data, "limit")),
+            "key_usage_daily_usd": _number(_get(data, "usage_daily")),
+            "key_usage_weekly_usd": _number(_get(data, "usage_weekly")),
+        }
+    )
+    weekly = _number(_get(data, "usage_weekly"))
+    if weekly is not None:
+        out.measurements.append(
+            _measurement(
+                "openrouter.key.spend_weekly",
+                quantity=weekly,
+                unit="USD",
+                window="10080m",
+                observed_at=at,
+                resets_at=None,
+                source=src,
+            )
+        )
+    return out
+
+
+def _x_featherless(payload: Any, at: datetime, src: str) -> Extracted:
+    return Extracted(
+        facts={
+            "plan": _safe_fact(_get(payload, "id")),
+            "concurrency": _number(_get(payload, "concurrency")),
+        }
+    )
+
+
+def _x_hf(payload: Any, at: datetime, src: str) -> Extracted:
+    period_end = _instant(_get(payload, "periodEnd"))
+    return Extracted(
+        facts={
+            "is_pro": _get(payload, "isPro") if isinstance(_get(payload, "isPro"), bool) else None,
+            "period_end": _iso(period_end),
+            "token_role": _safe_fact(_get(payload, "auth", "accessToken", "role")),
+        }
+    )
+
+
+def _x_tavily(payload: Any, at: datetime, src: str) -> Extracted:
+    out = Extracted(
+        facts={
+            "plan": _safe_fact(_get(payload, "account", "current_plan")),
+            "paygo_usage": _number(_get(payload, "account", "paygo_usage")),
+        }
+    )
+    used, limit = _get(payload, "account", "plan_usage"), _get(payload, "account", "plan_limit")
+    pct = _pct(used, limit)
+    if pct is not None:
+        out.measurements.append(
+            _measurement(
+                "tavily.plan.usage",
+                quantity=pct,
+                unit="percent_used",
+                window="plan_period",
+                observed_at=at,
+                resets_at=None,
+                source=src,
+                details={"used": _number(used), "limit": _number(limit)},
+            )
+        )
+    return out
+
+
+def _x_firecrawl(payload: Any, at: datetime, src: str) -> Extracted:
+    remaining = _number(_get(payload, "data", "remainingCredits"))
+    out = Extracted(
+        facts={
+            "plan_credits": _number(_get(payload, "data", "planCredits")),
+            "remaining_credits": remaining,
+            "period_end": _iso(_instant(_get(payload, "data", "billingPeriodEnd"))),
+        }
+    )
+    if remaining is not None:
+        out.measurements.append(
+            _measurement(
+                "firecrawl.credits.remaining",
+                quantity=remaining,
+                unit="credits",
+                window="billing_period",
+                observed_at=at,
+                resets_at=_instant(_get(payload, "data", "billingPeriodEnd")),
+                source=src,
+            )
+        )
+    return out
+
+
+def _x_elevenlabs(payload: Any, at: datetime, src: str) -> Extracted:
+    out = Extracted(
+        facts={
+            "tier": _safe_fact(_get(payload, "tier")),
+            "status": _safe_fact(_get(payload, "status")),
+        }
+    )
+    pct = _pct(_get(payload, "character_count"), _get(payload, "character_limit"))
+    if pct is not None:
+        out.measurements.append(
+            _measurement(
+                "elevenlabs.characters.used",
+                quantity=pct,
+                unit="percent_used",
+                window="billing_period",
+                observed_at=at,
+                resets_at=_instant(_get(payload, "next_character_count_reset_unix")),
+                source=src,
+                details={
+                    "limit": _number(_get(payload, "character_limit")),
+                    "period_days": 30
+                    if _get(payload, "billing_period") == "monthly_period"
+                    else None,
+                },
+            )
+        )
+    return out
+
+
+def _x_status_only(payload: Any, at: datetime, src: str) -> Extracted:
+    return Extracted()
+
+
+def _x_model_list(payload: Any, at: datetime, src: str) -> Extracted:
+    ids = [_get(m, "id") for m in (_get(payload, "data") or [])]
+    ids += [_get(m, "name") for m in (_get(payload, "models") or [])]
+    safe = [t for t in (_safe_fact(i) for i in ids if i) if isinstance(t, str)]
+    return Extracted(facts={"models": ", ".join(safe[:16]), "model_count": len(ids)})
+
+
+EXTRACTORS: Mapping[str, Callable[[Any, datetime, str], Extracted]] = MappingProxyType(
+    {
+        "kimi_usages": _x_kimi,
+        "glm_quota_limit": _x_glm,
+        "sakana_usage": _x_sakana,
+        "openrouter_credits": _x_openrouter_credits,
+        "openrouter_key": _x_openrouter_key,
+        "featherless_plan": _x_featherless,
+        "hf_whoami": _x_hf,
+        "tavily_usage": _x_tavily,
+        "firecrawl_credit_usage": _x_firecrawl,
+        "elevenlabs_subscription": _x_elevenlabs,
+        "status_only": _x_status_only,
+        "model_list": _x_model_list,
+    }
+)
 
 
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.
