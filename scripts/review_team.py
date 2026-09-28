@@ -2947,16 +2947,16 @@ def review_dossier_validity_blockers(
                 constituted_at=str(loaded.get("constituted_at") or ""),
             )
 
-    trusted_pr = pr_number
-    if trusted_pr is None and type(frontmatter.get("pr")) is int:
-        trusted_pr = frontmatter["pr"]
+    bound_pr = pr_number
+    if bound_pr is None and type(frontmatter.get("pr")) is int:
+        bound_pr = frontmatter["pr"]
     return _dossier_validity_blockers(
         loaded,
         pr_head_sha=pr_head_sha,
         registry=registry,
         frontmatter=frontmatter,
         expected_task_id=task_id,
-        pr_number=trusted_pr,
+        pr_number=bound_pr,
         changed_files=changed_files,
         changed_file_count=changed_file_count,
         outage_state_path=outage_state_path,
