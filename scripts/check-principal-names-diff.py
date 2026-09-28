@@ -148,6 +148,13 @@ def added_lines(root: Path, base: str, head: str) -> list[tuple[str, int, str]]:
     out: list[tuple[str, int, str]] = []
     path, lineno, remaining = "", 0, 0
     for line in diff.stdout.split("\n"):
+        if line.startswith("Binary files "):
+            digest = hashlib.sha256(line.encode()).hexdigest()
+            print(
+                f"principal-name-scan: REFUSED — unscanned binary diff; binary_diff_sha256={digest}. Restore --text and retry.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
         if line.startswith("diff --git "):
             remaining = 0
         elif not remaining and line.startswith("+++ b/"):

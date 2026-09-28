@@ -499,6 +499,16 @@ def test_tracked_pre_push_scans_binary_classified_added_lines(tmp_path: Path):
     assert result.returncode == 1, result.stderr
     assert _refusal("binary.dat", 1) in result.stderr
     assert not log.exists()
+    scanner = repo / "scripts" / SCRIPT.name
+    source = scanner.read_text()
+    assert source.count('        "--text",\n') == 1
+    scanner.write_text(source.replace('        "--text",\n', ""))
+    fallback = _run_wrapper(repo, registry, f"refs/heads/x {head} refs/heads/x {parent}\n")
+    assert fallback.returncode == 2, fallback.stderr
+    assert "binary_diff_sha256=" in fallback.stderr
+    assert NAME_A not in fallback.stderr
+    assert "binary.dat" not in fallback.stderr
+    assert not log.exists()
 
 
 def test_tracked_pre_push_passes_the_pushing_worktree_root_to_the_name_scan(tmp_path: Path):

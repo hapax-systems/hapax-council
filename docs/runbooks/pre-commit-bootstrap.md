@@ -59,7 +59,6 @@ git config --get core.hooksPath   # scripts
 ## Verify
 
 ```bash
-git config --get core.hooksPath   # scripts
 test -x "$(git rev-parse --show-toplevel)/scripts/pre-commit"
 test -x "$(git rev-parse --show-toplevel)/scripts/pre-push"
 ```
@@ -67,7 +66,6 @@ test -x "$(git rev-parse --show-toplevel)/scripts/pre-push"
 Recheck hook resolution from a linked worktree:
 
 ```bash
-git -C /path/to/linked-worktree config --show-origin core.hooksPath
 git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-commit
 git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-push
 ```
