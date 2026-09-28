@@ -1008,7 +1008,7 @@ class TestApply:
         )
         assert rendered
         assert {r["status"] for r in records} == {"shown", "evidence_unavailable"}
-        assert any(r.get("file") == "scripts/missing.py" and r.get("refusal") for r in records)
+        assert any(r.get("file") == "scripts/missing.py" and not r.get("refusal") for r in records)
 
     def test_prior_file_excerpts_add_allowlisted_symbol_body(self, tmp_path: Path) -> None:
         rel = "scripts/hapax-glmcp-reviewer"
@@ -1096,6 +1096,7 @@ class TestApply:
             "class ConsentRegistry:",
             "    def get(self, contract_id):",
             "        return resolve_contract_id(contract_id)",
+            "registry.get('key')",
             "class OtherRegistry:",
             "    def get(self, contract_id):",
             "        return None",
@@ -1119,8 +1120,8 @@ class TestApply:
         monkeypatch.setattr(dispatch, "_git_show_at_head", show)
         finding = {
             "file": rel,
-            "line": 4,
-            "title": "get permits unresolved IDs",
+            "line": 5,
+            "title": "registry.get() permits unresolved IDs",
             "detail": "resolve_contract_id() returns None, yielding the wrong contract.",
         }
         rendered, records = dispatch.build_prior_file_excerpts(
@@ -1132,23 +1133,33 @@ class TestApply:
         )
         assert "0004| def resolve_contract_id(candidate: str) -> str:" in rendered
         assert "def resolve_contract_id(fake)" not in rendered
-        assert "## agents/_governance.py:3 (get)" in rendered
-        assert "## agents/_governance.py:6 (get)" not in rendered
+        assert "## agents/_governance.py:3 (ConsentRegistry.get)" in rendered
+        assert "## agents/_governance.py:7 (OtherRegistry.get)" in rendered
         assert any(
             r.get("file") == "scripts/other.py" and r["status"] == "evidence_unavailable"
             for r in records
         )
 
-    def test_global_rank_precedes_first_file_budget(
+    def test_busy_first_file_keeps_required_definition_and_records_unresolved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         sources = {
-            "scripts/first.py": ["def incidental():", "    return '" + "x" * 300 + "'", "target()"],
+            "scripts/first.py": [
+                *(f"def incidental{i}(): return {i}" for i in range(50)),
+                "target()",
+            ],
             "scripts/second.py": ["def target(): return 1"],
         }
         monkeypatch.setattr(dispatch, "_git_show_at_head", lambda _r, _s, p: sources.get(p))
         rendered, records = dispatch.build_prior_file_excerpts(
-            [{"file": "scripts/first.py", "line": 3, "title": "incidental target"}],
+            [
+                {
+                    "file": "scripts/first.py",
+                    "line": 51,
+                    "title": " ".join(f"incidental{i}" for i in range(50))
+                    + " target() missing_helper",
+                }
+            ],
             repo_root=tmp_path,
             head_sha="a" * 40,
             changed_files=("scripts/first.py", "scripts/second.py"),
@@ -1156,12 +1167,12 @@ class TestApply:
             radius=0,
         )
         assert "## scripts/second.py:1 (target)" in rendered
+        assert not any(r.get("refusal") for r in records)
         assert any(
-            r["status"] == "definitions_not_rendered"
-            and "incidental" in r["symbols"]
-            and r["refusal"]
+            r.get("status") == "symbols_unresolved" and "missing_helper" in r["symbols"]
             for r in records
         )
+        assert any(r.get("status") == "incidental_omitted" and r["count"] >= 50 for r in records)
 
     def test_25th_file_and_symbol_cap(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1177,7 +1188,7 @@ class TestApply:
                 {
                     "file": "scripts/call.py",
                     "line": 1,
-                    "title": " ".join(f"symbol{i}" for i in range(65)),
+                    "title": " ".join(f"`symbol{i}`" for i in range(65)),
                 }
             ],
             repo_root=tmp_path,
@@ -1187,7 +1198,8 @@ class TestApply:
         )
         assert f"## {files[-1]}:1 (symbol0)" in rendered
         assert any(
-            r["status"] == "definitions_not_rendered" and "symbol64" in r["symbols"]
+            r["status"] == "definitions_not_rendered"
+            and any("symbol64" in name for name in r["definitions"])
             for r in records
         )
 
@@ -1202,7 +1214,10 @@ class TestApply:
             repo_root=tmp_path,
             head_sha="a" * 40,
         )
-        assert any(r.get("status") == "source_parse_error" and r.get("refusal") for r in records)
+        assert any(r.get("status") == "source_parse_error" for r in records)
+        assert any(
+            r.get("status") == "symbols_unresolved" and "broken" in r["symbols"] for r in records
+        )
 
         state["lines"] = ["def wide():"] + [f"    value_{i} = '{'x' * 160}'" for i in range(200)]
         rendered, records = dispatch.build_prior_file_excerpts(
@@ -1236,7 +1251,11 @@ class TestApply:
             "build_prior_file_excerpts",
             lambda *args, **kwargs: (
                 excerpt,
-                [{"file": "shared/foo.py", "status": "definition_shown"}],
+                [
+                    {"file": "shared/foo.py", "status": "definition_shown"},
+                    {"status": "symbols_unresolved", "symbols": ["missing_helper"]},
+                    {"status": "incidental_omitted", "count": 50},
+                ],
             ),
         )
         result, _, reviewers, _ = _review(tmp_path / "fits")
@@ -1253,11 +1272,20 @@ class TestApply:
         monkeypatch.setattr(
             dispatch,
             "build_prior_file_excerpts",
-            lambda *args, **kwargs: ("", [{"symbol": "target", "refusal": True}]),
+            lambda *args, **kwargs: (
+                "",
+                [
+                    {
+                        "status": "definitions_not_rendered",
+                        "definitions": ["shared/foo.py:target"],
+                        "refusal": True,
+                    }
+                ],
+            ),
         )
         result, _, reviewers, _ = _review(tmp_path / "budget")
         assert result["status"] == "source_evidence_incomplete"
-        assert result["refusals"][0]["symbol"] == "target"
+        assert "shared/foo.py:target" in result["refusals"][0]["definitions"]
         assert not reviewers.invocations
 
     def test_failed_definition_inclusion_retries_on_later_finding(
@@ -1275,8 +1303,8 @@ class TestApply:
         )
         rendered, records = dispatch.build_prior_file_excerpts(
             [
-                {"file": rel, "line": 1, "title": "target fails"},
-                {"file": rel, "line": 2, "title": "target fails again"},
+                {"file": rel, "line": 1, "title": "target() fails"},
+                {"file": rel, "line": 2, "title": "target() fails again"},
             ],
             repo_root=tmp_path,
             head_sha="a" * 40,

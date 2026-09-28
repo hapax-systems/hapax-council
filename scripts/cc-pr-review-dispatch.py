@@ -3116,34 +3116,22 @@ def _rel_for_display(rel: str) -> str | None:
 
 def _prior_symbol_hints(finding: dict[str, Any]) -> tuple[str, ...]:
     text = f"{finding.get('title') or ''}\n{finding.get('detail') or ''}"
-    hints = list(dict.fromkeys(_IDENTIFIER_RE.findall(text)))
-    if "PAYG endpoint" in text or "primary URL" in text:
-        hints.append("_valid_coding_plan_primary_base_url")
+    hints = []
+    for match in _IDENTIFIER_RE.finditer(text):
+        name = match.group()
+        if (
+            "_" in name
+            or "." in name
+            or sum(c.isupper() for c in name) > 1
+            or text[match.end() :].startswith("(")
+            or (
+                match.start() > 0
+                and text[match.start() - 1] == "`"
+                and text[match.end() :].startswith("`")
+            )
+        ):
+            hints.append(name)
     return tuple(dict.fromkeys(hints))
-
-
-def _claim_ranked_symbols(
-    symbols: tuple[str, ...], detail: str, parsed: ast.Module | None, cited_line: int
-) -> tuple[tuple[int, str], ...]:
-    claim_targets = set(re.findall(r"\b(?:to|of|in)\s+([A-Za-z_]\w*)\b", detail))
-    cited_calls = set()
-    if parsed is not None:
-        cited_calls = {
-            node.func.id if isinstance(node.func, ast.Name) else node.func.attr
-            for node in ast.walk(parsed)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, (ast.Name, ast.Attribute))
-            and node.lineno <= cited_line <= node.end_lineno
-        }
-
-    def priority(symbol: str) -> int:
-        if symbol in cited_calls:
-            return 0 if symbol in claim_targets else 1
-        return 2 if symbol in claim_targets else 3
-
-    return tuple(
-        sorted(((priority(symbol), symbol) for symbol in symbols), key=lambda pair: pair[0])
-    )
 
 
 def _source_tree(source_lines: list[str]) -> ast.Module | None:
@@ -3165,30 +3153,6 @@ def _definition_nodes(tree: ast.Module) -> dict[str, ast.AST]:
 
     visit(tree.body)
     return definitions
-
-
-def _select_definition(
-    definitions: dict[str, ast.AST], symbol: str, parsed: ast.Module, cited_line: int
-) -> ast.AST | None:
-    matches = [
-        (name, node)
-        for name, node in definitions.items()
-        if name == symbol or name.endswith(f".{symbol}")
-    ]
-    if len(matches) == 1:
-        return matches[0][1]
-    for _, node in matches:
-        if node.lineno <= cited_line <= node.end_lineno:
-            return node
-    called = {
-        f"{call.func.value.id}.{call.func.attr}"
-        for call in ast.walk(parsed)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and call.lineno <= cited_line <= call.end_lineno
-    }
-    return next((node for name, node in matches if name in called), None)
 
 
 def _imported_module_path(source_rel: str, node: ast.ImportFrom) -> str | None:
@@ -3249,7 +3213,7 @@ def build_prior_file_excerpts(
     sections: list[str] = []
     records: list[dict[str, Any]] = []
     call_sites: list[tuple[str, dict[str, Any]]] = []
-    claims: list[tuple[int, int, str, str, int]] = []
+    claims: list[tuple[int, str]] = []
     cited_files: list[str] = []
     seen_calls: set[tuple[str, int]] = set()
     skipped: set[str] = set()
@@ -3277,7 +3241,7 @@ def build_prior_file_excerpts(
 
     def skip(rel: str, status: str) -> None:
         if rel not in skipped:
-            records.append({"file": rel, "status": status, "refusal": True})
+            records.append({"file": rel, "status": status})
             skipped.add(rel)
 
     def parsed_source(rel: str) -> tuple[list[str], ast.Module] | None:
@@ -3301,7 +3265,7 @@ def build_prior_file_excerpts(
         elif used_bytes + len(section.encode()) > max_bytes:
             status = "excerpt_budget_exhausted"
         if status:
-            records.append({**record, "status": status, "refusal": True})
+            records.append({**record, "status": status})
             return False
         sections.append(section)
         records.append(record)
@@ -3325,16 +3289,23 @@ def build_prior_file_excerpts(
                     "file": "<omitted:invalid_path>",
                     "line": line,
                     "status": "invalid_path",
-                    "refusal": True,
                 },
             )
             continue
         cited_files.append(rel)
+        symbols = _prior_symbol_hints(finding)
+        claims.extend((finding_index, symbol) for symbol in symbols)
+        text = f"{finding.get('title') or ''}\n{finding.get('detail') or ''}"
+        incidental = set(_IDENTIFIER_RE.findall(text)) - set(symbols)
+        if incidental:
+            records.append(
+                {"file": shown, "status": "incidental_omitted", "count": len(incidental)}
+            )
         source_lines = source(rel)
         if source_lines is None:
             append_section(
                 f"## {shown}:{line} @ {head_sha[:9]}\n\n(evidence_unavailable at pinned head)\n",
-                {"file": shown, "line": line, "status": "evidence_unavailable", "refusal": True},
+                {"file": shown, "line": line, "status": "evidence_unavailable"},
             )
             continue
         if line > len(source_lines):
@@ -3345,14 +3316,10 @@ def build_prior_file_excerpts(
                     "file": shown,
                     "line": line,
                     "status": "line_out_of_range",
-                    "refusal": True,
                     "file_lines": len(source_lines),
                 },
             )
             continue
-        symbols = _prior_symbol_hints(finding)
-        ranked = _claim_ranked_symbols(symbols, str(finding.get("detail") or ""), tree(rel), line)
-        claims.extend((rank, finding_index, symbol, rel, line) for rank, symbol in ranked)
         key = (rel, line)
         if key in seen_calls:
             continue
@@ -3380,8 +3347,9 @@ def build_prior_file_excerpts(
         if claims
         else ()
     )
-    required: dict[tuple[str, int], set[str]] = {}
-    resolved: list[tuple[int, int, str, str, ast.AST, list[str]]] = []
+    required: dict[tuple[str, int], str] = {}
+    resolved: list[tuple[int, str, str, ast.AST, list[str]]] = []
+    resolved_names: set[str] = set()
     for candidate in candidates:
         if (
             _rel_for_display(candidate) is None
@@ -3401,27 +3369,35 @@ def build_prior_file_excerpts(
             if isinstance(node, ast.ImportFrom)
             for alias in node.names
         }
-        for rank, finding_index, symbol, rel, line in claims:
-            resolved_rel = candidate
-            resolved_lines = candidate_lines
-            node = _select_definition(
-                definitions, symbol, candidate_tree, line if candidate == rel else 0
-            )
-            if node is None and symbol in imports:
+        for finding_index, symbol in claims:
+            resolved_rel, resolved_lines = candidate, candidate_lines
+            name_hint = symbol.rsplit(".", 1)[-1]
+            matches = [
+                (name, node)
+                for name, node in definitions.items()
+                if name == name_hint or name.endswith(f".{name_hint}")
+            ]
+            if not matches and symbol in imports:
                 imported_rel, original = imports[symbol]
                 if imported_rel and source(imported_rel) is not None:
                     imported_pair = parsed_source(imported_rel)
                     if imported_pair is not None:
                         resolved_lines, imported_tree = imported_pair
                         node = _definition_nodes(imported_tree).get(original)
-                        resolved_rel = imported_rel
-            if node is None:
-                continue
-            required.setdefault((resolved_rel, node.lineno), set()).add(symbol)
-            resolved.append((rank, finding_index, symbol, resolved_rel, node, resolved_lines))
+                        if node is not None:
+                            matches = [(original, node)]
+                            resolved_rel = imported_rel
+            for qualified, node in matches:
+                resolved_names.add(symbol)
+                required[(resolved_rel, node.lineno)] = qualified
+                resolved.append((finding_index, qualified, resolved_rel, node, resolved_lines))
+
+    unresolved = sorted({symbol for _, symbol in claims} - resolved_names)
+    if unresolved:
+        records.append({"status": "symbols_unresolved", "symbols": unresolved})
 
     rendered_definitions: set[tuple[str, int]] = set()
-    for _, _, symbol, rel, node, lines in sorted(resolved, key=lambda item: item[:2]):
+    for _, qualified, rel, node, lines in sorted(resolved, key=lambda item: item[0]):
         key = (rel, node.lineno)
         if key in rendered_definitions or len(rendered_definitions) >= _EXCERPT_MAX_SYMBOLS:
             continue
@@ -3429,12 +3405,12 @@ def build_prior_file_excerpts(
         record = {
             "file": rel,
             "line": node.lineno,
-            "symbol": symbol,
+            "symbol": qualified,
             "status": "definition_truncated" if truncated else "definition_shown",
             "lines": f"{node.lineno}-{symbol_end}",
         }
         if append_section(
-            f"## {rel}:{node.lineno} ({symbol}) @ {head_sha[:9]}\n\n{snippet}", record
+            f"## {rel}:{node.lineno} ({qualified}) @ {head_sha[:9]}\n\n{snippet}", record
         ):
             rendered_definitions.add(key)
     for section, record in call_sites:
@@ -3444,7 +3420,7 @@ def build_prior_file_excerpts(
         records.append(
             {
                 "status": "definitions_not_rendered",
-                "symbols": sorted({symbol for key in missing for symbol in required[key]}),
+                "definitions": sorted(f"{rel}:{required[(rel, line)]}" for rel, line in missing),
                 "refusal": True,
             }
         )
@@ -3493,11 +3469,11 @@ def build_changed_file_excerpts(
             continue
         source_lines = _git_show_at_head(repo_root, head_sha, rel)
         if source_lines is None:
-            records.append({"file": shown, "status": "evidence_unavailable", "refusal": True})
+            records.append({"file": shown, "status": "evidence_unavailable"})
             continue
         parsed = _source_tree(source_lines)
         if parsed is None:
-            records.append({"file": shown, "status": "source_parse_error", "refusal": True})
+            records.append({"file": shown, "status": "source_parse_error"})
             continue
         definitions = _definition_nodes(parsed)
         for index, symbol in enumerate(symbols):
@@ -3507,7 +3483,6 @@ def build_changed_file_excerpts(
                         "file": shown,
                         "symbols": symbols[index:],
                         "status": "excerpt_limit_exhausted",
-                        "refusal": True,
                     }
                 )
                 break
@@ -3528,7 +3503,6 @@ def build_changed_file_excerpts(
                         "file": shown,
                         "symbol": symbol,
                         "status": "excerpt_budget_exhausted",
-                        "refusal": True,
                     }
                 )
                 continue
