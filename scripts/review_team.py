@@ -493,7 +493,7 @@ class DiffCapacityConfigError(ValueError):
 
 
 def seat_diff_capacity(seat_id: str, registry: Mapping[str, Any]) -> dict[str, Any]:
-    """Declared byte limit and evidence for a seat; new seats inherit unmeasured 80 KB."""
+    """Declared diff and prompt limits; unmeasured seats use measured floors."""
 
     capacity = registry.get("diff_capacity")
     if not isinstance(capacity, Mapping):
@@ -509,7 +509,11 @@ def seat_diff_capacity(seat_id: str, registry: Mapping[str, Any]) -> dict[str, A
     limit = entry.get("limit_bytes")
     prompt_limit = entry.get("prompt_limit_bytes")
     status = entry.get("status")
-    if type(limit) is not int or limit <= 0 or status not in {"measured", "unmeasured"}:
+    if (
+        type(limit) is not int
+        or limit <= 0
+        or status not in {"measured", "measured-refusal", "unmeasured"}
+    ):
         raise DiffCapacityConfigError(
             f"review diff_capacity seat {seat_id} has invalid limit/status"
         )
@@ -517,24 +521,28 @@ def seat_diff_capacity(seat_id: str, registry: Mapping[str, Any]) -> dict[str, A
         raise DiffCapacityConfigError(
             f"review diff_capacity seat {seat_id} has invalid prompt limit"
         )
-    if status == "unmeasured" and limit != 80_000:
-        raise DiffCapacityConfigError(
-            f"review diff_capacity seat {seat_id} must use 80000 unmeasured"
-        )
     if status == "unmeasured":
+        measured_limits = []
         measured_prompt_limits = []
         for measured_id, measured in seats.items():
             if not isinstance(measured, Mapping):
                 raise DiffCapacityConfigError(f"review diff_capacity seat {measured_id} malformed")
             if measured.get("status") == "measured":
+                measured_limit = measured.get("limit_bytes")
                 measured_prompt_limit = measured.get("prompt_limit_bytes")
+                if type(measured_limit) is not int or measured_limit <= 0:
+                    raise DiffCapacityConfigError(
+                        f"review diff_capacity seat {measured_id} has invalid limit/status"
+                    )
                 if type(measured_prompt_limit) is not int or measured_prompt_limit <= 0:
                     raise DiffCapacityConfigError(
                         f"review diff_capacity seat {measured_id} has invalid prompt limit"
                     )
+                measured_limits.append(measured_limit)
                 measured_prompt_limits.append(measured_prompt_limit)
-        if not measured_prompt_limits:
-            raise DiffCapacityConfigError("review diff_capacity has no measured prompt limit")
+        if not measured_limits:
+            raise DiffCapacityConfigError("review diff_capacity has no measured limits")
+        entry["limit_bytes"] = min(limit, min(measured_limits))
         entry["prompt_limit_bytes"] = min(prompt_limit, min(measured_prompt_limits))
     if (
         not isinstance(entry.get("measurement_file"), str)
@@ -1705,9 +1713,11 @@ def seat_partial_diff_coverage(review: Mapping[str, Any]) -> dict[str, Any] | No
     (M142 corollary: partial evidence may stop a merge, never certify one).
     """
 
-    if review.get(DIFF_FULL_FETCH_WITNESSED_FIELD) is True:
-        return None
     full = review.get(DIFF_FULL_BYTES_FIELD)
+    if review.get(DIFF_FULL_FETCH_WITNESSED_FIELD) is True:
+        if type(full) is not int or full < 0:
+            return {"kind": "unrecorded", "delivered_bytes": None, "full_bytes": None}
+        return None
     delivered = review.get(DIFF_DELIVERED_BYTES_FIELD)
     if (
         not isinstance(full, int)
@@ -2467,6 +2477,16 @@ def _dossier_validity_blockers(
     stamped_sizes = {
         r.get(DIFF_FULL_BYTES_FIELD) for r in reviews if type(r.get(DIFF_FULL_BYTES_FIELD)) is int
     }
+    witnessed_without_size = sorted(
+        str(r.get("id"))
+        for r in reviews
+        if r.get(DIFF_FULL_FETCH_WITNESSED_FIELD) is True
+        and (type(r.get(DIFF_FULL_BYTES_FIELD)) is not int or r[DIFF_FULL_BYTES_FIELD] < 0)
+    )
+    if witnessed_without_size:
+        blockers.append(
+            "review_dossier_witnessed_full_fetch_size_missing:" + ",".join(witnessed_without_size)
+        )
     substitution = dossier.get("family_substitution") or {}
     if not isinstance(substitution, Mapping):
         substitution = {}
@@ -2478,6 +2498,8 @@ def _dossier_validity_blockers(
         or substitution.get("size_replaced_seats")
         or ("size_replaced_families" in dossier and len(stamped_sizes) > 1)
     ):
+        if len(stamped_sizes) != 1:
+            blockers.append("review_dossier_size_replacements_diff_size_unproven")
         size_excluded = substitution.get("excluded_for_size", {})
         prompt_excluded = substitution.get("excluded_for_prompt") or {}
         prompt_bytes = substitution.get("prompt_bytes_by_seat") or {}
@@ -2541,6 +2563,19 @@ def _dossier_validity_blockers(
                 "excluded_for_size" in substitution and set(size_excluded) != expected_size_excluded
             ):
                 blockers.append("review_dossier_size_replacements_wrong_for_diff")
+        seated_replaced = sorted({str(r.get("family")) for r in reviews} & set(_note_size_replaced))
+        if seated_replaced:
+            blockers.append(
+                "review_dossier_size_replaced_family_seated:" + ",".join(seated_replaced)
+            )
+    over_limit = sorted(
+        str(r.get("id"))
+        for r in reviews
+        if type(r.get(DIFF_FULL_BYTES_FIELD)) is int
+        and r[DIFF_FULL_BYTES_FIELD] > seat_diff_capacity(str(r.get("id")), registry)["limit_bytes"]
+    )
+    if over_limit:
+        blockers.append("review_dossier_seat_over_diff_capacity:" + ",".join(over_limit))
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
     if degraded_families:
         seated_degraded = sorted({str(r.get("family")) for r in reviews} & degraded_families)

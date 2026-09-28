@@ -1564,6 +1564,72 @@ class TestSizeReplacementNoteValidity:
         )
 
 
+class TestDiffCapacityDossierValidity:
+    @pytest.mark.parametrize(
+        ("case", "blocker"),
+        [
+            ("replaced_seated", "review_dossier_size_replaced_family_seated:gemini"),
+            ("over_capacity", "review_dossier_seat_over_diff_capacity:gemini-1"),
+            ("size_unproven", "review_dossier_size_replacements_diff_size_unproven"),
+        ],
+    )
+    def test_valid_dossier_passes_and_invalid_dossier_blocks(self, case: str, blocker: str) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=50_000),
+                _review("codex-1", "codex", diff_full_bytes=50_000),
+                _review("muse-1", "muse", diff_full_bytes=50_000),
+            ],
+            constitution_notes=tuple(
+                f"family_replaced_for_size:{family}"
+                for family in ("gemini", "glm", "local", "vibe")
+            ),
+        )
+
+        def blockers() -> tuple[str, ...]:
+            return rt._dossier_validity_blockers(
+                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+            )
+
+        assert blockers() == ()
+        if case == "replaced_seated":
+            dossier["reviewers"][2].update(id="gemini-1", family="gemini")
+        elif case == "over_capacity":
+            dossier["reviewers"][2]["id"] = "gemini-1"
+        else:
+            dossier["reviewers"][2]["diff_full_bytes"] = 50_001
+        assert blocker in blockers()
+
+    def test_witnessed_full_fetch_requires_size_for_capacity_gate(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=10_000),
+                _review("codex-1", "codex", diff_full_bytes=10_000),
+                _review(
+                    "gemini-1", "gemini", diff_full_bytes=10_000, diff_full_fetch_witnessed=True
+                ),
+            ],
+        )
+
+        def blockers() -> tuple[str, ...]:
+            return rt._dossier_validity_blockers(
+                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+            )
+
+        assert blockers() == ()
+        del dossier["reviewers"][2]["diff_full_bytes"]
+        assert "review_dossier_witnessed_full_fetch_size_missing:gemini-1" in blockers()
+        assert "review_seat_partial_coverage:gemini-1" in blockers()
+        dossier["reviewers"][2]["diff_full_bytes"] = 50_000
+        assert "review_dossier_seat_over_diff_capacity:gemini-1" in blockers()
+
+
 class TestSynthesizeDossier:
     def test_dossier_persists_scope_metadata(self) -> None:
         rt = _load_review_team_module()
