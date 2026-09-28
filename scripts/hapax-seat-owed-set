@@ -181,11 +181,8 @@ def parse_ts(raw: str | None) -> datetime | None:
 
 BACKLOG_OLDEST = 15
 REPLY_RESIDUAL = (
-    "Reply residual: a seat drop in the sender inbox disposes an ask when re: "
-    "contains the filename, the stem, or a shared #NNNN, or when a later created_at "
-    "shares thread. A reply that does none of those stays owed. A later drop on the "
-    "same thread clears every earlier ask on that thread. A shared #NNNN clears every "
-    "ask that carries that token. Prose in section 5 does not dispose an ask."
+    "Reply residual: a later seat reply needs a disposition and an ask-specific "
+    "re: or disposition line. Shared thread and section 5 prose do not dispose."
 )
 
 
@@ -260,7 +257,6 @@ def _re_names(re_value: str, inbound_name: str, inbound_text: str) -> bool:
 def _reply_disposes(
     inbound_name: str,
     inbound_text: str,
-    inbound_fm: dict[str, str],
     inbound_time: datetime | None,
     replies: list[tuple[str, dict[str, str], str]],
     *,
@@ -269,8 +265,7 @@ def _reply_disposes(
     at: datetime,
 ) -> bool:
     for reply_name, reply_fm, reply_text in replies:
-        if not DISPOSITION_TOKEN.search(reply_text):
-            continue
+        reply_body = reply_text.split("\n---\n", 1)[-1]
         if not _is_seat_from(reply_fm.get("from", ""), process_role, inbox):
             continue
         reply_time = _message_time(reply_fm, reply_name)
@@ -278,17 +273,23 @@ def _reply_disposes(
             continue
         if reply_time is not None and inbound_time is not None and reply_time <= inbound_time:
             continue
-        if _re_names(reply_fm.get("re", ""), inbound_name, inbound_text):
-            return True
-        thread = inbound_fm.get("thread", "")
-        if (
-            thread
-            and reply_fm.get("thread", "") == thread
-            and inbound_time is not None
-            and reply_time is not None
-            and inbound_time < reply_time
-        ):
-            return True
+        for line in reply_body.splitlines():
+            if line.lstrip().startswith(">"):
+                continue
+            token = DISPOSITION_TOKEN.search(line)
+            if token is None:
+                continue
+            if _re_names(line, inbound_name, inbound_text):
+                return True
+            # Only a standalone token can borrow its ask from re:. A token
+            # naming another ask must not dispose this one through re:.
+            standalone = line[: token.start()].strip() == "" and (
+                line[token.end() :].strip() == ""
+                or token.group().lower() in {"held:", "deferred_until:"}
+                and not re.search(r"#\d+|\S+\.md\b", line[token.end() :])
+            )
+            if standalone and _re_names(reply_fm.get("re", ""), inbound_name, inbound_text):
+                return True
     return False
 
 
@@ -424,7 +425,6 @@ def project(
             if _reply_disposes(
                 name,
                 text,
-                msg_fm,
                 when,
                 replies_by_sender.get(sender, []),
                 process_role=seat_from,
