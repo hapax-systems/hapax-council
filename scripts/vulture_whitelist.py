@@ -5435,3 +5435,9 @@ _ = (
     _cp_url_punctuation_flags,
     _cp_within_window,
 )
+
+# The extensionless scripts/capability-envelope-import-audit calls this method;
+# vulture scans Python suffixes and cannot see that live caller.
+from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
+
+_EnvelopeOpenWatch.overflowed

@@ -15,6 +15,8 @@ sentinel when no envelope is applied, so a pass is not vacuous.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
 import os
 import subprocess
@@ -38,7 +40,14 @@ from shared.capability_envelope import (
     execute,
     render,
 )
-from shared.capability_envelope.sentinel import OpenWatch, find_tokens, sentinel_token
+from shared.capability_envelope import sentinel as sentinel_module
+from shared.capability_envelope.sentinel import (
+    _EVENT_HEADER,
+    _IN_OPEN,
+    OpenWatch,
+    find_tokens,
+    sentinel_token,
+)
 
 PROBE = Path(__file__).resolve().parent / "probe_harness.py"
 PYTHON = "/usr/bin/python3"
@@ -416,6 +425,69 @@ def test_masking_follows_symlinks_to_what_they_expose(tmp_path: Path):
     assert "docs/instructions.txt" in masked
 
 
+def test_a_chained_masked_name_symlink_masks_its_final_target(tmp_path: Path):
+    """glm-1's minor (2026-09-28): the round-3 leak was an assumption inside `_masks`, so a chain
+    is pinned by test rather than left to `Path.resolve()`'s semantics alone."""
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "CLAUDE.md", "leaked instructions\n")
+    (checkout / "middle.md").symlink_to(".git/CLAUDE.md")
+    (checkout / "AGENTS.md").symlink_to("middle.md")
+    rendered = render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
+    masked = set(rendered.masked)
+    # The FINAL target is what is masked, not the intermediate link whose name is not masked.
+    assert ".git/CLAUDE.md" in masked
+    assert "middle.md" not in masked
+
+
+@needs_bwrap
+def test_a_chained_masked_name_symlink_reads_empty_in_the_job(tmp_path: Path):
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "CLAUDE.md", "leaked instructions\n")
+    (checkout / "middle.md").symlink_to(".git/CLAUDE.md")
+    (checkout / "AGENTS.md").symlink_to("middle.md")
+    result = execute(
+        render(
+            _sh("cat /work/AGENTS.md; echo CHAIN=$?", workdir=checkout), run_root=tmp_path / "run"
+        ),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "leaked instructions" not in result.stdout, result.stdout
+    assert "CHAIN=0" in result.stdout
+
+
+def test_a_masked_name_inside_dot_git_is_masked(tmp_path: Path):
+    """Codex-1's major on #4784 (2026-09-28): `_masks` pruned `.git` before looking for masked
+    names beneath it, so a checkout containing `.git/AGENTS.md` exposed that file through
+    `/work/.git/AGENTS.md`, although the module's masking guarantee is stated over the workdir.
+    Masked-named FILES inside `.git` are bound empty; nothing else in `.git` is covered, so git
+    keeps working."""
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "AGENTS.md", "leaked instructions\n")
+    _write(checkout / ".git" / "HEAD", "ref: refs/heads/main\n")
+    _write(checkout / ".git" / "config", "[core]\n\trepositoryformatversion = 0\n")
+    rendered = render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
+    masked = set(rendered.masked)
+    assert ".git/AGENTS.md" in masked
+    assert ".git/HEAD" not in masked and ".git/config" not in masked
+
+
+@needs_bwrap
+def test_a_masked_name_inside_dot_git_reads_empty_and_the_rest_of_git_survives(tmp_path: Path):
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "AGENTS.md", "leaked instructions\n")
+    _write(checkout / ".git" / "HEAD", "ref: refs/heads/main\n")
+    script = "cat /work/.git/AGENTS.md; echo GITFILE=$?; cat /work/.git/HEAD"
+    result = execute(
+        render(_sh(script, workdir=checkout), run_root=tmp_path / "run"),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "leaked instructions" not in result.stdout, result.stdout
+    assert "GITFILE=0" in result.stdout
+    assert "ref: refs/heads/main" in result.stdout, "git's own metadata is not covered"
+
+
 def test_a_masked_name_symlinked_into_a_pruned_directory_is_masked(tmp_path: Path):
     """Review of #4784 (gemini-1, confirmed by dev21 under bwrap 0.12.0, 2026-09-28): a
     masked-named symlink whose target also has a masked name was covered NOWHERE. The walk prunes
@@ -563,6 +635,114 @@ def test_the_open_watch_sees_an_open_and_refuses_a_missing_sentinel(tmp_path: Pa
         pass
 
 
+def test_the_open_watch_refuses_when_the_inotify_instance_cannot_be_created(
+    tmp_path: Path, monkeypatch
+):
+    """Review of #4784 (codex-1, glm-1, 2026-09-28): the `inotify_init1` failure branch and its
+    next action had no direct test; the missing-sentinel test above exercises only
+    `inotify_add_watch`. An observation that cannot be established must refuse, never report an
+    empty set that reads as "nothing was opened"."""
+
+    class _Libc:
+        @staticmethod
+        def inotify_init1(_flags: int) -> int:
+            return -1
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: _Libc())
+    monkeypatch.setattr(ctypes, "get_errno", lambda: errno.ENFILE)
+    sentinel_file = _write(tmp_path / "sentinel.md", "x\n")
+    with pytest.raises(OSError, match="inotify_init1 failed.*next action"):
+        with OpenWatch([sentinel_file]):
+            pass
+
+
+def test_the_open_watch_sees_a_grandchild_that_outlives_its_parent(tmp_path: Path):
+    """Clause (6) (glm-1's minor on #4784, re-ruled on 2026-09-28): the drain used to run once at
+    `__exit__`, so an event queued after the process the caller waited for had returned was lost.
+    A grandchild that closes the pipes and opens a sentinel afterwards is still recorded: the
+    drain settles after the last event instead of reading once."""
+    seen = _write(tmp_path / "seen.md", "x\n")
+    inner = f"import time; time.sleep(0.05); open({str(seen)!r}).read()"
+    child = (
+        "import subprocess, sys\n"
+        "subprocess.Popen("
+        f"[sys.executable, '-c', {inner!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    )
+    with OpenWatch([seen]) as watch:
+        subprocess.run([sys.executable, "-c", child], check=True, timeout=60)
+    assert watch.opened() == {seen}
+
+
+def test_the_drain_keeps_a_partial_event_for_the_next_read(tmp_path: Path, monkeypatch):
+    """An inotify event can straddle two reads; a drain that restarts parsing at each read
+    misparses the tail. The leftover bytes are carried into the next read, so the second event is
+    recorded instead of lost."""
+    first = _write(tmp_path / "first.md", "x\n")
+    second = _write(tmp_path / "second.md", "y\n")
+    with OpenWatch([first, second]) as watch:
+        by_path = {path: wd for wd, path in watch._watches.items()}
+        blob = _EVENT_HEADER.pack(by_path[first], 0, 0, 0) + _EVENT_HEADER.pack(
+            by_path[second], 0, 0, 0
+        )
+        # The second event's header is split: this read ends one byte into it.
+        reads = iter([blob[: _EVENT_HEADER.size + 1], blob[_EVENT_HEADER.size + 1 :]])
+
+        def _read(fd: int, size: int) -> bytes:
+            try:
+                return next(reads)
+            except StopIteration:
+                raise BlockingIOError from None
+
+        monkeypatch.setattr(os, "read", _read)
+        watch._drain()
+    assert watch.opened() == {first, second}
+
+
+def test_the_watch_reports_an_overflowed_queue(tmp_path: Path, monkeypatch):
+    """Clause (7) of the row (codex-1, 2026-09-28): the drain unpacked the mask and never read it,
+    so an `IN_Q_OVERFLOW` event (mask 0x4000, wd -1) passed unnoticed and the lost opens made an
+    audit read clean. The watch reports the overflow so the verdict can be inconclusive."""
+    seen = _write(tmp_path / "seen.md", "x\n")
+    with OpenWatch([seen]) as watch:
+        overflow = _EVENT_HEADER.pack(-1, 0x4000, 0, 0)
+        reads = iter([overflow])
+
+        def _read(fd: int, size: int) -> bytes:
+            try:
+                return next(reads)
+            except StopIteration:
+                raise BlockingIOError from None
+
+        monkeypatch.setattr(os, "read", _read)
+        watch._drain()
+    assert watch.overflowed() is True
+
+
+def test_the_watch_reports_a_truncated_drain(tmp_path: Path, monkeypatch):
+    """Clause (7) follow-up (codex-1's major on #4793, 2026-09-28): the settle bound used to exit
+    with no flag, so a queue still being written at the bound read as a complete observation. The
+    bound now sets `_truncated`, and the caller treats it like an overflow."""
+    seen = _write(tmp_path / "seen.md", "x\n")
+    monkeypatch.setattr(sentinel_module, "_SETTLE_BOUND_SECONDS", 0.05)
+    monkeypatch.setattr(sentinel_module, "_SETTLE_SECONDS", 10.0)
+
+    class _EndlessRead:
+        """A queue that keeps producing an event for a watched path, forever."""
+
+        def __init__(self, wd: int) -> None:
+            self._event = _EVENT_HEADER.pack(wd, _IN_OPEN, 0, 0)
+
+        def __call__(self, fd: int, size: int) -> bytes:
+            return self._event
+
+    with OpenWatch([seen]) as watch:
+        wd = next(iter(watch._watches))
+        monkeypatch.setattr(os, "read", _EndlessRead(wd))
+        watch._drain(settle=True)
+    assert watch.truncated() is True
+
+
 # ---------------------------------------------------------------- carrier failures
 
 
@@ -619,7 +799,20 @@ def test_hooks_or_mcp_for_a_harness_without_a_renderer_are_refused(world: World,
         )
 
 
+def _in_operator_home(value: str) -> bool:
+    home = str(Path.home())
+    return value == home or value.startswith(home + "/")
+
+
 def test_rendered_argv_never_exposes_root_or_the_operator_home(world: World, tmp_path: Path):
+    """glm-1's minor (2026-09-28): the scan covered bind PAIRS only, so `--symlink` destinations,
+    `--tmpfs` destinations and `--setenv` values were outside it. Those are the carrier's own
+    generated entries, and each is now scanned like a bind destination.
+
+    The declaration's own paths are deliberately not asserted home-free: a declared job may
+    legitimately run a binary that lives under the operator's checkout, and the carrier's job here
+    is to cover the entries IT generates.
+    """
     rendered = render(world.declaration(), run_root=tmp_path / "run")
     argv = list(rendered.argv)
     assert "--clearenv" in argv
@@ -629,6 +822,16 @@ def test_rendered_argv_never_exposes_root_or_the_operator_home(world: World, tmp
             src, dst = argv[i + 1], argv[i + 2]
             assert src != "/" and dst != "/", "the host root is never bound whole"
             assert src != home and dst != home, "the operator's home is never bound whole"
+        elif arg == "--symlink":
+            assert not _in_operator_home(argv[i + 2]), argv[i + 2]
+        elif arg == "--tmpfs":
+            assert not _in_operator_home(argv[i + 1]), argv[i + 1]
+        elif arg == "--setenv":
+            assert not _in_operator_home(argv[i + 2]), argv[i + 2]
+    # The three forms above are present, so the scan is not vacuous over them: `--tmpfs` covers
+    # every masked directory and the private /tmp, and `--setenv` covers the fixed base and the
+    # declaration's env. `--symlink` appears only where the host's root links are symlinks.
+    assert "--tmpfs" in argv and "--setenv" in argv
     masked = set(rendered.masked)
     assert {
         "CLAUDE.md",
