@@ -18,9 +18,11 @@ way the live pii-guard doesn't block the writing of this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -41,7 +43,11 @@ RAG_AUDIO = "rag-" + "sources/" + "audio/clip.wav"
 
 
 def _run(
-    payload: dict, *, cwd: Path | None = None, env: dict[str, str] | None = None
+    payload: dict,
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    hook: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     # Never read the host's real principal registry from a test: default it to
     # a path that does not exist unless the test supplies its own.
@@ -51,7 +57,7 @@ def _run(
         **(env or {}),
     }
     return subprocess.run(
-        ["bash", str(HOOK)],
+        ["bash", str(hook or HOOK)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -66,6 +72,91 @@ def _edit(file_path: str, content: str, *, tool: str = "Edit", field: str = "new
         "tool_name": tool,
         "tool_input": {"file_path": file_path, field: content},
     }
+
+
+def test_registered_token_in_basename_blocks_without_path_echo(tmp_path: Path) -> None:
+    token = "Zorblaxine"
+    registry = tmp_path / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {token}\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    target = repo / f"report-{token}.md"
+
+    result = _run(
+        _edit(str(target), "clean content"),
+        cwd=repo,
+        env={"HAPAX_PRINCIPAL_NAME_MAP": str(registry)},
+    )
+
+    assert result.returncode == 2
+    assert hashlib.sha256(str(target).encode()).hexdigest() in result.stderr
+    assert str(target) not in result.stderr + result.stdout
+    assert token not in result.stderr + result.stdout
+
+
+def test_clean_basename_stays_green_with_registry(tmp_path: Path) -> None:
+    registry = tmp_path / "principal-name-map.yaml"
+    registry.write_text("principal-a2: Zorblaxine\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+    result = _run(
+        _edit(str(repo / "report-clean.md"), "clean content"),
+        cwd=repo,
+        env={"HAPAX_PRINCIPAL_NAME_MAP": str(registry)},
+    )
+
+    assert result.returncode == 0
+
+
+def test_registered_token_in_empty_binary_basename_blocks_without_path_echo(
+    tmp_path: Path,
+) -> None:
+    token = "Zorblaxine"
+    registry = tmp_path / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {token}\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    target = repo / f"report-{token}.png"
+
+    result = _run(
+        _edit(str(target), ""),
+        cwd=repo,
+        env={"HAPAX_PRINCIPAL_NAME_MAP": str(registry)},
+    )
+
+    assert result.returncode == 2
+    assert hashlib.sha256(str(target).encode()).hexdigest() in result.stderr
+    assert str(target) not in result.stderr + result.stdout
+
+
+def test_basename_uses_content_patterns_without_registry(tmp_path: Path) -> None:
+    hook = tmp_path / "hooks" / "scripts" / HOOK.name
+    hook.parent.mkdir(parents=True)
+    source, replacements = re.subn(
+        r'(if echo "\$new_content" \| grep -qiP )\'[^\']+\'',
+        lambda match: match.group(1) + "'Fauxglyph'",
+        HOOK.read_text(encoding="utf-8"),
+    )
+    assert replacements == 2
+    hook.write_text(source, encoding="utf-8")
+    shutil.copyfile(
+        REPO_ROOT / "hooks" / "scripts" / "principal-name-map.sh",
+        hook.parent / "principal-name-map.sh",
+    )
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    target = repo / "report-Fauxglyph.md"
+
+    result = _run(_edit(str(target), "clean content"), cwd=repo, hook=hook)
+
+    assert result.returncode == 2
+    assert hashlib.sha256(str(target).encode()).hexdigest() in result.stderr
+    assert str(target) not in result.stderr + result.stdout
+    assert (
+        _run(_edit(str(repo / "report-clean.md"), "clean content"), cwd=repo, hook=hook).returncode
+        == 0
+    )
 
 
 # ── Block path: PII patterns ───────────────────────────────────────
