@@ -1352,6 +1352,114 @@ class TestSizeReplacementNoteValidity:
             == ()
         )
 
+    def test_live_capacity_evidence_binds_diff_head_and_note(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        note = tmp_path / "task-x.md"
+        note.write_text("task context", encoding="utf-8")
+        head = "a" * 40
+        view_heads = [head, head]
+        calls = 0
+
+        def gh(cmd: list[str], **_kwargs) -> SimpleNamespace:
+            nonlocal calls
+            calls += 1
+            body = "diff text" if "diff" in cmd else json.dumps({"headRefOid": view_heads.pop(0)})
+            return SimpleNamespace(returncode=0, stdout=body)
+
+        monkeypatch.setattr(rt.subprocess, "run", gh)
+        constituted_at = datetime.now(UTC).isoformat()
+        evidence = rt._live_capacity_evidence(
+            99,
+            head,
+            ("gemini-1",),
+            note_path=note,
+            frontmatter={"pr_repo": "hapax-systems/hapax-council"},
+            registry=rt.load_lens_registry(),
+            constituted_at=constituted_at,
+        )
+        assert calls == 3
+        assert evidence is not None and evidence[0] == len("diff text")
+        assert evidence[1]["gemini-1"] > evidence[0]
+        view_heads[:] = [head, "b" * 40]
+        assert (
+            rt._live_capacity_evidence(
+                99,
+                "a" * 40,
+                ("gemini-1",),
+                note_path=note,
+                frontmatter={"pr_repo": "hapax-systems/hapax-council"},
+                registry=rt.load_lens_registry(),
+                constituted_at=constituted_at,
+            )
+            is None
+        )
+        note.write_text("changed task context", encoding="utf-8")
+        changed_at = datetime.fromisoformat(constituted_at).timestamp() + 1
+        os.utime(note, (changed_at, changed_at))
+        view_heads[:] = [head, head]
+        assert (
+            rt._live_capacity_evidence(
+                99,
+                head,
+                ("gemini-1",),
+                note_path=note,
+                frontmatter={"pr_repo": "hapax-systems/hapax-council"},
+                registry=rt.load_lens_registry(),
+                constituted_at=constituted_at,
+            )
+            is None
+        )
+
+    def test_public_validity_gate_uses_live_prompt_measurer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        ceiling = rt.seat_diff_capacity("gemini-1", registry)["prompt_limit_bytes"]
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=10_000),
+                _review("codex-1", "codex", diff_full_bytes=10_000),
+                _review("glm-1", "glm", diff_full_bytes=10_000),
+            ],
+            constitution_notes=("family_replaced_for_size:gemini",),
+        )
+        dossier["family_substitution"] = {
+            "excluded_for_prompt": {
+                "gemini": {"prompt_bytes": ceiling + 1, "prompt_limit_bytes": ceiling}
+            },
+            "prompt_bytes_by_seat": {"gemini-1": ceiling + 1},
+        }
+        note = tmp_path / "task-x.md"
+        note.write_text("task context", encoding="utf-8")
+        rt.review_dossier_path(note, "task-x").write_text(yaml.safe_dump(dossier), encoding="utf-8")
+        calls: list[tuple[int, str, tuple[str, ...]]] = []
+        live_prompt_bytes = ceiling - 1
+
+        def measure(pr: int, sha: str, seats: tuple[str, ...], **_kwargs):
+            calls.append((pr, sha, seats))
+            return 10_000, {"gemini-1": live_prompt_bytes}
+
+        monkeypatch.setattr(rt, "_live_capacity_evidence", measure)
+        frontmatter = {"task_id": "task-x", "pr": 99, "pr_repo": "hapax-systems/hapax-council"}
+
+        def blockers() -> tuple[str, ...]:
+            return rt.review_dossier_validity_blockers(
+                frontmatter,
+                note,
+                pr_head_sha="a" * 40,
+                registry=registry,
+                route_blocked_families={},
+            )
+
+        assert "review_dossier_prompt_size_unverified:gemini" in blockers()
+        assert calls == [(99, "a" * 40, ("gemini-1",))]
+        live_prompt_bytes = ceiling + 1
+        assert blockers() == ()
+
     @pytest.mark.parametrize(
         ("case", "blocker"),
         [
@@ -2466,6 +2574,10 @@ class TestVerdictBlockers:
             self._frontmatter(), note, pr_head_sha="a" * 40, pr_number=100
         )
         assert "review_dossier_pr_mismatch:99!=100" in blockers
+        fallback = rt.review_dossier_validity_blockers(
+            {"task_id": "task-x", "pr": 100}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_pr_mismatch:99!=100" in fallback
 
     def test_unknown_reviewer_family_blocks_even_when_not_accepting(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
