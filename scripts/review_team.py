@@ -21,6 +21,7 @@ the admission blockers; the dispatcher killswitch is
 
 from __future__ import annotations
 
+import argparse
 import ast
 import fnmatch
 import json
@@ -30,7 +31,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -2586,10 +2587,10 @@ def t2_family_floor_release(
     ``accepts`` are the checklist-complete accepts the admission gate counted. The rule
     holds only for a row whose ``risk_tier`` is T2 reviewed by a ``t2_standard`` team, with
     the accept quorum met and at least one accept from a family other than the writer's.
-    The writer's families are the dossier's own recorded ones -- an observed authoring
-    identity, never the row's lane name (a name is compatible with any model, so reading
-    one here would hand the rule a family the execution record never supported). A dossier
-    that records no writer family refuses the rule.
+    Until the dispatch path records observed authoring identity, exclude both the
+    dossier's recorded families and the current row lane's transport family. A
+    reassignment after dispatch must not weaken the writer set. A dossier that
+    records no writer family still refuses the rule.
     """
 
     if frontmatter is None:
@@ -2602,6 +2603,12 @@ def t2_family_floor_release(
         quorum = int(registry["sizing"][team_class]["quorum_accept"])
     except (KeyError, TypeError, ValueError):
         return None
+    lane = frontmatter.get("assigned_to")
+    family = dossier.get("writer_family")
+    if not isinstance(lane, str) or not lane.strip():
+        return None
+    if not isinstance(family, str) or not family.strip():
+        return None
     writer_families = {
         str(dossier.get(field) or "").strip()
         for field in ("writer_family", "constitution_writer_family")
@@ -2609,6 +2616,13 @@ def t2_family_floor_release(
     writer_families.discard("")
     if not writer_families:
         return None
+    try:
+        row_writer = writer_family_for_lane(lane, registry)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not isinstance(row_writer, str) or not row_writer.strip():
+        return None
+    writer_families.add(row_writer)
     distinct = [r for r in accepts if str(r.get("family")) not in writer_families]
     if len(accepts) < quorum or not distinct:
         return None
@@ -3378,3 +3392,26 @@ def review_team_verdict_blockers(
         diff_size_measurer=diff_size_measurer,
         capacity_evidence_measurer=capacity_evidence_measurer,
     )
+
+
+def inspect_writer_identity(argv: Sequence[str] | None = None) -> int:
+    """Print the observed claim/session identity without dispatching a review."""
+
+    parser = argparse.ArgumentParser(description="Inspect an authoring execution identity")
+    parser.add_argument("task_id")
+    parser.add_argument("lane")
+    parser.add_argument("--head-committed-at", type=int)
+    args = parser.parse_args(argv)
+    identity = observed_writer_identity(
+        args.task_id,
+        args.lane,
+        load_lens_registry(),
+        head_committed_at=args.head_committed_at,
+    )
+    json.dump(asdict(identity), sys.stdout, indent=2)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(inspect_writer_identity())
