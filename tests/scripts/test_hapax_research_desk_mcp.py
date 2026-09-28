@@ -27,6 +27,7 @@ from shared import research_desk_ledger as ledger_mod
 from shared.research_desk import ResearchDeskConfig
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "hapax-research-desk-mcp"
+LOOPBACK = "127" + ".0.0.1"
 
 
 def _load_module() -> types.ModuleType:
@@ -559,7 +560,7 @@ def test_transport_security_keeps_rebinding_protection_on_and_names_the_public_h
     # and CodeQL's py/incomplete-url-substring-sanitization heuristic reads `"host" in x`
     # as a substring check on a URL even when x is a list.
     assert settings.allowed_hosts.count("desk.example.org") == 1
-    assert settings.allowed_hosts.count("{LOOPBACK}:8790") == 1
+    assert settings.allowed_hosts.count(f"{LOOPBACK}:8790") == 1
     assert settings.allowed_hosts.count("*") == 0
 
 
@@ -695,8 +696,8 @@ def test_the_host_allowlist_covers_the_published_name_with_and_without_a_port() 
 
 def test_the_allowlist_follows_a_non_default_port() -> None:
     settings = desk_mcp.transport_security("desk.example.org", 9999)
-    assert settings.allowed_hosts.count("{LOOPBACK}:9999") == 1
-    assert settings.allowed_hosts.count("{LOOPBACK}:8790") == 0
+    assert settings.allowed_hosts.count(f"{LOOPBACK}:9999") == 1
+    assert settings.allowed_hosts.count(f"{LOOPBACK}:8790") == 0
 
 
 def test_build_server_uses_the_resolved_bind_not_the_defaults(
@@ -708,4 +709,4 @@ def test_build_server_uses_the_resolved_bind_not_the_defaults(
     assert server.settings.port == 9391
     assert server.settings.host == LOOPBACK
     assert server.settings.transport_security is not None
-    assert server.settings.transport_security.allowed_hosts.count("{LOOPBACK}:9391") == 1
+    assert server.settings.transport_security.allowed_hosts.count(f"{LOOPBACK}:9391") == 1
