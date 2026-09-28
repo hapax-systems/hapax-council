@@ -1,9 +1,9 @@
 # Capacity-gap signal v1
 
 The 15-minute timer writes `~/.cache/hapax/capacity-gap-signal-state.json` (`status_line` for Reins) and mails the §0 coordinator seat.
-It reads Fugu's current tmux wall/reset and the public OpenRouter and Featherless `/v1/models` catalogues. Space Bunny is available only while both token prices are exactly zero; no model call is made.
+It reads the last 120 lines of provider tmux panes for quota walls (including Kimi's 403 and Fugu's dated reset) and the public OpenRouter and Featherless `/v1/models` catalogues. Space Bunny is available only while both token prices are exactly zero; no model call is made.
 
-Idle requires a flat 15-minute request counter. Unserved GPU metal needs two samples and headroom; TP workers join their endpoint. MiMo backlog uses manifest minus DONE rows. Changed gaps mail once, persistent gaps after 30 minutes, clear sets never. Stale inputs mail `INPUT_STALE`.
+Idle requires a flat 15-minute request counter. Unserved GPU metal needs two samples and headroom; TP workers join their endpoint. MiMo backlog uses manifest minus DONE rows, including the seat's Talus completion readback when the local kit ledger is still blank. Changed gaps mail once, persistent gaps after 30 minutes, clear sets never. Stale inputs mail `INPUT_STALE`.
 
 ## Seat-owned post-merge activation
 

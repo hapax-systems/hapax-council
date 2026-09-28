@@ -288,7 +288,10 @@ def waiting_demand(rows: list[dict[str, Any]], walled_families: set[str]) -> Dem
         ):
             demand.waiting_rows.append(task_id)
         for family in walled_families:
-            if family in assigned and status not in {"done", "closed", "cancelled", "abandoned"}:
+            held_by_family = assigned == family or assigned.startswith(
+                (f"{family}-", f"cx-{family}")
+            )
+            if held_by_family and status not in {"done", "closed", "cancelled", "abandoned"}:
                 demand.walled_rows.setdefault(family, []).append(task_id)
     return demand
 
@@ -492,12 +495,12 @@ def catalogue_capabilities(catalogues: dict[str, dict[str, Any] | None]) -> dict
     return states
 
 
-def fugu_panes() -> dict[str, str]:
+def provider_panes() -> dict[str, str]:
     names = run(["tmux", "ls", "-F", "#{session_name}"], 5).splitlines()
     return {
-        name: run(["tmux", "capture-pane", "-pt", name, "-S", "-40"], 5)
+        name: run(["tmux", "capture-pane", "-pt", name, "-S", "-120"], 5)
         for name in names
-        if name.startswith("hapax-fugu-")
+        if re.fullmatch(r"hapax-[a-z][a-z0-9]*-.+", name)
     }
 
 
@@ -522,6 +525,27 @@ def fugu_wall(panes: dict[str, str], now: datetime) -> tuple[str, str | None]:
         if reset > now:
             resets.append(reset)
     return ("walled", stamp(max(resets))) if resets else ("unknown", None)
+
+
+def provider_walls(panes: dict[str, str], now: datetime) -> dict[str, tuple[str, str | None]]:
+    """Classify quota walls from provider panes without retaining pane text."""
+    walls: dict[str, tuple[str, str | None]] = {}
+    for name, pane in panes.items():
+        match = re.fullmatch(r"hapax-([a-z][a-z0-9]*)-.+", name)
+        if not match:
+            continue
+        family = match.group(1)
+        if family == "fugu":
+            state, reset = fugu_wall({name: pane}, now)
+            if state == "walled":
+                walls[family] = (state, reset)
+            continue
+        if re.search(
+            r"(?is)(?:usage\s+limit|quota\s+(?:exhausted|limit|will reset)|rate\s+limit\s+(?:exceeded|reached))",
+            pane,
+        ):
+            walls[family] = ("walled", None)
+    return walls
 
 
 def _claude_pace(repo: Path) -> tuple[str, str] | None:
@@ -579,6 +603,18 @@ def _appliance_demand(bus: Path) -> int:
                 and fields[0].isdigit()
                 and fields[1] == "DONE"
             }
+            # The local kit is a blank copy; Talus owns the execution ledger.
+            # Its seat readback certifies a complete remote set for this manifest.
+            verification = kit.parent / "VERIFY-v2.md"
+            if verification.is_file():
+                report = verification.read_text(encoding="utf-8")
+                match = re.search(
+                    r"Talus readback:[^\n]*`LEDGER-v2\.md` has exactly ([\d,]+) "
+                    r"unique task rows, no gaps, all marked `DONE`",
+                    report,
+                )
+                if match and int(match.group(1).replace(",", "")) == total:
+                    return 0
             return max(0, total - len(done))
         except (OSError, ValueError, KeyError, TypeError):
             pass
@@ -655,9 +691,9 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     quota_fresh = bool(quota)
     codex_state, codex_detail = codex_headroom(args.codex_sessions, now)
     quota["codex"] = codex_state
-    panes = fugu_panes()
-    fugu_state, fugu_reset = fugu_wall(panes, now)
-    quota["fugu"] = fugu_state
+    panes = provider_panes()
+    pane_walls = provider_walls(panes, now)
+    quota.update({family: value[0] for family, value in pane_walls.items()})
     states.update(quota)
     rows = read_tasks(args.tasks)
     walled = {key for key, value in quota.items() if value == "walled"}
@@ -710,7 +746,7 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
             "tailnet": bool(tailnet),
             "provider-catalogues": "unknown" not in catalogue_states.values(),
             "quota-ledger": quota_fresh,
-            "fugu-panes": bool(panes),
+            "provider-panes": bool(panes),
         },
     )
     for endpoint in answering:
@@ -733,7 +769,7 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     state["request_counters"] = request_counters
     state["known_endpoints"] = sorted(known | answering)
     _write_state(args.state, state)
-    detail = f"Waiting rows: {len(demand.waiting_rows)}; review queue: {demand.review_queue}; writer queue: {demand.writer_queue}; MiMo queued work: {demand.appliance_queue}. {codex_detail}. Fugu={fugu_state}, reset={fugu_reset or 'unknown'}; Featherless={catalogue_states['featherless']}; Space Bunny={catalogue_states['space-bunny']}. {pace[1] if pace else 'Claude pace=within line or unknown'}. Endpoint fit remains unmeasured unless a work-spec profile supplies it. TP membership: {json.dumps({key: sorted(value) for key, value in members.items()}, sort_keys=True)}"
+    detail = f"Waiting rows: {len(demand.waiting_rows)}; review queue: {demand.review_queue}; writer queue: {demand.writer_queue}; MiMo queued work: {demand.appliance_queue}. {codex_detail}. Provider pane walls={json.dumps({family: {'state': value[0], 'reset': value[1] or 'unknown'} for family, value in sorted(pane_walls.items())}, sort_keys=True)}; Featherless={catalogue_states['featherless']}; Space Bunny={catalogue_states['space-bunny']}. {pace[1] if pace else 'Claude pace=within line or unknown'}. Endpoint fit remains unmeasured unless a work-spec profile supplies it. TP membership: {json.dumps({key: sorted(value) for key, value in members.items()}, sort_keys=True)}"
     recipient, inbox_name = seat_role(args.seat_document)
     deliver(gaps, args.state, args.lanebus / inbox_name, now, detail, recipient=recipient)
     return gaps
