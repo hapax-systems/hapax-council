@@ -207,6 +207,27 @@ def test_fetch_of_a_delivered_row_still_works(desk: ResearchDeskConfig) -> None:
     assert get_request(desk, "req-done").status == "delivered"
 
 
+def test_symlinked_request_cannot_read_outside_the_active_directory(
+    desk: ResearchDeskConfig,
+) -> None:
+    path = write_request(desk, "req-symlink")
+    outside = desk.vault_root / "outside.md"
+    path.rename(outside)
+    path.symlink_to(outside)
+    with pytest.raises(ResearchDeskError) as exc:
+        get_request(desk, "req-symlink")
+    assert exc.value.reason_code == "request_not_found"
+    listed, _ = list_open_requests(desk)
+    assert listed == []
+
+
+def test_request_with_control_character_is_malformed(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-control", body="brief\x01payload")
+    listed, malformed = list_open_requests(desk)
+    assert listed == []
+    assert [row.reason_code for row in malformed] == ["request_control_character"]
+
+
 # --------------------------------------------------------------------------- #
 
 # Content screening: a safe, independently usable domain function.
@@ -222,6 +243,19 @@ def test_images_are_demoted_to_links_so_nothing_auto_loads() -> None:
     assert result.images == 1
     assert "![" not in result.markdown
     assert "[image withheld — a beacon](https://tracker.example/p.gif)" in result.markdown
+
+
+def test_raw_html_image_with_backtick_cannot_break_out_of_neutralization() -> None:
+    result = neutralize_markdown('<img src="https://tracker.example/x`y">')
+    assert result.images == 1
+    assert "<img" not in result.markdown
+    assert "&lt;img" in result.markdown
+
+
+def test_control_byte_in_link_target_is_neutralized() -> None:
+    result = neutralize_markdown("[x](\x01https://example.org)")
+    assert result.links == 1
+    assert "](\x01https:" not in result.markdown
 
 
 @pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]"])
@@ -249,7 +283,7 @@ def test_excessively_nested_image_label_is_removed_whole() -> None:
 def test_raw_html_images_are_defanged_too() -> None:
     result = neutralize_markdown('text <img src="http://tracker.example/p.gif"> more')
     assert result.images == 1
-    assert '`<img src="http://tracker.example/p.gif">`' in result.markdown
+    assert '&lt;img src="http://tracker.example/p.gif"&gt;' in result.markdown
 
 
 @pytest.mark.parametrize(

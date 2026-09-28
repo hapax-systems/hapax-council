@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,7 @@ LANEBUS_SUBPATH = Path("30-areas") / "hapax" / "lanebus"
 DEFAULT_DELIVERY_LANE = "cx-blue"
 
 #: Local (never NFS) state root. Per-request delivery locks live here.
-DEFAULT_STATE_ROOT = Path.home() / ".cache" / "hapax" / "research-desk"
+DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "hapax" / "research-desk"
 
 MAX_LIST_LIMIT = 50
 DEFAULT_LIST_LIMIT = 10
@@ -66,7 +67,6 @@ MAX_CITATION_TITLE_CHARS = 512
 MAX_REQUEST_BODY_BYTES = 128 * 1024
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_STATUS_LINE_RE = re.compile(r"^status:[ \t].*$|^status:$", re.MULTILINE)
 #: Control characters that have no business in vault markdown. Tab, newline and
 #: carriage return are excluded because they are ordinary markdown.
 _FORBIDDEN_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -288,6 +288,8 @@ def _display_target(target: str) -> str:
 
 def _scheme_of(target: str) -> str:
     candidate = _display_target(target)
+    if _URL_CONTROL_RE.search(candidate):
+        return "unsafe_control"
     if candidate.startswith("#") or candidate.startswith("/") or candidate.startswith("."):
         return ""  # a fragment or a relative path carries no scheme and no active content
     parsed = urlparse(candidate)
@@ -360,7 +362,7 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
     def _raw_img(match: re.Match[str]) -> str:
         nonlocal images
         images += 1
-        return f"`{match.group(0)}`"
+        return match.group(0).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     def _link(match: re.Match[str]) -> str:
         nonlocal links
@@ -395,10 +397,25 @@ def _request_path(config: ResearchDeskConfig, request_id: str) -> Path:
     return config.requests_dir / f"{request_id}.md"
 
 
-def _parse_request(path: Path, text: str | None = None) -> ResearchRequest | MalformedRequest:
+def _read_request_file(path: Path) -> str:
+    """Read a regular row without following a symlink at its filename."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, encoding="utf-8") as stream:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("research request is not a regular file")
+        return stream.read()
+
+
+def _parse_request(path: Path, text: str) -> ResearchRequest | MalformedRequest:
     """Parse one candidate row through the canonical estate parser."""
     request_id = path.stem
-    result = parse_frontmatter_with_diagnostics(path if text is None else text)
+    if _FORBIDDEN_CONTROL_RE.search(text):
+        return MalformedRequest(
+            request_id=request_id,
+            reason_code="request_control_character",
+            detail="research request contains a forbidden control character",
+        )
+    result = parse_frontmatter_with_diagnostics(text)
     if not result.ok or result.frontmatter is None:
         return MalformedRequest(
             request_id=request_id,
@@ -471,7 +488,7 @@ def iter_desk_rows(config: ResearchDeskConfig) -> list[ResearchRequest | Malform
     found: list[ResearchRequest | MalformedRequest] = []
     for path in sorted(requests_dir.glob("*.md")):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = _read_request_file(path)
         except (OSError, UnicodeDecodeError):
             continue
         if not _DESK_ROW_PREFILTER_RE.search(text):
@@ -513,13 +530,14 @@ def get_request(config: ResearchDeskConfig, request_id: str) -> ResearchRequest:
     """One request by id, whatever its status. Read-only."""
     request_id = validate_request_id(request_id)
     path = _request_path(config, request_id)
-    if not path.is_file():
+    try:
+        text = _read_request_file(path)
+    except (OSError, UnicodeDecodeError):
         raise ResearchDeskError(
             "request_not_found",
             "call list_open_research_requests for the current ids",
             detail=f"no active research request {request_id!r}",
-        )
-    text = path.read_text(encoding="utf-8")
+        ) from None
     probe = parse_frontmatter_with_diagnostics(text)
     if not probe.ok or probe.frontmatter is None or not _is_desk_row(probe.frontmatter):
         raise ResearchDeskError(
