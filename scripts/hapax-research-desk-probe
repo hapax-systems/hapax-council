@@ -1,0 +1,436 @@
+#!/usr/bin/env python3
+"""Recheck the research desk origin or an explicitly declared tailnet endpoint.
+
+The default targets loopback. ``--tailnet-host <name>.ts.net`` opts into the
+tailnet HTTPS/Serve endpoint. Public DNS names are refused before the key is read.
+The probe never calls ``deliver_result``; it authenticates and checks refusals.
+The bearer key is read from the FileStore and never printed or put on argv.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pwd
+import re
+import socket
+import subprocess
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from shared import research_desk_ledger as ledger  # noqa: E402
+
+SECRET_NAME = "research-desk-connector-key"  # pragma: allowlist secret — a FileStore NAME
+DEFAULT_PORT = 8790
+MCP_PATH = "/mcp"
+HEALTH_PATH = "/healthz"
+EXPECTED_HEALTH = {"ok": True, "service": "hapax-research-desk"}
+UNITS = ("hapax-research-desk-mcp.service",)
+HTTP_TIMEOUT = 20.0
+
+_INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "hapax-research-desk-probe", "version": "1"},
+    },
+}
+_MCP_ACCEPT = "application/json, text/event-stream"
+
+
+@dataclass
+class CheckResult:
+    name: str
+    ok: bool
+    detail: str = ""
+    next_action: str = ""
+    skipped: bool = False
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "check": self.name,
+            "ok": self.ok,
+            "skipped": self.skipped,
+            "detail": self.detail,
+            "next_action": self.next_action,
+        }
+
+
+@dataclass
+class ProbeConfig:
+    remote_host: str | None = None
+    port: int = DEFAULT_PORT
+    local_only: bool = False
+    ledger_path: Path = field(default_factory=ledger.ledger_path_from_env)
+
+    def __post_init__(self) -> None:
+        if self.remote_host is not None and not _is_tailnet_host(self.remote_host):
+            raise ProbeConfigError(
+                "refusing a non-tailnet target; pass a declared *.ts.net host with "
+                "--tailnet-host, or omit it to probe loopback"
+            )
+
+    @property
+    def target_base(self) -> str:
+        if self.remote_host and not self.local_only:
+            return f"https://{self.remote_host}"
+        return self.origin_base
+
+    @property
+    def origin_base(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+
+class ProbeConfigError(ValueError):
+    """An unsafe probe target, refused before reading or sending the key."""
+
+
+def _is_tailnet_host(host: str) -> bool:
+    label = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+    return re.fullmatch(rf"{label}\.{label}\.ts\.net", host) is not None
+
+
+def load_key() -> str | None:
+    """Read the bearer key. Returns None when the FileStore cannot supply it."""
+    binary = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local" / "bin" / "hapax-secret"
+    try:
+        result = subprocess.run(
+            [str(binary), SECRET_NAME], capture_output=True, text=True, timeout=15.0, check=False
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+# --------------------------------------------------------------------------- #
+# Checks
+# --------------------------------------------------------------------------- #
+
+
+def check_units_installed() -> CheckResult:
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "list-unit-files", "--no-legend", *UNITS],
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+            check=False,
+        ).stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return CheckResult("units_installed", False, str(exc), "run this on the desk host")
+    missing = [unit for unit in UNITS if unit not in out]
+    if missing:
+        return CheckResult(
+            "units_installed",
+            False,
+            f"not known to systemd: {', '.join(missing)}",
+            "run `systemctl --user link "
+            "~/.cache/hapax/source-activation/worktree/systemd/units/"
+            "hapax-research-desk-mcp.service` after the release tree carries it",
+        )
+    return CheckResult("units_installed", True, "the desk unit is known to systemd")
+
+
+def check_units_active() -> CheckResult:
+    states: dict[str, str] = {}
+    for unit in UNITS:
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=20.0,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            states[unit] = f"unknown ({exc})"
+            continue
+        states[unit] = result.stdout.strip() or "unknown"
+    detail = ", ".join(f"{unit}={state}" for unit, state in states.items())
+    if all(state == "active" for state in states.values()):
+        return CheckResult("units_active", True, detail)
+    return CheckResult(
+        "units_active",
+        False,
+        detail,
+        "systemctl --user enable --now " + " ".join(UNITS),
+    )
+
+
+def check_origin_listening(config: ProbeConfig) -> CheckResult:
+    with socket.socket() as sock:
+        sock.settimeout(5.0)
+        if sock.connect_ex(("127.0.0.1", config.port)) == 0:
+            return CheckResult("origin_listening", True, f"127.0.0.1:{config.port} accepts")
+    return CheckResult(
+        "origin_listening",
+        False,
+        f"nothing accepts on 127.0.0.1:{config.port}",
+        "systemctl --user start hapax-research-desk-mcp.service, then "
+        "journalctl --user -u hapax-research-desk-mcp.service -n 50",
+    )
+
+
+def _health(name: str, base: str, failure_action: str) -> CheckResult:
+    import httpx
+
+    try:
+        response = httpx.get(f"{base}{HEALTH_PATH}", timeout=HTTP_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 — every transport failure is the same answer here
+        return CheckResult(name, False, f"{type(exc).__name__}: {exc}", failure_action)
+    if response.status_code != 200:
+        return CheckResult(name, False, f"HTTP {response.status_code}", failure_action)
+    try:
+        payload = response.json()
+    except ValueError:
+        return CheckResult(name, False, "response was not JSON", failure_action)
+    if payload != EXPECTED_HEALTH:
+        return CheckResult(name, False, f"unexpected payload {payload!r}", failure_action)
+    return CheckResult(name, True, "200 with the expected payload")
+
+
+def check_origin_health(config: ProbeConfig) -> CheckResult:
+    return _health(
+        "origin_health",
+        config.origin_base,
+        "journalctl --user -u hapax-research-desk-mcp.service -n 50",
+    )
+
+
+def check_target_health(config: ProbeConfig) -> CheckResult:
+    return _health(
+        "target_health",
+        config.target_base,
+        "check the desk unit and the declared tailnet HTTPS/Serve binding",
+    )
+
+
+def _post_mcp(config: ProbeConfig, headers: dict[str, str]) -> Any:
+    import httpx
+
+    return httpx.post(
+        f"{config.target_base}{MCP_PATH}",
+        json=_INITIALIZE,
+        headers={"Accept": _MCP_ACCEPT, **headers},
+        timeout=HTTP_TIMEOUT,
+    )
+
+
+def check_refusals(config: ProbeConfig) -> list[CheckResult]:
+    """No key and a wrong key must both be 401, and must be INDISTINGUISHABLE.
+
+    A refusal that differs between 'absent' and 'wrong' is an oracle: it tells a caller
+    which half of the credential it got right.
+    """
+    results: list[CheckResult] = []
+    try:
+        absent = _post_mcp(config, {})
+        wrong = _post_mcp(config, {"Authorization": "Bearer probe-is-not-the-key-0000000000"})
+    except Exception as exc:  # noqa: BLE001
+        return [
+            CheckResult(
+                "auth_refusals",
+                False,
+                f"{type(exc).__name__}: {exc}",
+                "fix target_health first; the refusal checks need the edge to answer",
+            )
+        ]
+
+    for name, response in (("unauthenticated_refused", absent), ("wrong_key_refused", wrong)):
+        if response.status_code != 401:
+            results.append(
+                CheckResult(
+                    name,
+                    False,
+                    f"HTTP {response.status_code}, expected 401",
+                    "the auth edge is not in front of /mcp — check build_app() is wrapping the "
+                    "MCP app in the running build",
+                )
+            )
+        elif "www-authenticate" not in {k.lower() for k in response.headers}:
+            results.append(
+                CheckResult(name, False, "401 without WWW-Authenticate", "restore the header")
+            )
+        else:
+            results.append(CheckResult(name, True, "401 with WWW-Authenticate"))
+
+    identical = absent.status_code == wrong.status_code and absent.text == wrong.text
+    results.append(
+        CheckResult(
+            "refusals_are_indistinguishable",
+            identical,
+            "absent and wrong-key responses are byte-identical"
+            if identical
+            else "absent and wrong-key responses differ — that is a credential oracle",
+            "" if identical else "make both refusals emit the same status and body",
+        )
+    )
+    return results
+
+
+def check_key_spellings(config: ProbeConfig, key: str | None) -> list[CheckResult]:
+    if key is None:
+        action = f"hapax-secret --where {SECRET_NAME}"
+        return [
+            CheckResult(
+                "bearer_accepted",
+                False,
+                "the FileStore did not supply the key",
+                action,
+            ),
+            CheckResult(
+                "x_api_key_accepted",
+                False,
+                "the FileStore did not supply the key",
+                action,
+            ),
+        ]
+    spellings = {
+        "bearer_accepted": {"Authorization": f"Bearer {key}"},
+        "x_api_key_accepted": {"X-API-Key": key},
+    }
+    results: list[CheckResult] = []
+    for name, headers in spellings.items():
+        try:
+            response = _post_mcp(config, headers)
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                CheckResult(
+                    name,
+                    False,
+                    f"{type(exc).__name__}: {exc}",
+                    "check the desk unit and tailnet HTTPS/Serve binding, then retry",
+                )
+            )
+            continue
+        if response.status_code == 421:
+            results.append(
+                CheckResult(
+                    name,
+                    False,
+                    "421 Misdirected Request",
+                    "the tailnet Host is not in the server's allowlist — set "
+                    f"HAPAX_RESEARCH_DESK_TAILNET_HOST={config.remote_host} and restart the unit",
+                )
+            )
+            continue
+        if response.status_code != 200:
+            results.append(
+                CheckResult(
+                    name,
+                    False,
+                    f"HTTP {response.status_code}",
+                    "if 401, the registered key no longer matches the FileStore value",
+                )
+            )
+            continue
+        ok = "hapax-research-desk" in response.text
+        results.append(
+            CheckResult(
+                name,
+                ok,
+                "initialize returned serverInfo for hapax-research-desk"
+                if ok
+                else "200 but the response did not name this server",
+                "" if ok else "confirm the target points at this desk and not another origin",
+            )
+        )
+    return results
+
+
+def check_ledger(config: ProbeConfig) -> CheckResult:
+    read = ledger.read_records(config.ledger_path)
+    if not config.ledger_path.exists():
+        return CheckResult(
+            "ledger_readable",
+            True,
+            f"{config.ledger_path} does not exist yet (no call has been served)",
+        )
+    if read.ok:
+        return CheckResult("ledger_readable", True, f"{len(read)} row(s) at {config.ledger_path}")
+    return CheckResult(
+        "ledger_readable",
+        False,
+        f"{len(read)} good row(s), malformed line(s): {list(read.malformed_lines)}",
+        read.repair_action(config.ledger_path),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Runner
+# --------------------------------------------------------------------------- #
+
+
+def run_checks(config: ProbeConfig, key: str | None) -> list[CheckResult]:
+    results: list[CheckResult] = []
+    local: list[Callable[[], CheckResult]] = [
+        check_units_installed,
+        check_units_active,
+        lambda: check_origin_listening(config),
+        lambda: check_origin_health(config),
+        lambda: check_ledger(config),
+    ]
+    results.extend(check() for check in local)
+    results.append(check_target_health(config))
+    results.extend(check_refusals(config))
+    results.extend(check_key_spellings(config, key))
+    return results
+
+
+def render(results: list[CheckResult]) -> str:
+    width = max(len(result.name) for result in results)
+    lines = []
+    for result in results:
+        mark = "PASS" if result.ok else "FAIL"
+        lines.append(f"  {mark:<4} {result.name:<{width}}  {result.detail}")
+        if not result.ok and result.next_action:
+            lines.append(f"       {'':<{width}}  next action: {result.next_action}")
+    failed = [r for r in results if not r.ok]
+    lines.append("")
+    lines.append(
+        f"{len(results) - len(failed)}/{len(results)} checks passed"
+        if not failed
+        else f"{len(failed)} of {len(results)} checks FAILED"
+    )
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--tailnet-host", help="explicit machine.tailnet.ts.net host")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--local", action="store_true", help="force the loopback target")
+    parser.add_argument("--json", action="store_true", help="emit results as JSON")
+    args = parser.parse_args(argv)
+
+    try:
+        config = ProbeConfig(remote_host=args.tailnet_host, port=args.port, local_only=args.local)
+    except ProbeConfigError as exc:
+        print(f"hapax-research-desk-probe: {exc}", file=sys.stderr)
+        return 2
+    results = run_checks(config, load_key())
+
+    if args.json:
+        print(json.dumps([result.to_payload() for result in results], indent=2, sort_keys=True))
+    else:
+        print(render(results))
+    return 1 if any(not r.ok for r in results) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
