@@ -797,6 +797,35 @@ class TestApply:
         assert {e["reviewer"] for e in partial} == {r["id"] for r in dossier["reviewers"]}
         assert dossier["no_quorum_cause"].startswith("partial diff coverage")
 
+    def test_reseat_pairing_mismatch_returns_named_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seats = dispatch.review_team.Seat
+        constitution = dispatch.review_team.Constitution
+        calls = 0
+
+        def mismatched_constitution(*_args: Any, **_kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            team = (seats("claude-1", "claude"), seats("codex-1", "codex"))
+            if calls == 1:
+                team += (seats("gemini-1", "gemini"),)
+            return constitution("t2_standard", 2, team, ())
+
+        monkeypatch.setattr(dispatch.review_team, "constitute_team", mismatched_constitution)
+        inputs = dispatch.ConstitutionInputs({}, frozenset(), {}, None, {})
+        formed, _, error = dispatch.constitute_with_substitution(
+            "t2_standard",
+            "claude",
+            dispatch.review_team.load_lens_registry(),
+            inputs,
+            {},
+            pr_number=42,
+            diff_bytes=50_000,
+        )
+        assert formed is None
+        assert error == "size_reseat_pairing_mismatch:removed=1,added=0"
+
     def test_blocked_agy_route_is_not_invoked_as_reviewer(self, tmp_path: Path) -> None:
         result, _, reviewers, note = _review(
             tmp_path,
