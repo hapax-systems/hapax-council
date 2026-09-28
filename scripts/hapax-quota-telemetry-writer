@@ -486,9 +486,10 @@ CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
 CLAUDE_ADMISSION_PROBE_ENV_SCRUBBED = (
     "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_MODEL"
 )
-# The composite ledger evidence ref MUST end with this suffix so the availability guarantor's
-# _account_live_quota_observed_ref attests. Lane/session presence never produces it.
-CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = "account-live-quota:observed"
+# The preceding composite fragment already ends in a colon. This writer suffix is
+# bare; the ledger regex constant includes its own leading colon for matching.
+# Lane/session presence never produces this account-live suffix.
+_WRITER_ACCOUNT_LIVE_SUFFIX_BARE = "account-live-quota:observed"
 CLAUDE_ADMISSION_RECEIPT_GLOB = "*claude-subscription-quota-admission*.yaml"
 CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
     r"\A[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml\Z"
@@ -1837,7 +1838,7 @@ def active_claude_admission_receipts(
                     f"observed_at:{_iso_z_seconds(observed_at)}:"
                     f"fresh_until:{_iso_z_seconds(fresh_until)}:"
                     + (f"credential_binding:{credential_binding}:" if credential_binding else "")
-                    + f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
+                    + f"{_WRITER_ACCOUNT_LIVE_SUFFIX_BARE}"
                 ),
                 observed_at=observed_at,
                 fresh_until=fresh_until,
