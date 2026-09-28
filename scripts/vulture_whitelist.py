@@ -5462,3 +5462,37 @@ from shared.entitlement_census import (  # noqa: E402
 )
 
 _ = _census_load_census_config
+
+# E1 is staged in small PRs. These functions are reached by the later census integration slice;
+# the extensionless producer entrypoint is not scanned by vulture. The validators above are
+# invoked through Pydantic, and the holdings test pins the transport before activation.
+from shared.entitlement_census import HostHoldings as _census_HostHoldings  # noqa: E402
+from shared.entitlement_census import (  # noqa: E402
+    SecretRegister as _census_SecretRegister,
+)
+from shared.entitlement_census import (
+    _number as _census_number,
+)
+from shared.entitlement_census import (
+    _safe_fact as _census_safe_fact,
+)
+from shared.entitlement_census import (
+    collect_holdings as _census_collect_holdings,
+)
+from shared.entitlement_census import (
+    default_http_get as _census_default_http_get,
+)
+from shared.entitlement_census import (
+    default_resolve_secret as _census_default_resolve_secret,
+)
+
+_ = (
+    _census_SecretRegister.remember,
+    _census_SecretRegister.require_clean,
+    _census_HostHoldings.credential_names,
+    _census_number,
+    _census_safe_fact,
+    _census_collect_holdings,
+    _census_default_http_get,
+    _census_default_resolve_secret,
+)
