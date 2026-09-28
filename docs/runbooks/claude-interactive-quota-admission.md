@@ -66,9 +66,12 @@ permissions before retrying observation or launch. The observer never reports a
 write failure as durable inhibition. Once quota recovers, rerun the same authorized
 `hapax-claude-account-live-observe --probe --json` route and regenerate
 `hapax-quota-telemetry-writer --json`. No failed instrument run publishes a wall.
-Recheck these temporal sequences and both real producer composite-reference forms
-with `tests/scripts/test_claude_bound_wall.py` and
-`tests/scripts/test_hapax_claude_interactive_admission.py`.
+Recheck wall publication, timing and launch inhibition with
+`tests/scripts/test_claude_bound_wall.py` and
+`tests/scripts/test_hapax_claude_interactive_admission.py`. Separately,
+`tests/scripts/test_hapax_quota_telemetry_writer.py::test_writer_emitted_refs_fullmatch_ledger_regex_bound_and_unbound`
+runs the telemetry writer for both credential-bound and unbound receipts and
+checks each emitted composite ref against the ledger regex.
 
 The active probe reads the existing Claude saved-login credential binding
 `$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`).
