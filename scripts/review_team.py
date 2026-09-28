@@ -1392,21 +1392,17 @@ _NAMESPACE_CORRUPTION_RE = re.compile(
 )
 _BACKTICK_LITERAL_RE = re.compile(r"`([^`\n]{3,200})`")
 
-#: A critical asserting that a named function or method does NOT accept a named parameter — the
-#: "unexpected keyword argument" class that pyflakes/pyright settle statically. This is the second
-#: class the go-gate may refute, and it requires EXPLICIT parameter language. Bare "has no" /
-#: "gains no" are deliberately absent: "`f` has no validation for `value`" is a semantic claim
-#: about a parameter's handling, not a claim that the parameter is absent, and refuting it would
-#: fail OPEN in the admission gate.
-_PARAMETER_WORD = r"(?:parameter|argument|keyword|kwarg)s?"
+#: Only exact missing-parameter assertions are refutable; semantic claims stand.
+_PARAMETER_WORD = r"(?:parameter|argument|keyword)"
+_NAMED_PARAMETER = r"`([A-Za-z_][A-Za-z0-9_]*)`"
+# An assertion must end at a clause boundary. A following word can change its meaning
+# (for example, a claim about validation), so it remains blocking.
+_PARAMETER_ASSERTION_END = r"(?=$|[.;,)\n])"
 _MISSING_PARAMETER_RE = re.compile(
-    r"unexpected\s+keyword\s+argument|"
-    r"\btypeerror\b[^\n]{0,80}\bkeyword\b|"
-    rf"\b(?:no|missing|lacks?|without)\s+(?:the\s+|a\s+|any\s+|such\s+)?{_PARAMETER_WORD}\b|"
-    rf"\b(?:gains?|has|have|had|takes?|accepts?|declares?|lacks?)\s+no\s+"
-    rf"[`'\"]?[A-Za-z_][A-Za-z0-9_]*[`'\"]?\s+{_PARAMETER_WORD}\b|"
-    rf"\b{_PARAMETER_WORD}\s+(?:is|was|are|were)\s+(?:not|never)\s+"
-    r"(?:accepted|declared|supported|a\s+parameter)\b",
+    rf"\bunexpected\s+keyword\s+argument\s+{_NAMED_PARAMETER}{_PARAMETER_ASSERTION_END}|"
+    rf"\bno\s+(?:such\s+)?{_PARAMETER_WORD}\s+{_NAMED_PARAMETER}{_PARAMETER_ASSERTION_END}|"
+    rf"{_NAMED_PARAMETER}\s+{_PARAMETER_WORD}\s+is\s+not\s+(?:accepted|declared){_PARAMETER_ASSERTION_END}|"
+    rf"\bhas\s+no\s+{_NAMED_PARAMETER}\s+{_PARAMETER_WORD}{_PARAMETER_ASSERTION_END}",
     re.IGNORECASE,
 )
 _NEGATED_MISSING_PARAMETER_RE = re.compile(
@@ -1415,35 +1411,15 @@ _NEGATED_MISSING_PARAMETER_RE = re.compile(
     r"\b(?:not|isn'?t|is\s+not|never)\s+(?:a\s+|an\s+)?unexpected\s+keyword\s+argument",
     re.IGNORECASE,
 )
-#: Where the claim stops asserting the function and starts naming the parameter.
-_MISSING_PARAM_MARKER_RE = re.compile(
-    r"unexpected\s+keyword\s+argument|"
-    r"\b(?:gains?|has|have|had|takes?|accepts?|declares?|lacks?)\s+no\b|"
-    r"\b(?:no|missing|lacks?|without)\b",
-    re.IGNORECASE,
-)
-#: How far after the marker a parameter NAME may sit. Bounded so the window is deterministic.
-_MISSING_PARAM_WINDOW = 200
 _PLAIN_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: A backticked IDENTIFIER, of any length: `_dossier_validity_blockers` and `f` alike. The
 #: general-purpose ``_BACKTICK_LITERAL_RE`` requires three characters, so it never sees `f`.
 _BACKTICK_IDENTIFIER_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
-
-
-def _parameter_candidates(text: str) -> list[str]:
-    """Identifier-shaped parameter candidates in ``text``, in order.
-
-    Identifier-shaped means snake_case (it carries an underscore) or backticked. Plain English
-    words — ``argument``, ``signature``, ``gate`` — are never parameter names, however often a
-    claim uses them near the marker."""
-    backticked = set(_BACKTICK_IDENTIFIER_RE.findall(text))
-    candidates: list[str] = []
-    for token in _PLAIN_IDENTIFIER_RE.findall(text):
-        if token in candidates:
-            continue
-        if token in backticked or "_" in token:
-            candidates.append(token)
-    return candidates
+_BACKTICK_SUBJECT_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::)[A-Za-z_][A-Za-z0-9_]*)?)`")
+_PARAMETER_ONLY_SUFFIX_RE = re.compile(
+    r"[\s,.;:()\-—]*(?:TypeError(?:\s+at\s+(?:the\s+)?call)?|unexpected\s+keyword\s+argument)?[\s,.;:()\-—]*",
+    re.IGNORECASE,
+)
 
 
 #: Killswitch — set to "1" to disable the go-gate (every critical blocks; the pre-go-gate behaviour).
@@ -1493,7 +1469,7 @@ def _missing_parameter_function(
     a name that resolves to nothing is prose, not the function the claim is about. Several
     def-resolving names, or several defs of the surviving name, return ``None``."""
     text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
-    marker = _MISSING_PARAM_MARKER_RE.search(text)
+    marker = _MISSING_PARAMETER_RE.search(text)
     if marker is None:
         return None
     before = text[: marker.start()]
@@ -1520,14 +1496,7 @@ def _missing_parameter_function(
 
 
 def _missing_parameter_refutation(finding: Mapping[str, Any], source: str) -> str | None:
-    """Evidence when the head's AST REFUTES the claim; ``None`` whenever the critical stands.
-
-    Refuted only when the file parses, the claim's subject resolves to exactly one def (see
-    :func:`_missing_parameter_function`), and EVERY parameter the claim named is declared in that
-    def — or the def takes ``**kwargs``, which accepts any keyword. Every other case — a parse
-    failure, a subject that names no def or several, several defs of the named one, a parameter
-    genuinely absent, a class-qualified name with no such class — returns ``None``: uncertainty
-    never suppresses."""
+    """Return AST evidence only for a unique def accepting the one claimed parameter."""
     try:
         cited_line = int(finding.get("line") or 0)
     except (TypeError, ValueError):
@@ -1540,9 +1509,10 @@ def _missing_parameter_refutation(finding: Mapping[str, Any], source: str) -> st
     if fn is None:
         return None
     claimed = _parameter_candidates_of(finding)
-    if not claimed:
+    if len(claimed) != 1:
         return None
     declared = [arg.arg for arg in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs)]
+    # **kwargs accepts any keyword, including one absent from the named args.
     takes_kwargs = fn.args.kwarg is not None
     if not takes_kwargs and not set(claimed) <= set(declared):
         return None
@@ -1555,12 +1525,33 @@ def _missing_parameter_refutation(finding: Mapping[str, Any], source: str) -> st
 
 
 def _parameter_candidates_of(finding: Mapping[str, Any]) -> list[str]:
-    """The parameter names the claim asserts are absent (after its missing-parameter marker)."""
+    """One token bound by one allow-listed assertion, or no unambiguous parameter."""
     text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
-    marker = _MISSING_PARAM_MARKER_RE.search(text)
-    if marker is None:
+    matches = list(_MISSING_PARAMETER_RE.finditer(text))
+    if len(matches) != 1:
         return []
-    return _parameter_candidates(text[marker.end() : marker.end() + _MISSING_PARAM_WINDOW])
+    named = [(index, group) for index, group in enumerate(matches[0].groups()) if group is not None]
+    if len(named) != 1:
+        return []
+    shape, parameter = named[0]
+    # A second named token after the assertion could be another parameter claim.
+    # The function subject and a class qualifier are allowed; all else stands.
+    prefix = text[: matches[0].start()]
+    subjects = list(_BACKTICK_SUBJECT_RE.finditer(prefix))
+    if len(subjects) != 1:
+        return []
+    subject = subjects[0]
+    lead = prefix[: subject.start()].strip(" :\t\n")
+    connector = prefix[subject.end() :].strip(" :\t\n")
+    allowed_connectors = ({"", "gets", "raises"}, {"", "has"}, {""}, {""})
+    if lead not in {"", "TypeError"} or connector not in allowed_connectors[shape]:
+        return []
+    if not _PARAMETER_ONLY_SUFFIX_RE.fullmatch(text[matches[0].end() :]):
+        return []
+    extras = set(_BACKTICK_IDENTIFIER_RE.findall(text)) - {parameter, subject.group(1)}
+    if extras:
+        return []
+    return [parameter]
 
 
 def _is_path_like_at_literal(literal: str) -> bool:
@@ -1713,12 +1704,7 @@ def _literal_defect_verdict(finding: Mapping[str, Any], repo_root: Path) -> tupl
 
 
 def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
-    """Return True if the critical STANDS; False ONLY for a DEFINITIVELY-refuted phantom.
-
-    A critical is invalidated only when it is a syntax/compile claim, a missing-parameter claim, or
-    a namespace-corruption claim, AND the cited file at head settles it. Every other case — a
-    semantic critical, a missing/unreadable/non-Python file, an ambiguous name — KEEPS the critical.
-    Uncertainty never suppresses."""
+    """Whether a critical stands when no dossier evidence is needed."""
     return _literal_defect_verdict(finding, repo_root)[0]
 
 
@@ -1742,7 +1728,10 @@ def _blocking_criticals(
     blocking: list[tuple[str, dict]] = []
     phantom: list[tuple[str, dict]] = []
     for reviewer_id, finding in criticals:
-        stands, evidence = _literal_defect_verdict(finding, root)
+        if _is_missing_parameter_claim(finding):
+            stands, evidence = _literal_defect_verdict(finding, root)
+        else:
+            stands, evidence = verify_literal_defect_critical(finding, root), None
         if stands:
             blocking.append((reviewer_id, finding))
             continue

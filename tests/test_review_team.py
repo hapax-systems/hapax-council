@@ -3972,12 +3972,7 @@ class TestGoGate:
 
 
 class TestGoGateMissingParameter:
-    """The go-gate's second refutable class: a critical asserting that a named function/method does
-    not accept a named parameter (the "unexpected keyword argument" class). Refuted ONLY on an
-    unambiguous AST refutation at head; every other shape keeps the critical STANDING.
-
-    Replay: #4893 at `a269a4c6c`, glm-1's critical, VERBATIM from that head's review dossier. The
-    def sits outside the diff; the call at the cited line binds."""
+    """Narrow AST refutation; ambiguous and semantic claims stand."""
 
     def _py(self, root: Path, rel: str, src: str) -> None:
         p = root / rel
@@ -4004,8 +3999,7 @@ class TestGoGateMissingParameter:
         "    return []\n"
     )
 
-    # Verbatim from review-plan-remote-diff-20260928.review-dossier.yaml (reviewer glm-1, critical,
-    # head a269a4c6c). Not paraphrased: the next forced #4893 round presents exactly this text.
+    # Verbatim #4893 fixture.
     _GLM_TITLE = "Dossier validation raises TypeError instead of returning blockers"
     _GLM_DETAIL = (
         "Confirmed on current head a269a4c6c. review_dossier_validity_blockers passes\n"
@@ -4020,25 +4014,74 @@ class TestGoGateMissingParameter:
         "public gate path end to end.\n"
     )
 
+    def test_allowlist_and_dev21_counterexamples(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path,
+            "scripts/review_team.py",
+            "def f(value, *, other=None):\n    return value\n\n"
+            "def g(**kwargs):\n    return kwargs\n",
+        )
+        cases = (
+            ("`f` has no validation for `value`", True),
+            ("`g` has no bounds check on `size`", True),
+            ("`f` has no parameter validation for `value`", True),
+            ("`f` has no `value` parameter validation", True),
+            ("`g` lacks a parameter check for `size`", True),
+            ("`f` has no `value` parameter; also `other` is missing parameter", True),
+            ("`f` has no `missing_one` parameter", True),
+            ("`f` has no `other` parameter", False),
+            ("`f` gets unexpected keyword argument `other`", False),
+            ("`f` has no such parameter `other`", False),
+            ("`f` has no keyword `other`", False),
+            ("`f`: `other` parameter is not accepted", False),
+            ("`f`: `other` keyword is not declared", False),
+            ("`f` has no `other` argument", False),
+        )
+        for title, stands in cases:
+            assert rt.verify_literal_defect_critical(self._lit(title), tmp_path) is stands, title
+
+    def test_compound_findings_stand(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(tmp_path, "scripts/review_team.py", "def f(x, *, other=None):\n    return x\n")
+        cases = (
+            (
+                "`f` has no `x` parameter; it also corrupts state",
+                "The cache is overwritten on every call.",
+                True,
+            ),
+            (
+                "`f` has no `x` parameter",
+                "The write path also leaks the file handle and never releases the lock.",
+                True,
+            ),
+            ("`f` has no `x` parameter", "TypeError at the call.", False),
+        )
+        for title, detail, stands in cases:
+            finding = self._lit(title)
+            finding["detail"] = detail
+            assert rt.verify_literal_defect_critical(finding, tmp_path) is stands
+
     def _glm_finding(self, tmp_path: Path) -> tuple[dict, Path]:
         self._py(tmp_path, "scripts/review_team.py", self._DEF)
         finding = self._lit(self._GLM_TITLE)
         finding["detail"] = self._GLM_DETAIL
         return finding, tmp_path
 
-    def test_4893_verbatim_glm_critical_is_refuted(self, tmp_path: Path) -> None:
+    def test_4893_verbatim_glm_critical_stands_outside_allowlist(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         finding, root = self._glm_finding(tmp_path)
 
-        assert rt._is_missing_parameter_claim(finding) is True
-        assert rt.verify_literal_defect_critical(finding, root) is False
+        assert rt._is_missing_parameter_claim(finding) is False
+        assert rt.verify_literal_defect_critical(finding, root) is True
 
     def test_refutation_records_the_def_line_and_args(self, tmp_path: Path, monkeypatch) -> None:
-        """Exit-predicate (5): the def line and the args list are recorded in the dossier, through the
-        same classifier and recording path the existing go-gate uses."""
         rt = _load_review_team_module()
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
-        finding, root = self._glm_finding(tmp_path)
+        _, root = self._glm_finding(tmp_path)
+        finding = self._lit(
+            "`_dossier_validity_blockers` has no `capacity_evidence_measurer` parameter"
+        )
         reviews = [
             _review("gemini-1", "gemini", "accept"),
             _review("glm-1", "glm", "block", findings=[finding]),
@@ -4067,9 +4110,6 @@ class TestGoGateMissingParameter:
         assert "def _dossier_validity_blockers at line 1" in escalations[0]["detail"]
 
     def test_semantic_claims_are_never_refuted(self, tmp_path: Path) -> None:
-        """codex-1's two fixtures, verbatim. "has no <semantic thing> for/on <param>" names a
-        parameter but does NOT claim it is absent: the first is about validation, the second about a
-        bounds check on a def that takes **kwargs. The pre-fix matcher refuted both."""
         rt = _load_review_team_module()
         self._py(
             tmp_path,
@@ -4094,28 +4134,26 @@ class TestGoGateMissingParameter:
 
     def test_negated_claim_stands(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
-        finding, root = self._glm_finding(tmp_path)
-        # In class when read on its own ("gains no `b` parameter"), so the negation guard is what
-        # keeps it standing — a fixture that is out of class either way would pin nothing.
+        _, root = self._glm_finding(tmp_path)
+        # In class when read on its own, so the negation guard is what keeps it standing.
         negated = self._lit(
-            "`_dossier_validity_blockers` gains no `capacity_evidence_measurer` parameter — "
-            "this is not a missing parameter claim; the ordering is wrong"
+            "`_dossier_validity_blockers` has no `capacity_evidence_measurer` parameter"
         )
+        negated["detail"] = "This is not a missing parameter claim; the ordering is wrong."
+        assert rt._is_missing_parameter_claim(self._lit(negated["title"])) is True
         assert rt.verify_literal_defect_critical(negated, root) is True
 
     def test_two_defs_of_the_same_name_stand(self, tmp_path: Path) -> None:
-        """The FIRST def declares the parameter, so a uniqueness-blind verifier would refute."""
         rt = _load_review_team_module()
         self._py(
             tmp_path,
             "scripts/review_team.py",
             "def f(a, b=None):\n    return a\n\n\ndef f(a):\n    return a\n",
         )
-        finding = self._lit("`f` gains no `b` parameter")
+        finding = self._lit("`f` has no `b` parameter")
         assert rt.verify_literal_defect_critical(finding, tmp_path) is True
 
     def test_ambiguous_subject_stands(self, tmp_path: Path) -> None:
-        """Two def-resolving names before the marker: the subject is not unambiguous, so it stands."""
         rt = _load_review_team_module()
         self._py(
             tmp_path,
@@ -4137,7 +4175,7 @@ class TestGoGateMissingParameter:
             "scripts/review_team.py",
             "class Widget:\n    def render(self, *, throttle: int = 0) -> None:\n        return None\n",
         )
-        finding = self._lit("`Widget.render` gains no `throttle` parameter")
+        finding = self._lit("`Widget.render` has no `throttle` parameter")
         assert rt.verify_literal_defect_critical(finding, tmp_path) is False
 
     def test_class_qualified_method_without_such_class_stands(self, tmp_path: Path) -> None:
@@ -4147,32 +4185,32 @@ class TestGoGateMissingParameter:
             "scripts/review_team.py",
             "class Other:\n    def render(self, *, throttle: int = 0) -> None:\n        return None\n",
         )
-        finding = self._lit("`Widget.render` gains no `throttle` parameter")
+        finding = self._lit("`Widget.render` has no `throttle` parameter")
         assert rt.verify_literal_defect_critical(finding, tmp_path) is True
 
     def test_unparseable_head_keeps_the_critical(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "scripts/review_team.py", "def f(:\n")
-        finding = self._lit("`f` gains no `b` parameter")
+        finding = self._lit("`f` has no `b` parameter")
         assert rt.verify_literal_defect_critical(finding, tmp_path) is True
 
     def test_kwargs_def_refutes_only_the_explicit_class(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "scripts/review_team.py", "def f(a, **kwargs):\n    return a\n")
-        explicit = self._lit("`f` gains no `b` parameter")
+        explicit = self._lit("`f` has no `b` parameter")
         assert rt.verify_literal_defect_critical(explicit, tmp_path) is False
         semantic = self._lit("`f` has no validation for `b`")
         assert rt.verify_literal_defect_critical(semantic, tmp_path) is True
 
     def test_go_gate_killswitch_keeps_every_critical(self, tmp_path: Path, monkeypatch) -> None:
-        """Exit-predicate (3): HAPAX_REVIEW_GO_GATE_OFF disables this class with the rest."""
         rt = _load_review_team_module()
-        finding, root = self._glm_finding(tmp_path)
+        _, root = self._glm_finding(tmp_path)
+        finding = self._lit(
+            "`_dossier_validity_blockers` has no `capacity_evidence_measurer` parameter"
+        )
         reviews = [{"id": "glm-1", "family": "glm", "verdict": "block", "findings": [finding]}]
         monkeypatch.delenv("HAPAX_REVIEW_GO_GATE_OFF", raising=False)
         assert rt.verify_literal_defect_critical(finding, root) is False
-        # With the killswitch on, the critical blocks, exactly as before the go-gate. The killswitch
-        # returns before the checkout is bound, so the head sha is not what decides this.
         monkeypatch.setenv("HAPAX_REVIEW_GO_GATE_OFF", "1")
         blocking_off, phantoms_off = rt._blocking_criticals(reviews, root, head_sha="deadbeef" * 5)
         assert len(blocking_off) == 1
