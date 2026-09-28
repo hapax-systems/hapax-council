@@ -927,7 +927,7 @@ audit_root_installs() {
         compare_root_file "$rel" "$dest" || failed=1
         audit_root_artifact_trust "$dest" || failed=1
         case "$rel" in
-            scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+            scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|scripts/hapax-signing-holder|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
                 verify_executable "$rel" "$dest" || failed=1
                 ;;
         esac
@@ -935,7 +935,9 @@ audit_root_installs() {
     for rel in \
         systemd/units/hapax-root-failure-intake@.service \
         systemd/units/hapax-oom-score-enforce.service \
-        systemd/units/hapax-oom-score-enforce.timer; do
+        systemd/units/hapax-oom-score-enforce.timer \
+        systemd/system/hapax-signing-holder.socket \
+        systemd/system/hapax-signing-holder@.service; do
         dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             echo "root-required install drift: stale user-scope copy of system unit remains: $dest" >&2

@@ -1671,9 +1671,19 @@ def test_root_required_audit_detects_sudoers_reference_owner_drift(tmp_path: Pat
     assert "sudoers audit reference ownership/mode drift" in result.stderr
 
 
-def test_root_required_audit_detects_stale_user_copy_of_system_unit(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "unit",
+    (
+        "hapax-oom-score-enforce.timer",
+        "hapax-signing-holder.socket",
+        "hapax-signing-holder@.service",
+    ),
+)
+def test_root_required_audit_detects_stale_user_copy_of_system_unit(
+    tmp_path: Path, unit: str
+) -> None:
     env = _root_audit_env(tmp_path)
-    stale = Path(env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / "hapax-oom-score-enforce.timer"
+    stale = Path(env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / unit
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text("[Timer]\nOnUnitActiveSec=30s\n", encoding="utf-8")
 
