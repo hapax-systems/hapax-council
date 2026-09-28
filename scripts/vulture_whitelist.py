@@ -5429,3 +5429,9 @@ _ = (
     _cp_url_punctuation_flags,
     _cp_within_window,
 )
+
+# Research desk imports live in extensionless scripts/hapax-research-desk-mcp, which vulture cannot parse.
+from shared.research_desk import deliver_result as _research_desk_deliver_result  # noqa: E402
+from shared.research_desk import list_open_requests as _research_desk_list_open_requests  # noqa: E402
+from shared.research_desk_ledger import read_records as _research_desk_read_records  # noqa: E402
+_ = (_research_desk_deliver_result, _research_desk_list_open_requests, _research_desk_read_records)

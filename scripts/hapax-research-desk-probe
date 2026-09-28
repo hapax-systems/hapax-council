@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+"""Re-runnable proof that the research desk is actually reachable and actually refuses.
+
+Every operational claim in ``docs/architecture/research-desk-connector.md`` — the
+public URL answers, both key spellings authenticate, a missing or wrong key is refused
+identically, the units are loaded and active, the ledger is readable — was originally
+a transcript from one session. A transcript cannot be re-run, so a value that drifts
+(the port, the published host, the FileStore name) reads as fact indefinitely. That is
+the failure mode that produced the 421 this connector already paid for once.
+
+This is that transcript turned into a command:
+
+    uv run scripts/hapax-research-desk-probe            # human table, exit 1 on any failure
+    uv run scripts/hapax-research-desk-probe --json     # machine-readable
+    uv run scripts/hapax-research-desk-probe --local    # skip the public-path checks
+
+**Non-mutating by design.** It reads, authenticates and gets refused; it never calls
+``deliver_result``, so it writes nothing into the vault and spends no Computer credits.
+The delivery path is covered by
+``tests/scripts/test_hapax_research_desk_mcp.py::test_live_end_to_end_over_streamable_http``,
+which drives a real server over real HTTP against a scratch vault root.
+
+The bearer key is read from the FileStore and never printed, logged, or placed on argv.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import socket
+import subprocess
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from shared import research_desk_ledger as ledger  # noqa: E402
+
+SECRET_NAME = "research-desk-connector-key"  # pragma: allowlist secret — a FileStore NAME
+DEFAULT_PUBLIC_HOST = "desk.hapaxrnd.com"
+DEFAULT_PORT = 8790
+MCP_PATH = "/mcp"
+HEALTH_PATH = "/healthz"
+EXPECTED_HEALTH = {"ok": True, "service": "hapax-research-desk"}
+UNITS = ("hapax-research-desk-mcp.service", "hapax-research-desk-tunnel.service")
+TUNNEL_INGRESS_CONFIG = Path.home() / ".cloudflared" / "research-desk.yml"
+HTTP_TIMEOUT = 20.0
+
+_INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "hapax-research-desk-probe", "version": "1"},
+    },
+}
+_MCP_ACCEPT = "application/json, text/event-stream"
+
+
+@dataclass
+class CheckResult:
+    name: str
+    ok: bool
+    detail: str = ""
+    next_action: str = ""
+    skipped: bool = False
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "check": self.name,
+            "ok": self.ok,
+            "skipped": self.skipped,
+            "detail": self.detail,
+            "next_action": self.next_action,
+        }
+
+
+@dataclass
+class ProbeConfig:
+    public_host: str = DEFAULT_PUBLIC_HOST
+    port: int = DEFAULT_PORT
+    local_only: bool = False
+    ledger_path: Path = field(default_factory=ledger.ledger_path_from_env)
+
+    @property
+    def public_base(self) -> str:
+        return f"https://{self.public_host}"
+
+    @property
+    def origin_base(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+
+def load_key() -> str | None:
+    """Read the bearer key. Returns None when the FileStore cannot supply it."""
+    binary = Path.home() / ".local" / "bin" / "hapax-secret"
+    try:
+        result = subprocess.run(
+            [str(binary), SECRET_NAME], capture_output=True, text=True, timeout=15.0, check=False
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+# --------------------------------------------------------------------------- #
+# Checks
+# --------------------------------------------------------------------------- #
+
+
+def check_units_installed() -> CheckResult:
+    try:
+        out = subprocess.run(
+            ["systemctl", "--user", "list-unit-files", "--no-legend", *UNITS],
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+            check=False,
+        ).stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return CheckResult("units_installed", False, str(exc), "run this on the desk host")
+    missing = [unit for unit in UNITS if unit not in out]
+    if missing:
+        return CheckResult(
+            "units_installed",
+            False,
+            f"not known to systemd: {', '.join(missing)}",
+            "run systemd/scripts/install-units.sh from ~/projects/hapax-council (primary "
+            "worktree, on main, after the release tree carries scripts/hapax-research-desk-mcp)",
+        )
+    return CheckResult("units_installed", True, "both unit files are known to systemd")
+
+
+def check_units_active() -> CheckResult:
+    states: dict[str, str] = {}
+    for unit in UNITS:
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=20.0,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            states[unit] = f"unknown ({exc})"
+            continue
+        states[unit] = result.stdout.strip() or "unknown"
+    detail = ", ".join(f"{unit}={state}" for unit, state in states.items())
+    if all(state == "active" for state in states.values()):
+        return CheckResult("units_active", True, detail)
+    return CheckResult(
+        "units_active",
+        False,
+        detail,
+        "systemctl --user enable --now " + " ".join(UNITS) + "; a tunnel reported "
+        "'inactive' with no failure is usually the ConditionPathExists on its ingress config",
+    )
+
+
+def check_tunnel_ingress_config() -> CheckResult:
+    if TUNNEL_INGRESS_CONFIG.is_file():
+        return CheckResult("tunnel_ingress_config", True, str(TUNNEL_INGRESS_CONFIG))
+    return CheckResult(
+        "tunnel_ingress_config",
+        False,
+        f"{TUNNEL_INGRESS_CONFIG} is absent",
+        "copy docs/architecture/research-desk-tunnel.example.yml to that path and fill in the "
+        "tunnel id; without it the tunnel unit is condition-skipped (inactive, not failed)",
+    )
+
+
+def check_origin_listening(config: ProbeConfig) -> CheckResult:
+    with socket.socket() as sock:
+        sock.settimeout(5.0)
+        if sock.connect_ex(("127.0.0.1", config.port)) == 0:
+            return CheckResult("origin_listening", True, f"127.0.0.1:{config.port} accepts")
+    return CheckResult(
+        "origin_listening",
+        False,
+        f"nothing accepts on 127.0.0.1:{config.port}",
+        "systemctl --user start hapax-research-desk-mcp.service, then "
+        "journalctl --user -u hapax-research-desk-mcp.service -n 50",
+    )
+
+
+def _health(name: str, base: str, failure_action: str) -> CheckResult:
+    import httpx
+
+    try:
+        response = httpx.get(f"{base}{HEALTH_PATH}", timeout=HTTP_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 — every transport failure is the same answer here
+        return CheckResult(name, False, f"{type(exc).__name__}: {exc}", failure_action)
+    if response.status_code != 200:
+        return CheckResult(name, False, f"HTTP {response.status_code}", failure_action)
+    try:
+        payload = response.json()
+    except ValueError:
+        return CheckResult(name, False, "response was not JSON", failure_action)
+    if payload != EXPECTED_HEALTH:
+        return CheckResult(name, False, f"unexpected payload {payload!r}", failure_action)
+    return CheckResult(name, True, "200 with the expected payload")
+
+
+def check_origin_health(config: ProbeConfig) -> CheckResult:
+    return _health(
+        "origin_health",
+        config.origin_base,
+        "journalctl --user -u hapax-research-desk-mcp.service -n 50",
+    )
+
+
+def check_public_health(config: ProbeConfig) -> CheckResult:
+    return _health(
+        "public_health",
+        config.public_base,
+        "a 530 means the tunnel is down (systemctl --user status "
+        "hapax-research-desk-tunnel.service); a 502 means the tunnel is up but the origin is not",
+    )
+
+
+def _post_mcp(config: ProbeConfig, headers: dict[str, str]) -> Any:
+    import httpx
+
+    return httpx.post(
+        f"{config.public_base}{MCP_PATH}",
+        json=_INITIALIZE,
+        headers={"Accept": _MCP_ACCEPT, **headers},
+        timeout=HTTP_TIMEOUT,
+    )
+
+
+def check_refusals(config: ProbeConfig) -> list[CheckResult]:
+    """No key and a wrong key must both be 401, and must be INDISTINGUISHABLE.
+
+    A refusal that differs between 'absent' and 'wrong' is an oracle: it tells a caller
+    which half of the credential it got right.
+    """
+    results: list[CheckResult] = []
+    try:
+        absent = _post_mcp(config, {})
+        wrong = _post_mcp(config, {"Authorization": "Bearer probe-is-not-the-key-0000000000"})
+    except Exception as exc:  # noqa: BLE001
+        return [
+            CheckResult(
+                "auth_refusals",
+                False,
+                f"{type(exc).__name__}: {exc}",
+                "fix public_health first; the refusal checks need the edge to answer",
+            )
+        ]
+
+    for name, response in (("unauthenticated_refused", absent), ("wrong_key_refused", wrong)):
+        if response.status_code != 401:
+            results.append(
+                CheckResult(
+                    name,
+                    False,
+                    f"HTTP {response.status_code}, expected 401",
+                    "the auth edge is not in front of /mcp — check build_app() is wrapping the "
+                    "MCP app in the running build",
+                )
+            )
+        elif "www-authenticate" not in {k.lower() for k in response.headers}:
+            results.append(
+                CheckResult(name, False, "401 without WWW-Authenticate", "restore the header")
+            )
+        else:
+            results.append(CheckResult(name, True, "401 with WWW-Authenticate"))
+
+    identical = absent.status_code == wrong.status_code and absent.text == wrong.text
+    results.append(
+        CheckResult(
+            "refusals_are_indistinguishable",
+            identical,
+            "absent and wrong-key responses are byte-identical"
+            if identical
+            else "absent and wrong-key responses differ — that is a credential oracle",
+            "" if identical else "make both refusals emit the same status and body",
+        )
+    )
+    return results
+
+
+def check_key_spellings(config: ProbeConfig, key: str | None) -> list[CheckResult]:
+    if key is None:
+        action = f"hapax-secret --where {SECRET_NAME}"
+        return [
+            CheckResult(
+                "bearer_accepted",
+                False,
+                "the FileStore did not supply the key",
+                action,
+                skipped=True,
+            ),
+            CheckResult(
+                "x_api_key_accepted",
+                False,
+                "the FileStore did not supply the key",
+                action,
+                skipped=True,
+            ),
+        ]
+    spellings = {
+        "bearer_accepted": {"Authorization": f"Bearer {key}"},
+        "x_api_key_accepted": {"X-API-Key": key},
+    }
+    results: list[CheckResult] = []
+    for name, headers in spellings.items():
+        try:
+            response = _post_mcp(config, headers)
+        except Exception as exc:  # noqa: BLE001
+            results.append(CheckResult(name, False, f"{type(exc).__name__}: {exc}", ""))
+            continue
+        if response.status_code == 421:
+            results.append(
+                CheckResult(
+                    name,
+                    False,
+                    "421 Misdirected Request",
+                    f"the published Host is not in the server's allowlist — set "
+                    f"HAPAX_RESEARCH_DESK_PUBLIC_HOST={config.public_host} and restart the unit",
+                )
+            )
+            continue
+        if response.status_code != 200:
+            results.append(
+                CheckResult(
+                    name,
+                    False,
+                    f"HTTP {response.status_code}",
+                    "if 401, the registered key no longer matches the FileStore value",
+                )
+            )
+            continue
+        ok = "hapax-research-desk" in response.text
+        results.append(
+            CheckResult(
+                name,
+                ok,
+                "initialize returned serverInfo for hapax-research-desk"
+                if ok
+                else "200 but the response did not name this server",
+                "" if ok else "confirm the tunnel points at this desk and not another origin",
+            )
+        )
+    return results
+
+
+def check_ledger(config: ProbeConfig) -> CheckResult:
+    read = ledger.read_records(config.ledger_path)
+    if not config.ledger_path.exists():
+        return CheckResult(
+            "ledger_readable",
+            True,
+            f"{config.ledger_path} does not exist yet (no call has been served)",
+        )
+    if read.ok:
+        return CheckResult("ledger_readable", True, f"{len(read)} row(s) at {config.ledger_path}")
+    return CheckResult(
+        "ledger_readable",
+        False,
+        f"{len(read)} good row(s), malformed line(s): {list(read.malformed_lines)}",
+        read.repair_action(config.ledger_path),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Runner
+# --------------------------------------------------------------------------- #
+
+
+def run_checks(config: ProbeConfig, key: str | None) -> list[CheckResult]:
+    results: list[CheckResult] = []
+    local: list[Callable[[], CheckResult]] = [
+        check_units_installed,
+        check_units_active,
+        check_tunnel_ingress_config,
+        lambda: check_origin_listening(config),
+        lambda: check_origin_health(config),
+        lambda: check_ledger(config),
+    ]
+    results.extend(check() for check in local)
+    if config.local_only:
+        return results
+    results.append(check_public_health(config))
+    results.extend(check_refusals(config))
+    results.extend(check_key_spellings(config, key))
+    return results
+
+
+def render(results: list[CheckResult]) -> str:
+    width = max(len(result.name) for result in results)
+    lines = []
+    for result in results:
+        mark = "SKIP" if result.skipped else ("PASS" if result.ok else "FAIL")
+        lines.append(f"  {mark:<4} {result.name:<{width}}  {result.detail}")
+        if not result.ok and result.next_action:
+            lines.append(f"       {'':<{width}}  next action: {result.next_action}")
+    failed = [r for r in results if not r.ok and not r.skipped]
+    lines.append("")
+    lines.append(
+        f"{len(results) - len(failed)}/{len(results)} checks passed"
+        if not failed
+        else f"{len(failed)} of {len(results)} checks FAILED"
+    )
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--public-host", default=DEFAULT_PUBLIC_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--local", action="store_true", help="skip every check that leaves this host"
+    )
+    parser.add_argument("--json", action="store_true", help="emit results as JSON")
+    args = parser.parse_args(argv)
+
+    config = ProbeConfig(public_host=args.public_host, port=args.port, local_only=args.local)
+    results = run_checks(config, load_key())
+
+    if args.json:
+        print(json.dumps([result.to_payload() for result in results], indent=2, sort_keys=True))
+    else:
+        print(render(results))
+    return 1 if any(not r.ok and not r.skipped for r in results) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
