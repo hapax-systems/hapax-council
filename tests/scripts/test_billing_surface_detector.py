@@ -72,6 +72,14 @@ def test_text_classes_cover_credential_host_and_payg_paths_without_ast() -> None
     assert "capacity-pool-payg" in _text_classes('capacity_pool = "api_paid_spend"')
 
 
+def test_bearer_header_line_yields_api_key_route_finding_class() -> None:
+    assert "api-key-route" in _text_classes('headers = {"Authorization": "Bearer token"}')
+
+
+def test_javascript_process_env_read_yields_credential_finding_class() -> None:
+    assert "credential-env-read" in _text_classes("const key = process.env.OPENAI_API_KEY;")
+
+
 def test_provider_host_with_explicit_port_is_detected_without_prefix_false_positive() -> None:
     assert "provider-api-endpoint" in _pattern_only_classes('url = "https://api.openai.com:443/v1"')
     assert "provider-api-endpoint" in _text_classes('url = "https://api.openai.com:443/v1"')
