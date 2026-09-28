@@ -394,9 +394,7 @@ def test_cli_degrades_deterministically_when_no_duration_lines_exist(
     )
     duration_artifact = tmp_path / "durations.yaml"
     selected_units = tmp_path / "selected.txt"
-    selected_units.write_text(
-        "tests/a/test_alpha.py\ntests/a/test_beta.py\n", encoding="utf-8"
-    )
+    selected_units.write_text("tests/a/test_alpha.py\ntests/a/test_beta.py\n", encoding="utf-8")
 
     exit_code = main(
         [
