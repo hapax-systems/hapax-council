@@ -1,6 +1,7 @@
 import fcntl
 import json
 import os
+import signal
 import subprocess
 import textwrap
 import time
@@ -678,18 +679,60 @@ def test_headless_self_reap_keeps_persistent_claude_alive_while_task_live(tmp_pa
     env["HAPAX_CC_TASK_ROOT"] = str(vault)
     env["HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS"] = "0.3"
 
-    with pytest.raises(subprocess.TimeoutExpired):
-        subprocess.run(
-            [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=4,
+    # Own session, so the launcher and its sleep child form a process group this
+    # test can reap by construction. A host-wide `pkill -f "sleep 600"` here
+    # also SIGTERMed any other test's process whose command line matched, on a
+    # concurrent xdist worker (merge-group-flake-quarantine-determine-timeout-20260927).
+    proc = subprocess.Popen(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            proc.communicate(timeout=4)
+    finally:
+        _reap_own_group(proc)
+
+
+def _reap_own_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the group a start_new_session child leads, then reap the leader.
+
+    Signalled before the reap: the unreaped leader still holds its pid, so the
+    pgid cannot have been reused by an unrelated group."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.communicate()
+
+
+def test_headless_live_task_cleanup_spares_a_foreign_sleep_600(tmp_path: Path) -> None:
+    """The cleanup above reaps only what the test spawned. A bystander whose
+    command line matches `sleep 600`, shaped like test_hapax_determine's
+    process-tree producer, must survive it. A host-wide pattern kill failed that
+    producer in about 4 of 10 merge groups."""
+    pid_file = tmp_path / "bystander-child.pid"
+    bystander = subprocess.Popen(
+        ["/bin/sh", "-c", f"sleep 600 & echo $! > {pid_file}; sleep 600"],
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        while not (pid_file.exists() and pid_file.read_text().strip()):
+            assert time.monotonic() < deadline, "bystander never wrote its child pid"
+            time.sleep(0.05)
+        (tmp_path / "scenario").mkdir()
+        test_headless_self_reap_keeps_persistent_claude_alive_while_task_live(tmp_path / "scenario")
+        assert bystander.poll() is None, (
+            f"cleanup killed a foreign process (rc={bystander.returncode})"
         )
-    # Reap the still-running launcher + its sleep child (own session) so the
-    # sandbox doesn't leak processes.
-    subprocess.run(["pkill", "-TERM", "-f", "sleep 600"], check=False)
+        os.kill(int(pid_file.read_text().strip()), 0)
+    finally:
+        _reap_own_group(bystander)
 
 
 # ---------------------------------------------------------------------------

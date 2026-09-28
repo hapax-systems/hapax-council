@@ -23,6 +23,7 @@ Pinned behaviors:
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import textwrap
 import time
@@ -283,8 +284,21 @@ def _wait_for(predicate, timeout: float = 10.0) -> None:
     raise TimeoutError("condition not met within timeout")
 
 
-def _reap_stray_fake_claudes() -> None:
-    subprocess.run(["pkill", "-TERM", "-f", f"sleep {FAKE_CLAUDE_SLEEP}"], check=False)
+def _reap_stray_fake_claudes(proc: subprocess.Popen | None) -> None:
+    """SIGKILL what is left of the launcher's own process group, then reap it.
+
+    The launcher is started with start_new_session, so it and its fake claude
+    share a group this test owns by construction. A host-wide
+    `pkill -f "sleep ..."` also signalled any other test's process whose
+    command line matched, on a concurrent xdist worker
+    (merge-group-flake-quarantine-determine-timeout-20260927)."""
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait(timeout=5)
 
 
 def _retired_reason(relay_dir: Path, role: str = "beta") -> str:
@@ -316,6 +330,7 @@ def test_claim_hop_lane_survives_and_launcher_follows(tmp_path: Path) -> None:
                 stdout=stdout,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
             _wait_for(lambda: (pipe_dir / "beta.pid").exists())
             claude_pid = int((pipe_dir / "beta.pid").read_text(encoding="utf-8").strip())
@@ -343,9 +358,8 @@ def test_claim_hop_lane_survives_and_launcher_follows(tmp_path: Path) -> None:
             try:
                 proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-        _reap_stray_fake_claudes()
+                pass
+        _reap_stray_fake_claudes(proc)
 
     assert proc is not None and proc.returncode == 0
     text = out.read_text(encoding="utf-8")
@@ -372,6 +386,7 @@ def test_launch_row_close_kills_within_one_poll(tmp_path: Path) -> None:
                 stdout=stdout,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
             _wait_for(lambda: (pipe_dir / "beta.pid").exists())
             time.sleep(1.2)  # >= 2 polls with a live row — must survive
@@ -382,10 +397,7 @@ def test_launch_row_close_kills_within_one_poll(tmp_path: Path) -> None:
             proc.wait(timeout=15)
             elapsed = time.monotonic() - closed_at
     finally:
-        if proc is not None and proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=5)
-        _reap_stray_fake_claudes()
+        _reap_stray_fake_claudes(proc)
 
     assert proc is not None and proc.returncode == 0
     text = out.read_text(encoding="utf-8")
@@ -412,6 +424,7 @@ def test_missing_claim_file_mid_run_stays_indeterminate_no_kill(tmp_path: Path) 
                 stdout=stdout,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
             _wait_for(lambda: (pipe_dir / "beta.pid").exists())
             claude_pid = int((pipe_dir / "beta.pid").read_text(encoding="utf-8").strip())
@@ -427,9 +440,8 @@ def test_missing_claim_file_mid_run_stays_indeterminate_no_kill(tmp_path: Path) 
             try:
                 proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-        _reap_stray_fake_claudes()
+                pass
+        _reap_stray_fake_claudes(proc)
     assert proc is not None and proc.returncode == 0
 
 
@@ -442,21 +454,22 @@ def test_sigterm_teardown_records_self_reap_not_clean_exit(tmp_path: Path) -> No
         claude_body=f"exec sleep {FAKE_CLAUDE_SLEEP}\n",
         notes={"task-a": "closed"},  # measurably closed from the start
     )
+    proc = subprocess.Popen(
+        [str(SCRIPT), "--task", "task-a", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            [str(SCRIPT), "--task", "task-a", "beta", "governed prompt"],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=20,
-        )
+        stdout, stderr = proc.communicate(timeout=20)
     except subprocess.TimeoutExpired:
-        _reap_stray_fake_claudes()
+        _reap_stray_fake_claudes(proc)
         raise
 
-    assert result.returncode == 0, result.stderr
-    assert "self-reaping" in result.stdout  # the kill was a SIGTERM self-reap
+    assert proc.returncode == 0, stderr
+    assert "self-reaping" in stdout  # the kill was a SIGTERM self-reap
     reason = _retired_reason(relay_dir)
     assert reason.startswith("self_reap:row_status_closed"), (
         f"SIGTERM teardown recorded the wrong reason: {reason!r}"
