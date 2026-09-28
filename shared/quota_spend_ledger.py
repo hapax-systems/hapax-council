@@ -37,7 +37,7 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
-    {"claude.headless.full", "claude.review.opus"}
+    {"claude.headless.full", "claude.review.opus", "claude.interactive.full"}
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {
@@ -52,6 +52,7 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "glmcp.review.direct": "z_ai-glm-coding-plan",
     "claude.headless.full": "anthropic-claude-subscription",
     "claude.review.opus": "anthropic-claude-subscription",
+    "claude.interactive.full": "anthropic-claude-subscription",
     "kimi.interactive.lane": "moonshot-kimi-code-managed",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
@@ -114,6 +115,7 @@ CLAUDE_ADMISSION_COMPOSITE_REF_RE = re.compile(
     r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml):"
     rf"witness:(?P<witness>{CLAUDE_ADMISSION_WITNESS_PATTERN}):"
     rf"observation:(?P<observation>{CLAUDE_ADMISSION_OBSERVATION_PATTERN}):"
+    r"route_id:(?P<route_id>claude\.(?:headless\.full|review\.opus|interactive\.full)):"
     r"observed_at:(?P<observed_at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
     r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
     rf"{re.escape(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)}\Z"
@@ -1617,6 +1619,11 @@ def subscription_quota_state_for_route(
         for snapshot in snapshots
         if _subscription_quota_missing_required_fresh_until(snapshot)
     )
+    noncurrent_receipt_refs = tuple(
+        f"quota-snapshot:{snapshot.snapshot_id}:claude_receipt_not_current"
+        for snapshot in snapshots
+        if _subscription_quota_missing_current_claude_receipt(snapshot, now=checked_at)
+    )
     untrusted_fresh_refs = tuple(
         "quota-snapshot:"
         f"{snapshot.snapshot_id}:"
@@ -1633,6 +1640,7 @@ def subscription_quota_state_for_route(
         *evidence_refs,
         *expired_refs,
         *missing_fresh_until_refs,
+        *noncurrent_receipt_refs,
         *untrusted_fresh_refs,
         *missing_payg_spend_gate_refs,
     )
@@ -1685,7 +1693,23 @@ def _effective_subscription_quota_state(
         return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_fresh_until_expired(snapshot, now=now):
         return SubscriptionQuotaState.STALE
+    if _subscription_quota_missing_current_claude_receipt(snapshot, now=now):
+        return SubscriptionQuotaState.STALE
     return snapshot.subscription_quota_state
+
+
+def _subscription_quota_missing_current_claude_receipt(
+    snapshot: QuotaSnapshot, *, now: datetime
+) -> bool:
+    route_id = _normalize_route_id(snapshot.route_id)
+    return (
+        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH
+        and route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+        and not any(
+            _is_claude_admission_evidence_ref(ref, route_id=route_id, now=now)
+            for ref in snapshot.evidence_refs
+        )
+    )
 
 
 def _subscription_quota_missing_required_fresh_until(snapshot: QuotaSnapshot) -> bool:
@@ -1717,7 +1741,10 @@ def _subscription_quota_missing_required_admission_evidence(
     if normalized_route_id == "agy.review.direct":
         return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
-        return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+        return not any(
+            _is_claude_admission_evidence_ref(ref, route_id=normalized_route_id)
+            for ref in snapshot.evidence_refs
+        )
     if normalized_route_id == "kimi.interactive.lane":
         return not any(_is_kimi_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
@@ -1801,10 +1828,23 @@ def _is_kimi_admission_evidence_ref(ref: str) -> bool:
     )
 
 
-def _is_claude_admission_evidence_ref(ref: str) -> bool:
-    if CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref) is None:
+def _is_claude_admission_evidence_ref(
+    ref: str, *, route_id: str | None = None, now: datetime | None = None
+) -> bool:
+    match = CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref)
+    if match is None or (route_id is not None and match.group("route_id") != route_id):
         return False
-    return _has_safe_claude_admission_receipt_label(ref) and _has_safe_claude_admission_witness(ref)
+    try:
+        observed_at = datetime.fromisoformat(match.group("observed_at"))
+        fresh_until = datetime.fromisoformat(match.group("fresh_until"))
+    except ValueError:
+        return False
+    return (
+        observed_at < fresh_until
+        and (now is None or observed_at <= now < fresh_until)
+        and _has_safe_claude_admission_receipt_label(ref)
+        and _has_safe_claude_admission_witness(ref)
+    )
 
 
 def _has_safe_claude_admission_receipt_label(ref: str) -> bool:

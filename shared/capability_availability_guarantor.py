@@ -34,7 +34,7 @@ from shared.platform_capability_registry import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID = "claude.headless.full"
 CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_IDS = frozenset(
-    {CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID, "claude.review.opus"}
+    {CLAUDE_SUBSCRIPTION_ADMISSION_ROUTE_ID, "claude.review.opus", "claude.interactive.full"}
 )
 NEGATIVE_REF_TOKENS = {
     "absent",
