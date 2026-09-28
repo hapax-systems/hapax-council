@@ -2305,6 +2305,7 @@ def _quota_ledger_fresh_for(
         return [
             f"relay-receipt:{label}:witness:claude-subscription-headroom-observed-{stamp}"
             f":observation:subscription_quota_headroom_observed"
+            f":route_id:{route_id}"
             f":observed_at:{captured_at}:fresh_until:{fresh_until}:account-live-quota:observed"
         ]
 
