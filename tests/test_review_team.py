@@ -1337,6 +1337,21 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs
 
 
 class TestSizeReplacementNoteValidity:
+    def test_empty_substitution_does_not_claim_capacity_exclusion(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [_review(f"{family}-1", family) for family in ("claude", "codex", "gemini")],
+        )
+        dossier["family_substitution"] = {"excluded_for_size": {}, "excluded_for_prompt": {}}
+        assert (
+            rt._dossier_validity_blockers(
+                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+            )
+            == ()
+        )
+
     @pytest.mark.parametrize(
         ("case", "blocker"),
         [

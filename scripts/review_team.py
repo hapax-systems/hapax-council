@@ -2388,7 +2388,8 @@ def _dossier_validity_blockers(
     if (
         _note_size_replaced
         or _field_size_replaced
-        or "excluded_for_size" in substitution
+        or substitution.get("excluded_for_size")
+        or substitution.get("excluded_for_prompt")
         or substitution.get("size_replaced_seats")
         or ("size_replaced_families" in dossier and len(stamped_sizes) > 1)
     ):
