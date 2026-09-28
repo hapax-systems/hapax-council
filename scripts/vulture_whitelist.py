@@ -5532,3 +5532,14 @@ _ = (
     _census_serving_row,
     _census_unidentified_rows,
 )
+
+# E1 deltas feed the extensionless CLI intake in the integration slice; vulture scans neither
+# that entrypoint nor the staged test module.
+from shared.entitlement_census import (  # noqa: E402
+    census_surface_deltas as _census_surface_deltas,
+)
+from shared.entitlement_census import (
+    delta_file as _census_delta_file,
+)
+
+_ = (_census_surface_deltas, _census_delta_file)

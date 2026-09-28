@@ -52,9 +52,14 @@ from typing import Any, Literal, NamedTuple
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.capability_surface_delta import (
+    CAPABILITY_SURFACE_DELTA_SCHEMA_REF,
+    AuthorityCeiling,
     CapabilitySurfaceDelta,
+    CapabilitySurfaceDeltaFile,
     CapabilitySurfaceDescriptor,
     FreshnessState,
+    SurfaceKind,
+    build_surface_delta,
 )
 from shared.entitlement_capability import EntitlementShape, classify_entitlement
 
@@ -1825,8 +1830,157 @@ def _serving_row(
     )
 
 
-# --- the potential face ---------------------------------------------------------------------------
+# --- deltas ---------------------------------------------------------------------------------------
 
+
+_SURFACE_KIND = {
+    EntitlementKind.COGNITION: SurfaceKind.MODEL_ROUTE,
+    EntitlementKind.GROUNDING: SurfaceKind.MCP_TOOL,
+    EntitlementKind.MODALITY: SurfaceKind.MODEL_ROUTE,
+    EntitlementKind.LOCAL: SurfaceKind.LOCAL_TOOL,
+}
+_DELTA_KINDS = frozenset(_SURFACE_KIND)
+
+
+def _descriptor(
+    surface_id: str,
+    *,
+    descriptor_ref: str,
+    kind: EntitlementKind,
+    now: datetime,
+    pools: Sequence[str],
+    money_rail: bool,
+    provider: str | None,
+) -> CapabilitySurfaceDescriptor:
+    return CapabilitySurfaceDescriptor(
+        surface_id=surface_id,
+        descriptor_ref=descriptor_ref,
+        surface_kind=_SURFACE_KIND.get(kind, SurfaceKind.MODEL_ROUTE),
+        authority_ceiling=AuthorityCeiling.UNKNOWN,
+        observed_at=now,
+        stale_after="1h",
+        evidence_refs=[f"entitlement-census:{TASK_REF}", "frame/ENTITLEMENT-CENSUS-R2-20260924.md"],
+        provider_id=provider,
+        resource_pools=list(pools),
+        money_rail=money_rail,
+    )
+
+
+def census_surface_deltas(
+    config: CensusConfig,
+    rows: Sequence[CensusRow],
+    registry: Mapping[str, Any],
+    *,
+    now: datetime,
+) -> tuple[list[CapabilitySurfaceDescriptor], list[CapabilitySurfaceDelta]]:
+    """Held-but-undeclared, declared-but-dead and misclassified, as existing delta rows.
+
+    Descriptor refs carry no timestamps, so delta ids are stable and the intake never re-mints."""
+    by_id = {row.entitlement_id: row for row in rows}
+    descriptors: list[CapabilitySurfaceDescriptor] = []
+    deltas: list[CapabilitySurfaceDelta] = []
+
+    def emit(
+        prior: CapabilitySurfaceDescriptor | None, observed: CapabilitySurfaceDescriptor | None
+    ) -> None:
+        delta = build_surface_delta(
+            prior=prior,
+            observed=observed,
+            source="entitlement-census",
+            detected_by=PRODUCER_REF,
+            now=now,
+            remediation_ref=TASK_REF,
+        )
+        if delta is not None:
+            descriptors.extend(d for d in (prior, observed) if d is not None)
+            deltas.append(delta)
+
+    held = {
+        EntitlementState.LIVE,
+        EntitlementState.HELD,
+        EntitlementState.STALE,
+        EntitlementState.TERMS_RESTRICTED,
+    }
+    gone = {EntitlementState.DEAD, EntitlementState.ABSENT}
+    route_backers: dict[str, list[CensusRow]] = {}
+    shapes = {
+        str(s.get("shape_id")): s for s in _registry_rows(registry, "omitted_capability_shapes")
+    }
+    for decl in config.entitlements:
+        row = by_id.get(decl.entitlement_id)
+        if row is None or decl.kind not in _DELTA_KINDS:
+            continue
+        money = decl.cost_class in {CostClass.PREPAID, CostClass.PAYG}
+        if not (row.declared_routes or row.declared_shapes) and row.state in held:
+            emit(
+                None,
+                _descriptor(
+                    f"entitlement.{decl.entitlement_id}",
+                    descriptor_ref=f"entitlement-census:{decl.entitlement_id}",
+                    kind=decl.kind,
+                    now=now,
+                    pools=[decl.cost_class.value],
+                    money_rail=money,
+                    provider=decl.provider,
+                ),
+            )
+        for route_id in row.declared_routes:
+            route_backers.setdefault(route_id, []).append(row)
+        if decl.expected_shape_class:
+            for shape_id in row.declared_shapes:
+                shape_class = str(shapes.get(shape_id, {}).get("shape_class") or "")
+                if shape_class and shape_class != decl.expected_shape_class:
+                    emit(
+                        _descriptor(
+                            shape_id,
+                            descriptor_ref=f"platform-capability-registry:{shape_id}",
+                            kind=decl.kind,
+                            now=now,
+                            pools=[shape_class],
+                            money_rail=money,
+                            provider=decl.provider,
+                        ),
+                        _descriptor(
+                            shape_id,
+                            descriptor_ref=f"entitlement-census:{decl.entitlement_id}:{decl.expected_shape_class}",
+                            kind=decl.kind,
+                            now=now,
+                            pools=[decl.expected_shape_class],
+                            money_rail=money,
+                            provider=decl.provider,
+                        ),
+                    )
+    for route_id, backers in sorted(route_backers.items()):
+        if backers and all(b.state in gone for b in backers):
+            emit(
+                _descriptor(
+                    route_id,
+                    descriptor_ref=f"platform-capability-registry:{route_id}",
+                    kind=backers[0].kind,
+                    now=now,
+                    pools=[backers[0].cost_class.value],
+                    money_rail=backers[0].cost_class in {CostClass.PREPAID, CostClass.PAYG},
+                    provider=backers[0].provider,
+                ),
+                None,
+            )
+    return descriptors, deltas
+
+
+def delta_file(run: CensusRun) -> CapabilitySurfaceDeltaFile | None:
+    if not run.deltas:
+        return None
+    unique = {d.surface_id + "|" + d.descriptor_ref: d for d in run.descriptors}
+    return CapabilitySurfaceDeltaFile(
+        schema_ref=CAPABILITY_SURFACE_DELTA_SCHEMA_REF,
+        generated_from=[PRODUCER_REF, f"cc-task:{TASK_REF}"],
+        declared_at=run.now,
+        descriptors=list(unique.values()),
+        deltas=run.deltas,
+    )
+
+
+# --- the run --------------------------------------------------------------------------------------
 
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
