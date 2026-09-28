@@ -88,19 +88,10 @@ _STAMP_FIELDS = ("delivered_at", "delivery_receipt", "delivery_drop", "delivery_
 #: costs a research run and teaches the agent nothing.
 ALLOWED_URI_SCHEMES: frozenset[str] = frozenset(("http", "https"))
 
-#: A markdown destination, allowing one level of nested parentheses — ``alert(1)``,
-#: ``..._(disambiguation)``. A target pattern that stops at the FIRST ``)`` truncates
-#: those and leaves litter behind; worse, ``\(\s*`` is load-bearing, because CommonMark
-#: permits whitespace between ``(`` and the destination and a pattern without it reads
-#: the target as empty — which scores as "no scheme" and lets ``[x]( javascript:… )``
-#: through as a live link. Both found by the tests below, not by inspection.
+#: URI destination with one nested parenthesis level and leading whitespace.
 _MD_TARGET = r"(?:[^()\s]|\([^()\s]*\))*"
-_MD_LABEL = r"(?:[^\[\]]|\[[^\[\]]*\])*"
 _MD_IMAGE_DEST_RE = re.compile(rf"\(\s*(?P<target>{_MD_TARGET})(?P<rest>[^)]*)\)")
 _MAX_IMAGE_LABEL_DEPTH = 16
-_MD_LINK_RE = re.compile(
-    rf"(?<!!)\[(?P<text>{_MD_LABEL})\]\(\s*(?P<target>{_MD_TARGET})(?P<rest>[^)]*)\)"
-)
 _RAW_IMG_RE = re.compile(r"<\s*img\b[^>]*>", re.IGNORECASE)
 _AUTOLINK_RE = re.compile(r"<(?P<uri>[A-Za-z][A-Za-z0-9+.-]*:[^>\s]*)>")
 
@@ -276,13 +267,7 @@ class NeutralizedBody:
 
 
 def _display_target(target: str) -> str:
-    """The destination as shown inside a defang marker.
-
-    Angle brackets are stripped: a marker that still contained ``<scheme:…>`` would be
-    re-matched by the autolink pass that runs after this one and defanged a second
-    time, nesting the marker and double-counting what was withheld. Found by the
-    angle-bracket destination case in the smuggling test.
-    """
+    """Strip angle brackets so a defang marker cannot become an autolink."""
     return target.strip().strip("<>").strip()
 
 
@@ -297,27 +282,10 @@ def _scheme_of(target: str) -> str:
 
 
 def neutralize_markdown(body: str) -> NeutralizedBody:
-    """Strip active content from delivered markdown. Total: never raises, never refuses.
+    """Demote images and defang non-http(s) links in untrusted markdown.
 
-    Two rules, one hazard each:
-
-    * **Every image becomes a link.** An image target auto-loads when the drop is
-      opened, which turns any URL the external agent chooses into a read receipt on
-      the operator's vault — no click required. Demoting images to links removes the
-      auto-load without losing the reference. This applies whatever the scheme,
-      because the hazard is the auto-load, not the protocol.
-    * **Every link whose scheme is not http/https is defanged to inert text.** Same
-      allowlist the citations use — ``file:``, ``javascript:``, ``data:`` are not
-      references, they are actions, and a vault reader renders them as live.
-
-    Both rules only ever *remove* capability from the content, which is why they can
-    be total: there is no input for which neutralising is unsafe, so there is no
-    failure branch to get wrong. What survives is counted and reported in the drop's
-    frontmatter, so the control is visible rather than silent.
-
-    What this does NOT catch, stated rather than implied: raw HTML other than
-    ``<img>``, and a plain http(s) URL written as bare text that a reader turns into
-    a link. Neither auto-loads.
+    This does not screen other raw HTML or reader-generated links from bare URLs.
+    Counts let the delivery drop report each withheld image and link.
     """
     images = 0
     links = 0
@@ -364,14 +332,48 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
         images += 1
         return match.group(0).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    def _link(match: re.Match[str]) -> str:
+    def _links(text: str) -> str:
         nonlocal links
-        target = match.group("target")
-        scheme = _scheme_of(target)
-        if not scheme or scheme in ALLOWED_URI_SCHEMES:
-            return match.group(0)
-        links += 1
-        return f"{match.group('text')} `[link withheld — {scheme}: {_display_target(target)}]`"
+        parts: list[str] = []
+        cursor = 0
+        while (start := text.find("[", cursor)) != -1:
+            parts.append(text[cursor:start])
+            depth = 1
+            over_cap = False
+            pos = start + 1
+            while pos < len(text) and depth:
+                if text[pos] == "[":
+                    depth += 1
+                    over_cap |= depth > _MAX_IMAGE_LABEL_DEPTH
+                elif text[pos] == "]":
+                    depth -= 1
+                pos += 1
+            destination = _MD_IMAGE_DEST_RE.match(text, pos) if depth == 0 else None
+            if destination is None:
+                suspect = text.find("](", start + 1) if depth else -1
+                if suspect == -1:
+                    parts.append("[")
+                    cursor = start + 1
+                    continue
+                close = text.find(")", suspect + 2)
+                cursor = len(text) if close == -1 else close + 1
+                parts.append("`[link withheld]`")
+            elif over_cap or "](" in text[start + 1 : pos - 1]:
+                cursor = destination.end()
+                parts.append("`[link withheld]`")
+            else:
+                cursor = destination.end()
+                target = destination.group("target")
+                scheme = _scheme_of(target)
+                if not scheme or scheme in ALLOWED_URI_SCHEMES:
+                    parts.append(text[start:cursor])
+                    continue
+                payload = f"{text[start + 1 : pos - 1]} [link withheld — {scheme}: {_display_target(target)}]"
+                ticks = "`" * (max((len(run) for run in re.findall(r"`+", payload)), default=0) + 1)
+                parts.append(f"{ticks}{payload}{ticks}")
+            links += 1
+        parts.append(text[cursor:])
+        return "".join(parts)
 
     def _autolink(match: re.Match[str]) -> str:
         nonlocal links
@@ -383,7 +385,7 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
 
     out = _images(body)
     out = _RAW_IMG_RE.sub(_raw_img, out)
-    out = _MD_LINK_RE.sub(_link, out)
+    out = _links(out)
     out = _AUTOLINK_RE.sub(_autolink, out)
     return NeutralizedBody(markdown=out, images=images, links=links)
 

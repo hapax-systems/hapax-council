@@ -1,10 +1,4 @@
-"""Contract tests for the research-desk request queue.
-
-Everything here runs the real code against a real temporary vault tree. Nothing is
-mocked: the failure modes that matter (a row stamped into unparseable YAML, a
-second drop file for one request, external control bytes reaching the vault) are
-filesystem facts and a mock cannot show them.
-"""
+"""Research-desk queue tests against a temporary vault tree."""
 
 from __future__ import annotations
 
@@ -258,7 +252,7 @@ def test_control_byte_in_link_target_is_neutralized() -> None:
     assert "](\x01https:" not in result.markdown
 
 
-@pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]"])
+@pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]", "`a` [b [c]]"])
 def test_nested_image_labels_cannot_auto_load(label: str) -> None:
     result = neutralize_markdown(f"before ![{label}](https://tracker.example/p.gif) after")
     assert result.images == 1
@@ -296,6 +290,27 @@ def test_links_with_a_disallowed_scheme_are_defanged_to_inert_text(target: str) 
     assert f"]({target})" not in result.markdown
     assert "link withheld" in result.markdown
     assert target in result.markdown, "the original is shown, just not as a live link"
+
+
+@pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]"])
+def test_nested_link_labels_cannot_keep_active_destinations(label: str) -> None:
+    result = neutralize_markdown(f"before [{label}](javascript:alert(1)) after")
+    assert result.links == 1
+    assert "](javascript:" not in result.markdown
+
+
+def test_excessively_nested_link_label_is_removed_whole() -> None:
+    label = "[" * 17 + "x" + "]" * 17
+    result = neutralize_markdown(f"before [{label}](javascript:alert(1)) after")
+    assert result.links == 1
+    assert "](javascript:" not in result.markdown
+
+
+def test_unbalanced_link_label_is_removed_whole() -> None:
+    result = neutralize_markdown("before [a [b](javascript:alert(1)) after")
+    assert result.links == 1
+    assert "](javascript:" not in result.markdown
+    assert result.markdown == "before `[link withheld]`) after"
 
 
 def test_http_links_survive_untouched() -> None:
