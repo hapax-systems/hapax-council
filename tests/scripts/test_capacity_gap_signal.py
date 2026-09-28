@@ -190,3 +190,29 @@ def test_mimo_manifest_minus_ledger_done_is_queued_work(tmp_path: Path) -> None:
         "| Task | Status |\n|---|---|\n| 001 | DONE |\n| 002 | QUEUED |\n"
     )
     assert gap._appliance_demand(tmp_path) == 2
+
+
+def test_catalogue_importers_require_exact_zero_price_and_featherless_data() -> None:
+    catalogues = {
+        "https://openrouter.ai/api/v1/models": {
+            "data": [
+                {"id": "stealth/space-bunny-alpha", "pricing": {"prompt": "0", "completion": "0"}}
+            ]
+        },
+        "https://api.featherless.ai/v1/models": {"data": [{"id": "model-a"}, {"id": "model-b"}]},
+    }
+    states = gap.catalogue_capabilities(catalogues)
+    assert states == {"space-bunny": "price0", "featherless": "available:2"}
+    catalogues["https://openrouter.ai/api/v1/models"]["data"][0]["pricing"]["completion"] = (
+        "0.000001"
+    )
+    assert gap.catalogue_capabilities(catalogues)["space-bunny"] == "priced"
+
+
+def test_fugu_wall_importer_uses_live_pane_reset_and_expires() -> None:
+    pane = "■ You’ve hit your usage limit. Try again at Oct 4th, 2026 7:00 PM.\n› Ask Codex"
+    assert gap.fugu_wall({"hapax-fugu-ci": pane}, NOW) == ("walled", "2026-10-05T00:00:00Z")
+    assert (
+        gap.fugu_wall({"hapax-fugu-ci": pane}, datetime(2026, 10, 5, 0, 1, tzinfo=timezone.utc))[0]
+        == "unknown"
+    )
