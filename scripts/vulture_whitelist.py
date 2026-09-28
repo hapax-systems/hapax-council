@@ -4758,6 +4758,12 @@ _hkp_collect_evidence
 # classify_failure is the review-plane measurement-spine API (CapabilityAdapter thread): it maps the
 # channel-trust classifiers to a shared FailureReceipt. Consumed by the forthcoming worker-path +
 # dispatch-telemetry slices, not yet by a static caller. capability-adapter-failure-classification.
+# seat_diff_capacity is the tested support API consumed by PR #4871, stacked on
+# this precursor; the diff-only unused-function gate cannot see that child PR.
+from scripts.review_team import seat_diff_capacity as _review_seat_diff_capacity  # noqa: E402
+
+_review_seat_diff_capacity
+
 try:
     from scripts.review_team import (
         classify_failure as _adapter_classify_failure,  # noqa: F401, E402
