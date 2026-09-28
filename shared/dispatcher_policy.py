@@ -3066,7 +3066,9 @@ def _decision(
             "record its actual observation time with "
             "hapax-claude-subscription-quota-admission --route-id claude.interactive.full; "
             "regenerate telemetry with hapax-quota-telemetry-writer --json, then retry "
-            "the same governed dispatch. Preserve the original receipt expiry."
+            "the same governed dispatch. A bound shared-pool wall requires a newer genuine "
+            "serve or its 24-hour lifetime to end plus fresh positive evidence; preserve the "
+            "original receipt expiry."
         )
     decision = RouteDecision(
         decision_id=_decision_id(request, action, reasons, created_at),
