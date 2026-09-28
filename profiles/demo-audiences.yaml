@@ -1,9 +1,13 @@
 audiences:
-  alexis:
+  principal-a2:
     archetype: family
-    name: Alexis
+    # `name` is a human-readable DISPLAY label that reaches generated narration; the key above
+    # is the identifier. Scrubbing both to the opaque id made the demo address the audience as
+    # "principal-a2" out loud. A neutral human label keeps the surface behaviour and discloses
+    # nothing.
+    name: Partner
     context: |
-      Wife of 11 years, known each other for 15. She knows the operator has been
+      The operator's spouse, of long standing. She knows the operator has been
       building a system for executive function support and that it turned into a
       research project. Does not know the details of what was built — EVERYTHING ELSE
       is new to her.

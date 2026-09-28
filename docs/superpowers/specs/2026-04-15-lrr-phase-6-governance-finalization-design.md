@@ -142,7 +142,7 @@ If any closed-loop drill fails, Phase 6 is not closed. If the drill passes but a
 | Phase 4 complete: `shared/research_marker.py` in place, `condition_id` plumbed through voice grounding DVs | `python -c "from shared.research_marker import read_marker; print(read_marker())"` returns valid marker | YES |
 | Phase 1 complete: `ConsentGatedReader` pattern exists at `logos/api/deps/consent_gate.py` (PR #761) | `test -f logos/api/deps/consent_gate.py` + import check | YES |
 | `hapax-constitution` repo checked out and operator has push access | `git -C ~/projects/hapax-constitution remote -v` returns a valid remote | YES |
-| `axioms/contracts/` has at least the three pre-existing contracts (agatha, simon, guest-2026-03-30) | `ls axioms/contracts/*.yaml \| wc -l` ≥ 3 | YES |
+| `axioms/contracts/` has at least the three pre-existing contracts (principal-c1, principal-c2, guest-2026-03-30) | `ls axioms/contracts/*.yaml \| wc -l` ≥ 3 | YES |
 | `presence_engine.py` online and producing `presence_probability` posterior | `curl -sS localhost:8051/api/perception/presence \| jq .probability` returns a number | YES |
 | Working mode file exists and contains a legal value (`research` or `rnd`) | `cat ~/.cache/hapax/working-mode` returns one of those two | YES |
 | Operator available for constitutional amendments (`it-irreversible-broadcast`, `su-privacy-001`, `corporate_boundary` require sign-off) | operator acknowledgment at phase open | YES |
@@ -592,14 +592,14 @@ if (
 
 **Flow (end-to-end, ≤5 seconds):**
 
-1. Operator says "revoke Agatha's consent" on stream.
+1. Operator says "revoke principal-c1's consent" on stream.
 2. Daimonion VAD + STT captures utterance.
-3. Daimonion intent extractor parses `REVOKE(contract_name="agatha")`.
-4. `ConsentRegistry.revoke(contract_name)` mutates registry and moves contract file to `axioms/contracts/revoked/YYYY-MM-DD-agatha.yaml`.
+3. Daimonion intent extractor parses `REVOKE(contract_name="principal-c1")`.
+4. `ConsentRegistry.revoke(contract_name)` mutates registry and moves contract file to `axioms/contracts/revoked/YYYY-MM-DD-principal-c1.yaml`.
 5. `ConsentGatedWriter` cache invalidates; next upsert attempting to write subject data fails closed.
 6. `ConsentGatedReader` cache invalidates; next read filtering by person_id returns empty.
 7. Stream optionally auto-privates if revocation affects the current compositor frame (presence detect reruns; if revoked person's face is still in frame, auto-private fires).
-8. Hapax articulates on-stream: "I've revoked Agatha's consent. I am purging prior recording segments tagged with their contract. Live broadcast frames from before revocation are in an 'irreversible broadcast' category per the constitution; I cannot purge those." (Hermes-dependent articulation.)
+8. Hapax articulates on-stream: "I've revoked principal-c1's consent. I am purging prior recording segments tagged with their contract. Live broadcast frames from before revocation are in an 'irreversible broadcast' category per the constitution; I cannot purge those." (Hermes-dependent articulation.)
 
 **Script:** `scripts/drill-consent-revocation.py` — driver script that stages a synthetic utterance, runs the full cascade, measures wall-clock duration, asserts each stage completed, reports pass/fail.
 
@@ -910,7 +910,7 @@ Explicit exclusions to prevent scope creep.
 - **Not in scope:** Phase 8's Logos studio view tile composition. Phase 6 establishes the backend redaction gates that tile will consume; Phase 8 builds the tile.
 - **Not in scope:** Persona spec (DF-1). That is Phase 7. Phase 6 does not prescribe how Hapax talks; it only ensures the talk happens under lawful stream-mode semantics.
 - **Not in scope:** Closed-loop chat reactor research-awareness. That is Phase 9.
-- **Not in scope:** New broadcast consent contract templates for specific persons. The template shape is in scope (§3.1); filing actual contracts for agatha/simon/guest is operator-driven per-case work post-phase.
+- **Not in scope:** New broadcast consent contract templates for specific persons. The template shape is in scope (§3.1); filing actual contracts for principal-c1/principal-c2/guest is operator-driven per-case work post-phase.
 - **Not in scope:** Frame-diff privacy regression test. That lives in Phase 10 — Phase 6 is the unit-test layer; Phase 10 is the system-level backstop.
 - **Not in scope:** Archival pipeline retention rules. Those are Phase 2.
 
