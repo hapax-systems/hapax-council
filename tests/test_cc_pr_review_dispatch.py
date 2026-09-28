@@ -6912,6 +6912,41 @@ def _review_artifact(
 
 
 class TestVaultArtifactAcceptance:
+    def test_enforce_mode_seats_nothing_and_writes_no_dossier_on_both_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex major, #4839 round 1: the enforce switch must be exercised at the
+        # dispatcher for BOTH paths -- a PR review and a vault-only artifact -- and
+        # neither may seat a reviewer or write a dossier.
+        monkeypatch.setenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, "1")
+        empty = _identity_roots_for(tmp_path, "empty-identity")
+
+        reviewers = RecordingReviewers()
+        pr_result, _, _, note = _review(
+            tmp_path,
+            gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
+            task_kwargs={"assigned_to": "fugu-omglol"},
+            identity_roots=empty,
+            reviewers=reviewers,
+        )
+        assert pr_result["status"] == "writer_family_unobserved"
+        assert pr_result["plan"]["writer_family_enforcement"] is True
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+
+        artifact = tmp_path / "artifact-case"
+        artifact.mkdir()
+        artifact_reviewers = RecordingReviewers()
+        artifact_result, _, artifact_note, _ = _review_artifact(
+            artifact,
+            reviewer_runner=artifact_reviewers,
+            identity_roots=_identity_roots_for(artifact, "empty-identity"),
+        )
+        assert artifact_result["status"] == "writer_family_unobserved"
+        assert artifact_result["plan"]["writer_family_enforcement"] is True
+        assert artifact_reviewers.invocations == []
+        assert not (artifact_note.parent / "vault-row.review-dossier.yaml").exists()
+
     ROOT_FILES = [
         "30-areas/hapax/frame/CENSUS-APPENDIX.md",
         "30-areas/hapax/frame/CENSUS.md",

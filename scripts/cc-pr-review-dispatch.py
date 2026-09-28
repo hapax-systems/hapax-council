@@ -31,17 +31,19 @@ The writer's family is OBSERVED (``review_team.observed_writer_identity``): clai
 receipt -> the claim in force when the reviewed head was committed -> that
 session's native record -> provider -> family. Never the lane name, whose
 ``lane_families`` default once recorded Sakana Fugu as ``claude``. An
-unobservable author is recorded, not guessed:
+unobservable author has exactly two modes, both on one switch
+(``HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE``), and it is never guessed:
 
-- ``HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE`` unset or falsy (the default): the
-  dispatch proceeds on the lane's transport family, and the dossier says so —
+- **OBSERVE (the default, both paths — PR review and vault-only artifact):** the
+  dispatch proceeds on the lane's transport family and the dossier says so —
   ``writer_family_source: fallback`` plus
-  ``writer_family_unobserved: {reason, evidence}``. The review plane keeps moving
-  while no producer covers most rows (measured 2026-09-28: 18 of 234 receipts,
-  7.7%).
-- ``HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE=1``: the dispatch holds —
-  ``status: writer_family_unobserved``, no reviewer seats — and a dossier that
-  records ``unobserved``, or records nothing, is refused at admission.
+  ``writer_family_unobserved: {reason, lane, evidence, mode, would_hold_under}`` —
+  and the run logs the fallback. The review plane keeps moving while no producer
+  covers most rows (measured 2026-09-28: 18 of 234 receipts, 7.7%).
+- **ENFORCE (``HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE=1``):** the dispatch holds
+  on both paths — ``status: writer_family_unobserved``, no reviewer seated and no
+  dossier written — and a dossier that records ``unobserved``, or records
+  nothing, is refused at admission.
 
 The flip is a separate act: it waits on the per-claim observed-execution record
 (``writer-identity-record-at-claim-time-20260928``).
