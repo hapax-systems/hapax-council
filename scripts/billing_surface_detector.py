@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 #: Inline exemption marker, in the gitleaks:allow tradition: visible in the
 #: diff, reported by the scan, justified to the review team. For test fixtures
@@ -161,17 +162,13 @@ _EMPTY_BLOB_SHORT = "e69de29"
 
 
 def _host_of(target: str) -> str:
-    """Reduce a route target to its host, for governed-proxy comparison."""
-
+    """Read only the URL authority; malformed hosts never receive proxy treatment."""
     value = target.strip()
-    if "//" in value:
-        value = value.split("//", 1)[1]
-    if "@" in value:
-        value = value.rsplit("@", 1)[1]
-    value = value.split("/", 1)[0]
-    if value.startswith("["):  # bracketed IPv6, e.g. [::1]:4000
-        return value.split("]", 1)[0].lstrip("[").strip().lower()
-    return value.split(":", 1)[0].strip().lower()
+    try:
+        parsed = urlsplit(value if "://" in value or value.startswith("//") else f"//{value}")
+        return (parsed.hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 #: Argument names that make a ``Call`` an API-key route.

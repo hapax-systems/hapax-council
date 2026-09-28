@@ -1,8 +1,19 @@
 """Unit checks for the scanner's dormant detector and AST policy."""
 
+import ast
+from pathlib import Path
+
+import pytest
+
 from scripts.billing_surface_detector import (
+    _host_of,
+    _is_doc_path,
     _marker_is_allowed_on,
+    _marker_outside_fixtures_finding,
+    _node_credential_env_read,
     _node_findings_for_postimage,
+    _pattern_only_classes,
+    _strip_target_node,
     _text_classes,
 )
 
@@ -67,3 +78,109 @@ def test_unparseable_python_yields_no_structural_exemption_and_text_still_flags(
     assert not parsed and not findings and not allowed
     assert "api-key-route" in _text_classes(source)
     assert "credential-env-read" in _text_classes(source)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://api.openai.com?next=@localhost", "api.openai.com"),
+        ("https://api.openai.com/#@127.0.0.1", "api.openai.com"),
+        ("https://user@localhost:4000/v1", "localhost"),
+        ("https://api.openai.com/v1", "api.openai.com"),
+        ("http://[::1]:4000/v1", "::1"),
+        ("localhost:4000", "localhost"),
+        ("http://[invalid", ""),
+    ],
+)
+def test_host_parser_uses_authority_only_or_fails_closed(url: str, expected: str) -> None:
+    assert _host_of(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://api.openai.com?next=@localhost", "https://api.openai.com/#@127.0.0.1"],
+)
+def test_provider_url_with_proxy_name_outside_authority_is_not_exempt(url: str) -> None:
+    source = f'OpenAI(api_key=key, base_url="{url}")\n'
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1})
+    assert parsed
+    assert [(item.kind, item.line) for item in findings] == [("api-key-route", 1)]
+    assert allowed == []
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [("docs/spec.py", True), ("notes.md", True), ("src/app.py", False)],
+)
+def test_doc_path_boundary(path: str, expected: bool) -> None:
+    assert _is_doc_path(path) is expected
+
+
+def test_marker_outside_fixture_is_a_finding_with_next_action() -> None:
+    finding = _marker_outside_fixtures_finding(
+        "src/app.py", 7, "client = OpenAI(api_key=key)  # billing-scan:allow"
+    )
+    assert (finding.path, finding.line, finding.kind) == (
+        "src/app.py",
+        7,
+        "billing-scan-allow-outside-fixtures",
+    )
+    assert "Next action" in finding.text
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ('os.environ["OPENAI_API_KEY"]', True),
+        ('os.environ.get("OPENAI_API_KEY")', True),
+        ('os.environ.setdefault("OPENAI_API_KEY", value)', True),
+        ('os.getenv("OPENAI_API_KEY")', True),
+        ('environ["OPENAI_API_KEY"]', True),
+        ("os.getenv(name)", False),
+        ('os.getenv("PATH")', False),
+    ],
+)
+def test_credential_env_read_requires_a_literal_credential_name(
+    expression: str, expected: bool
+) -> None:
+    node = ast.parse(expression).body[0]
+    assert isinstance(node, ast.Expr)
+    assert _node_credential_env_read(node.value) is expected
+
+
+def test_strip_target_is_only_the_literal_removed_by_a_governed_strip() -> None:
+    deletion = ast.parse('del os.environ["OLD_API_KEY"]').body[0]
+    assert isinstance(_strip_target_node(deletion), ast.Subscript)
+    pop = ast.parse('os.environ.pop("OLD_API_KEY", os.environ["OPENAI_API_KEY"])').body[0]
+    assert isinstance(pop, ast.Expr)
+    target = _strip_target_node(pop.value)
+    assert isinstance(target, ast.Constant) and target.value == "OLD_API_KEY"
+    arbitrary = ast.parse('env.pop("OLD_API_KEY")').body[0]
+    assert isinstance(arbitrary, ast.Expr)
+    assert _strip_target_node(arbitrary.value) is None
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ('url = "https://api.openai.com/v1"', ("provider-api-endpoint",)),
+        ("client = OpenAI()", ("provider-api-endpoint",)),
+        ('capacity_pool = "api_paid_spend"', ("capacity-pool-payg",)),
+        ("plan_type = 'api'", ("capacity-pool-payg",)),
+        ("ordinary = 1", ()),
+    ],
+)
+def test_pattern_only_classes_have_no_structural_exemption(
+    line: str, expected: tuple[str, ...]
+) -> None:
+    assert _pattern_only_classes(line) == expected
+
+
+def test_exemption_functions_take_ast_nodes_without_line_text() -> None:
+    source = Path(__file__).resolve().parents[2] / "scripts" / "billing_surface_detector.py"
+    tree = ast.parse(source.read_text())
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    for name in ("_call_is_proxy_bound", "_strip_target_node"):
+        arguments = [arg.arg for arg in functions[name].args.args]
+        assert arguments in (["call"], ["node"])
+        assert not {"content", "line", "raw", "text", "source"}.intersection(arguments)
