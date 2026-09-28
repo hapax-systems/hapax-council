@@ -5719,7 +5719,7 @@ payg_fallback: false
         result, _, _, note = _review(
             tmp_path,
             now_iso=now,
-            task_kwargs={"risk_tier": "T1"},
+            task_kwargs={"risk_tier": "T1", "assigned_to": "cx-test"},
             gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
         )
         dossier = result["dossier"]
@@ -5763,6 +5763,7 @@ payg_fallback: false
             task_kwargs={
                 "risk_tier": "T1",
                 "quality_floor": "frontier_review_required",
+                "assigned_to": "cx-test",
             },
             gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
         )
@@ -5787,7 +5788,7 @@ payg_fallback: false
         state.write_text(json.dumps({"claude": now}), encoding="utf-8")
         kwargs = {
             "now_iso": now,
-            "task_kwargs": {"risk_tier": "T1"},
+            "task_kwargs": {"risk_tier": "T1", "assigned_to": "cx-test"},
             "gh": FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
         }
         _review(tmp_path, **kwargs)
@@ -6768,8 +6769,8 @@ class TestWalledFamilySubstitution:
         assert state["gemini"]["cause"] == "seat_output"
 
     def test_wall_and_route_block_substitute_a_distinct_family(self, tmp_path: Path) -> None:
-        # Today's #4729 shape: codex walled, glm route-blocked, claude writes. Three distinct
-        # families are seated; a declared substitute fills the third seat, never a reseat.
+        # Codex is walled, glm route-blocked, and claude writes. Three distinct
+        # non-author families are seated, with declared substitutes filling the gaps.
         _write_codex_weekly_wall(tmp_path / "wall-home")
         result, _, _, _ = _review(
             tmp_path,
@@ -6779,9 +6780,10 @@ class TestWalledFamilySubstitution:
         plan = result["plan"]
         families = [seat["family"] for seat in plan["seats"]]
         assert len(families) == len(set(families)) == 3
-        assert {"gemini", "claude"} <= set(families)
+        assert "gemini" in families
+        assert "claude" not in families
         substituted = plan["family_substitution"]["substitute_families_seated"]
-        assert len(substituted) == 1 and substituted[0] in {"muse", "vibe", "local"}
+        assert len(substituted) == 2 and set(substituted) <= {"muse", "vibe", "local"}
 
     def test_empty_output_is_an_outage_not_a_vote(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

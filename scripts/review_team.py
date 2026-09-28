@@ -1416,7 +1416,7 @@ def task_scoped_paid_review_route_blocked_families(
 
 def constitute_team(
     team_class: str,
-    writer_family: str,
+    writer_family: str | Sequence[str] | None,
     registry: Mapping[str, Any],
     *,
     pr_number: int,
@@ -1469,6 +1469,17 @@ def constitute_team(
         for f in roster
         if f not in available and f not in out and f not in blocked
     ]
+    # Every family that could have authored this head: one PR can close several
+    # rows, and excluding only one seats another row's author as a reviewer
+    # (clause (9); codex + gemini critical, #4835 r2).
+    if isinstance(writer_family, str) or writer_family is None:
+        writer_set = frozenset({writer_family} if writer_family else ())
+    else:
+        writer_set = frozenset(str(family) for family in writer_family if str(family))
+    if len(writer_set) > 1:
+        notes.append("writer_family_union:" + ",".join(sorted(writer_set)))
+    if writer_set:
+        notes.append("writer_family_excluded:" + ",".join(sorted(writer_set)))
     degraded: list[str] = []
     route_degraded: dict[str, tuple[str, ...]] = {}
 
@@ -1476,7 +1487,14 @@ def constitute_team(
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
         if sizing.get("require_all_families"):
-            missing = [f for f in roster if f not in available and f not in substitutes]
+            # "Every family" means every family that MAY review this work: a family
+            # in the authoring set is not missing, it is excluded, and demanding it
+            # would make an author from the roster unsatisfiable at T1.
+            missing = [
+                f
+                for f in roster
+                if f not in available and f not in substitutes and f not in writer_set
+            ]
             degradable = set(outage_families) | set(route_blocked)
             other_missing = [f for f in missing if f not in size_excluded_families]
             if other_missing and all(f in degradable for f in other_missing):
@@ -1534,13 +1552,11 @@ def constitute_team(
     # families a PR draws.
     core = rotated([f for f in available if f not in substitutes])
     subs = [f for f in available if f in substitutes]
-    writer_cap = size // 2  # strict-majority guard: writer seats can never reach size//2 + 1
-    order = [f for f in core if f != writer_family]
-    if writer_family in core and writer_cap >= 1:
-        order.append(writer_family)
-    order.extend(f for f in subs if f != writer_family)
-    if writer_family in subs and writer_cap >= 1:
-        order.append(writer_family)
+    # A family that may have authored the work never takes a seat -- from any class,
+    # and not merely after the core families: T1 seats every roster family, so
+    # ordering is seating there (clause (10); codex critical, #4835 r3).
+    order = [f for f in core if f not in writer_set]
+    order.extend(f for f in subs if f not in writer_set)
     seat_families = order[:size]
     if len(seat_families) < size:
         raise ValueError(

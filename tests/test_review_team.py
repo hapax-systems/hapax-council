@@ -532,14 +532,16 @@ class TestConstitution:
         assert len(set(families)) >= 2
         assert families.count("claude") <= 1  # writer family never the majority alone
 
-    def test_t1_team_has_all_registry_families(self) -> None:
+    def test_t1_team_has_all_non_author_core_families(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
         team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
         assert 4 <= len(team.seats) <= 5
-        # every CORE family; substitute families only fill seats the core cannot
+        # The author's family never reviews; every other core family still seats.
         roster = {entry["family"] for entry in reg["families"] if not entry.get("substitute")}
-        assert roster <= {seat.family for seat in team.seats}
+        families = {seat.family for seat in team.seats}
+        assert roster - {"claude"} <= families
+        assert "claude" not in families
 
     def test_t1_route_blocked_family_degrades_with_receipt_reason(self) -> None:
         rt = _load_review_team_module()
@@ -922,6 +924,84 @@ class TestObservedWriterIdentity:
         assert before.family == "fugu"
         assert after.family == "codex"
 
+    def test_the_constitution_excludes_every_observed_writer_family(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t2_standard", ["codex", "fugu"], reg, pr_number=7)
+
+        seated = {seat.family for seat in team.seats}
+        assert not seated & {"codex", "fugu"}
+        assert len(team.seats) == 3
+        assert "writer_family_union:codex,fugu" in team.notes
+
+    def test_a_single_writer_family_is_unchanged(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        from_one = rt.constitute_team("t2_standard", ["codex"], reg, pr_number=7)
+        from_string = rt.constitute_team("t2_standard", "codex", reg, pr_number=7)
+
+        assert [s.family for s in from_one.seats] == [s.family for s in from_string.seats]
+        assert "writer_family_union:" not in " ".join(from_one.notes)
+
+    def test_a_t1_team_never_seats_the_authoring_family(self) -> None:
+        # Clause (10) of the row, added by the seat 2026-09-28T04:08Z on the codex
+        # critical: T1 seats every roster family, so placing the author's family
+        # LAST is the same as seating it. Observed authoring families are excluded
+        # from T1 too -- from every class, and not merely placed after the core.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t1_critical", ["codex"], reg, pr_number=11)
+
+        seated = {seat.family for seat in team.seats}
+        assert "codex" not in seated
+        assert len(team.seats) >= 4
+        assert "writer_family_excluded:codex" in team.notes
+
+    def test_excluding_the_author_does_not_shrink_a_t1_team_below_its_floor(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t1_critical", ["claude", "codex"], reg, pr_number=11)
+
+        seated = {seat.family for seat in team.seats}
+        assert not seated & {"claude", "codex"}
+        assert len(seated) == len(team.seats) >= 4
+        assert "writer_family_excluded:claude,codex" in team.notes
+
+    def test_no_writer_family_ever_takes_a_seat(self) -> None:
+        # The cap this replaces allowed the writer's family one seat; a family that
+        # may have authored the work must never be one of its reviewers.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        for team_class in ("t2_standard", "t3_docs", "t1_critical"):
+            team = rt.constitute_team(team_class, "gemini", reg, pr_number=5)
+            assert "gemini" not in {seat.family for seat in team.seats}, team_class
+
+    def test_the_union_never_seats_a_writer_family_alone_as_the_majority(self) -> None:
+        # The same strict-majority guard, applied to every family in the union: with
+        # the union covering most of the roster, the seats come from what is left.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t3_docs", ["claude", "codex"], reg, pr_number=3)
+
+        seated = {seat.family for seat in team.seats}
+        assert not seated & {"claude", "codex"}
+        assert len(seated) == len(team.seats) == 2
+
+    def test_an_empty_union_behaves_as_no_writer_constraint(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t3_docs", [], reg, pr_number=3)
+
+        assert len(team.seats) == 2
+        assert "writer_family_union:" not in " ".join(team.notes)
+
 
 class TestDistinctFamilyFloor:
     """review-constitution-walled-family-substitution-20260924, seat finding 21:05:30Z: the
@@ -972,8 +1052,9 @@ class TestDistinctFamilyFloor:
             route_blocked_families={"glm": ("glmcp.review.direct:route_state_blocked",)},
         )
         families = {seat.family for seat in short.seats}
-        assert {"gemini", "claude"} <= families
-        assert len(families & self.SUBSTITUTES) == 1
+        assert "gemini" in families
+        assert "claude" not in families
+        assert len(families & self.SUBSTITUTES) == 2
 
     def test_too_few_distinct_families_refuses_instead_of_reseating(self) -> None:
         rt = _load_review_team_module()
@@ -989,12 +1070,14 @@ class TestDistinctFamilyFloor:
                 route_blocked_families=blocked,
             )
 
-    def test_t1_requires_every_core_family_not_the_substitutes(self) -> None:
+    def test_t1_seats_every_non_author_core_family_before_substitutes(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
         team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
         families = {seat.family for seat in team.seats}
-        assert families == {"claude", "codex", "gemini", "glm"}
+        assert {"codex", "gemini", "glm"} <= families
+        assert "claude" not in families
+        assert len(families & self.SUBSTITUTES) == 1
         dossier = _synth(
             rt,
             [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
