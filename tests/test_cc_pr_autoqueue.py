@@ -514,6 +514,124 @@ def _pr(
     }
 
 
+class TestStackedPrIsNeverArmed:
+    """A stacked PR's base is another PR's branch, not the default branch.
+
+    `gh pr merge --auto` on such a PR does not queue it: it folds the PR into its
+    base PR's branch, with no merge queue, no merge-group CI shards and no ordering
+    between the halves. Witnessed 2026-09-28T05:54Z on #4839, armed on a quorum
+    accept, base #4835's branch: it merged into that branch with a codex major open.
+    """
+
+    def _classify(self, vault: Path, payload: dict[str, Any]):
+        pr = autoqueue._parse_pr(payload)
+        assert pr is not None
+        return autoqueue.classify_pr(
+            pr,
+            tasks=autoqueue.load_task_notes(vault),
+            queued_prs=set(),
+            expected_auto_merge_method="SQUASH",
+            expected_auto_merge_method_source="test",
+        )
+
+    def _quorum_accepted_vault(self, tmp_path: Path) -> Path:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        return vault
+
+    @staticmethod
+    def _listed(pr_payload: dict[str, Any], *, default_branch: str = "main") -> dict[str, Any]:
+        # The listing carries the repository default branch beside the PR's base
+        # (graphql defaultBranchRef, REST base.repo.default_branch).
+        pr_payload["baseRepoDefaultBranch"] = default_branch
+        return pr_payload
+
+    def test_a_stacked_pr_with_quorum_accept_is_not_queued(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+
+        decision = self._classify(vault, self._listed(_pr(42, base="fix/other-branch")))
+
+        assert decision.action not in {
+            "queue",
+            "enable_auto_merge",
+            "already_queued",
+            "already_auto_merge_enabled",
+        }, decision.reasons
+        assert decision.action == "blocked", decision.reasons
+        assert any("fix/other-branch" in reason for reason in decision.reasons)
+        # The auto-arm writes `release_authorized: true`; a non-release action is
+        # never the auto-arm subject.
+        assert decision.auto_arm is False
+
+    def test_the_same_pr_retargeted_to_the_default_branch_queues(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+
+        decision = self._classify(vault, self._listed(_pr(42, base="main")))
+
+        assert decision.action == "queue", decision.reasons
+
+    def test_the_skip_lands_on_the_existing_reporting_surfaces(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No new surface: the base name travels in the decision reasons the
+        # reconciler report already carries, and in the required-check description
+        # the autoqueue already posts.
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+        decision = self._classify(vault, self._listed(_pr(42, base="fix/other-branch")))
+
+        assert "base_branch_not_default:fix/other-branch:default=main" in decision.reasons
+        admission = autoqueue._admission_status_for(decision)
+        assert admission is not None
+        state, description = admission
+        assert state == "failure"
+        assert "base_branch_not_default:fix/other-branch" in description
+
+    def test_an_unknown_default_branch_does_not_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A listing that carries no default branch cannot tell a stack from an
+        # ordinary PR. Absence is not evidence of stacking, so it does not block.
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+
+        decision = self._classify(vault, _pr(42, base="main"))
+
+        assert decision.action == "queue", decision.reasons
+
+    def test_an_armed_stacked_pr_is_left_alone_not_disarmed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # This rule refuses to arm or queue; it does not reach into GitHub to
+        # dequeue or disarm what is already there (the hold-label and
+        # override-only refusals behave the same way).
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+
+        decision = self._classify(
+            vault, self._listed(_pr(42, base="fix/other-branch", auto_merge=True))
+        )
+
+        assert decision.action not in {
+            "queue",
+            "enable_auto_merge",
+            "already_queued",
+            "already_auto_merge_enabled",
+            "disable_auto_merge",
+            "dequeue",
+        }, decision.reasons
+        assert decision.action == "blocked", decision.reasons
+        assert any("fix/other-branch" in reason for reason in decision.reasons)
+        assert decision.auto_arm is False
+
+
 class _FakeRunner:
     def __init__(self) -> None:
         self.open_prs: list[dict[str, Any]] = []
@@ -1650,7 +1768,11 @@ def test_run_reconciler_adapter_only_preserves_all_decisions(
         {
             42: "hold",
             43: "hold",
-            44: "already_auto_merge_enabled",
+            # 44 is based on `release`, a non-default branch: refused before any
+            # positive admission (row autoqueue-never-arms-stacked-prs-20260928).
+            # With an override the other way it carries a method-mismatch reason and
+            # is disarmed instead — the pre-existing arm hygiene still applies.
+            44: "blocked",
             45: "blocked",
         }
         if override == "MERGE"
@@ -3796,11 +3918,13 @@ def test_merge_method_override_respects_governance(
     report = _method_override_report(tmp_path, state=state, override=override)
     decision = report["decisions"][0]
     if state == "ordinary":
-        assert decision["action"] == (
-            "already_auto_merge_enabled" if override == "MERGE" else "disable_auto_merge"
-        )
+        # `ordinary` is based on `release`, a non-default branch, so it is refused
+        # before any positive admission (row autoqueue-never-arms-stacked-prs-20260928).
+        # Where the armed method also mismatches, that pre-existing refusal wins and
+        # disarms; the base fact alone (override=contradictory) blocks instead.
+        assert decision["action"] == ("blocked" if override == "MERGE" else "disable_auto_merge")
         assert decision.get("reasons", []) == (
-            []
+            ["base_branch_not_default:release:default=main"]
             if override == "MERGE"
             else ["auto_merge_method_mismatch:armed=MERGE:expected=SQUASH"]
         )
@@ -4154,6 +4278,9 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="wrong-method-armed", pr=4584)
     runner = _FakeRunner()
+    # base="release" is load-bearing for the first pass: the expected method then
+    # comes from the default method, not from the base's queue, which is what makes
+    # the armed MERGE a mismatch to disarm.
     runner.open_prs = [_pr(4584, base="release", auto_merge=True, auto_merge_method="MERGE")]
 
     first_report = autoqueue.run_reconciler(
@@ -4177,7 +4304,13 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
         runner=runner,
     )
 
-    assert second_report["counts"]["queue"] == 1
+    # The second pass no longer re-arms: `release` is not the default branch, so the
+    # PR never reaches a positive admission (row autoqueue-never-arms-stacked-prs-20260928).
+    assert second_report["counts"]["queue"] == 0
+    assert second_report["decisions"][0]["action"] == "blocked"
+    assert second_report["decisions"][0]["reasons"] == [
+        "base_branch_not_default:release:default=main"
+    ]
     assert [
         "gh",
         "pr",
@@ -4187,7 +4320,7 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
         "owner/repo",
         "--auto",
         "--squash",
-    ] in runner.calls
+    ] not in runner.calls
 
 
 def test_already_auto_merge_enabled_reports_unsupported_armed_method(
@@ -4681,9 +4814,13 @@ def test_run_reconciler_expected_method_override_is_reported_and_used(
     assert report["merge_queue_merge_method"]["method"] == "REBASE"
     assert report["merge_queue_merge_method"]["source"] == "override:test"
     assert report["merge_queue_merge_method"]["indeterminate"] is False
-    assert report["decisions"][0]["action"] == "queue"
     assert report["decisions"][0]["expected_auto_merge_method"] == "REBASE"
+    # base="release" is deliberate here: it is what keeps the ruleset out of the
+    # governance method. It is also a non-default base, so the PR is refused before
+    # any positive admission (row autoqueue-never-arms-stacked-prs-20260928).
     assert report["decisions"][0]["merge_queue_governance"]["method"] is None
+    assert report["decisions"][0]["action"] == "blocked"
+    assert report["decisions"][0]["reasons"] == ["base_branch_not_default:release:default=main"]
     assert not any(
         call[:5] == ["gh", "api", "--method", "GET", "-H"]
         and call[6] == "repos/owner/repo/rulesets"
@@ -4853,6 +4990,9 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="armed-method-missing", pr=83)
     runner = _FakeRunner()
+    # base="release" is load-bearing for the first pass: it is what keeps the base's
+    # queue out of the expected method, making the unreadable armed method the only
+    # blocker to disarm on.
     runner.open_prs = [_pr(83, base="release", auto_merge=True, auto_merge_method=None)]
 
     report = autoqueue.run_reconciler(
@@ -4887,8 +5027,16 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
         runner=runner,
     )
 
-    assert second_report["counts"]["queue"] == 1
-    assert ["gh", "pr", "merge", "83", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+    # No re-arm: `release` is not the default branch, so the PR is refused before a
+    # positive admission (row autoqueue-never-arms-stacked-prs-20260928).
+    assert second_report["counts"]["queue"] == 0
+    assert second_report["decisions"][0]["action"] == "blocked"
+    assert second_report["decisions"][0]["reasons"] == [
+        "base_branch_not_default:release:default=main"
+    ]
+    assert ["gh", "pr", "merge", "83", "--repo", "owner/repo", "--auto", "--squash"] not in (
+        runner.calls
+    )
 
 
 def test_merge_pr_rejects_missing_expected_merge_method(tmp_path: Path) -> None:

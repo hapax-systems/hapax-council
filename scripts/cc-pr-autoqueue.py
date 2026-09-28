@@ -3048,6 +3048,29 @@ def _missing_cc_task_link_only(reasons: list[str]) -> bool:
     return bool(reasons) and all(_is_missing_cc_task_link_reason(reason) for reason in reasons)
 
 
+BASE_BRANCH_NOT_DEFAULT_PREFIX = "base_branch_not_default:"
+
+
+def _base_branch_not_default_reason(pr: PullRequest) -> str | None:
+    """The reason a PR must not be queued, armed or released: its base is not the
+    repository default branch.
+
+    ``gh pr merge --auto`` on such a PR does not queue it. It folds the PR into its
+    base PR's branch: no merge queue, no merge-group CI shards, and no ordering
+    between the halves. Witnessed 2026-09-28T05:54Z — #4839 was armed on a quorum
+    accept while its base was #4835's branch, and merged into that branch with a
+    codex major open, pushing #4835 past the review cap.
+
+    A missing default branch (a listing that does not carry one) is not evidence
+    that the PR is stacked, so it does not refuse.
+    """
+    base_ref = read_ref_name(pr.base_ref)
+    default_branch = read_ref_name(pr.default_branch)
+    if not base_ref or not default_branch or base_ref == default_branch:
+        return None
+    return f"{BASE_BRANCH_NOT_DEFAULT_PREFIX}{base_ref}:default={default_branch}"
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -3271,6 +3294,23 @@ def classify_pr(
             tasks=matched_tasks,
             action=action,
             reasons=tuple(reasons),
+            expected_auto_merge_method=expected_auto_merge_method,
+            notes=tuple(notes),
+        )
+    stacked_reason = _base_branch_not_default_reason(pr)
+    if stacked_reason:
+        # A stacked PR's base is another PR's branch, so there is no merge queue for
+        # it: `--auto` folds it into its base PR's branch, skipping the queue, the
+        # merge-group shards and any ordering between the halves (#4839, 2026-09-28).
+        # Refuse the positive admissions — queue, arm, and the auto-arm that writes
+        # `release_authorized: true`. What is already on GitHub is left where it is;
+        # this rule does not dequeue or disarm.
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action="blocked",
+            reasons=(stacked_reason,),
             expected_auto_merge_method=expected_auto_merge_method,
             notes=tuple(notes),
         )
