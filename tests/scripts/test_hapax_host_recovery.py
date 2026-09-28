@@ -36,6 +36,11 @@ def lane(tmp_path: Path, *, provider: str = "codex") -> dict:
         "cwd": str(cwd),
         "inbox": str(inbox),
         "memory": {"high": "5G", "max": "7G", "swap": "1G"},
+        **(
+            {"sandbox": "danger-full-access", "approval": "never"}
+            if provider == "codex"
+            else {"permission_mode": "bypass"}
+        ),
     }
 
 
@@ -70,6 +75,55 @@ def test_manifest_rejects_unbounded_or_forged_lane(
     entry["tmux"] = "hapax-claude-dev1-seat"
     with pytest.raises(ValueError, match="identity"):
         module.launch_args(entry)
+
+
+def test_restore_preserves_measured_session_permissions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    entry = lane(tmp_path)
+    entry["sandbox"] = "read-only"
+    entry["approval"] = "on-request"
+    command = module.launch_args(entry)
+    assert command[command.index("-s") + 1] == "read-only"
+    assert command[command.index("-a") + 1] == "on-request"
+    del entry["approval"]
+    with pytest.raises(ValueError, match="permission mode"):
+        module.launch_args(entry)
+
+
+def test_capture_session_mode_requires_explicit_allowlisted_flags() -> None:
+    codex = ["codex", "resume", TRANSCRIPT, "-s", "workspace-write", "-a", "on-request"]
+    assert module.session_mode("codex", codex) == {
+        "sandbox": "workspace-write",
+        "approval": "on-request",
+    }
+    with pytest.raises(ValueError, match="permission mode"):
+        module.session_mode("codex", ["codex", "resume", TRANSCRIPT])
+    with pytest.raises(ValueError, match="permission mode"):
+        module.session_mode("codex", [*codex, "-s", "danger-full-access"])
+    assert module.session_mode(
+        "claude", ["claude", "--resume", TRANSCRIPT, "--dangerously-skip-permissions"]
+    ) == {"permission_mode": "bypass"}
+
+
+def test_readback_rejects_changed_session_permissions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    entry = lane(tmp_path)
+    monkeypatch.setattr(module, "run", lambda *args: "123")
+    monkeypatch.setattr(
+        module,
+        "proc_fields",
+        lambda pid: (
+            ["codex", "resume", TRANSCRIPT, "-s", "read-only", "-a", "on-request"],
+            {"HAPAX_AGENT_ROLE": entry["role"], "HAPAX_SESSION_ID": TRANSCRIPT},
+        ),
+    )
+    monkeypatch.setattr(module, "scope_readback", lambda pid: None)
+    with pytest.raises(ValueError, match="permission mode differs"):
+        module.readback(entry)
 
 
 def test_restore_rebuilds_bounded_commands_and_reports_failures(

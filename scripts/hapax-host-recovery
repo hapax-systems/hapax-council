@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Keep a host's live coding lanes recoverable across an unplanned reboot.
-
-The manifest contains identities, never a captured shell command. Restores build
-commands from an allowlist and run each lane in its own bounded user scope.
-"""
+"""Recover declared host units and bounded lane sessions after reboot."""
 
 from __future__ import annotations
 
@@ -26,6 +22,8 @@ UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
 ROLE = re.compile(r"^(?:codex-[a-z0-9-]+|dev[0-9]*|dev1-seat)$")
 UNIT = re.compile(r"^[a-z0-9][a-z0-9@_.-]*\.(?:service|timer|socket)$")
 MEMORY = {"high": "5G", "max": "7G", "swap": "1G"}
+SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
+APPROVAL_MODES = {"on-request", "never"}
 ROOT = Path.home() / "Documents/Personal/30-areas/hapax/lanebus"
 STATE = Path.home() / ".local/state/hapax/host-recovery"
 
@@ -132,7 +130,7 @@ def declare_unit(spec: str) -> dict:
     return unit
 
 
-def validate(entry: dict) -> None:
+def validate(entry: dict, *, require_mode: bool = False) -> None:
     role = entry["role"]
     provider = entry["provider"]
     expected = f"hapax-{provider}-{role.removeprefix('codex-') if provider == 'codex' else role}"
@@ -150,6 +148,16 @@ def validate(entry: dict) -> None:
         raise ValueError(f"recovery inbox unavailable: {inbox}")
     if entry["memory"] != MEMORY:
         raise ValueError("unapproved lane memory ceiling")
+    if provider == "codex":
+        if require_mode or "sandbox" in entry or "approval" in entry:
+            if (
+                entry.get("sandbox") not in SANDBOX_MODES
+                or entry.get("approval") not in APPROVAL_MODES
+            ):
+                raise ValueError("unmeasured or invalid recovery permission mode")
+    elif require_mode or "permission_mode" in entry:
+        if entry.get("permission_mode") != "bypass":
+            raise ValueError("unmeasured or invalid recovery permission mode")
 
 
 def proc_fields(pid: str) -> tuple[list[str], dict[str, str]]:
@@ -213,6 +221,35 @@ def transcript_id(provider: str, argv: list[str]) -> str:
     return candidate.lower()
 
 
+def session_mode(provider: str, argv: list[str]) -> dict[str, str]:
+    if provider == "claude":
+        if argv.count("--dangerously-skip-permissions") != 1 or any(
+            arg.startswith("--permission-mode") for arg in argv
+        ):
+            raise ValueError("unmeasured or invalid Claude permission mode")
+        return {"permission_mode": "bypass"}
+    if provider != "codex":
+        raise ValueError("unknown recovery provider permission mode")
+
+    def values(short: str, long: str) -> list[str]:
+        found = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg in {short, long}]
+        found += [
+            arg.partition("=")[2] for arg in argv if arg.startswith((f"{short}=", f"{long}="))
+        ]
+        return found
+
+    sandbox = values("-s", "--sandbox")
+    approval = values("-a", "--ask-for-approval")
+    if (
+        len(sandbox) != 1
+        or sandbox[0] not in SANDBOX_MODES
+        or len(approval) != 1
+        or approval[0] not in APPROVAL_MODES
+    ):
+        raise ValueError("unmeasured or invalid Codex permission mode")
+    return {"sandbox": sandbox[0], "approval": approval[0]}
+
+
 def live_lanes() -> list[dict]:
     listed = subprocess.run(
         ["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}\t#{pane_current_path}"],
@@ -252,6 +289,7 @@ def live_lanes() -> list[dict]:
             "cwd": cwd,
             "inbox": str(ROOT / ("dev1" if role == "dev1-seat" else role)),
             "memory": MEMORY.copy(),
+            **session_mode(provider, argv),
         }
         validate(entry)
         entries.append(entry)
@@ -259,6 +297,7 @@ def live_lanes() -> list[dict]:
 
 
 def readback(entry: dict) -> None:
+    validate(entry, require_mode=True)
     pid = run("tmux", "list-panes", "-t", f"={entry['tmux']}", "-F", "#{pane_pid}")
     argv, env = proc_fields(pid)
     if env.get("HAPAX_AGENT_ROLE") != entry["role"]:
@@ -267,6 +306,8 @@ def readback(entry: dict) -> None:
         raise ValueError("restored transcript differs from manifest")
     if env.get("HAPAX_SESSION_ID", entry["transcript"]) != entry["session_id"]:
         raise ValueError("restored session id differs from manifest")
+    if any(entry[key] != value for key, value in session_mode(entry["provider"], argv).items()):
+        raise ValueError("restored permission mode differs from manifest")
     scope_readback(pid)
 
 
@@ -300,16 +341,16 @@ def capture(path: Path, requested_units: tuple[str, ...] = ()) -> dict:
 
 
 def launch_args(entry: dict) -> list[str]:
-    validate(entry)
+    validate(entry, require_mode=True)
     if entry["provider"] == "codex":
         command = [
             "codex",
             "resume",
             entry["transcript"],
             "-s",
-            "danger-full-access",
+            entry["sandbox"],
             "-a",
-            "never",
+            entry["approval"],
             "-c",
             "model_reasoning_effort=high",
         ]
