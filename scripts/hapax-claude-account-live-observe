@@ -126,10 +126,9 @@ DEFAULT_MAX_AGE_SECONDS = 1800
 #: Receipt lifetime. Deliberately short: an observation of "served at T" cannot vouch
 #: for a quota wall that appears at T+1h.
 DEFAULT_STALE_AFTER_SECONDS = 3600
-#: The ledger keeps a window reading fresh for one hour (``MEASUREMENT_TTL``). Probing once the
-#: newest reading is older than 40 minutes lands the next reading before that lapses, on a
-#: 10-minute timer, and never probes for a quantity that is already fresh (H1 #15: read before
-#: probing). The 20-minute gap is deliberate lead time, not a mismatch to align away.
+#: The ledger keeps a window reading fresh for one hour (``MEASUREMENT_TTL``).
+#: This threshold reports diagnostic quantity staleness; a fresh reading cannot
+#: replace request-bound subscription evidence for any route.
 DEFAULT_QUANTITY_MAX_AGE_SECONDS = 2400
 DEFAULT_RECEIPT_DIR = Path(
     os.environ.get("HAPAX_RELAY_RECEIPT_DIR", str(Path.home() / ".cache/hapax/relay/receipts"))
@@ -1206,8 +1205,8 @@ def main(argv: list[str] | None = None) -> int:
         "--quantity-max-age-seconds",
         type=int,
         default=DEFAULT_QUANTITY_MAX_AGE_SECONDS,
-        help="Probe when the newest subscription window reading is older than this, even if "
-        "every route has passive evidence; never when it is newer.",
+        help="Report when the newest subscription window reading is older than this; "
+        "quantity freshness does not replace the controlled subscription probe.",
     )
     parser.add_argument(
         "--pace-receipt-dir",
@@ -1382,13 +1381,6 @@ def main(argv: list[str] | None = None) -> int:
                 "`hapax-claude-account-live-observe --probe --json` for the same route."
             )
             rc = 5
-        elif probe_report is not None and probe_report.get("outcome") == "probe_failed":
-            # Passive routes were minted; the probe itself is still a broken instrument.
-            payload["hint"] = (
-                "the active probe could not run; passive evidence was minted for the routes it "
-                "covers. Next action: run `claude -p ok` by hand under the observer's environment"
-            )
-            rc = 7
         else:
             rc = 0
     elif verdict == "walled":
