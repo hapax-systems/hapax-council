@@ -435,15 +435,24 @@ def test_unbalanced_image_label_is_neutralized_in_delivery(desk: ResearchDeskCon
 def test_raw_html_is_inert_in_delivery(desk: ResearchDeskConfig) -> None:
     write_request(desk, "req-html")
     markup = (
-        '<iframe src="//t"></iframe><link rel="stylesheet" href="//t">'
-        '<video src="//t"></video><audio src="//t"><source src="//t"></audio>'
-        '<object data="//t"></object><embed src="//t">'
-        '<svg><image href="//t"/></svg><div style="background:url(//t)">x</div>'
+        "<iframe src=//t><link rel=stylesheet href=//t><video src=//t><audio src=//t>"
+        "<source src=//t><object data=//t><embed src=//t><svg><image href=//t>"
+        '<div style="background:url(//t)">'
+    )
+    markup += " ".join(
+        f"[x]({scheme}alert(1))"
+        for scheme in (
+            "javascript&#58;",
+            "javascript&colon;",
+            "&#106;avascript:",
+            "javascript&#x3A;",
+        )
     )
     receipt = deliver_result(desk, request_id="req-html", markdown=markup)
     drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
     assert "<" not in drop.body
     assert "&lt;" in drop.body
+    assert drop.frontmatter["withheld_links"] == 4
 
 
 def test_delivery_refuses_a_request_that_is_not_open(desk: ResearchDeskConfig) -> None:

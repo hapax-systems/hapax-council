@@ -685,7 +685,7 @@ def _existing_receipt(request: ResearchRequest) -> DeliveryReceipt | None:
 def _unstamped_drop(
     config: ResearchDeskConfig, request_id: str
 ) -> tuple[Path, dict[str, Any]] | None:
-    """Find a committed drop left by an interrupted row stamp, under the request lock."""
+    """Find a committed drop after an interrupted stamp."""
     suffix = f"-perplexity-desk-{request_id}.md"
     candidates = sorted(config.lanebus_dir.glob(f"*{suffix}"))
     if not candidates:
@@ -866,8 +866,6 @@ def stamp_request_row(
     ]
     kept.extend(
         [
-            # Quoted: PyYAML coerces a bare ISO-8601 scalar into a ``datetime``, so an
-            # unquoted stamp would read back as a different type than it was written as.
             f"delivered_at: {_yaml_scalar(delivered_at)}",
             f"delivery_receipt: {receipt_id}",
             f"delivery_drop: {_yaml_scalar(drop_relpath)}",
