@@ -402,18 +402,34 @@ def test_delivery_refuses_an_unverifiable_prior_drop(desk: ResearchDeskConfig) -
     assert get_request(desk, "req-invalid-prior").status == "offered"
 
 
-def test_nested_label_active_content_is_neutralized_in_delivery(desk: ResearchDeskConfig) -> None:
+@pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]"])
+def test_nested_label_active_content_is_neutralized_in_delivery(
+    desk: ResearchDeskConfig, label: str
+) -> None:
     write_request(desk, "req-nested")
     receipt = deliver_result(
         desk,
         request_id="req-nested",
-        markdown="![a [b]](https://tracker.example/p.gif) [a [b]](javascript:alert(1))",
+        markdown=f"![{label}](https://tracker.example/p.gif) [a [b]](javascript:alert(1))",
     )
     drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
     assert drop.frontmatter["withheld_images"] == 1
     assert drop.frontmatter["withheld_links"] == 1
-    assert "![a [b]](" not in drop.body
+    assert "![" not in drop.body
     assert "[a [b]](javascript:" not in drop.body
+
+
+def test_unbalanced_image_label_is_neutralized_in_delivery(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-unbalanced")
+    receipt = deliver_result(
+        desk,
+        request_id="req-unbalanced",
+        markdown="![a [b](https://tracker.example/p.gif) answer",
+    )
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.frontmatter["withheld_images"] == 1
+    assert "![" not in drop.body
+    assert "https://tracker.example" not in drop.body
 
 
 def test_delivery_refuses_a_request_that_is_not_open(desk: ResearchDeskConfig) -> None:
