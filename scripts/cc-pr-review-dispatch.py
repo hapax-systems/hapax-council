@@ -4180,6 +4180,59 @@ def review_pr(
     if not apply:
         return {"status": "planned", "plan": plan}
 
+    return _apply_review(
+        pr_number=pr_number,
+        repo=repo,
+        repo_root=repo_root,
+        gh_runner=gh_runner,
+        reviewer_runner=reviewer_runner,
+        wake_dir=wake_dir,
+        send_runner=send_runner,
+        now_iso=now_iso,
+        route=route,
+        registry=registry,
+        pr_info=pr_info,
+        keyed_matches=keyed_matches,
+        task_ids=task_ids,
+        lenses=lenses,
+        team_class=team_class,
+        constitution=constitution,
+        writer_family=writer_family,
+        substitution=substitution,
+        outage_witness=outage_witness,
+        effective_route_blocked_families=effective_route_blocked_families,
+        plan=plan,
+        apply=apply,
+    )
+
+
+def _apply_review(
+    *,
+    pr_number: int,
+    repo: str,
+    repo_root: Path,
+    gh_runner: Any,
+    reviewer_runner: Any,
+    wake_dir: Path,
+    send_runner: Any,
+    now_iso: str,
+    route: ListingRoute | None,
+    registry: dict[str, Any],
+    pr_info: PRInfo,
+    keyed_matches: list[tuple[Path, dict[str, Any], str]],
+    task_ids: list[str],
+    lenses: tuple[str, ...],
+    team_class: str,
+    constitution: review_team.Constitution,
+    writer_family: str,
+    substitution: dict[str, Any],
+    outage_witness: dict[str, str],
+    effective_route_blocked_families: dict[str, tuple[str, ...]],
+    plan: dict[str, Any],
+    apply: bool,
+) -> dict[str, Any]:
+    """Fetch review evidence and dispatch only after the plan branch returns."""
+
     prior_criticals = [
         finding
         for path, _, match_task_id in keyed_matches

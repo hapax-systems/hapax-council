@@ -493,6 +493,7 @@ class TestDryRun:
             pytest.fail("plan mode reached a head, source, diff, or git subprocess")
 
         for name in (
+            "_apply_review",
             "ensure_head_object",
             "build_prior_file_excerpts",
             "build_changed_file_excerpts",
