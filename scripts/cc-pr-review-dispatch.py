@@ -3098,7 +3098,7 @@ _REL_DISPLAY_SAFE_RE = re.compile(r"[^A-Za-z0-9_./-]")
 _EXCERPT_TOTAL_BYTES = 7_000
 _EXCERPT_SYMBOL_BYTES = 1_200
 _EXCERPT_MAX_SYMBOLS = 64
-_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z_0-9]*\b")
+_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*\b")
 
 
 def _rel_for_display(rel: str) -> str | None:
@@ -3129,10 +3129,10 @@ def _claim_ranked_symbols(
     cited_calls = set()
     if parsed is not None:
         cited_calls = {
-            node.func.id
+            node.func.id if isinstance(node.func, ast.Name) else node.func.attr
             for node in ast.walk(parsed)
             if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
+            and isinstance(node.func, (ast.Name, ast.Attribute))
             and node.lineno <= cited_line <= node.end_lineno
         }
 
@@ -3152,11 +3152,41 @@ def _source_tree(source_lines: list[str]) -> ast.Module | None:
 
 
 def _definition_nodes(tree: ast.Module) -> dict[str, ast.AST]:
-    return {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    definitions: dict[str, ast.AST] = {}
+
+    def visit(body: list[ast.stmt], prefix: str = "") -> None:
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                name = f"{prefix}{node.name}"
+                definitions[name] = node
+                visit(node.body, f"{name}.")
+
+    visit(tree.body)
+    return definitions
+
+
+def _select_definition(
+    definitions: dict[str, ast.AST], symbol: str, parsed: ast.Module, cited_line: int
+) -> ast.AST | None:
+    matches = [
+        (name, node)
+        for name, node in definitions.items()
+        if name == symbol or name.endswith(f".{symbol}")
+    ]
+    if len(matches) == 1:
+        return matches[0][1]
+    for _, node in matches:
+        if node.lineno <= cited_line <= node.end_lineno:
+            return node
+    called = {
+        f"{call.func.value.id}.{call.func.attr}"
+        for call in ast.walk(parsed)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.lineno <= cited_line <= call.end_lineno
     }
+    return next((node for name, node in matches if name in called), None)
 
 
 def _imported_module_path(source_rel: str, node: ast.ImportFrom) -> str | None:
@@ -3322,15 +3352,18 @@ def build_prior_file_excerpts(
             "status": "shown",
             "lines": f"{start}-{end}",
         }
-        if len(symbols) > _EXCERPT_MAX_SYMBOLS:
-            records.append({"file": shown, "status": "symbols_truncated", "count": len(symbols)})
-            symbols = symbols[:_EXCERPT_MAX_SYMBOLS]
         if not symbols:
             append_section(callsite_section, callsite_record)
             continue
-        symbols = _claim_ranked_symbols(symbols, str(finding.get("detail") or ""), tree(rel), line)
-        resolved_symbols: set[str] = set()
+        symbols = _claim_ranked_symbols(
+            symbols,
+            str(finding.get("detail") or ""),
+            tree(rel),
+            line,
+        )
         candidates = tuple(dict.fromkeys((rel, *changed_files)))[:24]
+        resolved_symbols: set[str] = set()
+        cut_symbols: set[str] = set()
         for candidate in candidates:
             candidate_shown = _rel_for_display(candidate)
             if (
@@ -3357,7 +3390,7 @@ def build_prior_file_excerpts(
             for symbol in symbols:
                 resolved_rel = candidate
                 resolved_lines = candidate_lines
-                node = definitions.get(symbol)
+                node = _select_definition(definitions, symbol, candidate_tree, line)
                 if node is None and symbol in imports:
                     imported_rel, original = imports[symbol]
                     if imported_rel and _rel_for_display(imported_rel) is not None:
@@ -3377,6 +3410,9 @@ def build_prior_file_excerpts(
                             node = _definition_nodes(imported_tree).get(original)
                             resolved_rel = imported_rel
                 if node is None or resolved_lines is None:
+                    continue
+                if symbol not in resolved_symbols and len(resolved_symbols) >= _EXCERPT_MAX_SYMBOLS:
+                    cut_symbols.add(symbol)
                     continue
                 resolved_symbols.add(symbol)
                 symbol_key = (resolved_rel, node.lineno)
@@ -3398,6 +3434,10 @@ def build_prior_file_excerpts(
         unresolved = [symbol for symbol in symbols if symbol not in resolved_symbols]
         if unresolved:
             records.append({"file": shown, "status": "symbols_unresolved", "symbols": unresolved})
+        if cut_symbols:
+            records.append(
+                {"file": shown, "status": "symbols_cap_exceeded", "symbols": sorted(cut_symbols)}
+            )
         append_section(callsite_section, callsite_record)
         if len(sections) >= limit:
             break
@@ -4080,6 +4120,19 @@ def review_pr(
         head_sha=pr_info.head_sha,
         max_bytes=max(0, _EXCERPT_TOTAL_BYTES - len(prior_file_excerpts.encode())),
     )
+    cut_symbols = [
+        symbol
+        for record in prior_evidence_records
+        if record.get("status") == "symbols_cap_exceeded"
+        for symbol in record["symbols"]
+    ]
+    if cut_symbols:
+        return {
+            "status": "source_symbol_cap_exceeded",
+            "pr": pr_number,
+            "cut_symbols": cut_symbols,
+            "next_action": "split the PR or reduce prior critical scope before review",
+        }
     exhausted_excerpts = [
         record
         for record in (*prior_evidence_records, *changed_source_evidence_records)

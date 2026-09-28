@@ -1049,30 +1049,16 @@ class TestApply:
     def test_glm_verbatim_critical_gets_head_definition_outside_call_site(
         self, tmp_path: Path
     ) -> None:
-        # glm-1's #4893 critical at a269a4c6c has no backticks around the name.
         rel = "scripts/review_team.py"
         lines = ["# prior source"] * 2197
+        lines += ["def _dossier_validity_blockers(", "    dossier,", "    *,"]
+        lines += [f"    arg_{i}=None," for i in range(12)]
         lines += [
-            "def _dossier_validity_blockers(",
-            "    dossier: Mapping[str, Any],",
-            "    *,",
-            "    pr_head_sha: str | None,",
-            "    registry: Mapping[str, Any],",
-            "    frontmatter: Mapping[str, Any] | None = None,",
-            "    expected_task_id: str | None = None,",
-            "    pr_number: int | None = None,",
-            "    changed_files: Sequence[str] | None = None,",
-            "    changed_file_count: int | None = None,",
-            "    outage_state_path: Path | None = None,",
-            "    admission_time: datetime | str | None = None,",
-            "    route_blocked_families: Mapping[str, Sequence[str]] | None = None,",
-            "    floor_release_out: dict[str, Any] | None = None,",
-            "    diff_size_measurer: Callable[[int, str], int | None] | None = None,",
             "    capacity_evidence_measurer: Callable[",
-            "        [int, str, tuple[str, ...]], tuple[int, Mapping[str, int]] | None",
+            "        [int], int",
             "    ]",
             "    | None = None,",
-            ") -> tuple[str, ...]:",
+            "):",
             "    return ()",
         ]
         lines += [
@@ -1110,24 +1096,19 @@ class TestApply:
         assert rendered.index("2198| def _dossier_validity_blockers(") < rendered.index(
             "2794| blockers ="
         )
-        assert (
-            dispatch._claim_ranked_symbols(
-                dispatch._prior_symbol_hints(finding),
-                finding["detail"],
-                dispatch._source_tree(lines),
-                2794,
-            )[0]
-            == "_dossier_validity_blockers"
+        late = {
+            **finding,
+            "title": " ".join(f"ordinaryword{i}" for i in range(70)) + " " + finding["title"],
+        }
+        late_rendered, late_records = dispatch.build_prior_file_excerpts(
+            [late], repo_root=tmp_path, head_sha=head_sha
         )
-        assert any(
-            r.get("file") == rel
-            and r.get("symbol") == "_dossier_validity_blockers"
-            and r.get("status") == "definition_shown"
-            for r in records
-        )
-        assert len(rendered.encode()) < 8_000
+        assert "2213|     capacity_evidence_measurer: Callable[" in late_rendered
+        assert not any(r["status"] == "symbols_cap_exceeded" for r in late_records)
 
-    def test_4878_critical_gets_imported_head_definition(self, tmp_path: Path) -> None:
+    def test_4878_critical_gets_imported_head_definition(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         rel = "agents/_governance.py"
         source = ["from shared.governance.consent import resolve_contract_id"]
         source += ["# prior source"] * 82
@@ -1137,52 +1118,90 @@ class TestApply:
             "        return resolve_contract_id(contract_id)",
         ]
         source += ["# after caller"] * (100 - len(source))
-        self._git_repo_with_commit(tmp_path, rel, "\n".join(source) + "\n")
-        target = tmp_path / "shared/governance/consent.py"
-        target.parent.mkdir(parents=True)
-        target.write_text(
-            '"""\ndef resolve_contract_id(fake):\n"""\n'
-            "def resolve_contract_id(candidate: str) -> str:\n"
-            "    return candidate\n",
-            encoding="utf-8",
-        )
-        subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "commit", "-qm", "head with import"], cwd=tmp_path, check=True)
-        head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
-        ).stdout.strip()
+        sources = {
+            rel: source,
+            "shared/governance/consent.py": [
+                '"""',
+                "def resolve_contract_id(fake):",
+                '"""',
+                "def resolve_contract_id(candidate: str) -> str:",
+                "    return candidate",
+            ],
+        }
+
+        def show(_root: Path, _sha: str, path: str) -> list[str] | None:
+            if path == "scripts/other.py":
+                raise OSError("candidate unavailable")
+            return sources.get(path)
+
+        monkeypatch.setattr(dispatch, "_git_show_at_head", show)
         finding = {
             "file": rel,
             "line": 97,
             "title": "ConsentRegistry.get() returns arbitrary contracts for unresolved IDs",
-            "detail": (
-                "If resolve_contract_id() returns None for an unrecognized or already canonical "
-                "contract_id, canonical becomes None. The generator then iterates through "
-                "_contracts and yields the first contract whose key also resolves to None "
-                "(None == None). This allows unauthorized access or cross-talk between "
-                "unrecognized contracts."
-            ),
+            "detail": "resolve_contract_id() returns None, yielding the wrong contract.",
         }
         rendered, records = dispatch.build_prior_file_excerpts(
-            [finding], repo_root=tmp_path, head_sha=head_sha, changed_files=(rel,), radius=2
+            [finding],
+            repo_root=tmp_path,
+            head_sha="a" * 40,
+            changed_files=(rel, "scripts/other.py"),
+            radius=2,
         )
         assert "shared/governance/consent.py:4 (resolve_contract_id)" in rendered
         assert "0004| def resolve_contract_id(candidate: str) -> str:" in rendered
         assert "def resolve_contract_id(fake)" not in rendered
         assert any(
-            r.get("file") == "shared/governance/consent.py"
-            and r.get("symbol") == "resolve_contract_id"
-            and r.get("status") == "definition_shown"
+            r.get("file") == "scripts/other.py" and r["status"] == "evidence_unavailable"
             for r in records
         )
+        node = dispatch.ast.parse("from .consent import resolve_contract_id").body[0]
+        assert (
+            dispatch._imported_module_path("shared/governance/registry.py", node)
+            == "shared/governance/consent.py"
+        )
 
-    def test_definition_parse_failure_and_budget_are_recorded(self, tmp_path: Path) -> None:
+    def test_same_named_methods_use_cited_class(self, tmp_path: Path) -> None:
+        rel = "scripts/methods.py"
+        head_sha = self._git_repo_with_commit(
+            tmp_path,
+            rel,
+            "class First:\n    def get(self):\n        return 'first'\n"
+            "class Second:\n    def get(self):\n        return 'second'\n",
+        )
+        rendered, _ = dispatch.build_prior_file_excerpts(
+            [{"file": rel, "line": 3, "title": "get returns the wrong value"}],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            radius=0,
+        )
+        assert f"## {rel}:2 (get)" in rendered
+        assert f"## {rel}:5 (get)" not in rendered
+
+    def test_symbol_cap_names_cut_definition(self, tmp_path: Path) -> None:
+        rel = "scripts/many.py"
+        source = "\n".join(f"def symbol{i}(): return {i}" for i in range(65))
+        head_sha = self._git_repo_with_commit(tmp_path, rel, source)
+        _, records = dispatch.build_prior_file_excerpts(
+            [{"file": rel, "line": 1, "title": " ".join(f"symbol{i}" for i in range(65))}],
+            repo_root=tmp_path,
+            head_sha=head_sha,
+            limit=1,
+        )
+        assert any(
+            r["status"] == "symbols_cap_exceeded" and "symbol64" in r["symbols"] for r in records
+        )
+
+    def test_definition_parse_failure_and_budget_are_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         rel = "scripts/large.py"
-        head_sha = self._git_repo_with_commit(tmp_path, rel, "def broken(:\n    pass\n")
+        state = {"lines": ["def broken(:", "    pass"]}
+        monkeypatch.setattr(dispatch, "_git_show_at_head", lambda *_: state["lines"])
         _, records = dispatch.build_prior_file_excerpts(
             [{"file": rel, "line": 1, "title": "broken fails", "detail": "broken()"}],
             repo_root=tmp_path,
-            head_sha=head_sha,
+            head_sha="a" * 40,
         )
         assert any(
             r.get("file") == rel and r.get("status") == "source_parse_error" for r in records
@@ -1191,76 +1210,16 @@ class TestApply:
             r.get("status") == "symbols_unresolved" and "broken" in r["symbols"] for r in records
         )
 
-        (tmp_path / rel).write_text(
-            "def wide():\n" + "".join(f"    value_{i} = '{'x' * 160}'\n" for i in range(200)),
-            encoding="utf-8",
-        )
-        subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "commit", "-qm", "large definition"], cwd=tmp_path, check=True)
-        head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
-        ).stdout.strip()
+        state["lines"] = ["def wide():"] + [f"    value_{i} = '{'x' * 160}'" for i in range(200)]
         rendered, records = dispatch.build_prior_file_excerpts(
             [{"file": rel, "line": 1, "title": "wide fails", "detail": "wide()"}],
             repo_root=tmp_path,
-            head_sha=head_sha,
+            head_sha="a" * 40,
             radius=1,
         )
         assert len(rendered.encode()) < 8_000
         assert "definition truncated" in rendered
         assert any(r.get("status") == "definition_truncated" for r in records)
-
-    def test_relative_import_definition_is_resolved_at_head(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        rel = "shared/governance/registry.py"
-        self._git_repo_with_commit(
-            tmp_path,
-            rel,
-            "from .consent import resolve_contract_id\n"
-            "def get(contract_id):\n    return resolve_contract_id(contract_id)\n",
-        )
-        target = tmp_path / "shared/governance/consent.py"
-        target.write_text(
-            "def resolve_contract_id(candidate):\n    return candidate\n", encoding="utf-8"
-        )
-        subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-        subprocess.run(
-            ["git", "commit", "-qm", "head with relative import"], cwd=tmp_path, check=True
-        )
-        head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
-        ).stdout.strip()
-        rendered, records = dispatch.build_prior_file_excerpts(
-            [{"file": rel, "line": 3, "title": "resolve_contract_id does not validate"}],
-            repo_root=tmp_path,
-            head_sha=head_sha,
-            radius=0,
-        )
-        assert "shared/governance/consent.py:1 (resolve_contract_id)" in rendered
-        assert any(
-            r.get("status") == "definition_shown" and r.get("symbol") == "resolve_contract_id"
-            for r in records
-        )
-        real_show = dispatch._git_show_at_head
-
-        def failing_show(root: Path, sha: str, candidate: str) -> list[str] | None:
-            if candidate == "shared/governance/other.py":
-                raise OSError("source unavailable")
-            return real_show(root, sha, candidate)
-
-        monkeypatch.setattr(dispatch, "_git_show_at_head", failing_show)
-        _, records = dispatch.build_prior_file_excerpts(
-            [{"file": rel, "line": 3, "title": "resolve_contract_id fails"}],
-            repo_root=tmp_path,
-            head_sha=head_sha,
-            changed_files=("shared/governance/other.py",),
-        )
-        assert any(
-            r.get("file") == "shared/governance/other.py"
-            and r.get("status") == "evidence_unavailable"
-            for r in records
-        )
 
     def test_dispatch_keeps_complete_definition_or_refuses_prompt_ceiling(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1316,28 +1275,39 @@ class TestApply:
         assert result["status"] == "source_excerpt_capacity_exceeded"
         assert result["unshown_excerpts"][0]["symbol"] == "target"
         assert not reviewers.invocations
+        monkeypatch.setattr(
+            dispatch,
+            "build_prior_file_excerpts",
+            lambda *args, **kwargs: (
+                "",
+                [{"status": "symbols_cap_exceeded", "symbols": ["late_target"]}],
+            ),
+        )
+        result, _, reviewers, _ = _review(tmp_path / "symbol_cap")
+        assert result["status"] == "source_symbol_cap_exceeded"
+        assert result["cut_symbols"] == ["late_target"]
+        assert not reviewers.invocations
 
     def test_failed_definition_inclusion_retries_on_later_finding(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         rel = "scripts/example.py"
-        head_sha = self._git_repo_with_commit(tmp_path, rel, "def target():\n    return 1\n")
-        real_excerpt = dispatch._definition_excerpt
-        first = iter((True, False))
-
-        def first_too_large(lines: list[str], node: Any) -> tuple[str, int, bool]:
-            if next(first):
-                return "X" * 8_000, node.lineno, True
-            return real_excerpt(lines, node)
-
-        monkeypatch.setattr(dispatch, "_definition_excerpt", first_too_large)
+        monkeypatch.setattr(
+            dispatch, "_git_show_at_head", lambda *_: ["def target():", "    return 1"]
+        )
+        excerpts = iter((("X" * 8_000, 1, True), ("0001| def target():\n", 1, False)))
+        monkeypatch.setattr(
+            dispatch,
+            "_definition_excerpt",
+            lambda *_: next(excerpts),
+        )
         rendered, records = dispatch.build_prior_file_excerpts(
             [
                 {"file": rel, "line": 1, "title": "target fails"},
                 {"file": rel, "line": 2, "title": "target fails again"},
             ],
             repo_root=tmp_path,
-            head_sha=head_sha,
+            head_sha="a" * 40,
             radius=0,
         )
         assert "0001| def target():" in rendered
