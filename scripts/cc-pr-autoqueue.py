@@ -339,6 +339,7 @@ class TaskNote:
     lane_affinity: str | None = None
     epic_serialize: str | None = None
     frontmatter: dict[str, Any] = field(default_factory=dict)
+    vault_base: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -2656,7 +2657,9 @@ A PR whose task note is unparseable must NOT read as merely "unlinked".
 """
 
 
-def _task_note_from_frontmatter(path: Path, folder: str, fm: dict[str, Any]) -> TaskNote | None:
+def _task_note_from_frontmatter(
+    path: Path, folder: str, fm: dict[str, Any], *, vault_base: Path | None = None
+) -> TaskNote | None:
     task_id = _scalar(fm.get("task_id"))
     if not task_id:
         return None
@@ -2678,11 +2681,18 @@ def _task_note_from_frontmatter(path: Path, folder: str, fm: dict[str, Any]) -> 
         lane_affinity=_scalar(fm.get("lane_affinity")),
         epic_serialize=_scalar(fm.get("epic_serialize")),
         frontmatter=dict(fm),
+        vault_base=vault_base,
     )
 
 
 def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
     notes: list[TaskNote] = []
+    # Bind seat mail to the loader's vault, never an individual note's depth.
+    vault_base = (
+        vault_root.parent.parent
+        if vault_root.name == "hapax-cc-tasks" and vault_root.parent.name == "20-projects"
+        else None
+    )
     for folder in ("active", "closed"):
         root = vault_root / folder
         if not root.is_dir():
@@ -2695,7 +2705,7 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                 continue
             if not fm or fm.get("type") != "cc-task":
                 continue
-            task = _task_note_from_frontmatter(path, folder, fm)
+            task = _task_note_from_frontmatter(path, folder, fm, vault_base=vault_base)
             if task is None:
                 continue
             notes.append(task)
@@ -2721,6 +2731,7 @@ def _task_note_with_frontmatter(task: TaskNote, frontmatter: dict[str, Any]) -> 
         lane_affinity=_scalar(frontmatter.get("lane_affinity")),
         epic_serialize=_scalar(frontmatter.get("epic_serialize")),
         frontmatter=dict(frontmatter),
+        vault_base=task.vault_base,
     )
 
 
@@ -2897,20 +2908,21 @@ def _open_major_release_findings_blockers(
         return ("release_review_dossier_reviewers_unreadable",)
     dispositions = frontmatter.get("release_finding_dispositions")
     dispositions = dispositions if isinstance(dispositions, list) else []
-    # The row's source is a seat mail inside the canonical vault, not a bare
-    # author-written marker. The relative binding keeps test and host roots alike.
-    vault_root = task.path.parents[3]
+    # Row dispositions cite seat mail in the same vault.
+    vault_root = task.vault_base
     open_majors = 0
     for review in reviews:
         if not isinstance(review, dict):
             return ("release_review_dossier_reviewers_unreadable",)
-        for finding in review.get("findings") or []:
+        findings = review.get("findings")
+        if not isinstance(findings, list):
+            return ("release_review_dossier_findings_unreadable",)
+        for finding in findings:
             if not isinstance(finding, dict):
                 return ("release_review_dossier_findings_unreadable",)
             if str(finding.get("severity") or "").lower() != "major":
                 continue
-            if finding.get("resolved") is True:
-                continue
+            # Same-head resolved markers do not prove a later-head fix.
             finding_key = (
                 str(review.get("id") or ""),
                 str(finding.get("file") or ""),
@@ -2918,6 +2930,8 @@ def _open_major_release_findings_blockers(
                 str(finding.get("title") or ""),
                 str(finding.get("lens") or ""),
             )
+            if not all(finding_key):
+                return ("release_review_finding_identity_missing",)
             dispositioned = False
             for item in dispositions:
                 if not isinstance(item, dict) or item.get("head_sha") != pr_head_sha:
@@ -2944,8 +2958,10 @@ def _open_major_release_findings_blockers(
 
 
 def _seat_disposition_source_valid(
-    vault_root: Path, source: str, *, pr_head_sha: str, finding_title: str
+    vault_root: Path | None, source: str, *, pr_head_sha: str, finding_title: str
 ) -> bool:
+    if vault_root is None:
+        return False
     rel = Path(source)
     seat_dir = vault_root / "30-areas/hapax/lanebus/dev1"
     if (
@@ -2969,8 +2985,10 @@ def _seat_disposition_source_valid(
         return False
     return (
         bool(re.search(r"(?m)^from: (?:claude/)?dev1\s*$", text[4:end]))
-        and pr_head_sha in text[end:]
-        and finding_title in text[end:]
+        and bool(
+            re.search(rf"(?m)^release_finding_head_sha: {re.escape(pr_head_sha)}$", text[end:])
+        )
+        and bool(re.search(rf"(?m)^release_finding_title: {re.escape(finding_title)}$", text[end:]))
     )
 
 
