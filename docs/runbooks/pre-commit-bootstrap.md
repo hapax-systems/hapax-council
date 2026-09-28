@@ -2,7 +2,7 @@
 
 The pre-commit *framework* (the `pre-commit` CLI) is installed, but the
 per-clone git hook at `.git/hooks/pre-commit` is **not** version-controlled.
-Until it is installed in a given clone/worktree, the entire
+Without a hook path or per-clone install, the entire
 `.pre-commit-config.yaml` (ruff, conflict-markers, claim-registry,
 experiment-freeze, audio-conf gates, ...) never fires at commit time — only
 CI catches violations, minutes later. This runbook closes that gap.
@@ -34,7 +34,8 @@ Some council clones set `core.hooksPath` (redundantly) to the default
 
 > [ERROR] Cowardly refusing to install hooks with `core.hooksPath` set.
 
-Resolve by clearing the redundant setting, then re-running:
+For a clone without the shared activation hook path, resolve by clearing the
+redundant setting, then re-running:
 
 ```bash
 git config --unset-all core.hooksPath || true
@@ -46,21 +47,30 @@ underlying repository.
 
 ## Shared hooks (council)
 
-The tracked `scripts/pre-commit` delegates to the framework; `scripts/pre-push`
-runs both scanners and refuses if either is missing. After merge, the seat
-enables the relative setting below. It resolves per worktree; update branches
-missing the tracked hooks before relying on it.
+The tracked `scripts/pre-commit` delegates first to the activation worktree's
+`.venv/bin/pre-commit` (then to a CLI on PATH if that is absent), using the
+activation worktree's `.pre-commit-config.yaml`. The pushing branch's config
+does not select the checks: the hook passes an absolute config path from its
+own directory. `scripts/pre-push` runs both scanners, looking in that same
+hook directory first, then the pushing worktree, then the primary checkout.
+It refuses when a scanner is absent everywhere.
+
+After this change merges, the seat records the previous absolute value and
+sets the shared path to the activation worktree, which follows merged main:
 
 ```bash
-git config core.hooksPath scripts
-git config --get core.hooksPath   # scripts
+previous_hooks_path="$(git config --get core.hooksPath)"
+activation_hooks="$HOME/.cache/hapax/source-activation/worktree/scripts"
+git config core.hooksPath "$activation_hooks"
+git config --get core.hooksPath   # absolute path through the moving worktree symlink
 ```
 
 ## Verify
 
 ```bash
-test -x "$(git rev-parse --show-toplevel)/scripts/pre-commit"
-test -x "$(git rev-parse --show-toplevel)/scripts/pre-push"
+activation_hooks="$(git config --get core.hooksPath)"
+test -x "$activation_hooks/pre-commit"
+test -x "$activation_hooks/pre-push"
 ```
 
 Recheck hook resolution from a linked worktree:
@@ -68,6 +78,34 @@ Recheck hook resolution from a linked worktree:
 ```bash
 git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-commit
 git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-push
+```
+
+Both paths must resolve under `activation_hooks`, including from a Codex
+worktree whose branch predates the tracked hooks. Verify a test push from that
+worktree invokes the name scanner before treating this activation as complete.
+Choose an old-branch Codex worktree with a clean, unpushed non-root commit and a
+test remote that accepts dry runs:
+
+```bash
+old_codex_worktree=/path/to/old-branch-codex-worktree
+test_remote=origin
+GIT_TRACE=1 git -C "$old_codex_worktree" push --dry-run "$test_remote" HEAD:refs/heads/hook-readback
+head="$(git -C "$old_codex_worktree" rev-parse HEAD)"
+base="$(git -C "$old_codex_worktree" rev-parse HEAD^)"
+printf 'refs/heads/hook-readback %s refs/heads/hook-readback %s\n' "$head" "$base" |
+  (cd "$old_codex_worktree" && bash -x "$activation_hooks/pre-push" "$test_remote" "$test_remote")
+```
+
+The dry run must exit 0 without a missing-scanner refusal. The traced hook
+must show `python3` invoking the name scanner under the active release's
+`scripts/` directory with `--root "$old_codex_worktree"`; its clean scan
+exits 0. The second command supplies a bounded push-ref protocol directly so
+the scanner path is visible even though a clean scan prints no names.
+If activation fails, restore the recorded previous absolute value:
+
+```bash
+git config core.hooksPath "$previous_hooks_path"
+git config --get core.hooksPath
 ```
 
 For a task-scoped verification, run pre-commit on the files you touched:
@@ -84,4 +122,5 @@ scope.
 ## Why this is a bootstrap step, not a committed hook
 
 The framework's `.git/hooks/` hook is local; tracked wrappers ship in the repo.
-Install the framework per clone so the pre-commit wrapper can delegate to it.
+The council shared path selects the activation wrappers. Other clones without
+that setting still need the per-clone install.

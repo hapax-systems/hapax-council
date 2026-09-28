@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Relative hooksPath=scripts; chain both Python scanners and refuse if absent.
+# Shared hooksPath; chain both Python scanners and refuse if absent.
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
 common="$(git rev-parse --path-format=absolute --git-common-dir)"
+hook_dir="$(dirname "$(readlink -f "$0")")"
 refs="$(cat || true)"
 
 resolve() {
   local relative="$1"
-  if [ -f "$root/$relative" ]; then
+  if [ -f "$hook_dir/${relative#scripts/}" ]; then
+    printf '%s\n' "$hook_dir/${relative#scripts/}"
+  elif [ -f "$root/$relative" ]; then
     printf '%s\n' "$root/$relative"
   elif [ -f "$common/../$relative" ]; then
     printf '%s\n' "$common/../$relative"
@@ -19,14 +22,14 @@ resolve() {
 
 name_scan="$(resolve scripts/check-principal-names-diff.py)" || {
   echo "pre-push: missing scripts/check-principal-names-diff.py — refusing" >&2
-  echo "Remedy: restore the tracked scanner in this worktree (update or rebase the branch) and retry." >&2
+  echo "Remedy: restore the scanner in the activation hook directory, pushing worktree, or primary checkout; exit code 3." >&2
   exit 3
 }
 printf '%s' "$refs" | python3 "$name_scan" --root "$root"
 
 secret_scan="$(resolve scripts/hapax-prepush-secret-scan)" || {
   echo "pre-push: missing scripts/hapax-prepush-secret-scan — refusing" >&2
-  echo "Remedy: restore the scanner in the worktree or the primary checkout and retry." >&2
+  echo "Remedy: restore the scanner in the activation hook directory, pushing worktree, or primary checkout; exit code 3." >&2
   exit 3
 }
 printf '%s' "$refs" | python3 "$secret_scan" "$@"
