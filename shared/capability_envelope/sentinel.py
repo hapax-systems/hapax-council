@@ -13,6 +13,7 @@ import ctypes.util
 import os
 import secrets
 import struct
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from types import TracebackType
@@ -22,6 +23,15 @@ _IN_OPEN = 0x00000020
 _IN_NONBLOCK = 0o4000
 _IN_CLOEXEC = 0o2000000
 _EVENT_HEADER = struct.Struct("iIII")
+_READ_SIZE = 65536
+# A drain that happens after the watched work has returned still waits this long with no new
+# event: a grandchild that closed its pipes can open a sentinel after its parent returned, and
+# that event is queued after the process the caller waited for is gone (clause (6) of the row).
+_SETTLE_SECONDS = 0.5
+# Hard bound on that wait, so a writer that never stops cannot wedge a drain.
+_SETTLE_BOUND_SECONDS = 30.0
+# Poll interval while settling: short enough not to overshoot the settle window.
+_POLL_SECONDS = 0.01
 
 
 def sentinel_token(label: str) -> str:
@@ -73,7 +83,7 @@ class OpenWatch:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self._drain()
+        self._drain(settle=True)
         self.close()
 
     def close(self) -> None:
@@ -81,18 +91,40 @@ class OpenWatch:
             os.close(self._fd)
             self._fd = -1
 
-    def _drain(self) -> None:
+    def _drain(self, *, settle: bool = False) -> None:
+        """Read the queue, keeping any partial event for the next read.
+
+        An event can straddle two reads; a drain that restarts parsing at each read misparses the
+        tail, so the leftover bytes are carried into the next read. ``settle`` is the
+        drain-after-return path used by ``__exit__``: the queue is read until a settle window
+        passes with no new event, bounded by ``_SETTLE_BOUND_SECONDS``.
+        """
+        buf = b""
+        quiet_since: float | None = None
+        deadline = time.monotonic() + _SETTLE_BOUND_SECONDS if settle else None
         while self._fd >= 0:
-            try:
-                buf = os.read(self._fd, 65536)
-            except BlockingIOError:
-                return
-            offset = 0
-            while offset + _EVENT_HEADER.size <= len(buf):
-                wd, _mask, _cookie, name_len = _EVENT_HEADER.unpack_from(buf, offset)
+            while len(buf) >= _EVENT_HEADER.size:
+                wd, _mask, _cookie, name_len = _EVENT_HEADER.unpack_from(buf, 0)
+                event_len = _EVENT_HEADER.size + name_len
+                if len(buf) < event_len:
+                    break
                 if wd in self._watches:
                     self._opened.add(self._watches[wd])
-                offset += _EVENT_HEADER.size + name_len
+                buf = buf[event_len:]
+            try:
+                buf += os.read(self._fd, _READ_SIZE)
+                quiet_since = None
+            except BlockingIOError:
+                if not settle:
+                    return
+                now = time.monotonic()
+                if quiet_since is None:
+                    quiet_since = now
+                elif now - quiet_since >= _SETTLE_SECONDS:
+                    return
+                if deadline is not None and now >= deadline:
+                    return
+                time.sleep(_POLL_SECONDS)
 
     def opened(self) -> set[Path]:
         """The watched files something opened or read, so far."""

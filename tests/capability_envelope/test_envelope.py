@@ -40,7 +40,12 @@ from shared.capability_envelope import (
     execute,
     render,
 )
-from shared.capability_envelope.sentinel import OpenWatch, find_tokens, sentinel_token
+from shared.capability_envelope.sentinel import (
+    _EVENT_HEADER,
+    OpenWatch,
+    find_tokens,
+    sentinel_token,
+)
 
 PROBE = Path(__file__).resolve().parent / "probe_harness.py"
 PYTHON = "/usr/bin/python3"
@@ -647,6 +652,49 @@ def test_the_open_watch_refuses_when_the_inotify_instance_cannot_be_created(
     with pytest.raises(OSError, match="inotify_init1 failed.*next action"):
         with OpenWatch([sentinel_file]):
             pass
+
+
+def test_the_open_watch_sees_a_grandchild_that_outlives_its_parent(tmp_path: Path):
+    """Clause (6) (glm-1's minor on #4784, re-ruled on 2026-09-28): the drain used to run once at
+    `__exit__`, so an event queued after the process the caller waited for had returned was lost.
+    A grandchild that closes the pipes and opens a sentinel afterwards is still recorded: the
+    drain settles after the last event instead of reading once."""
+    seen = _write(tmp_path / "seen.md", "x\n")
+    inner = f"import time; time.sleep(0.05); open({str(seen)!r}).read()"
+    child = (
+        "import subprocess, sys\n"
+        "subprocess.Popen("
+        f"[sys.executable, '-c', {inner!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    )
+    with OpenWatch([seen]) as watch:
+        subprocess.run([sys.executable, "-c", child], check=True, timeout=60)
+    assert watch.opened() == {seen}
+
+
+def test_the_drain_keeps_a_partial_event_for_the_next_read(tmp_path: Path, monkeypatch):
+    """An inotify event can straddle two reads; a drain that restarts parsing at each read
+    misparses the tail. The leftover bytes are carried into the next read, so the second event is
+    recorded instead of lost."""
+    first = _write(tmp_path / "first.md", "x\n")
+    second = _write(tmp_path / "second.md", "y\n")
+    with OpenWatch([first, second]) as watch:
+        by_path = {path: wd for wd, path in watch._watches.items()}
+        blob = _EVENT_HEADER.pack(by_path[first], 0, 0, 0) + _EVENT_HEADER.pack(
+            by_path[second], 0, 0, 0
+        )
+        # The second event's header is split: this read ends one byte into it.
+        reads = iter([blob[: _EVENT_HEADER.size + 1], blob[_EVENT_HEADER.size + 1 :]])
+
+        def _read(fd: int, size: int) -> bytes:
+            try:
+                return next(reads)
+            except StopIteration:
+                raise BlockingIOError from None
+
+        monkeypatch.setattr(os, "read", _read)
+        watch._drain()
+    assert watch.opened() == {first, second}
 
 
 # ---------------------------------------------------------------- carrier failures
