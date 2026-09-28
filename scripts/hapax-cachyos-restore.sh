@@ -742,16 +742,10 @@ if [[ ! -d ~/Documents/Work ]]; then
 fi
 
 # ─── Phase 14: Local backup repo ───────────────────────────────────────────
-log "=== Phase 14: Initialize local backup repo ==="
+log "=== Phase 14: Local backup repo ==="
 
-if [[ -d /data ]]; then
-    mkdir -p /data/backups/restic
-    RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /data/backups/restic init 2>/dev/null || \
-        ok "Local restic repo already initialized"
-    ok "Local backup repo ready at /data/backups/restic"
-else
-    warn "/data not mounted — local backup skipped"
-fi
+# The tier-1 local repo is the NAS one hapax-backup-local writes (/mnt/nas/backups/restic), never initialized here.
+warn "Tier-1 local backups go to /mnt/nas/backups/restic: mount the NAS, then run hapax-backup-local once and check it"
 
 # ─── Phase 15: Enable user services & timers ───────────────────────────────
 log "=== Phase 15: Enable systemd user services & timers ==="

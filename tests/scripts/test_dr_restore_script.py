@@ -1,9 +1,10 @@
 """The DR restore script, moved into council from the archived distro-work repository.
 
 Row tier1-backup-hardening-from-4623-20260927, piece 5. This first PR is a move: the file is podium's
-~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, sha256 fa0dafc7…), with one granted
-line (seat ruling 2026-09-28): RESTORE_DIR under /var/tmp, so Phase 11's tmpfs mount over /tmp cannot hide the
-restored tree (#4623 round 3 prior art). The other granted fixes land in the stacked PR that follows.
+~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, sha256 fa0dafc7…), with two granted
+hunks (seat rulings 2026-09-28): RESTORE_DIR under /var/tmp, so Phase 11's tmpfs mount over /tmp cannot hide the
+restored tree (#4623 round 3 prior art), and Phase 14 initializing nothing, only warning with the NAS tier-1 target.
+The other granted fixes land in the stacked PR that follows.
 """
 
 from __future__ import annotations
@@ -14,15 +15,15 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-cachyos-restore.sh"
 
-# sha256 of the live blob 53b4137e6 plus the one granted line (RESTORE_DIR=/var/tmp/hapax-restore).
-MOVED_SHA256 = "a8b53fb0ed2a9c5cb153895eed1c4859176f6499a8394c27c2c490d1c6022a00"
+# sha256 of the live blob 53b4137e6 plus the two granted hunks (RESTORE_DIR=/var/tmp/hapax-restore; Phase 14 warns).
+MOVED_SHA256 = "2860f98355895768edab9becbd64128cd56af0d1c63d7278839e38c75ec5e479"
 
 
 def test_the_dr_script_parses() -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True, timeout=30)
 
 
-def test_the_dr_script_is_the_live_one_plus_the_restore_dir_line() -> None:
+def test_the_dr_script_is_the_live_one_plus_the_two_granted_hunks() -> None:
     assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == MOVED_SHA256
 
 
@@ -50,3 +51,18 @@ def test_the_restore_tree_survives_the_later_tmpfs_mount() -> None:
     assert not covered & set(mount_points), (
         f"a mount covers the restore tree: {covered & set(mount_points)}"
     )
+
+
+def test_phase_14_initializes_nothing_and_names_the_real_tier1_repo() -> None:
+    """The live Phase 14 ran `restic init` on a root-owned /data/backups/restic as the user, hid the error and reported
+    success, and hapax-backup-local never writes there. It now only warns with the NAS target and the next action
+    (seat ruling 2026-09-28, #4820's second granted hunk)."""
+
+    text = SCRIPT.read_text(encoding="utf-8")
+    phase_14 = text.split('log "=== Phase 14:')[1].split('log "=== Phase 15:')[0]
+    assert "restic" not in phase_14.replace("/backups/restic", "")
+    assert "|| ok" not in phase_14 and "/data/backups" not in phase_14
+    assert "warn " in phase_14 and "/mnt/nas/backups/restic" in phase_14
+    assert "hapax-backup-local" in phase_14
+    local = (SCRIPT.parent / "hapax-backup-local").read_text(encoding="utf-8")
+    assert 'REPO="/mnt/nas/backups/restic"' in local
