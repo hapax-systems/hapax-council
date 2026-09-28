@@ -1,5 +1,3 @@
-"""Independent, time-bound, artifact-bound witness receipts."""
-
 from __future__ import annotations
 
 import hashlib

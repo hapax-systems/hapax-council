@@ -1,8 +1,4 @@
-"""Sign for live peers in the system witness-rota cgroup, using SO_PEERPIDFD.
-
-The socket-activated DynamicUser service reads only its encrypted credential.
-This excludes non-escalating lanes; root-equivalent lanes remain outside that bound.
-The seat installs the holder under operator act O3."""
+"""Sign for system witness-rota peers via SO_PEERPIDFD and an encrypted credential."""
 
 from __future__ import annotations
 
@@ -132,8 +128,13 @@ def serve(
         log(f"refused: request from {admission.cgroup} is not a JSON mapping within the size limit")
         _reply(conn, "refused: the request must be one JSON mapping of at most 1 MiB")
         return 1
+    refreshed = admit_fn(conn)
+    if not refreshed.ok:
+        log(f"refused: {refreshed.reason}")
+        _reply(conn, f"refused: {refreshed.reason}")
+        return 1
     signature = public_gate_authority_signature(payload, secret)
-    log(f"signed: sha256 {hashlib.sha256(request).hexdigest()} for {admission.cgroup}")
+    log(f"signed: sha256 {hashlib.sha256(request).hexdigest()} for {refreshed.cgroup}")
     _reply(conn, signature)
     return 0
 

@@ -1,5 +1,3 @@
-"""Holder admission, refusals, signing and packaging."""
-
 from __future__ import annotations
 
 import hashlib
@@ -189,6 +187,17 @@ def test_a_refused_caller_gets_no_signature() -> None:
     assert response.startswith("refused:") and "hmac-sha256:" not in response
 
 
+def test_peer_exiting_after_request_gets_no_signature() -> None:
+    a, b = socket.socketpair()
+    with a, b:
+        b.sendall(json.dumps(PAYLOAD).encode())
+        b.shutdown(socket.SHUT_WR)
+        admissions = iter((ADMITTED, Admission(False, "peer exited", ROTA)))
+        rc = serve(a, SAMPLE, admit_fn=lambda _: next(admissions), log=lambda _: None)
+        assert rc == 1
+        assert b.recv(65536).startswith(b"refused:")
+
+
 def test_an_oversized_request_is_refused() -> None:
     big = json.dumps({"x": "a" * (1 << 20)}).encode()
     rc, response = exchange(big, ADMITTED)
@@ -281,8 +290,6 @@ def test_the_client_raises_when_refused(listener) -> None:
     thread.join(timeout=10)
 
 
-# Installer-owned system units live in systemd/system/, which post-merge deploy leaves to the
-# installer ("system-scoped configs; require sudo install").
 SOCKET_UNIT = REPO_ROOT / "systemd/system/hapax-signing-holder.socket"
 SERVICE_UNIT = REPO_ROOT / "systemd/system/hapax-signing-holder@.service"
 ENTRY = REPO_ROOT / "scripts/hapax-signing-holder"

@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Socket-activated witness signer. O3 installs this isolated entry and its root-owned library."""
+"""Isolated socket entry for the signing holder."""
 
 import sys
 
