@@ -110,12 +110,12 @@ def test_the_filestore_password_reaches_restic(tmp_path: Path, script: str) -> N
 
 
 def test_remote_uploads_the_dr_script_from_where_it_lives_today() -> None:
-    """Faithful to live: the DR script is not moved by this PR (seat ruling 2026-09-27 12:41Z)."""
+    """Faithful to live (seat ruling 2026-09-27 12:41Z). The DR script's copy in this repository (the pure move,
+    #4820) is not uploaded yet: the remote switches to it only in the stacked PR that carries the granted fixes."""
 
     text = (SCRIPTS / "hapax-backup-remote").read_text(encoding="utf-8")
     assert f"DR_SCRIPT={LIVE_DR_SCRIPT}\n" in text
     assert 'rclone copy "$DR_SCRIPT" b2:hapax-backups/dr-scripts/' in text
-    assert not (SCRIPTS / "hapax-cachyos-restore.sh").exists()
 
 
 def _run_dr_upload(tmp_path: Path, *, with_dr_script: bool, rclone_exit: int) -> tuple:
