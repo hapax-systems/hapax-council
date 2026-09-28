@@ -1,5 +1,7 @@
 """Capacity-gap v1 contracts. These are stamped before the producer exists."""
 
+import argparse
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -206,6 +208,18 @@ def test_mimo_verified_remote_completion_overrides_blank_template(tmp_path: Path
     assert gap._appliance_demand(tmp_path) == 2001
 
 
+def test_mimo_verified_completion_preserves_explicit_pending_row(tmp_path: Path) -> None:
+    kit = tmp_path / "mimo-talus/kit"
+    kit.mkdir(parents=True)
+    (kit / "MANIFEST-v2.json").write_text('{"count":2000}')
+    (kit / "LEDGER-v2.md").write_text("| Task | Status |\n|---|---|\n| 0001 | QUEUED |\n")
+    (tmp_path / "mimo-talus/VERIFY-v2.md").write_text(
+        "Talus readback: `LEDGER-v2.md` has exactly 2,000 unique task rows, "
+        "no gaps, all marked `DONE`.\n"
+    )
+    assert gap._appliance_demand(tmp_path) == 1
+
+
 def test_catalogue_importers_require_exact_zero_price_and_featherless_data() -> None:
     catalogues = {
         "https://openrouter.ai/api/v1/models": {
@@ -290,3 +304,71 @@ def test_missing_live_probe_fails_loud_after_two_cycles_and_recovers() -> None:
     assert gap.input_staleness(state, health) == {"INPUT_STALE:provider-catalogues"}
     health["provider-catalogues"] = True
     assert gap.input_staleness(state, health) == set()
+
+
+def test_tmux_failure_is_empty_pane_input(monkeypatch) -> None:
+    def fail(*_args, **_kwargs):
+        raise OSError("tmux unavailable")
+
+    monkeypatch.setattr(gap.subprocess, "run", fail)
+    assert gap.provider_panes() == {}
+
+
+def test_cycle_delivers_catalogue_wall_lost_and_stale_pane_gaps(
+    tmp_path: Path, monkeypatch
+) -> None:
+    seat = tmp_path / "COORDINATOR-SEAT.md"
+    seat.write_text("## 0. Incumbent and lease\n| incumbent | role `dev1-seat` |\n## 1. History\n")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"known_endpoints": ["offline:8000"]}))
+    args = argparse.Namespace(
+        repo=tmp_path,
+        observer=tmp_path / "observer.jsonl",
+        state=state,
+        routing=tmp_path / "routing.md",
+        quota_ledger=tmp_path / "quota.json",
+        codex_sessions=tmp_path / "sessions",
+        tasks=tmp_path / "tasks",
+        lanebus=tmp_path / "lanebus",
+        seat_document=seat,
+    )
+    monkeypatch.setattr(gap, "tailnet_devices", lambda: (set(), {"offline"}))
+    monkeypatch.setattr(gap, "_subscribed_state", lambda *_args: {})
+    monkeypatch.setattr(gap, "codex_headroom", lambda *_args: ("unknown", "codex unknown"))
+    monkeypatch.setattr(
+        gap,
+        "read_tasks",
+        lambda *_args: [{"task_id": "held", "status": "claimed", "assigned_to": "kimi-review"}],
+    )
+    monkeypatch.setattr(gap, "_pr_demand", lambda: (0, 0))
+    monkeypatch.setattr(gap, "_claude_pace", lambda *_args: None)
+    panes = iter([{"hapax-kimi-ci": "403 weekly usage limit"}, {}, {}])
+    monkeypatch.setattr(gap, "provider_panes", lambda: next(panes))
+    monkeypatch.setattr(
+        gap,
+        "fetch_catalogue",
+        lambda url: (
+            {
+                "data": [
+                    {
+                        "id": "stealth/space-bunny-alpha",
+                        "pricing": {"prompt": "0", "completion": "0"},
+                    }
+                ]
+            }
+            if url == gap.OPENROUTER_MODELS
+            else {"data": [{"id": "featherless-model"}]}
+        ),
+    )
+    first = gap.cycle(args, NOW)
+    assert "LOST:offline:8000" in first
+    assert "WALLED_WITH_DEMAND:kimi:rows=1" in first
+    assert "UNREGISTERED:openrouter:stealth/space-bunny-alpha" in first
+    gap.cycle(args, NOW + timedelta(minutes=1))
+    third = gap.cycle(args, NOW + timedelta(minutes=2))
+    assert "INPUT_STALE:provider-panes" in third
+    assert "LOST:offline:8000" in third
+    assert any(
+        "INPUT_STALE:provider-panes" in path.read_text()
+        for path in (args.lanebus / "dev1").glob("*.md")
+    )
