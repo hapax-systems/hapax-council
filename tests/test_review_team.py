@@ -317,6 +317,13 @@ class TestLensRegistry:
         assert "antigrav-" in lane_families["retired_prefixes"]
         assert lane_families["default"] == "claude"
 
+    def test_measured_review_seat_has_cited_byte_limit(self) -> None:
+        rt = _load_review_team_module()
+        capacity = rt.seat_diff_capacity("gemini-1", rt.load_lens_registry())
+        assert capacity["limit_bytes"] == 39_974
+        assert capacity["status"] == "measured"
+        assert len(capacity["measurement_sha256"]) == 64
+
 
 def _load_review_team_module():
     import importlib.util

@@ -10,6 +10,39 @@ registry_schema: 1
 registry_id: review-lenses
 declared_at: "2026-06-11T00:00:00Z"
 
+# Three repeats per size on one merged PR, with three planted defects: this is a
+# dispatch boundary for that demand, not a universal quality guarantee. Claude
+# scored 6/9 at 160 KB (one parser-invalid reply) but 9/9 at 320 KB; the
+# preregistered largest-eligible rule is non-monotonic for that cell.
+# Evidence: vault 30-areas/hapax/lanebus/review-capacity/measurement-final.json.
+diff_capacity:
+  default:
+    limit_bytes: 80000
+    status: unmeasured
+    measurement_file: 30-areas/hapax/lanebus/review-capacity/measurement-final.json
+    measurement_sha256: fdf13ffcb457c8d0ee6414e0310e4244adac63aea10d47c8b217da69c782fd8d  # pragma: allowlist secret
+  # Seat entries inherit the report path and hash from default.
+  seats:
+    claude-1:
+      limit_bytes: 319965
+      status: measured
+    codex-1:
+      limit_bytes: 319965
+      status: measured
+    gemini-1:
+      limit_bytes: 39974
+      status: measured
+    glm-1:
+      limit_bytes: 39974
+      status: measured
+    muse-1:
+      limit_bytes: 61494
+      status: measured
+    # Vibe's 22 KB wrapper refused even the 40 KB fixture before inference.
+    vibe-1:
+      limit_bytes: 80000
+      status: unmeasured
+
 # Always-on lenses are the floor, not the ceiling — every PR, every team.
 always_on_lenses:
   - tests-cover-the-diff
