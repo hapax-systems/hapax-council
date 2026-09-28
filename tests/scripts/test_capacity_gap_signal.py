@@ -216,3 +216,12 @@ def test_fugu_wall_importer_uses_live_pane_reset_and_expires() -> None:
         gap.fugu_wall({"hapax-fugu-ci": pane}, datetime(2026, 10, 5, 0, 1, tzinfo=UTC))[0]
         == "unknown"
     )
+
+
+def test_missing_live_probe_fails_loud_after_two_cycles_and_recovers() -> None:
+    state = {}
+    health = {"provider-catalogues": False, "quota-ledger": True}
+    assert gap.input_staleness(state, health) == set()
+    assert gap.input_staleness(state, health) == {"INPUT_STALE:provider-catalogues"}
+    health["provider-catalogues"] = True
+    assert gap.input_staleness(state, health) == set()

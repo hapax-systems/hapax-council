@@ -342,6 +342,17 @@ def _state(path: Path) -> dict[str, Any]:
         return {}
 
 
+def input_staleness(state: dict[str, Any], healthy: dict[str, bool]) -> set[str]:
+    failures = state.get("input_failures") or {}
+    gaps = set()
+    for source, is_healthy in healthy.items():
+        failures[source] = 0 if is_healthy else int(failures.get(source) or 0) + 1
+        if failures[source] >= 2:
+            gaps.add(f"INPUT_STALE:{source}")
+    state["input_failures"] = failures
+    return gaps
+
+
 def _write_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -641,9 +652,11 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     known = set(state.get("known_endpoints") or [])
     states = {key: value for key, value in states.items() if value != "lost" or key in known}
     quota = _subscribed_state(args.quota_ledger, now)
+    quota_fresh = bool(quota)
     codex_state, codex_detail = codex_headroom(args.codex_sessions, now)
     quota["codex"] = codex_state
-    fugu_state, fugu_reset = fugu_wall(fugu_panes(), now)
+    panes = fugu_panes()
+    fugu_state, fugu_reset = fugu_wall(panes, now)
     quota["fugu"] = fugu_state
     states.update(quota)
     rows = read_tasks(args.tasks)
@@ -691,12 +704,15 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
         and "featherless" not in registered_text.lower()
     ):
         gaps.add("UNREGISTERED:featherless")
-    if "unknown" in catalogue_states.values():
-        state["catalogue_failures"] = int(state.get("catalogue_failures") or 0) + 1
-        if state["catalogue_failures"] >= 2:
-            gaps.add("INPUT_STALE:provider-catalogues")
-    else:
-        state["catalogue_failures"] = 0
+    gaps |= input_staleness(
+        state,
+        {
+            "tailnet": bool(tailnet),
+            "provider-catalogues": "unknown" not in catalogue_states.values(),
+            "quota-ledger": quota_fresh,
+            "fugu-panes": bool(panes),
+        },
+    )
     for endpoint in answering:
         if endpoint in registered_text:
             continue
@@ -708,13 +724,6 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
             gaps.add(f"LOST:{key}")
     if stale:
         gaps.add("INPUT_STALE:capacity-observer")
-    if not tailnet:
-        failures = int(state.get("tailnet_failures") or 0) + 1
-        state["tailnet_failures"] = failures
-        if failures >= 2:
-            gaps.add("INPUT_STALE:tailnet")
-    else:
-        state["tailnet_failures"] = 0
     pace = _claude_pace(args.repo)
     if pace:
         gaps.add(pace[0])
