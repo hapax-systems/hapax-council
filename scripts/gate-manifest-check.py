@@ -129,6 +129,44 @@ def check_claude_settings(
                 errors.append(
                     f"claude {phase} drift: expected {expected.get(phase)!r}, got {actual.get(phase)!r}"
                 )
+    # A newly merged hook cannot be invoked through the activation worktree
+    # until source activation installs it. Check the command target once that
+    # exact path exists, so a stale lane worktree is refused after activation.
+    settings = _as_mapping(json.loads(path.read_text(encoding="utf-8")), str(path))
+    live_phases = _as_mapping(settings.get("hooks"), f"{path}: hooks")
+    manifest_phases = _as_mapping(runtime.get("phases"), "manifest claude.phases")
+    for phase, entries_raw in manifest_phases.items():
+        entries = _as_list(entries_raw, f"manifest claude.{phase}")
+        live_entries = _as_list(live_phases.get(phase, []), f"{path}: hooks.{phase}")
+        for index, raw in enumerate(entries):
+            entry = _as_mapping(raw, f"manifest claude.{phase}[{index}]")
+            declared = entry.get("activation_command")
+            if declared is None:
+                continue
+            if not isinstance(declared, str):
+                errors.append(f"claude {phase}[{index}] activation command is not a string")
+                continue
+            target = Path(os.path.expandvars(declared)).expanduser().resolve()
+            if not target.is_file():
+                continue
+            if index >= len(live_entries):
+                errors.append(f"claude {phase}[{index}] activation command missing")
+                continue
+            live_entry = _as_mapping(live_entries[index], f"{path}: hooks.{phase}[{index}]")
+            commands = _as_list(live_entry.get("hooks"), f"{path}: hooks.{phase}[{index}].hooks")
+            if len(commands) != 1:
+                errors.append(f"claude {phase}[{index}] activation command missing")
+                continue
+            command = _as_mapping(commands[0], f"{path}: hook command").get("command")
+            tokens = shlex.split(command) if isinstance(command, str) else []
+            candidate = tokens[1] if len(tokens) == 2 and tokens[0] in ("bash", "sh") else ""
+            observed = (
+                Path(os.path.expandvars(candidate)).expanduser().resolve() if candidate else None
+            )
+            if observed != target:
+                errors.append(
+                    f"claude {phase}[{index}] activation command drift: expected {target}, got {observed}"
+                )
     return errors
 
 
