@@ -153,7 +153,7 @@ class CapabilityCIGateTest(unittest.TestCase):
         self.assertEqual(baseline.schema_version, 2)
         # inventory_baseline() after retiring the five Sonar supply ids.
         self.assertEqual(baseline.count, len(baseline.records))
-        self.assertEqual(baseline.count, 187)
+        self.assertEqual(baseline.count, 188)
         evaluator = baseline.records["local_compute.agentic_trust_evaluator_surface"]
         self.assertEqual(evaluator.inventory_disposition.value, "evidence_only_non_supply")
 
