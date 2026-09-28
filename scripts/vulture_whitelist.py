@@ -5443,3 +5443,14 @@ from scripts.billing_surface_input import (  # noqa: E402
 )
 
 _ = _billing_materialise_post_image
+
+# billing-scan-diff-grammar-20260928: scripts/check-billing-surface-diff.py
+# calls these after the scanner layer lands; removed by #4844.
+from scripts.billing_surface_input import (  # noqa: E402
+    post_image_blob as _billing_post_image_blob,
+)
+from scripts.billing_surface_input import (
+    regenerated_added_lines as _billing_regenerated_added_lines,
+)
+
+_ = (_billing_post_image_blob, _billing_regenerated_added_lines)
