@@ -65,32 +65,20 @@ def _wall(ts: datetime) -> str:
     )
 
 
-def _synthetic_observations(*, transcript=(), headless=()):
-    """Selector fixtures only; real passive records cannot supply these served observations."""
-    found = []
-    for text in [*transcript, *headless]:
-        record = json.loads(text)
-        at = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
-        if record.get("is_error"):
-            found.append(obs.Observation("wall", at, "synthetic"))
-        else:
-            found.append(
-                obs.Observation("served", at, "synthetic", model=record["message"]["model"])
-            )
-    return obs._verdict(found)
-
-
-def _plan(tmp_path: Path, evidence, found) -> dict[str, dict]:
-    planned = obs.mint(
-        evidence,
+def _observations(tmp_path: Path, *, transcript=(), headless=()):
+    """Exercise the real passive scanners before the per-route selector."""
+    transcript_path = tmp_path / "session.jsonl"
+    headless_path = tmp_path / "output.jsonl"
+    transcript_path.write_text("\n".join(transcript) + "\n")
+    headless_path.write_text("\n".join(headless) + "\n")
+    result = obs.observe_all(
         now=NOW,
-        route_ids=ROUTES,
-        stale_after_seconds=1800,
-        receipt_dir=tmp_path,
-        dry_run=True,
-        evidence_by_route=obs.evidence_by_route(found, ROUTES),
+        max_age_seconds=1800,
+        transcript_glob=str(transcript_path),
+        headless_glob=str(headless_path),
     )
-    return {r["route_id"]: r for r in planned}
+    assert all(item.source in {"session-transcript", "headless-result"} for item in result[2])
+    return result
 
 
 class TestEachRouteUsesItsOwnFamily:
@@ -165,40 +153,28 @@ class TestEachRouteUsesItsOwnFamily:
     def test_fable_serve_newer_than_opus_serve_still_mints_the_opus_review_route(
         self, tmp_path: Path
     ) -> None:
-        """The measured starvation, reproduced: the newest serve is Fable, an opus serve is older."""
-        verdict, newest, found = _synthetic_observations(
+        """Neither unbound passive serve can vouch for subscription routes."""
+        verdict, newest, found = _observations(
+            tmp_path,
             transcript=[
                 _served(NOW - timedelta(minutes=9), "claude-opus-5"),
                 _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
             ],
         )
-        assert verdict == "served" and newest.model == "claude-fable-5-1"
-        by_route = _plan(tmp_path, newest, found)
-        assert "would_run" in by_route["claude.review.opus"], by_route["claude.review.opus"]
-        assert "would_run" in by_route["claude.headless.full"]
-        # and the review route's receipt is anchored to the OPUS serve's time, not Fable's
-        argv = by_route["claude.review.opus"]["would_run"]
-        assert argv[argv.index("--now") + 1] == (NOW - timedelta(minutes=9)).isoformat().replace(
-            "+00:00", "Z"
-        )
-        argv_headless = by_route["claude.headless.full"]["would_run"]
-        assert argv_headless[argv_headless.index("--now") + 1] == (
-            NOW - timedelta(minutes=1)
-        ).isoformat().replace("+00:00", "Z")
+        assert (verdict, newest, found) == ("no_evidence", None, [])
 
     def test_only_a_cheap_model_served_leaves_the_review_route_unvouched(
         self, tmp_path: Path
     ) -> None:
-        verdict, newest, found = _synthetic_observations(
+        verdict, newest, found = _observations(
+            tmp_path,
             transcript=[_served(NOW - timedelta(minutes=2), "claude-haiku-4-5")]
         )
-        assert verdict == "served"
-        by_route = _plan(tmp_path, newest, found)
-        assert by_route["claude.review.opus"].get("skipped") == "no-serve-in-model-family"
-        assert "would_run" in by_route["claude.headless.full"]
+        assert (verdict, newest, found) == ("no_evidence", None, [])
 
     def test_a_wall_newer_than_every_serve_holds_the_whole_account(self, tmp_path: Path) -> None:
-        verdict, newest, _found = _synthetic_observations(
+        verdict, newest, _found = _observations(
+            tmp_path,
             transcript=[_served(NOW - timedelta(minutes=5), "claude-opus-5")],
             headless=[_wall(NOW - timedelta(minutes=1))],
         )
@@ -207,41 +183,34 @@ class TestEachRouteUsesItsOwnFamily:
     def test_a_serve_older_than_a_newer_wall_is_not_resurrected_by_another_family(
         self, tmp_path: Path
     ) -> None:
-        """opus serve t0, wall t1, fable serve t2: the account is served (t2 is newest) but the
-        t0 opus serve predates the wall and must not vouch for the opus review route. A Fable
-        response cannot witness Opus availability after an Opus refusal (review finding, #4615)."""
-        verdict, newest, found = _synthetic_observations(
+        """An unbound passive serve cannot override a measured quota wall."""
+        verdict, newest, found = _observations(
+            tmp_path,
             transcript=[
                 _served(NOW - timedelta(minutes=9), "claude-opus-5"),
                 _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
             ],
             headless=[_wall(NOW - timedelta(minutes=5))],
         )
-        assert verdict == "served" and newest.model == "claude-fable-5-1"
+        assert verdict == "walled" and newest.source == "headless-result"
         by_route = obs.evidence_by_route(found, ROUTES)
-        assert by_route["claude.review.opus"] is None, "pre-wall opus serve resurrected"
-        assert by_route["claude.headless.full"] is not None
-        assert by_route["claude.headless.full"].at == NOW - timedelta(minutes=1)
-        planned = _plan(tmp_path, newest, found)
-        assert "would_run" not in planned["claude.review.opus"], planned["claude.review.opus"]
-        assert "would_run" in planned["claude.headless.full"]
+        assert by_route == dict.fromkeys(ROUTES)
 
     def test_a_serve_after_the_newest_wall_still_vouches_for_its_route(
         self, tmp_path: Path
     ) -> None:
-        """Control for the test above: the same wall, but the opus serve postdates it."""
-        verdict, newest, found = _synthetic_observations(
+        """Even a later passive Opus serve cannot clear a bound subscription wall."""
+        verdict, newest, found = _observations(
+            tmp_path,
             transcript=[
                 _served(NOW - timedelta(minutes=3), "claude-opus-5"),
                 _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
             ],
             headless=[_wall(NOW - timedelta(minutes=5))],
         )
-        assert verdict == "served"
+        assert verdict == "walled" and newest.source == "headless-result"
         by_route = obs.evidence_by_route(found, ROUTES)
-        assert by_route["claude.review.opus"] is not None
-        assert by_route["claude.review.opus"].at == NOW - timedelta(minutes=3)
-        assert "would_run" in _plan(tmp_path, newest, found)["claude.review.opus"]
+        assert by_route == dict.fromkeys(ROUTES)
 
     def test_main_unbound_mixed_family_serves_cannot_clear_wall(
         self, tmp_path: Path, capsys
