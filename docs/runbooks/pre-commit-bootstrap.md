@@ -44,11 +44,30 @@ scripts/install-git-hooks.sh
 Worktrees share the common git dir, so this only needs doing once per
 underlying repository.
 
+## Shared hooks (council)
+
+The tracked `scripts/pre-commit` delegates to the framework; `scripts/pre-push`
+runs both scanners and refuses if either is missing. After merge, the seat
+enables the relative setting below. It resolves per worktree; update branches
+missing the tracked hooks before relying on it.
+
+```bash
+git config core.hooksPath scripts
+git config --get core.hooksPath   # scripts
+```
+
 ## Verify
 
 ```bash
-test -x .git/hooks/pre-commit
-sed -n '1,12p' .git/hooks/pre-commit
+test -x "$(git rev-parse --show-toplevel)/scripts/pre-commit"
+test -x "$(git rev-parse --show-toplevel)/scripts/pre-push"
+```
+
+Recheck hook resolution from a linked worktree:
+
+```bash
+git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-commit
+git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-push
 ```
 
 For a task-scoped verification, run pre-commit on the files you touched:
@@ -64,7 +83,5 @@ scope.
 
 ## Why this is a bootstrap step, not a committed hook
 
-`.git/hooks/` is per-clone and outside version control, so the active hook
-cannot ship in a PR — only the config and this bootstrap can. Run the
-install once per clone, and again after any `git config` change that affects
-hook resolution.
+The framework's `.git/hooks/` hook is local; tracked wrappers ship in the repo.
+Install the framework per clone so the pre-commit wrapper can delegate to it.

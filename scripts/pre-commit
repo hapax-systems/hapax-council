@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# git pre-commit hook: delegate to the pre-commit framework under the shared hooksPath.
+#
+# Setting core.hooksPath=scripts replaces Git's hook-lookup directory, so the
+# framework-generated .git/hooks/pre-commit is not consulted. This tracked hook
+# keeps the runbook's commit-time gates working under that one setting by
+# invoking the framework's own hook implementation.
+set -euo pipefail
+
+if ! command -v pre-commit >/dev/null 2>&1; then
+  echo "pre-commit: the pre-commit CLI is not on PATH; refusing" >&2
+  echo "Remedy: install it (see docs/runbooks/pre-commit-bootstrap.md) and retry." >&2
+  exit 1
+fi
+
+exec pre-commit hook-impl \
+  --config=.pre-commit-config.yaml \
+  --hook-type=pre-commit \
+  -- "$@"
