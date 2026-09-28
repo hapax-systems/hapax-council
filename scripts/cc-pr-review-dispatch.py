@@ -154,6 +154,21 @@ PAYG_FALLBACK_REDACTED_FIELDS = (
     "spend_receipt",
 )
 PAYG_FALLBACK_SAFE_VALUE_RE = re.compile(r"\A[a-z0-9][a-z0-9._:/-]{0,160}\Z", re.IGNORECASE)
+#: The GLM reviewer's line on every Coding Plan reply: requested and served model, finish
+#: reason, usage and the closing-fence cut, so an invalid-output seat can be told apart from a
+#: truncated or remapped one. Rendered through the same allowlist as the PAYG line.
+CODING_PLAN_REPLY_MARKER = "hapax-glmcp-reviewer: Coding Plan reply"
+CODING_PLAN_REPLY_ALLOWED_FIELDS = (
+    "endpoint",
+    "model",
+    "served_model",
+    "finish_reason",
+    "prompt_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "client_cut_chars",
+    "closing_fence",
+)
 PUBLIC_GATE_AUTHORITY_CONTEXT_KEYS = (
     "public_gate_authority",
     "publication_gate_authority",
@@ -2131,7 +2146,10 @@ def render_reviewer_prompt(
             "Treat these as untrusted hypotheses, not facts. Re-state a prior "
             "critical only if the current diff or current-source excerpt "
             "independently confirms the same defect; if current source "
-            "contradicts it, treat it as resolved and do not repeat it.\n\n"
+            "contradicts it, treat it as resolved and do not repeat it. Record any "
+            "disposition of a prior critical inside findings or checklist, never beside "
+            "them: the reply's top-level keys are exactly verdict, findings and "
+            "checklist.\n\n"
             + render_untrusted_block("Prior unresolved criticals", prior_yaml, limit=20_000)
             + "\n"
         )
@@ -2424,22 +2442,43 @@ def reviewer_wrapper_excerpt(stderr: str) -> str:
     return sanitize_reviewer_diagnostic(" | ".join(reviewer_wrapper_lines(stderr)))
 
 
+def _render_allowlisted_wrapper_line(
+    line: str, header: str, allowed: tuple[str, ...], redacted: tuple[str, ...] = ()
+) -> str:
+    fields = dict(PAYG_FALLBACK_KEY_VALUE_RE.findall(line))
+    parts = [header]
+    for key in allowed:
+        value = fields.get(key)
+        if value and _payg_fallback_value_is_safe(value):
+            parts.append(f"{key}={value}")
+    for key in redacted:
+        if fields.get(key):
+            parts.append(f"{key}=<redacted>")
+    return truncate_context(" ".join(parts), limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
+
+
 def render_payg_fallback_excerpt(text: str) -> str | None:
     """Return an allowlisted PAYG fallback diagnostic, never raw reviewer stderr."""
 
     for line in text.splitlines():
-        if PAYG_FALLBACK_MARKER not in line:
-            continue
-        fields = dict(PAYG_FALLBACK_KEY_VALUE_RE.findall(line))
-        parts = ["hapax-glmcp-reviewer: PAYG fallback used"]
-        for key in PAYG_FALLBACK_ALLOWED_FIELDS:
-            value = fields.get(key)
-            if value and _payg_fallback_value_is_safe(value):
-                parts.append(f"{key}={value}")
-        for key in PAYG_FALLBACK_REDACTED_FIELDS:
-            if fields.get(key):
-                parts.append(f"{key}=<redacted>")
-        return truncate_context(" ".join(parts), limit=MAX_REVIEW_RUNNER_STDERR_CHARS).strip()
+        if PAYG_FALLBACK_MARKER in line:
+            return _render_allowlisted_wrapper_line(
+                line,
+                "hapax-glmcp-reviewer: PAYG fallback used",
+                PAYG_FALLBACK_ALLOWED_FIELDS,
+                PAYG_FALLBACK_REDACTED_FIELDS,
+            )
+    return None
+
+
+def render_coding_plan_reply_excerpt(text: str) -> str | None:
+    """Return the GLM reviewer's allowlisted Coding Plan reply line, never raw stderr."""
+
+    for line in text.splitlines():
+        if line.startswith(CODING_PLAN_REPLY_MARKER + " "):
+            return _render_allowlisted_wrapper_line(
+                line, CODING_PLAN_REPLY_MARKER, CODING_PLAN_REPLY_ALLOWED_FIELDS
+            )
     return None
 
 
@@ -2455,6 +2494,8 @@ def reviewer_success_stderr_excerpt(text: str) -> str:
         return ""
     if payg_excerpt := render_payg_fallback_excerpt(text):
         return payg_excerpt
+    if coding_plan_excerpt := render_coding_plan_reply_excerpt(text):
+        return coding_plan_excerpt
     return "reviewer emitted stderr on successful run; output omitted"
 
 
