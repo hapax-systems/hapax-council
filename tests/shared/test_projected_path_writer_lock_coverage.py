@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import re
+import runpy
 import subprocess
 import sys
 import textwrap
@@ -905,6 +906,78 @@ print("RELEASED", flush=True)
 """
 
 
+@pytest.mark.parametrize("scenario", ["missing", "replacement", "root_changed", "scan_error"])
+def test_cc_close_merge_check_refuses_a_move_between_resolve_and_read(
+    probe: tuple[Path, Path, dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    scenario: str,
+) -> None:
+    """Force the lost-note interval without depending on the writer's scheduler timing."""
+
+    _home, note, _env = probe
+    vault_root = note.parent.parent
+    away = vault_root / "_lineage" / note.name
+    away.parent.mkdir()
+    checker = REPO_ROOT / "scripts" / "cc-close-pr-merge-check.py"
+    module = runpy.run_path(str(checker), run_name="cc_close_merge_check_test")
+    main = module["main"]
+    resolved_root = vault_root
+    if scenario == "root_changed":
+        resolved_root = vault_root.parent / "other-tasks"
+        resolved_root.mkdir()
+    monkeypatch.setenv("HAPAX_CC_TASKS_ROOT", str(resolved_root))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(checker),
+            str(note),
+            "--task-id",
+            "lock-probe-1",
+            "--pr",
+            "999",
+            "--repo",
+            "hapax-systems/hapax-council",
+        ],
+    )
+    checked: list[str] = []
+    monkeypatch.setitem(
+        main.__globals__, "_check_pr_merged", lambda *_args: checked.append("called")
+    )
+    original_read = Path.read_text
+    original_glob = Path.glob
+
+    def missing_during_scan(path: Path, pattern: str):
+        if scenario == "scan_error" and path == vault_root / "active":
+            raise FileNotFoundError(path)
+        return original_glob(path, pattern)
+
+    def move_before_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == note:
+            note.rename(away)
+            if scenario == "replacement":
+                note.write_text(NOTE.replace("title:", "title: replacement "), encoding="utf-8")
+            raise FileNotFoundError(note)
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", move_before_read)
+    monkeypatch.setattr(Path, "glob", missing_during_scan)
+    assert main() == 1
+    refusal = capsys.readouterr().err
+    assert "cc-close: REFUSED" in refusal
+    if scenario == "replacement":
+        assert "changed while checking merge evidence" in refusal
+    elif scenario == "root_changed":
+        assert "task root changed while checking merge evidence" in refusal
+    elif scenario == "scan_error":
+        assert "could not recheck task paths" in refusal
+    else:
+        assert "neither active/ nor closed/" in refusal
+    assert f"ls {resolved_root}/*/lock-probe-1*" in refusal
+    assert checked == []
+
+
 def test_cc_close_s_lost_note_refusal_names_the_root_it_actually_resolved(
     probe: tuple[Path, Path, dict[str, str]],
 ) -> None:
@@ -1117,6 +1190,7 @@ NOT_A_TASK_NOTE_WRITER = {
     "scripts/cc-hygiene-dashboard-renderer.py": "renders the dashboard, not a note",
     "scripts/cc-hygiene-sweeper.py": "read-only sweep plus ntfy",
     "scripts/cc-close-sibling-check.py": "read-only check",
+    "scripts/cc-close-pr-merge-check.py": "reads the task note and PR state; writes no note",
     "scripts/check-peer-glob-coherence.py": "read-only check",
     "scripts/check-audio-authority-case.py": "read-only check",
     "scripts/cc-task-lint": "read-only lint over the vault",

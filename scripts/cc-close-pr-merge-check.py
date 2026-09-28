@@ -31,6 +31,7 @@ from shared.cc_task_pr_link import (
     is_well_formed_repo,
     unquote,
 )
+from shared.cc_task_root import CcTaskRootUnavailable, resolve_cc_task_root
 
 DEFAULT_PR_REPO = "hapax-systems/hapax-council"
 
@@ -83,15 +84,70 @@ def _check_pr_merged(pr_num: str, repo: str = DEFAULT_PR_REPO) -> str | None:
     return None
 
 
+def _refuse_lost_note(note_path: Path, task_id: str) -> int:
+    """A moved note cannot supply merge evidence, even if its locator reappears."""
+
+    original_root = note_path.parent.parent
+    try:
+        resolved_root = resolve_cc_task_root().path
+    except (CcTaskRootUnavailable, OSError) as exc:
+        print(
+            f"cc-close: REFUSED — task root could not be re-resolved after {note_path} "
+            f"moved during the merge check: {exc}. Original root: {original_root}",
+            file=sys.stderr,
+        )
+        return 1
+    location = f"`ls {resolved_root}/*/{task_id}*`"
+    if resolved_root != original_root:
+        print(
+            f"cc-close: REFUSED — task root changed while checking merge evidence "
+            f"({original_root} to {resolved_root}). Locate the note with {location} "
+            "before retrying",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        found = any(
+            (directory / f"{task_id}.md").is_file() or any(directory.glob(f"{task_id}-*.md"))
+            for directory in (resolved_root / "active", resolved_root / "closed")
+        )
+    except OSError as exc:
+        print(
+            f"cc-close: REFUSED — could not recheck task paths under {resolved_root} "
+            f"after the note moved: {exc}. Locate it with {location} before retrying",
+            file=sys.stderr,
+        )
+        return 1
+    if found:
+        print(
+            f"cc-close: REFUSED — '{task_id}' changed while checking merge evidence; "
+            f"inspect the note with {location} before retrying",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"cc-close: REFUSED — '{task_id}' is in neither active/ nor closed/; it moved "
+            f"during the merge check. Locate it with {location} before retrying",
+            file=sys.stderr,
+        )
+    return 1
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(
-            "usage: cc-close-pr-merge-check.py <note_path> [--pr N] [--repo OWNER/REPO]",
+            "usage: cc-close-pr-merge-check.py <note_path> [--task-id ID] [--pr N] "
+            "[--repo OWNER/REPO]",
             file=sys.stderr,
         )
         return 0
 
     note_path = Path(sys.argv[1])
+    task_id = note_path.stem
+    if "--task-id" in sys.argv:
+        idx = sys.argv.index("--task-id")
+        if idx + 1 < len(sys.argv):
+            task_id = sys.argv[idx + 1]
     cli_pr = None
     cli_repo = None
     if "--pr" in sys.argv:
@@ -103,7 +159,10 @@ def main() -> int:
         if idx + 1 < len(sys.argv):
             cli_repo = sys.argv[idx + 1]
 
-    text = note_path.read_text(encoding="utf-8")
+    try:
+        text = note_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _refuse_lost_note(note_path, task_id)
     fields = _extract_frontmatter(text)
 
     pr_num = cli_pr or fields.get("pr", "").strip()

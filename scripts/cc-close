@@ -234,7 +234,7 @@ if [[ "$final_status" == "done" ]]; then
     PR_MERGE_CHECKER="$SCRIPT_DIR/cc-close-pr-merge-check.py"
     if [[ -f "$PR_MERGE_CHECKER" ]]; then
       set +e
-      python3 "$PR_MERGE_CHECKER" "$note_path" ${pr:+--pr "$pr"}
+      python3 "$PR_MERGE_CHECKER" "$note_path" --task-id "$task_id" ${pr:+--pr "$pr"}
       merge_rc=$?
       set -e
       if [[ "$merge_rc" -ne 0 ]]; then
