@@ -244,6 +244,8 @@ jobs:
         run: echo "Docs-only change set; lint reports success without running heavy gates."
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
@@ -306,20 +308,24 @@ jobs:
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           if [ -n "$PR_BASE_REF" ]; then
-            git fetch --quiet origin "$PR_BASE_REF:refs/remotes/origin/$PR_BASE_REF" || true
+            git fetch --quiet origin "$PR_BASE_REF:refs/remotes/origin/$PR_BASE_REF"
             uv run python scripts/check-new-module-consumers.py --base-ref "origin/$PR_BASE_REF"
           elif [ -n "$PR_BASE_SHA" ]; then
-            git fetch --quiet origin "$PR_BASE_SHA" || true
+            git fetch --quiet origin "$PR_BASE_SHA"
             uv run python scripts/check-new-module-consumers.py --diff-range "$PR_BASE_SHA...HEAD"
+          elif [ -n "$MERGE_GROUP_BASE_SHA" ]; then
+            git fetch --quiet origin "$MERGE_GROUP_BASE_SHA"
+            uv run python scripts/check-new-module-consumers.py --diff-range "$MERGE_GROUP_BASE_SHA..HEAD"
           else
             if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
-              echo "no base SHA; skipping new-module-consumer-check"
-              exit 0
+              echo "new-module-consumer-check: missing base SHA; supply a valid push before SHA" >&2
+              exit 2
             fi
-            git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
+            git fetch --quiet origin "$PUSH_BEFORE_SHA"
             uv run python scripts/check-new-module-consumers.py --diff-range "$PUSH_BEFORE_SHA..HEAD"
           fi
       # taxonomy-A1 — consumer-existence gate. Refuses PRs that add a
