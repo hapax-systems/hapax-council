@@ -4803,9 +4803,7 @@ def test_claude_account_live_quota_suffix_tokens_are_consistent_across_layers() 
     )
 
     suffix_tokens = ("account", "live", "quota", "observed")
-    assert _ref_tokens(telemetry_namespace["CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX"]) == (
-        suffix_tokens
-    )
+    assert _ref_tokens(telemetry_namespace["_WRITER_ACCOUNT_LIVE_SUFFIX_BARE"]) == (suffix_tokens)
     assert _ref_tokens(LEDGER_SUFFIX) == suffix_tokens
 
 
@@ -7098,11 +7096,15 @@ def _claude_admission(
     lane_presence_used_as_quota_evidence: str = "false",
     probe_environment_scrubbed: str | None = None,
     name: str = "claude-subscription-quota-admission.yaml",
+    credential_binding: str | None = None,
 ) -> None:
     probe_environment_line = (
         f"probe_environment_scrubbed: {probe_environment_scrubbed}\n"
         if probe_environment_scrubbed is not None
         else ""
+    )
+    credential_binding_line = (
+        f"credential_binding: {credential_binding}\n" if credential_binding else ""
     )
     (relay / name).write_text(
         "schema: hapax.claude_quota_admission.v1\n"
@@ -7113,6 +7115,7 @@ def _claude_admission(
         "auth_surface: subscription\n"
         f"observation: {observation}\n"
         f"{probe_environment_line}"
+        f"{credential_binding_line}"
         f"observed_at: {observed_at}\n"
         f"stale_after_seconds: {stale_after_seconds}\n"
         f"evidence_ref: {evidence_ref}\n"
@@ -7445,12 +7448,17 @@ def test_claude_admission_writer_can_target_review_route(tmp_path: Path) -> None
     )
 
 
-def test_fresh_claude_admission_ref_passes_ledger_validator(tmp_path: Path) -> None:
+@pytest.mark.parametrize("credential_binding", [None, "a" * 64])
+def test_writer_emitted_refs_fullmatch_ledger_regex_bound_and_unbound(
+    tmp_path: Path, credential_binding: str | None
+) -> None:
     # Cross-layer contract: the composite ref the telemetry writer emits is exactly what the ledger
     # accepts as claude admission evidence, so the guarantor attests. Pins telemetry <-> ledger.
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
-    _claude_admission(relay, observed_at="2026-06-09T23:55:00Z")
+    _claude_admission(
+        relay, observed_at="2026-06-09T23:55:00Z", credential_binding=credential_binding
+    )
 
     result, out = _run_writer(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -7460,8 +7468,13 @@ def test_fresh_claude_admission_ref_passes_ledger_validator(tmp_path: Path) -> N
     )
 
     sys.path.insert(0, str(REPO_ROOT))
-    from shared.quota_spend_ledger import _is_claude_admission_evidence_ref
+    from shared.quota_spend_ledger import (
+        CLAUDE_ADMISSION_COMPOSITE_REF_RE,
+        _is_claude_admission_evidence_ref,
+    )
 
+    assert "::" not in ref
+    assert CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref) is not None
     assert _is_claude_admission_evidence_ref(ref) is True
 
 
