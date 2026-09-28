@@ -5482,3 +5482,8 @@ _ = (
 from shared.research_desk import deliver_result as _research_desk_deliver_result  # noqa: E402
 
 _ = _research_desk_deliver_result
+
+# The research desk's extensionless MCP entrypoint consumes this ledger reader.
+from shared.research_desk_ledger import read_records as _research_desk_read_records  # noqa: E402
+
+_ = _research_desk_read_records
