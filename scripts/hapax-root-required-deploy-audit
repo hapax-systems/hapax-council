@@ -27,6 +27,8 @@ fi
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
+SIGNING_HOLDER_DEST="${HAPAX_OOM_SIGNING_HOLDER_DEST:-/usr/local/sbin/hapax-signing-holder}"
+SIGNING_HOLDER_LIB_DIR="${HAPAX_OOM_SIGNING_HOLDER_LIB_DIR:-/usr/local/lib/hapax/signing-holder}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
@@ -307,6 +309,10 @@ oom_package_files=(
     scripts/hapax-root-failure-intake
     scripts/hapax-oom-policy-audit
     scripts/hapax-root-required-deploy-audit
+    scripts/hapax-signing-holder
+    shared/__init__.py
+    shared/public_gate_receipts.py
+    shared/signing_holder.py
     config/earlyoom/default
     systemd/system/system.slice.d/oom-containment.conf
     systemd/system/user.slice.d/oom-containment.conf
@@ -322,6 +328,8 @@ oom_package_files=(
     systemd/units/hapax-root-failure-intake@.service
     systemd/units/hapax-oom-score-enforce.service
     systemd/units/hapax-oom-score-enforce.timer
+    systemd/system/hapax-signing-holder.socket
+    systemd/system/hapax-signing-holder@.service
     systemd/units/hapax-oom-policy-audit.service
     systemd/units/hapax-oom-policy-audit.timer
     systemd/units/hapax-root-required-deploy-audit.service
@@ -550,7 +558,7 @@ expected_install_mode() {
         config/root-required/hapax-oom-score-enforce.sudoers)
             printf '440\n'
             ;;
-        scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+        scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|scripts/hapax-signing-holder|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
             printf '755\n'
             ;;
         *)
@@ -738,6 +746,13 @@ audit_systemd_state() {
         echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
         failed=1
     fi
+    for state in is-enabled is-active; do
+        if ! "$SYSTEMCTL" "$state" --quiet hapax-signing-holder.socket; then
+            echo "root-required activation drift: hapax-signing-holder.socket is not ${state#is-}" >&2
+            echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
     expected_enforcer_timeout="$(awk -F= '$1 == "TimeoutStartSec" {print $2; exit}' "$INSTALLED_SOURCE_ROOT/systemd/units/hapax-oom-score-enforce.service" 2>/dev/null || true)"
     if ! loaded_enforcer_timeout="$("$SYSTEMCTL" show hapax-oom-score-enforce.service -p TimeoutStartUSec --value 2>/dev/null)"; then
         loaded_enforcer_timeout=""
@@ -864,6 +879,10 @@ audit_root_installs() {
         "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
         "scripts/hapax-oom-policy-audit|$OOM_POLICY_AUDIT_DEST"
         "scripts/hapax-root-required-deploy-audit|$ROOT_REQUIRED_AUDIT_DEST"
+        "scripts/hapax-signing-holder|$SIGNING_HOLDER_DEST"
+        "shared/__init__.py|$SIGNING_HOLDER_LIB_DIR/shared/__init__.py"
+        "shared/public_gate_receipts.py|$SIGNING_HOLDER_LIB_DIR/shared/public_gate_receipts.py"
+        "shared/signing_holder.py|$SIGNING_HOLDER_LIB_DIR/shared/signing_holder.py"
         "config/earlyoom/default|$EARLYOOM_DEST"
         "systemd/system/system.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf"
         "systemd/system/user.slice.d/oom-containment.conf|$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf"
@@ -879,6 +898,8 @@ audit_root_installs() {
         "systemd/units/hapax-root-failure-intake@.service|$SYSTEMD_SYSTEM_DIR/hapax-root-failure-intake@.service"
         "systemd/units/hapax-oom-score-enforce.service|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.service"
         "systemd/units/hapax-oom-score-enforce.timer|$SYSTEMD_SYSTEM_DIR/hapax-oom-score-enforce.timer"
+        "systemd/system/hapax-signing-holder.socket|$SYSTEMD_SYSTEM_DIR/hapax-signing-holder.socket"
+        "systemd/system/hapax-signing-holder@.service|$SYSTEMD_SYSTEM_DIR/hapax-signing-holder@.service"
         "systemd/units/hapax-oom-policy-audit.service|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.service"
         "systemd/units/hapax-oom-policy-audit.timer|$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer"
         "systemd/units/hapax-root-required-deploy-audit.service|$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.service"
@@ -906,7 +927,7 @@ audit_root_installs() {
         compare_root_file "$rel" "$dest" || failed=1
         audit_root_artifact_trust "$dest" || failed=1
         case "$rel" in
-            scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+            scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|scripts/hapax-signing-holder|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
                 verify_executable "$rel" "$dest" || failed=1
                 ;;
         esac
@@ -914,7 +935,9 @@ audit_root_installs() {
     for rel in \
         systemd/units/hapax-root-failure-intake@.service \
         systemd/units/hapax-oom-score-enforce.service \
-        systemd/units/hapax-oom-score-enforce.timer; do
+        systemd/units/hapax-oom-score-enforce.timer \
+        systemd/system/hapax-signing-holder.socket \
+        systemd/system/hapax-signing-holder@.service; do
         dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             echo "root-required install drift: stale user-scope copy of system unit remains: $dest" >&2

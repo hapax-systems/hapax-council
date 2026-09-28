@@ -35,6 +35,8 @@ OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
+SIGNING_HOLDER_DEST="${HAPAX_OOM_SIGNING_HOLDER_DEST:-/usr/local/sbin/hapax-signing-holder}"
+SIGNING_HOLDER_LIB_DIR="${HAPAX_OOM_SIGNING_HOLDER_LIB_DIR:-/usr/local/lib/hapax/signing-holder}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
 SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
@@ -549,6 +551,8 @@ system_units=(
     systemd/units/hapax-root-failure-intake@.service
     systemd/units/hapax-oom-score-enforce.service
     systemd/units/hapax-oom-score-enforce.timer
+    systemd/system/hapax-signing-holder.socket
+    systemd/system/hapax-signing-holder@.service
 )
 user_audit_units=(
     systemd/units/hapax-oom-policy-audit.service
@@ -586,6 +590,8 @@ oom_sudoers_source="config/root-required/hapax-oom-score-enforce.sudoers"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
+signing_holder_source="scripts/hapax-signing-holder"
+signing_holder_modules=(shared/__init__.py shared/public_gate_receipts.py shared/signing_holder.py)
 package_manifest_source="config/root-required/oom-containment.files"
 package_files=(
     "$package_manifest_source"
@@ -602,6 +608,8 @@ package_files=(
     "$root_failure_intake_source"
     "$oom_policy_audit_source"
     "$root_required_audit_source"
+    "$signing_holder_source"
+    "${signing_holder_modules[@]}"
 )
 recovery_unit_scores=(
     apcupsd.service:-900
@@ -1379,6 +1387,11 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$ROOT_REQUIRED_AUDIT_DEST")"
     run_root install -m 0755 "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     echo "  '$root_required_audit_source' -> '$ROOT_REQUIRED_AUDIT_DEST'"
+    run_root install -d -m 0755 "$(dirname "$SIGNING_HOLDER_DEST")" "$SIGNING_HOLDER_LIB_DIR/shared"
+    run_root install -m 0755 "$(src_path "$signing_holder_source")" "$SIGNING_HOLDER_DEST"
+    for rel in "${signing_holder_modules[@]}"; do
+        run_root install -m 0644 "$(src_path "$rel")" "$SIGNING_HOLDER_LIB_DIR/$rel"
+    done
     run_root install -d -m 0755 "$(dirname "$EARLYOOM_DEST")"
     run_root install -m 0644 "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     echo "  '$earlyoom_source' -> '$EARLYOOM_DEST'"
@@ -1422,6 +1435,10 @@ install_live() {
     fi
 
     run_root "$SYSTEMCTL" daemon-reload
+    run_root "$SYSTEMCTL" enable --now hapax-signing-holder.socket || {
+        echo "unable to activate hapax-signing-holder.socket; next action: restore the root-required package and rerun the installer" >&2
+        return 1
+    }
     run_root "$SYSTEMCTL" enable --now hapax-oom-score-enforce.timer >/dev/null 2>&1 || {
         echo "unable to enable hapax-oom-score-enforce.timer; next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
         return 1
@@ -1614,6 +1631,20 @@ verify_live() {
     verify_root_artifact_trust "$OOM_POLICY_AUDIT_DEST" 755
     verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     verify_root_artifact_trust "$ROOT_REQUIRED_AUDIT_DEST" 755
+    verify_pair "$(src_path "$signing_holder_source")" "$SIGNING_HOLDER_DEST"
+    verify_root_artifact_trust "$SIGNING_HOLDER_DEST" 755
+    for rel in "${signing_holder_modules[@]}"; do
+        verify_pair "$(src_path "$rel")" "$SIGNING_HOLDER_LIB_DIR/$rel"
+        verify_root_artifact_trust "$SIGNING_HOLDER_LIB_DIR/$rel" 644
+    done
+    run_root "$SYSTEMCTL" is-enabled --quiet hapax-signing-holder.socket || {
+        echo "signing holder socket is not enabled; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    }
+    run_root "$SYSTEMCTL" is-active --quiet hapax-signing-holder.socket || {
+        echo "signing holder socket is not active; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        return 1
+    }
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     verify_root_artifact_trust "$EARLYOOM_DEST" 644
     run_root "$SYSTEMCTL" is-enabled --quiet earlyoom.service || {

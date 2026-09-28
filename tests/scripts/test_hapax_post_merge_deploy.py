@@ -70,10 +70,23 @@ P0_OOM_AUDIT_FILES = {
         "OnUnitActiveSec=10min\nUnit=hapax-root-required-deploy-audit.service\n"
     ),
 }
+SIGNING_HOLDER_PACKAGE_TEST_FILES = {
+    "scripts/hapax-signing-holder": "#!/usr/bin/python3 -I\n",
+    "shared/__init__.py": "",
+    "shared/public_gate_receipts.py": "def sign(): pass\n",
+    "shared/signing_holder.py": "def main(): pass\n",
+    "systemd/system/hapax-signing-holder.socket": (
+        "[Socket]\nListenStream=/run/hapax-signing-holder.sock\nAccept=yes\n"
+    ),
+    "systemd/system/hapax-signing-holder@.service": (
+        "[Service]\nExecStart=/usr/local/sbin/hapax-signing-holder\n"
+    ),
+}
 ROOT_AUDIT_SOURCE_FILES = {
     "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
+    **SIGNING_HOLDER_PACKAGE_TEST_FILES,
     "config/root-required/hapax-oom-score-enforce.sudoers": (
         "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"
     ),
@@ -614,6 +627,16 @@ def _root_audit_env(
         "scripts/hapax-root-failure-intake": root_failure_dest,
         "scripts/hapax-oom-policy-audit": oom_audit_dest,
         "scripts/hapax-root-required-deploy-audit": root_audit_dest,
+        "scripts/hapax-signing-holder": tmp_path / "sbin" / "hapax-signing-holder",
+        "shared/__init__.py": tmp_path / "lib" / "signing-holder" / "shared" / "__init__.py",
+        "shared/public_gate_receipts.py": (
+            tmp_path / "lib" / "signing-holder" / "shared" / "public_gate_receipts.py"
+        ),
+        "shared/signing_holder.py": tmp_path
+        / "lib"
+        / "signing-holder"
+        / "shared"
+        / "signing_holder.py",
         "config/earlyoom/default": earlyoom_dest,
         "systemd/logrotate.d/hapax-ups-power-events": logrotate_dest,
         "config/upower/90-hapax-apcupsd-owner.conf": upower_dest,
@@ -642,6 +665,7 @@ def _root_audit_env(
         "scripts/hapax-root-failure-intake",
         "scripts/hapax-oom-policy-audit",
         "scripts/hapax-root-required-deploy-audit",
+        "scripts/hapax-signing-holder",
         "config/apcupsd/hapax-power-event.py",
         "config/apcupsd/onbattery",
         "config/apcupsd/offbattery",
@@ -705,6 +729,8 @@ def _root_audit_env(
         "HAPAX_ROOT_FAILURE_INTAKE_DEST": str(root_failure_dest),
         "HAPAX_OOM_POLICY_AUDIT_DEST": str(oom_audit_dest),
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST": str(root_audit_dest),
+        "HAPAX_OOM_SIGNING_HOLDER_DEST": str(tmp_path / "sbin" / "hapax-signing-holder"),
+        "HAPAX_OOM_SIGNING_HOLDER_LIB_DIR": str(tmp_path / "lib" / "signing-holder"),
         "HAPAX_OOM_EARLYOOM_DEST": str(earlyoom_dest),
         "HAPAX_OOM_SYSTEMD_SYSTEM_DIR": str(system_dir),
         "HAPAX_OOM_SYSTEMD_USER_DIR": str(user_dir),
@@ -1051,6 +1077,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
+        **SIGNING_HOLDER_PACKAGE_TEST_FILES,
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
         "systemd/system/system.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
@@ -1354,6 +1381,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
         "scripts/hapax-oom-score-enforce": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-oom-score-trigger": "#!/usr/bin/env bash\nexit 0\n",
         "scripts/hapax-root-failure-intake": "#!/usr/bin/env bash\nexit 0\n",
+        **SIGNING_HOLDER_PACKAGE_TEST_FILES,
         "config/earlyoom/default": 'EARLYOOM_ARGS="--ignore recovery"\n',
         "systemd/system/system.slice.d/oom-containment.conf": (
             "[Slice]\nMemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\n"
@@ -1543,6 +1571,20 @@ def test_root_required_audit_detects_oom_enforcer_drift(tmp_path: Path) -> None:
     assert "install-p0-oom-containment --install --verify-live" in result.stderr
 
 
+def test_root_required_audit_detects_signing_holder_library_drift(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_root_audit_env(tmp_path, drift_rel="shared/signing_holder.py"),
+    )
+
+    assert result.returncode == 1
+    assert "root-required install drift" in result.stderr
+    assert "shared/signing_holder.py" in result.stderr
+
+
 def test_root_required_audit_rejects_untrusted_root_artifact_owner(tmp_path: Path) -> None:
     env = _root_audit_env(tmp_path)
     env["HAPAX_ROOT_AUDIT_TEST_ROOT_UID"] = str(os.getuid() + 1)
@@ -1629,9 +1671,19 @@ def test_root_required_audit_detects_sudoers_reference_owner_drift(tmp_path: Pat
     assert "sudoers audit reference ownership/mode drift" in result.stderr
 
 
-def test_root_required_audit_detects_stale_user_copy_of_system_unit(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "unit",
+    (
+        "hapax-oom-score-enforce.timer",
+        "hapax-signing-holder.socket",
+        "hapax-signing-holder@.service",
+    ),
+)
+def test_root_required_audit_detects_stale_user_copy_of_system_unit(
+    tmp_path: Path, unit: str
+) -> None:
     env = _root_audit_env(tmp_path)
-    stale = Path(env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / "hapax-oom-score-enforce.timer"
+    stale = Path(env["HAPAX_OOM_SYSTEMD_USER_DIR"]) / unit
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text("[Timer]\nOnUnitActiveSec=30s\n", encoding="utf-8")
 
@@ -1829,6 +1881,30 @@ def test_root_required_audit_detects_disabled_enforcer_timer(tmp_path: Path) -> 
     assert result.returncode == 1
     assert "hapax-oom-score-enforce.timer is not enabled" in result.stderr
     assert "enable --now" in result.stderr
+
+
+def test_root_required_audit_detects_disabled_signing_holder_socket(tmp_path: Path) -> None:
+    env = _root_audit_env(tmp_path)
+    fake_systemctl = Path(env["HAPAX_ROOT_AUDIT_SYSTEMCTL"])
+    baseline = fake_systemctl.read_text(encoding="utf-8")
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$*" = "is-enabled --quiet hapax-signing-holder.socket" ]; then exit 1; fi\n'
+        + baseline.split("\n", 1)[1],
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(ROOT_REQUIRED_AUDIT)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "hapax-signing-holder.socket is not enabled" in result.stderr
 
 
 def test_root_required_audit_detects_stale_loaded_enforcer_timeout(tmp_path: Path) -> None:
