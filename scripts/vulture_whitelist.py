@@ -5543,3 +5543,8 @@ from shared.entitlement_census import (
 )
 
 _ = (_census_surface_deltas, _census_delta_file)
+
+# The E1 CLI calls run_census from its extensionless entrypoint, which vulture does not scan.
+from shared.entitlement_census import run_census as _census_run_census  # noqa: E402
+
+_ = _census_run_census
