@@ -111,7 +111,9 @@ class TestOnlyAnthropicServesWitnessTheSubscription:
         verdict, _ = _run(tmp_path, transcript=[json.dumps(rec)])
         assert verdict == "no_evidence", f"{model!r} must not witness the Claude subscription"
 
-    def test_anthropic_serve_remains_passive_evidence_for_existing_routes(self, tmp_path: Path) -> None:
+    def test_anthropic_serve_remains_passive_evidence_for_existing_routes(
+        self, tmp_path: Path
+    ) -> None:
         verdict, ev = _run(tmp_path, transcript=[_assistant(NOW - timedelta(minutes=1))])
         assert verdict == "served"
         assert ev.source == "session-transcript"

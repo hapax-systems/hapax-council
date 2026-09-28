@@ -209,9 +209,7 @@ class TestEachRouteUsesItsOwnFamily:
         by_route = obs.evidence_by_route(found, ROUTES)
         assert by_route == dict.fromkeys(ROUTES)
 
-    def test_main_mixed_family_records_keep_interactive_held(
-        self, tmp_path: Path, capsys
-    ) -> None:
+    def test_main_mixed_family_records_keep_interactive_held(self, tmp_path: Path, capsys) -> None:
         """Review finding: every regression test composed observe_all/evidence_by_route/mint by
         hand, so main() could stop passing route-specific evidence and stay green. This runs the
         deployed entry point on the interleaving case and reads its JSON."""
