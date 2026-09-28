@@ -2299,6 +2299,7 @@ MIN_ELAPSED_PCT_TO_JUDGE = 20.0
 UNDERUSE_PACE_RATIO = 0.5
 UNDERUSE_CAPACITY_PCT = 5.0
 PROVIDER_CALLS_STREAM = "provider-calls"
+PROVIDER_CALLS_SOURCE_TASK = "capability-envelope-direct-api-channel-20260925"
 
 TREND_WINDOW = timedelta(days=7)
 DEMAND_WINDOW = timedelta(hours=24)
@@ -2711,7 +2712,10 @@ def utilization_for_row(
             **base,
             "basis": "none",
             "underuse": None,
-            "reason": "provider-calls ledger unreadable or absent",
+            "reason": (
+                "provider-calls stream absent or unreadable; declared API channel evidence "
+                f"unavailable (source: {PROVIDER_CALLS_SOURCE_TASK})"
+            ),
         }
     assert decl.renewal_day is not None  # EntitlementDecl validates this pairing.
     start, end = _billing_period(now, decl.renewal_day)

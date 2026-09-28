@@ -6,8 +6,10 @@ from pathlib import Path
 
 from shared.durable_jsonl_sink import DurableJsonlSink
 from shared.entitlement_census import (
+    ENTITLEMENT_CENSUS_CONFIG,
     CensusConfig,
     HostHoldings,
+    load_census_config,
     read_provider_calls,
     render_markdown,
     render_view,
@@ -87,6 +89,32 @@ def test_unreadable_or_missing_call_stream_is_unjudged_not_zero(tmp_path: Path):
     broken = tmp_path / "broken.jsonl"
     broken.write_text('{"bad":true}\n')
     assert read_provider_calls(broken) is None
+
+
+def test_declared_catalogue_names_the_unavailable_channel_for_featherless_and_verboo():
+    config = load_census_config(ENTITLEMENT_CENSUS_CONFIG)
+    config = config.model_copy(update={"serving_endpoints": ()})
+    run = run_census(
+        config,
+        now=NOW,
+        holdings=[],
+        registry={},
+        inventory_dispositions={},
+        ledger=None,
+        prior_view=None,
+        resolve_secret=lambda _: None,
+        http_get=lambda *_: (_ for _ in ()).throw(AssertionError("no network")),
+        read_home_file=lambda _: None,
+        provider_calls=None,
+    )
+    declared = {row.entitlement_id: row for row in run.rows}
+    assert set(declared) == {item.entitlement_id for item in config.entitlements}
+    assert all(row.utilization is not None for row in declared.values())
+    for name in ("featherless-request-pricing", "verboo-code-ultra"):
+        utilization = declared[name].utilization
+        assert utilization["basis"] == "none"
+        assert utilization["underuse"] is None
+        assert "capability-envelope-direct-api-channel-20260925" in utilization["reason"]
 
 
 def test_readable_empty_stream_reports_zero_recorded_calls_in_paid_period(tmp_path: Path):
