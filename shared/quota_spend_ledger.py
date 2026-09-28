@@ -1891,12 +1891,7 @@ def claude_interactive_credential_admitted(
 def claude_subscription_wall_observed_at(
     fields: Mapping[str, str], *, now: datetime
 ) -> datetime | None:
-    """Validate the controlled producer's binding, never a lane/model inference.
-
-    Reset predictions cannot authenticate a wall or override a newer serve.
-    The existing resetless-wall lifetime bounds this negative observation.
-    This validates provenance; actual launch additionally matches the credential.
-    """
+    """Validate controlled wall provenance; launch checks credential match separately."""
     if (
         fields.get("status") != "quota_blocked"
         or fields.get("provider") != "anthropic-claude-subscription"

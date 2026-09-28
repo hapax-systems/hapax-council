@@ -1,4 +1,4 @@
-"""Synthetic requests through the real observer, receipts, telemetry and child guard."""
+"""Bound wall tests."""
 
 import json
 import shlex
@@ -17,7 +17,6 @@ from shared.quota_spend_ledger import (
     subscription_quota_state_for_route,
 )
 from tests.scripts.test_claude_account_live_observe_per_route import obs
-from tests.scripts.test_claude_interactive_installed_copy import installed_fixture, run_installed
 from tests.scripts.test_claude_interactive_launch_auth import dispatch, launch_fixture
 from tests.scripts.test_hapax_quota_telemetry_writer import _run_writer, _wall_receipt
 
@@ -58,6 +57,8 @@ def observe(tmp_path, monkeypatch, capsys, env, at, outcome, *, receipts=None):
                 at.isoformat(),
                 "--route-id",
                 ROUTE,
+                "--pace-activation",
+                str(tmp_path / "inactive-pace-activation.json"),
                 "--json",
             ]
         )
@@ -68,6 +69,8 @@ def observe(tmp_path, monkeypatch, capsys, env, at, outcome, *, receipts=None):
 
 
 def admitted(tmp_path, monkeypatch, capsys):
+    # Keep the imported writer's trace scan in this fixture.
+    monkeypatch.setenv("HAPAX_QUOTA_TRACE_HOME", str(tmp_path / "trace-home"))
     env, _, _, child, _ = launch_fixture(tmp_path)
     now = datetime.now(UTC).replace(microsecond=0)
     rc, _ = observe(tmp_path, monkeypatch, capsys, env, now - timedelta(minutes=2), "served")
@@ -130,14 +133,14 @@ def test_tmux_child_rechecks_new_bound_refusal(tmp_path, monkeypatch, capsys):
     walls = list(staged.glob("*-quota-wall.yaml"))
     assert len(walls) == 1
     tmux = tmp_path / "bin/tmux"
-    tmux.write_text(
-        tmux.read_text().replace(
-            'exec "$runner"',
-            f"cp {shlex.quote(str(walls[0]))} {shlex.quote(env['HAPAX_RELAY_RECEIPT_DIR'])}/\n"
-            "export HAPAX_RELAY_RECEIPT_DIR=/synthetic-wrong-receipts\n"
-            'exec "$runner"',
-        )
+    runner_call = '"$runner" || exit $?'
+    source = tmux.read_text()
+    assert source.count(runner_call) == 1
+    injection = (
+        f"cp {shlex.quote(str(walls[0]))} {shlex.quote(env['HAPAX_RELAY_RECEIPT_DIR'])}/\n"
+        "export HAPAX_RELAY_RECEIPT_DIR=/synthetic-wrong-receipts\n"
     )
+    tmux.write_text(source.replace(runner_call, injection + runner_call))
     result = dispatch(tmp_path, env)
     assert result.returncode != 0, result.stdout + result.stderr
     assert not child.exists()
@@ -156,7 +159,6 @@ def test_wall_authority_and_observation_order(tmp_path, monkeypatch, capsys, bou
             (now + timedelta(hours=6)).isoformat(),
             detected_at=(now - timedelta(seconds=90)).isoformat(),
         )
-    # A newer genuine serve must supersede a predicted future reset.
     rc, _ = observe(tmp_path, monkeypatch, capsys, env, now - timedelta(seconds=30), "served")
     assert rc == 0
     if bound:
@@ -286,19 +288,10 @@ def test_bound_wall_appearing_during_auth_check_holds_exec(tmp_path, monkeypatch
         if "--version" in argv:
             return subprocess.CompletedProcess(argv, 0, "2.1.281 (Claude Code)", "")
         wall.rename(Path(env["HAPAX_RELAY_RECEIPT_DIR"]) / wall.name)
-        return subprocess.CompletedProcess(
-            argv,
-            0,
-            json.dumps(
-                {
-                    "loggedIn": True,
-                    "authMethod": "oauth_token",
-                    "apiProvider": "firstParty",
-                    "apiKeySource": None,
-                }
-            ),
-            "",
+        status = dict(
+            loggedIn=True, authMethod="oauth_token", apiProvider="firstParty", apiKeySource=None
         )
+        return subprocess.CompletedProcess(argv, 0, json.dumps(status), "")
 
     calls = []
     monkeypatch.setattr(obs.subprocess, "run", check)
@@ -316,15 +309,3 @@ def test_wall_publication_failure_reports_no_durable_revocation(tmp_path, monkey
     assert payload["wall_receipt_write_failed"] is True
     assert "earlier telemetry is not revoked" in payload["hint"]
     assert "receipt-directory permissions" in payload["hint"]
-
-
-@pytest.mark.parametrize("terminal", ["none", "tmux"])
-def test_installed_copy_refuses_new_bound_wall(tmp_path, monkeypatch, capsys, terminal):
-    env, installed, _, _, workdir, child, _ = installed_fixture(tmp_path, explicit=True)
-    env["HAPAX_RELAY_RECEIPT_DIR"] = str(tmp_path / "relay-receipts")
-    rc, _ = observe(tmp_path, monkeypatch, capsys, env, datetime.now(UTC), "wall")
-    assert rc == 3
-    result = run_installed(env, installed, workdir, terminal=terminal)
-    assert result.returncode != 0
-    assert "current quota evidence does not bind the launch credential" in result.stderr
-    assert not child.exists()

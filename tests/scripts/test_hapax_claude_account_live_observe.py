@@ -634,10 +634,17 @@ def test_a_quantity_probe_that_hits_a_wall_holds_the_route(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
-    wall = obs.Observation("wall", NOW, "active-probe", "provider-quota-refusal")
+    wall = obs.Observation(
+        "wall",
+        NOW,
+        "active-probe",
+        "provider-quota-refusal",
+        credential_binding=obs._probe_credential_binding("synthetic-subscription-token", NOW),
+    )
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=wall)
     assert calls == [NOW]
     assert (payload["verdict"], rc) == ("walled", 3)
+    assert Path(payload["wall_receipt"]).is_file()
     assert minted(tmp_path) == []
 
 
