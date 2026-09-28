@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from shared.research_desk import (
     ALLOWED_URI_SCHEMES,
     MAX_CITATIONS,
     MAX_LIST_LIMIT,
+    MAX_MARKDOWN_BYTES,
     DeliveryReceipt,
     ResearchDeskConfig,
     ResearchDeskError,
@@ -23,6 +25,7 @@ from shared.research_desk import (
     list_open_requests,
     neutralize_markdown,
     normalize_citations,
+    render_drop,
     stamp_request_row,
     validate_request_id,
 )
@@ -240,11 +243,6 @@ def test_request_with_control_character_is_malformed(desk: ResearchDeskConfig) -
     assert [row.reason_code for row in malformed] == ["request_control_character"]
 
 
-# --------------------------------------------------------------------------- #
-# Citations
-# --------------------------------------------------------------------------- #
-
-
 def test_citations_accept_strings_and_objects() -> None:
     assert normalize_citations(["https://example.org/a"]) == (
         {"url": "https://example.org/a", "title": ""},
@@ -289,9 +287,40 @@ def test_citation_url_with_newline_cannot_add_drop_frontmatter(desk: ResearchDes
     assert not list(desk.lanebus_dir.glob("*.md"))
 
 
-# --------------------------------------------------------------------------- #
-# Delivery
-# --------------------------------------------------------------------------- #
+def test_multiline_title_round_trips_through_drop_frontmatter(desk: ResearchDeskConfig) -> None:
+    request = replace(get_request(desk, write_request(desk, "req-lines").stem), title="one\ntwo")
+    drop = render_drop(
+        request=request,
+        lane="cx-blue",
+        markdown="answer",
+        citations=(),
+        model_notes="",
+        receipt_id="rd-lines",
+        delivered_at="2026-09-28T19:00:00Z",
+    )
+    assert parse_frontmatter_with_diagnostics(drop).frontmatter["request_title"] == "one\ntwo"
+
+
+def test_citation_title_cannot_add_active_markdown(desk: ResearchDeskConfig) -> None:
+    request = get_request(desk, write_request(desk, "req-cite-title").stem)
+    title = "![beacon](https://tracker.example/x) [run](javascript:alert(1)) <img src=x>"
+    drop = render_drop(
+        request=request,
+        lane="cx-blue",
+        markdown="answer",
+        citations=(
+            {"url": "https://example.org/a)![x](https://tracker.example/y)", "title": title},
+        ),
+        model_notes="",
+        receipt_id="rd-title",
+        delivered_at="2026-09-28T19:00:00Z",
+    )
+    body = parse_frontmatter_with_diagnostics(drop).body
+    assert "&lt;img" in body
+    assert "\\![beacon]" not in body
+    assert "\\!\\[beacon\\]" in body
+    assert "[run](javascript:" not in body
+    assert ")![x](https://tracker" not in body
 
 
 def test_delivery_writes_a_labelled_drop_and_stamps_the_row(desk: ResearchDeskConfig) -> None:
@@ -348,60 +377,21 @@ def test_delivery_preserves_every_other_row_field(desk: ResearchDeskConfig) -> N
     assert parse_frontmatter_with_diagnostics(path).body.strip() == "Full brief lives here."
 
 
-def test_delivery_is_idempotent_and_files_no_second_drop(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-twice")
-    first = deliver_result(desk, request_id="req-twice", markdown="first answer")
-    second = deliver_result(desk, request_id="req-twice", markdown="a different answer")
-
-    assert second.duplicate is True
-    assert second.receipt_id == first.receipt_id
-    drops = sorted(desk.lanebus_dir.glob("*.md"))
-    assert len(drops) == 1
-    assert "first answer" in drops[0].read_text(encoding="utf-8")
-
-
-def test_delivery_recovers_drop_after_stamp_failure(
+def test_retry_refuses_an_unstamped_drop_without_creating_another(
     desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_request(desk, "req-interrupted")
-    real_stamp = stamp_request_row
 
     def fail_stamp(*args: object, **kwargs: object) -> None:
         raise OSError("simulated stamp failure")
 
     monkeypatch.setattr("shared.research_desk.stamp_request_row", fail_stamp)
     with pytest.raises(OSError, match="simulated stamp failure"):
-        deliver_result(
-            desk,
-            request_id="req-interrupted",
-            markdown="first answer",
-            now=datetime(2026, 9, 16, 4, 5, 6, tzinfo=UTC),
-        )
-    monkeypatch.setattr("shared.research_desk.stamp_request_row", real_stamp)
-    first_drop = next(desk.lanebus_dir.glob("*.md"))
-    first_receipt = parse_frontmatter_with_diagnostics(first_drop).frontmatter["receipt_id"]
-    retry = deliver_result(
-        desk,
-        request_id="req-interrupted",
-        markdown="second answer",
-        now=datetime(2026, 9, 16, 4, 5, 7, tzinfo=UTC),
-    )
-    assert [first_drop] == list(desk.lanebus_dir.glob("*.md"))
-    assert retry.receipt_id == first_receipt
-    assert parse_frontmatter_with_diagnostics(first_drop).body.find("first answer") >= 0
-    assert get_request(desk, "req-interrupted").frontmatter["delivery_receipt"] == first_receipt
-
-
-def test_delivery_refuses_an_unverifiable_prior_drop(desk: ResearchDeskConfig) -> None:
-    write_request(desk, "req-invalid-prior")
-    desk.lanebus_dir.mkdir(parents=True, exist_ok=True)
-    path = desk.lanebus_dir / "20260916T040506Z-perplexity-desk-req-invalid-prior.md"
-    path.write_text("---\nrequest_id: req-invalid-prior\n---\npartial\n", encoding="utf-8")
+        deliver_result(desk, request_id="req-interrupted", markdown="first answer")
     with pytest.raises(ResearchDeskError) as exc:
-        deliver_result(desk, request_id="req-invalid-prior", markdown="answer")
-    assert exc.value.reason_code == "delivery_drop_unverifiable"
+        deliver_result(desk, request_id="req-interrupted", markdown="second answer")
+    assert exc.value.reason_code == "delivery_drop_unstamped"
     assert len(list(desk.lanebus_dir.glob("*.md"))) == 1
-    assert get_request(desk, "req-invalid-prior").status == "offered"
 
 
 @pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]"])
@@ -470,11 +460,6 @@ def test_a_markdown_rule_in_the_answer_cannot_forge_the_drop_frontmatter(
     assert drop.ok
     assert drop.frontmatter["source"] == "perplexity-computer"
     assert drop.frontmatter["content_trust"] == "untrusted_external"
-
-
-# --------------------------------------------------------------------------- #
-# Row stamping in isolation
-# --------------------------------------------------------------------------- #
 
 
 def test_stamp_refuses_a_symlinked_row(desk: ResearchDeskConfig) -> None:
@@ -720,3 +705,123 @@ def test_a_destination_with_balanced_parens_is_not_truncated() -> None:
     result = neutralize_markdown("[wiki](https://en.wikipedia.org/wiki/Foo_(bar))")
     assert result.links == 0
     assert result.markdown == "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))"
+
+
+def test_delivery_refuses_a_request_that_is_not_open(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-closed", status="refused")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-closed", markdown="answer")
+    assert exc.value.reason_code == "request_not_open"
+
+
+def test_delivery_refuses_a_delivered_row_with_no_receipt(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-orphan", status="delivered")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-orphan", markdown="answer")
+    assert exc.value.reason_code == "request_already_delivered"
+
+
+def test_delivery_refuses_an_unknown_request(desk: ResearchDeskConfig) -> None:
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="ghost", markdown="answer")
+    assert exc.value.reason_code == "request_not_found"
+
+
+def test_delivery_refuses_empty_markdown(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-empty")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-empty", markdown="   \n  ")
+    assert exc.value.reason_code == "markdown_empty"
+
+
+def test_delivery_refuses_oversized_markdown(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-big")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-big", markdown="x" * (MAX_MARKDOWN_BYTES + 1))
+    assert exc.value.reason_code == "payload_too_large"
+    assert not list(desk.lanebus_dir.glob("*.md"))
+
+
+def test_delivery_refuses_control_characters_in_the_answer(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-ctrl")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-ctrl", markdown="fine\x00not fine")
+    assert exc.value.reason_code == "payload_control_characters"
+
+
+def test_delivery_with_no_citations_emits_an_empty_list(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-nocite")
+    receipt = deliver_result(desk, request_id="req-nocite", markdown="answer")
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.frontmatter["citations"] == []
+
+
+def test_quotes_in_a_title_do_not_break_the_drop_frontmatter(desk: ResearchDeskConfig) -> None:
+    path = write_request(desk, "req-quote")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'title: "req-quote title"', "title: 'a \"quoted\" title\\'"
+        ),
+        encoding="utf-8",
+    )
+    receipt = deliver_result(desk, request_id="req-quote", markdown="answer")
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.ok, drop.error_message
+    assert '"quoted"' in drop.frontmatter["request_title"]
+
+
+def test_stamp_refuses_a_row_with_no_status_line(desk: ResearchDeskConfig) -> None:
+    path = desk.requests_dir / "no-status.md"
+    path.write_text("---\nkind: research_request\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(ResearchDeskError) as exc:
+        stamp_request_row(
+            path, receipt_id="rd-x", delivered_at="now", drop_relpath="a.md", citation_count=0
+        )
+    assert exc.value.reason_code == "request_malformed"
+    assert "status" in exc.value.repair_action
+
+
+def test_stamp_replaces_rather_than_duplicates_an_existing_delivery_field(
+    desk: ResearchDeskConfig,
+) -> None:
+    path = write_request(desk, "req-restamp", extra="delivered_at: 1999-01-01T00:00:00Z\n")
+    stamp_request_row(
+        path,
+        receipt_id="rd-new",
+        delivered_at="2026-09-16T00:00:00Z",
+        drop_relpath="drop.md",
+        citation_count=2,
+    )
+    text = path.read_text(encoding="utf-8")
+    assert text.count("delivered_at:") == 1
+    assert parse_frontmatter_with_diagnostics(text).frontmatter["delivered_at"] == (
+        "2026-09-16T00:00:00Z"
+    )
+
+
+def test_render_drop_addresses_the_configured_lane(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-lane")
+    request = get_request(desk, "req-lane")
+    body = render_drop(
+        request=request,
+        lane="theta",
+        markdown="answer",
+        citations=(),
+        model_notes="",
+        receipt_id="rd-1",
+        delivered_at="2026-09-16T00:00:00Z",
+    )
+    assert parse_frontmatter_with_diagnostics(body).frontmatter["to"] == "theta"
+
+
+def test_a_clean_answer_carries_zero_withheld_counts_and_no_banner(
+    desk: ResearchDeskConfig,
+) -> None:
+    write_request(desk, "req-clean")
+    receipt = deliver_result(
+        desk, request_id="req-clean", markdown="Plain prose with [a source](https://example.org)."
+    )
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.frontmatter["withheld_images"] == 0
+    assert drop.frontmatter["withheld_links"] == 0
+    assert "Active content removed:" not in drop.body
