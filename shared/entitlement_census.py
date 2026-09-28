@@ -63,7 +63,7 @@ from shared.capability_surface_delta import (
     SurfaceKind,
     build_surface_delta,
 )
-from shared.durable_jsonl_sink import DurableJsonlSink
+from shared.durable_jsonl_sink import DurableJsonlSink, validate_chain
 from shared.entitlement_capability import EntitlementShape, classify_entitlement
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -2166,6 +2166,7 @@ def run_census(
     resolve_secret: Callable[[str], str | None],
     http_get: Callable[[str, dict[str, str], float], HttpResponse],
     read_home_file: Callable[[str], bytes | None],
+    provider_calls: Sequence[Mapping[str, Any]] | None = None,
     scout_report: Mapping[str, Any] | None = None,
     gpu_probe: Callable[[str], tuple[bool, list[str]]] | None = None,
     deadline: float | None = None,
@@ -2240,15 +2241,8 @@ def run_census(
         )
         for decl in config.entitlements
     ]
-    # Until the utilization slice supplies a measured basis, every declared row says unjudged.
-    # Missing per-call evidence never means zero calls or healthy utilization.
     for decl, row in zip(config.entitlements, rows, strict=True):
-        row.utilization = {
-            "basis": "none",
-            "monthly_cost_usd": decl.monthly_cost_usd,
-            "underuse": None,
-            "reason": "no utilization reading",
-        }
+        row.utilization = utilization_for_row(decl, row, now=now, provider_calls=provider_calls)
     serving = [
         _serving_row(
             ep,
@@ -2304,6 +2298,8 @@ PRE_SINK_HISTORY_FILE = "history.jsonl"
 MIN_ELAPSED_PCT_TO_JUDGE = 20.0
 UNDERUSE_PACE_RATIO = 0.5
 UNDERUSE_CAPACITY_PCT = 5.0
+PROVIDER_CALLS_STREAM = "provider-calls"
+PROVIDER_CALLS_SOURCE_TASK = "capability-envelope-direct-api-channel-20260925"
 
 TREND_WINDOW = timedelta(days=7)
 DEMAND_WINDOW = timedelta(hours=24)
@@ -2595,6 +2591,246 @@ def compute_trend(
 # window pace, then the per-call ledger, then nothing. It never defaults to fine.
 
 
+def read_provider_calls(path: Path) -> list[dict[str, Any]] | None:
+    """Read only named/count fields from a validated durable stream.
+
+    ``None`` means absent, unreadable, or corrupt: it can never become zero calls. An
+    existing, valid, empty stream is a readable zero-recorded-call observation.
+    """
+    if not path.is_file() or not validate_chain(path, stream_id=PROVIDER_CALLS_STREAM).valid:
+        return None
+    allowed = {
+        "call_id",
+        "phase",
+        "provider",
+        "entitlement_id",
+        "started_at",
+        "ended_at",
+        "status",
+        "http_status",
+        "tokens_in",
+        "tokens_out",
+    }
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8") as stream:
+            for line in stream:
+                envelope = json.loads(line)
+                payload = envelope.get("payload")
+                if envelope.get("data_class") != "provider_call" or not isinstance(payload, dict):
+                    return None
+                if not all(
+                    isinstance(payload.get(key), str) and payload[key]
+                    for key in ("call_id", "phase", "provider", "entitlement_id", "started_at")
+                ) or payload["phase"] not in {"attempted", "final"}:
+                    return None
+                if _instant(payload["started_at"]) is None:
+                    return None
+                rows.append({key: payload.get(key) for key in allowed})
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+    return rows
+
+
+def _billing_period(now: datetime, day: int) -> tuple[datetime, datetime]:
+    """The declared monthly renewal boundary, with day <= 28 by declaration."""
+    year, month = now.year, now.month
+    if now.day < day:
+        year, month = (year - 1, 12) if month == 1 else (year, month - 1)
+    start = now.replace(year=year, month=month, day=day, hour=0, minute=0, second=0, microsecond=0)
+    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    end = start.replace(year=next_year, month=next_month)
+    return start, end
+
+
+def _window_utilization(row: CensusRow, *, now: datetime) -> dict[str, Any] | None:
+    candidates: list[tuple[int, float, dict[str, Any]]] = []
+    for measurement in row.measurements:
+        if measurement.get("unit") != "percent_used":
+            continue
+        window = measurement.get("window")
+        match = re.fullmatch(r"([1-9][0-9]*)m", window) if isinstance(window, str) else None
+        reset = _instant(measurement.get("resets_at"))
+        fresh_until = _instant(measurement.get("measurement_fresh_until"))
+        observed = _instant(measurement.get("observed_at"))
+        used = _number(measurement.get("quantity"))
+        if (
+            match is None
+            or reset is None
+            or fresh_until is None
+            or fresh_until < now
+            or reset <= now
+            or (observed is not None and observed > now)
+            or used is None
+            or not 0 <= used <= 100
+        ):
+            continue
+        minutes = int(match.group(1))
+        elapsed = (now - (reset - timedelta(minutes=minutes))).total_seconds()
+        if not 0 < elapsed <= minutes * 60:
+            continue
+        elapsed_pct = elapsed / (minutes * 60) * 100
+        if elapsed_pct < MIN_ELAPSED_PCT_TO_JUDGE:
+            continue
+        pace_ratio = used / elapsed_pct
+        candidates.append(
+            (
+                minutes,
+                elapsed_pct,
+                {
+                    "basis": "window_pace",
+                    "capacity_id": measurement.get("capacity_id"),
+                    "used_pct": used,
+                    "elapsed_pct": round(elapsed_pct, 3),
+                    "pace_ratio": round(pace_ratio, 4),
+                    "underuse": pace_ratio < UNDERUSE_PACE_RATIO,
+                    "reason": "below half of elapsed-window pace"
+                    if pace_ratio < UNDERUSE_PACE_RATIO
+                    else "window pace observed",
+                },
+            )
+        )
+    return max(candidates, key=lambda item: item[0])[2] if candidates else None
+
+
+def utilization_for_row(
+    decl: EntitlementDecl,
+    row: CensusRow,
+    *,
+    now: datetime,
+    provider_calls: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    """Prefer fresh quota-window pace; otherwise judge declared per-call capacity."""
+    base: dict[str, Any] = {"monthly_cost_usd": decl.monthly_cost_usd}
+    window = _window_utilization(row, now=now)
+    if window is not None:
+        return {**base, **window}
+    if not decl.usage_ledger:
+        return {**base, "basis": "none", "underuse": None, "reason": "no utilization reading"}
+    if provider_calls is None:
+        return {
+            **base,
+            "basis": "none",
+            "underuse": None,
+            "reason": (
+                "provider-calls stream absent or unreadable; declared API channel evidence "
+                f"unavailable (source: {PROVIDER_CALLS_SOURCE_TASK})"
+            ),
+        }
+    assert decl.renewal_day is not None  # EntitlementDecl validates this pairing.
+    start, end = _billing_period(now, decl.renewal_day)
+    elapsed = (now - start).total_seconds()
+    calls: dict[str, dict[str, Mapping[str, Any]]] = {}
+    for record in provider_calls:
+        if record.get("entitlement_id") != decl.entitlement_id:
+            continue
+        if record.get("provider") != decl.provider:
+            return {
+                **base,
+                "basis": "none",
+                "underuse": None,
+                "reason": "provider-call entitlement and provider disagree",
+            }
+        started = _instant(record.get("started_at"))
+        if started is None:
+            return {
+                **base,
+                "basis": "none",
+                "underuse": None,
+                "reason": "provider-calls ledger malformed",
+            }
+        if not start <= started <= now:
+            continue
+        call_id, phase = record.get("call_id"), record.get("phase")
+        if not isinstance(call_id, str) or phase not in {"attempted", "final"}:
+            return {
+                **base,
+                "basis": "none",
+                "underuse": None,
+                "reason": "provider-calls ledger malformed",
+            }
+        pair = calls.setdefault(call_id, {})
+        if phase in pair:
+            return {
+                **base,
+                "basis": "none",
+                "underuse": None,
+                "reason": "duplicate provider-call phase",
+            }
+        pair[phase] = record
+    busy_seconds = 0.0
+    unknown_tokens = 0
+    unknown_duration = 0
+    tokens_in = tokens_out = 0
+    for pair in calls.values():
+        attempted, final = pair.get("attempted"), pair.get("final")
+        if attempted is None:
+            return {
+                **base,
+                "basis": "none",
+                "underuse": None,
+                "reason": "final provider call without attempted row",
+            }
+        if final is None:
+            unknown_tokens += 1
+            unknown_duration += 1
+            continue
+        if final.get("started_at") != attempted.get("started_at"):
+            return {
+                **base,
+                "basis": "none",
+                "underuse": None,
+                "reason": "provider-call pair disagrees on start",
+            }
+        start_at = _instant(attempted.get("started_at"))
+        end_at = _instant(final.get("ended_at"))
+        if start_at is None or end_at is None or end_at < start_at or end_at > now:
+            unknown_duration += 1
+        else:
+            busy_seconds += (end_at - start_at).total_seconds()
+        ins, outs = final.get("tokens_in"), final.get("tokens_out")
+        if (
+            not isinstance(ins, int)
+            or isinstance(ins, bool)
+            or ins < 0
+            or not isinstance(outs, int)
+            or isinstance(outs, bool)
+            or outs < 0
+        ):
+            unknown_tokens += 1
+        else:
+            tokens_in += ins
+            tokens_out += outs
+    result: dict[str, Any] = {
+        **base,
+        "basis": "per_call_ledger",
+        "calls": len(calls),
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "unknown_tokens_calls": unknown_tokens,
+        "period_start": _iso(start),
+        "period_end": _iso(end),
+        "underuse": None,
+    }
+    if elapsed / (end - start).total_seconds() * 100 < MIN_ELAPSED_PCT_TO_JUDGE:
+        result["reason"] = "paid period too early to judge"
+    elif not calls:
+        result.update(underuse=True, reason="zero recorded calls in paid period")
+    elif decl.concurrency_slots is None:
+        result["reason"] = "calls recorded; no pace or slot capacity target"
+    else:
+        used_pct = busy_seconds / (decl.concurrency_slots * elapsed) * 100
+        result["used_pct"] = round(used_pct, 4)
+        if unknown_duration:
+            result["reason"] = "call duration incomplete; slot occupancy unjudged"
+        else:
+            result["underuse"] = used_pct < UNDERUSE_CAPACITY_PCT
+            result["reason"] = (
+                "below 5% of paid slots busy" if result["underuse"] else "slot occupancy observed"
+            )
+    return result
+
+
 def history_record(
     run: CensusRun, *, now: datetime, demand: Mapping[str, Any], witness: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -2658,19 +2894,30 @@ def _underuse(rows: Sequence[CensusRow]) -> list[dict[str, Any]]:
 
 
 def _paid_unjudged(rows: Sequence[CensusRow]) -> list[dict[str, Any]]:
-    """Paid capacity with no usage evidence: named, never folded into a count."""
+    """Paid capacity with no usage judgment, including unknown declared cost."""
     named = [
         {
             "entitlement_id": r.entitlement_id,
             "monthly_cost_usd": r.utilization["monthly_cost_usd"],
-            "reason": r.utilization.get("reason"),
+            "reason": (
+                f"{r.utilization.get('reason')}; monthly cost not declared"
+                if r.utilization.get("monthly_cost_usd") is None
+                else r.utilization.get("reason")
+            ),
         }
         for r in rows
         if r.utilization is not None
         and r.utilization.get("underuse") is None
-        and r.utilization.get("monthly_cost_usd")
+        and r.cost_class in {CostClass.SUBSCRIPTION, CostClass.PREPAID}
     ]
-    return sorted(named, key=lambda u: (-u["monthly_cost_usd"], u["entitlement_id"]))
+    return sorted(
+        named,
+        key=lambda u: (
+            u["monthly_cost_usd"] is None,
+            -(u["monthly_cost_usd"] or 0),
+            u["entitlement_id"],
+        ),
+    )
 
 
 def render_view(run: CensusRun, *, now: datetime) -> dict[str, Any]:
@@ -2783,7 +3030,7 @@ def render_markdown(view: Mapping[str, Any]) -> str:
                 "Paid, but utilization cannot be judged from the evidence:",
                 "",
                 *(
-                    f"- {u['entitlement_id']} (${_cell(u['monthly_cost_usd'])}/month): "
+                    f"- {u['entitlement_id']} (${_cell(u['monthly_cost_usd']) if u['monthly_cost_usd'] is not None else 'unknown'}/month): "
                     f"{_cell(u['reason'])}"
                     for u in view.get("paid_unjudged") or []
                 ),

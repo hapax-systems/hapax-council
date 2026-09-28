@@ -5594,3 +5594,10 @@ from shared.entitlement_census import (
 )
 
 _ = (_census_load_inventory_dispositions, _census_validate_registry_inventory_join)
+
+# Stage 2's validated provider-call reader is called by the extensionless census CLI.
+from shared.entitlement_census import (
+    read_provider_calls as _census_read_provider_calls,  # noqa: E402
+)
+
+_ = _census_read_provider_calls

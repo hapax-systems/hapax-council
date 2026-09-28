@@ -163,14 +163,55 @@ def test_all_hosts_reachable_exits_0(cli, tmp_path: Path) -> None:
     assert cli.main(_argv(paths, "--no-intake")) == 0
 
 
-def test_paid_call_ledger_remains_unjudged_until_utilization_stage(cli, tmp_path: Path) -> None:
+def test_paid_call_ledger_is_unjudged_when_stream_absent(cli, tmp_path: Path) -> None:
     paths = _files(tmp_path, remote=False)
     config = json.loads(paths["config"].read_text(encoding="utf-8"))
     config["entitlements"][0].update(
         {"usage_ledger": True, "renewal_day": 19, "monthly_cost_usd": 50}
     )
     paths["config"].write_text(json.dumps(config), encoding="utf-8")
-    assert cli.main(_argv(paths, "--dry-run", "--no-intake")) == 0
+    assert cli.main(_argv(paths, "--no-intake", "--now", "2026-09-28T12:00:00Z")) == 0
+    view = json.loads((paths["out"] / "view.json").read_text(encoding="utf-8"))
+    assert view["rows"][0]["utilization"]["underuse"] is None
+    assert view["paid_unjudged"][0]["entitlement_id"] == "featherless"
+
+
+def test_cli_reads_provider_call_stream_into_the_view(cli, tmp_path: Path) -> None:
+    from shared.durable_jsonl_sink import DurableJsonlSink
+
+    paths = _files(tmp_path, remote=False)
+    config = json.loads(paths["config"].read_text(encoding="utf-8"))
+    config["entitlements"][0].update(
+        {"usage_ledger": True, "renewal_day": 19, "monthly_cost_usd": 200}
+    )
+    paths["config"].write_text(json.dumps(config), encoding="utf-8")
+    sink = DurableJsonlSink(cli.SINK_ROOT)
+    sink.append(
+        stream_id="provider-calls",
+        data_class="provider_call",
+        source_receipt_ref="fixture-run",
+        payload={
+            "provider": "featherless",
+            "entitlement_id": "featherless",
+            "route_id": "featherless.route",
+            "call_id": "fixture-call",
+            "phase": "attempted",
+            "started_at": "2026-09-25T00:00:00Z",
+            "ended_at": None,
+            "status": None,
+            "http_status": None,
+            "tokens_in": None,
+            "tokens_out": None,
+            "model": "fixture-model",
+        },
+    )
+    assert cli.main(_argv(paths, "--no-intake", "--now", "2026-09-28T12:00:00Z")) == 0
+    view = json.loads((paths["out"] / "view.json").read_text(encoding="utf-8"))
+    utilization = view["rows"][0]["utilization"]
+    assert utilization["basis"] == "per_call_ledger"
+    assert utilization["calls"] == 1
+    assert utilization["unknown_tokens_calls"] == 1
+    assert utilization["underuse"] is None
 
 
 def test_intake_runs_only_without_no_intake_and_its_failure_exits_1(cli, tmp_path: Path) -> None:
