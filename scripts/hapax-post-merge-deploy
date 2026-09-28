@@ -37,8 +37,6 @@
 #       plus known stale local route-dropin cleanup for units that are being
 #       sourceized out of a temporary worktree override.
 #   systemd/units/*.md              → source/rationale docs only; no direct deploy
-#   systemd/units/host-recovery/appendix/** and its installer
-#                                  → appendix-only measured root policy install
 #   systemd/user-preset.d/*.preset → cp user preset
 #   systemd/overrides/**           → source/rationale docs only; no direct deploy
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
@@ -695,7 +693,7 @@ else
     FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APPENDIX_HOST_POLICY=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
 declare -A OOM_PACKAGE_PATHS=()
 declare -A APCUPSD_PACKAGE_PATHS=()
 GATE_CLOSURE=()
@@ -1110,8 +1108,6 @@ while IFS= read -r f; do
         config/hapax/*.conf)              HAPAX_CONF+=("$f") ;;
         config/wireplumber/scripts/hapax/*.lua) WP_LUA+=("$f") ;;
         config/wireplumber/*.conf)        WP+=("$f") ;;
-        systemd/units/host-recovery/appendix/*|scripts/install-appendix-host-containment)
-            APPENDIX_HOST_POLICY+=("$f") ;;
         systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
             RECOVERY_BUNDLE+=("$f")
             if [ "$(unit_install_scope "$f")" = "system" ]; then
@@ -1678,24 +1674,6 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         exit "$oom_installer_rc"
     fi
     rm -rf "$OOM_STAGE" 2>/dev/null || true
-    DID_ANYTHING=1
-fi
-
-if [ "${#APPENDIX_HOST_POLICY[@]}" -gt 0 ]; then
-    echo "appendix host containment files changed (${#APPENDIX_HOST_POLICY[@]}):"
-    for f in "${APPENDIX_HOST_POLICY[@]}"; do
-        echo "  $f"
-    done
-    if [ "$(hostname -s)" = "hapax-appendix" ]; then
-        deployed_sha="$(git -C "$REPO" rev-parse HEAD)"
-        if [ "$deployed_sha" != "$SHA" ]; then
-            echo "hapax-post-merge-deploy: appendix containment source $deployed_sha differs from requested $SHA; next action: activate the requested release, then retry deployment" >&2
-            exit 1
-        fi
-        "$REPO/scripts/install-appendix-host-containment" --source "$REPO" --install
-    else
-        echo "  skipped host-specific appendix policy on $(hostname -s)"
-    fi
     DID_ANYTHING=1
 fi
 

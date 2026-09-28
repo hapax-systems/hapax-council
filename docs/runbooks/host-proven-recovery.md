@@ -11,10 +11,8 @@ On appendix, run `scripts/install-host-recovery --install` from an activated
 source tree. The installer copies the script and four units into stable home
 paths, reloads the user manager, and enables the capture timer, boot restore
 service, and retry timer. `--check` verifies the installed copies and enablement.
-After merge, `hapax-post-merge-deploy` publishes the script, installs the
-auto-enabled user units, and invokes the appendix policy installer only when
-the activated source HEAD matches the requested release SHA. It skips the
-appendix-only root policy on other hosts.
+After merge, `hapax-post-merge-deploy` publishes the script and installs the
+auto-enabled user units.
 The timer records live `hapax-codex-*` and `hapax-claude-*` tmux panes every
 minute. A pane is admitted only with an explicit transcript UUID, a matching
 role and inbox, and a dedicated user cgroup with MemoryHigh=5G,
@@ -55,14 +53,21 @@ names units started, lanes restored, lanes already live, and every failure.
 Invalid manifests are refused and reported. Re-running restore on a complete
 same-boot state is a no-op.
 
-The appendix-specific host containment installer is
-`scripts/install-appendix-host-containment --install`; `--check` reads back its
-root drop-ins and live values. It admits only `hapax-appendix` with measured
-MemTotal in 59–61 GiB. The user tree has a 38G maximum, `system.slice` a 20G
-maximum, leaving over 2G for kernel/unreclaimable memory. The
-`hapax-llama-gptoss` Docker container is capped at 8G RAM/10G total swap.
-A later udev rule wins over CachyOS's 30-zram rule, and the installer triggers
-zram0 and reads back `vm.swappiness=10`. It backs up each replaced root file.
+The appendix root drop-ins, zram override, and Docker limit are owned by
+codex-worktree's P0-1 (#4937/#4951). Their current live values and preimages
+are recorded in the appendix postmortem. Do not use this recovery runbook to
+change those ceilings.
+
+## Choose a reboot proof target
+
+Before any controlled reboot, search the open incident rows for the target
+host and read each matching row. A host with an unresolved reset, hardware,
+storage, or service incident needs a separate seat ruling before it can be a
+proof target. Record the selection and ruling in the proof log. Aperture was
+chosen on 2026-09-28 while its GPU/context and hardware-reset p0 row was open;
+the controlled reboot was followed by a five-second fault boot and an AMD
+data-fabric sync-flood reset. The recovery watcher worked, but that host was
+an unsuitable proof target. Do not repeat the reboot as a recovery test.
 
 ## 2026-09-28 proof
 
@@ -72,14 +77,14 @@ zram0 and reads back `vm.swappiness=10`. It backs up each replaced root file.
   without restarting it. The installed boot service returned success on the
   same boot with all 19 already live. Appendix has **not** been rebooted under
   this new mechanism.
-- Appendix containment was installed at 22:38Z. `--check` read back user
-  MemoryHigh=32G/MemoryMax=38G, system MemoryHigh=16G/MemoryMax=20G,
-  swappiness 10 after a zram change trigger, and Docker 8G/10G.
+- The 22:38Z live containment values and their authority correction are
+  recorded in the postmortem. This P0-2/3 source covers recovery only.
 - Aperture preboot manifest pinned boot
   `4b66a0a7-2e53-442e-ba31-fcda2736b3fc`, with active
   `fleet-review.service` (enabled) and `fleet-review-tailnet.service`
   (static). A controlled reboot changed it to
-  `877be5fc-b7c9-4017-91e0-2bb0d13baacd`. At 22:48:27Z the boot
+  `877be5fc-b7c9-4017-91e0-2bb0d13baacd`, after a five-second fault boot.
+  At 22:48:27Z the boot
   restorer started the missing tailnet proxy; both units then read active,
   and the tailnet review endpoint's `/health` returned `{"status":"ok"}` from
   appendix. Its report reached `lanebus/dev1/20260928T224827Z-host-recovery-aperture-2993.md`
