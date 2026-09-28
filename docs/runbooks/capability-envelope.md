@@ -89,11 +89,13 @@ TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --
 The recipe for a harness is in this script's `LAUNCHES`; the same recipes for the other harnesses in use — opencode,
 grok, agy, codex and kimi — travel with the mutation-check and recipes PR, stacked on this one.
 
-| harness | report (each row claims only what its report shows) | recheck |
+These reports predate the writable-spool fix; none verifies this head.
+
+| harness | historical report | recheck |
 |---|---|---|
-| claude | `frame/harness-import-scrub-20260925/measure/audit-claude.json` (`clean`, 20260925T104357Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json` |
-| vibe | `frame/harness-import-scrub-20260925/measure/audit-vibe.json` (`clean`, 20260925T104411Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness vibe --out /tmp/vibe.json` |
-| muse | `frame/harness-import-scrub-20260925/measure/audit-muse.json` (`clean`, 20260925T104432Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness muse --out /tmp/muse.json` |
+| claude | `frame/harness-import-scrub-20260925/measure/audit-claude.json` (20260925T104357Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json` |
+| vibe | `frame/harness-import-scrub-20260925/measure/audit-vibe.json` (20260925T104411Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness vibe --out /tmp/vibe.json` |
+| muse | `frame/harness-import-scrub-20260925/measure/audit-muse.json` (20260925T104432Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness muse --out /tmp/muse.json` |
 
 Codex, agy, grok and kimi are inventoried in ENCOUNTERED-MACHINERY M153; opencode's default imports are measured in
 the vault at `frame/harness-import-scrub-20260925/HARNESS-IMPORTS.md`. Their **recipes** — the machinery that
