@@ -82,7 +82,7 @@ def _observations(tmp_path: Path, *, transcript=(), headless=()):
 
 
 class TestEachRouteUsesItsOwnFamily:
-    def test_passive_fable_does_not_suppress_missing_opus_probe(
+    def test_unbound_passive_serve_does_not_suppress_subscription_probe(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         """Measured defect: a continuous Fable serve must not suppress the Opus probe."""
@@ -137,15 +137,17 @@ class TestEachRouteUsesItsOwnFamily:
         assert rc == 0
         assert probe_calls == [NOW], "passive Fable evidence must not suppress the Opus probe"
         assert mint_route_evidence["claude.review.opus"].source == "active-probe"
-        assert mint_route_evidence["claude.headless.full"].source == "session-transcript"
-        assert mint_route_evidence["claude.headless.full"].at == passive_at
+        assert mint_route_evidence["claude.headless.full"].source == "active-probe"
+        assert mint_route_evidence["claude.headless.full"].at == NOW
         payload = json.loads(capsys.readouterr().out)
-        assert payload["probe"]["requested_for_routes"] == ["claude.review.opus"]
-        assert payload["probe"]["reason"] == "requested route lacks admissible evidence"
-        assert payload["probe"]["witnessed_routes"] == ["claude.review.opus"]
+        assert payload["probe"]["requested_for_routes"] == list(ROUTES)
+        assert payload["probe"]["reason"] == (
+            "passive records do not bind requests to the subscription account"
+        )
+        assert payload["probe"]["witnessed_routes"] == list(ROUTES)
         assert payload["observed_model_by_route"] == {
             "claude.review.opus": "claude-opus-5",
-            "claude.headless.full": "claude-fable-5-1",
+            "claude.headless.full": "claude-opus-5",
         }
 
     def test_fable_serve_newer_than_opus_serve_still_mints_the_opus_review_route(
@@ -209,7 +211,9 @@ class TestEachRouteUsesItsOwnFamily:
         by_route = obs.evidence_by_route(found, ROUTES)
         assert by_route == dict.fromkeys(ROUTES)
 
-    def test_main_mixed_family_records_keep_interactive_held(self, tmp_path: Path, capsys) -> None:
+    def test_main_unbound_mixed_family_records_cannot_decide_subscription(
+        self, tmp_path: Path, capsys
+    ) -> None:
         """Review finding: every regression test composed observe_all/evidence_by_route/mint by
         hand, so main() could stop passing route-specific evidence and stay green. This runs the
         deployed entry point on the interleaving case and reads its JSON."""
@@ -241,8 +245,6 @@ class TestEachRouteUsesItsOwnFamily:
                 "claude.review.opus",
                 "--route-id",
                 "claude.headless.full",
-                "--route-id",
-                "claude.interactive.full",
                 "--receipt-dir",
                 str(tmp_path / "receipts"),
                 "--no-probe",
@@ -250,14 +252,12 @@ class TestEachRouteUsesItsOwnFamily:
                 "--json",
             ]
         )
-        assert rc == 0
+        assert rc == 4
         payload = json.loads(capsys.readouterr().out)
-        assert payload["verdict"] == "served"
-        assert payload["passive"]["verdict"] == "served"
+        assert payload["verdict"] == "no_evidence"
+        assert payload["passive"]["verdict"] == "walled"
         assert payload["passive"]["subscription_bound"] is False
-        receipts = {item["route_id"]: item for item in payload["receipts"]}
-        assert receipts["claude.interactive.full"]["skipped"] == "no-serve-in-model-family"
-        assert "would_run" in receipts["claude.headless.full"]
+        assert not payload.get("receipts")
 
     def test_evidence_by_route_picks_the_freshest_in_family_not_the_first(
         self, tmp_path: Path
@@ -290,7 +290,7 @@ class TestEachRouteUsesItsOwnFamily:
         assert by_route["claude.review.opus"].get("skipped") == "model-family-mismatch"
         assert "would_run" in by_route["claude.headless.full"]
 
-    def test_observe_and_observe_all_agree_on_passive_input(self, tmp_path: Path) -> None:
+    def test_observe_and_observe_all_agree_on_unbound_passive_input(self, tmp_path: Path) -> None:
         transcript = tmp_path / "session.jsonl"
         transcript.write_text(_served(NOW - timedelta(minutes=1), "claude-opus-5") + "\n")
         kwargs = dict(
@@ -299,7 +299,5 @@ class TestEachRouteUsesItsOwnFamily:
             headless_glob=str(tmp_path / "absent"),
             transcript_glob=str(transcript),
         )
-        verdict, evidence = obs.observe(**kwargs)
-        assert verdict == "served" and evidence.source == "session-transcript"
-        verdict, newest, found = obs.observe_all(**kwargs)
-        assert verdict == "served" and newest is found[0]
+        assert obs.observe(**kwargs) == ("no_evidence", None)
+        assert obs.observe_all(**kwargs) == ("no_evidence", None, [])

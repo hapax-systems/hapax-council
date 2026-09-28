@@ -111,12 +111,10 @@ class TestOnlyAnthropicServesWitnessTheSubscription:
         verdict, _ = _run(tmp_path, transcript=[json.dumps(rec)])
         assert verdict == "no_evidence", f"{model!r} must not witness the Claude subscription"
 
-    def test_anthropic_serve_remains_passive_evidence_for_existing_routes(
-        self, tmp_path: Path
-    ) -> None:
+    def test_anthropic_serve_without_auth_is_not_evidence(self, tmp_path: Path) -> None:
         verdict, ev = _run(tmp_path, transcript=[_assistant(NOW - timedelta(minutes=1))])
-        assert verdict == "served"
-        assert ev.source == "session-transcript"
+        assert verdict == "no_evidence"
+        assert ev is None
 
     def test_haiku_does_not_witness_the_opus_review_route(self, tmp_path: Path) -> None:
         """When the Opus entitlement is exhausted, cheap models keep answering."""
@@ -359,13 +357,15 @@ def _run(tmp_path: Path, *, headless: list[str] = (), transcript: list[str] = ()
 
 
 class TestObservesOnlyServedRequests:
-    def test_passive_transcript_serve_remains_visible(self, tmp_path: Path) -> None:
+    def test_passive_transcript_serve_lacks_auth_binding(self, tmp_path: Path) -> None:
         verdict, ev = _run(tmp_path, transcript=[_assistant(NOW - timedelta(minutes=2))])
-        assert verdict == "served" and ev.source == "session-transcript"
+        assert verdict == "no_evidence"
+        assert ev is None
 
-    def test_passive_headless_serve_remains_visible(self, tmp_path: Path) -> None:
+    def test_passive_headless_serve_lacks_auth_binding(self, tmp_path: Path) -> None:
         verdict, ev = _run(tmp_path, headless=[_result(NOW - timedelta(minutes=3))])
-        assert verdict == "served" and ev.source == "headless-result"
+        assert verdict == "no_evidence"
+        assert ev is None
 
     def test_zero_token_record_is_not_served(self, tmp_path: Path) -> None:
         """A record with no tokens proves nothing was served — that is presence."""
@@ -454,7 +454,7 @@ class TestFailsClosed:
         verdict, _ = _run(tmp_path, transcript=[_assistant(ts), json.dumps(wall)])
         assert verdict == "walled", "an exact timestamp tie must fail closed"
 
-    def test_newer_serve_clears_earlier_wall_for_existing_routes(self, tmp_path: Path) -> None:
+    def test_unbound_serve_cannot_clear_earlier_wall(self, tmp_path: Path) -> None:
         verdict, _ = _run(
             tmp_path,
             headless=[
@@ -467,7 +467,7 @@ class TestFailsClosed:
                 _result(NOW - timedelta(minutes=2)),
             ],
         )
-        assert verdict == "served"
+        assert verdict == "walled"
 
     @pytest.mark.parametrize(
         "text",
@@ -522,7 +522,7 @@ class TestReadsMetadataOnly:
             {"type": "text", "text": "We hit our usage limit yesterday; quota exceeded twice."}
         ]
         verdict, _ = _run(tmp_path, transcript=[json.dumps(record)])
-        assert verdict == "served", "model output must not be scanned for wall markers"
+        assert verdict == "no_evidence", "model output must not be scanned for wall markers"
 
     def test_user_records_are_not_evidence(self, tmp_path: Path) -> None:
         rec = json.dumps(

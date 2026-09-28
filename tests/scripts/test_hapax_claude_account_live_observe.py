@@ -541,10 +541,6 @@ def run_main(monkeypatch, tmp_path: Path, capsys, *extra: str, probe_result=None
             "--max-age-seconds",
             "1800",
             "--json",
-            "--route-id",
-            "claude.review.opus",
-            "--route-id",
-            "claude.headless.full",
             *extra,
         ]
     )
