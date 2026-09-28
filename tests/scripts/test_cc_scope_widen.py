@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -155,6 +156,36 @@ def test_widen_allows_new_file_in_existing_dir(
 
     assert rc == cc_scope_widen.OK
     assert "shared/brand_new_module.py" in _scope_block(note.read_text(encoding="utf-8"))
+
+
+def test_widen_admits_only_exact_registered_external_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    note, _ = _setup(tmp_path, monkeypatch, "demo-task")
+    repo = cc_scope_widen.REPO_ROOT
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+    )
+    registered = tmp_path / "registered-worktree"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", "--detach", str(registered), "HEAD"],
+        check=True,
+        capture_output=True,
+    )
+    unrelated = tmp_path / "unrelated-worktree"
+    unrelated.mkdir()
+    before = note.read_bytes()
+
+    assert cc_scope_widen.widen("demo-task", [str(unrelated)]) == cc_scope_widen.REFUSED
+    assert note.read_bytes() == before
+    assert cc_scope_widen.widen("demo-task", [str(registered / "shared")]) == cc_scope_widen.REFUSED
+    assert note.read_bytes() == before
+    assert cc_scope_widen.widen("demo-task", [str(registered)]) == cc_scope_widen.OK
+    assert str(registered) in _scope_block(note.read_text(encoding="utf-8"))
 
 
 def test_widen_removes_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

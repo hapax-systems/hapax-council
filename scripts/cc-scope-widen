@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -101,7 +102,27 @@ def _surface_ok(item: str) -> bool:
             return True
         if not item.endswith("/") and (target.exists() or target.parent.is_dir()):
             return True
-    return False
+    # A linked checkout may live outside both authored roots. Admit only its
+    # exact path as reported by this repository's worktree registry; a parent,
+    # child, glob, or unrelated external path must not widen scope.
+    candidate = Path(item.rstrip("/")).expanduser()
+    if not candidate.is_absolute() or not candidate.is_dir():
+        return False
+    if any(part in {".", ".."} for part in candidate.parts):
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return f"worktree {candidate}" in result.stdout.splitlines()
 
 
 def widen(task_id: str, additions: list[str], removals: list[str] | None = None) -> int:
