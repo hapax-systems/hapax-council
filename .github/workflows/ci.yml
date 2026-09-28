@@ -810,15 +810,6 @@ jobs:
           # 20 min of silence to the kill — reported as a selector error and a
           # bare exit 1, with the kill never named.
           # Clause (4), merge-group-ci-flakes-shard-selector-and-title-cards-20260902.
-          KILL_SIGNAL=""
-          if [ "$PYTEST_EXIT" -eq 124 ]; then KILL_SIGNAL="SIGTERM (124)"; fi
-          if [ "$PYTEST_EXIT" -eq 137 ]; then KILL_SIGNAL="SIGKILL (137)"; fi
-          # The only test count that survives a kill: pytest -q under xdist prints
-          # one progress character per completed test, and a killed run never
-          # prints its "N passed" summary. Tests with no marker are the in-flight
-          # ones.
-          COMPLETED_MARKERS="$(awk 'match($0, /^[.FEsxX]+/) { total += RLENGTH } END { print total + 0 }' /tmp/pytest-output.txt)"
-          LAST_PROGRESS="$(grep -oE '\[ *[0-9]+%\]' /tmp/pytest-output.txt | tail -1 | tr -dc '0-9' || true)"
           uv run --no-sync python scripts/ci_select_pytest_shard.py \
             --pytest-output /tmp/pytest-output.txt \
             --duration-artifact "$duration_artifact" \
@@ -831,41 +822,17 @@ jobs:
             --event-name "$GITHUB_EVENT_NAME" \
             --require-durations
           DURATION_EXIT=$?
-          if [ "$DURATION_EXIT" -ne 0 ]; then
-            echo "Could not write pytest node duration artifact (exit $DURATION_EXIT)"
-            if [ -z "$KILL_SIGNAL" ]; then
-              exit 1
-            fi
-            echo "The shard was killed, so this run has no measured durations to record; the kill is reported below."
-          fi
-          # pytest exit codes: 0 = all passed, 1 = failures, 2 = usage error,
-          # 3 = internal error, 4 = usage error, 5 = no tests collected.
-          # With conftest.py pytest_sessionfinish (#1318) closing socket hangs,
-          # the timeout wrapper no longer fires on success, so pytest's own exit
-          # code is reliable. The prior grep-for-"failed" parse had a bug:
-          # "xfailed" contains "failed" as a substring, so any PR with xfail
-          # markers (e.g. #1322 chronic-xfails) flagged a false failure.
-          # Trust the exit code directly.
-          if [ "$PYTEST_EXIT" -eq 0 ]; then
-            # Sanity: a success must have a pytest summary line.
-            if grep -qE '\bpassed\b' /tmp/pytest-output.txt; then
-              echo "All tests passed (pytest exit 0)"
-              exit 0
-            fi
-            echo "No test summary found — likely crashed or timed out"
-            exit 1
-          fi
-          if [ "$PYTEST_EXIT" -eq 124 ] || [ "$PYTEST_EXIT" -eq 137 ]; then
-            # SIGTERM (124) or SIGKILL (137) from the ``timeout`` wrapper.
-            echo "killed at the shard timeout after ${COMPLETED_MARKERS} tests; in-flight: the tests that printed no progress marker (${LAST_PROGRESS:-no}% reached before ${KILL_SIGNAL})."
-            echo "This is NOT a test failure: the wrapper (timeout -s KILL 1800 = 30 min) fired while the shard was still running, so no test result was withheld or lost."
-            echo "Last lines before the kill — the in-flight window:"
-            tail -n 5 /tmp/pytest-output.txt || true
-            echo "Clause (6) of merge-group-ci-flakes-shard-selector-and-title-cards-20260902 adds the post-session stack dump that names those threads."
-            exit 1
-          fi
-          echo "Tests failed (pytest exit $PYTEST_EXIT)"
-          exit 1
+          # The classification lives in scripts/ci_classify_shard_exit.sh so that a
+          # test can reach it: inline, it was untested, and its marker count read
+          # interleaved traceback lines as completed tests. It reports a wrapper
+          # kill as a kill — never as a test failure — and names the
+          # duration-artifact failure only when that is the actual cause.
+          # Tolerating it for a killed run is the point: a killed run has no
+          # --durations summary to record.
+          # Clause (4), merge-group-ci-flakes-shard-selector-and-title-cards-20260902.
+          set +e
+          bash scripts/ci_classify_shard_exit.sh "$PYTEST_EXIT" "$DURATION_EXIT" /tmp/pytest-output.txt
+          exit $?
       - name: Upload pytest node duration artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1162,43 +1129,13 @@ jobs:
               -m "not llm" -k "not golden and not goldens" \
               -p no:cacheprovider 2>&1 | tee /tmp/pytest-output.txt
           PYTEST_EXIT=${PIPESTATUS[0]}
-          # Clause (4), merge-group-ci-flakes-shard-selector-and-title-cards-20260902:
-          # a kill is named as a kill. The count that survives a kill is the
-          # progress markers pytest -q prints per completed test; the in-flight
-          # tests are the ones with no marker.
-          KILL_SIGNAL=""
-          if [ "$PYTEST_EXIT" -eq 124 ]; then KILL_SIGNAL="SIGTERM (124)"; fi
-          if [ "$PYTEST_EXIT" -eq 137 ]; then KILL_SIGNAL="SIGKILL (137)"; fi
-          COMPLETED_MARKERS="$(awk 'match($0, /^[.FEsxX]+/) { total += RLENGTH } END { print total + 0 }' /tmp/pytest-output.txt)"
-          LAST_PROGRESS="$(grep -oE '\[ *[0-9]+%\]' /tmp/pytest-output.txt | tail -1 | tr -dc '0-9' || true)"
-          # pytest exit codes: 0 = all passed, 1 = failures, 2 = usage error,
-          # 3 = internal error, 4 = usage error, 5 = no tests collected.
-          # With conftest.py pytest_sessionfinish (#1318) closing socket hangs,
-          # the timeout wrapper no longer fires on success, so pytest's own exit
-          # code is reliable. The prior grep-for-"failed" parse had a bug:
-          # "xfailed" contains "failed" as a substring, so any PR with xfail
-          # markers (e.g. #1322 chronic-xfails) flagged a false failure.
-          # Trust the exit code directly.
-          if [ "$PYTEST_EXIT" -eq 0 ]; then
-            # Sanity: a success must have a pytest summary line.
-            if grep -qE '\bpassed\b' /tmp/pytest-output.txt; then
-              echo "All tests passed (pytest exit 0)"
-              exit 0
-            fi
-            echo "No test summary found — likely crashed or timed out"
-            exit 1
-          fi
-          if [ "$PYTEST_EXIT" -eq 124 ] || [ "$PYTEST_EXIT" -eq 137 ]; then
-            # SIGTERM (124) or SIGKILL (137) from the ``timeout`` wrapper.
-            echo "killed at the shard timeout after ${COMPLETED_MARKERS} tests; in-flight: the tests that printed no progress marker (${LAST_PROGRESS:-no}% reached before ${KILL_SIGNAL})."
-            echo "This is NOT a test failure: the wrapper (timeout -s KILL 1800 = 30 min) fired while the suite was still running."
-            echo "Last lines before the kill — the in-flight window:"
-            tail -n 5 /tmp/pytest-output.txt || true
-            echo "Clause (6) of merge-group-ci-flakes-shard-selector-and-title-cards-20260902 adds the post-session stack dump that names those threads."
-            exit 1
-          fi
-          echo "Tests failed (pytest exit $PYTEST_EXIT)"
-          exit 1
+          # Classification shared with the shard job, and tested there:
+          # scripts/ci_classify_shard_exit.sh. No duration artifact in this job,
+          # so the artifact exit is 0.
+          # Clause (4), merge-group-ci-flakes-shard-selector-and-title-cards-20260902.
+          set +e
+          bash scripts/ci_classify_shard_exit.sh "$PYTEST_EXIT" 0 /tmp/pytest-output.txt
+          exit $?
       - name: Upload Python coverage artifact
         if: always() && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'full'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

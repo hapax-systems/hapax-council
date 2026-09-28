@@ -374,7 +374,8 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(
                     "no pytest duration lines were found and no --selected-units basis "
                     "was given, so the duration artifact has no deterministic split "
-                    "to fall back to"
+                    "to fall back to. Next action: pass --selected-units <file>, the "
+                    "shard's selected units, or restore the duration output."
                 )
             duration_source = _DURATION_SOURCE_SELECTED_UNITS_FALLBACK
             duration_fallback = {
