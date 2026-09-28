@@ -636,6 +636,22 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
 #: A family no observation supports: a dossier carrying it asserts nothing.
 WRITER_FAMILY_UNOBSERVED = "unobserved"
 
+WRITER_FAMILY_ENFORCE_ENV = "HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE"
+
+
+def writer_family_enforcement_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """Enable the unobserved-author hold only for an explicit truthy switch."""
+
+    source = os.environ if environ is None else environ
+    return str(source.get(WRITER_FAMILY_ENFORCE_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enforce",
+    }
+
+
 #: Why a family is what it is. ``observed`` means an execution record named it;
 #: ``fallback`` means none did and the transport map answered instead.
 WRITER_FAMILY_SOURCE_OBSERVED = "observed"
@@ -686,6 +702,10 @@ class ObservedWriterIdentity:
     @property
     def observed(self) -> bool:
         return self.family != WRITER_FAMILY_UNOBSERVED
+
+    @property
+    def source(self) -> str:
+        return WRITER_FAMILY_SOURCE_OBSERVED if self.observed else WRITER_FAMILY_SOURCE_FALLBACK
 
 
 # Stat-only tree signatures: they catch an added AND a rewritten file.
@@ -2771,6 +2791,34 @@ def _live_capacity_evidence(
     }
 
 
+def _observed_family_from_dossier_evidence(
+    dossier: Mapping[str, Any], registry: Mapping[str, Any]
+) -> str | None:
+    lines = dossier.get("writer_family_evidence")
+    if not isinstance(lines, list):
+        return None
+    native = [
+        match
+        for line in lines
+        if isinstance(line, str)
+        if (
+            match := re.fullmatch(
+                r"native session record .+: harness=([^ ]+) provider=([^ ]+) models=.*", line
+            )
+        )
+    ]
+    families = [line for line in lines if isinstance(line, str) and line.startswith("family=")]
+    if len(native) != 1 or len(families) != 1:
+        return None
+    harness, provider = native[0].groups()
+    if dossier.get("writer_family_provider") != (None if provider == "unobserved" else provider):
+        return None
+    declared = registry.get("observed_identity_families") or {}
+    table = declared.get("harnesses" if provider == "unobserved" else "providers") or {}
+    resolved = table.get(harness if provider == "unobserved" else provider)
+    return resolved if isinstance(resolved, str) and families[0] == f"family={resolved}" else None
+
+
 def _dossier_validity_blockers(
     dossier: Mapping[str, Any],
     *,
@@ -3326,6 +3374,15 @@ def _dossier_validity_blockers(
                         if str(line).strip()
                     ]:
                         blockers.append("review_dossier_writer_family_fallback_evidence_missing")
+    if (
+        recorded_writer_family
+        and (
+            dossier.get("writer_family_source") == WRITER_FAMILY_SOURCE_OBSERVED
+            or dossier.get("writer_family_reason") in {"provider_observed", "harness_observed"}
+        )
+        and _observed_family_from_dossier_evidence(dossier, registry) != recorded_writer_family
+    ):
+        blockers.append("review_dossier_writer_family_evidence_mismatch:rerun_review_for_head")
     if recorded_writer_family and recorded_writer_family != WRITER_FAMILY_UNOBSERVED and accepts:
         writer_accepts = sum(1 for r in accepts if str(r.get("family")) == recorded_writer_family)
         if writer_accepts > len(accepts) // 2:

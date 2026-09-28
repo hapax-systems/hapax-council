@@ -27,6 +27,13 @@ Usage::
 Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
 
+The writer's family is OBSERVED (``review_team.observed_writer_identity``): claim
+receipt -> the claim in force when the reviewed head was committed -> that
+session's native record -> provider -> family. Never the lane name, whose
+``lane_families`` default once recorded Sakana Fugu as ``claude``. An
+unobservable author HOLDS (``status: writer_family_unobserved``, no seat), and a
+dossier that records ``unobserved``, or records nothing, is refused.
+
 A family with live wall evidence from ``shared.quota_headroom`` (a spent window
 before its reset, or a live wall) is never seated: the constitution substitutes
 from the other admitted review families, never below the class's diversity
@@ -1432,7 +1439,7 @@ def constitution_inputs(
 
 def constitute_with_substitution(
     team_class: str,
-    writer_family: str,
+    writer_family: str | Sequence[str] | None,
     registry: dict[str, Any],
     inputs: ConstitutionInputs,
     route_blocked_families: dict[str, tuple[str, ...]],
@@ -3186,6 +3193,51 @@ def ensure_head_object(repo_root: Path, head_sha: str, pr_number: int) -> bool:
     return _have()
 
 
+def _pr_head_committed_at(repo_root: Path, head_sha: str, pr_number: int) -> int | None:
+    """The reviewed head's committer time (epoch seconds), or None.
+
+    Consulted only for a multi-claim task, where epoch order is not authorship, so
+    the fetch is paid only where the question is asked.
+    """
+
+    if not ensure_head_object(repo_root, head_sha, pr_number):
+        return None
+    try:
+        shown = subprocess.run(
+            ["git", "show", "-s", "--format=%ct", f"{head_sha}^{{commit}}"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if shown.returncode != 0:
+        return None
+    try:
+        return int(shown.stdout.strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _head_committed_at_for(
+    repo_root: Path,
+    pr_info: Any,
+    task_id: str,
+    identity_roots: review_team.WriterIdentityRoots | None,
+) -> int | None:
+    """The head's commit time when a task has several claims, else None."""
+
+    try:
+        claims = review_team.claim_receipts_for(task_id, identity_roots)
+    except OSError:
+        return None
+    if len(claims) <= 1:
+        return None
+    return _pr_head_committed_at(repo_root, str(pr_info.head_sha), int(pr_info.number))
+
+
 _REL_DISPLAY_SAFE_RE = re.compile(r"[^A-Za-z0-9_./-]")
 _EXCERPT_TOTAL_BYTES = 7_000
 _EXCERPT_SYMBOL_BYTES = 1_200
@@ -3952,6 +4004,7 @@ def review_pr(
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
     route: ListingRoute | None = None,
+    identity_roots: review_team.WriterIdentityRoots | None = None,
 ) -> dict[str, Any]:
     """Constitute (and with ``apply``, dispatch) the review team for one PR.
 
@@ -4018,6 +4071,69 @@ def review_pr(
     outage_witness = inputs.outage_witness
     outage_families = inputs.outage_families
 
+    lenses = review_team.lenses_for_files(pr_info.files, registry)
+    team_class = review_team.strongest_team_class(
+        [review_team.team_class_for(fm, pr_info.files, registry) for _, fm, _ in keyed_matches]
+    )
+    # Native session evidence identifies the author; lane names do not.
+    identities = {
+        _task_id: review_team.observed_writer_identity(
+            _task_id,
+            str(_frontmatter.get("assigned_to") or ""),
+            registry,
+            roots=identity_roots,
+            head_committed_at=_head_committed_at_for(repo_root, pr_info, _task_id, identity_roots),
+        )
+        for _, _frontmatter, _task_id in keyed_matches
+    }
+    observed_families = {identity.family for identity in identities.values() if identity.observed}
+    # A multi-row constitution excludes every observed authoring family.
+    ambiguous_authoring_rows = sorted(observed_families) if len(observed_families) > 1 else []
+    authoring_identity = next(
+        (identity for identity in identities.values() if identity.lane),
+        next(iter(identities.values())),
+    )
+    unobserved = sorted(
+        (identity for identity in identities.values() if not identity.observed),
+        key=lambda identity: identity.task_id,
+    )
+    enforcing = review_team.writer_family_enforcement_enabled()
+    fallback_family = authoring_identity.fallback_family
+    if unobserved and (enforcing or not fallback_family):
+        return {
+            "status": "writer_family_unobserved",
+            "pr": pr_number,
+            "plan": {
+                "pr": pr_number,
+                "task_id": task_ids[0] if len(task_ids) == 1 else task_ids,
+                "head_sha": pr_info.head_sha,
+                "team_class": team_class,
+                "unobserved_writer_family": [
+                    {
+                        "task_id": identity.task_id,
+                        "lane": identity.lane,
+                        "reason": identity.reason,
+                        "evidence": list(identity.evidence),
+                    }
+                    for identity in unobserved
+                ],
+                "ambiguous_authoring_rows": ambiguous_authoring_rows,
+            },
+        }
+    if unobserved:
+        LOG.warning(
+            "PR #%d: writer family unobserved for %s — dispatching on the lane transport "
+            "family (%s); set %s=1 to hold instead",
+            pr_number,
+            ",".join(identity.task_id for identity in unobserved),
+            fallback_family,
+            review_team.WRITER_FAMILY_ENFORCE_ENV,
+        )
+    writer_family = authoring_identity.family if not unobserved else fallback_family
+    constitution_scope = sorted(
+        observed_families
+        | {identity.fallback_family for identity in unobserved if identity.fallback_family}
+    ) or ([writer_family] if writer_family else [])
     if not force:
         fresh_results: list[dict[str, Any]] = []
         fresh_blockers: list[str] = []
@@ -4120,15 +4236,6 @@ def review_pr(
                 " | ".join(fresh_blockers),
             )
 
-    lenses = review_team.lenses_for_files(pr_info.files, registry)
-    team_class = review_team.strongest_team_class(
-        [review_team.team_class_for(fm, pr_info.files, registry) for _, fm, _ in keyed_matches]
-    )
-    assigned_lane = next(
-        (str(fm.get("assigned_to") or "") for _, fm, _ in keyed_matches if fm.get("assigned_to")),
-        "",
-    )
-    writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
     if outage_families:
         LOG.warning(
             "family outage active (%s) — constitution may degrade (never seals)",
@@ -4136,7 +4243,7 @@ def review_pr(
         )
     constitution, substitution, constitution_error = constitute_with_substitution(
         team_class,
-        writer_family,
+        constitution_scope,
         registry,
         inputs,
         effective_route_blocked_families,
@@ -4168,6 +4275,8 @@ def review_pr(
         "team_class": team_class,
         "quorum_required": constitution.quorum_required,
         "writer_family": writer_family,
+        "writer_family_union": constitution_scope,
+        "ambiguous_authoring_rows": ambiguous_authoring_rows,
         "seats": [{"id": seat.id, "family": seat.family} for seat in constitution.seats],
         "lenses": list(lenses),
         "constitution_notes": list(constitution.notes),
@@ -4198,6 +4307,8 @@ def review_pr(
         team_class=team_class,
         constitution=constitution,
         writer_family=writer_family,
+        identities=identities,
+        ambiguous_authoring_rows=ambiguous_authoring_rows,
         substitution=substitution,
         outage_witness=outage_witness,
         effective_route_blocked_families=effective_route_blocked_families,
@@ -4225,6 +4336,8 @@ def _apply_review(
     team_class: str,
     constitution: review_team.Constitution,
     writer_family: str,
+    identities: dict[str, review_team.ObservedWriterIdentity],
+    ambiguous_authoring_rows: list[str],
     substitution: dict[str, Any],
     outage_witness: dict[str, str],
     effective_route_blocked_families: dict[str, tuple[str, ...]],
@@ -4380,9 +4493,10 @@ def _apply_review(
     comment_bodies: list[str] = []
     for target_note_path, target_frontmatter, target_task_id in keyed_matches:
         target_dossier_path = review_team.review_dossier_path(target_note_path, target_task_id)
-        target_writer_family = review_team.writer_family_for_lane(
-            str(target_frontmatter.get("assigned_to") or ""), registry
-        )
+        target_identity = identities[target_task_id]
+        target_writer_family = target_identity.family
+        if not target_identity.observed and target_identity.fallback_family:
+            target_writer_family = target_identity.fallback_family
         dossier = review_team.synthesize_dossier(
             task_id=target_task_id,
             pr_number=pr_number,
@@ -4400,6 +4514,13 @@ def _apply_review(
             repo_root=repo_root,
         )
         dossier["family_substitution"] = substitution
+        # Retain claim and native-session evidence for family readback.
+        dossier["writer_family_reason"] = target_identity.reason
+        dossier["writer_family_evidence"] = list(target_identity.evidence)
+        dossier["writer_family_provider"] = target_identity.provider
+        dossier["writer_family_session"] = target_identity.session_id
+        if ambiguous_authoring_rows:
+            dossier["constitution_authoring_rows_ambiguous"] = ambiguous_authoring_rows
         dossier["diff_source"] = pr_diff.source
         dossier["comparison_base"] = pr_diff.comparison_base
         dossier["diff_sha256"] = hashlib.sha256(pr_diff.encode("utf-8")).hexdigest()
@@ -4659,6 +4780,7 @@ def review_artifact(
     registry_path: Path | None = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+    identity_roots: review_team.WriterIdentityRoots | None = None,
 ) -> dict[str, Any]:
     """Review a vault-only row's artifact (file set + lineage) instead of a PR diff.
 
@@ -4752,9 +4874,43 @@ def review_artifact(
 
     lenses = review_team.lenses_for_files(files, registry)
     team_class = artifact_team_class(frontmatter, files, registry)
-    writer_family = review_team.writer_family_for_lane(
-        str(frontmatter.get("assigned_to") or ""), registry
+    # Artifacts lack a head commit to disambiguate multiple claims.
+    identity = review_team.observed_writer_identity(
+        task_id,
+        str(frontmatter.get("assigned_to") or ""),
+        registry,
+        roots=identity_roots,
     )
+    if not identity.observed and (
+        review_team.writer_family_enforcement_enabled() or not identity.fallback_family
+    ):
+        return {
+            "status": "writer_family_unobserved",
+            "task_id": task_id,
+            "plan": {
+                "task_id": task_id,
+                "head_sha": head_sha,
+                "team_class": team_class,
+                "unobserved_writer_family": [
+                    {
+                        "task_id": identity.task_id,
+                        "lane": identity.lane,
+                        "reason": identity.reason,
+                        "evidence": list(identity.evidence),
+                    }
+                ],
+            },
+        }
+    if not identity.observed:
+        LOG.warning(
+            "artifact %s: writer family unobserved (%s) — dispatching on the lane transport "
+            "family (%s); set %s=1 to hold instead",
+            task_id,
+            identity.reason,
+            identity.fallback_family,
+            review_team.WRITER_FAMILY_ENFORCE_ENV,
+        )
+    writer_family = identity.family if identity.observed else identity.fallback_family
     # Artifacts have no PR number to rotate by; a stable slice of the head keeps rotation fair.
     rotation = int(head_sha.removeprefix(ARTIFACT_HEAD_PREFIX)[:8], 16)
     constitution, substitution, constitution_error = constitute_with_substitution(
@@ -4769,6 +4925,7 @@ def review_artifact(
         "artifact_lineage": lineage,
         "team_class": team_class,
         "writer_family": writer_family,
+        "writer_family_reason": identity.reason,
         "lenses": list(lenses),
         "route_blocked_families": {
             family: list(reasons) for family, reasons in sorted(route_blocks.items())
@@ -4853,6 +5010,10 @@ def review_artifact(
         "lineage": lineage,
     }
     dossier["family_substitution"] = substitution
+    dossier["writer_family_reason"] = identity.reason
+    dossier["writer_family_evidence"] = list(identity.evidence)
+    dossier["writer_family_provider"] = identity.provider
+    dossier["writer_family_session"] = identity.session_id
     dossier["review_task_hash"] = task_hash
     dossier["review_task_hash_source_task_id"] = hash_task_id
     dossier["review_task_hash_source_note"] = hash_note
