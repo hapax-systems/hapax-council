@@ -31,8 +31,20 @@ The writer's family is OBSERVED (``review_team.observed_writer_identity``): clai
 receipt -> the claim in force when the reviewed head was committed -> that
 session's native record -> provider -> family. Never the lane name, whose
 ``lane_families`` default once recorded Sakana Fugu as ``claude``. An
-unobservable author HOLDS (``status: writer_family_unobserved``, no seat), and a
-dossier that records ``unobserved``, or records nothing, is refused.
+unobservable author is recorded, not guessed:
+
+- ``HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE`` unset or falsy (the default): the
+  dispatch proceeds on the lane's transport family, and the dossier says so —
+  ``writer_family_source: fallback`` plus
+  ``writer_family_unobserved: {reason, evidence}``. The review plane keeps moving
+  while no producer covers most rows (measured 2026-09-28: 18 of 234 receipts,
+  7.7%).
+- ``HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE=1``: the dispatch holds —
+  ``status: writer_family_unobserved``, no reviewer seats — and a dossier that
+  records ``unobserved``, or records nothing, is refused at admission.
+
+The flip is a separate act: it waits on the per-claim observed-execution record
+(``writer-identity-record-at-claim-time-20260928``).
 
 A family with live wall evidence from ``shared.quota_headroom`` (a spent window
 before its reset, or a live wall) is never seated: the constitution substitutes
@@ -3059,11 +3071,7 @@ def ensure_head_object(repo_root: Path, head_sha: str, pr_number: int) -> bool:
 
 
 def _pr_head_committed_at(repo_root: Path, head_sha: str, pr_number: int) -> int | None:
-    """The reviewed head's committer time (epoch seconds), or None.
-
-    Consulted only for a multi-claim task, where epoch order is not authorship, so
-    the fetch is paid only where the question is asked.
-    """
+    """The reviewed head's committer time (epoch seconds), or None (multi-claim only)."""
 
     if not ensure_head_object(repo_root, head_sha, pr_number):
         return None
@@ -3774,6 +3782,12 @@ def review_pr(
     )
     # Writer identity is OBSERVED, per row: a lane name is compatible with any
     # model, and reading it was how #4730 recorded a Sakana-Fugu row as claude.
+    #
+    # Clause 11: by default an unobservable author is RECORDED (see below) and the
+    # dispatch proceeds on the transport family; only
+    # HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE=1 holds and seats nothing, once the
+    # per-claim observed-execution record
+    # (`writer-identity-record-at-claim-time-20260928`) covers most rows.
     identities = {
         _task_id: review_team.observed_writer_identity(
             _task_id,
@@ -3785,9 +3799,14 @@ def review_pr(
         for _, _frontmatter, _task_id in keyed_matches
     }
     observed_families = {identity.family for identity in identities.values() if identity.observed}
-    # One PR can close several rows whose families need not agree: the
-    # CONSTITUTION excludes the UNION (clause (9)), so no row's author is seated as
-    # another's reviewer. Each dossier still records its own family.
+    # One PR can close several rows. When their observed families differ, no single
+    # family describes "the author of this head", so the CONSTITUTION cannot use one
+    # as the writer's (glm review of #4835). The constitution therefore excludes the
+    # UNION of every authoring family it knows -- the observed ones, plus, for a row
+    # whose identity is unobservable, the transport family its dossier will record
+    # (that is what the admission gate will treat as the writer's, so seating it
+    # would be self-review by our own record). Each row's dossier still records its
+    # own family.
     ambiguous_authoring_rows = sorted(observed_families) if len(observed_families) > 1 else []
     authoring_identity = next(
         (identity for identity in identities.values() if identity.lane),
@@ -3797,9 +3816,14 @@ def review_pr(
         (identity for identity in identities.values() if not identity.observed),
         key=lambda identity: identity.task_id,
     )
+    constitution_writer_families = sorted(
+        observed_families
+        | {identity.fallback_family for identity in unobserved if identity.fallback_family}
+    )
     enforcing = review_team.writer_family_enforcement_enabled()
+    held = bool(unobserved)
     fallback_family = authoring_identity.fallback_family
-    if unobserved and (enforcing or not fallback_family):
+    if held and (enforcing or not fallback_family):
         return {
             "status": "writer_family_unobserved",
             "pr": pr_number,
@@ -3808,6 +3832,7 @@ def review_pr(
                 "task_id": task_ids[0] if len(task_ids) == 1 else task_ids,
                 "head_sha": pr_info.head_sha,
                 "team_class": team_class,
+                "writer_family_enforcement": enforcing,
                 "unobserved_writer_family": [
                     {
                         "task_id": identity.task_id,
@@ -3820,22 +3845,22 @@ def review_pr(
                 "ambiguous_authoring_rows": ambiguous_authoring_rows,
             },
         }
-    if unobserved:
-        # Clause 11: the inert default. Dispatched on the lane's transport family, as
-        # before this change, with one line naming what would hold instead.
+    if held:
         LOG.warning(
-            "PR #%d: writer family unobserved for %s — dispatching on the lane transport "
-            "family (%s); set %s=1 to hold instead",
+            "PR #%d: writer family unobserved for %s — dispatching on the transport fallback "
+            "(%s); set %s=1 to hold instead",
             pr_number,
-            ",".join(identity.task_id for identity in unobserved),
+            ",".join([identity.task_id for identity in unobserved] + ambiguous_authoring_rows),
             fallback_family,
             review_team.WRITER_FAMILY_ENFORCE_ENV,
         )
-    writer_family = authoring_identity.family if not unobserved else fallback_family
-    constitution_scope = sorted(
-        observed_families
-        | {identity.fallback_family for identity in unobserved if identity.fallback_family}
-    ) or ([writer_family] if writer_family else [])
+        constitution_identity = None
+    else:
+        constitution_identity = authoring_identity
+    # The constitution takes the whole union; the plan still names the single family
+    # it would record for the authoring row.
+    writer_family = constitution_identity.family if constitution_identity else fallback_family
+    constitution_scope = constitution_writer_families or ([writer_family] if writer_family else [])
     if not force:
         fresh_results: list[dict[str, Any]] = []
         fresh_blockers: list[str] = []
@@ -3847,6 +3872,24 @@ def review_pr(
                 existing = None
             if not isinstance(existing, dict) or existing.get("head_sha") != pr_info.head_sha:
                 fresh_blockers.append(f"{target_task_id}:missing_or_stale")
+                break
+            # A current-head dossier whose family was only the transport fallback
+            # is not evidence of independence once the authoring execution IS
+            # observable (codex review of #4835): re-round so the recorded family
+            # becomes the observed one. While the observation is still absent the
+            # fallback stands, or every row would re-round on every cycle.
+            if (
+                str(existing.get("writer_family_source") or "").strip().lower()
+                == review_team.WRITER_FAMILY_SOURCE_FALLBACK
+                and identities[target_task_id].observed
+            ):
+                LOG.info(
+                    "PR #%d: %s records a fallback writer family but the authoring execution "
+                    "is now observable — re-reviewing",
+                    pr_number,
+                    target_task_id,
+                )
+                fresh_blockers.append(f"{target_task_id}:superseded_writer_family_fallback")
                 break
             blockers = review_team.review_dossier_validity_blockers(
                 target_frontmatter,
@@ -3977,6 +4020,12 @@ def review_pr(
         "team_class": team_class,
         "quorum_required": constitution.quorum_required,
         "writer_family": writer_family,
+        "writer_family_source": (
+            constitution_identity.source
+            if constitution_identity
+            else review_team.WRITER_FAMILY_SOURCE_FALLBACK
+        ),
+        "writer_family_enforcement": enforcing,
         "writer_family_union": constitution_scope,
         "ambiguous_authoring_rows": ambiguous_authoring_rows,
         "seats": [{"id": seat.id, "family": seat.family} for seat in constitution.seats],
@@ -4084,10 +4133,11 @@ def review_pr(
         target_dossier_path = review_team.review_dossier_path(target_note_path, target_task_id)
         target_identity = identities[target_task_id]
         target_writer_family = target_identity.family
-        if not target_identity.observed and target_identity.fallback_family:
-            # Clause 11: the inert default dispatches on the lane's transport family,
-            # which is what this dossier records as the writer's.
-            target_writer_family = target_identity.fallback_family
+        if not target_identity.observed:
+            # Observe mode: dispatch on the transport family, said out loud. The
+            # dossier records what would have held, why, and where the family
+            # actually came from, so the fallback is auditable rather than silent.
+            target_writer_family = target_identity.fallback_family or target_writer_family
         dossier = review_team.synthesize_dossier(
             task_id=target_task_id,
             pr_number=pr_number,
@@ -4109,10 +4159,19 @@ def review_pr(
         # evidence: which claim receipt named which session and which native
         # record named which provider. A reader can re-derive the family from
         # it instead of trusting the verdict.
+        dossier["writer_family_source"] = target_identity.source
         dossier["writer_family_reason"] = target_identity.reason
         dossier["writer_family_evidence"] = list(target_identity.evidence)
         dossier["writer_family_provider"] = target_identity.provider
         dossier["writer_family_session"] = target_identity.session_id
+        if not target_identity.observed:
+            dossier["writer_family_unobserved"] = {
+                "reason": target_identity.reason,
+                "lane": target_identity.lane,
+                "evidence": list(target_identity.evidence),
+                "mode": "enforce" if enforcing else "observe",
+                "would_hold_under": review_team.WRITER_FAMILY_ENFORCE_ENV,
+            }
         if ambiguous_authoring_rows:
             dossier["constitution_authoring_rows_ambiguous"] = ambiguous_authoring_rows
         dossier["diff_source"] = pr_diff.source
@@ -4468,17 +4527,17 @@ def review_artifact(
 
     lenses = review_team.lenses_for_files(files, registry)
     team_class = artifact_team_class(frontmatter, files, registry)
-    # Same rule as a PR review, never the lane name. An artifact has no commit, so
-    # a task with several claims cannot bind one to the authoring work.
+    # Same rule as a PR review: the artifact's writer family is observed, never
+    # read off the lane name. An artifact has no commit, so a task with several
+    # claims cannot bind one to the authoring work and is unobserved.
     identity = review_team.observed_writer_identity(
         task_id,
         str(frontmatter.get("assigned_to") or ""),
         registry,
         roots=identity_roots,
     )
-    if not identity.observed and (
-        review_team.writer_family_enforcement_enabled() or not identity.fallback_family
-    ):
+    enforcing = review_team.writer_family_enforcement_enabled()
+    if not identity.observed and (enforcing or not identity.fallback_family):
         return {
             "status": "writer_family_unobserved",
             "task_id": task_id,
@@ -4486,6 +4545,7 @@ def review_artifact(
                 "task_id": task_id,
                 "head_sha": head_sha,
                 "team_class": team_class,
+                "writer_family_enforcement": enforcing,
                 "unobserved_writer_family": [
                     {
                         "task_id": identity.task_id,
@@ -4498,8 +4558,8 @@ def review_artifact(
         }
     if not identity.observed:
         LOG.warning(
-            "artifact %s: writer family unobserved (%s) — dispatching on the lane transport "
-            "family (%s); set %s=1 to hold instead",
+            "artifact %s: writer family unobserved (%s) — dispatching on the transport "
+            "fallback (%s); set %s=1 to hold instead",
             task_id,
             identity.reason,
             identity.fallback_family,
@@ -4520,7 +4580,9 @@ def review_artifact(
         "artifact_lineage": lineage,
         "team_class": team_class,
         "writer_family": writer_family,
+        "writer_family_source": identity.source,
         "writer_family_reason": identity.reason,
+        "writer_family_enforcement": enforcing,
         "lenses": list(lenses),
         "route_blocked_families": {
             family: list(reasons) for family, reasons in sorted(route_blocks.items())
@@ -4605,10 +4667,19 @@ def review_artifact(
         "lineage": lineage,
     }
     dossier["family_substitution"] = substitution
+    dossier["writer_family_source"] = identity.source
     dossier["writer_family_reason"] = identity.reason
     dossier["writer_family_evidence"] = list(identity.evidence)
     dossier["writer_family_provider"] = identity.provider
     dossier["writer_family_session"] = identity.session_id
+    if not identity.observed:
+        dossier["writer_family_unobserved"] = {
+            "reason": identity.reason,
+            "lane": identity.lane,
+            "evidence": list(identity.evidence),
+            "mode": "enforce" if enforcing else "observe",
+            "would_hold_under": review_team.WRITER_FAMILY_ENFORCE_ENV,
+        }
     dossier["review_task_hash"] = task_hash
     dossier["review_task_hash_source_task_id"] = hash_task_id
     dossier["review_task_hash_source_note"] = hash_note

@@ -333,6 +333,108 @@ def _load_review_team_module():
     return module
 
 
+def _identity_roots(
+    tmp_path: Path,
+    *,
+    task_id: str = "task-x",
+    session_id: str = "01a0e556-a50e-7fd3-8e73-95b63b386898",
+    provider: str | None = "sakana",
+    models: tuple[str, ...] = ("fugu-max",),
+    harness: str = "codex",
+    claim_epoch: int = 1790554237,
+):
+    """A claim receipt plus the native record it names, on injected roots.
+
+    ``harness`` decides which native store is written; ``provider=None`` writes a
+    codex rollout whose ``session_meta`` carries no ``model_provider``.
+    """
+
+    rt = _load_review_team_module()
+    cache = tmp_path / "cache"
+    receipts = cache / "claim-publication-receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    codex_root = tmp_path / "codex-sessions"
+    claude_root = tmp_path / "claude-projects"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    claude_root.mkdir(parents=True, exist_ok=True)
+    roots = rt.WriterIdentityRoots(
+        claim_receipt_root=receipts,
+        codex_sessions_root=codex_root,
+        claude_projects_root=claude_root,
+    )
+    _add_claim(roots, task_id, session_id=session_id, claim_epoch=claim_epoch)
+    _add_native_record(roots, session_id, provider=provider, models=models, harness=harness)
+    return roots
+
+
+def _add_claim(
+    roots,
+    task_id: str,
+    *,
+    session_id: str,
+    claim_epoch: int,
+    role: str = "zeta",
+    suffix: str = "",
+) -> None:
+    """One more claim receipt for a task: a re-claim or a later reassignment."""
+
+    (roots.claim_receipt_root / f"{task_id}-receipt{suffix}.json").write_text(
+        json.dumps(
+            {
+                "schema": "hapax.claim-publication-receipt.v4",
+                "task_id": task_id,
+                "role": role,
+                "session_id": session_id,
+                "claim_epoch": claim_epoch,
+                "to_status": "claimed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _add_native_record(
+    roots,
+    session_id: str,
+    *,
+    provider: str | None = None,
+    models: tuple[str, ...] = ("m",),
+    harness: str = "codex",
+) -> None:
+    """The native record a session wrote, in the store its harness uses."""
+
+    if harness == "codex":
+        meta: dict = {
+            "session_id": session_id,
+            "timestamp": "2026-09-28T00:07:35.962Z",
+            "cwd": "/fixture/worktree",
+            "originator": "codex-tui",
+        }
+        if provider is not None:
+            meta["model_provider"] = provider
+        rollout = roots.codex_sessions_root / f"rollout-2026-09-27T19-07-35-{session_id}.jsonl"
+        rollout.write_text(
+            json.dumps({"type": "session_meta", "payload": meta})
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "turn_context",
+                    "payload": {"turn_id": "t1", "model": models[0], "cwd": "/fixture/worktree"},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return
+    transcript = roots.claude_projects_root / session_id / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(
+        json.dumps({"type": "assistant", "message": {"model": models[0], "role": "assistant"}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 class TestLensSelection:
     @pytest.mark.parametrize(
         "path",
@@ -782,12 +884,237 @@ class TestConstitution:
 class TestObservedWriterIdentity:
     """review-dossier-writer-family-from-observed-author-20260924: a dossier's
     writer_family is a claim about execution, so it comes from the record the
-    authoring session wrote. Unsafe cases first: an identity that cannot be
-    observed is UNOBSERVED -- guessing it decides who may review the work."""
+    authoring session wrote -- never from the lane name, and never from the
+    ``lane_families`` default. Unsafe cases first: an identity that cannot be
+    observed is UNOBSERVED, because guessing it decides who may review the work."""
+
+    def test_unknown_identity_is_unobserved_and_never_claude(self, tmp_path: Path) -> None:
+        # The unsafe case: no claim receipt, so no native record is reachable,
+        # for lanes whose names the transport map calls claude.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path)
+        (roots.claim_receipt_root / "task-x-receipt.json").unlink()
+
+        for lane in ("dev42", "kimi-2", "grok-sonar", "mimo-3", "fugu-omglol", "zeta", ""):
+            identity = rt.observed_writer_identity("task-x", lane, reg, roots=roots)
+            assert identity.family == "unobserved", lane
+            assert identity.family != "claude", lane
+            assert identity.observed is False
+
+    def test_claim_without_a_native_record_is_unobserved(self, tmp_path: Path) -> None:
+        # #4730's measured shape on 2026-09-28: the claim receipt names session
+        # 5946d399, and no native record carries that session id on this host.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path)
+        for path in roots.codex_sessions_root.iterdir():
+            path.unlink()
+
+        identity = rt.observed_writer_identity("task-x", "fugu-omglol", reg, roots=roots)
+
+        assert identity.family == "unobserved"
+        assert identity.session_id is None
+        assert any("no native session record" in line for line in identity.evidence)
+
+    def test_a_codex_harness_sakana_session_is_fugu_not_codex_or_claude(
+        self, tmp_path: Path
+    ) -> None:
+        # The row's item (3): the codex harness is shared, so the provider
+        # decides the family.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, provider="sakana", models=("fugu-max",))
+
+        identity = rt.observed_writer_identity("task-x", "fugu-omglol", reg, roots=roots)
+
+        assert identity.family == "fugu"
+        assert identity.provider == "sakana"
+        assert identity.harness == "codex"
+        assert identity.models == ("fugu-max",)
+
+    def test_a_codex_session_without_a_provider_is_unobserved(self, tmp_path: Path) -> None:
+        # A codex session whose provider was not recorded can be called neither
+        # codex (OpenAI) nor claude.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, provider=None)
+
+        identity = rt.observed_writer_identity("task-x", "cx-gold", reg, roots=roots)
+
+        assert identity.family == "unobserved"
+        assert any("not provider-exclusive" in line for line in identity.evidence)
+
+    def test_an_undeclared_provider_is_unobserved_not_the_harness_family(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, provider="some-new-provider")
+
+        identity = rt.observed_writer_identity("task-x", "cx-gold", reg, roots=roots)
+
+        assert identity.family == "unobserved"
+        assert any("is not declared" in line for line in identity.evidence)
+
+    def test_a_claude_transcript_maps_by_its_provider_exclusive_harness(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, harness="claude", models=("claude-opus-4-8",))
+
+        identity = rt.observed_writer_identity("task-x", "zeta", reg, roots=roots)
+
+        assert identity.family == "claude"
+        assert identity.provider is None
+        assert identity.harness == "claude"
+
+    def test_a_lane_rename_does_not_change_the_family(self, tmp_path: Path) -> None:
+        # Identity is per authoring session, not per name: renaming the lane
+        # leaves the observation untouched.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, provider="sakana")
+
+        original = rt.observed_writer_identity("task-x", "fugu-omglol", reg, roots=roots)
+        renamed = rt.observed_writer_identity("task-x", "dev42-renamed", reg, roots=roots)
+
+        assert original.family == renamed.family == "fugu"
+        assert renamed.lane == "dev42-renamed"
+
+    def test_the_lane_map_still_answers_a_transport_question_but_is_not_identity(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression pin: writer_family_for_lane still resolves these names (the
+        # wake path needs it) and its answer is not admissible writer identity.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path)
+
+        for lane in ("kimi-2", "grok-sonar", "mimo-3", "dev42", "fugu-omglol"):
+            assert rt.writer_family_for_lane(lane, reg) == "claude"
+            assert rt.observed_writer_identity("task-x", lane, reg, roots=roots).family != "claude"
+
+    def test_registry_declares_the_provider_table_it_needs(self) -> None:
+        rt = _load_review_team_module()
+        declared = rt.load_lens_registry()["observed_identity_families"]
+        assert declared["providers"]["sakana"] == "fugu"
+        assert declared["providers"]["openai"] == "codex"
+        # The codex harness is shared by OpenAI Codex and Sakana Fugu; listing it
+        # here would silently restore the collision the row names.
+        assert "codex" not in declared["harnesses"]
+
+    def test_a_receipt_rewritten_in_place_is_re_read_not_cached(self, tmp_path: Path) -> None:
+        # The index exists so a sweep does not re-read thousands of records per
+        # PR; it must still see a rewrite inside an unchanged directory.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, provider="sakana")
+        assert rt.observed_writer_identity("task-x", "fugu-omglol", reg, roots=roots).family == (
+            "fugu"
+        )
+
+        retired_session = "01a0e556-0000-0000-0000-000000000000"
+        receipt = roots.claim_receipt_root / "task-x-receipt.json"
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+        payload["session_id"] = retired_session
+        payload["claim_epoch"] = int(payload["claim_epoch"]) + 1
+        receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+        reread = rt.observed_writer_identity("task-x", "fugu-omglol", reg, roots=roots)
+        assert reread.session_id is None
+        assert reread.family == "unobserved"
+
+    def test_a_later_claim_does_not_change_the_authoring_family(self, tmp_path: Path) -> None:
+        # codex review of #4835: the highest claim_epoch is not the author. The
+        # author claimed at 100 and pushed the head; the row was handed to
+        # another lane at 200. The head's commit time (150) decides.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(
+            tmp_path,
+            session_id="01a0e5aa-0000-0000-0000-000000000001",
+            provider="sakana",
+            models=("fugu-max",),
+            claim_epoch=100,
+        )
+        _add_native_record(
+            roots,
+            "01a0e5bb-0000-0000-0000-000000000002",
+            provider="openai",
+            models=("gpt-6",),
+            harness="codex",
+        )
+        _add_claim(
+            roots,
+            "task-x",
+            session_id="01a0e5bb-0000-0000-0000-000000000002",
+            claim_epoch=200,
+            role="fugu-omglol-reassigned",
+            suffix="-2",
+        )
+
+        authoring = rt.observed_writer_identity(
+            "task-x", "fugu-omglol", reg, roots=roots, head_committed_at=150
+        )
+        assert authoring.family == "fugu"
+        assert authoring.session_id == "01a0e5aa-0000-0000-0000-000000000001"
+        assert authoring.reason == "provider_observed"
+        assert any(
+            "claim in force when the head was committed" in line for line in authoring.evidence
+        )
+
+        # A head committed after the reassignment really was authored under it.
+        later = rt.observed_writer_identity(
+            "task-x", "fugu-omglol", reg, roots=roots, head_committed_at=250
+        )
+        assert later.family == "codex"
+        assert later.session_id == "01a0e5bb-0000-0000-0000-000000000002"
+
+    def test_several_claims_without_a_head_time_are_unobserved(self, tmp_path: Path) -> None:
+        # Epoch order is not authorship: for #4730 the earliest claim is the lane
+        # the row was taken FROM. With no commit to bind one, neither is asserted.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, claim_epoch=100, provider="sakana")
+        _add_claim(
+            roots,
+            "task-x",
+            session_id="01a0e5cc-0000-0000-0000-000000000003",
+            claim_epoch=200,
+            suffix="-2",
+        )
+
+        identity = rt.observed_writer_identity("task-x", "fugu-omglol", reg, roots=roots)
+
+        assert identity.family == "unobserved"
+        assert identity.reason == "ambiguous_claims_without_head"
+        assert identity.fallback_family == "claude"
+
+    def test_a_claim_after_the_reviewed_head_is_unobserved(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, claim_epoch=300, provider="sakana")
+
+        identity = rt.observed_writer_identity(
+            "task-x", "fugu-omglol", reg, roots=roots, head_committed_at=150
+        )
+
+        assert identity.family == "unobserved"
+        assert identity.reason == "claim_after_reviewed_head"
+
+    def test_a_sole_claim_needs_no_head_time(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        roots = _identity_roots(tmp_path, provider="sakana")
+
+        identity = rt.observed_writer_identity("task-x", "fugu-omglol", reg, roots=roots)
+
+        assert identity.family == "fugu"
+        assert identity.reason == "provider_observed"
 
     def test_the_hold_is_inert_unless_the_killswitch_names_it(self) -> None:
-        # Clause 11 (seat 2026-09-28T04:06Z): the hold on an unobservable author must
-        # be inert, or a merged state would stall the review plane for ~86% of rows.
         rt = _load_review_team_module()
         assert rt.writer_family_enforcement_enabled({}) is False
         for value in ("1", "true", "on", "enforce"):
@@ -798,14 +1125,32 @@ class TestObservedWriterIdentity:
                 rt.writer_family_enforcement_enabled({rt.WRITER_FAMILY_ENFORCE_ENV: value}) is False
             )
 
+    def test_the_constitution_excludes_every_observed_writer_family(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
 
-class TestAuthoringFamilyExclusion:
-    """Clause (10) of the row, added by the seat 2026-09-28T04:08Z on the codex
-    critical: the observed authoring families are excluded from T1 teams too, and
-    not merely placed after the core families -- T1 seats every roster family, so
-    ordering is seating there. The cap that allowed one writer seat is gone."""
+        team = rt.constitute_team("t2_standard", ["codex", "fugu"], reg, pr_number=7)
+
+        seated = {seat.family for seat in team.seats}
+        assert not seated & {"codex", "fugu"}
+        assert len(team.seats) == 3
+        assert "writer_family_union:codex,fugu" in team.notes
+
+    def test_a_single_writer_family_is_unchanged(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        from_one = rt.constitute_team("t2_standard", ["codex"], reg, pr_number=7)
+        from_string = rt.constitute_team("t2_standard", "codex", reg, pr_number=7)
+
+        assert [s.family for s in from_one.seats] == [s.family for s in from_string.seats]
+        assert "writer_family_union:" not in " ".join(from_one.notes)
 
     def test_a_t1_team_never_seats_the_authoring_family(self) -> None:
+        # Clause (10) of the row, added by the seat 2026-09-28T04:08Z on the codex
+        # critical: T1 seats every roster family, so placing the author's family
+        # LAST is the same as seating it. Observed authoring families are excluded
+        # from T1 too -- from every class, and not merely placed after the core.
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
 
@@ -828,12 +1173,35 @@ class TestAuthoringFamilyExclusion:
         assert "writer_family_excluded:claude,codex" in team.notes
 
     def test_no_writer_family_ever_takes_a_seat(self) -> None:
+        # The cap this replaces allowed the writer's family one seat; a family that
+        # may have authored the work must never be one of its reviewers.
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
 
         for team_class in ("t2_standard", "t3_docs", "t1_critical"):
             team = rt.constitute_team(team_class, "gemini", reg, pr_number=5)
             assert "gemini" not in {seat.family for seat in team.seats}, team_class
+
+    def test_the_union_never_seats_a_writer_family_alone_as_the_majority(self) -> None:
+        # The same strict-majority guard, applied to every family in the union: with
+        # the union covering most of the roster, the seats come from what is left.
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t3_docs", ["claude", "codex"], reg, pr_number=3)
+
+        seated = {seat.family for seat in team.seats}
+        assert not seated & {"claude", "codex"}
+        assert len(seated) == len(team.seats) == 2
+
+    def test_an_empty_union_behaves_as_no_writer_constraint(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t3_docs", [], reg, pr_number=3)
+
+        assert len(team.seats) == 2
+        assert "writer_family_union:" not in " ".join(team.notes)
 
 
 class TestDistinctFamilyFloor:
@@ -916,7 +1284,7 @@ class TestDistinctFamilyFloor:
             rt,
             [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
             team_class="t1_critical",
-            writer_family="claude",
+            writer_family="fugu",
         )
         assert dossier["review_team_verdict"] == "quorum-accept"
 
@@ -1131,6 +1499,27 @@ class TestSeatT2FamilyFloorRelease:
         blockers = self._blockers(rt, dossier, self._frontmatter(), registry=reg, sink=sink)
         assert "review_dossier_below_family_floor:voting=1/seated=3" in blockers
         assert sink == {}
+
+    def test_the_rows_lane_name_does_not_add_a_writer_family(self) -> None:
+        # The dossier records the OBSERVED writer (claude). The row is assigned to a codex
+        # lane, but a lane name is a transport label, not a model: the codex accept IS
+        # distinct from the writer's family, so the rule releases the floor. Reading the
+        # lane would have silently hidden a family the record never named.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "invalid-output"),
+            ],
+            writer_family="claude",
+        )
+        sink: dict = {}
+        blockers = self._blockers(rt, dossier, self._frontmatter(assigned_to="cx-blue"), sink=sink)
+        assert self.FLOOR not in blockers
+        assert sink["rule"] == rt.T2_FAMILY_FLOOR_RELEASE_RULE
+        assert sink["writer_families"] == ["claude"]
 
     def test_a_short_quorum_is_not_rescued(self) -> None:
         rt = _load_review_team_module()
@@ -2435,6 +2824,121 @@ class TestVerdictBlockers:
         )
         assert any(b.startswith("review_dossier_family_diversity:") for b in blockers)
         assert any(b.startswith("review_dossier_writer_family_majority:") for b in blockers)
+
+    def test_a_dossier_with_no_recorded_writer_family_is_refused(self, tmp_path: Path) -> None:
+        # The field is not decorative: absent, it says nothing about who wrote
+        # the work, and a claim about independence cannot be built on silence.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "zeta"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_missing" in blockers
+
+    def test_a_dossier_recording_an_unobserved_writer_family_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+            writer_family="unobserved",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "zeta"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_unobserved" in blockers
+
+    def test_a_dossier_claiming_observed_without_evidence_is_refused(self, tmp_path: Path) -> None:
+        # Verified when stated: a dossier that says its family came from an
+        # observation must carry the observation.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+            writer_family="fugu",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        dossier["writer_family_source"] = "observed"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_evidence_missing:session" in blockers
+        assert "review_dossier_writer_family_evidence_missing:evidence" in blockers
+
+        dossier["writer_family_session"] = "01a0e556-a50e-7fd3-8e73-95b63b386898"
+        dossier["writer_family_evidence"] = ["claim receipt x: session=…", "family=fugu"]
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        assert (
+            rt.review_team_verdict_blockers(
+                {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+            )
+            == ()
+        )
+
+    def test_a_dossier_with_an_unknown_family_source_is_refused(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+            writer_family="fugu",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        dossier["writer_family_source"] = "inferred-from-a-vibe"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_source_unknown:inferred-from-a-vibe" in blockers
+
+    def test_a_legacy_dossier_without_a_source_is_not_refused_for_that(
+        self, tmp_path: Path
+    ) -> None:
+        # A dossier written before the observation rule carries no source. Refusing
+        # it would block every PR whose current-head dossier predates the rule --
+        # the review-plane stall the observation mode exists to avoid -- so the
+        # absence is left to the dispatcher's re-round, and the family it records
+        # still governs the majority guard.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+            writer_family="fugu",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert blockers == ()
 
     def test_the_recorded_family_governs_and_the_lane_name_does_not(self, tmp_path: Path) -> None:
         # The row's lane is fugu-omglol, whose NAME the transport map calls claude.

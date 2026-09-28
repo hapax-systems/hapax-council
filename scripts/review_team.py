@@ -581,19 +581,18 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
 #: A family no observation supports: a dossier carrying it asserts nothing.
 WRITER_FAMILY_UNOBSERVED = "unobserved"
 
-#: Clause 11 of the row (seat rulings 2026-09-28T04:06Z / 04:25Z): the hold on an
-#: unobservable author is INERT unless this names it. By default such a row
-#: dispatches on the lane's transport family, as it did before this change, with
-#: one log line. Measured, the claim plane's session id joins to a native record
-#: for 18 of 234 receipts (7.7%), so a default hold would stall ~86% of rows.
+#: Clause 11 of the row (seat rulings 2026-09-28T04:06Z / 04:08Z): the hold on an
+#: unobservable author is INERT unless this names it. Measured 2026-09-28, the
+#: claim plane's session id joins to a native record for 18 of 234 receipts
+#: (7.7%), so a default hold would stall ~86% of rows.
 WRITER_FAMILY_ENFORCE_ENV = "HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE"
 
 
 def writer_family_enforcement_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """Whether an unobservable author holds. True only under the switch.
+    """Whether an unobservable author holds, or is recorded and dispatched.
 
-    Any value other than a truthy one keeps the inert default, so a typo cannot
-    stop the review plane.
+    Only a truthy switch enables the hold: any other value keeps the inert
+    default, so a typo cannot stop the review plane.
     """
 
     source = os.environ if environ is None else environ
@@ -604,6 +603,12 @@ def writer_family_enforcement_enabled(environ: Mapping[str, str] | None = None) 
         "on",
         "enforce",
     }
+
+
+#: Why a family is what it is. ``observed`` means an execution record named it;
+#: ``fallback`` means none did and the transport map answered instead.
+WRITER_FAMILY_SOURCE_OBSERVED = "observed"
+WRITER_FAMILY_SOURCE_FALLBACK = "fallback"
 
 
 DEFAULT_CLAIM_RECEIPT_ROOT = Path.home() / ".cache" / "hapax" / "claim-publication-receipts"
@@ -654,6 +659,10 @@ class ObservedWriterIdentity:
     def observed(self) -> bool:
         return self.family != WRITER_FAMILY_UNOBSERVED
 
+    @property
+    def source(self) -> str:
+        return WRITER_FAMILY_SOURCE_OBSERVED if self.observed else WRITER_FAMILY_SOURCE_FALLBACK
+
 
 # Stat-only tree-signature guards: they catch an added AND a rewritten file,
 # which a directory mtime does not.
@@ -684,7 +693,7 @@ def _claim_receipt_index(root: Path) -> dict[str, tuple[tuple[int, str, str, str
     """task_id -> every claim receipt for it, oldest first.
 
     (claim_epoch, session_id, role, receipt ref) -- ALL of them: the highest epoch
-    is not the author.
+    is not the author (codex review of #4835).
     """
 
     key = str(root)
@@ -866,10 +875,11 @@ def observed_writer_identity(
 ) -> ObservedWriterIdentity:
     """Derive the authoring family from an observed execution record.
 
-    Fail-closed: an unresolved link yields :data:`WRITER_FAMILY_UNOBSERVED` with a
-    ``reason`` and the caller holds. Never the lane name -- the lane is only the
-    subject of the claim, and its transport family is reported separately as
-    ``fallback_family``.
+    Fail-closed by construction: every unresolved link yields
+    :data:`WRITER_FAMILY_UNOBSERVED` with a ``reason``, and the caller decides
+    the switch (see :func:`writer_family_enforcement_enabled`). Never the lane name -- the lane is carried through only as the
+    subject of the claim, and its transport family is offered separately as
+    ``fallback_family`` for a caller that must keep dispatching.
     """
 
     roots = roots or WriterIdentityRoots()
@@ -2884,8 +2894,29 @@ def _dossier_validity_blockers(
     # it back from the lane name here would re-ask a question the record already
     # answered, and would answer it with the transport default.
     recorded_writer_family = str(dossier.get("writer_family") or "").strip().lower()
-    if recorded_writer_family == WRITER_FAMILY_UNOBSERVED:
+    if not recorded_writer_family:
+        blockers.append("review_dossier_writer_family_missing")
+    elif recorded_writer_family == WRITER_FAMILY_UNOBSERVED:
         blockers.append("review_dossier_writer_family_unobserved")
+    else:
+        # Verify the recorded family's own evidence, when the dossier states a
+        # source. A dossier written before this change carries none: refusing
+        # those would block every PR whose current-head dossier predates the
+        # rule, which is the review-plane stall the observation mode exists to
+        # avoid. An ABSENT source is therefore recorded as legacy and left to
+        # the dispatcher's re-round, while a source that is present and
+        # inconsistent (or claims `observed` with nothing behind it) is refused.
+        writer_family_source = str(dossier.get("writer_family_source") or "").strip().lower()
+        if writer_family_source and writer_family_source not in {
+            WRITER_FAMILY_SOURCE_OBSERVED,
+            WRITER_FAMILY_SOURCE_FALLBACK,
+        }:
+            blockers.append(f"review_dossier_writer_family_source_unknown:{writer_family_source}")
+        elif writer_family_source == WRITER_FAMILY_SOURCE_OBSERVED:
+            if not str(dossier.get("writer_family_session") or "").strip():
+                blockers.append("review_dossier_writer_family_evidence_missing:session")
+            if not [line for line in dossier.get("writer_family_evidence") or [] if str(line)]:
+                blockers.append("review_dossier_writer_family_evidence_missing:evidence")
     if recorded_writer_family and recorded_writer_family != WRITER_FAMILY_UNOBSERVED and accepts:
         writer_accepts = sum(1 for r in accepts if str(r.get("family")) == recorded_writer_family)
         if writer_accepts > len(accepts) // 2:

@@ -52,13 +52,14 @@ dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
 #: name its own store explicitly.
 _REAL_WRITER_IDENTITY_ROOTS = dispatch.review_team.WriterIdentityRoots
 
-#: The per-test writer-identity store: ``_write_task`` leaves the observation its
-#: lane would have left, so no test reads this host's real ``$HOME``.
+#: The per-test writer-identity store the autouse fixture installs. A row written
+#: by ``_write_task`` leaves the observation its lane would have left there, so no
+#: test reads (or depends on) this host's real ``$HOME``.
 _IDENTITY_STORE: Path | None = None
 
 
 def _identity_roots_for(tmp_path: Path, name: str = "writer-identity") -> Any:
-    """A roots binding over ``tmp_path/name``, created if absent."""
+    """A roots binding over ``tmp_path/name``, created empty if it is not there."""
 
     store = tmp_path / name
     for part in ("claim-publication-receipts", "codex-sessions", "claude-projects"):
@@ -73,8 +74,8 @@ def _identity_roots_for(tmp_path: Path, name: str = "writer-identity") -> Any:
 def _lane_family(lane: str) -> str:
     """The family a lane's own harness records, per the transport map.
 
-    Fixture only: a lane the map cannot place (a retired name) takes the map's
-    default, so the fixture stays total.
+    Only used to build a test fixture: a lane the map cannot place (a retired
+    name) is observed as the place's default so the fixture stays total.
     """
 
     try:
@@ -86,7 +87,8 @@ def _lane_family(lane: str) -> str:
 
 
 def _observe_writer_identity(task_id: str, lane: str, *, family: str | None = None) -> None:
-    """Leave the claim receipt and native record a row's session would have left."""
+    """Leave, in the per-test store, the claim receipt and native record a row's
+    authoring session would have left behind."""
 
     store = _IDENTITY_STORE
     if store is None:
@@ -141,8 +143,9 @@ def _observe_writer_identity(task_id: str, lane: str, *, family: str | None = No
 def _isolate_writer_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point the default writer-identity roots at a per-test store.
 
-    A test that wants the unobserved case points the reader at an empty store
-    rather than relying on what is absent from ``$HOME``.
+    The observation is a binding the dispatcher reads, so a test that wants the
+    unobserved case points the reader at an empty store instead of relying on
+    the absence of something in ``$HOME``.
     """
 
     global _IDENTITY_STORE
@@ -1717,32 +1720,146 @@ checklist:
             == "claude"
         )
 
-    def test_an_unobservable_author_dispatches_by_default_with_one_log_line(
+    def test_an_unobservable_author_holds_and_dispatches_no_reviewers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The unsafe case, ENFORCE mode (the killswitch's mode): nothing
+        # observed means no dossier, no seat, and above all no silent claude. The
+        # default OBSERVEs instead -- next test.
+        monkeypatch.setenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, "1")
+        result, _, reviewers, note = _review(
+            tmp_path,
+            gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
+            task_kwargs={"assigned_to": "fugu-omglol"},
+            identity_roots=_identity_roots_for(tmp_path, "empty-identity"),
+        )
+        assert result["status"] == "writer_family_unobserved"
+        assert result["plan"]["writer_family_enforcement"] is True
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        (unobserved,) = result["plan"]["unobserved_writer_family"]
+        assert unobserved["task_id"] == "task-a"
+        assert unobserved["lane"] == "fugu-omglol"
+        assert unobserved["reason"] == "claim_receipt_absent"
+        assert any("claim receipts read from" in line for line in unobserved["evidence"])
+
+    def test_an_unobservable_author_is_recorded_and_dispatched_in_observe_mode(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # Clause 11 (seat 2026-09-28T04:06Z): #4835 alone must not default to a hold
-        # -- the review plane keeps moving, on the lane's transport family, and the
-        # run says so in one line.
+        # OBSERVE, the default: the would-be hold is recorded on the dossier and
+        # in the log, and the team still seats -- on the lane's transport family,
+        # said out loud as `fallback`, never presented as identity.
         monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
         caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
         result, _, reviewers, _ = _review(
             tmp_path,
+            gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
             task_kwargs={"assigned_to": "fugu-omglol"},
             identity_roots=_identity_roots_for(tmp_path, "empty-identity"),
         )
 
         assert result["status"] == "dispatched"
-        assert result["dossier"]["writer_family"] == "claude"  # the lane transport family
-        assert result["dossier"]["writer_family_reason"] == "claim_receipt_absent"
-        assert reviewers.invocations, "the inert default still seats the team"
+        dossier = result["dossier"]
+        assert dossier["writer_family"] == "claude"  # the lane's transport family
+        assert dossier["writer_family_source"] == "fallback"
+        assert dossier["writer_family_reason"] == "claim_receipt_absent"
+        held = dossier["writer_family_unobserved"]
+        assert held["lane"] == "fugu-omglol"
+        assert held["mode"] == "observe"
+        assert held["would_hold_under"] == dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV
+        assert reviewers.invocations, "observe mode still seats the team"
         assert "writer family unobserved" in caplog.text
-        assert "to hold instead" in caplog.text
+
+    def test_a_current_head_dossier_with_a_fallback_family_is_re_rounded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex review of #4835: the fresh-dossier return used to skip the
+        # identity check, so a dossier whose family was only a fallback stayed
+        # admissible after the authoring execution became observable.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        empty = _identity_roots_for(tmp_path, "empty-identity")
+        first, gh, _, note = _review(
+            tmp_path,
+            task_kwargs={"assigned_to": "fugu-omglol", "observed_family": "fugu"},
+            identity_roots=empty,
+        )
+        assert first["status"] == "dispatched"
+        assert first["dossier"]["writer_family_source"] == "fallback"
+        assert first["dossier"]["writer_family"] == "claude"  # the transport family
+
+        # The producer arrives: the same row is now observable. The default roots
+        # carry that observation (written with the row), the empty ones do not.
+        reviewers = RecordingReviewers()
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=False,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert second["status"] == "planned"
+        assert second["plan"]["writer_family"] == "fugu"
+        assert second["plan"]["writer_family_source"] == "observed"
+
+    def test_a_fallback_dossier_is_not_re_rounded_while_the_identity_is_unobserved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The other half of the guard: while nothing is observable the fallback
+        # stands, or every row would re-round on every cycle.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        empty = _identity_roots_for(tmp_path, "empty-identity")
+        first, gh, _, note = _review(
+            tmp_path,
+            task_kwargs={"assigned_to": "fugu-omglol"},
+            identity_roots=empty,
+        )
+        assert first["status"] == "dispatched"
+        assert first["dossier"]["writer_family_source"] == "fallback"
+
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=False,
+            gh_runner=gh,
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+            identity_roots=empty,
+        )
+
+        assert second["status"] == "skipped_fresh"
+
+    def test_a_lane_rename_does_not_change_the_dossier_family(self, tmp_path: Path) -> None:
+        # Identity is per authoring session: the same row observed twice, once
+        # under its real lane name and once renamed, records the same family.
+        families: dict[str, str] = {}
+        for lane in ("fugu-omglol", "renamed-lane-42"):
+            result, _, _, _ = _review(
+                tmp_path / lane.replace("/", "-"),
+                gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
+                task_kwargs={"assigned_to": lane, "observed_family": "fugu"},
+            )
+            families[lane] = result["dossier"]["writer_family"]
+        assert families == {"fugu-omglol": "fugu", "renamed-lane-42": "fugu"}
 
     def test_a_multi_row_pr_excludes_the_union_of_observed_families(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Clause (9): a PR closing two rows of different observed families must
-        # exclude BOTH -- seating only one left the other row's author on the panel.
+        # Clause (9): one PR closing two rows of different observed families must
+        # exclude BOTH from the team. Seating only one left the other row's author
+        # on the panel as an "independent" reviewer.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
         vault = _make_vault(tmp_path)
         _write_task(vault, task_id="task-a", assigned_to="fugu-omglol", observed_family="fugu")
         _write_task(vault, task_id="task-b", assigned_to="cx-gold", observed_family="codex")
@@ -1766,6 +1883,64 @@ checklist:
         assert plan["writer_family_union"] == ["codex", "fugu"]
         assert not {seat["family"] for seat in plan["seats"]} & {"codex", "fugu"}
         assert plan["ambiguous_authoring_rows"] == ["codex", "fugu"]
+
+    def test_a_fallback_union_is_excluded_too_in_observe_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An unobservable row's recorded family is its transport fallback (the same
+        # family the admission gate will treat as the writer's), so the team must
+        # exclude it as well -- otherwise our own record says the seat is the author.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", assigned_to="fugu-omglol", observed_family="fugu")
+        _write_task(vault, task_id="task-b", assigned_to="zeta")
+        (tmp_path / "writer-identity" / "claim-publication-receipts" / "task-b.json").unlink()
+
+        planned = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert planned["status"] == "planned"
+        plan = planned["plan"]
+        assert plan["writer_family_union"] == ["claude", "fugu"]
+        assert not {seat["family"] for seat in plan["seats"]} & {"claude", "fugu"}
+
+    def test_distinct_authoring_rows_still_get_their_own_dossier_families(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", assigned_to="fugu-omglol", observed_family="fugu")
+        _write_task(vault, task_id="task-b", assigned_to="cx-gold", observed_family="codex")
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+        assert result["status"] == "multi_dispatched"
+        by_task = {item["task_id"]: item["dossier"] for item in result["results"]}
+        assert by_task["task-a"]["writer_family"] == "fugu"
+        assert by_task["task-b"]["writer_family"] == "codex"
+        assert by_task["task-a"]["constitution_authoring_rows_ambiguous"] == ["codex", "fugu"]
+        assert by_task["task-b"]["constitution_authoring_rows_ambiguous"] == ["codex", "fugu"]
 
     def test_dispatch_records_changed_source_excerpt_evidence(self, tmp_path: Path) -> None:
         rel = "scripts/hapax-glmcp-reviewer"
@@ -3614,6 +3789,21 @@ public_gate_authority:
         assert result["dossier"]["review_team_verdict"] == "no-quorum"
         assert not (note.parent / "task-a.acceptance.yaml").exists()
 
+    def test_an_existing_t2_rule_dossier_mints_its_receipt_without_reviewers(
+        self, tmp_path: Path
+    ) -> None:
+        # A dossier written before the rule was encoded: the replay mints the receipt from the
+        # recorded reviews; no seat is dispatched again.
+        reviewers = RecordingReviewers(replies={"glm": "no verdict"})
+        _, _, _, note = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR, reviewers=reviewers)
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+        replay = RecordingReviewers()
+        result, _, _, _ = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR, reviewers=replay)
+        assert replay.invocations == []
+        assert result["status"] == "skipped_fresh"
+        assert receipt_path.is_file()
+
     def test_block_with_critical_fires_auto_wake(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
         reviewers = RecordingReviewers(replies={"glm": BLOCK_REPLY})
@@ -3636,11 +3826,10 @@ public_gate_authority:
         assert "zeta" in " ".join(sent[0])
 
     def test_a_glm_lane_wakes_through_the_codex_sender(self, tmp_path: Path) -> None:
-        # The wake transport is keyed on the lane's harness family, which the lane map
-        # still answers (and which is why it stays). Writer identity is a different
-        # question: a GLM lane's authoring execution has no declared provider, so the
-        # inert default dispatches on the transport family -- and the wake goes to the
-        # lane through the sender that family names.
+        # The wake send path, restored: a GLM lane's authoring execution has no
+        # declared provider, so in OBSERVE mode the row still dispatches on the
+        # transport family -- and the wake goes to the lane through the sender its
+        # harness family names, which is what the lane map is for.
         reg = dispatch.review_team.load_lens_registry()
         for lane in ("codex-glmcp", "glm-alpha"):
             assert dispatch.review_team.writer_family_for_lane(lane, reg) == "glm"
@@ -3657,6 +3846,7 @@ public_gate_authority:
         )
         assert result["status"] == "dispatched"
         assert result["dossier"]["writer_family"] == "glm"
+        assert result["dossier"]["writer_family_source"] == "fallback"
         assert result["dossier"]["review_team_verdict"] == "blocked"
         assert sent, "auto-wake send was not attempted"
         assert sent[0][0].endswith("hapax-codex-send")
