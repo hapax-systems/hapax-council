@@ -47,13 +47,21 @@ from __future__ import annotations
 
 import argparse
 import ast
-import os
 import re
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.billing_surface_input import (  # noqa: E402
+    GitUnavailable,
+    UnusableInput,
+    _git_out,
+    _run_git,
+    materialise_post_image,
+    post_image_blob,
+    regenerated_added_lines,
+)
 
 #: Inline exemption marker, in the gitleaks:allow tradition: visible in the
 #: diff, reported by the scan, justified to the review team. For test fixtures
@@ -176,7 +184,6 @@ _PLAN_TYPE_API_RE = re.compile(r"\bplan_type[\"']?\s*[:=]\s*[\"']api[\"']")
 
 _PY_SUFFIXES = (".py",)
 _DOC_SUFFIXES = (".md", ".rst", ".txt")
-_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 @dataclass(frozen=True)
@@ -502,200 +509,6 @@ def _text_classes(content: str) -> tuple[str, ...]:
     return tuple(kinds)
 
 
-class GitUnavailable(RuntimeError):
-    """git itself is missing: this scanner cannot validate its input without it."""
-
-
-class UnusableInput(RuntimeError):
-    """The input is not a diff git will apply to the base. Nothing is scanned."""
-
-
-#: Lines git emits around a section (never a body line). ``+++ b/<path>`` names the post-image path;
-#: ``--- a/<path>`` is consumed and ignored.
-_SECTION_META_PREFIXES: tuple[str, ...] = (
-    "index ",
-    "new file mode ",
-    "deleted file mode ",
-    "old mode ",
-    "new mode ",
-    "similarity index ",
-    "dissimilarity index ",
-    "rename from ",
-    "rename to ",
-    "copy from ",
-    "copy to ",
-)
-
-
-def _run_git(
-    args: list[str],
-    *,
-    repo: Path,
-    env: dict[str, str] | None = None,
-    stdin: str | None = None,
-) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(repo),
-            env=env,
-            input=stdin,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as exc:  # git absent, or not executable
-        raise GitUnavailable(str(exc)) from exc
-
-
-def _git_out(proc: subprocess.CompletedProcess[str]) -> str:
-    return (proc.stderr or proc.stdout or "").strip()
-
-
-def _resolve_base(base: str, *, repo: Path) -> str:
-    proc = _run_git(["rev-parse", "--verify", f"{base}^{{commit}}"], repo=repo)
-    if proc.returncode != 0:
-        raise UnusableInput(
-            f"~base '{base}' is not a commit git can resolve here ({_git_out(proc)}). Next action: "
-            "pass --base as the PR's base revision (or a commit sha) in this repository"
-        )
-    return proc.stdout.strip()
-
-
-def materialise_post_image(diff_text: str, *, repo: Path, base: str) -> tuple[Path, dict[str, str]]:
-    """The temporary index git builds from ``base`` + the input diff, or UnusableInput.
-
-    GIT VALIDATES THE INPUT HERE. ``git apply --check`` proves the input is a well-formed diff
-    that applies to the resolved base; ``git apply --cached`` then materialises the post-image in
-    an index seeded from the base's tree. A shape git will not apply is billing-scan-unusable-input
-    with a next action — there is no permissive parse of raw diff text to leak.
-    """
-    resolved = _resolve_base(base, repo=repo)
-    index_dir = Path(tempfile.mkdtemp(prefix="billing-scan-index-"))
-    index_path = index_dir / "index"
-    env = {**os.environ, "GIT_INDEX_FILE": str(index_path)}
-    read = _run_git(["read-tree", resolved], repo=repo, env=env)
-    if read.returncode != 0:
-        raise UnusableInput(
-            f"git could not seed a temporary index from {resolved[:12]}: {_git_out(read)}. Next "
-            "action: run this scanner inside the repository whose base it names"
-        )
-    # VALIDATE AGAINST THE BASE TREE, not the worktree: --cached checks the diff against the tree
-    # the temporary index holds. (A plain `git apply --check` reads the worktree, which is the
-    # post-image on a PR head, so a correct diff would look unapplicable.)
-    check = _run_git(
-        # --unidiff-zero: the input may be a zero-context diff (git diff --unified=0), which
-        # git apply refuses by default; the base-tree index is the safety check here.
-        ["apply", "--cached", "--check", "--unidiff-zero", "--whitespace=nowarn", "-"],
-        repo=repo,
-        env=env,
-        stdin=diff_text,
-    )
-    if check.returncode != 0:
-        raise UnusableInput(
-            f"git will not apply this input to {resolved[:12]}: {_git_out(check)}. Next action: "
-            "regenerate the diff with `git diff <base>...HEAD` in this repository (or fix the "
-            "input); a diff git cannot apply is billing-scan-unusable-input and is never scanned"
-        )
-    applied = _run_git(
-        ["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "-"],
-        repo=repo,
-        env=env,
-        stdin=diff_text,
-    )
-    if applied.returncode != 0:
-        raise UnusableInput(
-            f"git accepted the input with --check but could not apply it to the index: "
-            f"{_git_out(applied)}. Next action: regenerate the diff from the same repository state "
-            "and rerun"
-        )
-    return index_path, env
-
-
-def parse_git_added_lines(text: str) -> tuple[dict[str, dict[int, str]], str | None]:
-    """Added lines per post-image path from git's OWN ``--unified=0`` output.
-
-    A CLOSED grammar over the lines git emits for a text diff: section metadata, ``---``/``+++``
-    headers, a ``Binary files … differ`` note, hunk headers, body lines and the
-    ``\\ No newline at end of file`` marker. **The default is REJECT**: a line this grammar does not
-    know refuses the input (with its own next action) rather than being skipped, so an
-    unanticipated shape can never scan clean.
-    """
-    files: dict[str, dict[int, str]] = {}
-    pending_path: str | None = None
-    path: str | None = None
-    new_line = 0
-    in_hunk = False
-    for raw in text.splitlines():
-        if raw.startswith("diff --git "):
-            pending_path = None
-            path = None
-            in_hunk = False
-            continue
-        if raw.startswith(_SECTION_META_PREFIXES):
-            continue
-        if raw.startswith("--- ") or raw.startswith("+++ "):
-            candidate = raw[4:].strip()
-            if raw.startswith("--- "):
-                continue
-            if candidate == "/dev/null":
-                pending_path = None
-            elif candidate.startswith("b/"):
-                pending_path = candidate[2:]
-            else:
-                return {}, f"a '+++ ' header git would not emit: {raw!r}"
-            continue
-        if raw.startswith(("Binary files ", "GIT binary patch")):
-            # A declared-binary section's payload is opaque: git shows no added lines for it.
-            pending_path = None
-            in_hunk = False
-            continue
-        header = _HUNK_HEADER_RE.match(raw)
-        if header is not None:
-            if pending_path is None:
-                return {}, "a hunk header arrived before any '+++ b/<path>' header"
-            path = pending_path
-            new_line = int(header.group(3))
-            in_hunk = True
-            continue
-        if raw.startswith("\\"):
-            # `\ No newline at end of file` is hunk metadata, never an added line.
-            continue
-        if in_hunk and raw.startswith("+"):
-            if path is None:
-                return {}, "an added line arrived with no post-image path"
-            files.setdefault(path, {})[new_line] = raw[1:]
-            new_line += 1
-            continue
-        if in_hunk and raw.startswith(("-", " ")):
-            if raw.startswith(" "):
-                # A context line cannot occur under --unified=0; accepting the shape is not a
-                # fail-open because a context line is never scanned as added.
-                new_line += 1
-            continue
-        return {}, f"an unrecognised line in git's own diff output: {raw!r}"
-    return files, None
-
-
-def post_image_blob(path: str, *, repo: Path, env: dict[str, str]) -> str | None:
-    """git's own post-image text for ``path``, or None when git cannot hand it over as text.
-
-    None is a LIMITATION, never a pass: the caller then judges the added lines by the text
-    patterns, which grant no structural exemption.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "show", f":{path}"], cwd=str(repo), env=env, capture_output=True, check=False
-        )
-    except OSError as exc:
-        raise GitUnavailable(str(exc)) from exc
-    if proc.returncode != 0 or not proc.stdout:
-        return None
-    if b"\x00" in proc.stdout[:8192]:  # binary blob: opaque, and never parsed as text
-        return None
-    return proc.stdout.decode("utf-8", errors="replace")
-
-
 def scan_git_validated(
     diff_text: str, *, repo: Path, base: str
 ) -> tuple[ScanResult | None, str | None]:
@@ -712,25 +525,17 @@ def scan_git_validated(
             "(--diff-file) or --base/--head; a PR that genuinely changes no file is covered by the "
             "merge-group duplicate sentinel, not by this scan reporting success."
         )
-    index_path, env = materialise_post_image(diff_text, repo=repo, base=base)
-    del index_path
-    regenerated = _run_git(
-        ["diff", "--cached", "--no-color", "--no-ext-diff", "--unified=0", f"{base}^{{commit}}"],
-        repo=repo,
-        env=env,
-    )
-    if regenerated.returncode != 0:
-        return None, (
-            f"FAIL-CLOSED: git could not regenerate the diff from the validated index: "
-            f"{_git_out(regenerated)}. Next action: rerun in the repository whose base it names"
-        )
-    files, error = parse_git_added_lines(regenerated.stdout)
-    if error is not None:
-        return None, (
-            f"FAIL-CLOSED: {error}. Next action: this shape is not one git emits for a text diff, "
-            "so nothing is scanned; regenerate the input with `git diff <base>...HEAD` and rerun"
-        )
+    with materialise_post_image(diff_text, repo=repo, base=base) as (_index_path, env):
+        files, error = regenerated_added_lines(repo=repo, base=base, env=env)
+        if error is not None:
+            return None, error
+        return _scan_validated_files(files, repo=repo, env=env), None
 
+
+def _scan_validated_files(
+    files: dict[str, dict[int, str]], *, repo: Path, env: dict[str, str]
+) -> ScanResult:
+    """Judge only Git-regenerated added lines while the validated index exists."""
     findings: list[Finding] = []
     allowed: list[Finding] = []
     scanned: list[str] = []
@@ -836,13 +641,8 @@ def scan_git_validated(
                             "unparseable credential-bearing text is never exempt."
                         ),
                     )
-    return (
-        ScanResult(
-            findings=tuple(findings),
-            allowed=tuple(allowed),
-            scanned_files=tuple(scanned),
-        ),
-        None,
+    return ScanResult(
+        findings=tuple(findings), allowed=tuple(allowed), scanned_files=tuple(scanned)
     )
 
 
