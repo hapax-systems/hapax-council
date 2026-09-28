@@ -28,6 +28,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -72,27 +73,18 @@ _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _FORBIDDEN_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _URL_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
-#: Cheap byte screen before the YAML parse. ``active/`` holds >1200 engineering rows
-#: on NFS; parsing every one of them to find a handful of desk rows costs a second
-#: per list call. This is a PREFILTER, never the authority — a row that passes it is
-#: still admitted only by :func:`_is_desk_row` on the parsed frontmatter.
-_DESK_ROW_PREFILTER_RE = re.compile(
-    rf"^route_family:\s*{re.escape(REQUEST_ROUTE_FAMILY)}\s*$", re.MULTILINE
-)
-
 _STAMP_FIELDS = ("delivered_at", "delivery_receipt", "delivery_drop", "delivery_citations")
 
-#: The one URI-scheme allowlist the desk applies to every URI it writes, wherever it
-#: appears — a citation, a markdown link, an image target. Citations refuse; body URIs
-#: are neutralised instead, because refusing a whole answer over one stray `mailto:`
-#: costs a research run and teaches the agent nothing.
+#: Citations refuse other schemes; body links are neutralized.
 ALLOWED_URI_SCHEMES: frozenset[str] = frozenset(("http", "https"))
 
 #: URI destination with one nested parenthesis level and leading whitespace.
 _MD_TARGET = r"(?:[^()\s]|\([^()\s]*\))*"
 _MD_IMAGE_DEST_RE = re.compile(rf"\(\s*(?P<target>{_MD_TARGET})(?P<rest>[^)]*)\)")
 _MAX_IMAGE_LABEL_DEPTH = 16
-_RAW_IMG_RE = re.compile(r"<\s*img\b[^>]*>", re.IGNORECASE)
+_RAW_HTML_RE = re.compile(
+    r"(?P<code>(?<![\\`])(?P<ticks>`+)(?!`)[^\n]*?(?<!`)(?P=ticks)(?!`))|(?P<tag><[^>]*>|<)"
+)
 _AUTOLINK_RE = re.compile(r"<(?P<uri>[A-Za-z][A-Za-z0-9+.-]*:[^>\s]*)>")
 
 
@@ -282,10 +274,9 @@ def _scheme_of(target: str) -> str:
 
 
 def neutralize_markdown(body: str) -> NeutralizedBody:
-    """Demote images and defang non-http(s) links in untrusted markdown.
+    """Demote images, defang unsafe links, and escape raw HTML.
 
-    This does not screen other raw HTML or reader-generated links from bare URLs.
-    Counts let the delivery drop report each withheld image and link.
+    Bare URLs that a reader turns into links are not screened.
     """
     images = 0
     links = 0
@@ -308,9 +299,7 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
                 pos += 1
             destination = _MD_IMAGE_DEST_RE.match(text, pos) if depth == 0 else None
             if destination is None or over_cap:
-                # A malformed or excessively nested label may still contain a
-                # renderable image. Consume its entire apparent target, and never
-                # copy attacker-controlled markdown back into the output.
+                # Remove the whole apparent target on malformed or deep labels.
                 close = text.find(")", start + 2)
                 cursor = len(text) if close == -1 else close + 1
                 parts.append("`[image withheld]`")
@@ -327,10 +316,17 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
         parts.append(text[cursor:])
         return "".join(parts)
 
-    def _raw_img(match: re.Match[str]) -> str:
+    def _raw_html(match: re.Match[str]) -> str:
         nonlocal images
-        images += 1
-        return match.group(0).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        if match.group("code"):
+            return match.group(0)
+        tag = match.group(0)
+        autolink = _AUTOLINK_RE.fullmatch(tag)
+        if autolink and _scheme_of(autolink.group("uri")) in ALLOWED_URI_SCHEMES:
+            return tag
+        if re.match(r"<\s*img\b", tag, re.IGNORECASE):
+            images += 1
+        return escape(tag, quote=False)
 
     def _links(text: str) -> str:
         nonlocal links
@@ -384,9 +380,9 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
         return f"`[link withheld — {uri}]`"
 
     out = _images(body)
-    out = _RAW_IMG_RE.sub(_raw_img, out)
     out = _links(out)
     out = _AUTOLINK_RE.sub(_autolink, out)
+    out = _RAW_HTML_RE.sub(_raw_html, out)
     return NeutralizedBody(markdown=out, images=images, links=links)
 
 
@@ -473,13 +469,7 @@ def _is_desk_row(fm: dict[str, Any]) -> bool:
 
 
 def iter_desk_rows(config: ResearchDeskConfig) -> list[ResearchRequest | MalformedRequest]:
-    """Every ``research_request`` / ``perplexity-desk`` row under ``active/``.
-
-    A row that fails the kind/route_family test is not ours and is skipped
-    silently — that is the whole active-tasks directory, and reporting every
-    engineering task as "malformed" would bury the signal. A row that IS ours and
-    fails to parse is reported.
-    """
+    """Parse desk rows under active; skip rows of other kinds and routes."""
     requests_dir = config.requests_dir
     if not requests_dir.is_dir():
         raise ResearchDeskError(
@@ -492,8 +482,6 @@ def iter_desk_rows(config: ResearchDeskConfig) -> list[ResearchRequest | Malform
         try:
             text = _read_request_file(path)
         except (OSError, UnicodeDecodeError):
-            continue
-        if not _DESK_ROW_PREFILTER_RE.search(text):
             continue
         probe = parse_frontmatter_with_diagnostics(text)
         if not probe.ok or probe.frontmatter is None or not _is_desk_row(probe.frontmatter):

@@ -113,6 +113,12 @@ def test_list_returns_only_desk_rows_that_are_open(desk: ResearchDeskConfig) -> 
     assert malformed == []
 
 
+def test_list_admits_a_quoted_route_family(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "quoted-route", route_family='"perplexity-desk"')
+    listed, _ = list_open_requests(desk)
+    assert [row.request_id for row in listed] == ["quoted-route"]
+
+
 def test_list_reports_malformed_desk_rows_rather_than_skipping_them(
     desk: ResearchDeskConfig,
 ) -> None:
@@ -278,6 +284,26 @@ def test_raw_html_images_are_defanged_too() -> None:
     result = neutralize_markdown('text <img src="http://tracker.example/p.gif"> more')
     assert result.images == 1
     assert '&lt;img src="http://tracker.example/p.gif"&gt;' in result.markdown
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        '<iframe src="https://t.example/"></iframe>',
+        '<link rel="stylesheet" href="https://t.example/a.css">',
+        '<video src="https://t.example/v.mp4"></video>',
+        '<audio src="https://t.example/a.mp3"><source src="https://t.example/a.mp3"></audio>',
+        '<object data="https://t.example/o"></object><embed src="https://t.example/e">',
+        '<svg><image href="https://t.example/i"/></svg>',
+        '<div style="background:url(https://t.example/i)">x</div>',
+        '<x title="<iframe src=https://t.example>">',
+        "`unclosed <iframe src=https://t.example>",
+    ],
+)
+def test_raw_html_cannot_load_external_content(tag: str) -> None:
+    result = neutralize_markdown(tag)
+    assert "<" not in result.markdown
+    assert "&lt;" in result.markdown
 
 
 @pytest.mark.parametrize(
