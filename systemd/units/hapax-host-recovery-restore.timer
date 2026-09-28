@@ -1,4 +1,5 @@
 [Unit]
+# Hapax-Auto-Enable: true
 Description=Retry any incomplete host lane recovery
 
 [Timer]

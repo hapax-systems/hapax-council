@@ -11,6 +11,10 @@ On appendix, run `scripts/install-host-recovery --install` from an activated
 source tree. The installer copies the script and four units into stable home
 paths, reloads the user manager, and enables the capture timer, boot restore
 service, and retry timer. `--check` verifies the installed copies and enablement.
+After merge, `hapax-post-merge-deploy` publishes the script, installs the
+auto-enabled user units, and invokes the appendix policy installer only when
+the activated source HEAD matches the requested release SHA. It skips the
+appendix-only root policy on other hosts.
 The timer records live `hapax-codex-*` and `hapax-claude-*` tmux panes every
 minute. A pane is admitted only with an explicit transcript UUID, a matching
 role and inbox, and a dedicated user cgroup with MemoryHigh=5G,
