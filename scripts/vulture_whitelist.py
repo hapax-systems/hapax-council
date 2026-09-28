@@ -5454,3 +5454,11 @@ from scripts.billing_surface_input import (
 )
 
 _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
+
+# The E1 declaration loader is called by the extensionless census CLI in the integration slice.
+# Vulture does not scan that entrypoint; this reference keeps the staged producer visible.
+from shared.entitlement_census import (  # noqa: E402
+    load_census_config as _census_load_census_config,
+)
+
+_ = _census_load_census_config
