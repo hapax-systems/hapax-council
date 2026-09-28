@@ -819,13 +819,16 @@ class TestApply:
         assert all(r["diff_delivered_bytes"] == full for r in dossier["reviewers"])
         assert dossier["review_team_verdict"] == "quorum-accept"
 
-    def test_t1_size_replacement_keeps_four_independent_seats(self, tmp_path: Path) -> None:
+    def test_t1_90kb_diff_splits_on_same_family_reseat(self, tmp_path: Path) -> None:
         gh = FakeGh()
-        gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 6_000
+        gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 10_000
         result, _, reviewers, note = _review(tmp_path, gh=gh, task_kwargs={"risk_tier": "T1"})
-        assert result["status"] == "dispatched"
-        assert len({family for _, family, _ in reviewers.invocations}) == 4
-        assert result["dossier"]["review_team_verdict"] == "quorum-accept"
+        assert 90_000 < len(gh.diff.encode("utf-8")) < 100_000
+        assert result["status"] == "split_required"
+        assert "same_family_reseat" in result["plan"]["constitution_error"]
+        assert reviewers.invocations == []
+        assert "Review split required" in note.read_text()
+        assert len(result["notice_paths"]) == 2
 
     def test_large_docs_round_sends_whole_diff_to_eligible_seats(self, tmp_path: Path) -> None:
         gh = FakeGh(files=["docs/guide.md"])
