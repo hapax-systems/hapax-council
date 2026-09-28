@@ -667,6 +667,48 @@ class TestStackedPrIsNeverArmed:
         assert not any(call[:3] == ["gh", "pr", "merge"] for call in calls)
         assert not any("repos/owner/repo/pulls/42" in part for call in calls for part in call)
 
+    @pytest.mark.parametrize(
+        ("fault", "reason"),
+        [
+            ("unreadable", "current_base_branch_unverified:pr_unreadable"),
+            ("head_changed", "current_base_branch_unverified:head_changed"),
+            ("base_missing", "current_base_branch_unverified:base_or_default_missing"),
+            ("default_missing", "current_base_branch_unverified:base_or_default_missing"),
+        ],
+    )
+    def test_live_branch_evidence_errors_refuse_merge_arm(
+        self, tmp_path: Path, fault: str, reason: str
+    ) -> None:
+        pr = autoqueue._parse_pr(self._listed(_pr(42, base="main")))
+        assert pr is not None
+        runner = _FakeRunner()
+        runner.open_prs = [self._listed(_pr(42, base="main"))]
+        original = runner._rest_pull_for_number
+
+        def broken_read(number: int) -> dict[str, Any] | None:
+            if fault == "unreadable":
+                return None
+            payload = original(number)
+            assert payload is not None
+            if fault == "head_changed":
+                payload["head"]["sha"] = "new-head"
+            elif fault == "base_missing":
+                payload["base"]["ref"] = None
+            else:
+                payload["base"]["repo"]["default_branch"] = None
+            return payload
+
+        runner._rest_pull_for_number = broken_read
+        ok, message = autoqueue.merge_pr(
+            autoqueue.Decision(pr=pr, action="queue", expected_auto_merge_method="SQUASH"),
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert not ok
+        assert message == reason
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
     def test_an_armed_stacked_pr_is_left_alone_not_disarmed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -8349,10 +8391,15 @@ def test_governance_auto_arm_missing_head_sha_blocks_before_note_write(
     assert not any(call[:4] == ["gh", "pr", "merge", "745"] for call in runner.calls)
     assert any(
         item["pr"] == 745
-        and item["action"] == "release_auto_arm"
+        and item["action"] == "base_branch_revalidation"
         and item["ok"] is False
-        and item["message"]
-        == "release auto-arm failed: current_pr_head_unverifiable:missing_expected_head_sha"
+        and item["message"] == "current_base_branch_unverified:head_missing"
+        and item["admission_status"] == (False, "missing_head_sha")
+        for item in report["mutations"]
+    )
+    assert not any(call[:4] == ["gh", "api", "-X", "POST"] for call in runner.calls)
+    assert not any(
+        item.get("action") == "release_auto_arm" and item.get("pr") == 745
         for item in report["mutations"]
     )
 

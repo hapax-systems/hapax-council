@@ -5435,39 +5435,42 @@ def run_reconciler(
                     "already_auto_merge_enabled",
                 }
                 if release_head_subject:
-                    if decision.pr.head_sha:
-                        branch_blocker = _current_base_branch_blocker(
+                    branch_blocker = (
+                        _current_base_branch_blocker(
                             decision.pr,
                             repo=repo,
                             repo_root=repo_root,
                             runner=runner,
                             route=listing_route,
                         )
-                        if branch_blocker:
-                            blocked_decision = replace(
-                                decision,
-                                action="blocked",
-                                reasons=(branch_blocker,),
-                                auto_arm=False,
-                            )
-                            blocked_status = set_autoqueue_admission_status(
-                                blocked_decision,
-                                repo=repo,
-                                repo_root=repo_root,
-                                runner=runner,
-                                now=now,
-                                route=listing_route,
-                            )
-                            mutation_results.append(
-                                {
-                                    **decision.as_dict(),
-                                    "action": "base_branch_revalidation",
-                                    "ok": False,
-                                    "message": branch_blocker,
-                                    "admission_status": blocked_status,
-                                }
-                            )
-                            continue
+                        if decision.pr.head_sha
+                        else "current_base_branch_unverified:head_missing"
+                    )
+                    if branch_blocker:
+                        blocked_decision = replace(
+                            decision,
+                            action="blocked",
+                            reasons=(branch_blocker,),
+                            auto_arm=False,
+                        )
+                        blocked_status = set_autoqueue_admission_status(
+                            blocked_decision,
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                            now=now,
+                            route=listing_route,
+                        )
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "base_branch_revalidation",
+                                "ok": False,
+                                "message": branch_blocker,
+                                "admission_status": blocked_status,
+                            }
+                        )
+                        continue
                     if decision.auto_arm and decision.task is not None:
                         armed_ok, armed_message = arm_release_for_task(
                             decision.task,
