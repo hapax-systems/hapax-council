@@ -16,6 +16,8 @@ systemd/system/sshd.service.d/oom-protect.conf
 systemd/units/hapax-root-failure-intake@.service
 systemd/units/hapax-oom-score-enforce.service
 systemd/units/hapax-oom-score-enforce.timer
+systemd/system/hapax-signing-holder.socket
+systemd/system/hapax-signing-holder@.service
 systemd/units/hapax-oom-policy-audit.service
 systemd/units/hapax-oom-policy-audit.timer
 systemd/units/hapax-root-required-deploy-audit.service
@@ -34,3 +36,7 @@ scripts/hapax-oom-score-trigger
 scripts/hapax-root-failure-intake
 scripts/hapax-oom-policy-audit
 scripts/hapax-root-required-deploy-audit
+scripts/hapax-signing-holder
+shared/__init__.py
+shared/public_gate_receipts.py
+shared/signing_holder.py

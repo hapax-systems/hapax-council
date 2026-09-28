@@ -112,6 +112,10 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setenv("HAPAX_OOM_TRIGGER_DEST", str(tmp_path / "bin" / "hapax-oom-score-trigger"))
     monkeypatch.setenv(
+        "HAPAX_OOM_SIGNING_HOLDER_DEST", str(tmp_path / "sbin" / "hapax-signing-holder")
+    )
+    monkeypatch.setenv("HAPAX_OOM_SIGNING_HOLDER_LIB_DIR", str(tmp_path / "lib" / "signing-holder"))
+    monkeypatch.setenv(
         "HAPAX_OOM_SUDOERS_DEST", str(tmp_path / "sudoers.d" / "hapax-oom-score-enforce")
     )
     monkeypatch.setenv(
@@ -642,6 +646,19 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert sudoers_reference.stat().st_uid == os.getuid()
     assert sudoers_reference.stat().st_gid == os.getgid()
     assert root_failure_dest.is_file()
+    holder_dest = Path(os.environ["HAPAX_OOM_SIGNING_HOLDER_DEST"])
+    holder_lib = Path(os.environ["HAPAX_OOM_SIGNING_HOLDER_LIB_DIR"])
+    assert holder_dest.read_bytes() == (REPO_ROOT / "scripts/hapax-signing-holder").read_bytes()
+    assert holder_dest.stat().st_mode & 0o777 == 0o755
+    for relative in ("__init__.py", "signing_holder.py", "public_gate_receipts.py"):
+        assert (holder_lib / "shared" / relative).read_bytes() == (
+            REPO_ROOT / "shared" / relative
+        ).read_bytes()
+        assert (holder_lib / "shared" / relative).stat().st_mode & 0o777 == 0o644
+    for unit in ("hapax-signing-holder.socket", "hapax-signing-holder@.service"):
+        assert (system_dir / unit).read_bytes() == (
+            REPO_ROOT / "systemd/system" / unit
+        ).read_bytes()
     assert (tmp_path / "sbin" / "hapax-oom-policy-audit").is_file()
     assert (tmp_path / "sbin" / "hapax-root-required-deploy-audit").is_file()
     for unit in (
@@ -668,6 +685,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "daemon-reload" in calls
     assert "enable --now earlyoom.service" in calls
     assert "restart earlyoom.service" in calls
+    assert "enable --now hapax-signing-holder.socket" in calls
+    assert "is-active --quiet hapax-signing-holder.socket" in calls
     assert "set-property --runtime user.slice" in calls
     assert "is-enabled --quiet earlyoom.service" in calls
     assert "is-active --quiet earlyoom.service" in calls
