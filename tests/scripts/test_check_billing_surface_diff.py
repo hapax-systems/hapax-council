@@ -312,13 +312,17 @@ def test_a_marker_on_an_unchanged_opening_line_does_not_exempt_an_added_argument
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
     (repo / "tests" / "gen.py").write_text("client = OpenAI(  # billing-scan:allow\n)\n")
-    _commit(repo, "opening line carries the marker")
+    marker_base = _commit(repo, "opening line carries the marker")
     (repo / "tests" / "gen.py").write_text(
         "client = OpenAI(  # billing-scan:allow\n    api_key=key,\n)\n"
     )
-    _commit(repo, "add the credential argument")
+    head = _commit(repo, "add the credential argument")
 
-    result = _run(repo, base)
+    diff = _git(repo, "diff", "--unified=0", f"{marker_base}...{head}")
+    assert "+    api_key=key," in diff
+    assert "+client = OpenAI(" not in diff
+
+    result = _run(repo, marker_base)
 
     assert result.returncode == 1, result.stdout + result.stderr
     assert "api-key-route" in result.stdout
