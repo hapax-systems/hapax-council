@@ -4707,8 +4707,12 @@ def require_applied_admitted_claim_publication(
                     "recover and require the exact admitted claim publication receipt",
                     f"{publication_id}:{state}",
                 )
-            _require_captured_postimages(snapshot, loaded_projections[:7])
-            _require_captured_task_postimage(current_task, loaded_intent)
+            # The six lease sidecars stay exact. The note (projection 0) is the owner's to edit
+            # once applied, so it is held to the claim's identity, as a resume holds it; a byte
+            # comparison held every live claim whose owner had moved it to in_progress
+            # (claim-applied-note-continuation-test-first-20260927).
+            _require_captured_postimages(snapshot, loaded_projections[1:7])
+            _require_current_task_continues_claim(current_task, loaded_intent)
             receipt = _as_admitted_receipt(
                 journal.manifest_path,
                 _normalized(receipt_path),
@@ -4724,6 +4728,31 @@ def require_applied_admitted_claim_publication(
             return receipt
     except ReadOnlySnapshotError as exc:
         _raise_snapshot_error(exc)
+
+
+def _require_current_task_continues_claim(
+    current_task: TaskNoteSnapshot, intent: ClaimPublicationIntent
+) -> None:
+    """The live note still belongs to this applied claim: its receipt-bound path and mode, the
+    claim's lane as assignee, and its AuthorityCase.
+
+    Once a claim is applied its note is the owner's to edit (``in_progress``, a PR link, session
+    lines), so its bytes are not compared; its lease sidecars are, byte for byte. A resume, a
+    rehydration and a recovery of an applied journal all read the note through this one check.
+    """
+
+    frontmatter = current_task.frontmatter
+    if (
+        current_task.path != intent.note_path
+        or current_task.mode != intent.note_mode
+        or str(frontmatter.get("assigned_to") or "").strip() != intent.binding.lane
+        or str(frontmatter.get("authority_case") or "").strip() != intent.binding.authority_case
+    ):
+        raise ClaimPublicationError(
+            "claim_publication_current_task_identity_mismatch",
+            "restore one active task with the receipt-bound path, lane, and AuthorityCase",
+            current_task.task_id,
+        )
 
 
 def _resolve_applied_captured(
@@ -4836,18 +4865,7 @@ def _resolve_applied_captured(
             "reclaim through the exact applied claim publication",
             current_task.task_id,
         )
-    frontmatter = current_task.frontmatter
-    if (
-        current_task.path != intent.note_path
-        or current_task.mode != intent.note_mode
-        or str(frontmatter.get("assigned_to") or "").strip() != binding.lane
-        or str(frontmatter.get("authority_case") or "").strip() != binding.authority_case
-    ):
-        raise ClaimPublicationError(
-            "claim_publication_current_task_identity_mismatch",
-            "restore one active task with the receipt-bound path, lane, and AuthorityCase",
-            current_task.task_id,
-        )
+    _require_current_task_continues_claim(current_task, intent)
     return AppliedClaimPublicationSnapshot(
         intent=intent,
         current_task=current_task,

@@ -3216,3 +3216,100 @@ def test_a_role_rerunning_its_own_claim_on_a_blocked_row_is_still_answered_as_it
 
     assert again.returncode == 0, again.stderr
     assert "applied publication already owns task 'own-row'" in again.stdout
+
+
+# claim-applied-note-continuation-test-first-20260927, step one on current main: an applied
+# claim's owner edits its own note, as every owner does (the in_progress transition, a PR link, a
+# session-log line). Governed recovery then reads the applied journal against its admitted
+# postimage.
+
+
+def _continue_note(note: Path) -> None:
+    text = note.read_text(encoding="utf-8").replace("status: claimed", "status: in_progress", 1)
+    note.write_text(text + "\n- 2026-09-28T01:40:00Z cx-test: working (an owner's log line)\n")
+
+
+@pytest.mark.parametrize("scope", ["task", "all"])
+def test_governed_recovery_accepts_an_owners_continued_note(tmp_path: Path, scope: str) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "continued-row")
+    assert _claim(home, "continued-row").returncode == 0
+    _continue_note(note)
+    continued = note.read_bytes()
+
+    recovered = _claim(
+        home,
+        "continued-row" if scope == "task" else "",
+        install_gate0b=False,
+        extra_args=["--recover-claim-publications"],
+    )
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert "postimage_drift" not in recovered.stdout + recovered.stderr
+    assert note.read_bytes() == continued
+
+
+def _reassign(note: Path) -> None:
+    text = note.read_text(encoding="utf-8")
+    note.write_text(text.replace("assigned_to: cx-test", "assigned_to: another-lane", 1))
+
+
+def _reoffer(note: Path) -> None:
+    text = note.read_text(encoding="utf-8").replace("status: in_progress", "status: offered", 1)
+    note.write_text(text.replace("assigned_to: cx-test", "assigned_to: unassigned", 1))
+
+
+def _change_authority(note: Path) -> None:
+    text = note.read_text(encoding="utf-8")
+    note.write_text(text.replace("authority_case: CASE-TEST-001", "authority_case: CASE-OTHER", 1))
+
+
+def _change_mode(note: Path) -> None:
+    note.chmod(0o600 if (note.stat().st_mode & 0o777) != 0o600 else 0o640)
+
+
+def _rename(note: Path) -> None:
+    note.rename(note.with_name("continued-row-renamed.md"))
+
+
+def _alter_lease(note: Path) -> None:
+    epoch = note.parents[5] / ".cache" / "hapax" / "cc-claim-epoch-cx-test"
+    epoch.write_text(epoch.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("perturb", "reason"),
+    [
+        (_reassign, "claim_publication_current_task_identity_mismatch"),
+        (_reoffer, "claim_publication_current_task_identity_mismatch"),
+        (_change_authority, "claim_publication_current_task_identity_mismatch"),
+        (_change_mode, "claim_publication_current_task_identity_mismatch"),
+        (_rename, "claim_publication_current_task_identity_mismatch"),
+        (_alter_lease, "claim_publication_postimage_drift"),
+    ],
+    ids=[
+        "reassigned",
+        "reoffered",
+        "authority_changed",
+        "mode_changed",
+        "renamed",
+        "lease_altered",
+    ],
+)
+def test_governed_recovery_still_holds_a_note_that_no_longer_belongs_to_the_claim(
+    tmp_path: Path, perturb: object, reason: str
+) -> None:
+    # The unsafe cases, written before the relaxation: only the owner's own continuation is
+    # accepted. A note taken from the claim, or an altered lease sidecar, still holds.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "continued-row")
+    assert _claim(home, "continued-row").returncode == 0
+    _continue_note(note)
+    perturb(note)  # type: ignore[operator]
+
+    recovered = _claim(
+        home, "continued-row", install_gate0b=False, extra_args=["--recover-claim-publications"]
+    )
+
+    assert recovered.returncode == 8, recovered.stdout + recovered.stderr
+    assert reason in recovered.stdout + recovered.stderr
