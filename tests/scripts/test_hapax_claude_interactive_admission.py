@@ -178,7 +178,6 @@ def test_interactive_admission_respects_shared_pool_wall(
         route_id=wall_route,
         subscription_bound=True,
         detected_at="2026-06-09T23:57:00Z",
-        subscription_bound=True,
     )
     result, ledger_path = _run_writer(tmp_path)
     assert result.returncode == 0, result.stderr

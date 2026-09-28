@@ -22,6 +22,7 @@ import pytest
 
 import shared.durable_jsonl_sink as sink_mod
 from shared.quota_headroom import read_claude_wall_and_spend
+from shared.quota_spend_ledger import claude_subscription_credential_binding
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-account-live-observe"
@@ -634,18 +635,31 @@ def test_a_quantity_probe_that_hits_a_wall_holds_the_route(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    binding = claude_subscription_credential_binding("synthetic-subscription-token", NOW)
     wall = obs.Observation(
-        "wall",
-        NOW,
-        "active-probe",
-        "provider-quota-refusal",
-        credential_binding=obs._probe_credential_binding("synthetic-subscription-token", NOW),
+        "wall", NOW, "active-probe", "provider-quota-refusal", credential_binding=binding
     )
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=wall)
     assert calls == [NOW]
     assert (payload["verdict"], rc) == ("walled", 3)
-    assert Path(payload["wall_receipt"]).is_file()
     assert minted(tmp_path) == []
+    walls = list((tmp_path / "receipts").glob("*-quota-wall.yaml"))
+    assert len(walls) == 1
+    assert payload["wall_receipt"] == str(walls[0])
+    assert f"credential_binding: {binding}\n" in walls[0].read_text()
+
+
+def test_an_unbound_quantity_wall_reports_publication_failure(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    wall = obs.Observation("wall", NOW, "active-probe", "provider-quota-refusal")
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=wall)
+    assert calls == [NOW]
+    assert (payload["verdict"], rc) == ("walled", 5)
+    assert payload["wall_receipt_write_failed"] is True
+    assert "wall_receipt" not in payload
+    assert not list((tmp_path / "receipts").glob("*-quota-wall.yaml"))
 
 
 def test_a_failed_quantity_probe_mints_no_passive_admission(
