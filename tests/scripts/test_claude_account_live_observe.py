@@ -16,11 +16,14 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
-import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+
+from tests.scripts.test_claude_probe_subscription_boundary import (
+    subscription_probe_home as subscription_probe_home,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-account-live-observe"
@@ -36,31 +39,6 @@ obs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(obs)
 
 NOW = datetime(2026, 8, 19, 16, 0, 0, tzinfo=UTC)
-
-
-@pytest.fixture
-def subscription_probe_home(tmp_path, monkeypatch):
-    config = tmp_path / ".claude"
-    config.mkdir(parents=True)
-    cred = config / ".credentials.json"
-    cred.write_text(
-        json.dumps(
-            {
-                "claudeAiOauth": {
-                    "accessToken": "test-access-token",
-                    "subscriptionType": "max",
-                    "scopes": ["user:inference"],
-                    "expiresAt": int(NOW.timestamp() * 1000) + 3600000,
-                },
-            }
-        )
-    )
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    for name in list(os.environ):
-        if name.startswith(("ANTHROPIC_", "CLAUDE_CODE_USE_")):
-            monkeypatch.delenv(name)
-    monkeypatch.setattr(obs, "PROBE_MANAGED_DIR", tmp_path / "absent")
 
 
 @pytest.mark.usefixtures("subscription_probe_home")

@@ -65,19 +65,20 @@ def _wall(ts: datetime) -> str:
     )
 
 
-def _observe_all(tmp_path: Path, *, transcript: list[str] = (), headless: list[str] = ()):
-    hdir = tmp_path / "headless" / "lane"
-    tdir = tmp_path / "projects" / "proj"
-    hdir.mkdir(parents=True, exist_ok=True)
-    tdir.mkdir(parents=True, exist_ok=True)
-    (hdir / "output.jsonl").write_text("\n".join(headless) + "\n" if headless else "")
-    (tdir / "session.jsonl").write_text("\n".join(transcript) + "\n" if transcript else "")
-    return obs.observe_all(
+def _observations(tmp_path: Path, *, transcript=(), headless=()):
+    """Exercise the real passive scanners before the per-route selector."""
+    transcript_path = tmp_path / "session.jsonl"
+    headless_path = tmp_path / "output.jsonl"
+    transcript_path.write_text("\n".join(transcript) + "\n")
+    headless_path.write_text("\n".join(headless) + "\n")
+    result = obs.observe_all(
         now=NOW,
         max_age_seconds=1800,
-        headless_glob=str(tmp_path / "headless" / "*" / "output.jsonl"),
-        transcript_glob=str(tmp_path / "projects" / "*" / "*.jsonl"),
+        transcript_glob=str(transcript_path),
+        headless_glob=str(headless_path),
     )
+    assert all(item.source in {"session-transcript", "headless-result"} for item in result[2])
+    return result
 
 
 class TestEachRouteUsesItsOwnFamily:
@@ -153,7 +154,7 @@ class TestEachRouteUsesItsOwnFamily:
         self, tmp_path: Path
     ) -> None:
         """Neither unbound passive serve can vouch for subscription routes."""
-        verdict, newest, found = _observe_all(
+        verdict, newest, found = _observations(
             tmp_path,
             transcript=[
                 _served(NOW - timedelta(minutes=9), "claude-opus-5"),
@@ -165,13 +166,13 @@ class TestEachRouteUsesItsOwnFamily:
     def test_only_a_cheap_model_served_leaves_the_review_route_unvouched(
         self, tmp_path: Path
     ) -> None:
-        verdict, newest, found = _observe_all(
+        verdict, newest, found = _observations(
             tmp_path, transcript=[_served(NOW - timedelta(minutes=2), "claude-haiku-4-5")]
         )
         assert (verdict, newest, found) == ("no_evidence", None, [])
 
     def test_a_wall_newer_than_every_serve_holds_the_whole_account(self, tmp_path: Path) -> None:
-        verdict, newest, _found = _observe_all(
+        verdict, newest, _found = _observations(
             tmp_path,
             transcript=[_served(NOW - timedelta(minutes=5), "claude-opus-5")],
             headless=[_wall(NOW - timedelta(minutes=1))],
@@ -182,7 +183,7 @@ class TestEachRouteUsesItsOwnFamily:
         self, tmp_path: Path
     ) -> None:
         """An unbound passive serve cannot override a measured quota wall."""
-        verdict, newest, found = _observe_all(
+        verdict, newest, found = _observations(
             tmp_path,
             transcript=[
                 _served(NOW - timedelta(minutes=9), "claude-opus-5"),
@@ -198,7 +199,7 @@ class TestEachRouteUsesItsOwnFamily:
         self, tmp_path: Path
     ) -> None:
         """Even a later passive Opus serve cannot clear a bound subscription wall."""
-        verdict, newest, found = _observe_all(
+        verdict, newest, found = _observations(
             tmp_path,
             transcript=[
                 _served(NOW - timedelta(minutes=3), "claude-opus-5"),
@@ -210,7 +211,7 @@ class TestEachRouteUsesItsOwnFamily:
         by_route = obs.evidence_by_route(found, ROUTES)
         assert by_route == dict.fromkeys(ROUTES)
 
-    def test_main_unbound_mixed_family_records_cannot_decide_subscription(
+    def test_main_unbound_mixed_family_serves_cannot_clear_wall(
         self, tmp_path: Path, capsys
     ) -> None:
         """Review finding: every regression test composed observe_all/evidence_by_route/mint by
