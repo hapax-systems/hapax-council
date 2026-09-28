@@ -36,13 +36,17 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+import shlex
+import subprocess
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -68,6 +72,10 @@ ROUTABLE_ROUTE_STATES = frozenset({"active"})
 
 class CensusConfigError(ValueError):
     """The census declaration is invalid; the message names the next action."""
+
+
+class SecretLeakError(RuntimeError):
+    """A rendered artifact contains secret material. Nothing was written."""
 
 
 class CostClass(StrEnum):
@@ -473,6 +481,296 @@ def load_registry(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _instant(value: Any) -> datetime | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, int | float):
+            seconds = value / 1000 if value > 1e11 else value
+            return datetime.fromtimestamp(seconds, UTC)
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (ValueError, OverflowError, OSError, TypeError):
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo else None
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _get(payload: Any, *path: str | int) -> Any:
+    node = payload
+    for key in path:
+        if isinstance(key, int):
+            if not isinstance(node, list) or len(node) <= key:
+                return None
+            node = node[key]
+        else:
+            if not isinstance(node, dict):
+                return None
+            node = node.get(key)
+    return node
+
+
+#: Categorical facts that may leave a readback. Anything else is dropped, never projected.
+_SAFE_TEXT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:+/()@,-]{0,95}$")
+
+FactValue = str | int | float | bool | None
+
+
+def _safe_fact(value: Any) -> FactValue:
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value if math.isfinite(float(value)) else None
+    text = str(value).strip()
+    return text if _SAFE_TEXT.match(text) else None
+
+
+# --- secrets --------------------------------------------------------------------------------------
+
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("sk- key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
+    ("bearer token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}")),
+    ("github token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
+    ("huggingface token", re.compile(r"\bhf_[A-Za-z0-9]{20,}")),
+    ("xai key", re.compile(r"\bxai-[A-Za-z0-9]{20,}")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.")),
+    ("private key block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("aws access key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+)
+
+
+class SecretRegister:
+    """Holds every credential value this run resolved, so output can be checked against them.
+
+    Values live only in this process's memory; the register never renders them. ``require_clean``
+    fails closed on any resolved value and on secret-shaped tokens."""
+
+    def __init__(self) -> None:
+        self._values: set[str] = set()
+
+    def remember(self, value: str | None) -> None:
+        if value and len(value) >= 8:
+            self._values.add(value)
+
+    def hits(self, text: str) -> list[str]:
+        kinds = [label for label, pattern in _SECRET_PATTERNS if pattern.search(text)]
+        if any(value in text for value in self._values):
+            kinds.append("a credential value resolved in this run")
+        return sorted(set(kinds))
+
+    def require_clean(self, text: str, *, label: str) -> None:
+        hits = self.hits(text)
+        if hits:
+            raise SecretLeakError(
+                f"{label}: secret material detected ({', '.join(hits)}); nothing was written. Next "
+                "action: find the extractor or fact that carried it and drop that field"
+            )
+
+
+# --- transports -----------------------------------------------------------------------------------
+
+
+class HttpResponse(NamedTuple):
+    status: int | None
+    body: bytes
+    error: str | None
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib's default handler copies every header, Authorization included, onto the redirected
+    request, even across hosts. Refusing makes the 3xx surface as an HTTPError: unobserved."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ARG002
+        return None
+
+
+_OPENER = urllib.request.build_opener(_RefuseRedirects)
+
+
+def default_http_get(url: str, headers: Mapping[str, str], timeout: float) -> HttpResponse:
+    """GET, and only GET: there is no method or body parameter to misuse, and no redirect."""
+    request = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, **dict(headers)}, method="GET"
+    )
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            return HttpResponse(
+                status=int(response.status), body=response.read(MAX_BODY_BYTES), error=None
+            )
+    except urllib.error.HTTPError as exc:
+        return HttpResponse(status=exc.code, body=b"", error=None)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return HttpResponse(status=None, body=b"", error=type(exc).__name__)
+
+
+SECRET_TIMEOUT_S = 10.0
+
+
+def default_resolve_secret(name: str) -> str | None:
+    """Resolve one credential through the estate's FileStore interface; the value stays in memory."""
+    try:
+        result = subprocess.run(
+            ["hapax-secret", name],
+            capture_output=True,
+            text=True,
+            timeout=SECRET_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip() if result.returncode == 0 else ""
+    return value or None
+
+
+# --- held: names, login files and binaries per host ---------------------------------------------
+
+#: Read-only. Prints names, relative paths and mtimes; never a value, never file content.
+HOLDINGS_SCRIPT = r"""
+set -u
+PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+mode=logins
+for arg in "$@"; do
+  if [ "$arg" = "--bins" ]; then mode=bins; continue; fi
+  if [ "$mode" = logins ]; then
+    if [ -e "$HOME/$arg" ]; then printf 'L\t%s\t%s\n' "$arg" "$(stat -c %Y "$HOME/$arg")"; fi
+  else
+    if command -v "$arg" >/dev/null 2>&1; then printf 'B\t%s\n' "$arg"; fi
+  fi
+done
+if [ -d "$HOME/.config/reins/secrets" ]; then
+  for p in "$HOME/.config/reins/secrets"/*; do
+    [ -e "$p" ] || continue
+    n=${p##*/}
+    printf 'F\t%s\n' "${n%.bin}"
+  done
+fi
+if [ -d "$HOME/.password-store" ]; then
+  find "$HOME/.password-store" -name '*.gpg' -printf 'P\t%P\n' 2>/dev/null | sed 's/\.gpg$//'
+fi
+if [ -f "$HOME/llm-stack/.env" ]; then
+  grep -o '^[A-Za-z_][A-Za-z0-9_]*=' "$HOME/llm-stack/.env" | sed 's/=$//' | while read -r n; do printf 'E\t%s\n' "$n"; done
+fi
+printf 'H\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+"""
+
+_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$")
+_PASS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@+/-]{0,127}$")
+_ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+_REL_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/+-]{0,200}$")
+_BIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$")
+
+
+class HostHoldings(_Strict):
+    host_id: str
+    reachable: bool
+    observed_at: datetime | None
+    error: str | None = None
+    filestore_names: tuple[str, ...] = ()
+    pass_names: tuple[str, ...] = ()
+    env_names: tuple[str, ...] = ()
+    login_files: dict[str, datetime] = Field(default_factory=dict)
+    harness_bins: tuple[str, ...] = ()
+
+    def credential_names(self) -> set[str]:
+        return set(self.filestore_names) | {name.replace("/", "-") for name in self.pass_names}
+
+
+def holdings_command(
+    binding: HostBinding, *, login_files: Sequence[str], harness_bins: Sequence[str]
+) -> list[str]:
+    args = ["census-holdings", *login_files, "--bins", *harness_bins]
+    if binding.transport == "local":
+        return ["bash", "-c", HOLDINGS_SCRIPT, *args]
+    assert binding.target is not None
+    remote = (
+        "bash -c " + shlex.quote(HOLDINGS_SCRIPT) + " " + " ".join(shlex.quote(a) for a in args)
+    )
+    return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "--", binding.target, remote]
+
+
+def parse_holdings(host_id: str, text: str, *, now: datetime) -> HostHoldings:
+    names: set[str] = set()
+    passes: set[str] = set()
+    envs: set[str] = set()
+    bins: set[str] = set()
+    logins: dict[str, datetime] = {}
+    observed = now
+    for line in text.splitlines():
+        kind, _, rest = line.partition("\t")
+        if kind == "F" and _NAME_RE.match(rest):
+            names.add(rest)
+        elif kind == "P" and _PASS_RE.match(rest) and ".." not in rest:
+            passes.add(rest)
+        elif kind == "E" and _ENV_RE.match(rest):
+            envs.add(rest)
+        elif kind == "B" and _BIN_RE.match(rest):
+            bins.add(rest)
+        elif kind == "L":
+            rel, _, mtime = rest.partition("\t")
+            stamp = _instant(int(mtime)) if mtime.isdigit() else None
+            if _REL_RE.match(rel) and ".." not in rel.split("/") and stamp is not None:
+                logins[rel] = stamp
+        elif kind == "H":
+            observed = _instant(rest) or now
+    return HostHoldings(
+        host_id=host_id,
+        reachable=True,
+        observed_at=observed,
+        filestore_names=tuple(sorted(names)),
+        pass_names=tuple(sorted(passes)),
+        env_names=tuple(sorted(envs)),
+        login_files=logins,
+        harness_bins=tuple(sorted(bins)),
+    )
+
+
+def collect_holdings(
+    binding: HostBinding,
+    *,
+    login_files: Sequence[str],
+    harness_bins: Sequence[str],
+    now: datetime,
+    run: Callable[..., Any] = subprocess.run,
+    timeout: float = 60,
+) -> HostHoldings:
+    """One read per host. An unreachable host is a row with a reason, never an omission."""
+    argv = holdings_command(binding, login_files=login_files, harness_bins=harness_bins)
+    try:
+        result = run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return HostHoldings(
+            host_id=binding.host_id,
+            reachable=False,
+            observed_at=None,
+            error=f"{type(exc).__name__}",
+        )
+    if result.returncode != 0 and not (result.stdout or "").strip():
+        return HostHoldings(
+            host_id=binding.host_id,
+            reachable=False,
+            observed_at=None,
+            error=f"exit_{result.returncode}",
+        )
+    return parse_holdings(binding.host_id, result.stdout or "", now=now)
+
+
+# --- holds now: readbacks and their extractors --------------------------------------------------
+
+
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     ReadbackRef._allow_listed,
@@ -483,4 +781,5 @@ _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     TrialRecord._dated,
     EntitlementDecl._probe_rules,
     CensusConfig._unique,
+    _RefuseRedirects.redirect_request,
 )
