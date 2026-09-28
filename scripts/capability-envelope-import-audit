@@ -11,8 +11,9 @@ one-off transcript. A sentinel world is built under --root:
 Two runs follow, each inside an inotify watch on every sentinel:
 
 1. **baseline**: the harness launched the way its reviewer wrapper launches it on origin/main,
-   against the mirror (bwrap shows the whole host with HOME replaced by the mirror, so the
-   operator's own files are neither read nor changed; only the credential is bound, read-only);
+   against the mirror (bwrap shows the host read-only with HOME replaced by the mirror, so the
+   operator's own files are read as the harness would read them and never changed; the mirror is
+   the only writable place, and the credential is bound read-only);
 2. **enveloped**: the same harness inside shared.capability_envelope.
 
 The wrappers' own command() functions build the argv, so the audit tracks the real seats. Vibe
@@ -335,7 +336,11 @@ def verdict(
 
 
 def run_baseline(world: World, launch: Launch) -> dict:
-    argv = ["bwrap", "--dev-bind", "/", "/", "--bind", str(world.mirror), str(world.home)]
+    # A READ-ONLY root, and only the mirrored home writable. Review of #4793 (dev21, 2026-09-28):
+    # `--dev-bind / /` made the whole host root writable, so /tmp, /etc and /store-fast were
+    # exposed read-write to the baseline harness. The baseline must read what a real harness reads
+    # — that is how the audit detects imports — and change nothing outside its mirror.
+    argv = ["bwrap", "--ro-bind", "/", "/", "--bind", str(world.mirror), str(world.home)]
     for source, destination in launch.binds:
         if destination.is_relative_to(world.home):
             placeholder = world.mirror / destination.relative_to(world.home)

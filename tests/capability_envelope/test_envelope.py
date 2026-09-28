@@ -15,6 +15,8 @@ sentinel when no envelope is applied, so a pass is not vacuous.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
 import os
 import subprocess
@@ -416,6 +418,69 @@ def test_masking_follows_symlinks_to_what_they_expose(tmp_path: Path):
     assert "docs/instructions.txt" in masked
 
 
+def test_a_chained_masked_name_symlink_masks_its_final_target(tmp_path: Path):
+    """glm-1's minor (2026-09-28): the round-3 leak was an assumption inside `_masks`, so a chain
+    is pinned by test rather than left to `Path.resolve()`'s semantics alone."""
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "CLAUDE.md", "leaked instructions\n")
+    (checkout / "middle.md").symlink_to(".git/CLAUDE.md")
+    (checkout / "AGENTS.md").symlink_to("middle.md")
+    rendered = render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
+    masked = set(rendered.masked)
+    # The FINAL target is what is masked, not the intermediate link whose name is not masked.
+    assert ".git/CLAUDE.md" in masked
+    assert "middle.md" not in masked
+
+
+@needs_bwrap
+def test_a_chained_masked_name_symlink_reads_empty_in_the_job(tmp_path: Path):
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "CLAUDE.md", "leaked instructions\n")
+    (checkout / "middle.md").symlink_to(".git/CLAUDE.md")
+    (checkout / "AGENTS.md").symlink_to("middle.md")
+    result = execute(
+        render(
+            _sh("cat /work/AGENTS.md; echo CHAIN=$?", workdir=checkout), run_root=tmp_path / "run"
+        ),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "leaked instructions" not in result.stdout, result.stdout
+    assert "CHAIN=0" in result.stdout
+
+
+def test_a_masked_name_inside_dot_git_is_masked(tmp_path: Path):
+    """Codex-1's major on #4784 (2026-09-28): `_masks` pruned `.git` before looking for masked
+    names beneath it, so a checkout containing `.git/AGENTS.md` exposed that file through
+    `/work/.git/AGENTS.md`, although the module's masking guarantee is stated over the workdir.
+    Masked-named FILES inside `.git` are bound empty; nothing else in `.git` is covered, so git
+    keeps working."""
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "AGENTS.md", "leaked instructions\n")
+    _write(checkout / ".git" / "HEAD", "ref: refs/heads/main\n")
+    _write(checkout / ".git" / "config", "[core]\n\trepositoryformatversion = 0\n")
+    rendered = render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
+    masked = set(rendered.masked)
+    assert ".git/AGENTS.md" in masked
+    assert ".git/HEAD" not in masked and ".git/config" not in masked
+
+
+@needs_bwrap
+def test_a_masked_name_inside_dot_git_reads_empty_and_the_rest_of_git_survives(tmp_path: Path):
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "AGENTS.md", "leaked instructions\n")
+    _write(checkout / ".git" / "HEAD", "ref: refs/heads/main\n")
+    script = "cat /work/.git/AGENTS.md; echo GITFILE=$?; cat /work/.git/HEAD"
+    result = execute(
+        render(_sh(script, workdir=checkout), run_root=tmp_path / "run"),
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "leaked instructions" not in result.stdout, result.stdout
+    assert "GITFILE=0" in result.stdout
+    assert "ref: refs/heads/main" in result.stdout, "git's own metadata is not covered"
+
+
 def test_a_masked_name_symlinked_into_a_pruned_directory_is_masked(tmp_path: Path):
     """Review of #4784 (gemini-1, confirmed by dev21 under bwrap 0.12.0, 2026-09-28): a
     masked-named symlink whose target also has a masked name was covered NOWHERE. The walk prunes
@@ -563,6 +628,27 @@ def test_the_open_watch_sees_an_open_and_refuses_a_missing_sentinel(tmp_path: Pa
         pass
 
 
+def test_the_open_watch_refuses_when_the_inotify_instance_cannot_be_created(
+    tmp_path: Path, monkeypatch
+):
+    """Review of #4784 (codex-1, glm-1, 2026-09-28): the `inotify_init1` failure branch and its
+    next action had no direct test; the missing-sentinel test above exercises only
+    `inotify_add_watch`. An observation that cannot be established must refuse, never report an
+    empty set that reads as "nothing was opened"."""
+
+    class _Libc:
+        @staticmethod
+        def inotify_init1(_flags: int) -> int:
+            return -1
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *args, **kwargs: _Libc())
+    monkeypatch.setattr(ctypes, "get_errno", lambda: errno.ENFILE)
+    sentinel_file = _write(tmp_path / "sentinel.md", "x\n")
+    with pytest.raises(OSError, match="inotify_init1 failed.*next action"):
+        with OpenWatch([sentinel_file]):
+            pass
+
+
 # ---------------------------------------------------------------- carrier failures
 
 
@@ -619,7 +705,20 @@ def test_hooks_or_mcp_for_a_harness_without_a_renderer_are_refused(world: World,
         )
 
 
+def _in_operator_home(value: str) -> bool:
+    home = str(Path.home())
+    return value == home or value.startswith(home + "/")
+
+
 def test_rendered_argv_never_exposes_root_or_the_operator_home(world: World, tmp_path: Path):
+    """glm-1's minor (2026-09-28): the scan covered bind PAIRS only, so `--symlink` destinations,
+    `--tmpfs` destinations and `--setenv` values were outside it. Those are the carrier's own
+    generated entries, and each is now scanned like a bind destination.
+
+    The declaration's own paths are deliberately not asserted home-free: a declared job may
+    legitimately run a binary that lives under the operator's checkout, and the carrier's job here
+    is to cover the entries IT generates.
+    """
     rendered = render(world.declaration(), run_root=tmp_path / "run")
     argv = list(rendered.argv)
     assert "--clearenv" in argv
@@ -629,6 +728,16 @@ def test_rendered_argv_never_exposes_root_or_the_operator_home(world: World, tmp
             src, dst = argv[i + 1], argv[i + 2]
             assert src != "/" and dst != "/", "the host root is never bound whole"
             assert src != home and dst != home, "the operator's home is never bound whole"
+        elif arg == "--symlink":
+            assert not _in_operator_home(argv[i + 2]), argv[i + 2]
+        elif arg == "--tmpfs":
+            assert not _in_operator_home(argv[i + 1]), argv[i + 1]
+        elif arg == "--setenv":
+            assert not _in_operator_home(argv[i + 2]), argv[i + 2]
+    # The three forms above are present, so the scan is not vacuous over them: `--tmpfs` covers
+    # every masked directory and the private /tmp, and `--setenv` covers the fixed base and the
+    # declaration's env. `--symlink` appears only where the host's root links are symlinks.
+    assert "--tmpfs" in argv and "--setenv" in argv
     masked = set(rendered.masked)
     assert {
         "CLAUDE.md",

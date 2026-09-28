@@ -72,7 +72,8 @@ and it sees opens through bind mounts. What the model says it saw is complementa
 `scripts/capability-envelope-import-audit` is the rerunnable witness.
 - It builds a sentinel world.
 - It launches the harness the way its reviewer wrapper does, against a mirror of the home (the operator's own files
-  are neither read nor changed), and then again inside the envelope.
+  are **read as the harness would read them, and never changed** — the baseline's root is read-only and the mirrored
+  home is the only writable place), and then again inside the envelope.
 - It exits 0 when the enveloped run imported nothing **and** the baseline control witnessed an import, 1 on a leak,
   2 when the enveloped run did not complete **or** the baseline control witnessed nothing (reported as
   `clean-no-control` — a run whose control proved nothing is not evidence), and 64 when it refuses.
