@@ -7,4 +7,5 @@ Type=oneshot
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m scripts.capacity_gap_signal
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HAPAX_CAPACITY_PANE_TZ=America/Chicago
 TimeoutStartSec=180

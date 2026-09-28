@@ -213,6 +213,6 @@ def test_fugu_wall_importer_uses_live_pane_reset_and_expires() -> None:
     pane = "■ You’ve hit your usage limit. Try again at Oct 4th, 2026 7:00 PM.\n› Ask Codex"
     assert gap.fugu_wall({"hapax-fugu-ci": pane}, NOW) == ("walled", "2026-10-05T00:00:00Z")
     assert (
-        gap.fugu_wall({"hapax-fugu-ci": pane}, datetime(2026, 10, 5, 0, 1, tzinfo=timezone.utc))[0]
+        gap.fugu_wall({"hapax-fugu-ci": pane}, datetime(2026, 10, 5, 0, 1, tzinfo=UTC))[0]
         == "unknown"
     )

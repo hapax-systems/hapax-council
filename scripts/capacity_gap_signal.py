@@ -18,8 +18,10 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -35,6 +37,11 @@ MODEL_RE = re.compile(r"(?:/models/|--model[= ])([A-Za-z0-9_.-]+)")
 HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,99}")
 METRIC_RE = re.compile(r"^vllm:request_success_total(?:\{[^}]*\})?\s+([\d.]+)$")
 GPU_MEMORY_RE = re.compile(r"(?im)^.*(?:nvidia|geforce|rtx).*?,\s*(\d+) MiB,\s*(\d+) MiB\s*$")
+FUGU_RESET_RE = re.compile(
+    r"Try again at ([A-Za-z]{3}) (\d+)(?:st|nd|rd|th), (\d{4}) (\d{1,2}):(\d{2}) (AM|PM)"
+)
+OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models"
+FEATHERLESS_MODELS = "https://api.featherless.ai/v1/models"
 
 
 def instant(value: str) -> datetime:
@@ -440,6 +447,72 @@ def codex_headroom(sessions_root: Path, now: datetime) -> tuple[str, str]:
     return "unknown", "codex headroom=unknown"
 
 
+def fetch_catalogue(url: str) -> dict[str, Any] | None:
+    """GET metadata only. No completion endpoint or credential is used."""
+    request = urllib.request.Request(url, headers={"User-Agent": "hapax-capacity-gap-signal/1"})
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read(16_000_000))
+        return payload if isinstance(payload, dict) else None
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+
+def catalogue_capabilities(catalogues: dict[str, dict[str, Any] | None]) -> dict[str, str]:
+    states = {"space-bunny": "unknown", "featherless": "unknown"}
+    openrouter = catalogues.get(OPENROUTER_MODELS) or {}
+    for item in openrouter.get("data") or []:
+        if not isinstance(item, dict) or item.get("id") != "stealth/space-bunny-alpha":
+            continue
+        pricing = item.get("pricing") or {}
+        try:
+            states["space-bunny"] = (
+                "price0"
+                if Decimal(str(pricing["prompt"])) == 0 and Decimal(str(pricing["completion"])) == 0
+                else "priced"
+            )
+        except (KeyError, InvalidOperation, TypeError):
+            states["space-bunny"] = "unknown"
+        break
+    featherless = catalogues.get(FEATHERLESS_MODELS) or {}
+    models = featherless.get("data") or []
+    if isinstance(models, list) and models:
+        states["featherless"] = f"available:{len(models)}"
+    return states
+
+
+def fugu_panes() -> dict[str, str]:
+    names = run(["tmux", "ls", "-F", "#{session_name}"], 5).splitlines()
+    return {
+        name: run(["tmux", "capture-pane", "-pt", name, "-S", "-40"], 5)
+        for name in names
+        if name.startswith("hapax-fugu-")
+    }
+
+
+def fugu_wall(panes: dict[str, str], now: datetime) -> tuple[str, str | None]:
+    resets = []
+    for pane in panes.values():
+        if "usage limit" not in pane.lower():
+            continue
+        match = FUGU_RESET_RE.search(pane)
+        if not match:
+            continue
+        month, day, year, hour, minute, ampm = match.groups()
+        try:
+            local = datetime.strptime(
+                f"{month} {day} {year} {hour}:{minute} {ampm}", "%b %d %Y %I:%M %p"
+            )
+            reset = local.replace(
+                tzinfo=ZoneInfo(os.environ.get("HAPAX_CAPACITY_PANE_TZ", "America/Chicago"))
+            ).astimezone(UTC)
+        except ValueError:
+            continue
+        if reset > now:
+            resets.append(reset)
+    return ("walled", stamp(max(resets))) if resets else ("unknown", None)
+
+
 def _claude_pace(repo: Path) -> tuple[str, str] | None:
     raw = run(["python", str(repo / "scripts/hapax-claude-pool-pace"), "status", "--json"], 25)
     try:
@@ -570,6 +643,8 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     quota = _subscribed_state(args.quota_ledger, now)
     codex_state, codex_detail = codex_headroom(args.codex_sessions, now)
     quota["codex"] = codex_state
+    fugu_state, fugu_reset = fugu_wall(fugu_panes(), now)
+    quota["fugu"] = fugu_state
     states.update(quota)
     rows = read_tasks(args.tasks)
     walled = {key for key, value in quota.items() if value == "walled"}
@@ -595,6 +670,33 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     }
     gaps = judge_gaps(states, demand, registered)
     gaps |= registration_gaps(discovered, registered, answering=discovered)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        catalogues = dict(
+            zip(
+                (OPENROUTER_MODELS, FEATHERLESS_MODELS),
+                pool.map(fetch_catalogue, (OPENROUTER_MODELS, FEATHERLESS_MODELS)),
+                strict=True,
+            )
+        )
+    catalogue_states = catalogue_capabilities(catalogues)
+    if (
+        catalogue_states["space-bunny"] == "price0"
+        and "stealth/space-bunny-alpha" not in registered_text
+    ):
+        gaps.add("UNREGISTERED:openrouter:stealth/space-bunny-alpha")
+    elif catalogue_states["space-bunny"] == "priced":
+        gaps.add("PRICE_CHANGED:openrouter:stealth/space-bunny-alpha")
+    if (
+        catalogue_states["featherless"].startswith("available")
+        and "featherless" not in registered_text.lower()
+    ):
+        gaps.add("UNREGISTERED:featherless")
+    if "unknown" in catalogue_states.values():
+        state["catalogue_failures"] = int(state.get("catalogue_failures") or 0) + 1
+        if state["catalogue_failures"] >= 2:
+            gaps.add("INPUT_STALE:provider-catalogues")
+    else:
+        state["catalogue_failures"] = 0
     for endpoint in answering:
         if endpoint in registered_text:
             continue
@@ -622,7 +724,7 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     state["request_counters"] = request_counters
     state["known_endpoints"] = sorted(known | answering)
     _write_state(args.state, state)
-    detail = f"Waiting rows: {len(demand.waiting_rows)}; review queue: {demand.review_queue}; writer queue: {demand.writer_queue}; MiMo queued work: {demand.appliance_queue}. {codex_detail}. {pace[1] if pace else 'Claude pace=within line or unknown'}. Endpoint fit remains unmeasured unless a work-spec profile supplies it. TP membership: {json.dumps({key: sorted(value) for key, value in members.items()}, sort_keys=True)}"
+    detail = f"Waiting rows: {len(demand.waiting_rows)}; review queue: {demand.review_queue}; writer queue: {demand.writer_queue}; MiMo queued work: {demand.appliance_queue}. {codex_detail}. Fugu={fugu_state}, reset={fugu_reset or 'unknown'}; Featherless={catalogue_states['featherless']}; Space Bunny={catalogue_states['space-bunny']}. {pace[1] if pace else 'Claude pace=within line or unknown'}. Endpoint fit remains unmeasured unless a work-spec profile supplies it. TP membership: {json.dumps({key: sorted(value) for key, value in members.items()}, sort_keys=True)}"
     recipient, inbox_name = seat_role(args.seat_document)
     deliver(gaps, args.state, args.lanebus / inbox_name, now, detail, recipient=recipient)
     return gaps
