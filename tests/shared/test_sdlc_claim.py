@@ -19,6 +19,7 @@ from hapax.context_canon import contract as context_contract
 
 import shared.sdlc_claim as sdlc_claim
 import shared.sdlc_task_store as sdlc_task_store
+from shared.coord_projection import LifecycleTransitionError
 from shared.dispatcher_policy import DispatchAction, RouteDecision
 from shared.execution_admission import (
     ACTION_INTENT_SCHEMA,
@@ -4948,6 +4949,175 @@ def test_churn_carried_only_in_reason_code_names_the_retry(exc: Exception) -> No
 
     assert sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION in message
     assert "Gate-0B" not in message
+
+
+# ── claim-publication phase observations in the coordination event log ───────
+# claim-publication-lock-hold-under-peer-wait-20260927 (clause c), covering
+# claim-recovery-manifest-records-store-reason-code-20260927
+
+
+@pytest.fixture
+def coord_ledger(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """This test's own coord tree, set explicitly (not left to the conftest), as its ledger path.
+
+    A sibling of tmp_path, so tests that snapshot tmp_path see no new files.
+    """
+    coord = tmp_path_factory.mktemp("coord-ledger")
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(coord))
+    return coord / "ledger.jsonl"
+
+
+def _phase_observations(ledger: Path) -> list[dict[str, object]]:
+    if not ledger.is_file():
+        return []
+    events = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    return [e for e in events if e["event_type"] == sdlc_claim.CLAIM_PUBLICATION_PHASE_OBSERVED]
+
+
+def test_a_publication_emits_one_non_authoritative_observation_per_state(
+    tmp_path: Path, coord_ledger: Path
+) -> None:
+    fixture = _applied_publication(tmp_path)
+
+    observed = _phase_observations(coord_ledger)
+
+    assert [e["payload"]["state"] for e in observed] == [
+        "created",
+        "projecting",
+        "postimage_complete",
+        "applied",
+    ]
+    stamps = [e["timestamp"] for e in observed]
+    assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
+    for event in observed:
+        assert event["payload"]["authority"] == "non_authoritative_observation"
+        assert event["payload"]["task_id"] == fixture.intent.task_id
+        assert event["payload"]["role"] == fixture.intent.role
+        assert event["subject"] == event["payload"]["publication_id"]
+        assert event["payload"]["reason_code"] is None
+
+
+def test_a_held_publication_observes_the_stores_own_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coord_ledger: Path
+) -> None:
+    # The reason_code row's intent: a recovery_required journal names only the wrapper code, so
+    # a churn hold was not attributable. The observation carries the store's reason.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise ClaimPublicationError(
+            "claim_publication_task_projection_invalid",
+            sdlc_claim.TASK_FRONTIER_CHURN_NEXT_ACTION,
+            "task_store_frontier_changed_during_index_build",
+        )
+
+    monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", refuse)
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=tmp_path / "receipts",
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    held = _phase_observations(coord_ledger)[-1]["payload"]
+    assert held["state"] == "recovery_required"
+    assert held["reason_code"] == "claim_publication_task_projection_invalid"
+    assert held["reason_detail"] == "task_store_frontier_changed_during_index_build"
+
+
+@pytest.mark.parametrize(
+    ("raised", "detail"),
+    [
+        (
+            LifecycleTransitionError("projection_refused", "repair", "note:changed"),
+            "projection_refused:note:changed",
+        ),
+        (RuntimeError("disk full"), "pre_activation_projection:RuntimeError"),
+    ],
+    ids=["lifecycle_transition_error", "generic_exception"],
+)
+def test_the_other_held_branches_observe_their_reasons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    coord_ledger: Path,
+    raised: Exception,
+    detail: str,
+) -> None:
+    # glm on #4830: the LifecycleTransitionError and generic-exception branches of the
+    # transaction also write recovery_required; each must observe its wrapped reason.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise raised
+
+    monkeypatch.setattr(sdlc_claim, "_apply_projections", refuse)
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=tmp_path / "receipts",
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+
+    held = _phase_observations(coord_ledger)[-1]["payload"]
+    assert held["state"] == "recovery_required"
+    assert (held["reason_code"], held["reason_detail"]) == (
+        "claim_publication_projection_failed",
+        detail,
+    )
+
+
+def test_a_failing_emitter_leaves_the_publication_byte_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The unsafe case for a fail-open observation: it must never change a claim. With the event
+    # log refusing, the publication still applies, and its manifest and receipt are exactly the
+    # deterministic bytes the ownership proof re-derives.
+    import shared.coord_event_log as coord_event_log
+
+    def unavailable() -> object:
+        raise RuntimeError("coord event log unavailable")
+
+    monkeypatch.setattr(coord_event_log, "default_event_log", unavailable)
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest = fixture.transactions / publication_id / "manifest.json"
+    _intent, projections, _id, state, _consumption = sdlc_claim._load_admitted_manifest(manifest)
+    assert state == "applied"
+    assert manifest.read_bytes() == sdlc_claim._admitted_manifest_bytes(
+        fixture.intent, active.consumption, projections, publication_id, state="applied"
+    )
+    receipt = sdlc_claim.claim_publication_receipt_path(
+        fixture.intent.cache_dir, fixture.intent.binding, receipt_root=receipt_root
+    )
+    assert receipt.read_bytes() == (
+        sdlc_claim._canonical(
+            sdlc_claim._admitted_receipt_record(
+                fixture.intent, active.consumption, projections, publication_id
+            )
+        )
+        + b"\n"
+    )
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
 
 
 # ── governed release of a held claim publication (M166, M167) ────────────────

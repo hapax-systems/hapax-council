@@ -13,6 +13,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -142,6 +143,12 @@ TASK_FRONTIER_CHURN_NEXT_ACTION = (
 #: past the deadline: retakes add at most the budget plus the excess of that one slower
 #: resolution, and none starts after it (codex on #4829 round 2).
 _UNDER_LOCK_CHURN_BUDGET_SECONDS = 25.0
+#: The coordination-event type of one claim-publication state write. It is an OBSERVATION for
+#: attributing where a publication spent its time and why it held; it is never claim state, which
+#: lives in the journal and receipt alone (the manifest is re-derived byte for byte as the ownership
+#: proof, so no wall-clock time can live there).
+CLAIM_PUBLICATION_PHASE_OBSERVED = "claim_publication_phase_observed"
+_LOG = logging.getLogger(__name__)
 _churn_sleep = time.sleep
 _churn_clock = time.monotonic
 
@@ -2430,6 +2437,7 @@ def _persist_admitted_manifest_state(
     *,
     state: str,
     reason_code: str | None = None,
+    reason_detail: str | None = None,
 ) -> None:
     _claim_private_payload(
         manifest_path,
@@ -2443,6 +2451,57 @@ def _persist_admitted_manifest_state(
         ),
         overwrite=manifest_path.exists() or manifest_path.is_symlink(),
     )
+    _observe_claim_publication_phase(
+        intent, publication_id, state, reason_code=reason_code, reason_detail=reason_detail
+    )
+
+
+def _observe_claim_publication_phase(
+    intent: ClaimPublicationIntent,
+    publication_id: str,
+    state: str,
+    *,
+    reason_code: str | None,
+    reason_detail: str | None,
+) -> None:
+    """Emit one non-authoritative phase observation to the coordination event log.
+
+    Purely observational, so it never raises and never changes a publication's outcome: a
+    daemon-down append spools (``fail_open``), and any other failure is logged and dropped.
+    On ``recovery_required`` it carries the store's own reason (``reason_detail``), so a
+    held publication's cause is attributable without touching the deterministic manifest.
+    """
+
+    try:
+        from shared.coord_event_log import CoordEvent, CoordWriter, default_event_log
+
+        at = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        digest = hashlib.sha256("\0".join((publication_id, state, at)).encode()).hexdigest()
+        event = CoordEvent(
+            event_id=f"claim-pub-phase-{digest[:32]}",
+            timestamp=at,
+            event_type=CLAIM_PUBLICATION_PHASE_OBSERVED,
+            actor=intent.role,
+            subject=publication_id,
+            payload={
+                "authority": "non_authoritative_observation",
+                "publication_id": publication_id,
+                "reason_code": reason_code,
+                "reason_detail": reason_detail,
+                "role": intent.role,
+                "state": state,
+                "task_id": intent.task_id,
+            },
+        )
+        default_event_log().append(event, writer=CoordWriter.daemon(), fail_open=True)
+    except Exception as exc:  # noqa: BLE001 - an observation never decides a claim
+        _LOG.warning(
+            "claim publication phase observation not emitted (%s: %s); the claim's outcome is "
+            "unaffected. Next action: check the coord event log under $HAPAX_COORD_DIR "
+            "(default ~/.cache/hapax/coord) and its spool, then let the daemon ingest it",
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _persist_projection_blobs(
@@ -4042,6 +4101,7 @@ def _apply_admitted_claim_publication_transaction(
                 publication_id,
                 state="recovery_required",
                 reason_code=exc.reason_code,
+                reason_detail=exc.detail,
             )
             raise
         except LifecycleTransitionError as exc:
@@ -4058,6 +4118,7 @@ def _apply_admitted_claim_publication_transaction(
                 publication_id,
                 state="recovery_required",
                 reason_code=wrapped.reason_code,
+                reason_detail=wrapped.detail,
             )
             raise wrapped from exc
         except Exception as exc:
@@ -4071,6 +4132,7 @@ def _apply_admitted_claim_publication_transaction(
                     publication_id,
                     state="recovery_required",
                     reason_code=wrapped.reason_code,
+                    reason_detail=wrapped.detail,
                 )
             except ClaimPublicationError:
                 if not phase.startswith("journal_"):
