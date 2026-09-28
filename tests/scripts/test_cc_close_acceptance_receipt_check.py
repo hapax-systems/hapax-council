@@ -615,7 +615,7 @@ class TestCcCloseEndToEnd:
         env = os.environ.copy()
         env.update(HOME=str(home), HAPAX_AGENT_ROLE="test-role")
         result = subprocess.run(
-            ["bash", str(CC_CLOSE), "task-r", "--status", "withdrawn"],
+            ["bash", str(CC_CLOSE), "task-r", "--status", "withdrawn", "--reason", "test close"],
             env=env,
             text=True,
             capture_output=True,

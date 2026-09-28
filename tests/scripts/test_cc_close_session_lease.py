@@ -90,7 +90,7 @@ def _run_close(
     # rapid-close, AC checklist, PR-merge — are skipped; the claim clear runs for
     # every terminal status).
     return subprocess.run(
-        ["bash", str(SCRIPT), task_id, "--status", "withdrawn"],
+        ["bash", str(SCRIPT), task_id, "--status", "withdrawn", "--reason", "test close"],
         env=env,
         text=True,
         capture_output=True,

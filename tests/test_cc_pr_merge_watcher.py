@@ -1160,7 +1160,7 @@ class TestRuntimeWitnessRows:
         assert "PR #100 merged" in log
         assert "the next merged row lands awaiting on the installed watcher" in log
         assert "the transcript copy reaches the custody store" in log
-        assert "observe them, then cc-close task-W --pr 100" in log
+        assert 'observe them, then cc-close task-W --pr 100 --witness "<observation>"' in log
         assert "assigned_to: cx-red" in text  # it stays with its owner, pipeline-held
         assert (counters["closed"], counters["awaiting"], counters["failed"]) == (0, 1, 0)
         assert watcher.read_cursor(cursor) == datetime(2026, 4, 26, 12, tzinfo=UTC)

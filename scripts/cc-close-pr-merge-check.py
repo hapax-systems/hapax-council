@@ -192,7 +192,7 @@ def main() -> int:
 
     print(
         f"cc-close-pr-merge-check: BLOCKED — PR {pr_repo}#{pr_num} is {state} (not MERGED).\n"
-        f"  Merge the PR before closing the task, or use --status withdrawn.\n"
+        f'  Merge the PR before closing the task, or use --status withdrawn --reason "<why>".\n'
         f"  Bypass: HAPAX_PR_MERGE_GATE_OFF=1",
         file=sys.stderr,
     )
