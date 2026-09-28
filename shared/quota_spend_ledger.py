@@ -39,12 +39,17 @@ PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident
 CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {"claude.headless.full", "claude.review.opus"}
 )
+# The cloud-credit review route is receipt-bounded the same way, but its receipts attest the
+# promotional cloud credit (a separate pool from the subscription), so it sits in its own set
+# and its evidence refs never mix with the subscription composite-ref class.
+CLAUDE_CLOUD_CREDIT_RECEIPT_BOUNDED_ROUTES = frozenset({"claude.review.cloud"})
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {
         "agy.review.direct",
         "glmcp.review.direct",
         "kimi.interactive.lane",
         *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
+        *CLAUDE_CLOUD_CREDIT_RECEIPT_BOUNDED_ROUTES,
     }
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
@@ -52,6 +57,7 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "glmcp.review.direct": "z_ai-glm-coding-plan",
     "claude.headless.full": "anthropic-claude-subscription",
     "claude.review.opus": "anthropic-claude-subscription",
+    "claude.review.cloud": "anthropic-claude-cloud-credit",
     "kimi.interactive.lane": "moonshot-kimi-code-managed",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
@@ -159,6 +165,84 @@ CLAUDE_ADMISSION_IGNORED_UNSAFE_DETAIL_RE = re.compile(
     re.IGNORECASE,
 )
 CLAUDE_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):observation:")
+# Claude cloud-credit quota admission (scripts/hapax-claude-cloud-credit-quota-admission →
+# hapax-quota-telemetry-writer). The composite ledger evidence ref ends in the cloud-credit
+# suffix so the witness class is distinct from the subscription account-live suffix; the credit
+# is a different pool from the subscription and never pay-as-you-go.
+CLAUDE_CLOUD_CREDIT_ROUTE_ID = "claude.review.cloud"
+CLAUDE_CLOUD_CREDIT_PROVIDER = "anthropic-claude-cloud-credit"
+CLAUDE_CLOUD_CREDIT_ADMISSION_OBSERVATIONS = frozenset(
+    {
+        "cloud_credit_quota_headroom_observed",
+        "operator_confirmed_cloud_credit_headroom",
+    }
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_SUFFIX = ":cloud-credit-quota:observed"
+CLAUDE_CLOUD_CREDIT_ADMISSION_OBSERVATION_PATTERN = "|".join(
+    re.escape(observation) for observation in sorted(CLAUDE_CLOUD_CREDIT_ADMISSION_OBSERVATIONS)
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_PATTERN = (
+    r"claude-cloud-credit-(?:quota-headroom-observed|operator-confirmed-headroom)-"
+    r"\d{8}t\d{4}(?:\d{2})?z"
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_ALLOWLIST_RE = re.compile(
+    rf"\A{CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_PATTERN}\Z"
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?P<label>[a-z0-9_.+-]*claude-cloud-credit-quota-admission[a-z0-9_.+-]*\.yaml)"
+    r":witness:"
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_COMPOSITE_REF_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?P<label>[a-z0-9_.+-]*claude-cloud-credit-quota-admission[a-z0-9_.+-]*\.yaml):"
+    rf"witness:(?P<witness>{CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_PATTERN}):"
+    rf"observation:(?P<observation>{CLAUDE_CLOUD_CREDIT_ADMISSION_OBSERVATION_PATTERN}):"
+    r"observed_at:(?P<observed_at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
+    r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
+    rf"{re.escape(CLAUDE_CLOUD_CREDIT_ADMISSION_SUFFIX)}\Z"
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE = re.compile(
+    r"(?:"
+    r"(?:^|[-_.+:])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])subscription[-_.+:]?id[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[-_.+:][a-z0-9]+(?:$|[-_.+:])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE = re.compile(
+    r"(?:"
+    r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
+    r"(?:^|[-_.+])"
+    r"(?:(?:tmux|sessions?|lanes?|dev)[0-9]*|"
+    r"(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*|"
+    r"cx-[a-z0-9-]+|vbe-[0-9]+)"
+    r"(?:$|[-_.+])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):observation:")
+CLAUDE_CLOUD_CREDIT_ADMISSION_IGNORED_REASON_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,119}\Z")
+CLAUDE_CLOUD_CREDIT_ADMISSION_IGNORED_UNSAFE_DETAIL_RE = re.compile(
+    r"(?:"
+    r"(?:^|-)(?:cus|sub|acct|in|ch)-[a-z0-9]+(?:$|-)|"
+    r"(?:^|-)subscription-?id-?[a-z0-9]*[0-9][a-z0-9]*(?:$|-)|"
+    r"(?:^|-)(?:customer|account|invoice|payment|billing)[a-z0-9-]*[0-9][a-z0-9-]*(?:$|-)|"
+    r"(?:^|-)(?:session-present|lane-present|lane-exists)(?:$|-)|"
+    r"(?:^|-)(?:tmux|sessions?|lanes?|dev)[0-9]+(?:$|-)|"
+    r"(?:^|-)(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*(?:$|-)|"
+    r"(?:^|-)(?:cx-[a-z0-9-]+|vbe-[0-9]+|hapax-claude-[a-z0-9-]+)(?:$|-)"
+    r")",
+    re.IGNORECASE,
+)
 GLMCP_ADMISSION_CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 GLMCP_ADMISSION_PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
 GLMCP_PAYG_BUDGET_ROUTE_ID = "glmcp.review.direct"
@@ -237,6 +321,7 @@ class CapacityPool(StrEnum):
     LOCAL_COMPUTE = "local_compute"
     API_PAID_SPEND = "api_paid_spend"
     BOOTSTRAP_BUDGET = "bootstrap_budget"
+    PROMOTIONAL_CREDIT_QUOTA = "promotional_credit_quota"
     STEADY_STATE_TARGET = "steady_state_target"
     INCIDENT_OVERRIDE = "incident_override"
 
@@ -274,6 +359,7 @@ class ModelId(StrEnum):
     # replaces the coarse free-text model_or_engine for spend metering; drift-pinned to the registry.
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
     CLAUDE_OPUS_4_6 = "claude-opus-4-6"
+    CLAUDE_OPUS_5_5 = "claude-opus-5-5"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
@@ -1581,7 +1667,7 @@ def subscription_quota_state_for_route(
     *,
     now: datetime | None = None,
 ) -> tuple[SubscriptionQuotaState, tuple[str, ...]]:
-    """Return route-specific subscription quota state and evidence refs.
+    """Return route-specific quota state and evidence refs.
 
     Aggregate subscription freshness answers "does any subscription lane have
     capacity?" Route dispatch needs a stricter question for receipt-bound routes
@@ -1590,11 +1676,16 @@ def subscription_quota_state_for_route(
 
     checked_at = _coerce_now(now)
     normalized_route_id = _normalize_route_id(route_id)
+    expected_pool = (
+        CapacityPool.PROMOTIONAL_CREDIT_QUOTA
+        if normalized_route_id in CLAUDE_CLOUD_CREDIT_RECEIPT_BOUNDED_ROUTES
+        else CapacityPool.SUBSCRIPTION_QUOTA
+    )
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
         if snapshot.admission_compatible
-        and snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+        and snapshot.capacity_pool is expected_pool
         and _normalize_route_id(snapshot.route_id) == normalized_route_id
     )
     if not snapshots:
@@ -1718,6 +1809,10 @@ def _subscription_quota_missing_required_admission_evidence(
         return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id in CLAUDE_CLOUD_CREDIT_RECEIPT_BOUNDED_ROUTES:
+        return not any(
+            _is_claude_cloud_credit_admission_evidence_ref(ref) for ref in snapshot.evidence_refs
+        )
     if normalized_route_id == "kimi.interactive.lane":
         return not any(_is_kimi_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
@@ -1731,6 +1826,8 @@ def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnaps
         return "untrusted_agy_admission_evidence"
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return "untrusted_claude_admission_evidence"
+    if normalized_route_id in CLAUDE_CLOUD_CREDIT_RECEIPT_BOUNDED_ROUTES:
+        return "untrusted_claude_cloud_credit_admission_evidence"
     if normalized_route_id == "kimi.interactive.lane":
         return "untrusted_kimi_admission_evidence"
     return "untrusted_route_admission_evidence"
@@ -1807,6 +1904,40 @@ def _is_claude_admission_evidence_ref(ref: str) -> bool:
     return _has_safe_claude_admission_receipt_label(ref) and _has_safe_claude_admission_witness(ref)
 
 
+def _is_claude_cloud_credit_admission_evidence_ref(ref: str) -> bool:
+    if CLAUDE_CLOUD_CREDIT_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref) is None:
+        return False
+    return _has_safe_claude_cloud_credit_admission_receipt_label(
+        ref
+    ) and _has_safe_claude_cloud_credit_admission_witness(ref)
+
+
+def _has_safe_claude_cloud_credit_admission_receipt_label(ref: str) -> bool:
+    label_match = CLAUDE_CLOUD_CREDIT_ADMISSION_RECEIPT_LABEL_RE.match(ref)
+    if label_match is None:
+        return False
+    label_stem = label_match.group("label").removesuffix(".yaml")
+    return (
+        CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE.search(label_stem) is None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE.search(label_stem) is None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE.search(label_stem) is None
+    )
+
+
+def _has_safe_claude_cloud_credit_admission_witness(ref: str) -> bool:
+    witness_matches = CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    return (
+        CLAUDE_CLOUD_CREDIT_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_ALLOWLIST_RE.fullmatch(witness) is not None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE.search(witness) is None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE.search(witness) is None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE.search(witness) is None
+    )
+
+
 def _has_safe_claude_admission_receipt_label(ref: str) -> bool:
     label_match = CLAUDE_ADMISSION_RECEIPT_LABEL_RE.match(ref)
     if label_match is None:
@@ -1881,6 +2012,50 @@ def _is_untrusted_claude_admission_ref_for_evidence(ref: str) -> bool:
         "claude-subscription-quota-admission" in ref
         or "unsafe-receipt-name-sha256:" in ref
         or bool(CLAUDE_ADMISSION_WITNESS_REF_RE.search(ref))
+    )
+
+
+def _is_safe_claude_cloud_credit_ignored_evidence_ref(ref: str) -> bool:
+    if ":ignored:" not in ref:
+        return False
+    label = _claude_evidence_receipt_label(ref)
+    if label is None:
+        return False
+    ignored_reason = ref.split(":ignored:", maxsplit=1)[1]
+    if (
+        CLAUDE_CLOUD_CREDIT_ADMISSION_IGNORED_REASON_RE.fullmatch(ignored_reason) is None
+        or CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE.search(ignored_reason) is not None
+        or CLAUDE_CLOUD_CREDIT_ADMISSION_IGNORED_UNSAFE_DETAIL_RE.search(ignored_reason) is not None
+    ):
+        return False
+    if re.fullmatch(r"unsafe-receipt-name-sha256:[0-9a-f]{16}", label) is not None:
+        return True
+    label_stem = label.removesuffix(".yaml")
+    return (
+        CLAUDE_CLOUD_CREDIT_ADMISSION_RECEIPT_LABEL_RE.match(f"relay-receipt:{label}:witness:")
+        is not None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE.search(label_stem) is None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE.search(label_stem) is None
+        and CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE.search(label_stem) is None
+    )
+
+
+def _is_untrusted_claude_cloud_credit_admission_ref_for_evidence(ref: str) -> bool:
+    if _is_claude_cloud_credit_admission_evidence_ref(
+        ref
+    ) or _is_safe_claude_cloud_credit_ignored_evidence_ref(ref):
+        return False
+    if (
+        CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE.search(ref) is not None
+        or CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE.search(ref) is not None
+    ):
+        return True
+    if not ref.startswith("relay-receipt:"):
+        return False
+    return (
+        "claude-cloud-credit-quota-admission" in ref
+        or "unsafe-receipt-name-sha256:" in ref
+        or bool(CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_REF_RE.search(ref))
     )
 
 
@@ -2212,6 +2387,14 @@ def _redact_quota_evidence_ref(route_id: str, ref: str) -> str:
     ):
         digest = hashlib.sha256(ref.encode("utf-8", errors="replace")).hexdigest()[:16]
         return f"quota-evidence-ref:redacted-untrusted-claude-admission-sha256:{digest}"
+    if (
+        route_id in CLAUDE_CLOUD_CREDIT_RECEIPT_BOUNDED_ROUTES
+        and _is_untrusted_claude_cloud_credit_admission_ref_for_evidence(ref)
+    ):
+        digest = hashlib.sha256(ref.encode("utf-8", errors="replace")).hexdigest()[:16]
+        return (
+            f"quota-evidence-ref:redacted-untrusted-claude-cloud-credit-admission-sha256:{digest}"
+        )
     return ref
 
 
