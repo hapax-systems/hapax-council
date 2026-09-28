@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -365,6 +366,42 @@ def test_receipt_for_account_a_cannot_launch_account_b(tmp_path, when):
     assert not observed.exists()
     if when == "before-dispatch":
         assert not (tmp_path / "home/.cache/hapax/claude-spawns").exists()
+
+
+@pytest.mark.parametrize("source", ["registry", "listed"])
+def test_advertised_interactive_launcher_invokes_subscription_guard(tmp_path, source):
+    env, _, _, observed, credential = launch_fixture(tmp_path)
+    if source == "registry":
+        registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+        route = next(r for r in registry["routes"] if r["route_id"] == "claude.interactive.full")
+    else:
+        result = subprocess.run(
+            [str(REPO_ROOT / "scripts/hapax-methodology-dispatch"), "--list-platform-paths"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        line = next(
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("claude/interactive/full:")
+        )
+        route = {"launcher": line.split(" -> ", 1)[1]}
+    command = shlex.split(
+        route["launcher"].replace("<lane>", "beta").replace("<task>", "governed-build")
+    )
+    assert "--subscription-only" in command
+    credential.unlink()
+    result = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        env={**os.environ, **env, "HOME": str(tmp_path / "home")},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "subscription authentication or host policy is unproven" in result.stderr
+    assert not observed.exists()
 
 
 @pytest.mark.parametrize("defect", ["legacy", "malformed", "missing", "wrong-proof"])
