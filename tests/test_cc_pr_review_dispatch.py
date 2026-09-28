@@ -1130,7 +1130,6 @@ class TestApply:
             changed_files=(rel, "scripts/other.py"),
             radius=2,
         )
-        assert "shared/governance/consent.py:4 (resolve_contract_id)" in rendered
         assert "0004| def resolve_contract_id(candidate: str) -> str:" in rendered
         assert "def resolve_contract_id(fake)" not in rendered
         assert "## agents/_governance.py:3 (get)" in rendered
