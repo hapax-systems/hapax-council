@@ -102,7 +102,7 @@ ok "Backup accessible"
 # ─── Phase 2: Restore from backup ──────────────────────────────────────────
 log "=== Phase 2: Restore files from B2 ==="
 
-RESTORE_DIR="/tmp/hapax-restore"
+RESTORE_DIR="/var/tmp/hapax-restore"
 rm -rf "$RESTORE_DIR"
 mkdir -p "$RESTORE_DIR"
 
