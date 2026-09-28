@@ -7,6 +7,8 @@ in a process image.
 
 from __future__ import annotations
 
+import fcntl
+import os
 from pathlib import Path
 
 from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter
@@ -73,16 +75,10 @@ def test_ingest_spool_leaves_malformed_file(tmp_path: Path) -> None:
     assert bad.exists()  # left in place so the intent is not lost
 
 
-def test_ingest_spool_removes_the_lock_sidecar_with_the_consumed_intent(
+def test_ingest_spool_preserves_the_lock_inode_while_another_holder_exists(
     tmp_path: Path,
 ) -> None:
-    """A consumed intent leaves NO residue — including the flock sidecar.
-
-    Production census on 2026-09-25 (row
-    coord-ledger-appendix-mirror-destroys-local-appends-20260925): 43 orphaned
-    `.jsonl.lock` sidecars in the live spool dir, one per intent consumed since
-    June — `ingest_spool` unlinked the intent but not the `append_jsonl` lock.
-    """
+    """Unlinking a held sidecar lets a second writer lock a different inode."""
     log = _log(tmp_path)
     receipt = log.spool_fail_open(
         _event(), writer=CoordWriter.shim(lane="zeta"), reason="daemon_down"
@@ -90,12 +86,28 @@ def test_ingest_spool_removes_the_lock_sidecar_with_the_consumed_intent(
     assert receipt.spool_path is not None
     lock_sidecar = receipt.spool_path.with_name(receipt.spool_path.name + ".lock")
     assert lock_sidecar.exists()
-
-    result = log.ingest_spool()
-
-    assert result.ingested == 1
-    assert not receipt.spool_path.exists()
-    assert not lock_sidecar.exists(), "the consumed intent's lock sidecar must go with it"
+    original_inode = lock_sidecar.stat().st_ino
+    held_fd = os.open(lock_sidecar, os.O_WRONLY)
+    try:
+        fcntl.flock(held_fd, fcntl.LOCK_EX)
+        result = log.ingest_spool()
+        assert result.ingested == 1
+        assert not receipt.spool_path.exists()
+        assert lock_sidecar.exists()
+        assert lock_sidecar.stat().st_ino == original_inode
+        other_fd = os.open(lock_sidecar, os.O_WRONLY)
+        try:
+            try:
+                fcntl.flock(other_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                raise AssertionError("a second holder acquired a split lock")
+        finally:
+            os.close(other_fd)
+    finally:
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+        os.close(held_fd)
 
 
 def test_ingest_spool_redelivered_intent_is_ingested_exactly_once(tmp_path: Path) -> None:

@@ -113,6 +113,7 @@ def test_feed_mirror_units_are_tracked() -> None:
 def test_feed_mirror_exec_start_is_an_allowlist() -> None:
     tokens = _exec_start_tokens(SERVICE)
     assert tokens[0].endswith("rsync")
+    assert {"--no-perms", "--no-owner", "--no-group"}.issubset(tokens)
     rules = _rsync_filter_rules(tokens)
     assert rules, "the mirror must carry explicit filter rules"
     # The catch-all exclude is what makes this an allowlist.
@@ -125,6 +126,14 @@ def test_feed_mirror_exec_start_is_an_allowlist() -> None:
         assert _rule_allows(rules, feed), f"{feed} must transfer"
     for name in NEVER_MIRRORED:
         assert not _rule_allows(rules, name), f"{name} must never transfer"
+
+
+def test_feed_mirror_has_an_overall_timeout() -> None:
+    assert "TimeoutStartSec=60s" in SERVICE.read_text(encoding="utf-8")
+
+
+def test_feed_mirror_waits_for_network_online() -> None:
+    assert "After=network-online.target" in SERVICE.read_text(encoding="utf-8")
 
 
 def _make_frozen_ledger(path: Path, rows: int) -> None:

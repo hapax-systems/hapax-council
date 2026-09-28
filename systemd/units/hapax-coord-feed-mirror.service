@@ -16,8 +16,8 @@
 #   (relay/inflections/20260810-coord-mirror-destroys-the-ledger-it-mirrors.md,
 #   measured: frame/append-only-logs-20260925 E2 §3). This exclude-list shape
 #   is why 70 methodology-dispatch intents of 2026-09-23/24 never landed.
-#   appendix's ledger.db is a downstream replica; appendix coord writers spool
-#   for the canonical writer on podium (shared/coord_event_log.py docstring).
+#   appendix's existing ledger.db is a stale noncanonical copy; appendix coord
+#   writers spool for the canonical writer on podium (shared/coord_event_log.py).
 # - grants/ and grant-key are the ESCAPE-AUTHORIZATION plane (2026-08-04
 #   incident): a grant minted on podium must not become valid on appendix by
 #   riding a feed mirror. Each host mints its own.
@@ -27,11 +27,13 @@
 [Unit]
 Description=Pull coord feeds from podium (dev-host mirror)
 Wants=network-online.target
+After=network-online.target
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/rsync -a --timeout=10 \
+TimeoutStartSec=60s
+ExecStart=/usr/bin/rsync -a --no-perms --no-owner --no-group --timeout=10 \
           --include=sdlc-vocab.json --include=review-receipts.json \
           --include=sdlc-events.jsonl --include=sdlc-events.shadow.json \
           --exclude='*' \

@@ -80,3 +80,31 @@ def test_ingest_spool_cli_reports_duplicates_on_redelivery(
     assert out["duplicates"] == 1
     assert out["failed"] == 0
     assert sum(1 for e in log.replay().events if e.event_id == "evt-cli-1") == 1
+
+
+def test_ingest_spool_cli_refuses_success_when_consumed_file_cannot_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    log = _log(tmp_path)
+    receipt = log.spool_fail_open(
+        _event(), writer=CoordWriter.shim(lane="kimi-2"), reason="daemon_down"
+    )
+    assert receipt.spool_path is not None
+    original_unlink = Path.unlink
+
+    def fail_intent_unlink(path: Path, *args: object, **kwargs: object) -> None:
+        if path == receipt.spool_path:
+            raise OSError("injected unlink failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_intent_unlink)
+    rc = coord_event_log.main(["ingest-spool"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert out["failed"] == 1
+    assert any("unlink_failed" in error for error in out["errors"])
+    assert any("retry ingest-spool" in error for error in out["errors"])
+    assert receipt.spool_path.exists()
+    assert sum(1 for event in log.replay().events if event.event_id == "evt-cli-1") == 1
