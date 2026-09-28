@@ -20,6 +20,7 @@ from types import TracebackType
 
 _IN_ACCESS = 0x00000001
 _IN_OPEN = 0x00000020
+_IN_Q_OVERFLOW = 0x00004000
 _IN_NONBLOCK = 0o4000
 _IN_CLOEXEC = 0o2000000
 _EVENT_HEADER = struct.Struct("iIII")
@@ -52,6 +53,7 @@ class OpenWatch:
         self._fd = -1
         self._watches: dict[int, Path] = {}
         self._opened: set[Path] = set()
+        self._overflowed = False
 
     def __enter__(self) -> OpenWatch:
         libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
@@ -104,7 +106,12 @@ class OpenWatch:
         deadline = time.monotonic() + _SETTLE_BOUND_SECONDS if settle else None
         while self._fd >= 0:
             while len(buf) >= _EVENT_HEADER.size:
-                wd, _mask, _cookie, name_len = _EVENT_HEADER.unpack_from(buf, 0)
+                wd, mask, _cookie, name_len = _EVENT_HEADER.unpack_from(buf, 0)
+                # An overflowed queue means opens were dropped: the observation is incomplete,
+                # which must read as inconclusive, never as "nothing was opened" (review of
+                # #4793, codex-1, 2026-09-28).
+                if mask & _IN_Q_OVERFLOW or wd == -1:
+                    self._overflowed = True
                 event_len = _EVENT_HEADER.size + name_len
                 if len(buf) < event_len:
                     break
@@ -130,3 +137,12 @@ class OpenWatch:
         """The watched files something opened or read, so far."""
         self._drain()
         return set(self._opened)
+
+    def overflowed(self) -> bool:
+        """Whether the kernel dropped events from the watch queue.
+
+        An overflowed queue can hide an open, so a caller must treat the observation as
+        inconclusive rather than clean.
+        """
+        self._drain()
+        return self._overflowed

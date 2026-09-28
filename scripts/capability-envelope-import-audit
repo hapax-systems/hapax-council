@@ -140,15 +140,28 @@ def _vibe_runtime(binary: Path, home: Path) -> tuple[Path, ...]:
 
 
 def _muse_release(launcher: Path) -> Path:
-    """The binary the muse launcher would exec (``muse-bin-<.muse-version>`` beside it), so the
-    audit never runs the self-updater inside the envelope."""
+    """The binary the muse launcher would exec (``muse-bin-<.muse-version>`` beside it).
+
+    A launcher whose release cannot be established is REFUSED, never run: the launcher is the
+    self-updater, and the envelope must not run it (review of #4793, codex-1, clause (7) of the
+    row, 2026-09-28 — the fallback to the launcher contradicted that guarantee).
+    """
     directory = launcher.resolve().parent
     try:
         version = (directory / ".muse-version").read_text(encoding="utf-8").strip()
-    except OSError:
-        return launcher
+    except OSError as exc:
+        raise Refused(
+            f"muse installation at {directory} names no release ({type(exc).__name__}); next "
+            "action: install muse so its release binary (muse-bin-<version>) sits beside the "
+            "launcher, or point HAPAX_MUSE_BIN at the release binary itself"
+        ) from exc
     candidate = directory / f"muse-bin-{version}"
-    return candidate if version and candidate.is_file() else launcher
+    if not version or not candidate.is_file():
+        raise Refused(
+            f"the muse release {candidate.name} that .muse-version names is not there; next "
+            "action: reinstall muse, or point HAPAX_MUSE_BIN at the release binary itself"
+        )
+    return candidate
 
 
 def _declared_hook(world: World) -> Path:
@@ -301,12 +314,15 @@ def _scrub(value: str, home: Path) -> str:
     return value.replace(str(home), "~")
 
 
-def _observe(world: World, proc: subprocess.CompletedProcess, opened: set[Path]) -> dict:
+def _observe(
+    world: World, proc: subprocess.CompletedProcess, opened: set[Path], *, overflowed: bool = False
+) -> dict:
     sentinel_tokens = [t for t in world.tokens.values() if t.startswith("HAPAX-SENTINEL-")]
     by_token = {t: p for p, t in world.tokens.items()}
     found = find_tokens(proc.stdout, sentinel_tokens)
     return {
         "returncode": proc.returncode,
+        "overflowed": overflowed,
         "tokens_in_reply": sorted(str(by_token[t].relative_to(world.root)) for t in found),
         "sentinels_opened": sorted(str(p.relative_to(world.root)) for p in opened),
         "markers": sorted(p.name for p in world.spool.iterdir()),
@@ -325,11 +341,22 @@ def verdict(
     observation is what a broken probe or a silently refused launch also produces, so it is
     inconclusive and exits non-zero rather than 0 (review of #4784, codex-1: ``clean-no-control``
     must not be a passing result).
+
+    Two more fail-closed rules (review of #4793, codex-1, clause (7) of the row, 2026-09-28):
+
+    - an **overflowed** watch queue means the kernel dropped events, so an open may be missing from
+      either run and the verdict is inconclusive, never clean;
+    - a **failed baseline** proves only that the probe can detect *one* import, not that it reached
+      every sentinel, so the control's coverage is unknown and the verdict is inconclusive.
     """
     leaked = [m for m in enveloped["markers"] if m in undeclared_markers]
+    if baseline.get("overflowed") or enveloped.get("overflowed"):
+        return "inconclusive", 2
     if enveloped["sentinels_opened"] or enveloped["tokens_in_reply"] or leaked:
         return "leak", 1
     if enveloped["returncode"] != 0:
+        return "inconclusive", 2
+    if baseline["returncode"] != 0:
         return "inconclusive", 2
     control = baseline["sentinels_opened"] or baseline["tokens_in_reply"] or baseline["markers"]
     return ("clean", 0) if control else ("clean-no-control", 2)
@@ -363,14 +390,14 @@ def run_baseline(world: World, launch: Launch) -> dict:
         proc = subprocess.run(
             argv, capture_output=True, text=True, timeout=900, env=env, check=False
         )
-    return _observe(world, proc, watch.opened())
+    return _observe(world, proc, watch.opened(), overflowed=watch.overflowed())
 
 
 def run_enveloped(world: World, launch: Launch) -> dict:
     rendered = render(launch.declaration, run_root=world.root / "envelope-run")
     with OpenWatch(sorted(world.tokens)) as watch:
         proc = execute(rendered, timeout=900)
-    observed = _observe(world, proc, watch.opened())
+    observed = _observe(world, proc, watch.opened(), overflowed=watch.overflowed())
     observed["declaration_sha256"] = rendered.facts["declaration_sha256"]
     return observed
 

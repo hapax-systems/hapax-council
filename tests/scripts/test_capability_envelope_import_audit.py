@@ -56,12 +56,33 @@ def _obs(**overrides):
         (_obs(returncode=1, sentinels_opened=["x"]), ("leak", 1)),
         (_obs(returncode=1), ("inconclusive", 2)),
         (_obs(markers=["declared-hook-fired"]), ("clean", 0)),
+        (_obs(overflowed=True), ("inconclusive", 2)),
     ],
-    ids=["opened", "token", "undeclared-marker", "leak-outranks-failure", "failed", "clean"],
+    ids=[
+        "opened",
+        "token",
+        "undeclared-marker",
+        "leak-outranks-failure",
+        "failed",
+        "clean",
+        "enveloped-overflow",
+    ],
 )
 def test_the_verdict(enveloped: dict, expected: tuple[str, int]):
     baseline = _obs(sentinels_opened=["mirror-home/AGENTS.md"])
     assert _audit().verdict(baseline, enveloped, ("undeclared-user-hook-ran",)) == expected
+
+
+def test_the_verdict_cannot_be_clean_on_an_overflowed_or_failed_baseline():
+    """Clause (7) of the row (codex-1, 2026-09-28): an overflowed queue drops events, so a clean
+    enveloped run proves nothing; and a baseline that FAILED proves only that the probe can detect
+    one import, not that it reached every sentinel."""
+    audit = _audit()
+    witnessed = _obs(sentinels_opened=["mirror-home/AGENTS.md"])
+    assert audit.verdict(_obs(overflowed=True), witnessed, ()) == ("inconclusive", 2)
+    assert audit.verdict(
+        _obs(sentinels_opened=["mirror-home/AGENTS.md"], returncode=1), _obs(), ()
+    ) == ("inconclusive", 2)
 
 
 def test_a_clean_run_without_a_witnessed_baseline_import_says_so():
@@ -269,16 +290,19 @@ def test_muse_builder_refuses_without_a_binary(tmp_path, monkeypatch):
         audit.muse_launch(world)
 
 
-def test_muse_release_falls_back_to_the_launcher(tmp_path: Path):
-    """codex-1's minor (2026-09-28): the audit must never run muse's self-updater inside the
-    envelope, and every way the release cannot be resolved falls back to the launcher."""
+def test_muse_release_refuses_rather_than_running_the_self_updating_launcher(tmp_path: Path):
+    """codex-1's minor, ruled clause (7) (2026-09-28): the audit must never run muse's
+    self-updater inside the envelope, so every way the release cannot be established REFUSES
+    rather than falling back to the launcher."""
     audit = _audit()
     launcher = _exe(tmp_path / "bin" / "muse")
-    # No version file beside the launcher: the launcher is what runs.
-    assert audit._muse_release(launcher) == launcher
-    # A version file naming a release that is not there: same fallback.
+    # No version file beside the launcher: the release cannot be established, so refuse.
+    with pytest.raises(audit.Refused, match="names no release.*next action"):
+        audit._muse_release(launcher)
+    # A version file naming a release that is not there: refuse too.
     _file(tmp_path / "bin" / ".muse-version", "9.9.9\n")
-    assert audit._muse_release(launcher) == launcher
+    with pytest.raises(audit.Refused, match="is not there.*next action"):
+        audit._muse_release(launcher)
     # A version naming a real release binary: the release runs, never the self-updating launcher.
     release = _exe(tmp_path / "bin" / "muse-bin-9.9.9")
     assert audit._muse_release(launcher) == release

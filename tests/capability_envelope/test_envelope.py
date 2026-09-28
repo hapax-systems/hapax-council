@@ -697,6 +697,26 @@ def test_the_drain_keeps_a_partial_event_for_the_next_read(tmp_path: Path, monke
     assert watch.opened() == {first, second}
 
 
+def test_the_watch_reports_an_overflowed_queue(tmp_path: Path, monkeypatch):
+    """Clause (7) of the row (codex-1, 2026-09-28): the drain unpacked the mask and never read it,
+    so an `IN_Q_OVERFLOW` event (mask 0x4000, wd -1) passed unnoticed and the lost opens made an
+    audit read clean. The watch reports the overflow so the verdict can be inconclusive."""
+    seen = _write(tmp_path / "seen.md", "x\n")
+    with OpenWatch([seen]) as watch:
+        overflow = _EVENT_HEADER.pack(-1, 0x4000, 0, 0)
+        reads = iter([overflow])
+
+        def _read(fd: int, size: int) -> bytes:
+            try:
+                return next(reads)
+            except StopIteration:
+                raise BlockingIOError from None
+
+        monkeypatch.setattr(os, "read", _read)
+        watch._drain()
+    assert watch.overflowed() is True
+
+
 # ---------------------------------------------------------------- carrier failures
 
 

@@ -74,9 +74,12 @@ and it sees opens through bind mounts. What the model says it saw is complementa
 - It launches the harness the way its reviewer wrapper does, against a mirror of the home (the operator's own files
   are **read as the harness would read them, and never changed** — the baseline's root is read-only and the mirrored
   home is the only writable place), and then again inside the envelope.
-- It exits 0 when the enveloped run imported nothing **and** the baseline control witnessed an import, 1 on a leak,
-  2 when the enveloped run did not complete **or** the baseline control witnessed nothing (reported as
-  `clean-no-control` — a run whose control proved nothing is not evidence), and 64 when it refuses.
+- It exits 0 when the enveloped run imported nothing **and** the baseline control witnessed an import on a run that
+  completed, 1 on a leak, and 64 when it refuses. **Anything that leaves the observation incomplete is 2
+  (inconclusive), never 0:** the enveloped run did not complete; the baseline control witnessed nothing
+  (`clean-no-control` — a run whose control proved nothing is not evidence); the baseline itself failed, so its
+  coverage of the sentinels is unknown; or the watch queue **overflowed**, which means the kernel dropped events and
+  an open can be missing from the record.
 - Vibe runs only on the Team allowance.
 
 ```bash
