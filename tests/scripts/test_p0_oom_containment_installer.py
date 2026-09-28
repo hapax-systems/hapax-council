@@ -90,19 +90,22 @@ def _copy_oom_package(dest_root: Path) -> None:
         shutil.copy2(REPO_ROOT / relative, dest)
 
 
-def test_source_check_rejects_host_policy_file_mismatch(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("rel", "needle"),
+    (
+        ("system.slice.d/oom-containment.conf", "MemoryMax=18G"),
+        ("user@1000.service.d/oom.conf", "OOMScoreAdjust=100"),
+        ("user@1000.service.d/oom.conf", "OOMPolicy=continue"),
+        ("user@1000.service.d/oom.conf", "MemorySwapMax=8G"),
+    ),
+)
+def test_source_check_rejects_host_policy_file_mismatch(
+    tmp_path: Path, rel: str, needle: str
+) -> None:
     source = tmp_path / "source"
     _copy_oom_package(source)
-    target = (
-        source
-        / "config/root-required/oom-host-policy/appendix/systemd/system/system.slice.d/oom-containment.conf"
-    )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        "[Slice]\nMemoryHigh=14G\nMemoryMax=99G\nMemorySwapMax=infinity\n"
-        "MemoryLow=14G\nMemoryMin=12G\n",
-        encoding="utf-8",
-    )
+    selected = source / "config/root-required/oom-host-policy/appendix/systemd/system" / rel
+    selected.write_text(selected.read_text().replace(needle, ""))
     result = subprocess.run(
         [str(INSTALLER), "--source", str(source), "--check", "--no-runtime"],
         text=True,
@@ -115,8 +118,10 @@ def test_source_check_rejects_host_policy_file_mismatch(tmp_path: Path) -> None:
             "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "63310084",
         },
     )
-    assert result.returncode != 0
-    assert "host policy mismatch" in result.stderr
+    assert (
+        result.returncode != 0
+        and needle.split("=")[0].replace("OOMPolicy", "continue") in result.stderr
+    )
 
 
 @pytest.fixture(autouse=True)

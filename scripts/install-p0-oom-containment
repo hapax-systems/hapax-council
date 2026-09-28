@@ -1093,11 +1093,11 @@ check_source() {
         echo "OOM sudoers owner UID/GID must be numeric; next action: remove invalid HAPAX_OOM_SUDOERS_OWNER_UID/GID overrides" >&2
         return 1
     fi
-    grep -Eq '^OOMScoreAdjust=100$' "$(src_path systemd/system/user@1000.service.d/oom.conf)" || {
+    grep -Eq '^OOMScoreAdjust=100$' "$(policy_src_path systemd/system/user@1000.service.d/oom.conf)" || {
         echo "user@1000 OOM drop-in must set OOMScoreAdjust=100; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
         return 1
     }
-    grep -Eq '^OOMPolicy=continue$' "$(src_path systemd/system/user@1000.service.d/oom.conf)" || {
+    grep -Eq '^OOMPolicy=continue$' "$(policy_src_path systemd/system/user@1000.service.d/oom.conf)" || {
         echo "user@1000 OOM drop-in must continue after a descendant OOM; next action: restore systemd/system/user@1000.service.d/oom.conf from the P0 PR" >&2
         return 1
     }
