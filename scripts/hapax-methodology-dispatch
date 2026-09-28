@@ -154,6 +154,9 @@ CAPACITY_INVARIANT = (
     "degradation is permitted. Capacity may be reduced only by task-platform "
     "fit, quota state, resource contention, or explicit operator hold."
 )
+WORKLOAD_SHAPES = frozenset(
+    {"serving", "bulk_read_only", "agentic_build", "gpu_batch", "other"}
+)
 DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
 DEFAULT_INVARIANT_MANIFEST = REPO_ROOT_FOR_IMPORTS / "config" / "invariant-manifest.yaml"
 
@@ -1429,6 +1432,9 @@ def write_receipt(
         "event": "methodology_dispatch",
         "timestamp": now_utc(),
         "task_id": task_id,
+        # Only an explicit task declaration can classify the work. The route,
+        # model and title describe execution or prose, not workload shape.
+        "workload_shape": declared_workload_shape(validation.task),
         "lane": lane,
         "platform": platform,
         "mode": mode,
@@ -1478,6 +1484,13 @@ def write_receipt(
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, sort_keys=True) + "\n")
     return path
+
+
+def declared_workload_shape(task: TaskNote | None) -> str:
+    if task is None:
+        return "unknown"
+    shape = task.fields.get("workload_shape")
+    return shape if isinstance(shape, str) and shape in WORKLOAD_SHAPES else "unknown"
 
 
 def slugify(value: str) -> str:

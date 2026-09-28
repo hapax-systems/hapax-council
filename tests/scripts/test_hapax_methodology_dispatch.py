@@ -1329,6 +1329,7 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
         "governed-build",
         f"""
         kind: build
+        workload_shape: agentic_build
         authority_case: CASE-TEST-001
         parent_spec: {spec}
         """,
@@ -1345,11 +1346,58 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     receipt = json.loads(line)
     assert receipt["ok"] is True
     assert receipt["task_id"] == "governed-build"
+    assert receipt["workload_shape"] == "agentic_build"
     assert receipt["parent_spec_path"] == str(spec)
     assert receipt["route_decision_id"].startswith("rd-")
     assert receipt["route_policy_action"] == "launch"
     assert receipt["dimensional_route_receipt_schema"] == 1
     assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
+
+
+@pytest.mark.parametrize(
+    ("declaration", "expected"),
+    [
+        ("serving", "serving"),
+        ("bulk_read_only", "bulk_read_only"),
+        ("agentic_build", "agentic_build"),
+        ("gpu_batch", "gpu_batch"),
+        ("other", "other"),
+        (None, "unknown"),
+        ("unsupported_shape", "unknown"),
+    ],
+)
+def test_dispatch_receipt_uses_only_declared_workload_shape(
+    tmp_path: Path, monkeypatch, declaration: str | None, expected: str
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setattr(module, "orchestration_ledger_dir", lambda: tmp_path)
+    # These execution cues must never substitute for a task declaration.
+    task_fields = {"title": "GPU batch serving build", "platform": "codex", "model": "gpu-model"}
+    if declaration is not None:
+        task_fields["workload_shape"] = declaration
+    task = module.TaskNote(tmp_path / "task.md", task_fields)
+    route = module.PlatformPath("codex", "headless", "full", "gpu-launcher", "serving", True, "")
+
+    path = module.write_receipt(
+        task_id="task", lane="test", platform="codex", mode="headless", profile="full",
+        route=route, validation=module.Validation(True, "ok", task), prompt=None,
+        launched=True, launch_returncode=0,
+    )
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["workload_shape"] == expected
+    assert record["event"] == "methodology_dispatch"
+
+
+def test_dispatch_receipt_without_task_cannot_infer_shape(tmp_path: Path, monkeypatch) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setattr(module, "orchestration_ledger_dir", lambda: tmp_path)
+    path = module.write_receipt(
+        task_id="gpu-batch-serving", lane="test", platform="codex", mode="headless",
+        profile="full", route=None, validation=module.Validation(False, "task absent"),
+        prompt=None, launched=False,
+    )
+    assert json.loads(path.read_text(encoding="utf-8"))["workload_shape"] == "unknown"
 
 
 def test_dispatch_admission_reuses_worker_adapter_map(monkeypatch) -> None:
