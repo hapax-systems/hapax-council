@@ -115,12 +115,17 @@ _PROVIDER_API_HOSTS = (
     "api.runwayml.com",
 )
 _PROVIDER_HOST_RE = re.compile(
-    r"https?://(?:" + "|".join(re.escape(host) for host in _PROVIDER_API_HOSTS) + r")(?:[/\"'\s]|$)"
+    r"https?://(?:"
+    + "|".join(re.escape(host) for host in _PROVIDER_API_HOSTS)
+    + r")(?::[0-9]+)?(?:[/\?#\"'\s]|$)"
 )
 
-#: Zero-argument provider SDK constructors read their credential from the
-#: environment implicitly — the bare/API invocation path.
-_BARE_PROVIDER_SDK_RE = re.compile(r"\b(?:Async)?(?:OpenAI|Anthropic|AzureOpenAI)\s*\(\s*\)")
+#: Text fallback for provider constructors; parsed Python uses Call nodes so a
+#: governed proxy on the same constructor can be recognized structurally.
+_PROVIDER_SDK_CALL_RE = re.compile(r"\b(?:Async)?(?:OpenAI|Anthropic|AzureOpenAI)\s*\(")
+_PROVIDER_SDK_NAMES = frozenset(
+    {"OpenAI", "AsyncOpenAI", "Anthropic", "AsyncAnthropic", "AzureOpenAI", "AsyncAzureOpenAI"}
+)
 
 #: Rebinding work to the PAYG billing class (registry JSON, python enum, or a
 #: session plan-type flip; quota reader precedent: test_vibe_api_binding_and_
@@ -385,23 +390,33 @@ def _node_findings_for_postimage(
         if not node_is_added(node):
             continue
         line_no = node.lineno or 1
-        if isinstance(node, ast.Call) and _call_api_key_args(node):
-            if _call_is_proxy_bound(node):
-                allowed_out.append(
-                    Finding(
-                        path=path, line=line_no, kind="governed-proxy-route", text=snippet(node)
-                    )
-                )
-                continue
-            out.append(
-                Finding(
-                    path=path,
-                    line=line_no,
-                    kind="api-key-route",
-                    text=snippet(node),
-                    covers=covered(node),
-                )
+        if isinstance(node, ast.Call):
+            api_key_args = _call_api_key_args(node)
+            constructor_name = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else None
             )
+            is_provider_constructor = constructor_name in _PROVIDER_SDK_NAMES
+            if api_key_args or is_provider_constructor:
+                if _call_is_proxy_bound(node):
+                    allowed_out.append(
+                        Finding(
+                            path=path, line=line_no, kind="governed-proxy-route", text=snippet(node)
+                        )
+                    )
+                else:
+                    out.append(
+                        Finding(
+                            path=path,
+                            line=line_no,
+                            kind="api-key-route" if api_key_args else "provider-api-endpoint",
+                            text=snippet(node),
+                            covers=covered(node),
+                        )
+                    )
         if _node_credential_env_read(node):
             if id(node) in strip_targets:
                 continue  # the strip's target itself; recorded above
@@ -426,7 +441,7 @@ def _pattern_only_classes(content: str) -> tuple[str, ...]:
     """
 
     kinds: list[str] = []
-    if _PROVIDER_HOST_RE.search(content) or _BARE_PROVIDER_SDK_RE.search(content):
+    if _PROVIDER_HOST_RE.search(content):
         kinds.append("provider-api-endpoint")
     if _CAPACITY_POOL_PAYG_RE.search(content) or _PLAN_TYPE_API_RE.search(content):
         kinds.append("capacity-pool-payg")
@@ -450,4 +465,6 @@ def _text_classes(content: str) -> tuple[str, ...]:
     ):
         kinds.append("api-key-route")
     kinds.extend(_pattern_only_classes(content))
+    if _PROVIDER_SDK_CALL_RE.search(content) and "provider-api-endpoint" not in kinds:
+        kinds.append("provider-api-endpoint")
     return tuple(kinds)
