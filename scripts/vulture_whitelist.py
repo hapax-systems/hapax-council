@@ -5443,3 +5443,7 @@ from scripts.billing_surface_input import (  # noqa: E402
 )
 
 _ = _billing_materialise_post_image
+
+# Pytest plugin loaded by the CI refutation proof subprocess (-p).
+pytest_runtest_logreport  # noqa: F821
+pytest_sessionfinish  # noqa: F821
