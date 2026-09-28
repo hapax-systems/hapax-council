@@ -275,16 +275,20 @@ class TestLensRegistry:
         """Claude (a reasoning model) must be given a bare-fence output directive,
         or it prepends prose and the strict dossier parser discards its verdict as
         invalid-output (a lost vote). The wrapper owns the no-prose contract,
-        descriptor binding, and tool denial so the registry does not carry a raw CLI."""
+        descriptor binding, and the cloud-credit billing-witness refusal so the
+        registry does not carry a raw CLI."""
         roster = _registry()["families"]
         claude = next(entry for entry in roster if entry["family"] == "claude")
         cmd = claude["reviewer_command"]
-        assert cmd == ["scripts/hapax-claude-reviewer"]
-        wrapper = (REPO_ROOT / "scripts" / "hapax-claude-reviewer").read_text(encoding="utf-8")
-        assert 'REVIEW_EXECUTION_ROUTE = "claude.review.opus"' in wrapper
-        assert '"--allowedTools"' in wrapper
+        assert cmd == ["scripts/hapax-claude-cloud-reviewer"]
+        wrapper = (REPO_ROOT / "scripts" / "hapax-claude-cloud-reviewer").read_text(
+            encoding="utf-8"
+        )
+        assert 'REVIEW_EXECUTION_ROUTE = "claude.review.cloud"' in wrapper
         assert "exactly one fenced yaml" in wrapper
         assert "invalid-output" in wrapper
+        assert "ccr_promotional" in wrapper
+        assert "pay-as-you-go" in wrapper
 
     def test_surface_rows_cover_spec_table(self) -> None:
         reg = _registry()
@@ -695,7 +699,7 @@ class TestConstitution:
             entry["family"] for entry in reg["families"]
         ]
         assert rt.review_family_route_ids(reg) == {
-            "claude": "claude.review.opus",
+            "claude": "claude.review.cloud",
             "gemini": "agy.review.direct",
             "glm": "glmcp.review.direct",
         }
@@ -724,11 +728,11 @@ class TestConstitution:
 
         assert "claude" in blocked
         assert any(
-            "claude_review_seat_receipt_admission_required" in reason
+            "claude_cloud_review_seat_receipt_admission_required" in reason
             for reason in blocked["claude"]
         )
         assert any(
-            "claude_review_route_specific_quota_receipt_absent" in reason
+            "claude_cloud_review_route_specific_quota_receipt_absent" in reason
             for reason in blocked["claude"]
         )
 
@@ -736,7 +740,7 @@ class TestConstitution:
         rt = _load_review_team_module()
         reg = _registry()
         payload = _platform_registry_payload()
-        route = next(row for row in payload["routes"] if row["route_id"] == "claude.review.opus")
+        route = next(row for row in payload["routes"] if row["route_id"] == "claude.review.cloud")
         _mark_route_fresh(route)
         platform_registry = rt.PlatformCapabilityRegistry.model_validate(payload)
 

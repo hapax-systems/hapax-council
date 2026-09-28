@@ -145,11 +145,14 @@ docs_only_globs: ["docs/**", "*.md"]
 # blind reviewer prompt is piped on stdin. Tune flags here, not in code.
 families:
   - family: claude
-    # scripts/hapax-claude-reviewer pins Opus, disables tools, and injects the
-    # bare-fence output contract. Keeping this as a wrapper, not a raw
-    # ``claude -p`` argv, lets the platform-capability route represent this as
-    # read-only review capacity rather than a mutable Claude worker lane.
-    reviewer_command: ["scripts/hapax-claude-reviewer"]
+    # scripts/hapax-claude-cloud-reviewer seats the family through an
+    # Anthropic-managed cloud session billed to the promotional cloud credit
+    # (never the paced Max pool, never pay-as-you-go), injects the bare-fence
+    # output contract, and refuses the seat when the credit billing witness is
+    # absent. Keeping this as a wrapper, not a raw ``claude --cloud`` argv,
+    # lets the platform-capability route represent this as read-only review
+    # capacity rather than a mutable Claude worker lane.
+    reviewer_command: ["scripts/hapax-claude-cloud-reviewer"]
     timeout_seconds: 1200
   - family: codex
     reviewer_command: ["codex", "exec", "--sandbox", "read-only", "-"]
@@ -205,11 +208,15 @@ families:
 route_backed_review_families:
   - family: claude
     # Fail-closed binding: Claude review supply counts only when the
-    # claude.review.opus platform route is admitted with fresh platform and
-    # route-specific subscription/quota receipts. The wrapper pins Opus and
-    # denies tools so this route is distinct from mutable Claude headless lanes.
-    route_id: claude.review.opus
-    reviewer_command: ["scripts/hapax-claude-reviewer"]
+    # claude.review.cloud platform route is admitted with fresh platform and
+    # route-specific cloud-credit quota receipts. The wrapper runs the review
+    # as a cloud session on the promotional credit and refuses when the credit
+    # billing witness is missing; there is no fallback to the claude -p route
+    # (claude.review.opus stays declared but unbound) and none to
+    # pay-as-you-go. Credit exhaustion latches this route out; it never
+    # reroutes.
+    route_id: claude.review.cloud
+    reviewer_command: ["scripts/hapax-claude-cloud-reviewer"]
     timeout_seconds: 1200
   - family: gemini
     # Fail-closed binding: this family is backed by the agy reviewer wrapper,

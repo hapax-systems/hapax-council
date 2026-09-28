@@ -2374,6 +2374,9 @@ CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX = (
 CLAUDE_REVIEWER_STDOUT_QUOTA_WALL_DIAGNOSTIC = (
     "hapax-claude-reviewer: claude stdout quota-wall diagnostic observed"
 )
+CLAUDE_CLOUD_REVIEWER_QUOTA_WALL_DIAGNOSTIC = (
+    "hapax-claude-cloud-reviewer: claude cloud credit quota-wall diagnostic observed"
+)
 CLAUDE_REVIEWER_CANONICAL_QUOTA_WALL = "HTTP 429 Too Many Requests"
 CLAUDE_REVIEWER_WRAPPER_DIAGNOSTIC_PREFIXES = (
     CLAUDE_REVIEWER_STDOUT_DIAGNOSTIC_PREFIX,
@@ -2381,6 +2384,8 @@ CLAUDE_REVIEWER_WRAPPER_DIAGNOSTIC_PREFIXES = (
     "hapax-claude-reviewer: claude stdout omitted from classifier ",
     "hapax-claude-reviewer: claude single-line stdout omitted from classifier ",
     "hapax-claude-reviewer: claude exited nonzero; ",
+    CLAUDE_CLOUD_REVIEWER_QUOTA_WALL_DIAGNOSTIC,
+    "hapax-claude-cloud-reviewer: ",
 )
 
 
@@ -2393,7 +2398,11 @@ def reviewer_stdout_classifier_diagnostic(stderr: str) -> str:
 
 def reviewer_stdout_quota_wall_diagnostic(stderr: str) -> bool:
     return any(
-        line.strip() == CLAUDE_REVIEWER_STDOUT_QUOTA_WALL_DIAGNOSTIC
+        line.strip()
+        in {
+            CLAUDE_REVIEWER_STDOUT_QUOTA_WALL_DIAGNOSTIC,
+            CLAUDE_CLOUD_REVIEWER_QUOTA_WALL_DIAGNOSTIC,
+        }
         for line in (stderr or "").splitlines()
     )
 
