@@ -61,18 +61,13 @@ git config --get core.hooksPath   # scripts
 On the council host, after this lands, the seat sets that relative value and
 reads it back from a Codex worktree.
 
-A relative value is resolved against each worktree's top level, so one setting
-covers the primary checkout and every linked worktree, and no worktree depends
-on an absolute path into another checkout. A worktree whose branch does not yet
-carry both tracked hooks has no hook at that boundary; update or rebase it
-before relying on the setting. The pre-commit CLI must be on `PATH`, as the
-one-time install section above provides.
+The relative value resolves in each worktree. Update any branch missing the
+tracked hooks before relying on them; keep the pre-commit CLI on `PATH`.
 
 ## Verify
 
 ```bash
-test -x .git/hooks/pre-commit
-sed -n '1,12p' .git/hooks/pre-commit
+git config --get core.hooksPath   # scripts
 test -x "$(git rev-parse --show-toplevel)/scripts/pre-commit"
 test -x "$(git rev-parse --show-toplevel)/scripts/pre-push"
 ```
@@ -81,7 +76,6 @@ Recheck hook resolution from a linked worktree:
 
 ```bash
 git -C /path/to/linked-worktree config --show-origin core.hooksPath
-git -C /path/to/linked-worktree rev-parse --git-path hooks
 git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-commit
 git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-push
 ```

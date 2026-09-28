@@ -256,6 +256,16 @@ def test_a_file_header_that_looks_like_an_added_line_is_not_scanned(tmp_path: Pa
     assert _run(repo, registry, parent, head).returncode == 0
 
 
+def test_plus_prefixed_content_is_scanned_with_correct_lines(tmp_path: Path):
+    repo, registry = _repo(tmp_path), _valid_registry(tmp_path)
+    parent, head = _commit(repo, "plus.txt", f"++{NAME_A}\n++ b/{NAME_B}\nauthor: {NAME_A}\n")
+    result = _run(repo, registry, parent, head)
+    assert result.returncode == 1, result.stderr
+    for line in (1, 2, 3):
+        assert _refusal("plus.txt", line) in result.stderr
+    assert NAME_A not in result.stderr and NAME_B not in result.stderr
+
+
 def test_non_utf8_added_content_does_not_crash_the_scan(tmp_path: Path):
     """A repository may carry non-UTF-8 text; refusal must still name only file and line."""
     repo, registry = _repo(tmp_path), _valid_registry(tmp_path)

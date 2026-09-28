@@ -138,16 +138,20 @@ def added_lines(root: Path, base: str, head: str) -> list[tuple[str, int, str]]:
     if diff.returncode != 0:
         raise SystemExit(2)
     out: list[tuple[str, int, str]] = []
-    path, lineno, in_hunk = "", 0, False
+    path, lineno, remaining = "", 0, 0
     for line in diff.stdout.split("\n"):
-        if line.startswith("+++ b/"):
-            path, in_hunk = line[6:], False
+        if line.startswith("diff --git "):
+            remaining = 0
+        elif not remaining and line.startswith("+++ b/"):
+            path = line[6:]
         elif line.startswith("@@"):
             plus = line.split("+", 1)[1].split(" ", 1)[0]
-            lineno, in_hunk = int(plus.split(",", 1)[0]), True
-        elif in_hunk and line.startswith("+") and not line.startswith("+++"):
-            out.append((path, lineno, line[1:]))
-            lineno += 1
+            start, _, count = plus.partition(",")
+            lineno, remaining = int(start), int(count) if count else 1
+        elif remaining and line.startswith(("+", " ")):
+            if line.startswith("+"):
+                out.append((path, lineno, line[1:]))
+            lineno, remaining = lineno + 1, remaining - 1
     return out
 
 
