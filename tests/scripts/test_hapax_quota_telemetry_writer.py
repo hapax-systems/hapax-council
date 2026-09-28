@@ -4805,6 +4805,7 @@ def test_claude_account_live_quota_suffix_tokens_are_consistent_across_layers() 
     suffix_tokens = ("account", "live", "quota", "observed")
     assert _ref_tokens(telemetry_namespace["_WRITER_ACCOUNT_LIVE_SUFFIX_BARE"]) == (suffix_tokens)
     assert _ref_tokens(LEDGER_SUFFIX) == suffix_tokens
+    assert f":{telemetry_namespace['_WRITER_ACCOUNT_LIVE_SUFFIX_BARE']}" == LEDGER_SUFFIX
 
 
 def test_writes_valid_live_ledger_with_fresh_captured_at(tmp_path: Path) -> None:
