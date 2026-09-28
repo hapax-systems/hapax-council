@@ -114,17 +114,21 @@ else:
 """
     )
     (binary / "claude").chmod(0o700)
-    # A pre-existing tmux server has its OWN environment; execute the real runner
-    # after injecting gateway controls and dropping the dispatcher's opt-in env.
+    # A pre-existing tmux server has its OWN environment. Simulate its session
+    # and ready REPL pane while executing the real runner under gateway controls.
+    session_state = tmp_path / "tmux-session-active"
     (binary / "tmux").write_text(
-        '#!/usr/bin/env bash\ncase "$1" in\n'
-        "has-session) exit 1 ;;\nnew-session)\n"
+        f'#!/usr/bin/env bash\nSESSION_STATE={str(session_state)!r}\ncase "$1" in\n'
+        'has-session) test -f "$SESSION_STATE" ;;\nnew-session)\n'
         "for runner; do :; done\n"
         "export ANTHROPIC_BASE_URL=https://tmux-gateway.invalid\n"
         "export ANTHROPIC_AUTH_TOKEN=synthetic-tmux-token\n"
         "unset CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST CLAUDE_CODE_OAUTH_TOKEN\n"
         "export HOME=/synthetic-unbound-home CLAUDE_CONFIG_DIR=/synthetic-unbound-config\n"
-        'exec "$runner" ;;\n*) exit 0 ;;\nesac\n'
+        '"$runner" || exit $?\ntouch "$SESSION_STATE"\nexit 0 ;;\n'
+        'display-message) case "$*" in *pane_dead*) echo 0 ;; *pane_pid*) echo 0 ;; esac; exit 0 ;;\n'
+        'capture-pane) printf "? for shortcuts\\n"; exit 0 ;;\n'
+        "*) exit 0 ;;\nesac\n"
     )
     (binary / "tmux").chmod(0o700)
     (config / "settings.json").write_text(json.dumps({"hooks": {"SessionStart": []}}))
