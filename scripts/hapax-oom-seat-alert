@@ -25,7 +25,11 @@ def _short(value: object) -> str:
 
 
 def _test_inputs() -> tuple[Path, Path]:
-    names = ("HAPAX_OOM_SEAT_ALERT_TEST_MODE", "HAPAX_OOM_SEAT_ALERT_BOOT_ID_PATH", "HAPAX_OOM_SEAT_ALERT_AUDIT")
+    names = (
+        "HAPAX_OOM_SEAT_ALERT_TEST_MODE",
+        "HAPAX_OOM_SEAT_ALERT_BOOT_ID_PATH",
+        "HAPAX_OOM_SEAT_ALERT_AUDIT",
+    )
     selected = [name for name in names if name in os.environ]
     installed = Path(__file__).resolve() == INSTALLED
     if installed and selected:
@@ -67,7 +71,9 @@ def _failing_checks(audit: Path) -> tuple[int | str, list[str]]:
             for item in checks
             if isinstance(item, dict) and item.get("status") in {"gap", "error"}
         ]
-        return result.returncode, failed[:20] or ["- Recheck returned no failing checks; inspect the unit journal."]
+        return result.returncode, failed[:20] or [
+            "- Recheck returned no failing checks; inspect the unit journal."
+        ]
     except (OSError, subprocess.TimeoutExpired, ValueError, json.JSONDecodeError) as exc:
         return "unavailable", [f"- Recheck unavailable: {_short(exc)}; inspect the unit journal."]
 

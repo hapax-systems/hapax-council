@@ -270,9 +270,7 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "HAPAX_OOM_POLICY_AUDIT_DEST", str(tmp_path / "sbin" / "hapax-oom-policy-audit")
     )
-    monkeypatch.setenv(
-        "HAPAX_OOM_SEAT_ALERT_DEST", str(tmp_path / "sbin" / "hapax-oom-seat-alert")
-    )
+    monkeypatch.setenv("HAPAX_OOM_SEAT_ALERT_DEST", str(tmp_path / "sbin" / "hapax-oom-seat-alert"))
     monkeypatch.setenv(
         "HAPAX_OOM_HOST_PROFILE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
     )
@@ -428,8 +426,7 @@ def _systemctl_user_unit_cases(
         "User": "",
     }.items():
         cases.append(
-            f"  *--user\\ show\\ {alert_unit}\\ -p\\ {prop}\\ --value*) "
-            f'printf "%s\\n" "{value}" ;;'
+            f'  *--user\\ show\\ {alert_unit}\\ -p\\ {prop}\\ --value*) printf "%s\\n" "{value}" ;;'
         )
     for timer, target, on_boot, on_active in (
         (
