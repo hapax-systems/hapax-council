@@ -553,6 +553,10 @@ jobs:
           packages/agentgov/tests/test_carrier.py -q --tb=short
 
   capability-envelope-containment:
+    # Sizing, measured 2026-09-28 (review of #4837, glm-1): one tests/capability_envelope run with
+    # HAPAX_ENVELOPE_REQUIRE_BWRAP=1 took 15 s on appendix, and the mutation step runs one baseline
+    # plus one run per mutation (25 runs, about 6 minutes). timeout-minutes: 15 is that with
+    # headroom for a slower runner; re-measure before adding mutations in bulk.
     # The declared capability envelope (shared/capability_envelope; DESIGN v1.3 §3.2a, canary
     # C10) is a containment guarantee, so its containment and canary tests must execute, not
     # skip. They need bubblewrap with unprivileged user namespaces, which ubuntu-latest restricts

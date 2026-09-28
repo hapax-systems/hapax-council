@@ -346,7 +346,10 @@ def test_opencode_builder_drops_secret_fields_and_needs_the_local_provider(tmp_p
     monkeypatch.setenv("HAPAX_OPENCODE_BIN", str(_exe(tmp_path / "pkg" / "bin" / "opencode.exe")))
     config = world.home / ".config" / "opencode" / "opencode.json"
     provider = {
-        "options": {"baseURL": "http://x/v1", "apiKey": "sk-fixture"},  # pragma: allowlist secret
+        "options": {
+            "baseURL": "http://127.0.0.1:8080/v1",
+            "apiKey": "sk-fixture",  # pragma: allowlist secret
+        },  # pragma: allowlist secret
         "models": {"m": {}},
     }  # pragma: allowlist secret
     _file(config, json.dumps({"provider": {"local-research": provider}}))
@@ -420,6 +423,34 @@ KIMI_CONFIG = {
     },
 }
 
+KIMI_CONFIG_TOML = """default_model = "kimi-code/k3"
+
+[thinking]
+enabled = true
+effort = "high"
+budget = 9
+
+[[hooks]]
+event = "PreToolUse"
+command = "gate"
+
+[services.search]
+base_url = "https://s"
+api_key = "svc-secret"  # pragma: allowlist secret
+
+[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://k/v1"
+api_key = ""
+oauth.storage = "file"
+oauth.key = "kimi-code"
+
+[models."kimi-code/k3"]
+provider = "managed:kimi-code"
+model = "k3"
+max_context_size = 9
+"""
+
 
 def test_kimi_config_keeps_only_the_model_route():
     import copy
@@ -450,6 +481,247 @@ def test_kimi_config_refuses_a_provider_api_key():
         audit.kimi_config(copy.deepcopy(KIMI_CONFIG), "kimi-code/other")
 
 
+def test_a_binary_override_that_is_not_an_executable_file_is_refused(tmp_path, monkeypatch):
+    """codex-1's major (2026-09-28): a stale HAPAX_*_BIN used to pass the "not found" refusal and
+    fail later, at launch, where the failure reads as a harness problem."""
+    audit = _audit()
+    missing = tmp_path / "nowhere" / "agy"
+    monkeypatch.setenv("HAPAX_AGY_BIN", str(missing))
+    with pytest.raises(audit.Refused, match="is not an executable file; next action"):
+        audit._binary("HAPAX_AGY_BIN", "agy")
+    plain = _file(tmp_path / "not-executable")
+    plain.chmod(0o644)
+    monkeypatch.setenv("HAPAX_AGY_BIN", str(plain))
+    with pytest.raises(audit.Refused, match="is not an executable file; next action"):
+        audit._binary("HAPAX_AGY_BIN", "agy")
+
+
+def test_the_claude_builder_routes_through_the_same_checked_binary(tmp_path, monkeypatch):
+    audit, world = _world(tmp_path)
+    _file(world.home / ".claude" / ".credentials.json")
+    monkeypatch.setenv("HAPAX_CLAUDE_BIN", str(tmp_path / "nowhere" / "claude"))
+    with pytest.raises(audit.Refused, match="is not an executable file; next action"):
+        audit.claude_launch(world)
+
+
+def test_kimi_builder_declares_credentials_device_and_the_rebuilt_config(tmp_path, monkeypatch):
+    """gemini-1's major (2026-09-28): the kimi builder's binds, declaration and refusals were
+    never exercised directly, only `kimi_config` was."""
+    import tomllib
+
+    audit, world = _world(tmp_path)
+    kimi_home = world.home / ".kimi-code"
+    kimi_bin = _exe(kimi_home / "bin" / "kimi")
+    monkeypatch.setenv("HAPAX_KIMI_BIN", str(kimi_bin))
+    _file(kimi_home / "credentials")
+    _file(kimi_home / "device_id")
+    _file(kimi_home / "config.toml", KIMI_CONFIG_TOML)
+    launch = audit.kimi_launch(world)
+    decl = launch.declaration
+    assert decl.harness == "kimi"
+    assert decl.binaries == (kimi_bin,)
+    assert {c.target: c.writable for c in decl.credentials} == {".kimi-code/credentials": True}
+    assert {f.target for f in decl.home_files} == {".kimi-code/device_id", ".kimi-code/config.toml"}
+    rebuilt = (world.root / "declared" / "kimi-config.toml").read_text(encoding="utf-8")
+    assert "svc-secret" not in rebuilt and "hooks" not in rebuilt  # pragma: allowlist secret
+    assert tomllib.loads(rebuilt)["providers"]["managed:kimi-code"]["api_key"] == ""
+    assert [source for source, _ in launch.binds] == [
+        kimi_home / "credentials",
+        kimi_home / "device_id",
+        kimi_home / "bin" / "kimi",
+    ]
+    _, other = _world(tmp_path / "again")
+    _exe(other.home / ".kimi-code" / "bin" / "kimi")
+    _file(other.home / ".kimi-code" / "credentials")
+    _file(other.home / ".kimi-code" / "device_id")
+    _file(other.home / ".kimi-code" / "config.toml", "not = [toml\n")
+    with pytest.raises(audit.Refused, match="kimi config unreadable.*next action"):
+        audit.kimi_launch(other)
+
+
+def test_the_agy_builder_omits_the_helpers_directory_when_it_is_not_one(tmp_path, monkeypatch):
+    """gemini-1's minor (2026-09-28): the `helpers` branch — a directory is declared and bound, a
+    non-directory is left out rather than rejected."""
+    audit, world = _world(tmp_path)
+    monkeypatch.setenv("HAPAX_AGY_BIN", str(_exe(tmp_path / "bin" / "agy")))
+    agy_home = world.home / ".gemini" / "antigravity-cli"
+    _file(agy_home / "antigravity-oauth-token")
+    _file(agy_home / "installation_id")
+    _file(agy_home / "bin")  # a FILE where the builder expects a directory
+    launch = audit.agy_launch(world)
+    assert ".gemini/antigravity-cli/bin" not in _targets(launch.declaration)
+    assert all(source != agy_home / "bin" for source, _ in launch.binds)
+
+
+def test_carries_secret_sees_a_secret_inside_a_list():
+    """gemini-1's minor (2026-09-28): the list branch of `_carries_secret`."""
+    audit = _audit()
+    assert audit._carries_secret({"redirects": ["https://x"]}) is False
+    present = {"redirects": [{"api_key": "x"}]}  # pragma: allowlist secret
+    assert audit._carries_secret(present) is True
+    blank = {"redirects": [{"api_key": ""}]}  # pragma: allowlist secret
+    assert audit._carries_secret(blank) is False
+
+
+def test_the_opencode_builder_refuses_an_unreadable_config(tmp_path, monkeypatch):
+    audit, world = _world(tmp_path)
+    monkeypatch.setenv("HAPAX_OPENCODE_BIN", str(_exe(tmp_path / "pkg" / "bin" / "opencode.exe")))
+    _file(world.home / ".config" / "opencode" / "opencode.json", "{not json")
+    with pytest.raises(audit.Refused, match="opencode config unreadable.*next action"):
+        audit.opencode_launch(world)
+
+
+def test_the_opencode_builder_refuses_a_remote_endpoint(tmp_path, monkeypatch):
+    """codex-1's major (2026-09-28): the provider NAME does not prove the endpoint is local, so the
+    "$0 launch" claim could hold for a remote endpoint."""
+    import json
+
+    audit, world = _world(tmp_path)
+    monkeypatch.setenv("HAPAX_OPENCODE_BIN", str(_exe(tmp_path / "pkg" / "bin" / "opencode.exe")))
+    provider = {"options": {"baseURL": "https://api.example.com/v1"}, "models": {"m": {}}}
+    _file(
+        world.home / ".config" / "opencode" / "opencode.json",
+        json.dumps({"provider": {"local-research": provider}}),
+    )
+    with pytest.raises(audit.Refused, match="is not a local, zero-cost endpoint.*next action"):
+        audit.opencode_launch(world)
+    # A host declared local is accepted.
+    monkeypatch.setenv("HAPAX_OPENCODE_LOCAL_HOSTS", "spark-01df")
+    provider["options"]["baseURL"] = "http://spark-01df:8000/v1"
+    _file(
+        world.home / ".config" / "opencode" / "opencode.json",
+        json.dumps({"provider": {"local-research": provider}}),
+    )
+    assert audit.opencode_launch(world).declaration.harness == "opencode"
+
+
+def test_the_opencode_builder_refuses_a_config_that_is_not_an_object(tmp_path, monkeypatch):
+    """codex-1's minor (2026-09-28): a JSON ARRAY parses, then `config.get` raised AttributeError
+    instead of a Refused with exit 64."""
+    import json
+
+    audit, world = _world(tmp_path)
+    monkeypatch.setenv("HAPAX_OPENCODE_BIN", str(_exe(tmp_path / "pkg" / "bin" / "opencode.exe")))
+    _file(
+        world.home / ".config" / "opencode" / "opencode.json", json.dumps(["not", "an", "object"])
+    )
+    with pytest.raises(audit.Refused, match="is not an object; next action"):
+        audit.opencode_launch(world)
+
+
+def test_the_opencode_builder_refuses_a_provider_that_is_not_a_table(tmp_path, monkeypatch):
+    """glm-1's minor (2026-09-28): the refusal for a provider that is not a table fires BEFORE the
+    scrub, so it is reachable — the `assert` that used to stand after the scrub could never fail
+    and is stripped by `python -O` besides."""
+    import json
+
+    audit, world = _world(tmp_path)
+    monkeypatch.setenv("HAPAX_OPENCODE_BIN", str(_exe(tmp_path / "pkg" / "bin" / "opencode.exe")))
+    _file(
+        world.home / ".config" / "opencode" / "opencode.json",
+        json.dumps({"provider": {"local-research": ["not", "a", "table"]}}),
+    )
+    with pytest.raises(audit.Refused, match="has no local-research provider with a model"):
+        audit.opencode_launch(world)
+
+
+def test_without_secrets_drops_secret_keys_inside_lists_too():
+    """gemini-1's minor (2026-09-28): the list branch of `_without_secrets`."""
+    audit = _audit()
+    scrubbed = audit._without_secrets(
+        {
+            "servers": [
+                {"api_key": "sk-fixture", "keep": 1},  # pragma: allowlist secret
+                {"token": "x", "keep": 2},  # pragma: allowlist secret
+            ]
+        }
+    )
+    assert scrubbed == {"servers": [{"keep": 1}, {"keep": 2}]}
+
+
+def test_a_binary_override_falls_back_to_the_default_path(tmp_path, monkeypatch):
+    """gemini-1's minor (2026-09-28): the `default=` branch of `_binary` (kimi's vendored path)."""
+    audit = _audit()
+    vendor = _exe(tmp_path / "vendor" / "kimi")
+    monkeypatch.delenv("HAPAX_KIMI_BIN", raising=False)
+    monkeypatch.setattr(audit.shutil, "which", lambda _name: None)
+    assert audit._binary("HAPAX_KIMI_BIN", "kimi", default=vendor) == vendor.resolve()
+
+
+def test_kimi_refusals_name_their_next_actions():
+    """gemini-1's minor (2026-09-28): the missing-provider and the OAuth-secret refusals."""
+    import copy
+
+    audit = _audit()
+    config = copy.deepcopy(KIMI_CONFIG)
+    config["models"]["kimi-code/k3"]["provider"] = "managed:absent"
+    with pytest.raises(audit.Refused, match="no provider.*next action"):
+        audit.kimi_config(config, "kimi-code/k3")
+    secret = copy.deepcopy(KIMI_CONFIG)
+    secret["providers"]["managed:kimi-code"]["oauth"] = {
+        "storage": "file",
+        "key": "kimi-code",
+        "api_key": "sk-fixture",  # pragma: allowlist secret
+    }
+    with pytest.raises(audit.Refused, match="OAuth block carries a secret; next action"):
+        audit.kimi_config(secret, "kimi-code/k3")
+
+
+def test_a_launch_stdin_reaches_both_runs(tmp_path, monkeypatch):
+    """gemini-1's minor (2026-09-28): codex's one-shot needs its stdin closed, and that travels
+    from the Launch into BOTH the baseline subprocess call and the enveloped carrier. The runs
+    themselves are stubbed; the plumbing under test is not."""
+    import subprocess as _subprocess
+
+    audit = _audit()
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    world = audit.build_world(tmp_path / "world", home)
+
+    class _Watch:
+        def __init__(self, paths):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def opened(self):
+            return set()
+
+        def overflowed(self):
+            return False
+
+        def truncated(self):
+            return False
+
+    calls: dict[str, object] = {}
+    completed = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    def _run(argv, **kwargs):
+        calls["baseline"] = kwargs.get("input")
+        return completed
+
+    def _execute(rendered, **kwargs):
+        calls["enveloped"] = kwargs.get("stdin")
+        return completed
+
+    monkeypatch.setattr(audit, "OpenWatch", _Watch)
+    monkeypatch.setattr(audit.subprocess, "run", _run)
+    monkeypatch.setattr(audit, "execute", _execute)
+    closed = audit.Launch(
+        ["/bin/true"],
+        [],
+        audit.EnvelopeDeclaration(harness="claude", argv=("/bin/true",)),
+        stdin="",
+    )
+    audit.run_baseline(world, closed)
+    audit.run_enveloped(world, closed)
+    assert calls == {"baseline": "", "enveloped": ""}
+
+
 def test_muse_builder_runs_the_release_binary_and_refuses_without_auth(tmp_path, monkeypatch):
     audit, world = _world(tmp_path)
     launcher = _exe(tmp_path / "bin" / "muse")
@@ -472,6 +744,7 @@ def test_muse_builder_runs_the_release_binary_and_refuses_without_auth(tmp_path,
         ("grok", "HAPAX_GROK_BIN"),
         ("agy", "HAPAX_AGY_BIN"),
         ("codex", "HAPAX_CODEX_BIN"),
+        ("kimi", "HAPAX_KIMI_BIN"),
     ],
 )
 def test_a_missing_binary_is_refused(tmp_path, monkeypatch, harness, env_var):

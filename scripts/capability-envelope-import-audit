@@ -47,6 +47,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -187,12 +188,7 @@ def _declared_hook(world: World) -> Path:
 
 
 def claude_launch(world: World) -> Launch:
-    binary = os.environ.get("HAPAX_CLAUDE_BIN") or shutil.which("claude")
-    if not binary:
-        raise Refused(
-            "claude binary not found; next action: install Claude Code or set HAPAX_CLAUDE_BIN"
-        )
-    exe = Path(binary).resolve()
+    exe = _binary("HAPAX_CLAUDE_BIN", "claude")
     package = exe.parents[1]
     creds = _credential(world.home / ".claude" / ".credentials.json", "claude")
     slug = str(world.checkout).replace("/", "-")
@@ -335,7 +331,16 @@ def _binary(env_var: str, name: str, default: Path | None = None) -> Path:
         found = str(default)
     if not found:
         raise Refused(f"{name} binary not found; next action: install {name} or set {env_var}")
-    return Path(found).resolve()
+    path = Path(found)
+    # An override is checked, never trusted: a stale HAPAX_*_BIN used to pass the refusal above and
+    # fail later, at launch, where the failure reads as a harness problem rather than a bad
+    # override (review of #4837, codex-1, 2026-09-28).
+    if not (path.is_file() and os.access(path, os.X_OK)):
+        raise Refused(
+            f"{env_var}={found} is not an executable file; next action: point {env_var} at the "
+            f"{name} executable, or unset it to use {name} from PATH"
+        )
+    return path.resolve()
 
 
 def _credential(path: Path, harness: str) -> Path:
@@ -356,6 +361,24 @@ def _carries_secret(value: object) -> bool:
     if isinstance(value, list):
         return any(_carries_secret(v) for v in value)
     return False
+
+
+def _is_local_endpoint(host: str) -> bool:
+    """Whether the provider's endpoint is a local, zero-cost one.
+
+    The provider NAME does not prove the endpoint is local (review of #4837, codex-1, 2026-09-28):
+    the runbook's "$0 launch" claim would otherwise hold for a remote endpoint. Loopback, plus any
+    host declared in `HAPAX_OPENCODE_LOCAL_HOSTS` (a comma-separated list, for a local box that
+    answers on its tailnet name), is what counts.
+    """
+    if not host:
+        return False
+    if host == "localhost" or host == "::1" or host.startswith("127."):
+        return True
+    declared = {
+        entry.strip() for entry in os.environ.get("HAPAX_OPENCODE_LOCAL_HOSTS", "").split(",")
+    }
+    return host in {entry for entry in declared if entry}
 
 
 def _without_secrets(value: object) -> object:
@@ -393,20 +416,39 @@ def opencode_launch(world: World) -> Launch:
             (world.home / ".config" / "opencode" / "opencode.json").read_text(encoding="utf-8")
         )
     except (OSError, ValueError) as exc:
-        raise Refused(f"opencode config unreadable ({type(exc).__name__})") from exc
+        raise Refused(
+            f"opencode config unreadable ({type(exc).__name__}); next action: repair "
+            "~/.config/opencode/opencode.json or remove it"
+        ) from exc
+    if not isinstance(config, dict):
+        raise Refused(
+            "opencode config is not an object; next action: repair "
+            "~/.config/opencode/opencode.json so it holds a JSON object"
+        )
     provider = (config.get("provider") or {}).get(OPENCODE_PROVIDER)
     if not isinstance(provider, dict) or not provider.get("models"):
         raise Refused(
             f"opencode has no {OPENCODE_PROVIDER} provider with a model; next action: declare the "
             "local model in ~/.config/opencode/opencode.json"
         )
+    endpoint = str((provider.get("options") or {}).get("baseURL", ""))
+    if not _is_local_endpoint(urlsplit(endpoint).hostname or ""):
+        raise Refused(
+            f"opencode's {OPENCODE_PROVIDER} endpoint {endpoint!r} is not a local, zero-cost "
+            "endpoint; next action: point the provider at a loopback endpoint, or declare a local "
+            "host in HAPAX_OPENCODE_LOCAL_HOSTS"
+        )
     # A local endpoint needs no key (measured 2026-09-25 with none); any secret-named field is
     # dropped, never copied. An endpoint that does need one makes the run inconclusive, not leaky.
-    provider = _without_secrets(provider)
-    assert isinstance(provider, dict)
-    model = f"{OPENCODE_PROVIDER}/{next(iter(provider['models']))}"
+    # `_without_secrets` PRESERVES the shape of a table, so the table is still a table here — the
+    # `assert isinstance(provider, dict)` that used to stand here could never fail, and an assert
+    # is stripped by `python -O` besides (review of #4837, glm-1, 2026-09-28). The refusal for a
+    # provider that is not a table is above, BEFORE the scrub, where it can actually fire; the
+    # annotation below is the type narrowing, with no runtime claim.
+    scrubbed: dict = _without_secrets(provider)
+    model = f"{OPENCODE_PROVIDER}/{next(iter(scrubbed['models']))}"
     declared = {"$schema": "https://opencode.ai/config.json", "model": model}
-    declared["provider"] = {OPENCODE_PROVIDER: provider}
+    declared["provider"] = {OPENCODE_PROVIDER: scrubbed}
     config_file = world.root / "declared" / "opencode.json"
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(json.dumps(declared, indent=1), encoding="utf-8")
@@ -540,7 +582,10 @@ def kimi_config(config: dict, model: str) -> str:
     provider_name = entry.get("provider")
     provider = (config.get("providers") or {}).get(provider_name)
     if not isinstance(provider, dict):
-        raise Refused(f"kimi config has no provider {provider_name!r} for {model}")
+        raise Refused(
+            f"kimi config has no provider {provider_name!r} for {model}; next action: name the "
+            "provider in ~/.kimi-code/config.toml"
+        )
     if provider.get("api_key"):
         raise Refused(
             f"kimi provider {provider_name} carries an api_key; it is not copied (next action: "
@@ -548,7 +593,10 @@ def kimi_config(config: dict, model: str) -> str:
         )
     oauth = provider.get("oauth") or {}
     if _carries_secret(oauth):
-        raise Refused(f"kimi provider {provider_name} OAuth block carries a secret")
+        raise Refused(
+            f"kimi provider {provider_name} OAuth block carries a secret; next action: point it "
+            "at the OAuth route instead of inlining one"
+        )
     out = f"default_model = {_toml_scalar(model)}\n\n"
     thinking = {
         k: v for k, v in (config.get("thinking") or {}).items() if k in ("enabled", "effort")
@@ -577,7 +625,10 @@ def kimi_launch(world: World) -> Launch:
     try:
         config = tomllib.loads((kimi_home / "config.toml").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise Refused(f"kimi config unreadable ({type(exc).__name__})") from exc
+        raise Refused(
+            f"kimi config unreadable ({type(exc).__name__}); next action: repair "
+            "~/.kimi-code/config.toml or remove it"
+        ) from exc
     config_file = world.root / "declared" / "kimi-config.toml"
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(kimi_config(config, KIMI_MODEL), encoding="utf-8")

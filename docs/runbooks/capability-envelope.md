@@ -93,16 +93,16 @@ Every row below is backed by a stored report, and claims only what that report s
 supports are measured; seven are `clean` and codex was re-run clean on 2026-09-28 after its subscription wall ended
 (its 2026-09-26 run is kept as the `inconclusive` predecessor).
 
-| harness | report (each row claims only what its report shows) | recheck |
-|---|---|---|
-| claude | `frame/harness-import-scrub-20260925/measure/audit-claude.json` (`clean`, 20260925T104357Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json` |
-| vibe | `frame/harness-import-scrub-20260925/measure/audit-vibe.json` (`clean`, 20260925T104411Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness vibe --out /tmp/vibe.json` |
-| muse | `frame/harness-import-scrub-20260925/measure/audit-muse.json` (`clean`, 20260925T104432Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness muse --out /tmp/muse.json` |
-| opencode | `frame/harness-import-scrub-20260925/measure/audit-opencode.json` (`clean`, 20260926T004840Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness opencode --out /tmp/opencode.json` |
-| grok | `frame/harness-import-scrub-20260925/measure/audit-grok.json` (`clean`, 20260926T004855Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness grok --out /tmp/grok.json` |
-| agy | `frame/harness-import-scrub-20260925/measure/audit-agy.json` (`clean`, 20260926T004926Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness agy --out /tmp/agy.json` |
-| kimi | `frame/harness-import-scrub-20260925/measure/audit-kimi.json` (`clean`, 20260926T004945Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness kimi --out /tmp/kimi.json` |
-| codex | `frame/harness-import-scrub-20260925/measure/codex-import-audit-20260928T022438Z.json` (`clean`, 20260928T022438Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness codex --out /tmp/codex.json` |
+| harness | report | sha256 (first 16) | recheck |
+|---|---|---|---|
+| claude | `frame/harness-import-scrub-20260925/measure/audit-claude.json` (`clean`, 20260925T104357Z) | `42122d5a8793fa82` | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json` |
+| vibe | `frame/harness-import-scrub-20260925/measure/audit-vibe.json` (`clean`, 20260925T104411Z) | `3ee6d4bdb04098c4` | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness vibe --out /tmp/vibe.json` |
+| muse | `frame/harness-import-scrub-20260925/measure/audit-muse.json` (`clean`, 20260925T104432Z) | `737789c66b091ac0` | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness muse --out /tmp/muse.json` |
+| opencode | `frame/harness-import-scrub-20260925/measure/audit-opencode.json` (`clean`, 20260926T004840Z) | `43826dbd4a755c2f` | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness opencode --out /tmp/opencode.json` |
+| grok | `frame/harness-import-scrub-20260925/measure/audit-grok.json` (`clean`, 20260926T004855Z) | `77957d7a9c2896d0` | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness grok --out /tmp/grok.json` |
+| agy | `frame/harness-import-scrub-20260925/measure/audit-agy.json` (`clean`, 20260926T004926Z) | `b74ed3b587554532` | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness agy --out /tmp/agy.json` |
+| kimi | `frame/harness-import-scrub-20260925/measure/audit-kimi.json` (`clean`, 20260926T004945Z) | `8880b76ce076cfea` | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness kimi --out /tmp/kimi.json` |
+| codex | `frame/harness-import-scrub-20260925/measure/codex-import-audit-20260928T022438Z.json` (`clean`, 20260928T022438Z) | `4e8abdd89cbe9649` | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness codex --out /tmp/codex.json` |
 
 One harness is inventoried rather than measured by this script: GLM, whose dispatch is on hold. No row here asserts
 anything about it.
@@ -140,11 +140,23 @@ The runtime tests need bubblewrap with unprivileged user namespaces. The require
 
 So CI cannot pass by skipping. `tests/ci/test_capability_envelope_ci.py` pins that job.
 
-**Mutation check:** the same job runs `scripts/capability-envelope-mutation-check`.
+**Mutation check:** the same job runs `scripts/capability-envelope-mutation-check` **with `HAPAX_ENVELOPE_REQUIRE_BWRAP=1`** — a mutation check whose own carrier cannot start is a skip, not a pass.
 - It breaks each envelope invariant in a temporary copy of the package: a mask, a refusal, a read-only bind, the
   cleared environment, and so on.
 - It fails unless every mutation turns `tests/capability_envelope` red and the unmutated copy stays green.
-- `tests/scripts/test_capability_envelope_mutation_check.py` checks, in every suite, that each mutation still applies.
+- `tests/scripts/test_capability_envelope_mutation_check.py` checks, in every suite, that each mutation still applies,
+  and runs `check()`/`main()` against a fixture repository (killed, survived, not-applied, the exit code and the
+  report).
+- **Sizing, measured 2026-09-28** (review of #4837, glm-1): one `tests/capability_envelope` run with
+  `HAPAX_ENVELOPE_REQUIRE_BWRAP=1` took **15 s** on appendix, and the check runs one baseline plus one run per
+  mutation — 25 runs, about **6 minutes** — against the job's `timeout-minutes: 15`. Re-measure before adding
+  mutations in bulk or raising the cap.
+- **Runtime cost and credentials of the audit itself** (glm-1's minor): each run launches the harness twice (baseline
+  and enveloped) and takes roughly 20–60 s per harness; it needs the harness's own binary on `PATH` or in the
+  `HAPAX_*_BIN` variable, and its credential (`~/.claude/.credentials.json`, `~/.vibe/.env` on the Team allowance,
+  `~/.config/muse/auth.json`, `~/.codex/auth.json`, `~/.kimi-code/{credentials,device_id}`, grep/grok's
+  `~/.grok/auth.json`, agy's token files, and a local model for opencode). A missing binary or credential refuses
+  (exit 64) rather than running wide.
 
 ```bash
 HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run python scripts/capability-envelope-mutation-check   # prints "ALL KILLED"

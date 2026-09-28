@@ -36,6 +36,12 @@ STAGED = (
     "tests/__init__.py",
     "tests/capability_envelope",
 )
+# NOT the repository's conftests (review of #4837, glm-1, 2026-09-28). Measured: staging
+# `conftest.py` and `tests/conftest.py` makes the staged run fail COLLECTION — they import and
+# patch parts of the repository the minimal staged copy does not carry — while
+# `tests/capability_envelope` passes without them. The staged suite is self-contained by
+# construction, and `tests/scripts/test_capability_envelope_mutation_check.py` pins that it carries
+# no conftest of its own.
 
 
 @dataclass(frozen=True)
@@ -77,7 +83,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         RENDER,
         "declared MCP servers are rendered",
         '        state["mcpServers"][server.name] = {\n',
-        "        {}[server.name] = {\n",
+        '        state["otherServers"][server.name] = {\n',
     ),
     Mutation(
         "M6",
@@ -298,6 +304,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=None, help="write the JSON report here")
     args = parser.parse_args(argv)
     mutations = tuple(m for m in MUTATIONS if not args.only or m.id in args.only)
+    # An unknown id would leave an empty set, and every() of an empty set is true: the check would
+    # print ALL KILLED and exit 0 having run nothing (review of #4837, codex-1, 2026-09-28).
+    unknown = [i for i in (args.only or ()) if i not in {m.id for m in MUTATIONS}]
+    if unknown:
+        print(
+            f"unknown mutation id(s): {', '.join(sorted(unknown))}; next action: name a listed id "
+            f"({', '.join(m.id for m in MUTATIONS)})",
+            file=sys.stderr,
+        )
+        return 2
     report = check(mutations, REPO_ROOT)
     if args.out:
         args.out.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -28,6 +29,103 @@ def _check():
 
 
 MUTATIONS = _check().MUTATIONS
+
+
+@pytest.fixture
+def fixture_repo(tmp_path: Path) -> Path:
+    """A minimal repo with the same staged layout, so check() and main() run for real."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "__init__.py").write_text("", encoding="utf-8")
+    package = shared / "capability_envelope"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "mod.py").write_text("MASK = True\n", encoding="utf-8")
+    tests_root = tmp_path / "tests"
+    tests_root.mkdir()
+    (tests_root / "__init__.py").write_text("", encoding="utf-8")
+    tests = tests_root / "capability_envelope"
+    tests.mkdir()
+    (tests / "test_mod.py").write_text(
+        "from shared.capability_envelope.mod import MASK\n\n\ndef test_mask():\n    assert MASK\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def _mutation(module, **overrides):
+    """A mutation the fixture repo's own test can kill."""
+    fields = {
+        "id": "FX",
+        "target": "shared/capability_envelope/mod.py",
+        "invariant": "the fixture invariant",
+        "old": "MASK = True",
+        "new": "MASK = False",
+    }
+    fields.update(overrides)
+    return module.Mutation(**fields)
+
+
+def test_check_kills_a_mutation_and_keeps_the_baseline_green(fixture_repo: Path):
+    """gemini-1's minor (2026-09-28): the drift guard only imported the script, so check() and
+    main() were never run. check() runs the fixture's suite for real: the baseline is green, the
+    mutation turns it red, and the report says killed."""
+    check = _check()
+    report = check.check((_mutation(check),), fixture_repo)
+    assert report["baseline"]["returncode"] == 0
+    assert [r["outcome"] for r in report["mutations"]] == ["killed"]
+    assert report["ok"] is True
+
+
+def test_check_fails_when_a_mutation_survives_or_never_applied(fixture_repo: Path):
+    check = _check()
+    surviving = _mutation(check, id="SURV", new="MASK = True ")
+    report = check.check((surviving,), fixture_repo)
+    assert report["mutations"][0]["outcome"] == "survived"
+    assert report["ok"] is False
+    absent = _mutation(check, id="ABSENT", old="NOT THERE", new="STILL NOT")
+    second = check.check((absent,), fixture_repo)
+    assert second["mutations"][0]["outcome"].startswith("not-applied")
+    assert second["ok"] is False
+
+
+def test_main_writes_the_report_and_returns_the_verdict(
+    fixture_repo: Path, tmp_path: Path, monkeypatch, capsys
+):
+    check = _check()
+    monkeypatch.setattr(check, "MUTATIONS", (_mutation(check),))
+    monkeypatch.setattr(check, "REPO_ROOT", fixture_repo)
+    out = tmp_path / "report.json"
+    assert check.main(["--only", "FX", "--out", str(out)]) == 0
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["ok"] is True
+    assert "ALL KILLED" in capsys.readouterr().out
+
+    surviving = _mutation(check, id="SURV", new="MASK = True ")
+    monkeypatch.setattr(check, "MUTATIONS", (surviving,))
+    assert check.main(["--only", "SURV"]) == 1
+    assert "FAILED" in capsys.readouterr().out
+
+
+def test_main_refuses_an_unknown_mutation_id(fixture_repo: Path, monkeypatch, capsys):
+    """codex-1's minor (2026-09-28): an unknown id used to select nothing, and every() of nothing
+    is true — ALL KILLED with exit 0 having run no mutation at all."""
+    check = _check()
+    monkeypatch.setattr(check, "MUTATIONS", (_mutation(check),))
+    monkeypatch.setattr(check, "REPO_ROOT", fixture_repo)
+    assert check.main(["--only", "NOT-A-MUTATION"]) == 2
+    assert "unknown mutation id" in capsys.readouterr().err
+
+
+def test_the_staged_tree_carries_no_conftest_of_its_own():
+    """glm-1's minor (2026-09-28): `stage()` copies only the envelope package and its tests, so a
+    root conftest cannot travel with them. Measured: staging the repository's `conftest.py` and
+    `tests/conftest.py` fails COLLECTION in the minimal copy — they import and patch parts of the
+    repository that are not there — while the envelope suite passes without them. The staged suite
+    is therefore self-contained by construction, and this pins that it stays so."""
+    check = _check()
+    assert not any(Path(entry).name == "conftest.py" for entry in check.STAGED)
+    assert not (SCRIPT.parents[1] / "tests" / "capability_envelope" / "conftest.py").exists()
 
 
 @pytest.mark.parametrize("mutation", MUTATIONS, ids=[m.id for m in MUTATIONS])
