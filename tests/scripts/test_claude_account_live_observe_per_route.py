@@ -167,8 +167,7 @@ class TestEachRouteUsesItsOwnFamily:
         self, tmp_path: Path
     ) -> None:
         verdict, newest, found = _observations(
-            tmp_path,
-            transcript=[_served(NOW - timedelta(minutes=2), "claude-haiku-4-5")]
+            tmp_path, transcript=[_served(NOW - timedelta(minutes=2), "claude-haiku-4-5")]
         )
         assert (verdict, newest, found) == ("no_evidence", None, [])
 
