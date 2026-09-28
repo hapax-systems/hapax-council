@@ -311,3 +311,146 @@ def test_an_unknown_line_in_gits_own_output_rejects() -> None:
     )
     assert files == {}
     assert error is not None and "unrecognised" in error
+
+
+# ── the marker is decided from the added lines a finding COVERS ──────
+
+
+def test_a_marker_on_an_unchanged_opening_line_does_not_exempt_an_added_argument(
+    tmp_path: Path,
+) -> None:
+    """codex's r1 critical on #4844.
+
+    A call's opening line is a CONTEXT line when only an argument below it is added. The marker on
+    that unchanged opening line must NOT exempt the newly added ``api_key=`` argument inside the
+    call — the exemption belongs to the added lines the finding covers.
+    """
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "tests" / "gen.py").write_text("client = OpenAI(  # billing-scan:allow\n)\n")
+    _commit(repo, "opening line carries the marker")
+    (repo / "tests" / "gen.py").write_text(
+        "client = OpenAI(  # billing-scan:allow\n    api_key=key,\n)\n"
+    )
+    _commit(repo, "add the credential argument")
+
+    result = _run(repo, base)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "api-key-route" in result.stdout
+    assert "allowed" not in result.stdout
+
+
+def test_a_marker_on_the_added_calls_own_line_still_exempts(tmp_path: Path) -> None:
+    """The other half: the exemption still works when the ADDED lines it covers carry the marker."""
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "tests" / "gen.py").write_text("client = OpenAI(api_key=key)  # billing-scan:allow\n")
+    _commit(repo, "one-line marked call")
+
+    result = _run(repo, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "allowed tests/gen.py:1" in result.stdout
+
+
+def test_a_multi_line_call_needs_the_marker_on_every_added_line_it_covers(
+    tmp_path: Path,
+) -> None:
+    """The rule a reader must know: an exemption covers the ADDED lines that carry the marker, so a
+    multi-line call is exempt only when every added line of it is marked — anything less would let an
+    unmarked added line ride an exempted node."""
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "tests" / "gen.py").write_text(
+        "client = OpenAI(  # billing-scan:allow\n"
+        "    api_key=key,  # billing-scan:allow\n"
+        ")  # billing-scan:allow\n"
+    )
+    _commit(repo, "multi-line marked call")
+
+    result = _run(repo, base)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "allowed tests/gen.py:1" in result.stdout
+
+
+# ── the remaining detector classes and error branches, at the entry point ──
+
+
+def test_a_provider_endpoint_literal_is_a_provider_api_endpoint_finding(tmp_path: Path) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "app.py").write_text('ENDPOINT = "https://api.openai.com/v1/chat"\n')
+    _commit(repo, "provider endpoint")
+    result = _run(repo, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "provider-api-endpoint" in result.stdout
+
+
+def test_a_bare_provider_sdk_constructor_is_a_provider_api_endpoint_finding(
+    tmp_path: Path,
+) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "app.py").write_text("from openai import OpenAI\n\nclient = OpenAI()\n")
+    _commit(repo, "bare constructor")
+    result = _run(repo, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "provider-api-endpoint" in result.stdout
+
+
+def test_a_capacity_pool_payg_rebinding_is_a_finding(tmp_path: Path) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "app.py").write_text('config = {"capacity_pool": "api_paid_spend"}\n')
+    _commit(repo, "payg rebinding")
+    result = _run(repo, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "capacity-pool-payg" in result.stdout
+
+
+def test_a_plan_type_api_rebinding_is_a_finding(tmp_path: Path) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / "app.py").write_text("plan_type = 'api'\n")
+    _commit(repo, "plan type")
+    result = _run(repo, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "capacity-pool-payg" in result.stdout
+
+
+def test_an_unresolvable_head_refuses_with_a_next_action(tmp_path: Path) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--base",
+            base,
+            "--head",
+            "no-such-head",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "Next action" in result.stderr
+
+
+def test_a_repo_that_is_not_a_repository_refuses_with_a_next_action(tmp_path: Path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    result = _run_text(plain, "abcdef0", plain, "not a diff at all\n")
+    assert result.returncode == 2
+    assert "Next action" in result.stderr
+
+
+def test_an_empty_diff_file_refuses_with_a_next_action(tmp_path: Path) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    result = _run_text(repo, base, tmp_path, "")
+    assert result.returncode == 2
+    assert "Next action" in result.stderr
