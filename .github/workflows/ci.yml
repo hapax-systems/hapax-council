@@ -801,6 +801,24 @@ jobs:
               -m "not llm" -k "not golden and not goldens" \
               -p no:cacheprovider 2>&1 | tee /tmp/pytest-output.txt
           PYTEST_EXIT=${PIPESTATUS[0]}
+          # A wrapper kill is a BUDGET fact, not a test failure, and it is
+          # classified here, before anything else can fail over it. Until
+          # 2026-09-28 the duration-artifact write below ran first and exited on
+          # the selector's "no pytest duration lines were found" (a killed run
+          # never prints its --durations summary): CI run 36369340992, shard 3/4,
+          # all tests reported by 02:34:50Z, then a post-session asyncio hang and
+          # 20 min of silence to the kill — reported as a selector error and a
+          # bare exit 1, with the kill never named.
+          # Clause (4), merge-group-ci-flakes-shard-selector-and-title-cards-20260902.
+          KILL_SIGNAL=""
+          if [ "$PYTEST_EXIT" -eq 124 ]; then KILL_SIGNAL="SIGTERM (124)"; fi
+          if [ "$PYTEST_EXIT" -eq 137 ]; then KILL_SIGNAL="SIGKILL (137)"; fi
+          # The only test count that survives a kill: pytest -q under xdist prints
+          # one progress character per completed test, and a killed run never
+          # prints its "N passed" summary. Tests with no marker are the in-flight
+          # ones.
+          COMPLETED_MARKERS="$(awk 'match($0, /^[.FEsxX]+/) { total += RLENGTH } END { print total + 0 }' /tmp/pytest-output.txt)"
+          LAST_PROGRESS="$(grep -oE '\[ *[0-9]+%\]' /tmp/pytest-output.txt | tail -1 | tr -dc '0-9' || true)"
           uv run --no-sync python scripts/ci_select_pytest_shard.py \
             --pytest-output /tmp/pytest-output.txt \
             --duration-artifact "$duration_artifact" \
@@ -815,7 +833,10 @@ jobs:
           DURATION_EXIT=$?
           if [ "$DURATION_EXIT" -ne 0 ]; then
             echo "Could not write pytest node duration artifact (exit $DURATION_EXIT)"
-            exit 1
+            if [ -z "$KILL_SIGNAL" ]; then
+              exit 1
+            fi
+            echo "The shard was killed, so this run has no measured durations to record; the kill is reported below."
           fi
           # pytest exit codes: 0 = all passed, 1 = failures, 2 = usage error,
           # 3 = internal error, 4 = usage error, 5 = no tests collected.
@@ -836,7 +857,11 @@ jobs:
           fi
           if [ "$PYTEST_EXIT" -eq 124 ] || [ "$PYTEST_EXIT" -eq 137 ]; then
             # SIGTERM (124) or SIGKILL (137) from the ``timeout`` wrapper.
-            echo "Test step timed out (exit $PYTEST_EXIT)"
+            echo "killed at the shard timeout after ${COMPLETED_MARKERS} tests; in-flight: the tests that printed no progress marker (${LAST_PROGRESS:-no}% reached before ${KILL_SIGNAL})."
+            echo "This is NOT a test failure: the wrapper (timeout -s KILL 1800 = 30 min) fired while the shard was still running, so no test result was withheld or lost."
+            echo "Last lines before the kill — the in-flight window:"
+            tail -n 5 /tmp/pytest-output.txt || true
+            echo "Clause (6) of merge-group-ci-flakes-shard-selector-and-title-cards-20260902 adds the post-session stack dump that names those threads."
             exit 1
           fi
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
@@ -1137,6 +1162,15 @@ jobs:
               -m "not llm" -k "not golden and not goldens" \
               -p no:cacheprovider 2>&1 | tee /tmp/pytest-output.txt
           PYTEST_EXIT=${PIPESTATUS[0]}
+          # Clause (4), merge-group-ci-flakes-shard-selector-and-title-cards-20260902:
+          # a kill is named as a kill. The count that survives a kill is the
+          # progress markers pytest -q prints per completed test; the in-flight
+          # tests are the ones with no marker.
+          KILL_SIGNAL=""
+          if [ "$PYTEST_EXIT" -eq 124 ]; then KILL_SIGNAL="SIGTERM (124)"; fi
+          if [ "$PYTEST_EXIT" -eq 137 ]; then KILL_SIGNAL="SIGKILL (137)"; fi
+          COMPLETED_MARKERS="$(awk 'match($0, /^[.FEsxX]+/) { total += RLENGTH } END { print total + 0 }' /tmp/pytest-output.txt)"
+          LAST_PROGRESS="$(grep -oE '\[ *[0-9]+%\]' /tmp/pytest-output.txt | tail -1 | tr -dc '0-9' || true)"
           # pytest exit codes: 0 = all passed, 1 = failures, 2 = usage error,
           # 3 = internal error, 4 = usage error, 5 = no tests collected.
           # With conftest.py pytest_sessionfinish (#1318) closing socket hangs,
@@ -1156,7 +1190,11 @@ jobs:
           fi
           if [ "$PYTEST_EXIT" -eq 124 ] || [ "$PYTEST_EXIT" -eq 137 ]; then
             # SIGTERM (124) or SIGKILL (137) from the ``timeout`` wrapper.
-            echo "Test step timed out (exit $PYTEST_EXIT)"
+            echo "killed at the shard timeout after ${COMPLETED_MARKERS} tests; in-flight: the tests that printed no progress marker (${LAST_PROGRESS:-no}% reached before ${KILL_SIGNAL})."
+            echo "This is NOT a test failure: the wrapper (timeout -s KILL 1800 = 30 min) fired while the suite was still running."
+            echo "Last lines before the kill — the in-flight window:"
+            tail -n 5 /tmp/pytest-output.txt || true
+            echo "Clause (6) of merge-group-ci-flakes-shard-selector-and-title-cards-20260902 adds the post-session stack dump that names those threads."
             exit 1
           fi
           echo "Tests failed (pytest exit $PYTEST_EXIT)"
