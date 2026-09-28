@@ -1,0 +1,8 @@
+# hostname	min_memtotal_gib	max_memtotal_gib	profile	app_high	app_max	uid_high	uid_max	system_high	system_max	zram_mib	swappiness
+# Each host interval is measured from /proc/meminfo; the hard user and system maxima
+# together leave at least 2 GiB for kernel and unreclaimable memory at its floor.
+# Appendix: MemTotal 63310084 KiB = 60.38 GiB; current user peak ~35.4 GiB,
+# system current ~12 GiB. Podium: MemTotal 131009480 KiB = 124.94 GiB;
+# current system ~30 GiB. System MemoryMin remains 12G on both hosts.
+hapax-appendix	59	61	appendix	32G	37G	33G	39G	14G	18G	16384	10
+hapax-podium	123	125	podium	68G	76G	72G	80G	32G	40G	32768	10

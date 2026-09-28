@@ -7,6 +7,8 @@ import argparse
 import fcntl
 import json
 import os
+import re
+import socket
 import stat
 import subprocess
 import sys
@@ -84,6 +86,151 @@ class Check:
     target: str
     actual: str
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class HostPolicy:
+    hostname: str
+    profile: str
+    minimum_gib: int
+    maximum_gib: int
+    app_high: int
+    app_max: int
+    uid_high: int
+    uid_max: int
+    system_high: int
+    system_max: int
+    zram_mib: int
+    swappiness: int
+
+
+class HostPolicyError(RuntimeError):
+    pass
+
+
+def _policy_integer(value: str, field: str, line: int) -> int:
+    if not re.fullmatch(r"[1-9][0-9]*|0", value):
+        raise HostPolicyError(f"line {line}: {field} must be a canonical nonnegative integer")
+    return int(value)
+
+
+def _policy_gib(value: str, field: str, line: int) -> int:
+    if not re.fullmatch(r"[1-9][0-9]*G", value):
+        raise HostPolicyError(f"line {line}: {field} must be positive whole GiB")
+    return int(value[:-1]) * BYTES_1G
+
+
+def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolicy:
+    """Select one reviewed host and RAM interval; reject all malformed peer rows too."""
+    try:
+        lines = table.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise HostPolicyError(f"cannot read host profile table {table}: {exc}") from exc
+    expected = {"hapax-appendix": "appendix", "hapax-podium": "podium"}
+    policies: dict[str, HostPolicy] = {}
+    intervals: list[tuple[int, int, str]] = []
+    for number, raw in enumerate(lines, 1):
+        if not raw or raw.startswith("#"):
+            continue
+        fields = raw.split("\t")
+        if len(fields) != 12:
+            raise HostPolicyError(f"line {number}: expected exactly 12 tab-separated fields")
+        (
+            host,
+            low,
+            high,
+            profile,
+            app_hi,
+            app_max,
+            uid_hi,
+            uid_max,
+            sys_hi,
+            sys_max,
+            zram,
+            swap,
+        ) = fields
+        if host in policies:
+            raise HostPolicyError(f"line {number}: duplicate hostname {host}")
+        if expected.get(host) != profile:
+            raise HostPolicyError(f"line {number}: unsupported hostname/profile {host}/{profile}")
+        floor = _policy_integer(low, "min_memtotal_gib", number)
+        ceiling = _policy_integer(high, "max_memtotal_gib", number)
+        if floor == 0 or ceiling < floor:
+            raise HostPolicyError(f"line {number}: invalid RAM interval")
+        sizes = [
+            _policy_gib(value, name, number)
+            for value, name in zip(
+                (app_hi, app_max, uid_hi, uid_max, sys_hi, sys_max),
+                ("app_high", "app_max", "uid_high", "uid_max", "system_high", "system_max"),
+                strict=True,
+            )
+        ]
+        app_hi_b, app_max_b, uid_hi_b, uid_max_b, sys_hi_b, sys_max_b = sizes
+        if not (app_hi_b < app_max_b <= uid_max_b and app_hi_b <= uid_hi_b < uid_max_b):
+            raise HostPolicyError(f"line {number}: app and UID ceilings are unordered")
+        if not (12 * BYTES_1G <= sys_hi_b < sys_max_b):
+            raise HostPolicyError(f"line {number}: system ceiling is below its 12G floor")
+        if uid_max_b + sys_max_b > (floor - 2) * BYTES_1G:
+            raise HostPolicyError(
+                f"line {number}: aggregate ceiling leaves less than 2G kernel margin"
+            )
+        zram_mib = _policy_integer(zram, "zram_mib", number)
+        if zram_mib < 8192 or zram_mib * 2 > floor * 1024:
+            raise HostPolicyError(f"line {number}: zram must be 8G..half the RAM interval floor")
+        swappiness = _policy_integer(swap, "swappiness", number)
+        if swappiness > 200:
+            raise HostPolicyError(f"line {number}: swappiness exceeds kernel range")
+        policies[host] = HostPolicy(
+            host,
+            profile,
+            floor,
+            ceiling,
+            app_hi_b,
+            app_max_b,
+            uid_hi_b,
+            uid_max_b,
+            sys_hi_b,
+            sys_max_b,
+            zram_mib,
+            swappiness,
+        )
+        intervals.append((floor, ceiling, host))
+    if {host: item.profile for host, item in policies.items()} != expected:
+        raise HostPolicyError("host profile table must name appendix and podium exactly")
+    intervals.sort()
+    for left, right in zip(intervals, intervals[1:], strict=False):
+        if left[1] >= right[0]:
+            raise HostPolicyError(f"host RAM intervals overlap: {left[2]} and {right[2]}")
+    selected = policies.get(hostname)
+    if selected is None:
+        raise HostPolicyError(f"unsupported canonical hostname {hostname!r}")
+    actual_gib = memtotal_kib // (1024**2)
+    if not selected.minimum_gib <= actual_gib <= selected.maximum_gib:
+        raise HostPolicyError(
+            f"{hostname} RAM {actual_gib} GiB outside admitted interval "
+            f"{selected.minimum_gib}..{selected.maximum_gib} GiB"
+        )
+    return selected
+
+
+def current_host_policy() -> HostPolicy:
+    script = Path(__file__).resolve()
+    table = (
+        Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv")
+        if script == Path("/usr/local/sbin/hapax-oom-policy-audit")
+        else script.parents[1] / "config/root-required/oom-host-profiles.tsv"
+    )
+    try:
+        lines = (PROC_ROOT / "meminfo").read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise HostPolicyError(f"cannot read MemTotal: {exc}") from exc
+    matches = [line.split() for line in lines if line.startswith("MemTotal:")]
+    if len(matches) != 1 or len(matches[0]) < 3 or matches[0][2] != "kB":
+        raise HostPolicyError("MemTotal must occur once in kB")
+    memtotal = _policy_integer(matches[0][1], "MemTotal", 0)
+    if memtotal == 0:
+        raise HostPolicyError("MemTotal must be positive")
+    return load_host_policy(table, socket.gethostname(), memtotal)
 
 
 class AuditLockError(RuntimeError):
