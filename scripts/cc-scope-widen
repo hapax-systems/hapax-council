@@ -136,8 +136,7 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
     for item in additions:
         if not _surface_ok(item):
             return _refuse(
-                f"path '{item}' has no existing surface under {REPO_ROOT} "
-                f"or {PERSONAL_VAULT_ROOT}"
+                f"path '{item}' has no existing surface under {REPO_ROOT} or {PERSONAL_VAULT_ROOT}"
             )
 
     if str(REPO_ROOT) not in sys.path:
@@ -162,16 +161,15 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
                 return ERROR
             return _widen_locked(task_id, note, additions, removals)
 
-
     except TaskNoteLockError as exc:
         # A refusal from the lock is an operator-facing outcome, not a crash: the estate's
         # executive_function axiom requires the message to carry its own next action, and a
         # Python traceback carries the stack instead.
         print(f"cc-scope-widen: REFUSED — {exc}", file=sys.stderr)
         return REFUSED
-def _widen_locked(
-    task_id: str, note: Path, additions: list[str], removals: list[str]
-) -> int:
+
+
+def _widen_locked(task_id: str, note: Path, additions: list[str], removals: list[str]) -> int:
     """The read-modify-write itself. Called only with the projection lock held."""
 
     text = note.read_text(encoding="utf-8")
