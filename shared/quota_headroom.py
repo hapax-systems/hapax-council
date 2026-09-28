@@ -114,6 +114,40 @@ def json_object(path: Path) -> dict[str, Any]:
         raise TraceReadError(f"corrupt_or_unreadable_source:{source_ref(path, 'json')}") from exc
 
 
+def read_census_measurements(home: Path, *, now: datetime) -> dict[str, list[QuotaMeasurement]]:
+    """Consume the E1 projection as quota evidence, preserving missing or bad input as unknown."""
+    path = home / ".cache/hapax/entitlement-census/measurements.json"
+    if not path.exists():
+        return {"census": [measurement("census.capacity", reason="census_measurements_absent")]}
+    try:
+        payload = json_object(path)
+        at = instant(payload.get("generated_at"))
+        if payload.get("producer") != "scripts/hapax-entitlement-census":
+            raise ValueError("unexpected census producer")
+        raw = payload.get("measurements")
+        if not isinstance(raw, list):
+            raise ValueError("census measurements must be a list")
+        if at is None or not at <= now < at + MEASUREMENT_TTL:
+            return {"census": [measurement("census.capacity", reason="census_measurements_stale")]}
+        rows = [QuotaMeasurement.model_validate(item) for item in raw]
+    except (TraceReadError, ValueError, TypeError) as exc:
+        return {
+            "census": [
+                measurement(
+                    "census.capacity",
+                    reason="census_measurements_unreadable",
+                    details={"error": type(exc).__name__},
+                )
+            ]
+        }
+    grouped: dict[str, list[QuotaMeasurement]] = defaultdict(list)
+    for row in rows:
+        grouped[row.capacity_id.split(".", 1)[0]].append(row)
+    return dict(grouped) or {
+        "census": [measurement("census.capacity", reason="census_no_quantities")]
+    }
+
+
 def measurement(capacity_id: str, *, reason: str = "no_local_quota_quantity", **fields):
     return QuotaMeasurement(capacity_id=capacity_id, reason_code=reason, **fields)
 
@@ -1013,6 +1047,8 @@ def collect_measurements(
                     details={"error": type(exc).__name__},
                 )
             ]
+    for family, rows in read_census_measurements(home, now=now).items():
+        result[family] = [*rows, *result.get(family, [])]
     return result
 
 
