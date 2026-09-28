@@ -367,3 +367,93 @@ def test_cli_prints_selected_files_and_runtime_weight_plan(
     assert exit_code == 0
     assert captured.out == "tests/slow.py\n"
     assert "Shard plan by runtime weight: 1=10-weight/1-units 2=4-weight/2-units" in (captured.err)
+
+
+def test_cli_degrades_deterministically_when_no_duration_lines_exist(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A killed shard writes no --durations summary.
+
+    The post-run invocation used to fail here ("no pytest duration lines were
+    found"), and because that step ran before pytest's own exit code was
+    classified, the selector's error was what the merge group saw: a KILL was
+    reported as a selector error, never as a timeout. Degrading instead of
+    failing keeps the artifact being written and lets the timeout be named.
+    """
+    pytest_output = tmp_path / "pytest-output.txt"
+    pytest_output.write_text(
+        "\n".join(
+            [
+                "tests/a/test_alpha.py ..F                [ 50%]",
+                "tests/a/test_beta.py .                  [100%]",
+                "Killed",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    duration_artifact = tmp_path / "durations.yaml"
+    selected_units = tmp_path / "selected.txt"
+    selected_units.write_text("tests/a/test_alpha.py\ntests/a/test_beta.py\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "--pytest-output",
+            str(pytest_output),
+            "--duration-artifact",
+            str(duration_artifact),
+            "--selected-units",
+            str(selected_units),
+            "--shard",
+            "3",
+            "--shards",
+            "4",
+            "--run-id",
+            "36369340992",
+            "--run-attempt",
+            "1",
+            "--head-sha",
+            "0bbbb893",
+            "--event-name",
+            "merge_group",
+            "--require-durations",
+        ]
+    )
+
+    assert exit_code == 0
+    loaded = yaml.safe_load(duration_artifact.read_text(encoding="utf-8"))
+    assert loaded["durations"] == []
+    assert loaded["shard"] == {"index": 3, "count": 4, "selected_unit_count": 2}
+    assert loaded["selected_units"] == ["tests/a/test_alpha.py", "tests/a/test_beta.py"]
+    # "and says so": the fallback is named in the artifact, not only on stderr.
+    assert loaded["duration_fallback"]["reason"] == "no_pytest_duration_lines"
+    assert loaded["duration_fallback"]["deterministic_basis"] == "selected_units"
+    assert loaded["duration_source"] == "deterministic_selected_units_fallback"
+    stderr = capsys.readouterr().err
+    assert "no pytest duration lines" in stderr
+    assert "deterministic" in stderr
+
+
+def test_cli_still_fails_when_durations_required_without_a_deterministic_basis(
+    tmp_path: Path,
+) -> None:
+    """No durations AND no selected units: there is no deterministic split to record."""
+    pytest_output = tmp_path / "pytest-output.txt"
+    pytest_output.write_text("Killed\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "--pytest-output",
+                str(pytest_output),
+                "--duration-artifact",
+                str(tmp_path / "durations.yaml"),
+                "--shard",
+                "1",
+                "--shards",
+                "4",
+                "--require-durations",
+            ]
+        )
+
+    assert excinfo.value.code != 0
