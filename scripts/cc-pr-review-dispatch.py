@@ -3943,8 +3943,12 @@ def review_pr(
     )
     writer_family = review_team.writer_family_for_lane(assigned_lane, registry)
     pr_diff = fetch_pr_diff(
-        pr_info, repo=repo, repo_root=repo_root, runner=gh_runner,
-        route=route, allow_local=apply,
+        pr_info,
+        repo=repo,
+        repo_root=repo_root,
+        runner=gh_runner,
+        route=route,
+        allow_local=apply,
     )
     diff_bytes = len(pr_diff.encode("utf-8"))
     if outage_families:
@@ -3980,14 +3984,17 @@ def review_pr(
         changed_source_excerpt_files = [
             rel for rel in pr_info.files if rel in _REVIEW_SOURCE_EXCERPT_SYMBOLS
         ]
-        if prior_criticals or changed_source_excerpt_files:
-            ensure_head_object(repo_root, pr_info.head_sha, pr_number)
-        prior_file_excerpts, prior_evidence_records = build_prior_file_excerpts(
-            prior_criticals, repo_root=repo_root, head_sha=pr_info.head_sha
-        )
-        changed_file_excerpts, changed_source_evidence_records = build_changed_file_excerpts(
-            changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
-        )
+        prior_file_excerpts, changed_file_excerpts = "", ""
+        prior_evidence_records, changed_source_evidence_records = [], []
+        if apply:
+            if prior_criticals or changed_source_excerpt_files:
+                ensure_head_object(repo_root, pr_info.head_sha, pr_number)
+            prior_file_excerpts, prior_evidence_records = build_prior_file_excerpts(
+                prior_criticals, repo_root=repo_root, head_sha=pr_info.head_sha
+            )
+            changed_file_excerpts, changed_source_evidence_records = build_changed_file_excerpts(
+                changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
+            )
         reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
         task_note_text = "\n\n".join(
             f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"

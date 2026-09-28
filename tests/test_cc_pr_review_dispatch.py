@@ -487,6 +487,15 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
 
 
 class TestDryRun:
+    def test_plan_no_checkout(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        gh = FakeGh(files=["scripts/cc-pr-review-dispatch.py"])
+        monkeypatch.setattr(
+            dispatch.subprocess, "run", lambda *a, **k: pytest.fail("plan touched local Git")
+        )
+        result, _, _, _ = _review(tmp_path, gh=gh, apply=False)
+        assert result["status"] == "planned"
+        assert result["plan"]["family_substitution"]["prompt_bytes_by_seat"]
+
     @pytest.mark.parametrize("blocked", [False, True])
     def test_plan_diff_source_never_fetches_local(
         self, monkeypatch: pytest.MonkeyPatch, blocked: bool
@@ -820,6 +829,7 @@ class TestApply:
         result, _, reviewers, note = _review(tmp_path, gh=gh)
         assert result["status"] == "dispatched"
         assert "gemini-1" in lookups and "gemini" not in lookups
+        assert lookups and all(seat.endswith("-1") for seat in lookups)
         assert reviewers.invocations
         dossier = yaml.safe_load(
             (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
