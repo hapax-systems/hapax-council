@@ -746,6 +746,13 @@ audit_systemd_state() {
         echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
         failed=1
     fi
+    for state in is-enabled is-active; do
+        if ! "$SYSTEMCTL" "$state" --quiet hapax-signing-holder.socket; then
+            echo "root-required activation drift: hapax-signing-holder.socket is not ${state#is-}" >&2
+            echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            failed=1
+        fi
+    done
     expected_enforcer_timeout="$(awk -F= '$1 == "TimeoutStartSec" {print $2; exit}' "$INSTALLED_SOURCE_ROOT/systemd/units/hapax-oom-score-enforce.service" 2>/dev/null || true)"
     if ! loaded_enforcer_timeout="$("$SYSTEMCTL" show hapax-oom-score-enforce.service -p TimeoutStartUSec --value 2>/dev/null)"; then
         loaded_enforcer_timeout=""
