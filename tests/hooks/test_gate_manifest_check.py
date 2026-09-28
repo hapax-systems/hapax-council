@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -75,6 +76,53 @@ def test_claude_settings_fixture_matches_manifest(tmp_path: Path) -> None:
     result = _run("--claude-settings", settings)
 
     assert result.returncode == 0, result.stderr
+
+
+def test_seat_session_start_uses_activation_command_and_rejects_stale_worktree(
+    tmp_path: Path,
+) -> None:
+    entry = _manifest()["runtimes"]["claude"]["phases"]["SessionStart"][0]
+    assert entry["matcher"] == "startup|resume|clear"
+    assert entry["hooks"] == ["bash"]
+    assert entry["activation_command"] == (
+        "$HOME/.cache/hapax/source-activation/worktree/scripts/hapax-seat-session-start"
+    )
+    activation = (
+        tmp_path / ".cache/hapax/source-activation/worktree/scripts/hapax-seat-session-start"
+    )
+    activation.parent.mkdir(parents=True)
+    activation.write_text("#!/bin/sh\n", encoding="utf-8")
+    settings = _write_claude_settings(tmp_path)
+    loaded = json.loads(settings.read_text(encoding="utf-8"))
+    loaded["hooks"]["SessionStart"][0]["hooks"][0]["command"] = (
+        'bash "$HOME/projects/hapax-council--grok-owedset/scripts/hapax-seat-session-start"'
+    )
+    settings.write_text(json.dumps(loaded), encoding="utf-8")
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    result = subprocess.run(
+        ["python", str(SCRIPT), "--repo-root", str(REPO_ROOT), "--claude-settings", str(settings)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert "activation command drift" in result.stderr
+    loaded["hooks"]["SessionStart"][0]["hooks"][0]["command"] = (
+        'bash "$HOME/.cache/hapax/source-activation/worktree/scripts/hapax-seat-session-start"'
+    )
+    settings.write_text(json.dumps(loaded), encoding="utf-8")
+    green = subprocess.run(
+        ["python", str(SCRIPT), "--repo-root", str(REPO_ROOT), "--claude-settings", str(settings)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+        timeout=10,
+    )
+    assert green.returncode == 0, green.stderr
 
 
 def test_claude_mcp_mutators_run_full_task_connector_and_release_gates() -> None:
