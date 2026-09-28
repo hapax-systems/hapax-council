@@ -28,7 +28,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass, field
-from html import escape
+from html import escape, unescape
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -264,7 +264,7 @@ def _display_target(target: str) -> str:
 
 
 def _scheme_of(target: str) -> str:
-    candidate = _display_target(target)
+    candidate = unescape(_display_target(target))
     if _URL_CONTROL_RE.search(candidate):
         return "unsafe_control"
     if candidate.startswith("#") or candidate.startswith("/") or candidate.startswith("."):

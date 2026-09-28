@@ -375,6 +375,10 @@ def test_neutralisation_is_total_on_ordinary_prose() -> None:
         "[x](javascript:alert(1))",
         '[x](javascript:alert(1) "title")',
         "[x](<javascript:alert(1)>)",
+        "[x](javascript&#58;alert(1))",
+        "[x](javascript&colon;alert(1))",
+        "[x](&#106;avascript:alert(1))",
+        "[x](javascript&#x3A;alert(1))",
     ],
 )
 def test_no_commonmark_destination_spelling_smuggles_a_live_scheme(body: str) -> None:
