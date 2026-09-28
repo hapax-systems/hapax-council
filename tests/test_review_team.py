@@ -814,23 +814,9 @@ class TestConstitution:
 
 
 class TestObservedWriterIdentity:
-    """review-dossier-writer-family-from-observed-author-20260924: a dossier's
-    writer_family is a claim about execution, so it comes from the record the
-    authoring session wrote. Unsafe cases first: an identity that cannot be
-    observed is UNOBSERVED -- guessing it decides who may review the work."""
-
-    def test_the_hold_is_inert_unless_the_killswitch_names_it(self) -> None:
-        # Clause 11 (seat 2026-09-28T04:06Z): the hold on an unobservable author must
-        # be inert, or a merged state would stall the review plane for ~86% of rows.
-        rt = _load_review_team_module()
-        assert rt.writer_family_enforcement_enabled({}) is False
-        for value in ("1", "true", "on", "enforce"):
-            assert rt.writer_family_enforcement_enabled({rt.WRITER_FAMILY_ENFORCE_ENV: value})
-        # A typo must not stop the review plane.
-        for value in ("", "0", "no", "observe", "enforc"):
-            assert (
-                rt.writer_family_enforcement_enabled({rt.WRITER_FAMILY_ENFORCE_ENV: value}) is False
-            )
+    """Clause (1)-(3) of the row: writer_family is a claim about execution, so it comes
+    from the record the authoring session wrote. Unsafe case first: an identity that
+    cannot be observed is UNOBSERVED -- guessing it decides who may review."""
 
 
 class TestDistinctFamilyFloor:

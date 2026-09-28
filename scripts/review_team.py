@@ -610,11 +610,9 @@ def strongest_team_class(classes: Sequence[str]) -> str:
 def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str:
     """TRANSPORT family of a lane name (exact map, then prefixes, then default).
 
-    Answers "which harness carries a wake message to this lane", which is a
-    question about a name. It is NOT writer identity and must never be used as
-    one: a lane name is compatible with any model, so ``fugu-omglol`` (Sakana
-    Fugu in the codex harness) resolves here to ``claude``. A dossier's
-    ``writer_family`` comes from :func:`observed_writer_identity` instead.
+    "Which harness carries a wake message to this lane" is a question about a name,
+    not writer identity: ``fugu-omglol`` resolves here to ``claude``. A dossier's
+    ``writer_family`` comes from :func:`observed_writer_identity``.
     """
 
     lane_families = registry["lane_families"]
@@ -634,49 +632,21 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
     return lane_families["default"]
 
 
-#: A family no observation supports: a dossier carrying it asserts nothing.
+#: A family no observation supports.
 WRITER_FAMILY_UNOBSERVED = "unobserved"
-
-#: Clause 11 of the row (seat rulings 2026-09-28T04:06Z / 04:25Z): the hold on an
-#: unobservable author is INERT unless this names it. By default such a row
-#: dispatches on the lane's transport family, as it did before this change, with
-#: one log line. Measured, the claim plane's session id joins to a native record
-#: for 18 of 234 receipts (7.7%), so a default hold would stall ~86% of rows.
-WRITER_FAMILY_ENFORCE_ENV = "HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE"
-
-
-def writer_family_enforcement_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """Whether an unobservable author holds. True only under the switch.
-
-    Any value other than a truthy one keeps the inert default, so a typo cannot
-    stop the review plane.
-    """
-
-    source = os.environ if environ is None else environ
-    return str(source.get(WRITER_FAMILY_ENFORCE_ENV, "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-        "enforce",
-    }
-
 
 DEFAULT_CLAIM_RECEIPT_ROOT = Path.home() / ".cache" / "hapax" / "claim-publication-receipts"
 DEFAULT_CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 DEFAULT_CLAUDE_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
-#: ``-<uuid>.jsonl`` / ``<uuid>.jsonl`` — the session a native record belongs to.
+#: ``-<uuid>.jsonl`` — the session a native record belongs to.
 _SESSION_ID_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 
 
 @dataclass(frozen=True)
 class WriterIdentityRoots:
-    """Where an observed authoring identity is read from.
-
-    Injectable so a caller (and every test) reads a root it names rather than
-    whatever happens to be in ``$HOME``.
-    """
+    """Where an observed authoring identity is read from; injectable, so a caller
+    reads a root it names rather than whatever is in ``$HOME``."""
 
     claim_receipt_root: Path = DEFAULT_CLAIM_RECEIPT_ROOT
     codex_sessions_root: Path = DEFAULT_CODEX_SESSIONS_ROOT
@@ -687,11 +657,8 @@ class WriterIdentityRoots:
 class ObservedWriterIdentity:
     """What the execution record says about who authored a row.
 
-    ``family`` is a registry family or :data:`WRITER_FAMILY_UNOBSERVED`; there is
-    no third state. ``evidence`` is the replayable chain (claim receipt -> session
-    -> native record -> provider), ``reason`` the machine-readable disposition
-    behind ``family``, and ``fallback_family`` what the transport map answers for
-    the lane.
+    ``family`` is a registry family or :data:`WRITER_FAMILY_UNOBSERVED`, never a
+    third state; ``reason`` is the machine-readable disposition behind it.
     """
 
     task_id: str
@@ -711,8 +678,7 @@ class ObservedWriterIdentity:
         return self.family != WRITER_FAMILY_UNOBSERVED
 
 
-# Stat-only tree-signature guards: they catch an added AND a rewritten file,
-# which a directory mtime does not.
+# Stat-only tree signatures: they catch an added AND a rewritten file.
 _CLAIM_RECEIPT_INDEX: dict[str, tuple[tuple, dict[str, tuple[tuple[int, str, str, str], ...]]]] = {}
 _NATIVE_SESSION_INDEX: dict[tuple[str, str], tuple[tuple, dict[str, Path]]] = {}
 
@@ -834,8 +800,7 @@ def _native_session_observation(
 ) -> tuple[str | None, str, tuple[str, ...], str] | None:
     """(provider, harness, models, ref) for the record a session wrote, or None.
 
-    A Claude transcript is written by the Anthropic-only Claude Code harness, so
-    it has no provider field to read; the harness is the observation there.
+    A Claude transcript has no provider field: its harness is the observation.
     """
 
     codex_path = _native_session_index(roots.codex_sessions_root, "codex").get(session_id)
@@ -923,9 +888,7 @@ def observed_writer_identity(
     """Derive the authoring family from an observed execution record.
 
     Fail-closed: an unresolved link yields :data:`WRITER_FAMILY_UNOBSERVED` with a
-    ``reason`` and the caller holds. Never the lane name -- the lane is only the
-    subject of the claim, and its transport family is reported separately as
-    ``fallback_family``.
+    ``reason``. Never the lane name, which is only the subject of the claim.
     """
 
     roots = roots or WriterIdentityRoots()
