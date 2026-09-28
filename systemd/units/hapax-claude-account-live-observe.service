@@ -14,14 +14,13 @@ Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-cl
 
 [Service]
 Type=oneshot
-# Harvests account-live evidence the estate ALREADY produces — headless lane results and
-# session transcripts — and hands it to scripts/hapax-claude-subscription-quota-admission,
-# which owns all sanitization and bounds. Reads metadata only (record type, timestamp,
-# token counts, error status); never prompt or response content, and never lane/tmux
-# presence. When any requested route lacks in-family evidence inside --max-age-seconds it
-# makes ONE bounded real request (~$0.02 warm) rather than letting either a quiet estate or
-# a busy session in another model family silently drop the review floor. Pass --no-probe
-# to restrict to passive observation.
+# Reads headless results and session transcripts for recent quota walls only. Passive
+# serves do not establish subscription authentication and cannot mint admission or skip
+# the probe. If no wall holds the account, makes ONE bounded Opus subscription request;
+# a served response can witness headless, review and interactive routes. The existing
+# scripts/hapax-claude-subscription-quota-admission writer owns sanitization and bounds.
+# Lane/tmux presence never witnesses quota. Pass --no-probe to read passive walls only;
+# unbound passive serves then leave admission held.
 #
 # --max-age-seconds 900 with the writer's TTL: the receipt is anchored to the OBSERVATION
 # time, not the mint time, so a 14-minute-old observation yields 14 fewer minutes of
