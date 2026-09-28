@@ -1584,10 +1584,16 @@ class TestDiffCapacityDossierValidity:
                 for family in ("gemini", "glm", "local", "vibe")
             }
         }
+        live_diff_bytes = 50_000
 
         def blockers() -> tuple[str, ...]:
             return rt._dossier_validity_blockers(
-                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+                dossier,
+                pr_head_sha="a" * 40,
+                pr_number=99,
+                registry=registry,
+                route_blocked_families={},
+                capacity_evidence_measurer=lambda _pr, _sha, _seats: (live_diff_bytes, {}),
             )
 
         assert "review_dossier_size_replacements_wrong_for_diff" in blockers()
@@ -1596,6 +1602,7 @@ class TestDiffCapacityDossierValidity:
         for review in dossier["reviewers"]:
             review["diff_full_bytes"] = 1_000
             review["diff_delivered_bytes"] = 1_000
+        live_diff_bytes = 1_000
         dossier["family_substitution"]["excluded_for_size"] = {}
         assert blockers() == ()
         dossier["reviewers"][2]["diff_full_bytes"] = 1_001
@@ -1629,7 +1636,12 @@ class TestDiffCapacityDossierValidity:
 
         def blockers() -> tuple[str, ...]:
             return rt._dossier_validity_blockers(
-                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+                dossier,
+                pr_head_sha="a" * 40,
+                pr_number=99,
+                registry=registry,
+                route_blocked_families={},
+                capacity_evidence_measurer=lambda _pr, _sha, _seats: (50_000, {}),
             )
 
         assert blockers() == ()
