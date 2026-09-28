@@ -2687,7 +2687,6 @@ def _task_note_from_frontmatter(
 
 def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
     notes: list[TaskNote] = []
-    # Bind seat mail to the loader's vault, never an individual note's depth.
     vault_base = (
         vault_root.parent.parent
         if vault_root.name == "hapax-cc-tasks" and vault_root.parent.name == "20-projects"
@@ -2903,8 +2902,9 @@ def _open_major_release_findings_blockers(
         return ("release_review_dossier_reviewers_unreadable",)
     dispositions = frontmatter.get("release_finding_dispositions")
     dispositions = dispositions if isinstance(dispositions, list) else []
-    # Row dispositions cite seat mail in the same vault.
     vault_root = task.vault_base
+    if dispositions and vault_root is None:
+        return ("release_seat_source_vault_unavailable",)
     open_counts = {"major": 0, "critical": 0}
     for review in reviews:
         if not isinstance(review, dict):
@@ -2918,7 +2918,6 @@ def _open_major_release_findings_blockers(
             severity = str(finding.get("severity") or "").lower()
             if severity not in {"major", "critical"}:
                 continue
-            # Same-head resolved markers do not prove a later-head fix.
             finding_key = (
                 str(review.get("id") or ""),
                 str(finding.get("file") or ""),
@@ -2942,7 +2941,11 @@ def _open_major_release_findings_blockers(
                     or item.get("disposition") not in {"accepted", "deferred"}
                     or not isinstance(source, str)
                     or not _seat_disposition_source_valid(
-                        vault_root, source, pr_head_sha=pr_head_sha, finding_title=finding_key[3]
+                        vault_root,
+                        source,
+                        pr_head_sha=pr_head_sha,
+                        finding_title=finding_key[3],
+                        disposition=item["disposition"],
                     )
                 ):
                     continue
@@ -2958,7 +2961,12 @@ def _open_major_release_findings_blockers(
 
 
 def _seat_disposition_source_valid(
-    vault_root: Path | None, source: str, *, pr_head_sha: str, finding_title: str
+    vault_root: Path | None,
+    source: str,
+    *,
+    pr_head_sha: str,
+    finding_title: str,
+    disposition: str,
 ) -> bool:
     if vault_root is None:
         return False
@@ -2989,6 +2997,9 @@ def _seat_disposition_source_valid(
             re.search(rf"(?m)^release_finding_head_sha: {re.escape(pr_head_sha)}$", text[end:])
         )
         and bool(re.search(rf"(?m)^release_finding_title: {re.escape(finding_title)}$", text[end:]))
+        and bool(
+            re.search(rf"(?m)^release_finding_disposition: {re.escape(disposition)}$", text[end:])
+        )
     )
 
 

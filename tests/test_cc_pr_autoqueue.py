@@ -5155,6 +5155,7 @@ def test_explicit_row_disposition_clears_open_major_for_current_head(tmp_path: P
         "---\nfrom: claude/dev1\n---\n"
         "release_finding_head_sha: sha-42\n"
         "release_finding_title: Major defect\n"
+        "release_finding_disposition: accepted\n"
     )
     _write_task(
         vault,
@@ -5223,45 +5224,45 @@ def test_same_head_resolved_marker_does_not_clear_finding(
     assert blockers == (expected,)
 
 
-def test_incidental_head_and_title_in_seat_mail_do_not_disposition(tmp_path: Path) -> None:
+def test_seat_mail_naming_finding_without_ruling_cannot_disposition(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
-    ruling = tmp_path / "Documents/Personal/30-areas/hapax/lanebus/dev1/incidental.md"
+    ruling = vault.parent.parent / "30-areas/hapax/lanebus/dev1/no-ruling.md"
     ruling.parent.mkdir(parents=True)
     ruling.write_text(
-        "---\nfrom: claude/dev1\n---\nA different matter mentions sha-42 and Major defect.\n"
+        "---\nfrom: claude/dev1\n---\n"
+        "release_finding_head_sha: sha-42\nrelease_finding_title: Major defect\n"
     )
     assert not autoqueue._seat_disposition_source_valid(
         vault.parent.parent,
-        "30-areas/hapax/lanebus/dev1/incidental.md",
+        "30-areas/hapax/lanebus/dev1/no-ruling.md",
         pr_head_sha="sha-42",
         finding_title="Major defect",
+        disposition="accepted",
     )
 
 
-def test_task_loader_carries_declared_vault_base_for_seat_sources(tmp_path: Path) -> None:
-    vault = _make_vault(tmp_path)
-    _write_task(vault, task_id="vault-binding", status="pr_open", pr=42)
-    task = autoqueue.load_task_notes(vault)[0]
-    assert task.vault_base == vault.parent.parent
-
-
-def test_open_major_gate_fails_closed_on_missing_findings(tmp_path: Path) -> None:
-    vault = _make_vault(tmp_path)
+def test_unbound_vault_source_names_binding_failure(tmp_path: Path) -> None:
+    vault = tmp_path / "custom-tasks"
+    (vault / "active").mkdir(parents=True)
     _write_task(
         vault,
-        task_id="bad-dossier",
+        task_id="unbound-source",
         status="pr_open",
         pr=42,
-        extra_frontmatter={**_eligible_arm_extra(), "risk_flags": {"governance_sensitive": True}},
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {"governance_sensitive": True},
+            "release_finding_dispositions": [{"head_sha": "sha-42"}],
+        },
     )
-    dossier = autoqueue.review_team.review_dossier_path(
-        vault / "active/bad-dossier.md", "bad-dossier"
+    _write_review_dossier(
+        vault, "unbound-source", head_sha="sha-42", reviewers=_reviewers_with_open_major()
     )
-    dossier.write_text("head_sha: sha-42\nreviewers:\n  - id: codex-1\n")
     task = autoqueue.load_task_notes(vault)[0]
+    assert task.vault_base is None
     assert autoqueue._open_major_release_findings_blockers(
         task, task.frontmatter, pr_head_sha="sha-42"
-    ) == ("release_review_dossier_findings_unreadable",)
+    ) == ("release_seat_source_vault_unavailable",)
 
 
 @pytest.mark.parametrize(
