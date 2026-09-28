@@ -1,6 +1,6 @@
 /**
- * Kids demo — hand-choreographed for Agatha (11) and Simon (8).
- * Same structure as alexis-v4.ts. Every action manually timed.
+ * Kids demo — hand-choreographed for principal-c1 and principal-c2.
+ * Same structure as principal-a2-v4.ts. Every action manually timed.
  */
 import type { DemoBridge } from "../useDemoBridge";
 import type { RegionName } from "../../contexts/TerrainContext";
