@@ -1477,9 +1477,10 @@ class TestSizeReplacementNoteValidity:
                 _review("codex-1", "codex", diff_full_bytes=50_000),
                 _review("muse-1", "muse", diff_full_bytes=50_000),
             ],
-            constitution_notes=(
-                "family_replaced_for_size:gemini",
-                "family_replaced_for_size:glm",
+            constitution_notes=tuple(
+                f"family_replaced_for_size:{family}"
+                for family in ("gemini", "glm", "local", "vibe")
+                if rt.seat_diff_capacity(f"{family}-1", registry)["limit_bytes"] < 50_000
             ),
         )
 
