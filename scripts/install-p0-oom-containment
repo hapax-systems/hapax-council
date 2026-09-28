@@ -34,6 +34,7 @@ OOM_SUDOERS_OWNER_UID="${HAPAX_OOM_SUDOERS_OWNER_UID:-0}"
 OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
+OOM_HOST_PROFILE_DEST="${HAPAX_OOM_HOST_PROFILE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
@@ -587,9 +588,22 @@ root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
 package_manifest_source="config/root-required/oom-containment.files"
+host_profile_source="config/root-required/oom-host-profiles.tsv"
+host_policy_sources=(
+    config/root-required/oom-host-policy/appendix/systemd/units/app.slice.d/oom-containment.conf
+    config/root-required/oom-host-policy/appendix/systemd/system/user-1000.slice.d/oom-containment.conf
+    config/root-required/oom-host-policy/appendix/systemd/system/user@1000.service.d/oom.conf
+    config/root-required/oom-host-policy/appendix/systemd/system/system.slice.d/oom-containment.conf
+    config/root-required/oom-host-policy/podium/systemd/units/app.slice.d/oom-containment.conf
+    config/root-required/oom-host-policy/podium/systemd/system/user-1000.slice.d/oom-containment.conf
+    config/root-required/oom-host-policy/podium/systemd/system/user@1000.service.d/oom.conf
+    config/root-required/oom-host-policy/podium/systemd/system/system.slice.d/oom-containment.conf
+)
 package_files=(
     "$package_manifest_source"
     scripts/install-p0-oom-containment
+    "$host_profile_source"
+    "${host_policy_sources[@]}"
     "$oom_sudoers_source"
     "${system_dropins[@]}"
     "${system_units[@]}"
@@ -765,6 +779,36 @@ src_path() {
     printf '%s/%s\n' "$SOURCE" "$1"
 }
 
+select_host_policy() {
+    local fields
+    fields="$("$(src_path "$oom_policy_audit_source")" --print-host-policy)" || {
+        echo "OOM host policy selection refused; next action: inspect the canonical hostname, MemTotal and $host_profile_source" >&2
+        return 1
+    }
+    IFS=$'\t' read -r HOST_PROFILE APP_HIGH APP_MAX UID_HIGH UID_MAX SYSTEM_HIGH SYSTEM_MAX ZRAM_MIB SWAPPINESS <<< "$fields"
+    case "$HOST_PROFILE" in
+        appendix|podium) ;;
+        *) echo "OOM host policy selected an unsupported profile; next action: repair $host_profile_source" >&2; return 1 ;;
+    esac
+}
+
+policy_src_path() {
+    case "$1" in
+        systemd/units/app.slice.d/oom-containment.conf|systemd/system/user-1000.slice.d/oom-containment.conf|systemd/system/user@1000.service.d/oom.conf|systemd/system/system.slice.d/oom-containment.conf)
+            printf '%s/config/root-required/oom-host-policy/%s/%s\n' "$SOURCE" "$HOST_PROFILE" "$1" ;;
+        *) src_path "$1" ;;
+    esac
+}
+
+require_host_policy_value() {
+    local rel="$1" key="$2" expected="$3" actual
+    actual="$(source_unit_value "$rel" "$key")" || return 1
+    if [ "$actual" != "$expected" ]; then
+        echo "host policy mismatch: $rel $key=$actual, table requires $expected; next action: reconcile the profile file and $host_profile_source" >&2
+        return 1
+    fi
+}
+
 publish_installed_source_file() {
     local source="$1" dest="$2" dest_dir temp
     dest_dir="$(dirname "$dest")"
@@ -811,7 +855,7 @@ validate_package_manifest() {
 
 app_slice_value() {
     local key="$1" file value
-    file="$(src_path "$user_dropin")"
+    file="$(policy_src_path "$user_dropin")"
     value="$(awk -F= -v key="$key" '$1 == key {print $2; exit}' "$file" 2>/dev/null || true)"
     if [ -z "$value" ]; then
         echo "app.slice drop-in missing $key; next action: restore $user_dropin from the P0 PR" >&2
@@ -822,7 +866,7 @@ app_slice_value() {
 
 source_unit_value() {
     local rel="$1" key="$2" file value
-    file="$(src_path "$rel")"
+    file="$(policy_src_path "$rel")"
     value="$(awk -v key="$key" '$0 ~ "^" key "=" {sub(/^[^=]*=/, ""); print; exit}' "$file" 2>/dev/null || true)"
     if [ -z "$value" ]; then
         echo "$rel missing $key; next action: restore $rel from the P0 PR" >&2
@@ -1007,6 +1051,14 @@ check_source() {
             return 1
         }
     done
+    require_host_policy_value "$user_dropin" MemoryHigh "$APP_HIGH" || return 1
+    require_host_policy_value "$user_dropin" MemoryMax "$APP_MAX" || return 1
+    for rel in systemd/system/user-1000.slice.d/oom-containment.conf systemd/system/user@1000.service.d/oom.conf; do
+        require_host_policy_value "$rel" MemoryHigh "$UID_HIGH" || return 1
+        require_host_policy_value "$rel" MemoryMax "$UID_MAX" || return 1
+    done
+    require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryHigh "$SYSTEM_HIGH" || return 1
+    require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryMax "$SYSTEM_MAX" || return 1
     [ -x "$(src_path "$oom_trigger_source")" ] || {
         echo "OOM startup trigger is not executable: $(src_path "$oom_trigger_source"); next action: chmod +x scripts/hapax-oom-score-trigger" >&2
         return 1
@@ -1334,7 +1386,7 @@ install_live() {
     for rel in "${system_dropins[@]}"; do
         dest="$(system_dest "$rel")"
         run_root install -d -m 0755 "$(dirname "$dest")"
-        run_root install -m 0644 "$(src_path "$rel")" "$dest"
+        run_root install -m 0644 "$(policy_src_path "$rel")" "$dest"
         echo "  '$rel' -> '$dest'"
     done
     for rel in "${system_units[@]}"; do
@@ -1376,6 +1428,9 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$OOM_POLICY_AUDIT_DEST")"
     run_root install -m 0755 "$(src_path "$oom_policy_audit_source")" "$OOM_POLICY_AUDIT_DEST"
     echo "  '$oom_policy_audit_source' -> '$OOM_POLICY_AUDIT_DEST'"
+    run_root install -d -m 0755 "$(dirname "$OOM_HOST_PROFILE_DEST")"
+    run_root install -m 0644 "$(src_path "$host_profile_source")" "$OOM_HOST_PROFILE_DEST"
+    echo "  '$host_profile_source' -> '$OOM_HOST_PROFILE_DEST'"
     run_root install -d -m 0755 "$(dirname "$ROOT_REQUIRED_AUDIT_DEST")"
     run_root install -m 0755 "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     echo "  '$root_required_audit_source' -> '$ROOT_REQUIRED_AUDIT_DEST'"
@@ -1389,7 +1444,7 @@ install_live() {
         if [ -L "$dest" ]; then
             rm -f "$dest"
         fi
-        install -m 0644 "$(src_path "$rel")" "$dest"
+        install -m 0644 "$(policy_src_path "$rel")" "$dest"
         echo "  '$rel' -> '$dest' (copy)"
     done
 
@@ -1574,7 +1629,7 @@ verify_live() {
     local rel dest timer
     for rel in "${system_dropins[@]}"; do
         dest="$(system_dest "$rel")"
-        verify_pair "$(src_path "$rel")" "$dest"
+        verify_pair "$(policy_src_path "$rel")" "$dest"
         verify_root_artifact_trust "$dest" 644
     done
     for rel in "${system_units[@]}"; do
@@ -1612,6 +1667,8 @@ verify_live() {
     verify_root_artifact_trust "$ROOT_FAILURE_INTAKE_DEST" 755
     verify_pair "$(src_path "$oom_policy_audit_source")" "$OOM_POLICY_AUDIT_DEST"
     verify_root_artifact_trust "$OOM_POLICY_AUDIT_DEST" 755
+    verify_pair "$(src_path "$host_profile_source")" "$OOM_HOST_PROFILE_DEST"
+    verify_root_artifact_trust "$OOM_HOST_PROFILE_DEST" 644
     verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     verify_root_artifact_trust "$ROOT_REQUIRED_AUDIT_DEST" 755
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
@@ -1630,7 +1687,7 @@ verify_live() {
             echo "live P0 slice drop-in is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live to replace it with a copy" >&2
             return 1
         fi
-        verify_pair "$(src_path "$rel")" "$dest"
+        verify_pair "$(policy_src_path "$rel")" "$dest"
     done
     for rel in "${user_protection_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
@@ -1955,6 +2012,7 @@ verify_user_process_oom_floor() {
     [ "$failed" -eq 0 ]
 }
 
+select_host_policy
 [ "$CHECK" -eq 0 ] || check_source
 [ "$INSTALL" -eq 0 ] || refuse_whole_script_root
 [ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock

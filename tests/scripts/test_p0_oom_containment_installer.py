@@ -90,6 +90,35 @@ def _copy_oom_package(dest_root: Path) -> None:
         shutil.copy2(REPO_ROOT / relative, dest)
 
 
+def test_source_check_rejects_host_policy_file_mismatch(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _copy_oom_package(source)
+    target = (
+        source
+        / "config/root-required/oom-host-policy/appendix/systemd/system/system.slice.d/oom-containment.conf"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "[Slice]\nMemoryHigh=14G\nMemoryMax=99G\nMemorySwapMax=infinity\n"
+        "MemoryLow=14G\nMemoryMin=12G\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--check", "--no-runtime"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-appendix",
+            "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "63310084",
+        },
+    )
+    assert result.returncode != 0
+    assert "host policy mismatch" in result.stderr
+
+
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")

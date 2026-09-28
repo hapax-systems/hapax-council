@@ -1,6 +1,15 @@
 # Versioned ownership manifest for the root-required OOM containment package.
 config/root-required/oom-containment.files
 scripts/install-p0-oom-containment
+config/root-required/oom-host-profiles.tsv
+config/root-required/oom-host-policy/appendix/systemd/units/app.slice.d/oom-containment.conf
+config/root-required/oom-host-policy/appendix/systemd/system/user-1000.slice.d/oom-containment.conf
+config/root-required/oom-host-policy/appendix/systemd/system/user@1000.service.d/oom.conf
+config/root-required/oom-host-policy/appendix/systemd/system/system.slice.d/oom-containment.conf
+config/root-required/oom-host-policy/podium/systemd/units/app.slice.d/oom-containment.conf
+config/root-required/oom-host-policy/podium/systemd/system/user-1000.slice.d/oom-containment.conf
+config/root-required/oom-host-policy/podium/systemd/system/user@1000.service.d/oom.conf
+config/root-required/oom-host-policy/podium/systemd/system/system.slice.d/oom-containment.conf
 config/root-required/hapax-oom-score-enforce.sudoers
 systemd/system/system.slice.d/oom-containment.conf
 systemd/system/user.slice.d/oom-containment.conf
