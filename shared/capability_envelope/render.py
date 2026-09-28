@@ -189,12 +189,22 @@ def _masks(workdir: Path, declared: tuple[str, ...]) -> list[str]:
                     ) from exc
                 if target_rel in declared_set:
                     continue
-                if target.name in MASKED_NAMES:
-                    continue  # the target is masked on its own
+                # The RESOLVED TARGET is always named, never assumed to be covered by the walk.
+                # The walk prunes `.git` and masked-name directories, so a target inside either is
+                # never reached on its own: `CLAUDE.md -> .git/CLAUDE.md` read the file in full
+                # (review of #4784, gemini-1, 2026-09-28).
+                #
+                # The link path itself is deliberately NOT appended: bubblewrap refuses to mount
+                # on a symlink destination ("bwrap: Can't mount on symlink destination
+                # /work/CLAUDE.md", measured 2026-09-28), so covering the target is what closes
+                # the leak — the link then resolves to the masked file. Appending the link would
+                # trade a leak for a carrier that cannot start at all.
                 rel = target_rel
             masked.append(rel)
         dirnames[:] = [d for d in dirnames if d not in MASKED_NAMES]
-    return masked
+    # One mount per path: a target reachable both through a link and by the walk must not be
+    # mounted twice, and the order of first appearance is the order bwrap must mount them in.
+    return list(dict.fromkeys(masked))
 
 
 def _claude_config(decl: EnvelopeDeclaration) -> tuple[dict[str, Any], dict[str, Any]]:

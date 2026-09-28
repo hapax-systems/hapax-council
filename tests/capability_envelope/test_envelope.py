@@ -408,10 +408,40 @@ def test_masking_follows_symlinks_to_what_they_expose(tmp_path: Path):
     checkout = _checkout_with_links(tmp_path)
     rendered = render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
     masked = set(rendered.masked)
-    # CLAUDE.md -> AGENTS.md: the target is masked on its own.
+    # CLAUDE.md -> AGENTS.md: the target is masked on its own, which is what the link resolves to.
+    # The link path is not mounted over — bwrap refuses a symlink destination (see the `.git`
+    # specimen below) — so the target is the covering mount.
     assert "AGENTS.md" in masked and "CLAUDE.md" not in masked
     # GEMINI.md -> docs/instructions.txt: the ordinary-named target is what gets covered.
     assert "docs/instructions.txt" in masked
+
+
+def test_a_masked_name_symlinked_into_a_pruned_directory_is_masked(tmp_path: Path):
+    """Review of #4784 (gemini-1, confirmed by dev21 under bwrap 0.12.0, 2026-09-28): a
+    masked-named symlink whose target also has a masked name was covered NOWHERE. The walk prunes
+    `.git` and masked-name directories, so the resolved target was never reached on its own, and
+    the early `continue` skipped appending it — `CLAUDE.md -> .git/CLAUDE.md` read in full."""
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "CLAUDE.md", "leaked instructions\n")
+    (checkout / "CLAUDE.md").symlink_to(".git/CLAUDE.md")
+    rendered = render(_sh("true", workdir=checkout), run_root=tmp_path / "run")
+    masked = set(rendered.masked)
+    assert ".git/CLAUDE.md" in masked
+    assert rendered.masked.count(".git/CLAUDE.md") == 1
+
+
+@needs_bwrap
+def test_a_masked_name_symlinked_into_dot_git_reads_empty_in_the_job(tmp_path: Path):
+    """The specimen the finding was reported with: the job must not read the file behind the
+    link, whichever of the two paths it opens."""
+    checkout = tmp_path / "repo"
+    _write(checkout / ".git" / "CLAUDE.md", "leaked instructions\n")
+    (checkout / "CLAUDE.md").symlink_to(".git/CLAUDE.md")
+    script = "cat /work/CLAUDE.md; echo LINK=$?; cat /work/.git/CLAUDE.md; echo TARGET=$?"
+    result = execute(render(_sh(script, workdir=checkout), run_root=tmp_path / "run"), timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert "leaked instructions" not in result.stdout, result.stdout
+    assert "LINK=0" in result.stdout and "TARGET=0" in result.stdout
 
 
 @pytest.mark.parametrize(
