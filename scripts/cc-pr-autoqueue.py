@@ -2991,15 +2991,13 @@ def _seat_disposition_source_valid(
     end = text.find("\n---", 4)
     if end < 0:
         return False
-    return (
-        bool(re.search(r"(?m)^from: (?:claude/)?dev1\s*$", text[4:end]))
-        and bool(
-            re.search(rf"(?m)^release_finding_head_sha: {re.escape(pr_head_sha)}$", text[end:])
-        )
-        and bool(re.search(rf"(?m)^release_finding_title: {re.escape(finding_title)}$", text[end:]))
-        and bool(
-            re.search(rf"(?m)^release_finding_disposition: {re.escape(disposition)}$", text[end:])
-        )
+    ruling = (
+        rf"(?m)^release_finding_head_sha: {re.escape(pr_head_sha)}\n"
+        rf"release_finding_title: {re.escape(finding_title)}\n"
+        rf"release_finding_disposition: {re.escape(disposition)}$"
+    )
+    return bool(re.search(r"(?m)^from: (?:claude/)?dev1\s*$", text[4:end])) and bool(
+        re.search(ruling, text[end:])
     )
 
 

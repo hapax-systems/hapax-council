@@ -5224,13 +5224,22 @@ def test_same_head_resolved_marker_does_not_clear_finding(
     assert blockers == (expected,)
 
 
-def test_seat_mail_naming_finding_without_ruling_cannot_disposition(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "",
+        "release_finding_disposition: deferred\nrelease_finding_title: Other\nrelease_finding_disposition: accepted\n",
+    ],
+)
+def test_seat_mail_naming_finding_without_ruling_cannot_disposition(
+    tmp_path: Path, extra: str
+) -> None:
     vault = _make_vault(tmp_path)
     ruling = vault.parent.parent / "30-areas/hapax/lanebus/dev1/no-ruling.md"
     ruling.parent.mkdir(parents=True)
     ruling.write_text(
         "---\nfrom: claude/dev1\n---\n"
-        "release_finding_head_sha: sha-42\nrelease_finding_title: Major defect\n"
+        "release_finding_head_sha: sha-42\nrelease_finding_title: Major defect\n" + extra
     )
     assert not autoqueue._seat_disposition_source_valid(
         vault.parent.parent,
