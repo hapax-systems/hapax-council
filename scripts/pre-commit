@@ -12,6 +12,7 @@ config="$activation_root/.pre-commit-config.yaml"
 
 if [ ! -f "$config" ]; then
   echo "pre-commit: missing activation .pre-commit-config.yaml; refusing" >&2
+  echo "Remedy: restore the activation worktree config at $config, or point core.hooksPath at a valid activation scripts directory." >&2
   exit 1
 fi
 

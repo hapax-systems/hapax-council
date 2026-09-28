@@ -83,6 +83,24 @@ git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-push
 Both paths must resolve under `activation_hooks`, including from a Codex
 worktree whose branch predates the tracked hooks. Verify a test push from that
 worktree invokes the name scanner before treating this activation as complete.
+Choose an old-branch Codex worktree with a clean, unpushed non-root commit and a
+test remote that accepts dry runs:
+
+```bash
+old_codex_worktree=/path/to/old-branch-codex-worktree
+test_remote=origin
+GIT_TRACE=1 git -C "$old_codex_worktree" push --dry-run "$test_remote" HEAD:refs/heads/hook-readback
+head="$(git -C "$old_codex_worktree" rev-parse HEAD)"
+base="$(git -C "$old_codex_worktree" rev-parse HEAD^)"
+printf 'refs/heads/hook-readback %s refs/heads/hook-readback %s\n' "$head" "$base" |
+  (cd "$old_codex_worktree" && bash -x "$activation_hooks/pre-push" "$test_remote" "$test_remote")
+```
+
+The dry run must exit 0 without a missing-scanner refusal. The traced hook
+must show `python3` invoking the name scanner under the active release's
+`scripts/` directory with `--root "$old_codex_worktree"`; its clean scan
+exits 0. The second command supplies a bounded push-ref protocol directly so
+the scanner path is visible even though a clean scan prints no names.
 If activation fails, restore the recorded previous absolute value:
 
 ```bash

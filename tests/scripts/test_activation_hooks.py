@@ -93,6 +93,23 @@ def test_missing_scanner_everywhere_refuses(tmp_path: Path):
     assert direct.returncode == 3
 
 
+def test_missing_secret_scanner_everywhere_refuses_with_exit_3(tmp_path: Path):
+    old, scripts, _secret_log, env = _fixture(tmp_path)
+    (scripts / "hapax-prepush-secret-scan").unlink()
+    direct = subprocess.run(
+        [str(scripts / "pre-push"), "origin", "file:///dev/null"],
+        input="",
+        capture_output=True,
+        text=True,
+        cwd=old,
+        env=env,
+        check=False,
+    )
+    assert direct.returncode == 3
+    assert "missing scripts/hapax-prepush-secret-scan" in direct.stderr
+    assert "Remedy:" in direct.stderr
+
+
 def test_branch_scanner_cannot_shadow_activation_scanner(tmp_path: Path):
     old, _scripts, _secret_log, env = _fixture(tmp_path)
     (old / "scripts").mkdir()
@@ -162,3 +179,19 @@ def test_precommit_prefers_activation_framework_over_branch_path(tmp_path: Path)
     assert committed.returncode == 0, committed.stderr
     assert active_log.read_text() == "active\n"
     assert not branch_log.exists()
+
+
+def test_precommit_missing_activation_config_refuses_with_next_action(tmp_path: Path):
+    old, scripts, _secret_log, env = _fixture(tmp_path)
+    shutil.copy2(REPO_ROOT / "scripts" / "pre-commit", scripts / "pre-commit")
+    direct = subprocess.run(
+        [str(scripts / "pre-commit")],
+        capture_output=True,
+        text=True,
+        cwd=old,
+        env=env,
+        check=False,
+    )
+    assert direct.returncode == 1
+    assert "missing activation .pre-commit-config.yaml" in direct.stderr
+    assert "Remedy:" in direct.stderr
