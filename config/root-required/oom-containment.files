@@ -46,4 +46,5 @@ scripts/hapax-oom-score-trigger
 scripts/hapax-root-failure-intake
 scripts/hapax-oom-policy-audit
 scripts/hapax-oom-seat-alert
+scripts/hapax-oom-docker-limits
 scripts/hapax-root-required-deploy-audit

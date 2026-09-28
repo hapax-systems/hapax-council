@@ -1209,6 +1209,45 @@ def format_human(checks: list[Check]) -> str:
     return "\n".join(lines)
 
 
+def audit_docker_containers() -> list[Check]:
+    script = Path(__file__).resolve()
+    helper = (
+        Path("/usr/local/sbin/hapax-oom-docker-limits")
+        if script == Path("/usr/local/sbin/hapax-oom-policy-audit")
+        else script.with_name("hapax-oom-docker-limits")
+    )
+    try:
+        result = subprocess.run(
+            [str(helper), "--audit"],
+            text=True,
+            capture_output=True,
+            timeout=90,
+            check=False,
+        )
+        if len(result.stdout) > 32768 or len(result.stderr) > 2048:
+            raise ValueError("Docker audit output exceeded bound")
+        payload = json.loads(result.stdout)
+        rows = payload["checks"]
+        if not isinstance(rows, list) or not rows or len(rows) > 129:
+            raise ValueError("Docker audit check count invalid")
+        checks = [Check(**row) for row in rows]
+        if any(item.status not in {"pass", "gap", "error"} for item in checks):
+            raise ValueError("Docker audit status invalid")
+        if result.returncode != int(any(item.status != "pass" for item in checks)):
+            raise ValueError("Docker audit exit/check mismatch")
+        return checks
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as exc:
+        return [
+            Check(
+                "docker_inventory",
+                "error",
+                "all local containers memory-bounded",
+                "unavailable",
+                f"Docker cap audit failed: {exc}; {NEXT_OOM_INSTALL}",
+            )
+        ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     output = parser.add_mutually_exclusive_group()
@@ -1279,6 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
                 *audit_protected_user_units(),
                 audit_residual_user_process_protection(args.uid),
                 *audit_tmux_scopes(),
+                *audit_docker_containers(),
             ]
     except AuditLockError as exc:
         checks = [
