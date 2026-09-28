@@ -1,13 +1,14 @@
 """Git-owned input validation for the billing surface scan.
 
 Callers may inspect added lines only after ``materialise_post_image`` has
-validated the input against the named base. The next layer regenerates a diff
-from the temporary index yielded here.
+validated the input against the named base. Git then regenerates a diff from
+that temporary index; a closed grammar reads only its added lines.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -21,6 +22,22 @@ class GitUnavailable(RuntimeError):
 
 class UnusableInput(RuntimeError):
     """The input does not apply to the named base."""
+
+
+_SECTION_META_PREFIXES: tuple[str, ...] = (
+    "index ",
+    "new file mode ",
+    "deleted file mode ",
+    "old mode ",
+    "new mode ",
+    "similarity index ",
+    "dissimilarity index ",
+    "rename from ",
+    "rename to ",
+    "copy from ",
+    "copy to ",
+)
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 def _run_git(
@@ -100,3 +117,99 @@ def materialise_post_image(
                 "state and rerun"
             )
         yield index_path, env
+
+
+def parse_git_added_lines(text: str) -> tuple[dict[str, dict[int, str]], str | None]:
+    """Read added lines from Git's own zero-context diff, rejecting unknown shapes."""
+    files: dict[str, dict[int, str]] = {}
+    pending_path: str | None = None
+    path: str | None = None
+    new_line = 0
+    in_hunk = False
+    deleted_file = False
+    for raw in text.splitlines():
+        if raw.startswith("diff --git "):
+            pending_path = None
+            path = None
+            in_hunk = False
+            deleted_file = False
+            continue
+        if raw.startswith(_SECTION_META_PREFIXES):
+            continue
+        if raw.startswith("--- ") or raw.startswith("+++ "):
+            candidate = raw[4:].strip()
+            if raw.startswith("--- "):
+                continue
+            if candidate == "/dev/null":
+                pending_path = None
+                deleted_file = True
+            elif candidate.startswith("b/"):
+                pending_path = candidate[2:]
+                deleted_file = False
+            else:
+                return {}, f"a '+++ ' header git would not emit: {raw!r}"
+            continue
+        if raw.startswith(("Binary files ", "GIT binary patch")):
+            pending_path = None
+            in_hunk = False
+            continue
+        header = _HUNK_HEADER_RE.match(raw)
+        if header is not None:
+            if pending_path is None and not deleted_file:
+                return {}, "a hunk header arrived before any '+++ b/<path>' header"
+            path = pending_path
+            new_line = int(header.group(3))
+            in_hunk = True
+            continue
+        if raw.startswith("\\"):
+            continue
+        if in_hunk and raw.startswith("+"):
+            if path is None:
+                return {}, "an added line arrived with no post-image path"
+            files.setdefault(path, {})[new_line] = raw[1:]
+            new_line += 1
+            continue
+        if in_hunk and raw.startswith(("-", " ")):
+            if raw.startswith(" "):
+                new_line += 1
+            continue
+        return {}, f"an unrecognised line in git's own diff output: {raw!r}"
+    return files, None
+
+
+def post_image_blob(path: str, *, repo: Path, env: dict[str, str]) -> str | None:
+    """Read the indexed blob as text; a binary or unreadable blob is opaque."""
+    try:
+        proc = subprocess.run(
+            ["git", "show", f":{path}"], cwd=str(repo), env=env, capture_output=True, check=False
+        )
+    except OSError as exc:
+        raise GitUnavailable(str(exc)) from exc
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    if b"\x00" in proc.stdout[:8192]:
+        return None
+    return proc.stdout.decode("utf-8", errors="replace")
+
+
+def regenerated_added_lines(
+    *, repo: Path, base: str, env: dict[str, str]
+) -> tuple[dict[str, dict[int, str]], str | None]:
+    """Ask Git for the validated index diff, then read only its added lines."""
+    regenerated = _run_git(
+        ["diff", "--cached", "--no-color", "--no-ext-diff", "--unified=0", f"{base}^{{commit}}"],
+        repo=repo,
+        env=env,
+    )
+    if regenerated.returncode != 0:
+        return {}, (
+            "FAIL-CLOSED: git could not regenerate the diff from the validated index: "
+            f"{_git_out(regenerated)}. Next action: rerun in the repository whose base it names"
+        )
+    files, error = parse_git_added_lines(regenerated.stdout)
+    if error is not None:
+        return {}, (
+            f"FAIL-CLOSED: {error}. Next action: this shape is not one git emits for a text diff, "
+            "so nothing is scanned; regenerate the input with `git diff <base>...HEAD` and rerun"
+        )
+    return files, None
