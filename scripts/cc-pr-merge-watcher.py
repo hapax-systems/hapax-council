@@ -457,7 +457,11 @@ def await_runtime_witnesses(task: LinkedTask, *, dry_run: bool = False) -> bool:
     cursor then holds and the next cycle retries.
     """
     note = task.note_path
-    next_action = f"observe them, then cc-close {task.task_id} --pr {task.pr_number}"
+    # The awaiting row's one exit (M182): cc-close refuses done on it without --witness.
+    next_action = (
+        f"observe them, then cc-close {task.task_id} --pr {task.pr_number} "
+        '--witness "<observation>"'
+    )
     if dry_run:
         LOG.info(
             "[dry-run] would move task %s to %s (PR #%d merged; unmet runtime witnesses)",

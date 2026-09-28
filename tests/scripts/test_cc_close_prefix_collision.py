@@ -47,7 +47,7 @@ def _run_close(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "test-role"
     return subprocess.run(
-        ["bash", str(SCRIPT), task_id, "--status", "withdrawn"],
+        ["bash", str(SCRIPT), task_id, "--status", "withdrawn", "--reason", "test close"],
         env=env,
         text=True,
         capture_output=True,

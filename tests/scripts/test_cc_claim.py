@@ -3148,3 +3148,71 @@ def test_a_note_other_than_the_locked_one_is_never_rewritten(
     assert "claim_return_note_moved" in held.value.message
     assert note.read_bytes() == before
     assert elsewhere.read_bytes() == before
+
+
+# cc-close-reason-and-awaiting-witness-path-20260927 (M181, M182): cc-claim decides whether the
+# target can be claimed before it releases anything, so a refused claim leaves every file
+# byte-identical (M181: a refused claim had archived the role's pipeline-held row first). An
+# awaiting row's refusal names its one exit, `cc-close --witness` (M182).
+
+
+def _tree_bytes(root: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
+
+
+@pytest.mark.parametrize(
+    ("status", "assigned_to", "refusal"),
+    [
+        (
+            "merged_awaiting_runtime_witness",
+            "cx-test",
+            'cc-close target-row --pr 77 --witness "<observation>"',
+        ),
+        ("blocked", "cx-test", "current status is 'blocked'"),
+        ("offered", "another-lane", "already assigned to 'another-lane'"),
+    ],
+    ids=["awaiting", "blocked", "assigned_elsewhere"],
+)
+def test_a_refused_claim_releases_nothing(
+    tmp_path: Path, status: str, assigned_to: str, refusal: str
+) -> None:
+    home = tmp_path / "home"
+    parked = _write_task(home, "active", "parked-row")
+    target = _write_task(
+        home,
+        "active",
+        "target-row",
+        status=status,
+        assigned_to=assigned_to,
+        blocked_reason="waiting_for_a_peer" if status == "blocked" else None,
+    )
+    target.write_text(
+        target.read_text(encoding="utf-8").replace("claimable: true", "claimable: true\npr: 77"),
+        encoding="utf-8",
+    )
+    assert _claim(home, "parked-row").returncode == 0
+    _set_status(parked, "claimed", "pr_open")
+    before = _tree_bytes(home)
+
+    refused = _claim(home, "target-row", install_gate0b=False)
+
+    assert refused.returncode == 4, refused.stderr
+    assert refusal in refused.stderr
+    assert _tree_bytes(home) == before
+    assert _lineage_shapes(home, "parked-row") == []
+
+
+def test_a_role_rerunning_its_own_claim_on_a_blocked_row_is_still_answered_as_its_owner(
+    tmp_path: Path,
+) -> None:
+    # The early decision defers when this role's own marker already names the target: that is
+    # an existing claim, answered by its applied publication as before, never a fresh refusal.
+    home = tmp_path / "home"
+    row = _write_task(home, "active", "own-row")
+    assert _claim(home, "own-row").returncode == 0
+    _set_status(row, "claimed", "blocked")
+
+    again = _claim(home, "own-row", install_gate0b=False)
+
+    assert again.returncode == 0, again.stderr
+    assert "applied publication already owns task 'own-row'" in again.stdout

@@ -575,6 +575,7 @@ from shared.charter_claim import child_may_mint, sidecar_belongs_to  # noqa: E40
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    TASK_MERGED_AWAITING_WITNESS_STATUS,
     TASK_RESUMABLE_STATUSES,
     blocked_reason_from_frontmatter,
     blocked_witness_from_frontmatter,
@@ -599,6 +600,167 @@ def _frontmatter_scalar(note_text: str, key: str) -> str:
     value = match.group(1).strip().strip('"').strip("'")
     return "" if value.lower() in {"", "null", "none", "~", "[]"} else value
 
+
+def _strip_scalar(value: str) -> str:
+    return value.strip().strip('"').strip("'")
+
+
+_YAML_NULLS = frozenset({"", "null", "none", "~", "[]"})
+
+
+def _is_claimable_assignee(value: str) -> bool:
+    stripped = _strip_scalar(value)
+    return stripped == "unassigned" or stripped.lower() in _YAML_NULLS
+
+
+# Canonical SSOT: a lane may resume an owned task in any merge-ready state, not
+# just pr_open/merge_queue (shared/sdlc_lifecycle.py TASK_RESUMABLE_STATUSES).
+READY_STATUSES = TASK_RESUMABLE_STATUSES
+# A lane may also take back its OWN working row after its lease lapsed: a live claim by this
+# role never reaches the decision (it is answered as an applied publication), so only a lapsed
+# one does. Before this, the seat had to hand-edit the note (2026-09-26, dev44 and dev33).
+OWN_WORKING_STATUSES = TASK_DISPATCHABLE_STATUSES - TASK_CLAIMABLE_STATUSES
+
+
+def _other_claim_markers(cache: Path) -> list[Path]:
+    """Every claim marker naming this task except the caller's own two keys: another role's
+    live claim, or another session's of this role. A self-resume never takes one over."""
+
+    own = {f"cc-active-task-{role}", f"cc-active-task-{role}-{session_id}"}
+    hits: list[Path] = []
+    for marker in sorted(cache.glob("cc-active-task-*")):
+        if marker.name in own:
+            continue
+        try:
+            named = marker.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            hits.append(marker)  # unreadable: it may name the task, so it counts as live
+            continue
+        if task_id in named:
+            hits.append(marker)
+    return hits
+
+
+def _refuse_while_another_claim_holds(verb: str) -> None:
+    others = _other_claim_markers(cache_dir)
+    if others:
+        print(
+            f"cc-claim: refusing to {verb} '{task_id}' — another claim marker names it or cannot "
+            "be read: "
+            + ", ".join(str(path) for path in others)
+            + ". Next action: inspect it. A live claim is handed off to its lane. Residue the note "
+            "no longer names (a re-offered row) is released by the lane that owns the marker, "
+            f"with `cc-claim --release-claim-residue {task_id}`.",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+
+
+status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
+status = status_match.group(1) if status_match else "offered"
+assigned_match = re.search(r"^assigned_to:[ \t]*(.*)$", text, flags=re.MULTILINE)
+assigned_raw = assigned_match.group(1) if assigned_match else "unassigned"
+assigned_to = _strip_scalar(assigned_raw)
+
+
+def _claim_mode_or_refuse() -> str:
+    """``claim`` or ``resume`` for this note, or a refusal (exit 6 or 4) that changes nothing.
+
+    It reads only the note's text and the claim markers, so it can run before anything is
+    released (M181)."""
+
+    if not text.startswith("---") or text.find("\n---", 4) < 0:
+        print(
+            f"cc-claim: FATAL — task note {path} has no closing frontmatter "
+            "delimiter; next action: repair the note (restore the opening and "
+            "closing '---' lines), then re-run cc-claim. No claim caches were written.",
+            file=sys.stderr,
+        )
+        sys.exit(6)
+    if status in TASK_CLAIMABLE_STATUSES:
+        if assigned_match and not _is_claimable_assignee(assigned_raw):
+            if assigned_to != role:
+                print(
+                    f"cc-claim: refusing to claim '{task_id}' — already assigned to "
+                    f"'{assigned_to}'. Next action: ask the assigned lane/operator to release it "
+                    "or claim a different offered task.",
+                    file=sys.stderr,
+                )
+                sys.exit(4)
+        mode = "claim"
+    elif status in READY_STATUSES or status in OWN_WORKING_STATUSES:
+        state_label = "ready-state" if status in READY_STATUSES else "working"
+        if _is_claimable_assignee(assigned_raw):
+            print(
+                f"cc-claim: refusing to resume '{task_id}' — {state_label} task is not assigned "
+                f"to '{role}'. Next action: restore assigned_to: {role} if this lane owns the PR "
+                "follow-up, or claim a different offered task.",
+                file=sys.stderr,
+            )
+            sys.exit(4)
+        if assigned_to != role:
+            print(
+                f"cc-claim: refusing to resume '{task_id}' — assigned to '{assigned_to}', not "
+                f"'{role}'. Next action: hand off to {assigned_to}, ask the operator to reassign "
+                "the task, or claim a task assigned to this lane.",
+                file=sys.stderr,
+            )
+            sys.exit(4)
+        mode = "resume"
+    else:
+        detail = ""
+        if status == "blocked":
+            frontmatter = frontmatter_from_text(text)
+            detail_parts: list[str] = []
+            reason = blocked_reason_from_frontmatter(frontmatter)
+            witness = blocked_witness_from_frontmatter(frontmatter)
+            detail_parts.append(f"blocked_reason: {reason or 'missing'}")
+            if witness:
+                detail_parts.append(f"blocked_witness: {witness}")
+            detail = " (" + "; ".join(detail_parts) + ")"
+        if status == TASK_MERGED_AWAITING_WITNESS_STATUS:
+            # Its one exit is the witnessed close, which needs no claim (M182).
+            pr = _frontmatter_scalar(text, "pr") or "<N>"
+            next_action = (
+                "observe its runtime witness, then close it with "
+                f'`cc-close {task_id} --pr {pr} --witness "<observation>"` (no claim is needed).'
+            )
+        else:
+            next_action = (
+                "move the task through the governed lifecycle to an offered or assigned ready "
+                "state, then rerun cc-claim."
+            )
+        print(
+            f"cc-claim: refusing to claim '{task_id}' — current status is '{status}'{detail}, "
+            f"not 'offered' or an assigned ready state. Next action: {next_action}",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+    # Every claim and every resume refuses while any other claim marker names the task (seat,
+    # 2026-09-27T04:05Z). A stale one left on a re-offered row is released by the lane that
+    # owns it.
+    _refuse_while_another_claim_holds(mode)
+    return mode
+
+
+def _own_marker_names_task() -> bool:
+    """Whether this role's own claim marker already names the task: an existing claim, which its
+    applied publication answers below (exit 0 or a hold), as it always has."""
+
+    for key in (role, f"{role}-{session_id}"):
+        try:
+            named = (cache_dir / f"cc-active-task-{key}").read_text(encoding="utf-8").split()
+        except (OSError, UnicodeError):
+            continue
+        if named[:1] == [task_id]:
+            return True
+    return False
+
+
+# The decision comes before anything is released (M181, 2026-09-27): a refused claim had first
+# archived the role's pipeline-held row. Only an existing claim of this role defers it, to after
+# its applied publication is consulted.
+claim_mode = None if _own_marker_names_task() else _claim_mode_or_refuse()
 
 manual_binding_issued = False
 
@@ -881,130 +1043,11 @@ if canon_enforced:
         )
         sys.exit(0)
 
-if not text.startswith("---") or text.find("\n---", 4) < 0:
-    print(
-        f"cc-claim: FATAL — task note {path} has no closing frontmatter "
-        "delimiter; next action: repair the note (restore the opening and "
-        "closing '---' lines), then re-run cc-claim. No claim caches were written.",
-        file=sys.stderr,
-    )
-    sys.exit(6)
-frontmatter = frontmatter_from_text(text)
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _strip_scalar(value: str) -> str:
-    return value.strip().strip('"').strip("'")
-
-
-_YAML_NULLS = frozenset({"", "null", "none", "~", "[]"})
-
-
-def _is_claimable_assignee(value: str) -> bool:
-    stripped = _strip_scalar(value)
-    return stripped == "unassigned" or stripped.lower() in _YAML_NULLS
-
-
-# Canonical SSOT: a lane may resume an owned task in any merge-ready state, not
-# just pr_open/merge_queue (shared/sdlc_lifecycle.py TASK_RESUMABLE_STATUSES).
-READY_STATUSES = TASK_RESUMABLE_STATUSES
-# A lane may also take back its OWN working row after its lease lapsed: a live claim by this
-# role never reaches here (it is answered above as an applied publication), so only a lapsed
-# one does. Before this, the seat had to hand-edit the note (2026-09-26, dev44 and dev33).
-OWN_WORKING_STATUSES = TASK_DISPATCHABLE_STATUSES - TASK_CLAIMABLE_STATUSES
-
-
-def _other_claim_markers(cache: Path) -> list[Path]:
-    """Every claim marker naming this task except the caller's own two keys: another role's
-    live claim, or another session's of this role. A self-resume never takes one over."""
-
-    own = {f"cc-active-task-{role}", f"cc-active-task-{role}-{session_id}"}
-    hits: list[Path] = []
-    for marker in sorted(cache.glob("cc-active-task-*")):
-        if marker.name in own:
-            continue
-        try:
-            named = marker.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeError):
-            hits.append(marker)  # unreadable: it may name the task, so it counts as live
-            continue
-        if task_id in named:
-            hits.append(marker)
-    return hits
-
-
-def _refuse_while_another_claim_holds(verb: str) -> None:
-    others = _other_claim_markers(cache_dir)
-    if others:
-        print(
-            f"cc-claim: refusing to {verb} '{task_id}' — another claim marker names it or cannot "
-            "be read: "
-            + ", ".join(str(path) for path in others)
-            + ". Next action: inspect it. A live claim is handed off to its lane. Residue the note "
-            "no longer names (a re-offered row) is released by the lane that owns the marker, "
-            f"with `cc-claim --release-claim-residue {task_id}`.",
-            file=sys.stderr,
-        )
-        sys.exit(4)
-
-
-status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
-status = status_match.group(1) if status_match else "offered"
-assigned_match = re.search(r"^assigned_to:[ \t]*(.*)$", text, flags=re.MULTILINE)
-assigned_raw = assigned_match.group(1) if assigned_match else "unassigned"
-assigned_to = _strip_scalar(assigned_raw)
-
-if status in TASK_CLAIMABLE_STATUSES:
-    if assigned_match and not _is_claimable_assignee(assigned_raw):
-        if assigned_to != role:
-            print(
-                f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_to}'. "
-                "Next action: ask the assigned lane/operator to release it or claim a different "
-                "offered task.",
-                file=sys.stderr,
-            )
-            sys.exit(4)
-    claim_mode = "claim"
-elif status in READY_STATUSES or status in OWN_WORKING_STATUSES:
-    state_label = "ready-state" if status in READY_STATUSES else "working"
-    if _is_claimable_assignee(assigned_raw):
-        print(
-            f"cc-claim: refusing to resume '{task_id}' — {state_label} task is not assigned to "
-            f"'{role}'. Next action: restore assigned_to: {role} if this lane owns the PR "
-            "follow-up, or claim a different offered task.",
-            file=sys.stderr,
-        )
-        sys.exit(4)
-    if assigned_to != role:
-        print(
-            f"cc-claim: refusing to resume '{task_id}' — assigned to '{assigned_to}', not "
-            f"'{role}'. Next action: hand off to {assigned_to}, ask the operator to reassign "
-            "the task, or claim a task assigned to this lane.",
-            file=sys.stderr,
-        )
-        sys.exit(4)
-    claim_mode = "resume"
-else:
-    detail = ""
-    if status == "blocked":
-        detail_parts: list[str] = []
-        reason = blocked_reason_from_frontmatter(frontmatter)
-        witness = blocked_witness_from_frontmatter(frontmatter)
-        detail_parts.append(f"blocked_reason: {reason or 'missing'}")
-        if witness:
-            detail_parts.append(f"blocked_witness: {witness}")
-        detail = " (" + "; ".join(detail_parts) + ")"
-    print(
-        f"cc-claim: refusing to claim '{task_id}' — current status is '{status}'{detail}, "
-        "not 'offered' or an assigned ready state. Next action: move the task through "
-        "the governed lifecycle to an offered or assigned ready state, then rerun cc-claim.",
-        file=sys.stderr,
-    )
-    sys.exit(4)
-
-# Every claim and every resume refuses while any other claim marker names the task (seat,
-# 2026-09-27T04:05Z). A stale one left on a re-offered row is released by the lane that owns it.
-_refuse_while_another_claim_holds(claim_mode)
+if claim_mode is None:
+    # This role's own marker named the task and no applied publication answered it above, so
+    # the decision runs here, where it always ran for an existing claim (M181).
+    claim_mode = _claim_mode_or_refuse()
 
 
 def _frontmatter_lines(note_text: str) -> list[str]:
