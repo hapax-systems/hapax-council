@@ -96,9 +96,8 @@ ALLOWED_URI_SCHEMES: frozenset[str] = frozenset(("http", "https"))
 #: through as a live link. Both found by the tests below, not by inspection.
 _MD_TARGET = r"(?:[^()\s]|\([^()\s]*\))*"
 _MD_LABEL = r"(?:[^\[\]]|\[[^\[\]]*\])*"
-_MD_IMAGE_RE = re.compile(
-    rf"!\[(?P<alt>{_MD_LABEL})\]\(\s*(?P<target>{_MD_TARGET})(?P<rest>[^)]*)\)"
-)
+_MD_IMAGE_DEST_RE = re.compile(rf"\(\s*(?P<target>{_MD_TARGET})(?P<rest>[^)]*)\)")
+_MAX_IMAGE_LABEL_DEPTH = 16
 _MD_LINK_RE = re.compile(
     rf"(?<!!)\[(?P<text>{_MD_LABEL})\]\(\s*(?P<target>{_MD_TARGET})(?P<rest>[^)]*)\)"
 )
@@ -321,14 +320,42 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
     images = 0
     links = 0
 
-    def _image(match: re.Match[str]) -> str:
+    def _images(text: str) -> str:
         nonlocal images
-        images += 1
-        alt = match.group("alt").strip() or "image"
-        target = match.group("target")
-        if _scheme_of(target) in ALLOWED_URI_SCHEMES:
-            return f"[image withheld — {alt}]({target})"
-        return f"`[image withheld — {alt}: {_display_target(target)}]`"
+        parts: list[str] = []
+        cursor = 0
+        while (start := text.find("![", cursor)) != -1:
+            parts.append(text[cursor:start])
+            depth = 1
+            over_cap = False
+            pos = start + 2
+            while pos < len(text) and depth:
+                if text[pos] == "[":
+                    depth += 1
+                    over_cap |= depth > _MAX_IMAGE_LABEL_DEPTH
+                elif text[pos] == "]":
+                    depth -= 1
+                pos += 1
+            destination = _MD_IMAGE_DEST_RE.match(text, pos) if depth == 0 else None
+            if destination is None or over_cap:
+                # A malformed or excessively nested label may still contain a
+                # renderable image. Consume its entire apparent target, and never
+                # copy attacker-controlled markdown back into the output.
+                close = text.find(")", start + 2)
+                cursor = len(text) if close == -1 else close + 1
+                parts.append("`[image withheld]`")
+            else:
+                cursor = destination.end()
+                target = destination.group("target")
+                alt = text[start + 2 : pos - 1].strip()
+                label = f"image withheld — {alt}" if alt and "[" not in alt else "image withheld"
+                if _scheme_of(target) in ALLOWED_URI_SCHEMES:
+                    parts.append(f"[{label}]({target})")
+                else:
+                    parts.append(f"`[{label}: {_display_target(target)}]`")
+            images += 1
+        parts.append(text[cursor:])
+        return "".join(parts)
 
     def _raw_img(match: re.Match[str]) -> str:
         nonlocal images
@@ -352,7 +379,7 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
         links += 1
         return f"`[link withheld — {uri}]`"
 
-    out = _MD_IMAGE_RE.sub(_image, body)
+    out = _images(body)
     out = _RAW_IMG_RE.sub(_raw_img, out)
     out = _MD_LINK_RE.sub(_link, out)
     out = _AUTOLINK_RE.sub(_autolink, out)

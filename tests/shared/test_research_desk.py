@@ -224,6 +224,28 @@ def test_images_are_demoted_to_links_so_nothing_auto_loads() -> None:
     assert "[image withheld — a beacon](https://tracker.example/p.gif)" in result.markdown
 
 
+@pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]"])
+def test_nested_image_labels_cannot_auto_load(label: str) -> None:
+    result = neutralize_markdown(f"before ![{label}](https://tracker.example/p.gif) after")
+    assert result.images == 1
+    assert "![" not in result.markdown
+
+
+def test_unbalanced_image_label_is_removed_whole() -> None:
+    result = neutralize_markdown("before ![a [b](https://tracker.example/p.gif) after")
+    assert result.images == 1
+    assert "![" not in result.markdown
+    assert "https://tracker.example" not in result.markdown
+
+
+def test_excessively_nested_image_label_is_removed_whole() -> None:
+    label = "a " + "[" * 20 + "b" + "]" * 20
+    result = neutralize_markdown(f"before ![{label}](https://tracker.example/p.gif) after")
+    assert result.images == 1
+    assert "![" not in result.markdown
+    assert "https://tracker.example" not in result.markdown
+
+
 def test_raw_html_images_are_defanged_too() -> None:
     result = neutralize_markdown('text <img src="http://tracker.example/p.gif"> more')
     assert result.images == 1
