@@ -275,7 +275,7 @@ class TestEachRouteUsesItsOwnFamily:
 
     def test_mint_without_the_selector_behaves_as_before(self, tmp_path: Path) -> None:
         """Existing callers pass one observation; the family guard is unchanged for them."""
-        ev = obs.Observation("served", NOW, "session-transcript", model="claude-fable-5-1")
+        ev = obs.Observation("served", NOW, "active-probe", model="claude-fable-5-1")
         planned = obs.mint(
             ev,
             now=NOW,
