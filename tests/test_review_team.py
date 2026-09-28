@@ -1566,6 +1566,43 @@ class TestSizeReplacementNoteValidity:
 
 
 class TestDiffCapacityDossierValidity:
+    def test_empty_replacement_record_still_checks_size_exclusions(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=50_000),
+                _review("codex-1", "codex", diff_full_bytes=50_000),
+                _review("muse-1", "muse", diff_full_bytes=50_000),
+            ],
+        )
+        assert dossier["size_replaced_families"] == []
+        dossier["family_substitution"] = {
+            "excluded_for_size": {
+                family: rt.seat_diff_capacity(f"{family}-1", registry)
+                for family in ("gemini", "glm", "local", "vibe")
+            }
+        }
+
+        def blockers() -> tuple[str, ...]:
+            return rt._dossier_validity_blockers(
+                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+            )
+
+        assert "review_dossier_size_replacements_wrong_for_diff" in blockers()
+        dossier["reviewers"][2]["diff_full_bytes"] = 50_001
+        assert "review_dossier_size_replacements_diff_size_unproven" in blockers()
+        for review in dossier["reviewers"]:
+            review["diff_full_bytes"] = 1_000
+            review["diff_delivered_bytes"] = 1_000
+        dossier["family_substitution"]["excluded_for_size"] = {}
+        assert blockers() == ()
+        dossier["reviewers"][2]["diff_full_bytes"] = 1_001
+        assert "review_dossier_size_replacements_diff_size_unproven" in blockers()
+        del dossier["family_substitution"]
+        assert "review_dossier_size_replacements_diff_size_unproven" in blockers()
+
     @pytest.mark.parametrize(
         ("case", "blocker"),
         [
