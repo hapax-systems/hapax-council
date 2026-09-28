@@ -1,10 +1,8 @@
-"""Real CLI request-route canary; invoked ONLY inside an unshared network namespace.
-
-Synthetic credentials, loopback-only HTTP, no provider access and no retained output.
-"""
+"""Isolated real CLI route canary."""
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -19,7 +17,6 @@ def main():
 
     class Canary(BaseHTTPRequestHandler):
         def do_POST(self):
-            # Never record headers, tokens, request bodies or CLI output.
             if self.path.startswith("/v1/messages"):
                 hits.append(True)
             self.send_response(401)
@@ -29,10 +26,7 @@ def main():
                 json.dumps(
                     {
                         "type": "error",
-                        "error": {
-                            "type": "authentication_error",
-                            "message": "synthetic canary refusal",
-                        },
+                        "error": {"type": "authentication_error", "message": "refused"},
                     }
                 ).encode()
             )
@@ -85,16 +79,10 @@ def main():
                 result[name] = {
                     "returncode": proc.returncode,
                     "timed_out": False,
-                    "connection_failure": any(
-                        s in (proc.stdout + proc.stderr).lower()
-                        for s in (
-                            "unable to connect",
-                            "connection error",
-                            "fetch failed",
-                            "enotfound",
-                            "request timed out",
-                            "econnrefused",
-                            "enetunreach",
+                    "connection_failure": bool(
+                        re.search(
+                            r"unable to connect|connection error|fetch failed|enotfound|request timed out|econnrefused|enetunreach",
+                            (proc.stdout + proc.stderr).lower(),
                         )
                     ),
                 }

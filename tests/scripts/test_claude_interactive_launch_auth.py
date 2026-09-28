@@ -30,8 +30,8 @@ from tests.scripts.test_hapax_quota_telemetry_writer import _run_writer
 NOW = datetime.now(UTC)
 
 
-def bound_ledger(tmp_path):
-    """Synthetic fresh A observation, independently construct the opaque proof."""
+def bound_ledger(tmp_path, *, token="synthetic-subscription-access-token"):
+    """Build a bound synthetic quota witness."""
     path = _fresh_claude_subscription_quota_ledger(tmp_path, route_id="claude.interactive.full")
     payload = json.loads(path.read_text())
     for snapshot in payload["quota_snapshots"]:
@@ -43,7 +43,7 @@ def bound_ledger(tmp_path):
                 ref.split(":observed_at:")[1].split(":fresh_until:")[0]
             ).isoformat()
             proof = hmac.new(
-                b"synthetic-subscription-access-token",
+                token.encode(),
                 f"hapax:claude:subscription:first-party:credential-binding:v1:{stamp}".encode(),
                 hashlib.sha256,
             ).hexdigest()
@@ -173,8 +173,7 @@ else:
         "HAPAX_QUOTA_SPEND_LEDGER": str(bound_ledger(tmp_path)),
         "CLAUDE_CONFIG_DIR": str(config),
         "XDG_CACHE_HOME": str(home / ".cache"),
-        # The synthetic tmux stub runs its child synchronously and has no pane.
-        # The observed child file is this fixture's launch proof.
+        # Stub executes the runner synchronously, without a pane.
         "HAPAX_CLAUDE_READY_TIMEOUT": "0",
     }
     return env, config, workdir, observed, credential
