@@ -5454,3 +5454,9 @@ from scripts.billing_surface_input import (
 )
 
 _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
+
+# The extensionless scripts/capability-envelope-import-audit calls this method;
+# vulture scans Python suffixes and cannot see that live caller.
+from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
+
+_EnvelopeOpenWatch.overflowed

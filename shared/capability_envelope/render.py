@@ -8,8 +8,12 @@ Isolation is by construction, not by trusting harness flags:
 - **The job home is generated fresh per run** under a create-once run root. It holds only the
   declared files, credentials and the harness config rendered from the declaration (declared
   hooks, declared MCP servers). Nothing written during one run is visible to the next.
-- **The checkout is masked.** Every instruction or harness config file or directory in the
-  workdir (``MASKED_NAMES``) is covered, except the ones the declaration names.
+- **The checkout is masked by name.** Every file or directory in the workdir whose name is in
+  ``MASKED_NAMES`` is covered — an empty read-only file, or an empty tmpfs for a directory —
+  except the ones the declaration names. ``MASKED_NAMES`` is a fixed, measured list (see its own
+  comment), not an enumeration of every name a harness might read: a name absent from it is not
+  masked by this layer, and adding one is a measurement, never a guess. The list is applied
+  wherever the walk meets such a name in the workdir, ``.git`` included.
 - **The environment is cleared.** Only a fixed base, the harness config variables and the
   declared variables are set.
 
@@ -166,7 +170,6 @@ def _masks(workdir: Path, declared: tuple[str, ...]) -> list[str]:
     root = workdir.resolve()
     masked: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d != ".git"]
         base = Path(dirpath)
         for name in [*dirnames, *filenames]:
             if name not in MASKED_NAMES:
@@ -189,10 +192,11 @@ def _masks(workdir: Path, declared: tuple[str, ...]) -> list[str]:
                     ) from exc
                 if target_rel in declared_set:
                     continue
-                # The RESOLVED TARGET is always named, never assumed to be covered by the walk.
-                # The walk prunes `.git` and masked-name directories, so a target inside either is
-                # never reached on its own: `CLAUDE.md -> .git/CLAUDE.md` read the file in full
-                # (review of #4784, gemini-1, 2026-09-28).
+                # The RESOLVED TARGET is always named, never assumed to be covered by the walk:
+                # a target inside a masked-name directory is pruned from the walk, and the walk
+                # sees a chain only at its first link. `CLAUDE.md -> .git/CLAUDE.md` read the file
+                # in full before this (review of #4784, gemini-1, 2026-09-28), which is why the
+                # resolved target is named explicitly.
                 #
                 # The link path itself is deliberately NOT appended: bubblewrap refuses to mount
                 # on a symlink destination ("bwrap: Can't mount on symlink destination
