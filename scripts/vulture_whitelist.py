@@ -5477,3 +5477,8 @@ _ = (
     _research_desk_list_open_requests,
     _research_desk_neutralize_markdown,
 )
+
+# FastMCP registers the delivery tool in the stacked server PR.
+from shared.research_desk import deliver_result as _research_desk_deliver_result  # noqa: E402
+
+_ = _research_desk_deliver_result
