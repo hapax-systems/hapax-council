@@ -19,8 +19,8 @@ set -euo pipefail
 #   Option A — GitHub (authenticate via browser):
 #     sudo pacman -S git github-cli
 #     gh auth login              # browser OAuth, no SSH key needed
-#     gh repo clone ryanklee/distro-work
-#     ./distro-work/hapax-cachyos-restore.sh
+#     gh repo clone hapax-systems/hapax-council
+#     ./hapax-council/scripts/hapax-cachyos-restore.sh
 #
 #   Option B — B2 (needs key ID + app key):
 #     sudo pacman -S rclone
@@ -107,7 +107,7 @@ rm -rf "$RESTORE_DIR"
 mkdir -p "$RESTORE_DIR"
 
 log "Restoring latest snapshot..."
-restic restore latest --target "$RESTORE_DIR" --no-lock --verbose 2>&1 | tail -3
+restic restore latest --tag tier2-remote --target "$RESTORE_DIR" --no-lock --verbose 2>&1 | tail -3
 ok "Snapshot restored"
 
 # Determine restored home path (username may differ)
@@ -150,6 +150,30 @@ fi
 chmod 700 ~/.gnupg ~/.ssh 2>/dev/null || true
 chmod 600 ~/.gnupg/* ~/.ssh/id_* 2>/dev/null || true
 chmod 644 ~/.ssh/*.pub ~/.ssh/known_hosts 2>/dev/null || true
+
+# ─── FileStore (the estate's secret store since 2026-09-16) ─────────────────
+# Restored from the backup with its key, like ~/.gnupg; the backup services read their restic passwords from it.
+# Only entry names are checked (the store keeps "a/b" as "a-b.bin"); no value is read. Snapshots from before #4813 do
+# not hold it: say so, with the next action, and go on (#4813, seat exception 2026-09-27 12:03Z).
+FILESTORE_ENTRIES=(backups/restic-password backblaze/restic-password)
+if [[ -f "$RHOME/.config/reins/secrets/.key" ]]; then
+    mkdir -p ~/.config/reins
+    rm -rf ~/.config/reins/secrets
+    cp -a "$RHOME/.config/reins/secrets" ~/.config/reins/
+    chmod 700 ~/.config/reins/secrets
+    find ~/.config/reins/secrets -type f -exec chmod 600 {} +
+    ok "Restored the FileStore (~/.config/reins/secrets)"
+    for entry in "${FILESTORE_ENTRIES[@]}"; do
+        if [[ -f ~/.config/reins/secrets/"${entry//\//-}.bin" ]]; then
+            ok "FileStore entry present: $entry"
+        else
+            warn "FileStore entry missing: $entry; the backup services need it. Next: put it with \`hapax-secret $entry\`"
+        fi
+    done
+else
+    warn "The snapshot holds no FileStore (~/.config/reins/secrets/.key); snapshots from before #4813 do not. The backup services read ${FILESTORE_ENTRIES[*]} from it. Next: put each with \`hapax-secret <name>\` once ~/.local/bin is restored"
+fi
+# ─── end FileStore
 
 # Verify pass
 pass ls > /dev/null 2>&1 && ok "pass store verified" || warn "pass may need GPG passphrase unlock"
@@ -610,8 +634,30 @@ fi
 # ─── Phase 12: Docker stack ────────────────────────────────────────────────
 log "=== Phase 12: Start Docker stack + restore databases ==="
 
-DUMP="$RESTORE_DIR/tmp/hapax-backup-dumps-remote"
-[[ ! -d "$DUMP" ]] && DUMP="$RESTORE_DIR/tmp/hapax-backup-dumps"
+# Where the producers write their dumps: /store/llm-data/backup-dumps-{remote,local} since ca32d43 (2026-09-02;
+# disk, not tmpfs), /tmp before it. The old search looked only in /tmp, so a restore from any newer snapshot silently
+# skipped PostgreSQL and Qdrant and still reported completion (#4623 review round 1 critical 1; #4813). A candidate
+# counts only when it holds postgres-all.sql: an empty dump directory is not a dump. No dump is a refusal, never a skip.
+DUMP=""
+for _candidate in \
+    "$RESTORE_DIR/store/llm-data/backup-dumps-remote" \
+    "$RESTORE_DIR/store/llm-data/backup-dumps-local" \
+    "$RESTORE_DIR/tmp/hapax-backup-dumps-remote" \
+    "$RESTORE_DIR/tmp/hapax-backup-dumps"; do
+    if [[ -f "$_candidate/postgres-all.sql" ]]; then
+        DUMP="$_candidate"
+        break
+    fi
+done
+if [[ -z "$DUMP" ]]; then
+    fail "No database dump (postgres-all.sql) in the restored snapshot. Searched:"
+    fail "  $RESTORE_DIR/store/llm-data/backup-dumps-remote"
+    fail "  $RESTORE_DIR/store/llm-data/backup-dumps-local"
+    fail "  $RESTORE_DIR/tmp/hapax-backup-dumps-remote"
+    fail "  $RESTORE_DIR/tmp/hapax-backup-dumps"
+    fail "Next: find the dump in the snapshot you restored (restic snapshots, then restic ls <snapshot-id> | grep postgres-all.sql), restore the directory that holds it under $RESTORE_DIR, then rerun Phase 12"
+    exit 1
+fi
 
 if [[ -f ~/llm-stack/docker-compose.yml ]]; then
     log "Starting Docker stack..."
@@ -681,7 +727,7 @@ mkdir -p ~/projects
 declare -A REPOS=(
     [distro-work]="ryanklee/distro-work"
     [hapax-constitution]="ryanklee/hapax-constitution"
-    [hapax-council]="ryanklee/hapax-council"
+    [hapax-council]="hapax-systems/hapax-council"
     [hapax-officium]="ryanklee/hapax-officium"
     [hapax-watch]="ryanklee/hapax-watch"
     [hapax-mcp]="ryanklee/hapax-mcp"
@@ -820,8 +866,10 @@ echo "  5. Verify: docker compose -f ~/llm-stack/docker-compose.yml ps"
 echo "  6. Verify: pass show api/anthropic"
 echo "  7. Verify: claude --version && claude plugins list"
 echo "  8. cd ~/projects/hapax-council && uv sync"
-echo "  9. systemctl --user start logos-api && systemctl --user start hapax-daimonion"
-echo " 10. First local backup: ~/.local/bin/hapax-backup-local.sh"
+echo "  9. Activation worktree (the units run from it): ~/projects/hapax-council/scripts/hapax-source-activate && test -x ~/.cache/hapax/source-activation/worktree/scripts/hapax-backup-local"
+echo " 10. Backup units from council: install -m 644 ~/projects/hapax-council/systemd/units/hapax-backup-{local,remote}.service ~/.config/systemd/user/ && systemctl --user daemon-reload"
+echo " 11. systemctl --user start logos-api && systemctl --user start hapax-daimonion"
+echo " 12. First local backup: systemctl --user start hapax-backup-local.service"
 echo ""
 log "Verification:"
 echo "  nvidia-smi                    # GPU"
