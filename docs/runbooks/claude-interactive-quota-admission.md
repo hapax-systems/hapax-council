@@ -50,12 +50,13 @@ not exhaust the subscription pool. A genuinely bound wall inhibits all three
 Claude subscription routes. A newer account-live serve supersedes it by observed
 time; a predicted future reset cannot overrule that newer measurement.
 
-The interactive guard also reads controlled wall receipts directly at preflight,
+When the producer and guard resolve the same receipt directory, the interactive
+guard also reads controlled wall receipts directly at preflight,
 inside the tmux runner and after the CLI authentication check. Thus an earlier
 positive ledger cannot admit the same credential after a later bound refusal
 while telemetry awaits its next tick. The launcher pins the receipt-directory
 binding across tmux along with its configuration and ledger. A simultaneous
-refusal wins over a positive; a different credential's proof cannot revoke this
+refusal wins over a positive; a different credential's parseable proof cannot revoke this
 credential. Malformed or unreadable controlled receipts hold the child. Neither
 wall expiry nor an instrument failure creates positive evidence.
 
