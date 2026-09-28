@@ -782,12 +782,24 @@ class TestApply:
     def test_bad_diff_capacity_returns_named_status(self, tmp_path: Path) -> None:
         registry = dispatch.review_team.load_lens_registry()
         registry["diff_capacity"]["seats"]["gemini-1"]["limit_bytes"] = "bad"
+        with pytest.raises(dispatch.review_team.DiffCapacityConfigError):
+            dispatch.review_team.seat_diff_capacity("gemini-1", registry)
         path = tmp_path / "registry.yaml"
         path.write_text(yaml.safe_dump(registry))
         result, _, reviewers, _ = _review(tmp_path, registry_path=path)
         assert result["status"] == "diff_capacity_config_invalid"
         assert "diff_capacity" in result["next_action"]
         assert reviewers.invocations == []
+
+    def test_other_value_error_is_not_labeled_diff_capacity_config_invalid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail_constitution(*_args: Any, **_kwargs: Any) -> None:
+            raise ValueError("other constitutional failure")
+
+        monkeypatch.setattr(dispatch, "constitute_with_substitution", fail_constitution)
+        with pytest.raises(ValueError, match="other constitutional failure"):
+            _review(tmp_path)
 
     def test_size_replaces_ineligible_seats_and_preserves_full_coverage(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -870,6 +882,11 @@ class TestApply:
         assert len(mails) == 1
         assert result["notice_paths"] == [str(note), str(mails[0])]
         first_note, first_mail = note.read_text(), mails[0].read_text()
+        for notice in (first_note, first_mail):
+            assert f"Constitution error: {result['plan']['constitution_error']}" in notice
+            assert "Constitution causes:" in notice
+            for cause in result["plan"]["constitution_causes"]:
+                assert f"- {cause}" in notice
         again = dispatch.review_pr(
             42,
             repo="owner/repo",

@@ -2120,6 +2120,8 @@ def write_split_required_notices(
     matches: list[tuple[Path, dict[str, Any], str]],
     diff_bytes: int,
     substitution: dict[str, Any],
+    constitution_error: str,
+    constitution_causes: list[str],
     largest_files: list[dict[str, Any]],
     now_iso: str,
     lanebus_root: Path,
@@ -2130,6 +2132,9 @@ def write_split_required_notices(
     lines = [
         f"PR #{pr_info.number} ({repo}) at {pr_info.head_sha}: full diff {diff_bytes:,} bytes.",
         "No review round was dispatched: eligible seats cannot meet the required quorum and family independence.",
+        f"Constitution error: {constitution_error}",
+        "Constitution causes:",
+        *(f"- {cause}" for cause in constitution_causes),
         "Seat limits (bytes; measured status):",
         *(
             f"- {seat}: {value['limit_bytes']:,} ({value['status']})"
@@ -3952,7 +3957,7 @@ def review_pr(
             pr_number=pr_number,
             diff_bytes=diff_bytes,
         )
-    except ValueError as exc:
+    except review_team.DiffCapacityConfigError as exc:
         return {
             "status": "diff_capacity_config_invalid",
             "pr": pr_number,
@@ -3983,6 +3988,8 @@ def review_pr(
                     matches=keyed_matches,
                     diff_bytes=diff_bytes,
                     substitution=substitution,
+                    constitution_error=constitution_error,
+                    constitution_causes=causes,
                     largest_files=largest_diff_files(pr_diff),
                     now_iso=now_iso,
                     lanebus_root=lanebus_root,
