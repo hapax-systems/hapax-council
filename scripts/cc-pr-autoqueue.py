@@ -2883,12 +2883,7 @@ def _review_team_quorum_evidence_blockers(
 def _open_major_release_findings_blockers(
     task: TaskNote, frontmatter: dict[str, Any], *, pr_head_sha: str | None
 ) -> tuple[str, ...]:
-    """Keep a valid quorum from becoming sensitive release evidence over an open major.
-
-    The ordinary dossier validity gate already blocks unresolved criticals.
-    An accepted dossier can still carry majors, so this release-only check reads
-    those findings and the row's seat-sourced dispositions at the same head.
-    """
+    """Keep a valid quorum from releasing undispositioned major or critical findings."""
     if not any(
         REVIEW_TEAM_QUORUM_EVIDENCE in RELEASE_MITIGATION_CHECKS.get(flag, ())
         for flag in _effective_sensitive_flags(frontmatter)
@@ -2910,7 +2905,7 @@ def _open_major_release_findings_blockers(
     dispositions = dispositions if isinstance(dispositions, list) else []
     # Row dispositions cite seat mail in the same vault.
     vault_root = task.vault_base
-    open_majors = 0
+    open_counts = {"major": 0, "critical": 0}
     for review in reviews:
         if not isinstance(review, dict):
             return ("release_review_dossier_reviewers_unreadable",)
@@ -2920,7 +2915,8 @@ def _open_major_release_findings_blockers(
         for finding in findings:
             if not isinstance(finding, dict):
                 return ("release_review_dossier_findings_unreadable",)
-            if str(finding.get("severity") or "").lower() != "major":
+            severity = str(finding.get("severity") or "").lower()
+            if severity not in {"major", "critical"}:
                 continue
             # Same-head resolved markers do not prove a later-head fix.
             finding_key = (
@@ -2953,8 +2949,12 @@ def _open_major_release_findings_blockers(
                 dispositioned = True
                 break
             if not dispositioned:
-                open_majors += 1
-    return (f"release_review_open_major:{open_majors}",) if open_majors else ()
+                open_counts[severity] += 1
+    return tuple(
+        f"release_review_open_{severity}:{count}"
+        for severity, count in open_counts.items()
+        if count
+    )
 
 
 def _seat_disposition_source_valid(

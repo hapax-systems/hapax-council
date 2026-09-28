@@ -5197,7 +5197,13 @@ def test_explicit_row_disposition_clears_open_major_for_current_head(tmp_path: P
     assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE in verified
 
 
-def test_same_head_resolved_marker_does_not_clear_major(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("severity", "expected"),
+    [("major", "release_review_open_major:1"), ("critical", "release_review_open_critical:1")],
+)
+def test_same_head_resolved_marker_does_not_clear_finding(
+    tmp_path: Path, severity: str, expected: str
+) -> None:
     vault = _make_vault(tmp_path)
     _write_task(
         vault,
@@ -5208,12 +5214,13 @@ def test_same_head_resolved_marker_does_not_clear_major(tmp_path: Path) -> None:
     )
     reviewers = _reviewers_with_open_major()
     reviewers[0]["findings"][0]["resolved"] = True
+    reviewers[0]["findings"][0]["severity"] = severity
     _write_review_dossier(vault, "resolved-marker", head_sha="sha-42", reviewers=reviewers)
     task = autoqueue.load_task_notes(vault)[0]
     blockers = autoqueue._open_major_release_findings_blockers(
         task, task.frontmatter, pr_head_sha="sha-42"
     )
-    assert blockers == ("release_review_open_major:1",)
+    assert blockers == (expected,)
 
 
 def test_incidental_head_and_title_in_seat_mail_do_not_disposition(tmp_path: Path) -> None:
