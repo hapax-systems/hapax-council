@@ -5020,13 +5020,7 @@ def _resolve_applied_successor(
     receipt_path: Path,
     receipt_root: Path,
 ) -> ClaimPublicationSuccessor | None:
-    """Resolve a spent applied journal from two receipts, not from live sidecar drift.
-
-    The predecessor's immutable receipt must still match its journal. A successor must be a
-    later admitted publication for the same task, lane and AuthorityCase, and its *current*
-    task note and six sidecars must verify. An unfinished or contradictory candidate cannot
-    terminate the predecessor. The applied predecessor journal is never rewritten.
-    """
+    """Resolve a spent journal from verified same-owner, ordered applied receipts."""
 
     predecessor = _as_admitted_receipt(
         manifest_path,
@@ -5063,9 +5057,6 @@ def _resolve_applied_successor(
             or newer_intent.binding.receipt_hash == intent.binding.receipt_hash
         ):
             continue
-        # A later publication may replace the role-wide lease, but a predecessor's
-        # session-only lease still has to be exact unless that predecessor was released.
-        # Otherwise an unrelated intact successor would conceal damaged old evidence.
         successor_paths = {item.path for item in newer_projections[1:7]}
         try:
             if any(
@@ -5145,6 +5136,29 @@ def _resolve_applied_successor(
     return successors[0] if successors else None
 
 
+def _release_readme_lines(
+    *,
+    shape: str,
+    intent: ClaimPublicationIntent,
+    publication_id: str,
+    observed_at: str,
+    staging_dir: Path,
+    present: Sequence[FileProjection],
+) -> list[str]:
+    return [
+        "Governed release of claim residue (cc-claim --release-claim-residue).",
+        f"shape: {shape}",
+        f"task_id: {intent.task_id}",
+        f"role: {intent.role}",
+        f"session_id: {intent.session_id}",
+        f"publication_id: {publication_id}",
+        f"released_at: {observed_at}",
+        f"moved originals (kept, never unlinked): {staging_dir}",
+        "to archive (each must equal the journal's after-image, sha256 below):",
+        *(f"  - {item.path} sha256:{_sha256(item.after or b'')}" for item in present),
+    ]
+
+
 def _resolve_governed_applied_release(
     *,
     intent: ClaimPublicationIntent,
@@ -5208,20 +5222,33 @@ def _resolve_governed_applied_release(
             "returned_claim",
         )
         shapes_found = [shape for shape in shapes if lines.count(f"shape: {shape}") == 1]
-        expected = (
-            f"task_id: {intent.task_id}",
-            f"role: {intent.role}",
-            f"session_id: {intent.session_id}",
-            f"publication_id: {publication_id}",
-            f"released_at: {stamp}",
-            f"moved originals (kept, never unlinked): {staged}",
+        if len(shapes_found) != 1:
+            continue
+        shape = shapes_found[0]
+        archived_projections = tuple(
+            item
+            for item in projections[1:7]
+            if shape != "lapsed_lease" or not _is_claim_activation_projection(item)
         )
-        if len(shapes_found) != 1 or any(lines.count(line) != 1 for line in expected):
+        expected_lines = _release_readme_lines(
+            shape=shape,
+            intent=intent,
+            publication_id=publication_id,
+            observed_at=stamp,
+            staging_dir=staged,
+            present=archived_projections,
+        )
+        try:
+            archive_names = {path.name for path in archive.iterdir()}
+        except OSError:
+            continue
+        if lines != expected_lines or archive_names != {
+            "README.md",
+            *(item.path.name for item in archived_projections),
+        }:
             continue
         material = [readme_bytes]
-        for projection in projections[1:7]:
-            if _is_claim_activation_projection(projection):
-                continue
+        for projection in archived_projections:
             archived = archive / projection.path.name
             original = staged / projection.path.name
             if any(path.is_symlink() or not path.is_file() for path in (archived, original)):
@@ -5234,7 +5261,7 @@ def _resolve_governed_applied_release(
             if (
                 archived_state != (projection.after, projection.after_mode)
                 or original_state != archived_state
-                or lines.count(f"  - {projection.path} sha256:{_sha256(projection.after or b'')}")
+                or lines.count(f"  - {projection.path} sha256:{_sha256(archived_state[0] or b'')}")
                 != 1
             ):
                 break
@@ -5247,7 +5274,7 @@ def _resolve_governed_applied_release(
                     task_id=intent.task_id,
                     role=intent.role,
                     session_id=intent.session_id,
-                    shape=shapes_found[0],
+                    shape=shape,
                     archive_path=archive,
                     archive_sha256=_sha256(b"\0".join(material)),
                 )
@@ -7381,21 +7408,14 @@ def _archive_residue(
     # a rerun for the same publication (see _staged_original).
     with suppress(FileExistsError), bound.open("x", encoding="ascii") as binding:
         binding.write(f"{journal.publication_id}\n")
-    lines = [
-        "Governed release of claim residue (cc-claim --release-claim-residue).",
-        f"shape: {shape}",
-        f"task_id: {intent.task_id}",
-        f"role: {intent.role}",
-        f"session_id: {intent.session_id}",
-        f"publication_id: {journal.publication_id}",
-        f"released_at: {observed_at}",
-        f"moved originals (kept, never unlinked): {staging_dir}",
-        "to archive (each must equal the journal's after-image, sha256 below):",
-        *(
-            f"  - {projection.path} sha256:{_sha256(projection.after or b'')}"
-            for projection in present
-        ),
-    ]
+    lines = _release_readme_lines(
+        shape=shape,
+        intent=intent,
+        publication_id=journal.publication_id,
+        observed_at=observed_at,
+        staging_dir=staging_dir,
+        present=present,
+    )
     # Created once: never overwritten or duplicated (an existing one is this journal's, above).
     with suppress(FileExistsError), readme.open("x", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")

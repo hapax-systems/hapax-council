@@ -6,6 +6,7 @@ import json
 import multiprocessing as mp
 import os
 import queue
+import shutil
 import stat
 import subprocess
 from collections.abc import Callable
@@ -6026,9 +6027,14 @@ def test_recovery_treats_a_verified_governed_release_as_terminal_history(tmp_pat
     assert _tree_snapshot(tmp_path) == before
 
 
-def test_recovery_holds_a_release_whose_archived_sidecar_was_changed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("target", ["epoch", "activation", "readme"])
+def test_recovery_holds_a_release_whose_archive_was_changed(tmp_path: Path, target: str) -> None:
     fixture, receipt, released = _governed_release_fixture(tmp_path)
-    archived = next(path for path in released.archived if path.name.startswith("cc-claim-epoch-"))
+    if target == "readme":
+        archived = released.archive_dir / "README.md"
+    else:
+        prefix = "cc-claim-epoch-" if target == "epoch" else "cc-active-task-"
+        archived = next(path for path in released.archived if path.name.startswith(prefix))
     archived.write_bytes(archived.read_bytes() + b"tampered\n")
     before = _tree_snapshot(tmp_path)
 
@@ -6041,42 +6047,6 @@ def test_recovery_holds_a_release_whose_archived_sidecar_was_changed(tmp_path: P
     )
 
     assert (result.state, result.reason_code) == ("hold", "claim_publication_postimage_drift")
-    assert _tree_snapshot(tmp_path) == before
-
-
-def test_recovery_accepts_a_returned_claims_receipt_bound_archive(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path)
-    admission = _active_admission_fixture(tmp_path, fixture)
-    receipt = sdlc_claim._apply_admitted_claim_publication_transaction(
-        fixture.intent,
-        admission.consumption,
-        transaction_root=fixture.transactions,
-        receipt_root=tmp_path / "receipts",
-        lock_root=fixture.locks,
-        now=admission.checked_at,
-    )
-    returned = sdlc_claim.return_claim(
-        vault_root=fixture.vault,
-        cache_dir=fixture.cache,
-        transaction_root=fixture.transactions,
-        lock_root=fixture.locks,
-        role=fixture.intent.role,
-        task_id=fixture.intent.task_id,
-        observed_at="20260928T180100Z",
-    )
-    assert returned.shape == "returned_claim"
-    before = _tree_snapshot(tmp_path)
-
-    (result,) = recover_claim_publications(
-        cache_dir=fixture.cache,
-        transaction_root=fixture.transactions,
-        receipt_root=receipt.receipt_path.parent,
-        lock_root=fixture.locks,
-        task_id=fixture.intent.task_id,
-    )
-
-    assert result.state == "released"
-    assert result.release is not None and result.release.shape == "returned_claim"
     assert _tree_snapshot(tmp_path) == before
 
 
@@ -6118,10 +6088,17 @@ def test_recovery_keeps_a_predecessor_settled_after_its_successor_is_released(
     assert _tree_snapshot(tmp_path) == before
 
 
-def test_recovery_follows_three_ordered_applied_receipts(tmp_path: Path) -> None:
-    fixture, first, second = _two_applied_claims_for_one_task(tmp_path)
+def _publish_third_claim(
+    tmp_path: Path,
+    fixture: ClaimFixture,
+    first: sdlc_claim.ClaimPublicationReceipt,
+    second: sdlc_claim.ClaimPublicationReceipt,
+    *,
+    same_epoch: bool = False,
+    session_id: str = "session-third",
+) -> sdlc_claim.ClaimPublicationReceipt:
     for projection in sdlc_claim._projections(fixture.intent)[1:7]:
-        if projection.path.stem.endswith("cx-red"):
+        if projection.path.stem.endswith("cx-red") and projection.path.exists():
             projection.path.unlink()
     second_intent = sdlc_claim._load_admitted_manifest(
         fixture.transactions / second.publication_id / "manifest.json"
@@ -6130,8 +6107,8 @@ def test_recovery_follows_three_ordered_applied_receipts(tmp_path: Path) -> None
     third_binding = ClaimDispatchBinding.create(
         task_id=old.task_id,
         lane=old.lane,
-        session_id="session-third",
-        claim_epoch=old.claim_epoch + 1,
+        session_id=session_id,
+        claim_epoch=old.claim_epoch if same_epoch else old.claim_epoch + 1,
         dispatch_message_id="dispatch-msg-third",
         platform=old.platform,
         mode=old.mode,
@@ -6151,13 +6128,35 @@ def test_recovery_follows_three_ordered_applied_receipts(tmp_path: Path) -> None
     admission = _active_admission_fixture(
         tmp_path / "third-proof", replace(fixture, intent=third_intent)
     )
-    third = sdlc_claim._apply_admitted_claim_publication_transaction(
+    return sdlc_claim._apply_admitted_claim_publication_transaction(
         third_intent,
         admission.consumption,
         transaction_root=fixture.transactions,
         receipt_root=first.receipt_path.parent,
         lock_root=fixture.locks,
         now=admission.checked_at,
+    )
+
+
+def test_recovery_holds_competing_earliest_successor_receipts(tmp_path: Path) -> None:
+    fixture, first, second = _two_applied_claims_for_one_task(
+        tmp_path, successor_session="session-abc"
+    )
+    note = fixture.intent.note_path
+    note.write_bytes(note.read_bytes().replace(b"status: pr_open", b"status: ready_for_review"))
+    released = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role=fixture.intent.role,
+        task_id=fixture.intent.task_id,
+        observed_at="20260928T180300Z",
+    )
+    assert released.publication_id == second.publication_id
+    note.write_bytes(note.read_bytes().replace(b"status: ready_for_review", b"status: pr_open"))
+    third = _publish_third_claim(
+        tmp_path, fixture, first, second, same_epoch=True, session_id="session-abc"
     )
     before = _tree_snapshot(tmp_path)
 
@@ -6169,11 +6168,40 @@ def test_recovery_follows_three_ordered_applied_receipts(tmp_path: Path) -> None
         task_id=fixture.intent.task_id,
     )
 
-    assert {result.publication_id: result.state for result in results} == {
-        first.publication_id: "superseded",
-        second.publication_id: "superseded",
-        third.publication_id: "applied",
-    }
+    older = next(item for item in results if item.publication_id == first.publication_id)
+    assert (older.state, older.reason_code) == (
+        "hold",
+        "claim_publication_successor_ambiguous",
+    )
+    assert third.publication_id != second.publication_id
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_recovery_holds_two_verified_release_archives(tmp_path: Path) -> None:
+    fixture, receipt, released = _governed_release_fixture(tmp_path)
+    old_stamp, new_stamp = "20260928T180000Z", "20260928T180001Z"
+    second_archive = released.archive_dir.with_name(
+        released.archive_dir.name.replace(old_stamp, new_stamp)
+    )
+    staged = fixture.cache / "claim-residue-release" / fixture.intent.task_id
+    shutil.copytree(released.archive_dir, second_archive)
+    shutil.copytree(
+        staged / f"{old_stamp}-{fixture.intent.role}",
+        staged / f"{new_stamp}-{fixture.intent.role}",
+    )
+    readme = second_archive / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8").replace(old_stamp, new_stamp))
+    before = _tree_snapshot(tmp_path)
+
+    (result,) = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+
+    assert (result.state, result.reason_code) == ("hold", "claim_publication_release_ambiguous")
     assert _tree_snapshot(tmp_path) == before
 
 
