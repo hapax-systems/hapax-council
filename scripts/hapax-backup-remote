@@ -8,10 +8,11 @@ set -euo pipefail
 #
 # Moved 2026-09-27 from podium's ~/projects/distro-work/hapax-backup-remote.sh at 4e0087f (the archived distro-work
 # repository's last live copy), so the unit runs it from the activation worktree, never from a mutable checkout
-# (row tier1-backup-scripts-into-council-reland-r2-20260927). A faithful move with two changes: the restic password
-# comes from the FileStore (operator ruling 2026-09-16), and the FileStore itself (~/.config/reins/secrets/) is backed
-# up, since it had been in no backup since that migration (seat exception 2026-09-27 11:55Z). The DR restore script
-# is uploaded from where it lives today, as live; moving it is its own PR (seat ruling 2026-09-27 12:41Z).
+# (row tier1-backup-scripts-into-council-reland-r2-20260927). A faithful move with these changes: the restic password
+# comes from the FileStore (operator ruling 2026-09-16); the FileStore itself (~/.config/reins/secrets/) is backed up,
+# since it had been in no backup since that migration (seat exception 2026-09-27 11:55Z); the DR restore script is
+# uploaded from beside this script (scripts/hapax-cachyos-restore.sh), under the same B2 object name as before; and an
+# upload failure names its next action.
 
 # The installed entry points may be ~/.local/bin symlinks into the release tree, so the lib is resolved beside the
 # target, as in scripts/hapax-backup-watchdog.
@@ -193,7 +194,7 @@ restic forget \
 # Failing here does NOT lose backup data: restic backup and forget have already
 # completed above. It fails because DR readiness is part of this lane's job, and
 # a refusal naming its own remedy beats a silent WARN.
-DR_SCRIPT="$HOME/projects/distro-work/hapax-cachyos-restore.sh"
+DR_SCRIPT="${_hapax_self%/*}/hapax-cachyos-restore.sh"
 log "Uploading DR restore script to B2..."
 if [[ ! -f "$DR_SCRIPT" ]]; then
     log "FATAL: DR script missing at $DR_SCRIPT — bare-metal recovery cannot"
@@ -202,7 +203,7 @@ if [[ ! -f "$DR_SCRIPT" ]]; then
     exit 1
 fi
 if ! rclone copy "$DR_SCRIPT" b2:hapax-backups/dr-scripts/; then
-    log "FATAL: DR script upload failed — B2 still holds the stale copy"
+    log "FATAL: DR script upload failed — B2 still holds the stale copy; check the remote with \`rclone lsd b2:hapax-backups\`, then rerun"
     exit 1
 fi
 ok "DR script uploaded: $(basename "$DR_SCRIPT")"

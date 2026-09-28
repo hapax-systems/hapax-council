@@ -1,10 +1,10 @@
 """The DR restore script, moved into council from the archived distro-work repository.
 
-Row tier1-backup-hardening-from-4623-20260927, piece 5. This first PR is a move: the file is podium's
-~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, sha256 fa0dafc7…), with two granted
-hunks (seat rulings 2026-09-28): RESTORE_DIR under /var/tmp, so Phase 11's tmpfs mount over /tmp cannot hide the
-restored tree (#4623 round 3 prior art), and Phase 14 initializing nothing, only warning with the NAS tier-1 target.
-The other granted fixes land in the stacked PR that follows.
+Row tier1-backup-hardening-from-4623-20260927, piece 5. The file is podium's
+~/projects/distro-work/hapax-cachyos-restore.sh at 4e0087f (git blob 53b4137e6, sha256 fa0dafc7…), plus the move's
+two granted hunks (RESTORE_DIR under /var/tmp and Phase 14 only warning, #4820) and exactly the six hunks the seat
+granted during #4813's review.
+Their behaviour is tested in tests/scripts/test_tier1_backup_scripts.py.
 """
 
 from __future__ import annotations
@@ -15,16 +15,17 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-cachyos-restore.sh"
 
-# sha256 of the live blob 53b4137e6 plus the two granted hunks (RESTORE_DIR=/var/tmp/hapax-restore; Phase 14 warns).
-MOVED_SHA256 = "2860f98355895768edab9becbd64128cd56af0d1c63d7278839e38c75ec5e479"
+# sha256 of the live blob plus #4820's two hunks and the six granted hunks (the same digest
+# test_tier1_backup_scripts.py pins).
+GRANTED_SHA256 = "ea3fe913343ef890c0056f377d5b67e2fe82582bf6be61c4a0847940781bc108"
 
 
 def test_the_dr_script_parses() -> None:
     subprocess.run(["bash", "-n", str(SCRIPT)], check=True, timeout=30)
 
 
-def test_the_dr_script_is_the_live_one_plus_the_two_granted_hunks() -> None:
-    assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == MOVED_SHA256
+def test_the_dr_script_is_the_live_one_plus_the_granted_hunks() -> None:
+    assert hashlib.sha256(SCRIPT.read_bytes()).hexdigest() == GRANTED_SHA256
 
 
 def test_the_dr_script_is_executable() -> None:
