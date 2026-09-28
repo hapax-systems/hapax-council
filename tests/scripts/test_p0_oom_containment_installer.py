@@ -136,6 +136,9 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "HAPAX_OOM_POLICY_AUDIT_DEST", str(tmp_path / "sbin" / "hapax-oom-policy-audit")
     )
     monkeypatch.setenv(
+        "HAPAX_OOM_HOST_PROFILE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
+    )
+    monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
         str(tmp_path / "sbin" / "hapax-root-required-deploy-audit"),
     )

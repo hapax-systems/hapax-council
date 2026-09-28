@@ -2012,8 +2012,10 @@ verify_user_process_oom_floor() {
     [ "$failed" -eq 0 ]
 }
 
-select_host_policy
-[ "$CHECK" -eq 0 ] || check_source
+if [ "$CHECK" -eq 1 ]; then
+    select_host_policy
+    check_source
+fi
 [ "$INSTALL" -eq 0 ] || refuse_whole_script_root
 [ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock
 [ "$INSTALL" -eq 0 ] || acquire_root_required_lock
@@ -2026,8 +2028,14 @@ fi
 [ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
 [ "$INSTALL" -eq 0 ] || validate_no_unhandled_package_removals
 [ "$INSTALL" -eq 0 ] || validate_root_required_deferral
-[ "$INSTALL" -eq 0 ] || install_live
-[ "$VERIFY_LIVE" -eq 0 ] || verify_live
+if [ "$INSTALL" -eq 1 ]; then
+    select_host_policy
+    install_live
+fi
+if [ "$VERIFY_LIVE" -eq 1 ]; then
+    [ -n "${HOST_PROFILE:-}" ] || select_host_policy
+    verify_live
+fi
 [ "$INSTALL" -eq 0 ] || record_installed_source
 [ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
 [ "$INSTALL" -eq 0 ] || drain_root_required_deferral
