@@ -50,14 +50,11 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
   fi
 fi
 
-# Skip non-content files (binary, images, etc.)
-case "$file_path" in
-  *.png|*.jpg|*.jpeg|*.gif|*.wav|*.mp3|*.mp4|*.db|*.sqlite) exit 0 ;;
-esac
-
 # Extract the new content being written
 new_content="$(printf '%s' "$input" | jq -r '.tool_input.new_string // .tool_input.content // empty' 2>/dev/null || true)"
-[ -n "$new_content" ] || exit 0
+case "$file_path" in
+  *.png|*.jpg|*.jpeg|*.gif|*.wav|*.mp3|*.mp4|*.db|*.sqlite) new_content="" ;;
+esac
 
 # --- PII Pattern Checks ---
 # Each pattern must be HIGH confidence (no false positives on code/docs)
@@ -96,6 +93,10 @@ if toplevel="$(git -C "$probe_dir" rev-parse --show-toplevel 2>/dev/null)" && [ 
 fi
 
 if [ "$name_checks_exempt" -eq 0 ]; then
+  content_only="$new_content"
+  path_basename="$(basename -- "$file_path")"
+  # Existing content patterns and registry entries scan the basename as a second line.
+  new_content+=$'\n'"$path_basename"
   # Registered principals' given names, read from the gitignored local registry
   # (hooks/scripts/principal-name-map.sh). Absent registry: no names, surname
   # only. An unreadable or invalid registry fails closed. A matched name is never
@@ -132,6 +133,16 @@ if [ "$name_checks_exempt" -eq 0 ]; then
   fi
 fi
 
+if [ "$name_checks_exempt" -eq 0 ]; then
+  new_content="$content_only"
+fi
+
+# Binary writes need no content scan, but their path names still passed above.
+case "$file_path" in
+  *.png|*.jpg|*.jpeg|*.gif|*.wav|*.mp3|*.mp4|*.db|*.sqlite)
+    [ "${#blocked[@]}" -eq 0 ] && exit 0 ;;
+esac
+
 # Location data
 if echo "$new_content" | grep -qP 'Minneapolis[- ]St\.?\s*Paul'; then
   blocked+=("Location data (Minneapolis-St. Paul)")
@@ -152,7 +163,8 @@ if echo "$new_content" | grep -qP 'rag-sources/(chrome|audio)/'; then
 fi
 
 if [ ${#blocked[@]} -gt 0 ]; then
-  echo "BLOCKED: PII detected in content being written to $file_path:" >&2
+  path_digest="$(printf '%s' "$file_path" | sha256sum | cut -d' ' -f1)"
+  echo "BLOCKED: PII detected at path_sha256=$path_digest:" >&2
   for msg in "${blocked[@]}"; do
     echo "  - $msg" >&2
   done
