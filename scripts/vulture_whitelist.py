@@ -5574,3 +5574,13 @@ _ = (
     _census_read_queued_demand,
     _census_read_wall_witness,
 )
+
+# E1's extensionless CLI attaches history and renders the view in its integration slice.
+from shared.entitlement_census import (  # noqa: E402
+    attach_history as _census_attach_history,
+)
+from shared.entitlement_census import (
+    render_view as _census_render_view,
+)
+
+_ = (_census_attach_history, _census_render_view)

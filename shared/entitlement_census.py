@@ -2177,6 +2177,15 @@ def run_census(
         )
         for decl in config.entitlements
     ]
+    # Until the utilization slice supplies a measured basis, every declared row says unjudged.
+    # Missing per-call evidence never means zero calls or healthy utilization.
+    for decl, row in zip(config.entitlements, rows, strict=True):
+        row.utilization = {
+            "basis": "none",
+            "monthly_cost_usd": decl.monthly_cost_usd,
+            "underuse": None,
+            "reason": "no utilization reading",
+        }
     serving = [
         _serving_row(
             ep,
@@ -2519,6 +2528,139 @@ def compute_trend(
 # Operator-accepted 2026-09-25T10:15Z: the census reports utilization per entitlement, and underuse is
 # the failure to surface. Each row states its basis, from the best evidence available:
 # window pace, then the per-call ledger, then nothing. It never defaults to fine.
+
+
+def history_record(
+    run: CensusRun, *, now: datetime, demand: Mapping[str, Any], witness: Mapping[str, Any]
+) -> dict[str, Any]:
+    """One compact line of the append-only series: states, window readings, demand, walls."""
+    return {
+        "ts": _iso(now),
+        "states": {row.entitlement_id: row.state.value for row in run.rows},
+        "windows": [
+            [m["capacity_id"], m["quantity"], m["unit"], m["window"], m["resets_at"]]
+            for m in run.measurements
+        ],
+        "demand": dict(demand),
+        "witness": dict(witness),
+    }
+
+
+def attach_history(
+    run: CensusRun,
+    *,
+    now: datetime,
+    prior: Sequence[Mapping[str, Any]],
+    demand: Mapping[str, Any],
+    witness: Mapping[str, Any],
+) -> None:
+    run.history_record = history_record(run, now=now, demand=demand, witness=witness)
+    run.trend = compute_trend([*prior, run.history_record], now=now)
+
+
+# --- projection -----------------------------------------------------------------------------------
+
+
+def _row_view(row: CensusRow) -> dict[str, Any]:
+    data = row.model_dump(mode="json")
+    # Reins capability-surface pack fields (reins api/reins_read.py::_capability_pack_row).
+    data["capability_id"] = row.entitlement_id
+    data["status"] = row.state.value
+    data["routing_meaning"] = (
+        f"{row.recruitment_stage}; {row.cost_class.value}; evidence {row.evidence_class.value}"
+    )
+    data["blocker"] = "; ".join(row.reasons)
+    data["spend_model"] = row.cost_class.value
+    data["evidence_refs"] = [f"entitlement-census:{row.entitlement_id}"]
+    return data
+
+
+def _underuse(rows: Sequence[CensusRow]) -> list[dict[str, Any]]:
+    """Paid capacity going unused, most expensive first. Underuse is the failure to surface."""
+    flagged = [
+        {
+            "entitlement_id": r.entitlement_id,
+            "monthly_cost_usd": r.utilization.get("monthly_cost_usd"),
+            "basis": r.utilization.get("basis"),
+            "used_pct": r.utilization.get("used_pct"),
+            "pace_ratio": r.utilization.get("pace_ratio"),
+            "reason": r.utilization.get("reason"),
+        }
+        for r in rows
+        if r.utilization is not None and r.utilization.get("underuse") is True
+    ]
+    return sorted(flagged, key=lambda u: (-(u["monthly_cost_usd"] or 0.0), u["entitlement_id"]))
+
+
+def _paid_unjudged(rows: Sequence[CensusRow]) -> list[dict[str, Any]]:
+    """Paid capacity with no usage evidence: named, never folded into a count."""
+    named = [
+        {
+            "entitlement_id": r.entitlement_id,
+            "monthly_cost_usd": r.utilization["monthly_cost_usd"],
+            "reason": r.utilization.get("reason"),
+        }
+        for r in rows
+        if r.utilization is not None
+        and r.utilization.get("underuse") is None
+        and r.utilization.get("monthly_cost_usd")
+    ]
+    return sorted(named, key=lambda u: (-u["monthly_cost_usd"], u["entitlement_id"]))
+
+
+def render_view(run: CensusRun, *, now: datetime) -> dict[str, Any]:
+    states: dict[str, int] = {}
+    stages: dict[str, int] = {}
+    for row in run.rows:
+        states[row.state.value] = states.get(row.state.value, 0) + 1
+        stages[row.recruitment_stage] = stages.get(row.recruitment_stage, 0) + 1
+    return {
+        "schema": VIEW_SCHEMA,
+        "pack_id": "entitlement-census",
+        "generated_at": _iso(now),
+        "producer": PRODUCER_REF,
+        "task": TASK_REF,
+        "faces": {
+            "supply": "rows: held, entitled or authorized capacity with freshness; dispatch-facing",
+            "potential": "potential: the funnel for owned hardware; never dispatch-facing",
+        },
+        "summary": {
+            "rows": len(run.rows),
+            "by_state": dict(sorted(states.items())),
+            "by_recruitment_stage": dict(sorted(stages.items())),
+            "deltas": len(run.deltas),
+            "measurements": len(run.measurements),
+        },
+        "hosts": [
+            {
+                "host_id": h.host_id,
+                "reachable": h.reachable,
+                "observed_at": _iso(h.observed_at),
+                "error": h.error,
+                "credential_names": len(h.filestore_names),
+                "pass_names": len(h.pass_names),
+                "env_names": len(h.env_names),
+            }
+            for h in run.holdings
+        ],
+        "rows": [_row_view(row) for row in run.rows],
+        "underuse": _underuse(run.rows),
+        "paid_unjudged": _paid_unjudged(run.rows),
+        "utilization_unjudged": sum(
+            1
+            for r in run.rows
+            if r.utilization is not None and r.utilization.get("underuse") is None
+        ),
+        "unclassified_names": run.unclassified,
+        "potential": run.potential,
+        "trend": run.trend
+        if run.trend is not None
+        else {"points": 0, "note": "history not attached to this run (dry run or direct call)"},
+        "deltas": [
+            {"delta_id": d.delta_id, "surface_id": d.surface_id, "delta_kind": d.delta_kind.value}
+            for d in run.deltas
+        ],
+    }
 
 
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.

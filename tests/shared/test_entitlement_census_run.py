@@ -2,7 +2,14 @@
 
 from datetime import UTC, datetime
 
-from shared.entitlement_census import CensusConfig, EntitlementState, HostHoldings, run_census
+from shared.entitlement_census import (
+    CensusConfig,
+    EntitlementState,
+    HostHoldings,
+    attach_history,
+    render_view,
+    run_census,
+)
 
 NOW = datetime(2026, 9, 28, tzinfo=UTC)
 
@@ -56,6 +63,12 @@ def test_every_declared_row_survives_absent_evidence():
     assert [row.entitlement_id for row in result.rows] == ["sample"]
     assert result.rows[0].state is EntitlementState.UNOBSERVED
     assert result.potential["dispatch_reads"] is False
+    assert result.rows[0].utilization == {
+        "basis": "none",
+        "monthly_cost_usd": None,
+        "underuse": None,
+        "reason": "no utilization reading",
+    }
 
 
 def test_spent_deadline_skips_secret_resolution_and_network():
@@ -94,3 +107,18 @@ def test_hardware_candidate_requires_enumeration_to_be_available():
     assert before.potential["hardware"][0]["availability"] == "unavailable"
     after = _run(config, held, gpu_probe=lambda _: (True, ["RTX 5090"]))
     assert after.potential["hardware"][0]["availability"] == "enumerated"
+
+
+def test_projection_names_paid_unjudged_and_absent_trend():
+    config = _config()
+    paid = config.entitlements[0].model_copy(update={"monthly_cost_usd": 90.0})
+    config = config.model_copy(update={"entitlements": (paid,)})
+    result = _run(config, [HostHoldings(host_id="appendix", reachable=True, observed_at=NOW)])
+    view = render_view(result, now=NOW)
+    assert view["paid_unjudged"][0]["entitlement_id"] == "sample"
+    assert view["underuse"] == [] and view["utilization_unjudged"] == 1
+    assert view["trend"]["points"] == 0
+    attach_history(result, now=NOW, prior=[], demand={"queued": {"queued": 1}}, witness={})
+    view = render_view(result, now=NOW)
+    assert view["trend"]["points"] == 1
+    assert view["trend"]["availability"]["direction"] == "insufficient_history"
