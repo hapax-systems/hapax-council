@@ -185,6 +185,10 @@ class Finding:
     line: int
     kind: str
     text: str
+    #: Added post-image lines this finding covers, when it is decided on a NODE. The marker decision
+    #: reads these, so a marker on an unchanged line can never exempt a newly added line inside the
+    #: node (codex's r1 critical on #4844).
+    covers: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -399,6 +403,13 @@ def _node_findings_for_postimage(
 
     out: list[Finding] = []
     allowed_out: list[Finding] = []
+
+    def covered(node: ast.AST) -> tuple[int, ...]:
+        """The ADDED lines the node spans, in order: the marker decision reads these and only these."""
+        start = node.lineno or 1
+        end = getattr(node, "end_lineno", node.lineno) or node.lineno
+        return tuple(line for line in sorted(added_lines) if start <= line <= end)
+
     # ONLY the strip's target node is exempt. Its other children — the default argument above all —
     # are scanned like any other code (codex-1's round-4 critical).
     strip_targets: set[int] = set()
@@ -415,6 +426,7 @@ def _node_findings_for_postimage(
                 line=node.lineno or 1,
                 kind="protective-strip",
                 text=snippet(node),
+                covers=covered(node),
             )
         )
 
@@ -430,12 +442,26 @@ def _node_findings_for_postimage(
                     )
                 )
                 continue
-            out.append(Finding(path=path, line=line_no, kind="api-key-route", text=snippet(node)))
+            out.append(
+                Finding(
+                    path=path,
+                    line=line_no,
+                    kind="api-key-route",
+                    text=snippet(node),
+                    covers=covered(node),
+                )
+            )
         if _node_credential_env_read(node):
             if id(node) in strip_targets:
                 continue  # the strip's target itself; recorded above
             out.append(
-                Finding(path=path, line=line_no, kind="credential-env-read", text=snippet(node))
+                Finding(
+                    path=path,
+                    line=line_no,
+                    kind="credential-env-read",
+                    text=snippet(node),
+                    covers=covered(node),
+                )
             )
     return out, allowed_out, True
 
@@ -558,7 +584,9 @@ def materialise_post_image(diff_text: str, *, repo: Path, base: str) -> tuple[Pa
     # the temporary index holds. (A plain `git apply --check` reads the worktree, which is the
     # post-image on a PR head, so a correct diff would look unapplicable.)
     check = _run_git(
-        ["apply", "--cached", "--check", "--whitespace=nowarn", "-"],
+        # --unidiff-zero: the input may be a zero-context diff (git diff --unified=0), which
+        # git apply refuses by default; the base-tree index is the safety check here.
+        ["apply", "--cached", "--check", "--unidiff-zero", "--whitespace=nowarn", "-"],
         repo=repo,
         env=env,
         stdin=diff_text,
@@ -570,7 +598,10 @@ def materialise_post_image(diff_text: str, *, repo: Path, base: str) -> tuple[Pa
             "input); a diff git cannot apply is billing-scan-unusable-input and is never scanned"
         )
     applied = _run_git(
-        ["apply", "--cached", "--whitespace=nowarn", "-"], repo=repo, env=env, stdin=diff_text
+        ["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", "-"],
+        repo=repo,
+        env=env,
+        stdin=diff_text,
     )
     if applied.returncode != 0:
         raise UnusableInput(
@@ -705,28 +736,41 @@ def scan_git_validated(
     scanned: list[str] = []
 
     def emit(
-        path: str, line_no: int, kinds: tuple[str, ...], content: str, text: str | None = None
+        path: str,
+        line_no: int,
+        kinds: tuple[str, ...],
+        content: str,
+        text: str | None = None,
+        *,
+        covers: tuple[int, ...] = (),
     ) -> None:
         """Record one added line's kinds, applying the marker decision.
 
         The marker is honoured only on an allowlisted path. Anywhere else it does NOT exempt the
         line (the underlying findings stand) and it is itself a finding — never a silent ignore.
-        **This is the ONE place a finding's exemption is decided**, and it is decided from the
-        finding's OWN line: ``line_no``/``content`` must be the line the finding is about, so a
-        neighbour's marker can never speak for it (the r3 marker leak).
+        **This is the ONE place a finding's exemption is decided.** It is decided from the ADDED
+        lines the finding COVERS: for a line-level class that is the line itself, and for a
+        node-decided finding it is every added line inside the node (`covers`). A marker on an
+        unchanged line therefore cannot exempt a newly added line — codex's r1 critical on #4844,
+        where a marker on a call's unchanged opening line exempted an added ``api_key=`` argument
+        further down. An empty ``covers`` falls back to the line's own text only.
         """
-        marked = ALLOW_MARKER in content
+        covered_texts = [added[line] for line in covers if line in added] or [content]
+        marked = all(ALLOW_MARKER in text_of_line for text_of_line in covered_texts)
         if not kinds and not marked:
             return
         marker_ok = marked and _marker_is_allowed_on(path)
         if marked and not marker_ok:
-            findings.append(_marker_outside_fixtures_finding(path, line_no, content))
+            for line in covers or (line_no,):
+                if line in added:
+                    findings.append(_marker_outside_fixtures_finding(path, line, added[line]))
         for kind in kinds:
             finding = Finding(
                 path=path,
                 line=line_no,
                 kind=kind,
                 text=text if text is not None else content.strip()[:200],
+                covers=covers,
             )
             (allowed if marker_ok else findings).append(finding)
 
@@ -747,7 +791,14 @@ def scan_git_validated(
         if parsed:
             for finding in node_findings:
                 line_content = added.get(finding.line, finding.text)
-                emit(path, finding.line, (finding.kind,), line_content, text=finding.text)
+                emit(
+                    path,
+                    finding.line,
+                    (finding.kind,),
+                    line_content,
+                    text=finding.text,
+                    covers=finding.covers,
+                )
             for line_no, text in sorted(added.items()):
                 line_kinds: tuple[str, ...] = _pattern_only_classes(text)
                 if any(pattern.search(text) for pattern in _BEARER_RES):
