@@ -624,7 +624,7 @@ jobs:
 
   test-full-shard:
     needs: [docs_only_filter, post_merge_duplicate_filter]
-    if: github.event_name == 'merge_group' && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+    if: (github.event_name == 'merge_group' || github.event_name == 'pull_request') && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
     name: test-full-shard (${{ matrix.shard }}/${{ matrix.shard_count }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -635,6 +635,9 @@ jobs:
         shard_count: [4]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           enable-cache: true
@@ -693,6 +696,7 @@ jobs:
           uv run --no-sync python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
       - name: Run full pytest shard
         env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
           OLLAMA_HOST: "http://0.0.0.0:1"
@@ -730,6 +734,7 @@ jobs:
           # expression used by the actual test command, preserving the
           # existing release surface while reducing longest-runner wall time.
           collect_output="$(mktemp)"
+          checkout_sha="$(git rev-parse HEAD)"
           shard_files="$(mktemp)"
           duration_artifact="/tmp/pytest-node-durations-shard-${PYTEST_SHARD}-of-${PYTEST_SHARD_COUNT}.yaml"
           selected_units_artifact="/tmp/pytest-selected-units-shard-${PYTEST_SHARD}-of-${PYTEST_SHARD_COUNT}.txt"
@@ -765,11 +770,16 @@ jobs:
             --deselect=tests/studio_compositor/test_overlay_zones_research_gate.py::TestZoneGate::test_default_always_on \
             -m "not llm" -k "not golden and not goldens" \
             -p no:cacheprovider > "$collect_output"
+          affected_args=()
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            affected_args=(--affected-base-sha "$PR_BASE_SHA")
+          fi
           uv run --no-sync python scripts/ci_select_pytest_shard.py \
             --collect-output "$collect_output" \
             --weights config/ci/python-test-runtime-weights.yaml \
             --shard "$PYTEST_SHARD" \
-            --shards "$PYTEST_SHARD_COUNT" > "$shard_files"
+            --shards "$PYTEST_SHARD_COUNT" \
+            "${affected_args[@]}" > "$shard_files"
           unit_count="$(wc -l < "$shard_files" | tr -d ' ')"
           echo "Shard $PYTEST_SHARD/$PYTEST_SHARD_COUNT selected $unit_count test units."
           cp "$shard_files" "$selected_units_artifact"
@@ -782,7 +792,7 @@ jobs:
               --shards "$PYTEST_SHARD_COUNT" \
               --run-id "$GITHUB_RUN_ID" \
               --run-attempt "$GITHUB_RUN_ATTEMPT" \
-              --head-sha "$GITHUB_SHA" \
+              --head-sha "$checkout_sha" \
               --event-name "$GITHUB_EVENT_NAME"
             echo "No test units selected for this shard."
             exit 0
@@ -859,7 +869,7 @@ jobs:
             --shards "$PYTEST_SHARD_COUNT" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --head-sha "$GITHUB_SHA" \
+            --head-sha "$checkout_sha" \
             --event-name "$GITHUB_EVENT_NAME" \
             --require-durations
           DURATION_EXIT=$?
@@ -941,8 +951,7 @@ jobs:
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             echo "mode=pr-admission" >> "$GITHUB_OUTPUT"
-            echo "Pull request: running fast Python admission slice."
-            echo "Merge queue keeps full pytest in required-check shards."
+            echo "Pull request: aggregating affected full-suite shards and running the fast admission slice."
           elif [ "$GITHUB_EVENT_NAME" = "merge_group" ]; then
             echo "mode=merge-group-shards" >> "$GITHUB_OUTPUT"
             echo "Merge queue: aggregating full pytest shard results."
@@ -964,6 +973,17 @@ jobs:
           echo "Full pytest shard result: $TEST_FULL_SHARD_RESULT"
           echo "Serial title-card result: $TEST_TITLE_CARDS_RESULT"
           exit 1
+      - name: Verify PR-head affected full-suite shards
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission'
+        env:
+          TEST_FULL_SHARD_RESULT: ${{ needs.test-full-shard.result }}
+        run: |
+          set -euo pipefail
+          if [ "$TEST_FULL_SHARD_RESULT" != "success" ]; then
+            echo "PR-head affected full-suite shard result: $TEST_FULL_SHARD_RESULT"
+            exit 1
+          fi
+          echo "PR-head affected full-suite shards passed."
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode != 'merge-group-shards'
         with:
