@@ -45,7 +45,7 @@ expand. `HAPAX_ENVELOPE_REQUIRE_BWRAP=1` makes a sandbox that cannot be built fa
 | **Allowlist root.** `/usr`, the `/bin`-style links and a short list of `/etc` files, all read-only. The host root and the operator's home are never bound whole | `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope/test_envelope.py -q -k "never_exposes_root or ancestor_agents_md"` |
 | **A fresh job home** at `/home/job` under a create-once run root. It holds only generated config (Claude: `settings.json` with the declared hooks; `.claude.json` with the declared MCP servers), declared files and credentials | `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope/test_envelope.py -q -k "fresh_per_run or hook_matcher or declared_home_file"` |
 | **Credentials** are file binds: read-only unless `writable=True` (for refresh by rename). Their values never appear in the argv or the run facts | `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope/test_envelope.py -q -k credential` |
-| **The checkout** is at `/work`, read-only unless `workdir_writable`. Every name in `MASKED_NAMES` is covered by an empty read-only file, or an empty tmpfs for a directory, unless declared. A masked-named symlink is covered at its **resolved target**, wherever that target lives — the walk prunes `.git` and masked-name directories, so the target is named explicitly — and a symlink that leaves the checkout is refused | `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope/test_envelope.py -q -k "masked or symlink or workdir or pruned"` |
+| **The checkout** is at `/work`, read-only unless `workdir_writable`. Every name in `MASKED_NAMES` is covered by an empty read-only file, or an empty tmpfs for a directory, unless declared — wherever the walk meets it, `.git` included. A masked-named symlink is covered at its **resolved target**, wherever that target lives, never at the link itself (bwrap refuses to mount over a symlink destination); a symlink that leaves the checkout is refused | `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope/test_envelope.py -q -k "masked or symlink or workdir or dot_git"` |
 | **The environment** is cleared (`--clearenv`), then given a fixed base, the harness config variables and the declared `env` | `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope/test_envelope.py -q -k "environment or declared_env"` |
 | **No undeclared import reaches the job**, and a declared governance hook still fires. The control run shows the same probe reaches every sentinel without the envelope | `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope/test_envelope.py -q -k "undeclared or control or governance_hook"` |
 
@@ -86,11 +86,11 @@ TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --
 The recipe for a harness is in this script's `LAUNCHES`; the same recipes for the other harnesses in use — opencode,
 grok, agy, codex and kimi — travel with the mutation-check and recipes PR, stacked on this one.
 
-| harness | report (each row claims only what its report shows) |
-|---|---|
-| claude | `frame/harness-import-scrub-20260925/measure/audit-claude.json` (`clean`, 20260925T104357Z) |
-| vibe | `frame/harness-import-scrub-20260925/measure/audit-vibe.json` (`clean`, 20260925T104411Z) |
-| muse | `frame/harness-import-scrub-20260925/measure/audit-muse.json` (`clean`, 20260925T104432Z) |
+| harness | report (each row claims only what its report shows) | recheck |
+|---|---|---|
+| claude | `frame/harness-import-scrub-20260925/measure/audit-claude.json` (`clean`, 20260925T104357Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json` |
+| vibe | `frame/harness-import-scrub-20260925/measure/audit-vibe.json` (`clean`, 20260925T104411Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness vibe --out /tmp/vibe.json` |
+| muse | `frame/harness-import-scrub-20260925/measure/audit-muse.json` (`clean`, 20260925T104432Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness muse --out /tmp/muse.json` |
 
 | harness | baseline launch (origin/main wrapper argv) imported | enveloped |
 |---|---|---|

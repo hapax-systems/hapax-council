@@ -269,6 +269,21 @@ def test_muse_builder_refuses_without_a_binary(tmp_path, monkeypatch):
         audit.muse_launch(world)
 
 
+def test_muse_release_falls_back_to_the_launcher(tmp_path: Path):
+    """codex-1's minor (2026-09-28): the audit must never run muse's self-updater inside the
+    envelope, and every way the release cannot be resolved falls back to the launcher."""
+    audit = _audit()
+    launcher = _exe(tmp_path / "bin" / "muse")
+    # No version file beside the launcher: the launcher is what runs.
+    assert audit._muse_release(launcher) == launcher
+    # A version file naming a release that is not there: same fallback.
+    _file(tmp_path / "bin" / ".muse-version", "9.9.9\n")
+    assert audit._muse_release(launcher) == launcher
+    # A version naming a real release binary: the release runs, never the self-updating launcher.
+    release = _exe(tmp_path / "bin" / "muse-bin-9.9.9")
+    assert audit._muse_release(launcher) == release
+
+
 def test_vibe_builder_refuses_without_a_binary(tmp_path, monkeypatch):
     audit, world = _world(tmp_path)
     monkeypatch.setattr(
