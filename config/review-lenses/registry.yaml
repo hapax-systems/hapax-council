@@ -230,24 +230,13 @@ lane_families:
     - gemini-cli-
   default: claude
 
-# Observed authoring identity -> writer family. This is the ONLY admissible
-# source for a dossier's `writer_family`/`constitution_writer_family`: the
-# model family that authored a row decides which families may review it
-# (family-diversity floor, self-review exclusion), and that is a claim about
-# execution, not about a name.
-#
-# Read path (scripts/review_team.py `observed_writer_identity`):
-#   1. the claim-publication receipt for the task names the authoring session;
-#   2. that session's native record names the served provider (and model) --
-#      codex rollout `session_meta.model_provider`, or, for a Claude
-#      transcript, the harness that wrote the record;
-#   3. `providers` maps a served provider to its family; `harnesses` is usable
-#      only where the harness cannot serve more than one provider.
-#
-# `codex` is deliberately NOT under `harnesses`: the codex harness is shared by
-# OpenAI Codex and Sakana Fugu, so a codex session with no observed provider is
-# UNOBSERVED -- never `codex`, never `claude`. An undeclared provider is
-# UNOBSERVED too: providers are declared here deliberately, never inferred.
+# Observed authoring identity -> writer family: the admissible source for a
+# dossier's `writer_family`, which decides which families may review the work.
+# Read path (review_team.observed_writer_identity): claim receipt -> the authoring
+# session's native record -> the served provider -> `providers`. `harnesses` is
+# usable only where the harness serves exactly one provider; `codex` is absent
+# because it is shared by OpenAI Codex and Sakana Fugu, so a codex session with no
+# observed provider is UNOBSERVED -- never `codex`, never `claude`.
 observed_identity_families:
   # Served provider (native session record) -> model family.
   providers:
