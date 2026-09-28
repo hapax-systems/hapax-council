@@ -3032,7 +3032,26 @@ def _decision(
     route_policy_green = action is DispatchAction.LAUNCH and not compatibility_degraded
     cloud_burst_receipt = _cloud_burst_receipt_fields(request, reasons)
     message = "; ".join(reason for reason in reasons if reason) or action.value
+    recovery_reasons = set(reasons)
+    for candidate in dimensional_candidates or ():
+        if candidate.route_id == request.route_id:
+            # Policy vetoes retain the gate's reason code in their message;
+            # their outer code only says policy_hold / policy_refuse.
+            recovery_reasons.update(
+                veto.message for veto in candidate.vetoes if veto.field == "dispatch_policy"
+            )
     if (
+        normalize_route_id(request.route_id) == "claude.interactive.full"
+        and action is not DispatchAction.LAUNCH
+        and "subscription_route_capability_missing" in recovery_reasons
+    ):
+        message += (
+            "; Next action: restore the declared claude.interactive.full capability in "
+            "config/platform-capability-registry.json and regenerate its platform capability "
+            "receipt through the governed capability probe; retry the same governed dispatch "
+            "to evaluate quota and remaining prerequisites."
+        )
+    elif (
         normalize_route_id(request.route_id) == "claude.interactive.full"
         and action is not DispatchAction.LAUNCH
         and {
@@ -3040,7 +3059,7 @@ def _decision(
             "subscription_route_quota_not_fresh",
             "subscription_quota_ledger_stale",
             "subscription_quota_ledger_unknown",
-        }.intersection(reasons)
+        }.intersection(recovery_reasons)
     ):
         message += (
             "; Next action: obtain a genuine Opus-family account-live observation; "

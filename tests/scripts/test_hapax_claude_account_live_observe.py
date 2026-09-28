@@ -110,9 +110,27 @@ def _durable_sink_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
+def _scrub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     for name in list(obs.PROBE_ENV_SCRUBBED) + ["ANTHROPIC_MODEL"]:
         monkeypatch.delenv(name, raising=False)
+    home = tmp_path / "home"
+    config = home / ".claude"
+    config.mkdir(parents=True)
+    (config / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "synthetic-subscription-token",
+                    "subscriptionType": "max",
+                    "scopes": ["user:inference"],
+                    "expiresAt": int(NOW.timestamp() * 1000) + 3600000,
+                }
+            }
+        )
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(obs, "PROBE_MANAGED_DIR", tmp_path / "absent-managed")
 
 
 def probe_stream(monkeypatch, *records):
