@@ -54,6 +54,8 @@ class OpenWatch:
         self._watches: dict[int, Path] = {}
         self._opened: set[Path] = set()
         self._overflowed = False
+        self._truncated = False
+        self._buf = b""
 
     def __enter__(self) -> OpenWatch:
         libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
@@ -97,14 +99,27 @@ class OpenWatch:
         """Read the queue, keeping any partial event for the next read.
 
         An event can straddle two reads; a drain that restarts parsing at each read misparses the
-        tail, so the leftover bytes are carried into the next read. ``settle`` is the
-        drain-after-return path used by ``__exit__``: the queue is read until a settle window
-        passes with no new event, bounded by ``_SETTLE_BOUND_SECONDS``.
+        tail, so the leftover bytes are carried into the next read — the buffer lives on the
+        instance for that, not in this call (review of #4793, gemini-1, 2026-09-28). Linux returns
+        only whole events from an inotify fd, so the straddle is belt-and-braces rather than the
+        only guard, and the straddle test pins the parser's own behaviour.
+
+        ``settle`` is the drain-after-return path used by ``__exit__``: the queue is read until a
+        settle window passes with no new event, bounded by ``_SETTLE_BOUND_SECONDS``. Hitting that
+        bound with the queue still being written sets ``_truncated``, because the read is then
+        incomplete and the caller must not read it as a complete observation.
         """
-        buf = b""
+        buf = self._buf
         quiet_since: float | None = None
         deadline = time.monotonic() + _SETTLE_BOUND_SECONDS if settle else None
         while self._fd >= 0:
+            # The bound is checked here, not only on the empty-queue branch: a queue written
+            # continuously never raises EAGAIN, so a bound checked only there would never fire
+            # (found while testing the truncated path, 2026-09-28).
+            if deadline is not None and time.monotonic() >= deadline:
+                self._truncated = True
+                self._buf = buf
+                return
             while len(buf) >= _EVENT_HEADER.size:
                 wd, mask, _cookie, name_len = _EVENT_HEADER.unpack_from(buf, 0)
                 # An overflowed queue means opens were dropped: the observation is incomplete,
@@ -123,13 +138,20 @@ class OpenWatch:
                 quiet_since = None
             except BlockingIOError:
                 if not settle:
+                    self._buf = buf
                     return
                 now = time.monotonic()
                 if quiet_since is None:
                     quiet_since = now
                 elif now - quiet_since >= _SETTLE_SECONDS:
+                    self._buf = buf
                     return
                 if deadline is not None and now >= deadline:
+                    # The bound is a safety valve, not a licence to report a complete
+                    # observation: events may still be arriving, so the read is TRUNCATED and the
+                    # caller must treat it like an overflow (review of #4793, codex-1, 2026-09-28).
+                    self._truncated = True
+                    self._buf = buf
                     return
                 time.sleep(_POLL_SECONDS)
 
@@ -146,3 +168,11 @@ class OpenWatch:
         """
         self._drain()
         return self._overflowed
+
+    def truncated(self) -> bool:
+        """Whether the drain hit its settle bound with the queue still being written.
+
+        A truncated read can hide an open, exactly as an overflow does.
+        """
+        self._drain()
+        return self._truncated

@@ -20,8 +20,10 @@ The wrappers' own command() functions build the argv, so the audit tracks the re
 runs only when its key is on the Team allowance (the wrapper's check), never on the API meter.
 
 Exit status: 0 clean (the enveloped run imported nothing, and the baseline control witnessed an
-import), 1 leak, 2 inconclusive (the enveloped run did not complete, or the baseline control
-witnessed nothing), 64 refused (for example the billing guard).
+import on a run that completed), 1 leak, 2 inconclusive (the enveloped run did not complete; the
+baseline control witnessed nothing; the baseline itself failed; or the watch queue overflowed or the
+drain was truncated, so opens may be missing from the record), 64 refused (for example the billing
+guard).
 
 usage: python scripts/capability-envelope-import-audit --harness {claude,vibe,muse} --out FILE
 """
@@ -146,6 +148,11 @@ def _muse_release(launcher: Path) -> Path:
     self-updater, and the envelope must not run it (review of #4793, codex-1, clause (7) of the
     row, 2026-09-28 — the fallback to the launcher contradicted that guarantee).
     """
+    if launcher.name.startswith("muse-bin-"):
+        # A direct release binary is the release: the caller already did the lookup we would do,
+        # and the advice in the refusal below would be impossible otherwise (review of #4793,
+        # codex-1, 2026-09-28).
+        return launcher.resolve()
     directory = launcher.resolve().parent
     try:
         version = (directory / ".muse-version").read_text(encoding="utf-8").strip()
@@ -390,14 +397,24 @@ def run_baseline(world: World, launch: Launch) -> dict:
         proc = subprocess.run(
             argv, capture_output=True, text=True, timeout=900, env=env, check=False
         )
-    return _observe(world, proc, watch.opened(), overflowed=watch.overflowed())
+    return _observe(
+        world,
+        proc,
+        watch.opened(),
+        overflowed=watch.overflowed() or watch.truncated(),
+    )
 
 
 def run_enveloped(world: World, launch: Launch) -> dict:
     rendered = render(launch.declaration, run_root=world.root / "envelope-run")
     with OpenWatch(sorted(world.tokens)) as watch:
         proc = execute(rendered, timeout=900)
-    observed = _observe(world, proc, watch.opened(), overflowed=watch.overflowed())
+    observed = _observe(
+        world,
+        proc,
+        watch.opened(),
+        overflowed=watch.overflowed() or watch.truncated(),
+    )
     observed["declaration_sha256"] = rendered.facts["declaration_sha256"]
     return observed
 
@@ -413,6 +430,13 @@ def main(argv: list[str] | None = None) -> int:
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     scratch = Path(os.environ.get("TMPDIR", "/tmp"))
     root = args.root or scratch / f"envelope-audit-{args.harness}-{stamp}"
+    if root.exists():
+        print(
+            f"capability-envelope-import-audit: refused: {root} already exists; next action: pass "
+            "--root a path that does not exist yet, or remove it",
+            file=sys.stderr,
+        )
+        return 64
     world = build_world(root, Path.home())
     try:
         launch = LAUNCHES[args.harness](world)
@@ -427,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     except EnvelopeCarrierError as exc:
         enveloped = {
             "returncode": -1,
+            "overflowed": False,
             "tokens_in_reply": [],
             "sentinels_opened": [],
             "markers": [],

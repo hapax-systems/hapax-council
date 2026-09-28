@@ -290,6 +290,28 @@ def test_muse_builder_refuses_without_a_binary(tmp_path, monkeypatch):
         audit.muse_launch(world)
 
 
+def test_muse_release_accepts_a_direct_release_binary(tmp_path: Path):
+    """codex-1's major (2026-09-28): the refusal advises pointing HAPAX_MUSE_BIN at the release
+    binary, so that path must actually work."""
+    audit = _audit()
+    release = _exe(tmp_path / "bin" / "muse-bin-9.9.9")
+    assert audit._muse_release(release) == release.resolve()
+
+
+def test_a_root_that_already_exists_is_refused(tmp_path: Path, monkeypatch, capsys):
+    """glm-1's minor (2026-09-28): an existing --root used to raise FileExistsError as a
+    traceback rather than a refusal with a next action."""
+    audit = _audit()
+    existing = tmp_path / "already-there"
+    existing.mkdir()
+    monkeypatch.setattr(audit, "LAUNCHES", {"claude": lambda world: None})
+    code = audit.main(
+        ["--harness", "claude", "--out", str(tmp_path / "o.json"), "--root", str(existing)]
+    )
+    assert code == 64
+    assert "already exists" in capsys.readouterr().err
+
+
 def test_muse_release_refuses_rather_than_running_the_self_updating_launcher(tmp_path: Path):
     """codex-1's minor, ruled clause (7) (2026-09-28): the audit must never run muse's
     self-updater inside the envelope, so every way the release cannot be established REFUSES

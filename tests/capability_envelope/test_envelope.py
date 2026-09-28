@@ -40,8 +40,10 @@ from shared.capability_envelope import (
     execute,
     render,
 )
+from shared.capability_envelope import sentinel as sentinel_module
 from shared.capability_envelope.sentinel import (
     _EVENT_HEADER,
+    _IN_OPEN,
     OpenWatch,
     find_tokens,
     sentinel_token,
@@ -715,6 +717,30 @@ def test_the_watch_reports_an_overflowed_queue(tmp_path: Path, monkeypatch):
         monkeypatch.setattr(os, "read", _read)
         watch._drain()
     assert watch.overflowed() is True
+
+
+def test_the_watch_reports_a_truncated_drain(tmp_path: Path, monkeypatch):
+    """Clause (7) follow-up (codex-1's major on #4793, 2026-09-28): the settle bound used to exit
+    with no flag, so a queue still being written at the bound read as a complete observation. The
+    bound now sets `_truncated`, and the caller treats it like an overflow."""
+    seen = _write(tmp_path / "seen.md", "x\n")
+    monkeypatch.setattr(sentinel_module, "_SETTLE_BOUND_SECONDS", 0.05)
+    monkeypatch.setattr(sentinel_module, "_SETTLE_SECONDS", 10.0)
+
+    class _EndlessRead:
+        """A queue that keeps producing an event for a watched path, forever."""
+
+        def __init__(self, wd: int) -> None:
+            self._event = _EVENT_HEADER.pack(wd, _IN_OPEN, 0, 0)
+
+        def __call__(self, fd: int, size: int) -> bytes:
+            return self._event
+
+    with OpenWatch([seen]) as watch:
+        wd = next(iter(watch._watches))
+        monkeypatch.setattr(os, "read", _EndlessRead(wd))
+        watch._drain(settle=True)
+    assert watch.truncated() is True
 
 
 # ---------------------------------------------------------------- carrier failures
