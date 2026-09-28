@@ -273,6 +273,16 @@ def test_kimi_and_generic_wall_hold_assigned_rows() -> None:
     )
 
 
+def test_rerouted_kimi_rows_are_not_still_held_by_kimi() -> None:
+    rows = [
+        {"task_id": "held", "status": "claimed", "assigned_to": "kimi-review"},
+        {"task_id": "rerouted", "status": "claimed", "assigned_to": "codex-kimiwall"},
+        {"task_id": "fugu", "status": "claimed", "assigned_to": "cx-fugultra"},
+    ]
+    demand = gap.waiting_demand(rows, {"kimi", "fugu"})
+    assert demand.walled_rows == {"kimi": ["held"], "fugu": ["fugu"]}
+
+
 def test_missing_live_probe_fails_loud_after_two_cycles_and_recovers() -> None:
     state = {}
     health = {"provider-catalogues": False, "quota-ledger": True}
