@@ -822,6 +822,7 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
     "witness:claude-subscription-headroom-observed-20260708t1400z:"
     "observation:subscription_quota_headroom_observed:"
+    "route_id:claude.headless.full:"
     "observed_at:2026-07-08T14:00:00Z:"
     "fresh_until:2026-07-08T14:15:00Z:"
     "account-live-quota:observed"
@@ -854,7 +855,9 @@ def _write_claude_live_quota_ledger(
             "provider": "anthropic-claude-subscription",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
-            "evidence_refs": [CLAUDE_ADMISSION_EVIDENCE_REF],
+            "evidence_refs": [
+                CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", route_id)
+            ],
             "operator_visible_reason": "fixture claude admission receipt",
         }
     )
@@ -1454,7 +1457,10 @@ def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
 
     assert route.route_state is RouteState.ACTIVE
     assert route.blocked_reasons == []
-    assert CLAUDE_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+    assert (
+        CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", "claude.review.opus")
+        in route.freshness.evidence.quota.evidence_refs
+    )
     assert result.ok is True
 
 
