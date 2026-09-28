@@ -4042,6 +4042,39 @@ def review_pr(
                 "next_action": "Repair diff_capacity in config/review-lenses/registry.yaml, then retry.",
             }
     if constitution is None:
+        if not substitution["prompt_bytes_by_seat"]:
+            prior_criticals = [
+                finding
+                for path, _, match_task_id in keyed_matches
+                for finding in _prior_unresolved_criticals(
+                    review_team.review_dossier_path(path, match_task_id)
+                )
+            ]
+            task_note_text = "\n\n".join(
+                f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
+                for path, _, _ in keyed_matches
+            )
+            charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
+            substitution["prompt_bytes_by_seat"] = {
+                seat_id: len(
+                    render_reviewer_prompt(
+                        seat=review_team.Seat(id=seat_id, family=seat_id.removesuffix("-1")),
+                        pr_info=pr_info,
+                        diff_source=pr_diff.source,
+                        comparison_base=pr_diff.comparison_base,
+                        task_id=task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
+                        team_class=team_class,
+                        lenses=lenses,
+                        charters=charters,
+                        pr_body=pr_info.body,
+                        task_note_text=task_note_text,
+                        diff=pr_diff,
+                        prior_criticals=prior_criticals,
+                        prior_file_excerpts="",
+                    ).encode("utf-8")
+                )
+                for seat_id in substitution["seat_limits"]
+            }
         causes = [f"eligible_team:{constitution_error}"]
         split_required = bool(
             substitution["excluded_for_size"] or substitution["excluded_for_prompt"]

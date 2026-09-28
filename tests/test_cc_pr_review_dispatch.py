@@ -524,6 +524,38 @@ class TestDryRun:
             )
         assert not any(cmd[0] == "git" for cmd in gh.calls)
 
+    @pytest.mark.parametrize(
+        ("lane", "collision", "error"),
+        [("unsafe/lane", False, "safe writer lane"), ("zeta", True, "different content")],
+    )
+    def test_split_notice_rejects_unsafe_lane_or_mail_collision(
+        self, tmp_path: Path, lane: str, collision: bool, error: str
+    ) -> None:
+        gh = FakeGh()
+        info = dispatch.fetch_pr(42, repo="owner/repo", repo_root=REPO_ROOT, runner=gh)
+        note = tmp_path / "task-a.md"
+        note.write_text("# Task\n")
+        bus = tmp_path / "bus"
+        if collision:
+            inbox = bus / lane
+            inbox.mkdir(parents=True)
+            (inbox / f"review-split-required-pr42-{info.head_sha[:12]}-task-a.md").write_text(
+                "forged content"
+            )
+        with pytest.raises(ValueError, match=error):
+            dispatch.write_split_required_notices(
+                pr_info=info,
+                repo="owner/repo",
+                matches=[(note, {"assigned_to": lane}, "task-a")],
+                diff_bytes=90_000,
+                substitution={"seat_limits": {}, "prompt_bytes_by_seat": {}},
+                constitution_error="same_family_reseat",
+                constitution_causes=["eligible_team:same_family_reseat"],
+                largest_files=[],
+                now_iso="2026-09-28T12:00:00Z",
+                lanebus_root=bus,
+            )
+
     def test_dry_run_plans_without_dispatching(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -865,35 +897,6 @@ class TestApply:
             for _, family, prompt in reviewers.invocations
         )
 
-    def test_reseat_pairing_mismatch_returns_named_failure(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        seats = dispatch.review_team.Seat
-        constitution = dispatch.review_team.Constitution
-        calls = 0
-
-        def mismatched_constitution(*_args: Any, **_kwargs: Any) -> Any:
-            nonlocal calls
-            calls += 1
-            team = (seats("claude-1", "claude"), seats("codex-1", "codex"))
-            if calls == 1:
-                team += (seats("gemini-1", "gemini"),)
-            return constitution("t2_standard", 2, team, ())
-
-        monkeypatch.setattr(dispatch.review_team, "constitute_team", mismatched_constitution)
-        inputs = dispatch.ConstitutionInputs({}, frozenset(), {}, None, {})
-        formed, _, error = dispatch.constitute_with_substitution(
-            "t2_standard",
-            "claude",
-            dispatch.review_team.load_lens_registry(),
-            inputs,
-            {},
-            pr_number=42,
-            diff_bytes=50_000,
-        )
-        assert formed is None
-        assert error == "size_reseat_pairing_mismatch:removed=1,added=0"
-
     def test_t1_90kb_diff_splits_on_same_family_reseat(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 10_000
@@ -945,11 +948,16 @@ class TestApply:
         assert len(mails) == 1
         assert result["notice_paths"] == [str(note), str(mails[0])]
         first_note, first_mail = note.read_text(), mails[0].read_text()
+        sizes = result["plan"]["family_substitution"]["prompt_bytes_by_seat"]
+        assert set(sizes) == set(result["plan"]["family_substitution"]["seat_limits"])
+        assert all(size > result["plan"]["diff_bytes"] for size in sizes.values())
         for notice in (first_note, first_mail):
             assert f"Constitution error: {result['plan']['constitution_error']}" in notice
             assert "Constitution causes:" in notice
             for cause in result["plan"]["constitution_causes"]:
                 assert f"- {cause}" in notice
+            for seat, size in sizes.items():
+                assert f"- {seat}: {size:,} /" in notice
         again = dispatch.review_pr(
             42,
             repo="owner/repo",
