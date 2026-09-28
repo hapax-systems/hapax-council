@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -37,6 +38,32 @@ _spec.loader.exec_module(obs)
 NOW = datetime(2026, 8, 19, 16, 0, 0, tzinfo=UTC)
 
 
+@pytest.fixture
+def subscription_probe_home(tmp_path, monkeypatch):
+    config = tmp_path / ".claude"
+    config.mkdir(parents=True)
+    cred = config / ".credentials.json"
+    cred.write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "test-access-token",
+                    "subscriptionType": "max",
+                    "scopes": ["user:inference"],
+                    "expiresAt": int(NOW.timestamp() * 1000) + 3600000,
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    for name in list(os.environ):
+        if name.startswith(("ANTHROPIC_", "CLAUDE_CODE_USE_")):
+            monkeypatch.delenv(name)
+    monkeypatch.setattr(obs, "PROBE_MANAGED_DIR", tmp_path / "absent")
+
+
+@pytest.mark.usefixtures("subscription_probe_home")
 class TestScrubsContaminatedEnvironment:
     """The probe must not measure a redirected endpoint and call it the subscription.
 
@@ -56,6 +83,7 @@ class TestScrubsContaminatedEnvironment:
             child_env.update(kwargs["env"])
 
             class R:
+                returncode = 0
                 stdout = json.dumps(
                     {
                         "is_error": False,
@@ -138,6 +166,7 @@ class TestOnlyAnthropicServesWitnessTheSubscription:
         assert all("would_run" in r for r in planned)
 
 
+@pytest.mark.usefixtures("subscription_probe_home")
 class TestProbeCarriesTheModelItObserved:
     """Two review families independently flagged this: a probe with no model minted NOTHING.
 
@@ -152,6 +181,7 @@ class TestProbeCarriesTheModelItObserved:
             payload["modelUsage"] = {model: {"inputTokens": 5}}
 
         class R:
+            returncode = 0
             stdout = json.dumps(payload)
             stderr = ""
 
@@ -256,6 +286,7 @@ class TestPrefilterMatchesTheWallFields:
         assert verdict == "walled", "a wall reported only via api_error_status must be seen"
 
 
+@pytest.mark.usefixtures("subscription_probe_home")
 class TestProbeFailureIsNotAbsentEvidence:
     """A probe that could not RUN is a broken instrument, not an observation of nothing."""
 
