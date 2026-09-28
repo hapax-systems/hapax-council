@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-8"])
 def test_interactive_observer_selects_and_mints_only_opus(tmp_path: Path, model: str) -> None:
-    evidence = obs.Observation("served", NOW, "synthetic", model=model)
+    evidence = obs.Observation("served", NOW, "active-probe", model=model)
     selected = obs.evidence_by_route([evidence], (ROUTE,))[ROUTE]
     planned = obs.mint(
         evidence,
@@ -65,7 +65,7 @@ def test_interactive_cheap_serve_does_not_suppress_opus_probe(tmp_path, monkeypa
 
     def probe(now):
         calls.append(now)
-        return obs.Observation("served", now, "synthetic-probe", model="claude-opus-4-8")
+        return obs.Observation("served", now, "active-probe", model="claude-opus-4-8")
 
     monkeypatch.setattr(obs, "probe", probe)
     assert (
@@ -100,7 +100,7 @@ def test_default_observer_produces_interactive_receipt_from_probe(tmp_path, monk
     monkeypatch.setattr(
         obs,
         "probe",
-        lambda now: obs.Observation("served", now, "synthetic-probe", model="claude-opus-5"),
+        lambda now: obs.Observation("served", now, "active-probe", model="claude-opus-5"),
     )
     receipts = tmp_path / "receipts"
     assert (
