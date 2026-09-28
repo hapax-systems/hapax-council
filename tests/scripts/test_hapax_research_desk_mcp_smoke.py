@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import importlib.machinery
 import importlib.util
 import json
 import os
 import pwd
 import shutil
-import socket
-import threading
 import types
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -147,106 +142,6 @@ async def test_delivery_retains_intent_if_outcome_append_fails(
     rows = ledger_mod.read_records(ledger_path).records
     assert [row["outcome"] for row in rows] == ["pending"]
     assert len(list(config.lanebus_dir.glob("*.md"))) == 1
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind((LOOPBACK, 0))
-        return int(sock.getsockname()[1])
-
-
-@contextlib.contextmanager
-def _serving(app: Any, port: int) -> Iterator[None]:
-    import uvicorn
-
-    server = uvicorn.Server(
-        uvicorn.Config(app, host=LOOPBACK, port=port, log_level="warning", lifespan="on")
-    )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    try:
-        for _ in range(200):
-            if server.started:
-                break
-            threading.Event().wait(0.05)
-        else:  # pragma: no cover - a server that never starts fails the test below
-            raise RuntimeError("uvicorn did not start")
-        yield
-    finally:
-        server.should_exit = True
-        thread.join(timeout=10)
-
-
-def test_live_end_to_end_over_streamable_http(
-    config: ResearchDeskConfig, ledger_path: Path
-) -> None:
-    """The gate the task row names: a real MCP client, over real HTTP, through the auth edge."""
-    import httpx
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamable_http_client
-
-    seed_request(config, "req-live")
-    server = desk_mcp.build_server(config, ledger_path=ledger_path)
-    app = desk_mcp.build_app(server.streamable_http_app(), key=KEY)
-    port = _free_port()
-    url = f"http://{LOOPBACK}:{port}{desk_mcp.MCP_PATH}"
-
-    async def drive() -> dict[str, Any]:
-        headers = {"Authorization": f"Bearer {KEY}"}
-        async with httpx.AsyncClient(headers=headers, timeout=30) as http_client:
-            async with streamable_http_client(url, http_client=http_client) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
-                    listed = await session.call_tool("list_open_research_requests", {"limit": 5})
-                    fetched = await session.call_tool("fetch_request", {"request_id": "req-live"})
-                    delivered = await session.call_tool(
-                        "deliver_result",
-                        {
-                            "request_id": "req-live",
-                            "markdown": "# Answer\n\nMeasured over HTTP.",
-                            "citations": [{"url": "https://example.org/x", "title": "X"}],
-                            "model_notes": "live e2e",
-                        },
-                    )
-
-                    def _payload(result: Any, label: str) -> Any:
-                        text = result.content[0].text
-                        try:
-                            return json.loads(text)
-                        except json.JSONDecodeError as exc:  # pragma: no cover - diagnostic
-                            raise AssertionError(
-                                f"{label} did not return JSON (isError={result.isError}): {text!r}"
-                            ) from exc
-
-                    return {
-                        "tools": sorted(tool.name for tool in tools.tools),
-                        "listed": _payload(listed, "list_open_research_requests"),
-                        "fetched": _payload(fetched, "fetch_request"),
-                        "delivered": _payload(delivered, "deliver_result"),
-                    }
-
-    with _serving(app, port):
-        out = asyncio.run(drive())
-
-    assert out["tools"] == ["deliver_result", "fetch_request", "list_open_research_requests"]
-    assert out["listed"]["count"] == 1
-    assert out["fetched"]["question"].startswith("Which EU")
-    assert out["delivered"]["ok"] is True
-
-    drops = list(config.lanebus_dir.glob("*.md"))
-    assert len(drops) == 1
-    assert "Measured over HTTP." in drops[0].read_text(encoding="utf-8")
-
-    rows = ledger_mod.read_records(ledger_path).records
-    assert [row["tool"] for row in rows] == [
-        "list_open_research_requests",
-        "fetch_request",
-        "deliver_result",
-        "deliver_result",
-    ]
-    assert [row["outcome"] for row in rows[-2:]] == ["pending", "ok"]
-    assert all(row["caller_ip"] == LOOPBACK for row in rows)
 
 
 def test_check_reports_the_actual_directories_and_ledger(

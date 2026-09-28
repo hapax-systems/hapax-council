@@ -351,7 +351,7 @@ async def _call_tool(server: Any, name: str, arguments: dict[str, Any]) -> Any:
     return json.loads(text)
 
 
-async def test_tools_write_one_ledger_row_per_call_and_never_the_key(
+async def test_tools_record_delivery_intent_and_never_the_key(
     config: ResearchDeskConfig, ledger_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seed_request(config, "req-ledger")
@@ -382,8 +382,9 @@ async def test_tools_write_one_ledger_row_per_call_and_never_the_key(
         "list_open_research_requests",
         "fetch_request",
         "deliver_result",
+        "deliver_result",
     ]
-    assert [row["outcome"] for row in rows] == ["ok", "ok", "ok"]
+    assert [row["outcome"] for row in rows] == ["ok", "ok", "pending", "ok"]
     assert rows[-1]["receipt_id"] == delivered["receipt_id"]
     assert all(row["caller_ip"] == LOOPBACK for row in rows)
     blob = json.dumps(rows)
@@ -427,6 +428,46 @@ async def test_ledger_write_failure_fails_the_tool_call(
         await server.call_tool("list_open_research_requests", {})
 
 
+async def test_delivery_cannot_write_when_intent_append_fails(
+    config: ResearchDeskConfig, tmp_path: Path
+) -> None:
+    seed_request(config, "req-no-ledger")
+    blocked_path = tmp_path / "directory-as-ledger"
+    blocked_path.mkdir()
+    server = desk_mcp.build_server(config, ledger_path=blocked_path)
+    with pytest.raises(Exception):
+        await server.call_tool(
+            "deliver_result", {"request_id": "req-no-ledger", "markdown": "answer"}
+        )
+    assert not list(config.lanebus_dir.glob("*.md"))
+    assert "status: offered" in (config.requests_dir / "req-no-ledger.md").read_text()
+
+
+async def test_delivery_retains_intent_if_outcome_append_fails(
+    config: ResearchDeskConfig, ledger_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_request(config, "req-outcome-fails")
+    actual_append = ledger_mod.append
+    calls = 0
+
+    def fail_after_intent(record: dict[str, Any], *, path: Path | None = None) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise OSError("outcome append failed")
+        actual_append(record, path=path)
+
+    monkeypatch.setattr(ledger_mod, "append", fail_after_intent)
+    server = desk_mcp.build_server(config, ledger_path=ledger_path)
+    with pytest.raises(Exception):
+        await server.call_tool(
+            "deliver_result", {"request_id": "req-outcome-fails", "markdown": "answer"}
+        )
+    rows = ledger_mod.read_records(ledger_path).records
+    assert [row["outcome"] for row in rows] == ["pending"]
+    assert len(list(config.lanebus_dir.glob("*.md"))) == 1
+
+
 async def test_duplicate_delivery_is_ledgered_as_duplicate(
     config: ResearchDeskConfig, ledger_path: Path
 ) -> None:
@@ -440,7 +481,7 @@ async def test_duplicate_delivery_is_ledgered_as_duplicate(
     assert second["duplicate"] is True
     assert second["receipt_id"] == first["receipt_id"]
     outcomes = [row["outcome"] for row in ledger_mod.read_records(ledger_path).records]
-    assert outcomes == ["ok", "duplicate"]
+    assert outcomes == ["pending", "ok", "pending", "duplicate"]
     assert len(list(config.lanebus_dir.glob("*.md"))) == 1
 
 
@@ -547,8 +588,10 @@ def test_live_end_to_end_over_streamable_http(
         "fetch_request",
         "fetch_request",
         "deliver_result",
+        "deliver_result",
     ]
     assert rows[2]["outcome"] == "error"
+    assert [row["outcome"] for row in rows[-2:]] == ["pending", "ok"]
     assert all(row["caller_ip"] == LOOPBACK for row in rows)
 
 
