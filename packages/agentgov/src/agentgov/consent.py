@@ -162,6 +162,15 @@ class ConsentContractLoadError(Exception):
     """Raised when a contract YAML file fails to parse in strict mode."""
 
 
+class SubjectPurgeIncomplete(RuntimeError):
+    """Durable revocations and remaining obligations after a persistence refusal."""
+
+    def __init__(self, revoked_ids: tuple[str, ...], pending_ids: tuple[str, ...]) -> None:
+        self.revoked_ids = revoked_ids
+        self.pending_ids = pending_ids
+        super().__init__("contract_persistence_failed")
+
+
 def _private_load_error(path: Path, error: Exception) -> bool:
     with identity_operation() as snapshot:
         if snapshot is None:
@@ -296,6 +305,13 @@ class ConsentRegistry:
                         ) from exc
                     log.exception("Failed to load contract from %s", path)
 
+            conflicts = self._resolve_alias_conflicts()
+            if conflicts:
+                log.warning(
+                    "consent_alias_conflict: %s; the group is treated as revoked; inspect contract "
+                    "storage before retrying",
+                    ",".join(sorted(conflicts)),
+                )
             count = sum(1 for contract in self._contracts.values() if contract.active)
             self._fail_closed = False
             self._loaded_at = time.time()
@@ -307,12 +323,44 @@ class ConsentRegistry:
             self._fail_closed = True
             return 0
 
+    def _matching_contract_keys(self, contract_id: str) -> list[str]:
+        canonical = resolve_contract_id(contract_id) or contract_id
+        return [key for key in self._contracts if (resolve_contract_id(key) or key) == canonical]
+
+    def _resolve_alias_conflicts(self) -> dict[str, str]:
+        """Retain a revoked representative when canonical grant records disagree."""
+
+        groups: dict[str, list[str]] = {}
+        for key in self._contracts:
+            groups.setdefault(resolve_contract_id(key) or key, []).append(key)
+        conflicts: dict[str, str] = {}
+        for canonical, keys in sorted(groups.items()):
+            members = [self._contracts[key] for key in keys]
+            if len(members) == 1:
+                continue
+            if len({_grant_identity(member) for member in members}) == 1:
+                continue  # Identical duplicates change nothing; leave them alone.
+            keep = canonical if canonical in self._contracts else sorted(keys)[0]
+            self._contracts[keep] = replace(
+                self._contracts[keep], revoked_at=datetime.now(UTC).isoformat()
+            )
+            for key in keys:
+                if key == keep:
+                    continue
+                del self._contracts[key]
+                self._contract_paths.pop(key, None)
+            conflicts[canonical] = "consent_alias_conflict"
+        return conflicts
+
+    @_registry_operation
     def get(self, contract_id: str) -> ConsentContract | None:
-        return self._contracts.get(contract_id)
+        keys = self._matching_contract_keys(contract_id)
+        return self._contracts[keys[0]] if keys else None
 
     def __iter__(self):
         return iter(self._contracts.values())
 
+    @_registry_operation
     def contract_check(self, person_id: str, data_category: str) -> bool:
         """Check whether an active contract permits this data flow.
 
@@ -324,25 +372,34 @@ class ConsentRegistry:
         for contract in self._contracts.values():
             if not contract.active:
                 continue
-            if person_id in contract.parties and data_category in contract.scope:
+            if (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            } and data_category in contract.scope:
                 return True
         return False
 
+    @_registry_operation
     def get_contract_for(self, person_id: str) -> ConsentContract | None:
         """Return the active contract for a person, if any."""
         for contract in self._contracts.values():
-            if contract.active and person_id in contract.parties:
+            if contract.active and (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            }:
                 return contract
         return None
 
+    @_registry_operation
     def subject_data_categories(self, person_id: str) -> frozenset[str]:
         """Return all permitted data categories for a person."""
         categories: set[str] = set()
         for contract in self._contracts.values():
-            if contract.active and person_id in contract.parties:
+            if contract.active and (resolve_principal_id(person_id) or person_id) in {
+                resolve_principal_id(party) or party for party in contract.parties
+            }:
                 categories |= contract.scope
         return frozenset(categories)
 
+    @_registry_operation
     def revoke_contract(
         self,
         contract_id: str,
@@ -355,63 +412,68 @@ class ConsentRegistry:
         Raises KeyError if the contract_id is not registered.
         """
         t0 = time.monotonic()
-        contract = self._contracts.get(contract_id)
-        if contract is None:
+        keys = self._matching_contract_keys(contract_id)
+        if not keys:
+            if (
+                resolve_contract_id(contract_id) != contract_id
+                or resolve_principal_id(contract_id) != contract_id
+            ):
+                raise KeyError("consent_contract_unregistered")
             raise KeyError(f"Contract {contract_id} not registered")
 
         now_iso = datetime.now().isoformat()
-        revoked_contract = ConsentContract(
-            id=contract.id,
-            parties=contract.parties,
-            scope=contract.scope,
-            direction=contract.direction,
-            visibility_mechanism=contract.visibility_mechanism,
-            created_at=contract.created_at,
-            revoked_at=now_iso,
-            principal_class=contract.principal_class,
-            guardian=contract.guardian,
-        )
-        self._contracts[contract_id] = revoked_contract
-
-        directory = contracts_dir or self._contracts_dir
-        if directory is not None:
-            src = directory / f"{contract_id}.yaml"
+        for key in keys:
+            if not self._contracts[key].active:
+                continue
+            src = self._contract_paths.get(key)
+            if src is None:
+                self._contracts[key] = replace(self._contracts[key], revoked_at=now_iso)
+                continue
+            if contracts_dir is not None:
+                src = contracts_dir / src.name
             if src.exists():
-                revoked_dir = directory / "revoked"
+                revoked_dir = src.parent / "revoked"
                 revoked_dir.mkdir(parents=True, exist_ok=True)
                 stamp = now_iso[:10]
-                dst = revoked_dir / f"{stamp}-{contract_id}.yaml"
+                dst = revoked_dir / f"{stamp}-{src.name}"
                 n = 2
                 while dst.exists():
-                    dst = revoked_dir / f"{stamp}-{contract_id}-{n}.yaml"
+                    dst = revoked_dir / f"{stamp}-{src.stem}-{n}.yaml"
                     n += 1
                 src.rename(dst)
-                log.info("Revoked contract %s — moved YAML to %s", contract_id, dst)
+                log.info("consent_contract_revoked")
+            self._contracts[key] = replace(self._contracts[key], revoked_at=now_iso)
 
         elapsed = time.monotonic() - t0
         return elapsed
 
+    @_registry_operation
     def purge_subject(self, person_id: str) -> list[str]:
         """Mark all contracts for a person as revoked. Returns revoked IDs."""
         revoked: list[str] = []
-        for contract_id, contract in self._contracts.items():
-            if contract.active and person_id in contract.parties:
-                revoked_contract = ConsentContract(
-                    id=contract.id,
-                    parties=contract.parties,
-                    scope=contract.scope,
-                    direction=contract.direction,
-                    visibility_mechanism=contract.visibility_mechanism,
-                    created_at=contract.created_at,
-                    revoked_at=datetime.now().isoformat(),
-                    principal_class=contract.principal_class,
-                    guardian=contract.guardian,
+        candidates = [
+            contract_id
+            for contract_id, contract in self._contracts.items()
+            if contract.active
+            and resolve_principal_id(person_id)
+            in {resolve_principal_id(party) or party for party in contract.parties}
+        ]
+        for index, contract_id in enumerate(candidates):
+            try:
+                self.revoke_contract(contract_id)
+            except OSError:
+                log.warning(
+                    "contract_persistence_failed: remedy=restore_contract_storage_then_retry"
                 )
-                self._contracts[contract_id] = revoked_contract
-                revoked.append(contract_id)
-                log.info("Revoked contract %s for %s", contract_id, person_id)
+                raise SubjectPurgeIncomplete(
+                    tuple(resolve_contract_id(cid) for cid in revoked),
+                    tuple(resolve_contract_id(cid) for cid in candidates[index:]),
+                ) from None
+            revoked.append(contract_id)
+            log.info("consent_subject_revoked")
         return revoked
 
+    @_registry_operation
     def create_contract(
         self,
         person_id: str,
@@ -423,6 +485,7 @@ class ConsentRegistry:
         contracts_dir: Path | None = None,
     ) -> ConsentContract:
         """Create and activate a new consent contract at runtime."""
+        person_id = resolve_principal_id(person_id) or person_id
         now = datetime.now().isoformat()
         cid = contract_id or f"contract-{person_id}-{now[:10]}"
 
@@ -452,7 +515,8 @@ class ConsentRegistry:
             if contract.guardian:
                 contract_data["guardian"] = contract.guardian
             contract_path.write_text(yaml.dump(contract_data, default_flow_style=False))
-            log.info("Created consent contract %s for %s at %s", cid, person_id, contract_path)
+            self._contract_paths[cid] = contract_path
+            log.info("consent_contract_created")
 
         self._contracts[cid] = contract
         return contract

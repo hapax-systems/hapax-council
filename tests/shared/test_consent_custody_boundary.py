@@ -11,7 +11,7 @@ from shared.governance import consent
 from tests.shared.synthetic_custody import CONTRACT, ENTRY, OLD_CONTRACT, PRINCIPAL, document
 
 
-@pytest.mark.parametrize("alias", [False])
+@pytest.mark.parametrize("alias", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize(
     "change",
@@ -39,7 +39,7 @@ def test_conflicting_grants_never_authorize(alias, reverse, change, tmp_path):
     assert not registry.contract_check("synthetic-other-subject", "audio")
 
 
-@pytest.mark.parametrize("alias", [False])
+@pytest.mark.parametrize("alias", [False, True])
 def test_identical_duplicates_preserve_consent_and_same_id_counts_once(tmp_path, alias):
     record = {"id": CONTRACT, "parties": ["operator", PRINCIPAL], "scope": ["audio"]}
     for name in ("a", "b"):
