@@ -286,8 +286,10 @@ def _unconditional_targets(head: str, tokens: list[str]) -> list[str]:
     positionals = [t for t in tokens[1:] if not t.startswith("-")]
     if not positionals:
         return []
-    if head in {"cp", "mv", "install"}:
-        return positionals[-1:]  # the destination is the trailing positional
+    if head in {"cp", "install"}:
+        return positionals[-1:]  # the destination is the trailing positional; the source is read
+    if head == "mv":
+        return positionals  # mv unlinks every source, so each positional is a write
     return positionals  # tee/touch/truncate/chmod/chown/mkdir/rm/dd: every positional
 
 
@@ -675,6 +677,144 @@ def _status_gate(status: str) -> Decision | None:
 
 # --- The decision function ----------------------------------------------------
 
+_HEREDOC_OP_RE = re.compile(r"<<-?[A-Za-z_'\"]+")
+_STDOUT_REDIR_RE = re.compile(r"(?:^|\s)1?>>?\s*([^\s<>|&;]+)")
+_SHELL_WRAPPERS = frozenset(
+    {
+        "sudo",
+        "doas",
+        "env",
+        "command",
+        "builtin",
+        "nohup",
+        "time",
+        "exec",
+        "nice",
+        "ionice",
+        "stdbuf",
+        "setsid",
+    }
+)
+
+
+def _gate_narrow_cognition_path(path: str) -> bool:
+    """Bash ``is_cognition_path`` (the live gate), not the broader scratch classifier.
+
+    Bare ``/tmp`` and ``~/.cache/hapax/relay/`` stay cognition for
+    ``_unconditional_writes_in_tree`` only. The shell early-allow must refuse
+    those, or the shadow would allow writes the gate still blocks.
+    """
+    if not path:
+        return False
+    path = os.path.normpath(os.path.expanduser(path))
+    if not os.path.isabs(path):
+        path = os.path.normpath(os.path.join(os.getcwd(), path))
+    home = os.path.expanduser("~")
+    if path.startswith(home + "/.claude/") and ("/memory/" in path or path.endswith("/memory")):
+        return True
+    personal = home + "/Documents/Personal/"
+    if path.startswith(personal + "20-projects/hapax-cc-tasks/"):
+        return False
+    if path.startswith(personal + "20-projects/hapax-requests/"):
+        return False
+    if path.startswith(personal):
+        return True
+    if path.startswith("/dev/shm/"):
+        return True
+    if path.startswith("/tmp/hapax-") or path.startswith("/tmp/hapax/"):
+        return True
+    bases = {os.environ.get("TMPDIR", "/tmp").rstrip("/") or "/tmp", "/tmp"}
+    for base in bases:
+        prefix = base + "/claude-"
+        if path.startswith(prefix) and "/" in path[len(prefix) :]:
+            return True
+    return False
+
+
+def _strip_gate_quotes(command: str) -> str:
+    command = re.sub(r"'[^']*'", "", command)
+    command = re.sub(r'"[^"]*"', "", command)
+    return re.sub(r"(^|\s)#[^\n]*", lambda m: m.group(1), command)
+
+
+def _segment_head_args(segment: str) -> tuple[str | None, list[str]]:
+    tokens = segment.split()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if (
+            tok in _SHELL_WRAPPERS
+            or tok.startswith("-")
+            or ("=" in tok and not tok.startswith("/"))
+        ):
+            i += 1
+            continue
+        break
+    if i >= len(tokens):
+        return None, []
+    return tokens[i], tokens[i + 1 :]
+
+
+#: The MINIMAL cognition carve-out (seat's exit condition, 2026-09-28). Mirrors the bash gate:
+#: admitted only when EVERY segment is `echo`, `printf`, `cat` or `tee` with NO option token at all —
+#: any token beginning with `-`, `--` included, refuses — writing only through `>`/`>>`/`tee` into a
+#: cognition path, with an optional leading `cd <path>`. Every other head, every option and every
+#: unresolved token refuses. There is no option allowlist left to enumerate.
+_CARVE_OUT_HEADS = frozenset({"echo", "printf", "cat", "tee"})
+_UNRESOLVED_MARKER = "!unresolved:"
+
+
+#: Dynamic forms a cognition-only write never needs, and which the quote-strip would HIDE while the shell
+#: still executes them: command substitution, a process substitution, or a head that evaluates text.
+_DYNAMIC_HEAD_RE = re.compile(r"(^|[\s;&|(])(eval|source)(\s|$)")
+_DYNAMIC_DOT_RE = re.compile(r"(^|[\s;&|(])\.[\s]")
+
+
+def _command_has_dynamic_form(command: str) -> bool:
+    """Whether the RAW command carries a dynamic form. Checked BEFORE the quote-strip, because the strip
+    removes quoted content that the shell still executes (review of #4704, 2026-09-28)."""
+    if "$(" in command or "`" in command or "<(" in command or ">(" in command:
+        return True
+    return bool(_DYNAMIC_HEAD_RE.search(command) or _DYNAMIC_DOT_RE.search(command))
+
+
+def _shell_targets_cognition_only(command: str) -> bool:
+    """True iff the live gate's ``_bash_writes_cognition_only`` would allow.
+
+    Mirrors the minimal carve-out per segment, plus the gate's pre-strip refusal of dynamic forms. An
+    empty extract, an unresolved segment, a dynamic form, or any non-cognition target is False.
+    """
+    if _command_has_dynamic_form(command):
+        return False
+    stripped = _strip_gate_quotes(command)
+    targets: list[str] = []
+    for segment in re.split(r"[;|&()]", stripped):
+        if not segment.strip():
+            continue
+        segment = _HEREDOC_OP_RE.sub("", segment)
+        found = _STDOUT_REDIR_RE.findall(segment)
+        head, args = _segment_head_args(segment)
+        if head == "cd":
+            pass  # a leading `cd <path>` writes nothing
+        elif head in _CARVE_OUT_HEADS:
+            if any(arg.startswith("-") for arg in args):
+                found.append(_UNRESOLVED_MARKER + head)
+            elif head == "tee":
+                found.extend(arg for arg in args if arg)
+        elif head is None:
+            pass  # a bare redirect segment: its target came from the scan above
+        else:
+            found.append(_UNRESOLVED_MARKER + head)
+        targets.extend(found)
+    if not targets:
+        return False
+    for target in targets:
+        if target.startswith(_UNRESOLVED_MARKER):
+            return False
+        if not _gate_narrow_cognition_path(target):
+            return False
+    return True
+
 
 def policy_decide(
     tool_call: ToolCall,
@@ -710,6 +850,16 @@ def _decide(
     # 2. Cognition surfaces are always writable — a blocked lane must still think.
     if path and is_cognition_path(path):
         return _allow("cognition", "cognition/diagnostic surface — always writable")
+    # Shell writes have no file_path. Same early allow as the bash gate: every
+    # extracted target is a narrow cognition path, or this falls through.
+    if (
+        name in _BASH_TOOLS
+        and not path
+        and command
+        and not _bash_is_runtime(command)
+        and _shell_targets_cognition_only(command)
+    ):
+        return _allow("cognition", "shell write targets only cognition paths")
 
     # 3. Kernel down: the embedded floor is the whole decision (irreversible-harm SSOT).
     if not kernel_up:

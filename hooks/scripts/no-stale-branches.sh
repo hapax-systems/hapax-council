@@ -8,8 +8,11 @@
 #            git worktree add WITH -b/-B (attaching an existing branch
 #            to a new worktree is not new work and is always allowed).
 #    When: ANY local or remote feature branches have unmerged commits vs main.
-#    Also: enforces visible session worktree limit (max 8 during the
-#          Claude+Codex transition). Infrastructure worktrees under ~/.cache/,
+#    Also: enforces visible session worktree limit (cap 20 — see session_wt_cap
+#          below, which is the enforced value; this line said "max 8 during the
+#          Claude+Codex transition" until 2026-09-20 and had been stale since the
+#          cap was raised. A reader who trusted it would conclude the cap was
+#          already blown at 10 lanes). Infrastructure worktrees under ~/.cache/,
 #          .claude/worktrees/, and .codex/worktrees/ are NOT counted — they
 #          exist independently of operator-visible session work.
 #
