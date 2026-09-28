@@ -109,6 +109,46 @@ async def test_ledger_write_failure_fails_the_tool_call(
         await server.call_tool("list_open_research_requests", {})
 
 
+async def test_delivery_cannot_write_when_intent_append_fails(
+    config: ResearchDeskConfig, tmp_path: Path
+) -> None:
+    seed_request(config, "req-no-ledger")
+    blocked_path = tmp_path / "directory-as-ledger"
+    blocked_path.mkdir()
+    server = desk_mcp.build_server(config, ledger_path=blocked_path)
+    with pytest.raises(Exception):
+        await server.call_tool(
+            "deliver_result", {"request_id": "req-no-ledger", "markdown": "answer"}
+        )
+    assert not list(config.lanebus_dir.glob("*.md"))
+    assert "status: offered" in (config.requests_dir / "req-no-ledger.md").read_text()
+
+
+async def test_delivery_retains_intent_if_outcome_append_fails(
+    config: ResearchDeskConfig, ledger_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_request(config, "req-outcome-fails")
+    actual_append = ledger_mod.append
+    calls = 0
+
+    def fail_after_intent(record: dict[str, Any], *, path: Path | None = None) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise OSError("outcome append failed")
+        actual_append(record, path=path)
+
+    monkeypatch.setattr(ledger_mod, "append", fail_after_intent)
+    server = desk_mcp.build_server(config, ledger_path=ledger_path)
+    with pytest.raises(Exception):
+        await server.call_tool(
+            "deliver_result", {"request_id": "req-outcome-fails", "markdown": "answer"}
+        )
+    rows = ledger_mod.read_records(ledger_path).records
+    assert [row["outcome"] for row in rows] == ["pending"]
+    assert len(list(config.lanebus_dir.glob("*.md"))) == 1
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind((LOOPBACK, 0))
@@ -203,7 +243,9 @@ def test_live_end_to_end_over_streamable_http(
         "list_open_research_requests",
         "fetch_request",
         "deliver_result",
+        "deliver_result",
     ]
+    assert [row["outcome"] for row in rows[-2:]] == ["pending", "ok"]
     assert all(row["caller_ip"] == LOOPBACK for row in rows)
 
 

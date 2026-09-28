@@ -26,9 +26,8 @@ Posture:
 * **Loopback only.** A non-loopback bind is refused outright. Public exposure is
   the tunnel's job, and the tunnel is a separate unit with a separate failure
   domain.
-* **Every call is a ledger row.** A ledger that cannot be written fails the call
-  rather than serving it unrecorded — the desk's receipt surface is the only thing
-  that counts a subscription entitlement the estate cannot meter directly.
+* **Every call has ledger evidence.** Delivery records intent before mutation and
+  outcome afterward. A ledger that cannot record intent fails before delivery.
 
 Run: ``uv run scripts/hapax-research-desk-mcp``  (``--check`` validates and exits).
 """
@@ -353,6 +352,7 @@ def build_server(
         rejected at the transport and never reaches the code that would accept it.
         """
         bytes_in = len((markdown or "").encode("utf-8")) + len((model_notes or "").encode("utf-8"))
+        _record("deliver_result", "pending", request_id=request_id[:128], bytes_in=bytes_in)
         try:
             receipt = _deliver_result(
                 config,
