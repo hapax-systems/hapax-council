@@ -29,6 +29,7 @@ systemd/units/hapax-oom-score-enforce.service
 systemd/units/hapax-oom-score-enforce.timer
 systemd/units/hapax-oom-policy-audit.service
 systemd/units/hapax-oom-policy-audit.timer
+systemd/units/hapax-oom-policy-seat-alert@.service
 systemd/units/hapax-root-required-deploy-audit.service
 systemd/units/hapax-root-required-deploy-audit.timer
 systemd/units/app.slice.d/oom-containment.conf
@@ -44,4 +45,5 @@ scripts/hapax-oom-score-enforce
 scripts/hapax-oom-score-trigger
 scripts/hapax-root-failure-intake
 scripts/hapax-oom-policy-audit
+scripts/hapax-oom-seat-alert
 scripts/hapax-root-required-deploy-audit

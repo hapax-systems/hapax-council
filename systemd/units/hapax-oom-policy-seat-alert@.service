@@ -1,0 +1,10 @@
+[Unit]
+Description=Deliver Hapax OOM policy audit failure to the coordinator seat
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
+
+[Service]
+Type=oneshot
+TimeoutStartSec=45s
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/sbin/hapax-oom-seat-alert %i
+SyslogIdentifier=hapax-oom-policy-seat-alert
