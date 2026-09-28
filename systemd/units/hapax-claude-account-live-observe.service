@@ -4,7 +4,9 @@ Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-cl
 # Deliberately NOT After=hapax-secrets.service and NO EnvironmentFile. That file carries
 # ANTHROPIC_BASE_URL pointing at podium's LiteLLM proxy; inheriting it would send the probe
 # to a different endpoint while the receipt asserts auth_surface=subscription. The observer
-# needs no secrets — it reads local artifacts and, at most, runs the CLI as the operator.
+# reads the CLI's saved subscription credential binding and passes only its validated
+# access token in the isolated child's environment. It needs no FileStore EnvironmentFile;
+# it never persists credential values in observations or receipts.
 # Deliberately NO OnFailure=notify-failure@%n.service. This unit exits non-zero as a
 # NORMAL outcome: 3 = a quota wall was observed, 4 = nothing exercised the subscription
 # and the probe could not observe either. Both are correct fail-closed results that hold
