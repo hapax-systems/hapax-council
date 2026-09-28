@@ -2125,6 +2125,10 @@ def _dossier_validity_blockers(
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
     floor_release_out: dict[str, Any] | None = None,
     diff_size_measurer: Callable[[int, str], int | None] | None = None,
+    capacity_evidence_measurer: Callable[
+        [int, str, tuple[str, ...]], tuple[int, Mapping[str, int]] | None
+    ]
+    | None = None,
 ) -> tuple[str, ...]:
     """Blockers for a recorded dossier; ``floor_release_out`` receives the T2 rule's evidence
     when the rule stood in for the family floor (the dossier may still carry other blockers).
@@ -2378,16 +2382,46 @@ def _dossier_validity_blockers(
     stamped_sizes = {
         r.get(DIFF_FULL_BYTES_FIELD) for r in reviews if type(r.get(DIFF_FULL_BYTES_FIELD)) is int
     }
-    if _note_size_replaced:
-        substitution = dossier.get("family_substitution") or {}
-        if not isinstance(substitution, Mapping):
-            substitution = {}
+    substitution = dossier.get("family_substitution") or {}
+    if not isinstance(substitution, Mapping):
+        substitution = {}
+    if (
+        _note_size_replaced
+        or _field_size_replaced
+        or "excluded_for_size" in substitution
+        or substitution.get("size_replaced_seats")
+        or ("size_replaced_families" in dossier and len(stamped_sizes) > 1)
+    ):
+        size_excluded = substitution.get("excluded_for_size", {})
         prompt_excluded = substitution.get("excluded_for_prompt") or {}
         prompt_bytes = substitution.get("prompt_bytes_by_seat") or {}
         prompt_over: set[str] = set()
-        prompt_invalid = not isinstance(prompt_excluded, Mapping) or not isinstance(
-            prompt_bytes, Mapping
+        prompt_invalid = (
+            not isinstance(size_excluded, Mapping)
+            or not isinstance(prompt_excluded, Mapping)
+            or not isinstance(prompt_bytes, Mapping)
         )
+        measure_pr = pr_number if pr_number is not None else None
+        measured = None
+        if (
+            capacity_evidence_measurer is not None
+            and measure_pr is not None
+            and pr_head_sha is not None
+            and isinstance(prompt_excluded, Mapping)
+        ):
+            try:
+                measured = capacity_evidence_measurer(
+                    measure_pr,
+                    pr_head_sha,
+                    tuple(f"{family}-1" for family in prompt_excluded),
+                )
+            except (OSError, ValueError, TypeError, RuntimeError):
+                pass  # unmeasurable capacity evidence refuses below
+        if measured is None:
+            blockers.append("review_dossier_capacity_evidence_unavailable")
+        live_full, live_prompts = measured if measured is not None else (None, {})
+        if live_full is not None and stamped_sizes != {live_full}:
+            blockers.append("review_dossier_diff_size_unverified")
         if not prompt_invalid:
             for family, evidence in prompt_excluded.items():
                 capacity = seat_diff_capacity(f"{family}-1", registry)
@@ -2400,18 +2434,26 @@ def _dossier_validity_blockers(
                 ):
                     prompt_invalid = True
                     break
-                prompt_over.add(str(family))
-        if len(stamped_sizes) != 1 or prompt_invalid:
+                seat_id = f"{family}-1"
+                if (
+                    type(live_prompts.get(seat_id)) is not int
+                    or live_prompts[seat_id] <= capacity["prompt_limit_bytes"]
+                ):
+                    blockers.append(f"review_dossier_prompt_size_unverified:{family}")
+                else:
+                    prompt_over.add(str(family))
+        if len(stamped_sizes) != 1 or prompt_invalid or live_full is None:
             blockers.append("review_dossier_size_replacements_wrong_for_diff")
         else:
-            full_bytes = next(iter(stamped_sizes))
-            expected_excluded = sorted(
+            expected_size_excluded = {
                 family
                 for family in roster
-                if seat_diff_capacity(f"{family}-1", registry)["limit_bytes"] < full_bytes
-                or family in prompt_over
-            )
-            if _note_size_replaced != expected_excluded:
+                if seat_diff_capacity(f"{family}-1", registry)["limit_bytes"] < live_full
+            }
+            expected_excluded = sorted(expected_size_excluded | prompt_over)
+            if _note_size_replaced != expected_excluded or (
+                "excluded_for_size" in substitution and set(size_excluded) != expected_size_excluded
+            ):
                 blockers.append("review_dossier_size_replacements_wrong_for_diff")
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
     if degraded_families:

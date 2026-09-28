@@ -1362,7 +1362,12 @@ class TestSizeReplacementNoteValidity:
 
         def blockers() -> tuple[str, ...]:
             return rt._dossier_validity_blockers(
-                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+                dossier,
+                pr_head_sha="a" * 40,
+                pr_number=99,
+                registry=registry,
+                route_blocked_families={},
+                capacity_evidence_measurer=lambda _pr, _sha, _seats: (50_000, {}),
             )
 
         assert blockers() == ()
@@ -1390,6 +1395,50 @@ class TestSizeReplacementNoteValidity:
             dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
         )
         assert "review_dossier_size_replacements_wrong_for_diff" in blockers
+
+    def test_forged_prompt_size_cannot_remove_core_family(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=10_000),
+                _review("codex-1", "codex", diff_full_bytes=10_000),
+                _review("glm-1", "glm", diff_full_bytes=10_000),
+            ],
+            constitution_notes=("family_replaced_for_size:gemini",),
+        )
+        ceiling = rt.seat_diff_capacity("gemini-1", registry)["prompt_limit_bytes"]
+        dossier["family_substitution"] = {
+            "excluded_for_prompt": {
+                "gemini": {"prompt_bytes": ceiling + 1, "prompt_limit_bytes": ceiling}
+            },
+            "prompt_bytes_by_seat": {"gemini-1": ceiling + 1},
+        }
+
+        def blockers(live_prompt_bytes: int, live_diff_bytes: int = 10_000) -> tuple[str, ...]:
+            return rt._dossier_validity_blockers(
+                dossier,
+                pr_head_sha="a" * 40,
+                pr_number=99,
+                registry=registry,
+                route_blocked_families={},
+                capacity_evidence_measurer=lambda _pr, _sha, _seats: (
+                    live_diff_bytes,
+                    {"gemini-1": live_prompt_bytes},
+                ),
+            )
+
+        assert blockers(ceiling + 1) == ()
+        assert "review_dossier_prompt_size_unverified:gemini" in blockers(ceiling - 1)
+        assert "review_dossier_diff_size_unverified" in blockers(ceiling + 1, 10_001)
+        assert "review_dossier_capacity_evidence_unavailable" in rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            pr_number=99,
+            registry=registry,
+            route_blocked_families={},
+        )
 
 
 class TestSynthesizeDossier:
