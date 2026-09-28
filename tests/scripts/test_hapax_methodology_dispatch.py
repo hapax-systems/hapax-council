@@ -1329,6 +1329,7 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
         "governed-build",
         f"""
         kind: build
+        workload_shape: agentic_build
         authority_case: CASE-TEST-001
         parent_spec: {spec}
         """,
@@ -1345,11 +1346,71 @@ def test_receipt_contains_task_and_authority(tmp_path: Path) -> None:
     receipt = json.loads(line)
     assert receipt["ok"] is True
     assert receipt["task_id"] == "governed-build"
+    assert receipt["workload_shape"] == "agentic_build"
     assert receipt["parent_spec_path"] == str(spec)
     assert receipt["route_decision_id"].startswith("rd-")
     assert receipt["route_policy_action"] == "launch"
     assert receipt["dimensional_route_receipt_schema"] == 1
     assert receipt["dimensional_selected_route_id"] == "claude.headless.full"
+
+
+@pytest.mark.parametrize(
+    ("declaration", "expected"),
+    [
+        ("serving", "serving"),
+        ("bulk_read_only", "bulk_read_only"),
+        ("agentic_build", "agentic_build"),
+        ("gpu_batch", "gpu_batch"),
+        ("other", "other"),
+        (None, "unknown"),
+        ("unsupported_shape", "unknown"),
+    ],
+)
+def test_dispatch_receipt_uses_only_declared_workload_shape(
+    tmp_path: Path, monkeypatch, declaration: str | None, expected: str
+) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setattr(module, "orchestration_ledger_dir", lambda: tmp_path)
+    # These execution cues must never substitute for a task declaration.
+    task_fields = {"title": "GPU batch serving build", "platform": "codex", "model": "gpu-model"}
+    if declaration is not None:
+        task_fields["workload_shape"] = declaration
+    task = module.TaskNote(tmp_path / "task.md", task_fields)
+    route = module.PlatformPath("codex", "headless", "full", "gpu-launcher", "serving", True, "")
+
+    path = module.write_receipt(
+        task_id="task",
+        lane="test",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        route=route,
+        validation=module.Validation(True, "ok", task),
+        prompt=None,
+        launched=True,
+        launch_returncode=0,
+    )
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["workload_shape"] == expected
+    assert record["event"] == "methodology_dispatch"
+
+
+def test_dispatch_receipt_without_task_cannot_infer_shape(tmp_path: Path, monkeypatch) -> None:
+    module = _dispatcher_module()
+    monkeypatch.setattr(module, "orchestration_ledger_dir", lambda: tmp_path)
+    path = module.write_receipt(
+        task_id="gpu-batch-serving",
+        lane="test",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        route=None,
+        validation=module.Validation(False, "task absent"),
+        prompt=None,
+        launched=False,
+    )
+    assert json.loads(path.read_text(encoding="utf-8"))["workload_shape"] == "unknown"
 
 
 def test_dispatch_admission_reuses_worker_adapter_map(monkeypatch) -> None:
@@ -4163,7 +4224,7 @@ exit 1
     assert receipt["platform"] == "glmcp"
     assert receipt["routes"] == ["glmcp.review.direct"]
     assert receipt["cli"]["binary"] == "scripts/hapax-glmcp-reviewer"
-    assert "model=glm-5.3" in receipt["cli"]["version"]
+    assert "model=glm-5.2" in receipt["cli"]["version"]
     assert "payg_fallback=enabled" in receipt["cli"]["version"]
     receipt_text = json.dumps(receipt)
     assert "test-secret-token" not in receipt_text
@@ -4862,3 +4923,57 @@ def test_policy_rollback_help_documents_retirement() -> None:
     # The old help claimed legacy full-profile routes "may launch" — that is now
     # false (rollback HOLDs). Guard against the stale promise regressing.
     assert "may launch" not in help_text
+
+
+# M76: hapax-post-merge-deploy installs hapax-* launchers as release-pinned regular copies in
+# ~/.local/bin, so this script's __file__-relative imports found neither executor_contract.py
+# nor shared/ and the installed dispatch died with ModuleNotFoundError: executor_contract.
+
+
+def _installed_copy(tmp_path: Path, *, tamper: bool = False) -> Path:
+    bin_dir = tmp_path / "local-bin"
+    bin_dir.mkdir()
+    copy = bin_dir / "hapax-methodology-dispatch"
+    content = SCRIPT.read_bytes() + (b"\n# tampered\n" if tamper else b"")
+    copy.write_bytes(content)
+    copy.chmod(0o755)
+    return copy
+
+
+def _run_installed(copy: Path, activation_root: Path) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(activation_root)}
+    env.pop("PYTHONPATH", None)
+    return subprocess.run(
+        [sys.executable, str(copy), "--help"],
+        cwd=copy.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_installed_copy_imports_from_the_activated_release(tmp_path: Path) -> None:
+    result = _run_installed(_installed_copy(tmp_path), REPO_ROOT)
+
+    assert result.returncode == 0, result.stderr[-800:]
+    assert "ModuleNotFoundError" not in result.stderr
+
+
+def test_installed_copy_that_differs_from_the_release_refuses(tmp_path: Path) -> None:
+    result = _run_installed(_installed_copy(tmp_path, tamper=True), REPO_ROOT)
+
+    assert result.returncode != 0
+    assert "differs from the activated release" in result.stderr
+    assert "next action" in result.stderr
+
+
+def test_installed_copy_without_an_activated_release_refuses(tmp_path: Path) -> None:
+    missing = tmp_path / "no-activation"
+
+    result = _run_installed(_installed_copy(tmp_path), missing)
+
+    assert result.returncode != 0
+    assert "activated release" in result.stderr
+    assert "ModuleNotFoundError" not in result.stderr

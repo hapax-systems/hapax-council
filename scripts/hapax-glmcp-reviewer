@@ -43,12 +43,13 @@ from shared.failure_classification import (  # noqa: E402
 )
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    GLMCP_MODEL_IDS,
     GLMCP_PAYG_BUDGET_PROFILE,
     GLMCP_PAYG_BUDGET_PROVIDER,
     GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
     GLMCP_PAYG_BUDGET_ROUTE_ID,
     GLMCP_PAYG_BUDGET_TASK_CLASS,
-    GLMCP_PAYG_ESTIMATED_COST_USD,
+    GLMCP_PAYG_PRICE_BASIS_REF,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     CapacityPool,
     PaidRouteRequest,
@@ -56,6 +57,10 @@ from shared.quota_spend_ledger import (  # noqa: E402
     SpendReceipt,
     SpendReconciliationState,
     evaluate_paid_route_eligibility,
+    frozen_spend_receipt_payload,
+    glmcp_payg_reservation_usd,
+    glmcp_payg_usage_ceiling_usd,
+    glmcp_payg_usage_cost_usd,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
 )
@@ -64,7 +69,7 @@ DEFAULT_SECRET_ENTRY = "glmcp/api-key"
 DEFAULT_CODING_PLAN_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 DEFAULT_PAYG_BASE_URL = "https://api.z.ai/api/paas/v4"
 DEFAULT_BASE_URL = DEFAULT_CODING_PLAN_BASE_URL
-DEFAULT_MODEL = "glm-5.3"
+DEFAULT_MODEL = "glm-5.2"
 DEFAULT_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_THINKING = "disabled"
@@ -72,17 +77,46 @@ PAYG_FALLBACK_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhaust
 PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v1"
 PAYG_SPEND_RECEIPT_RECONCILE_AFTER = timedelta(hours=24)
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
-# Z.ai's GLM-5.3 is the current Coding Plan flagship (probed live 2026-09-10:
-# HTTP 200 on /api/anthropic) and works on the PAYG endpoint when thinking is
-# enabled with adequate max_tokens (probed live 2026-09-17). glm-5.2 remains
-# admitted for compatibility and is the only id that accepts thinking=disabled
-# on PAYG; the fallback path translates the thinking contract on 1210 rather
-# than pinning a model per endpoint.
-CODING_PLAN_MODELS = frozenset({"glm-5.2", DEFAULT_MODEL})
+# The review seat requests glm-5.2 (restored 2026-09-27): valid verdicts were 397/406 on it
+# before #4692 made glm-5.3 the default, 16/21 after. Z.ai serves a glm-5.2 request as glm-5.3
+# (measured on /api/anthropic 2026-08-22 and on this Coding Plan endpoint 2026-09-27; the reply
+# line below shows both ids), but the requested id still sets the server's treatment: 158-203
+# reasoning tokens against 531-969 for glm-5.3 on the same packet with thinking disabled.
+# glm-5.3 stays admitted and selectable. It is the Coding Plan flagship and works on PAYG when
+# thinking is enabled with adequate max_tokens (probed live 2026-09-17); the fallback path
+# translates the thinking contract on 1210 rather than pinning a model per endpoint.
+CODING_PLAN_MODELS = frozenset({DEFAULT_MODEL, "glm-5.3"})
+# The PAYG fallback always requests glm-5.3, whatever the seat's model: it is the id PAYG
+# serves as itself, so the served-model identity check holds. A glm-5.2 request may be remapped
+# forward as on the Coding Plan, which would bill a reply the check then refuses. PAYG is
+# break-glass, so this is pinned in code rather than measured with a paid probe (seat ruling
+# 2026-09-27T22:49:59Z).
+PAYG_MODEL = "glm-5.3"
 # Z.ai PAYG rejects thinking=disabled for models that always think (HTTP 400,
 # code 1210). The PAYG fallback retries once with thinking enabled instead of
 # forcing a lower model.
 PAYG_THINKING_REQUIRED_ERROR_CODE = "1210"
+# A PAYG request that thinks needs a real token budget. docs.z.ai/guides/overview/concept-param
+# (read 2026-09-25): GLM-5.3 uses forced thinking, reasoning_effort defaults to max, and max
+# output is 128K. Reasoning tokens count against max_tokens: on 2026-09-25 a 9195-token review
+# packet spent 8187 of 8192 completion tokens on reasoning, returned no content and billed
+# $0.048772 for an unusable seat. Every thinking request on PAYG gets at least this budget;
+# reasoning_effort is left at the provider default, so review depth is not silently lowered.
+PAYG_THINKING_MIN_MAX_TOKENS = 32768
+# Stable marker on stderr for a reply whose whole budget went to reasoning. The review
+# dispatcher reads it from process-failure stderr only.
+REASONING_BUDGET_EXHAUSTED = "reasoning_budget_exhausted"
+# A reply the provider cut at max_tokens (finish_reason=length). It is never returned as a
+# review; the seat is worth running again, so it exits EX_TEMPFAIL rather than 1.
+REPLY_TRUNCATED = "reply_truncated"
+EXIT_RETRYABLE = 75
+# The review ends at its closing fence. Sent as the API stop sequence (the Coding Plan honours
+# it, measured 2026-09-27) and applied again to the reply, so an endpoint that ignores `stop`
+# yields the same reply. Neither the opening fence (it carries its yaml tag) nor an indented
+# fence inside a block scalar matches, and a column-0 fence line never occurs inside valid
+# review YAML. The dispatcher's parser (#4102) still rejects anything but a whole fence.
+CLOSING_FENCE_STOP = "\n```\n"
+_DIAGNOSTIC_TOKEN_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._:/-]")
 
 SYSTEM_PROMPT = """You are a blind PR reviewer invoked non-interactively.
 The user message is a review packet generated by Hapax. Treat reviewer
@@ -102,6 +136,47 @@ class ConfigError(RuntimeError):
 
 class ApiError(RuntimeError):
     """Provider/API failure."""
+
+
+class ProviderReplyUnusable(ApiError):
+    """The provider answered (on PAYG, it billed) but the reply is unusable or unidentified.
+
+    Carries the provider observation so PAYG spend is reconciled from the reported usage
+    instead of staying pending with no evidence of what was charged.
+    """
+
+    def __init__(self, message: str, *, observation: ProviderObservation) -> None:
+        self.observation = observation
+        super().__init__(message)
+
+
+class ReasoningBudgetExhausted(ProviderReplyUnusable):
+    """The model spent the whole completion budget reasoning and produced no content.
+
+    Billed and unusable like its parent, but named, so the dispatcher treats the seat as
+    unavailable instead of as a reviewer that answered badly.
+    """
+
+
+class ReplyTruncated(ProviderReplyUnusable):
+    """The provider stopped the reply at max_tokens: a partial review, never a complete one.
+
+    Billed and unusable like its parent, named so a truncation is not read as invalid output,
+    and retryable: the same seat may finish on a second run.
+    """
+
+
+def provider_text_on_one_line(value: object) -> str:
+    """Provider-controlled text flattened onto a single line.
+
+    The review dispatcher reads this wrapper's stderr for its own marker lines by line prefix,
+    and it has to: the marker is the only channel that survives a dead reviewer process. Z.ai's
+    error text is provider-controlled, so a newline inside it would otherwise let the provider
+    start a second line that looks like this wrapper's own - including one that forges the
+    named reasoning-budget outage. Collapse it here, where the text is still ours to shape.
+    """
+
+    return " ".join(str(value).splitlines()).strip() or "(no message)"
 
 
 class ZaiHttpError(ApiError):
@@ -150,6 +225,21 @@ class ZaiErrorInfo:
 
 
 @dataclass(frozen=True)
+class ProviderObservation:
+    """What the provider reported executing: served model, finish reason, token usage."""
+
+    served_model: str | None = None
+    finish_reason: str | None = None
+    prompt_tokens: int | None = None
+    cached_tokens: int | None = None
+    completion_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+    def has_usage(self) -> bool:
+        return self.prompt_tokens is not None and self.completion_tokens is not None
+
+
+@dataclass(frozen=True)
 class PaygSpendGate:
     state: str
     budget_id: str
@@ -173,14 +263,14 @@ class NoRedirectHTTPHandler(urllib.request.HTTPRedirectHandler):
 
 
 def usage() -> str:
-    return """usage: hapax-glmcp-reviewer [--check]
+    return f"""usage: hapax-glmcp-reviewer [--check]
 
 Reads a blind review prompt on stdin and writes the GLM reviewer reply to stdout.
 
 Environment overrides:
   HAPAX_GLMCP_REVIEW_SECRET_ENTRY       FileStore secret name (default: glmcp/api-key)
   HAPAX_GLMCP_REVIEW_BASE_URL          OpenAI-compatible Coding Plan base URL
-  HAPAX_GLMCP_REVIEW_MODEL             model (default: glm-5.2)
+  HAPAX_GLMCP_REVIEW_MODEL             model (default: {DEFAULT_MODEL})
   HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS   request timeout (default: 900)
   HAPAX_GLMCP_REVIEW_MAX_TOKENS        max response tokens (default: 8192)
   HAPAX_GLMCP_REVIEW_TEMPERATURE       sampling temperature (default: 0)
@@ -554,14 +644,97 @@ def format_zai_error(status: int, detail: str, *, secret: str) -> str:
     return "; ".join(parts)
 
 
-def _call_glm_once(
+def _usage_count(container: object, key: str) -> int | None:
+    if not isinstance(container, dict):
+        return None
+    value = container.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _provider_observation(payload: dict[str, Any]) -> ProviderObservation:
+    usage = payload.get("usage")
+    choices = payload.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else None
+    finish = first.get("finish_reason") if isinstance(first, dict) else None
+    served = payload.get("model")
+    return ProviderObservation(
+        served_model=safe_structured_value(served, max_chars=80)
+        if isinstance(served, str)
+        else None,
+        finish_reason=safe_structured_value(finish, max_chars=40)
+        if isinstance(finish, str)
+        else None,
+        prompt_tokens=_usage_count(usage, "prompt_tokens"),
+        cached_tokens=_usage_count(
+            usage.get("prompt_tokens_details") if isinstance(usage, dict) else None,
+            "cached_tokens",
+        ),
+        completion_tokens=_usage_count(usage, "completion_tokens"),
+        reasoning_tokens=_usage_count(
+            usage.get("completion_tokens_details") if isinstance(usage, dict) else None,
+            "reasoning_tokens",
+        ),
+    )
+
+
+def _stop_at_closing_fence(reply: str) -> tuple[str, int, str]:
+    """The reply up to its closing fence, as the API stop would have returned it, then closed.
+
+    Returns the reply, the characters this cut removed (0 when the provider already stopped),
+    and the closing fence's state: ``intact``, ``restored`` or ``none`` (no opening fence).
+    """
+
+    cut_at = reply.find(CLOSING_FENCE_STOP)
+    cut_chars = 0
+    if cut_at != -1:
+        cut_chars = len(reply) - cut_at
+        reply = reply[:cut_at]
+    fence_lines = sum(1 for line in reply.split("\n") if line.startswith("```"))
+    if fence_lines == 0:
+        return reply, cut_chars, "none"
+    if fence_lines % 2:
+        return reply.rstrip() + "\n```", cut_chars, "restored"
+    return reply, cut_chars, "intact"
+
+
+def _diagnostic_token(value: object) -> str:
+    """One whitespace-free token, so provider text cannot add a field or a line of its own."""
+
+    if value is None:
+        return "unknown"
+    token = _DIAGNOSTIC_TOKEN_UNSAFE_RE.sub("_", str(value))[:80]
+    return token or "unknown"
+
+
+def _coding_plan_reply_line(
+    config: ReviewConfig, observation: ProviderObservation, cut_chars: int, closing_fence: str
+) -> str:
+    fields = (
+        ("endpoint", config.base_url),
+        ("model", config.model),
+        ("served_model", observation.served_model),
+        ("finish_reason", observation.finish_reason),
+        ("prompt_tokens", observation.prompt_tokens),
+        ("completion_tokens", observation.completion_tokens),
+        ("reasoning_tokens", observation.reasoning_tokens),
+        ("client_cut_chars", cut_chars),
+        ("closing_fence", closing_fence),
+    )
+    return "hapax-glmcp-reviewer: Coding Plan reply " + " ".join(
+        f"{key}={_diagnostic_token(value)}" for key, value in fields
+    )
+
+
+def _call_glm_once_observed(
     prompt: str,
     config: ReviewConfig,
     api_key: str,
     *,
     base_url: str,
     provider_label: str,
-) -> str:
+) -> tuple[str, ProviderObservation]:
     body = json.dumps(
         {
             "model": config.model,
@@ -572,6 +745,7 @@ def _call_glm_once(
             "temperature": config.temperature,
             "max_tokens": config.max_tokens,
             "thinking": {"type": config.thinking},
+            "stop": [CLOSING_FENCE_STOP],
             "stream": False,
         }
     ).encode("utf-8")
@@ -625,15 +799,18 @@ def _call_glm_once(
             "response JSON was not an object; retry later or capture the provider payload for review"
         )
 
+    observation = _provider_observation(payload)
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise ApiError(
-            "response missing choices; retry later or capture the provider payload for review"
+        raise ProviderReplyUnusable(
+            "response missing choices; retry later or capture the provider payload for review",
+            observation=observation,
         )
     message = choices[0].get("message") if isinstance(choices[0], dict) else None
     if not isinstance(message, dict):
-        raise ApiError(
-            "response missing message; retry later or capture the provider payload for review"
+        raise ProviderReplyUnusable(
+            "response missing message; retry later or capture the provider payload for review",
+            observation=observation,
         )
     content: Any = message.get("content")
     if isinstance(content, str):
@@ -652,34 +829,60 @@ def _call_glm_once(
                 parts.append(str(text_part))
         reply = "".join(parts)
         if unexpected_parts and not reply.strip():
-            raise ApiError(
+            raise ProviderReplyUnusable(
                 "response content parts had no text/content; retry later or capture the "
-                "provider payload for review"
+                "provider payload for review",
+                observation=observation,
             )
     elif content is None:
         reply = ""
     else:
-        raise ApiError(
+        raise ProviderReplyUnusable(
             "response message has no text content; retry later or capture the provider "
-            "payload for review"
+            "payload for review",
+            observation=observation,
+        )
+    if reply.strip() and observation.finish_reason == "length":
+        raise ReplyTruncated(
+            "the provider cut the reply at max_tokens "
+            f"(finish_reason=length completion_tokens={observation.completion_tokens} "
+            f"reasoning_tokens={observation.reasoning_tokens} max_tokens={config.max_tokens}); "
+            "the partial review was not used; retry the seat, or raise "
+            "HAPAX_GLMCP_REVIEW_MAX_TOKENS if it recurs",
+            observation=observation,
         )
     if not reply.strip():
         reasoning = message.get("reasoning_content")
         if config.thinking == "enabled" and isinstance(reasoning, str) and reasoning.strip():
-            raise ApiError(
+            if observation.finish_reason == "length" or (
+                observation.completion_tokens is not None
+                and observation.completion_tokens >= config.max_tokens
+            ):
+                raise ReasoningBudgetExhausted(
+                    f"{REASONING_BUDGET_EXHAUSTED}: reasoning consumed the completion budget "
+                    f"and left no content (completion_tokens={observation.completion_tokens} "
+                    f"reasoning_tokens={observation.reasoning_tokens} "
+                    f"max_tokens={config.max_tokens} finish_reason={observation.finish_reason}); "
+                    "the seat cannot vote on this budget; raise PAYG_THINKING_MIN_MAX_TOKENS "
+                    "in hapax-glmcp-reviewer or hold the GLM family",
+                    observation=observation,
+                )
+            raise ProviderReplyUnusable(
                 "response content was empty but reasoning_content was present; rerun with "
-                "HAPAX_GLMCP_REVIEW_THINKING=disabled for review-quorum output"
+                "HAPAX_GLMCP_REVIEW_THINKING=disabled for review-quorum output",
+                observation=observation,
             )
-        raise ApiError(
+        raise ProviderReplyUnusable(
             "response message was empty; retry later or rerun with "
-            "HAPAX_GLMCP_REVIEW_THINKING=disabled"
+            "HAPAX_GLMCP_REVIEW_THINKING=disabled",
+            observation=observation,
         )
-    return reply
+    return reply, observation
 
 
 def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
     try:
-        return _call_glm_once(
+        reply, observation = _call_glm_once_observed(
             prompt,
             config,
             api_key,
@@ -691,20 +894,24 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
             raise ApiError(
                 f"{exc}; retry later or check the Z.ai Coding Plan endpoint/status"
             ) from exc
+        # every PAYG use below (reservation, request, identity check, receipts) is the pinned id
+        config = replace(config, model=PAYG_MODEL)
         gate: PaygSpendGate | None = None
         reservation: PaygSpendReservation | None = None
         try:
+            estimated_cost_usd = _payg_reservation_usd(prompt, config)
             with _quota_spend_live_lock():
-                gate = _require_payg_spend_gate()
+                gate = _require_payg_spend_gate(estimated_cost_usd=estimated_cost_usd)
                 reservation = _reserve_payg_spend_receipt(
                     gate=gate,
                     config=config,
                     primary_error=exc,
+                    estimated_cost_usd=estimated_cost_usd,
                 )
             try:
-                reply = _call_glm_once(
+                reply, observation = _call_glm_once_observed(
                     prompt,
-                    config,
+                    _payg_thinking_config(config) if config.thinking == "enabled" else config,
                     api_key,
                     base_url=config.payg_base_url,
                     provider_label="PAYG API",
@@ -718,29 +925,36 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                     or config.thinking != "disabled"
                 ):
                     raise
-                reply = _call_glm_once(
+                reply, observation = _call_glm_once_observed(
                     prompt,
-                    replace(config, thinking="enabled"),
+                    _payg_thinking_config(config),
                     api_key,
                     base_url=config.payg_base_url,
                     provider_label="PAYG API",
                 )
+            identity_error = _payg_identity_error(observation, config)
+            if identity_error is not None:
+                raise ProviderReplyUnusable(identity_error, observation=observation)
             with _quota_spend_live_lock():
                 reservation = _mark_payg_spend_receipt_succeeded(
                     reservation=reservation,
                     ledger_path=gate.ledger_path,
                     config=config,
                     primary_error=exc,
+                    observation=observation,
                 )
             print(
                 "hapax-glmcp-reviewer: PAYG fallback used "
                 f"endpoint={config.payg_base_url} model={config.model} "
+                f"served_model={observation.served_model} "
                 f"primary_error_class={exc.info.error_class} "
                 f"spend_gate={gate.state} budget_id={gate.budget_id} "
+                f"reserved_usd={estimated_cost_usd} "
+                f"actual_usd={reservation.spend_receipt.actual_cost_usd} "
                 f"spend_receipt={reservation.path.name}",
                 file=sys.stderr,
             )
-            return reply
+            return _stop_at_closing_fence(reply)[0]
         except ApiError as fallback_exc:
             receipt_ref = reservation.path.name if reservation is not None else "not-written"
             reservation_note = ""
@@ -760,6 +974,51 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                             " spend receipt failure reconciliation failed "
                             f"({type(reconcile_exc).__name__});"
                         )
+                elif isinstance(fallback_exc, ProviderReplyUnusable):
+                    # The provider answered, so the call billed. From the named, requested
+                    # model: reconcile from its reported usage. From an unidentified model the
+                    # price is unknown: freeze, holding at least the dearest known rates.
+                    observation = fallback_exc.observation
+                    identity_error = _payg_identity_error(observation, config)
+                    try:
+                        with _quota_spend_live_lock():
+                            if identity_error is None:
+                                _mark_payg_spend_receipt_succeeded(
+                                    reservation=reservation,
+                                    ledger_path=gate.ledger_path,
+                                    config=config,
+                                    primary_error=exc,
+                                    observation=observation,
+                                    reply_used=False,
+                                )
+                                reservation_note = (
+                                    " spend receipt reconciled from the billed response; "
+                                    "reply not used;"
+                                )
+                            else:
+                                _mark_payg_spend_receipt_frozen(
+                                    reservation=reservation,
+                                    ledger_path=gate.ledger_path,
+                                    config=config,
+                                    primary_error=exc,
+                                    observation=observation,
+                                    count_usd=_unidentified_spend_ceiling_usd(observation),
+                                    reason=(
+                                        f"reviewer froze: {identity_error}; the executing "
+                                        "model's price is unknown, so the higher of the "
+                                        "reservation and the usage at the dearest known rates "
+                                        "is held"
+                                    ),
+                                )
+                                reservation_note = (
+                                    " spend frozen: the executing model is unidentified; "
+                                    "reply not used;"
+                                )
+                    except ApiError as reconcile_exc:
+                        reservation_note = (
+                            " billed-response reconciliation failed "
+                            f"({type(reconcile_exc).__name__}); reservation remains pending;"
+                        )
                 else:
                     reservation_note = (
                         " spend receipt reservation remains pending because the PAYG "
@@ -772,6 +1031,58 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                 "scripts/hapax-quota-telemetry-writer --json, then retry later, check "
                 "PAYG balance, or write a classified GLMCP hold receipt"
             ) from fallback_exc
+    reply, cut_chars, closing_fence = _stop_at_closing_fence(reply)
+    print(_coding_plan_reply_line(config, observation, cut_chars, closing_fence), file=sys.stderr)
+    return reply
+
+
+def _payg_identity_error(observation: ProviderObservation, config: ReviewConfig) -> str | None:
+    """A PAYG reply is used only when the provider names the model that was requested.
+
+    The name is the provider's own attestation (the response ``model`` field); nothing here
+    can verify it from outside. It catches a substitution the provider reports, not one it hides.
+    """
+
+    if observation.served_model is None:
+        return (
+            "PAYG response named no served model; reply refused because the executing model "
+            "is unidentified; capture the provider payload and recheck the Z.ai PAYG contract"
+        )
+    if observation.served_model != config.model:
+        return (
+            f"PAYG served model {observation.served_model!r} differs from requested "
+            f"{config.model!r}; reply refused; set HAPAX_GLMCP_REVIEW_MODEL to an admitted "
+            "model the provider serves as itself"
+        )
+    return None
+
+
+def _payg_thinking_config(config: ReviewConfig) -> ReviewConfig:
+    """The config for a PAYG request that thinks: thinking on, budget at least the floor."""
+    return replace(
+        config,
+        thinking="enabled",
+        max_tokens=max(config.max_tokens, PAYG_THINKING_MIN_MAX_TOKENS),
+    )
+
+
+def _payg_reservation_usd(prompt: str, config: ReviewConfig) -> Decimal:
+    # With thinking disabled, an always-thinking model's first PAYG request is rejected (1210)
+    # and retried once; count that first request's input as billable too. The billed output is
+    # the thinking request's, so it is priced at that request's budget.
+    attempts = 2 if config.thinking == "disabled" else 1
+    try:
+        return glmcp_payg_reservation_usd(
+            model=config.model,
+            prompt_utf8_bytes=len(SYSTEM_PROMPT.encode("utf-8")) + len(prompt.encode("utf-8")),
+            max_tokens=_payg_thinking_config(config).max_tokens,
+            attempts=attempts,
+        )
+    except QuotaSpendLedgerError as exc:
+        raise ApiError(
+            f"PAYG fallback refused by paid-spend gate: {exc}; use an admitted GLM model "
+            "with a recorded Z.ai list price"
+        ) from exc
 
 
 def _should_try_payg_fallback(exc: ZaiHttpError, config: ReviewConfig) -> bool:
@@ -809,7 +1120,7 @@ def _quota_spend_live_lock() -> Any:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _payg_budget_request() -> PaidRouteRequest:
+def _payg_budget_request(*, estimated_cost_usd: Decimal) -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(
         {
             "route_id": GLMCP_PAYG_BUDGET_ROUTE_ID,
@@ -818,7 +1129,7 @@ def _payg_budget_request() -> PaidRouteRequest:
             "profile": GLMCP_PAYG_BUDGET_PROFILE,
             "task_class": GLMCP_PAYG_BUDGET_TASK_CLASS,
             "quality_floor": GLMCP_PAYG_BUDGET_QUALITY_FLOOR,
-            "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
+            "estimated_cost_usd": str(estimated_cost_usd),
             "capacity_pool": CapacityPool.API_PAID_SPEND,
         }
     )
@@ -849,14 +1160,14 @@ def _payg_task_hash() -> str | None:
     return None
 
 
-def _require_payg_spend_gate() -> PaygSpendGate:
+def _require_payg_spend_gate(*, estimated_cost_usd: Decimal) -> PaygSpendGate:
     live_path = _quota_spend_live_path_from_env()
     try:
         resolved = load_quota_spend_ledger_resolved(live_path=live_path)
         # This runs while _quota_spend_live_lock() is held, so the ledger read
         # includes reservations appended by earlier lock holders before this call
         # can admit another PAYG request.
-        request = _payg_budget_request()
+        request = _payg_budget_request(estimated_cost_usd=estimated_cost_usd)
         decision = evaluate_paid_route_eligibility(resolved.ledger, request)
     except (OSError, QuotaSpendLedgerError, ValueError) as exc:
         raise ApiError(
@@ -940,11 +1251,13 @@ def _reserve_payg_spend_receipt(
     gate: PaygSpendGate,
     config: ReviewConfig,
     primary_error: ZaiHttpError,
+    estimated_cost_usd: Decimal,
 ) -> PaygSpendReservation:
     reservation = _build_payg_spend_receipt(
         gate=gate,
         config=config,
         primary_error=primary_error,
+        estimated_cost_usd=estimated_cost_usd,
     )
     _append_spend_receipt_to_live_ledger(
         ledger_path=gate.ledger_path,
@@ -971,6 +1284,7 @@ def _build_payg_spend_receipt(
     gate: PaygSpendGate,
     config: ReviewConfig,
     primary_error: ZaiHttpError,
+    estimated_cost_usd: Decimal,
 ) -> PaygSpendReservation:
     created_at = datetime.now(UTC).replace(microsecond=0)
     stamp = _payg_reservation_event_stamp(primary_error, created_at)
@@ -1007,7 +1321,7 @@ def _build_payg_spend_receipt(
         "budget_id": gate.budget_id,
         "provider": GLMCP_PAYG_BUDGET_PROVIDER,
         "model_or_engine": config.model,
-        "model_id": "z_ai-glm-5.2",
+        "model_id": GLMCP_MODEL_IDS.get(config.model),
         "effort": "none",
         "quantization": "not_applicable",
         "auth_surface": "api_key",
@@ -1016,7 +1330,7 @@ def _build_payg_spend_receipt(
             "receipt-bounded GLMCP review fallback after Coding Plan quota wall"
         ),
         "spend_reason": "quota_exhaustion",
-        "estimated_cost_usd": GLMCP_PAYG_ESTIMATED_COST_USD,
+        "estimated_cost_usd": str(estimated_cost_usd),
         "created_at": created_at.isoformat().replace("+00:00", "Z"),
         "reconcile_by": (created_at + PAYG_SPEND_RECEIPT_RECONCILE_AFTER)
         .isoformat()
@@ -1092,6 +1406,7 @@ def _payg_spend_receipt_fields(
     config: ReviewConfig,
     primary_error: ZaiHttpError,
     status: str,
+    observation: ProviderObservation | None = None,
 ) -> list[tuple[str, object]]:
     fields: list[tuple[str, object]] = [
         ("schema", PAYG_SPEND_RECEIPT_SCHEMA),
@@ -1137,7 +1452,94 @@ def _payg_spend_receipt_fields(
     ]
     if receipt_payload.get("cap_remaining_usd") is not None:
         fields.append(("cap_remaining_usd", receipt_payload["cap_remaining_usd"]))
+    if observation is not None:
+        fields.extend(
+            (key, value)
+            for key, value in (
+                ("served_model", observation.served_model),
+                ("finish_reason", observation.finish_reason),
+                ("usage_prompt_tokens", observation.prompt_tokens),
+                ("usage_cached_tokens", observation.cached_tokens),
+                ("usage_completion_tokens", observation.completion_tokens),
+                ("usage_reasoning_tokens", observation.reasoning_tokens),
+            )
+            if value is not None
+        )
+        fields.append(("price_basis_ref", GLMCP_PAYG_PRICE_BASIS_REF))
     return fields
+
+
+def _observed_actual_cost_usd(
+    *,
+    estimated_cost: Decimal,
+    config: ReviewConfig,
+    observation: ProviderObservation | None,
+) -> tuple[Decimal, str]:
+    """Actual cost of an identified call (served == requested model, which reserving already
+    priced) from provider-reported usage at list price; else keep the upper bound."""
+
+    if observation is None or not observation.has_usage():
+        return estimated_cost, "no provider usage reported, so the pre-call upper bound stands"
+    actual = glmcp_payg_usage_cost_usd(
+        model=config.model,
+        prompt_tokens=observation.prompt_tokens or 0,
+        cached_tokens=observation.cached_tokens or 0,
+        completion_tokens=observation.completion_tokens or 0,
+    )
+    return actual, f"actual from provider-reported usage at list price {GLMCP_PAYG_PRICE_BASIS_REF}"
+
+
+def _unidentified_spend_ceiling_usd(observation: ProviderObservation) -> Decimal:
+    # Zero leaves the frozen receipt holding its reservation as the figure.
+    if not observation.has_usage():
+        return Decimal("0")
+    try:
+        return glmcp_payg_usage_ceiling_usd(
+            prompt_tokens=observation.prompt_tokens or 0,
+            completion_tokens=observation.completion_tokens or 0,
+        )
+    except Exception:  # noqa: BLE001 - an unpriceable report still freezes, at the reservation
+        return Decimal("0")
+
+
+def _mark_payg_spend_receipt_frozen(
+    *,
+    reservation: PaygSpendReservation,
+    ledger_path: Path,
+    config: ReviewConfig,
+    primary_error: ZaiHttpError,
+    observation: ProviderObservation | None,
+    count_usd: Decimal,
+    reason: str,
+) -> PaygSpendReservation:
+    """Freeze spend the reviewer cannot trust: it counts, and paid GLMCP spend stops."""
+
+    frozen_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    receipt_payload = frozen_spend_receipt_payload(
+        reservation.spend_receipt.model_dump(mode="json"),
+        count_usd=count_usd,
+        frozen_at=frozen_at,
+        reason=reason,
+    )
+    spend_receipt = SpendReceipt.model_validate(receipt_payload)
+    _write_flat_yaml_atomic(
+        reservation.path,
+        _payg_spend_receipt_fields(
+            receipt_payload=receipt_payload,
+            config=config,
+            primary_error=primary_error,
+            status="spend_frozen",
+            observation=observation,
+        ),
+    )
+    _replace_spend_receipt_in_live_ledger(ledger_path=ledger_path, receipt=spend_receipt)
+    print(
+        f"hapax-glmcp-reviewer: spend frozen spend_receipt={reservation.path.name} "
+        f"held_usd={spend_receipt.cost_against_cap()}: {reason}; paid GLMCP spend is refused "
+        "until a reviewed governance receipt with the same spend_id resolves it",
+        file=sys.stderr,
+    )
+    return PaygSpendReservation(path=reservation.path, spend_receipt=spend_receipt)
 
 
 def _mark_payg_spend_receipt_succeeded(
@@ -1146,15 +1548,63 @@ def _mark_payg_spend_receipt_succeeded(
     ledger_path: Path,
     config: ReviewConfig,
     primary_error: ZaiHttpError,
+    observation: ProviderObservation | None = None,
+    reply_used: bool = True,
 ) -> PaygSpendReservation:
     reconciled_at = datetime.now(UTC).replace(microsecond=0)
     receipt_payload = reservation.spend_receipt.model_dump(mode="json")
-    receipt_payload["actual_cost_usd"] = receipt_payload["estimated_cost_usd"]
+    estimated_cost = Decimal(str(receipt_payload["estimated_cost_usd"]))
+    try:
+        actual_cost, basis = _observed_actual_cost_usd(
+            estimated_cost=estimated_cost,
+            config=config,
+            observation=observation,
+        )
+    except Exception as exc:  # noqa: BLE001 - a billed call's pricing failure must freeze, not escape
+        # A usage report the price function cannot accept (e.g. cached above prompt tokens),
+        # or any other pricing failure, prices nothing: freeze at the reservation or the
+        # dearest-rate ceiling rather than leave the reservation pending.
+        return _mark_payg_spend_receipt_frozen(
+            reservation=reservation,
+            ledger_path=ledger_path,
+            config=config,
+            primary_error=primary_error,
+            observation=observation,
+            count_usd=(
+                _unidentified_spend_ceiling_usd(observation)
+                if observation is not None
+                else estimated_cost
+            ),
+            reason=f"reviewer froze: provider usage report inconsistent ({exc})",
+        )
+    if actual_cost > estimated_cost:
+        # The reservation was meant to bound this call; the bound failed. Count the higher
+        # figure and stop paid spend until someone looks.
+        return _mark_payg_spend_receipt_frozen(
+            reservation=reservation,
+            ledger_path=ledger_path,
+            config=config,
+            primary_error=primary_error,
+            observation=observation,
+            count_usd=actual_cost,
+            reason=(
+                f"reviewer froze: provider-reported actual {actual_cost} exceeds the reservation "
+                f"{estimated_cost}; {basis}"
+            ),
+        )
+    if receipt_payload.get("cap_remaining_usd") is not None:
+        cap_remaining = Decimal(str(receipt_payload["cap_remaining_usd"]))
+        receipt_payload["cap_remaining_usd"] = str(cap_remaining + estimated_cost - actual_cost)
+    receipt_payload["actual_cost_usd"] = str(actual_cost)
     receipt_payload["reconciliation_state"] = SpendReconciliationState.RECONCILED.value
     receipt_payload["reconciled_at"] = reconciled_at.isoformat().replace("+00:00", "Z")
+    outcome = (
+        "PAYG API call returned model output"
+        if reply_used
+        else "PAYG API call billed a response whose reply was not used"
+    )
     receipt_payload["reconciliation_reason"] = (
-        "PAYG API call returned model output; provider invoice unavailable, "
-        "using pre-call estimate against cap"
+        f"{outcome}; {basis}; provider invoice unavailable, not an invoice figure"
     )
     spend_receipt = SpendReceipt.model_validate(receipt_payload)
     _write_flat_yaml_atomic(
@@ -1164,6 +1614,7 @@ def _mark_payg_spend_receipt_succeeded(
             config=config,
             primary_error=primary_error,
             status="spend_reconciled",
+            observation=observation,
         ),
     )
     _replace_spend_receipt_in_live_ledger(ledger_path=ledger_path, receipt=spend_receipt)
@@ -1330,10 +1781,29 @@ def main(argv: list[str] | None = None) -> int:
             raise ConfigError("stdin prompt is empty; pipe a rendered review prompt on stdin")
         reply = call_glm(prompt, config, api_key)
     except ConfigError as exc:
-        print(f"hapax-glmcp-reviewer: {exc}", file=sys.stderr)
+        print(f"hapax-glmcp-reviewer: {provider_text_on_one_line(exc)}", file=sys.stderr)
         return 2
     except ApiError as exc:
-        print(f"hapax-glmcp-reviewer: api error: {exc}", file=sys.stderr)
+        if isinstance(exc, ReasoningBudgetExhausted) or isinstance(
+            exc.__cause__, ReasoningBudgetExhausted
+        ):
+            # the marker comes from the type, so the dispatcher can name the outage whatever
+            # the message says; the message is flattened so the provider cannot open a line of
+            # its own after the marker
+            print(
+                f"hapax-glmcp-reviewer: {REASONING_BUDGET_EXHAUSTED}: "
+                f"{provider_text_on_one_line(exc)}",
+                file=sys.stderr,
+            )
+            return 1
+        if isinstance(exc, ReplyTruncated) or isinstance(exc.__cause__, ReplyTruncated):
+            # named from the type like the budget marker above; retryable, so not exit 1
+            print(
+                f"hapax-glmcp-reviewer: {REPLY_TRUNCATED}: {provider_text_on_one_line(exc)}",
+                file=sys.stderr,
+            )
+            return EXIT_RETRYABLE
+        print(f"hapax-glmcp-reviewer: api error: {provider_text_on_one_line(exc)}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("hapax-glmcp-reviewer: interrupted", file=sys.stderr)

@@ -190,7 +190,7 @@ class ConvergenceRule(RuleBase):
             return None
 
         prompt: str = event.tool_input.get("prompt", "")
-        output: str = event.user_message or ""
+        output: str = event.tool_output or ""
 
         slug = extract_topic_slug(prompt)
         findings_count = count_findings(output)

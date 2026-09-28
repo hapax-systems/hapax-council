@@ -61,6 +61,25 @@ class ConductorServer:
                     result = rewrite.to_dict()
                 else:
                     result = {"action": "allow"}
+        elif event_type == "user_prompt":
+            # The operator's own turn. Routed explicitly, so a rule that reads
+            # operator prose (spawn intent) is actually reached: before this branch
+            # existed an operator turn was answered `allow` without any rule seeing
+            # it, and the spawn-intent branch gated on this event_type could never
+            # run (M103).
+            responses = self.registry.process_user_prompt(event)
+            block = next((r for r in responses if r.action == "block"), None)
+            if block:
+                result = block.to_dict()
+            else:
+                rewrite = next((r for r in responses if r.action == "rewrite"), None)
+                if rewrite:
+                    result = rewrite.to_dict()
+                else:
+                    message = next((r.message for r in responses if r.message), None)
+                    result = {"action": "allow"}
+                    if message:
+                        result["message"] = message
         else:
             result = {"action": "allow"}
 

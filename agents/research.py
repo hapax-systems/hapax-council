@@ -9,13 +9,14 @@ import asyncio
 import logging
 import sys
 from dataclasses import dataclass
+from typing import Literal
 
 log = logging.getLogger("research")
 
 from pydantic_ai import Agent
 from qdrant_client import QdrantClient
 
-from agents._config import EMBEDDING_MODEL, LITELLM_BASE, LITELLM_KEY, embed, get_model, get_qdrant
+from agents._config import EMBEDDING_MODEL, embed, get_model, get_qdrant
 from agents._operator import get_goals, get_system_prompt_fragment
 
 # Import Langfuse OTel config (side-effect: configures exporter)
@@ -131,6 +132,21 @@ async def search_knowledge_base(ctx, query: str) -> str:
 
 # search_samples removed — 'samples' Qdrant collection was never populated
 
+# Tavily has no hour bucket. hour and day both use the day window.
+_TavilyWindow = Literal["day", "week", "month"]
+_TAVILY_TIME_RANGE: dict[str, _TavilyWindow] = {
+    "hour": "day",
+    "day": "day",
+    "week": "week",
+    "month": "month",
+}
+
+
+def _tavily_time_range(recency: str | None) -> _TavilyWindow | None:
+    if recency is None:
+        return None
+    return _TAVILY_TIME_RANGE.get(recency)
+
 
 @agent.tool
 async def search_web(
@@ -139,7 +155,7 @@ async def search_web(
     recency: str | None = None,
     domains: list[str] | None = None,
 ) -> str:
-    """Search the live web for current information using Perplexity Sonar.
+    """Search the live web for current information using Tavily.
 
     Args:
         query: Natural language search query.
@@ -151,19 +167,35 @@ async def search_web(
         attributes={"query.text": query[:100], "search.recency": recency or "none"},
     ):
         try:
-            from pydantic_ai.models.openai import OpenAIChatModel
-            from pydantic_ai.providers.litellm import LiteLLMProvider
-
-            web_model = OpenAIChatModel(
-                "web-scout",
-                provider=LiteLLMProvider(api_base=LITELLM_BASE, api_key=LITELLM_KEY),
+            from shared.tavily_client import (
+                TavilyBudgetExceeded,
+                TavilyConfigError,
+                TavilyPolicyViolation,
+                TavilyRequestError,
+                search_snippets,
             )
-            web_agent = Agent(web_model)
-            result = await web_agent.run(query)
-            return result.output
-        except Exception as exc:
+
+            domain_filter = list(domains)[:20] if domains else None
+            text = await asyncio.to_thread(
+                search_snippets,
+                query,
+                lane="scout_horizon",
+                max_results=5,
+                include_domains=domain_filter,
+                time_range=_tavily_time_range(recency),
+            )
+            return text or "Web search returned no results."
+        except (
+            TavilyConfigError,
+            TavilyBudgetExceeded,
+            TavilyPolicyViolation,
+            TavilyRequestError,
+        ) as exc:
             log.warning("Web search failed: %s", exc)
-            return f"Web search unavailable: {exc}"
+            return (
+                f"Web search unavailable: {exc}; "
+                "next_action=retry later or proceed without external web evidence"
+            )
 
 
 @agent.tool
@@ -172,9 +204,7 @@ async def deep_research(
     question: str,
     domains: list[str] | None = None,
 ) -> str:
-    """Run deep multi-source web research using Perplexity Sonar Deep Research.
-
-    Higher cost than search_web. Skipped in fortress working mode.
+    """Run a deeper Tavily search. Skipped in fortress working mode.
 
     Args:
         question: Research question requiring comprehensive investigation.
@@ -193,19 +223,35 @@ async def deep_research(
             pass
 
         try:
-            from pydantic_ai.models.openai import OpenAIChatModel
-            from pydantic_ai.providers.litellm import LiteLLMProvider
-
-            web_model = OpenAIChatModel(
-                "web-deep",
-                provider=LiteLLMProvider(api_base=LITELLM_BASE, api_key=LITELLM_KEY),
+            from shared.tavily_client import (
+                TavilyBudgetExceeded,
+                TavilyConfigError,
+                TavilyPolicyViolation,
+                TavilyRequestError,
+                search_snippets,
             )
-            web_agent = Agent(web_model)
-            result = await web_agent.run(question)
-            return result.output
-        except Exception as exc:
+
+            domain_filter = list(domains)[:20] if domains else None
+            text = await asyncio.to_thread(
+                search_snippets,
+                question,
+                lane="research_reports",
+                max_results=5,
+                search_depth="advanced",
+                include_domains=domain_filter,
+            )
+            return text or "Web search returned no results."
+        except (
+            TavilyConfigError,
+            TavilyBudgetExceeded,
+            TavilyPolicyViolation,
+            TavilyRequestError,
+        ) as exc:
             log.warning("Deep research failed: %s", exc)
-            return f"Deep research unavailable: {exc}"
+            return (
+                f"Deep research unavailable: {exc}; "
+                "next_action=retry later or proceed without external web evidence"
+            )
 
 
 # ── Entry points ─────────────────────────────────────────────────────────────

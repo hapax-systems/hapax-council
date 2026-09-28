@@ -218,7 +218,10 @@ class TestProducerTimeoutKillsTheWholeTree:
             repo_root=tmp_path,
             timeout=2,
         )
-        assert rec["outcome"] == "timeout"
+        # The record in the message: an outside SIGTERM shows as outcome=failed
+        # with returncode=-15 before the 2s timeout, which the bare comparison
+        # hid in the merge-group log.
+        assert rec["outcome"] == "timeout", rec
         assert rec["returncode"] is None
         assert rec["duration_s"] >= 2.0
         assert rec["completed_at"]
@@ -512,9 +515,17 @@ def test_group_sweep_premise_pinned_to_the_real_producer_registry() -> None:
     the real registry runs under the harness's start_new_session process
     group, so killpg(proc.pid) reaches whatever it spawned. A producer
     joining the registry must re-verify that premise; this pin forces the
-    re-verification instead of letting the sweep premise go stale silently."""
+    re-verification instead of letting the sweep premise go stale silently.
+
+    encountered-machinery-audit (2026-09-25) re-verified: its only children are synchronous
+    `git -C <vault> log/show/rev-parse` calls via subprocess.run with a timeout, with no
+    start_new_session and no daemonizing, so they stay in the harness's process group."""
     producers = det.load_registry(det.DEFAULT_REGISTRY)
-    assert sorted(p["id"] for p in producers) == ["agy-review-quota", "claude-account-live"]
+    assert sorted(p["id"] for p in producers) == [
+        "agy-review-quota",
+        "claude-account-live",
+        "encountered-machinery-audit",
+    ]
 
 
 class TestLivenessReconciler:

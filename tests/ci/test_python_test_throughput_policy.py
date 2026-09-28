@@ -60,7 +60,7 @@ def test_required_test_check_keeps_full_pytest_on_merge_queue_and_main() -> None
     assert "Serial title-card result" in test_block
     assert "steps.test_mode.outputs.mode == 'full'" in test_block
     assert "github.event_name != 'merge_group'" in test_block
-    assert "timeout -s KILL 1200" in test_block
+    assert "timeout -s KILL 1800" in test_block
     assert "uv sync --extra ci --frozen" in test_block
     assert (
         'uv run --no-sync python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"' in test_block

@@ -1542,6 +1542,9 @@ sync_dependency_environment() {
 sync_dependency_environment "$candidate_worktree"
 run_activation_health_probes "$candidate_worktree"
 LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
+# The cc-* tools the runbooks name, symlinked from the release (M79; a test pins this
+# list against docs/runbooks). A new tool is added here deliberately, never by glob.
+MANAGED_CC_TOOLS=(cc-cascade-unblock cc-claim cc-close cc-scope-widen cc-stage-advance cc-task-lint cc-task-offer-ready cc-task-repair)
 if ! mkdir -p "$LOCAL_BIN"; then
     write_receipt "failed" "not_started" "2" "managed launcher directory unavailable"
     echo "hapax-source-activate: unable to prepare managed launcher directory $LOCAL_BIN; next action: repair its permissions or free space, then rerun governed source activation" >&2
@@ -1577,7 +1580,7 @@ snapshot_managed_launchers() {
             }
             managed["$base"]=1
         done
-        for base in cc-claim cc-close; do
+        for base in "${MANAGED_CC_TOOLS[@]}"; do
             [[ -f "$root/scripts/$base" ]] && managed["$base"]=1
         done
     done
@@ -1825,7 +1828,7 @@ prepare_active_runtime_surface() {
     for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
         link_active_script "$script" || return 1
     done
-    for script in cc-claim cc-close; do
+    for script in "${MANAGED_CC_TOOLS[@]}"; do
         link_active_script "$ACTIVE_WORKTREE/scripts/$script" || return 1
     done
     sync_active_config \
@@ -1848,7 +1851,45 @@ if [[ "$config_sync_count" -gt 0 ]]; then
     echo "hapax-source-activate: synced $config_sync_count config files from activation worktree"
 fi
 
+# Post-deploy governed re-provision of the Gate-0B claim-publication install (row
+# gate0b-post-deploy-governed-reprovision-20260927). A merge that changed the executor-bound shared/
+# modules correctly invalidates the install receipt; re-provision it through the governed install
+# step, with the merges as its recorded basis, instead of leaving every lane's next claim to hold
+# until the seat quarantines by hand. It refuses anything no merge explains. A hold is reported
+# loudly and never fails the activation: the release itself is fine.
+#
+# It also runs on the already-activated path, so a HELD re-provision is retried by the next timer
+# tick once its cause is repaired (gate0b-reprovision-recovery-paths-20260927); `current` is a
+# no-op. With `quiet-if-unchanged`, an outcome identical to the last one is not reported again.
+reprovision_claim_publication_install() {
+    local command=("${HAPAX_SOURCE_ACTIVATE_REPROVISION_CMD:-}")
+    if [[ -z "${command[0]}" ]]; then
+        local python="$ACTIVE_WORKTREE/.venv/bin/python"
+        if [[ ! -x "$python" || ! -f "$ACTIVE_WORKTREE/shared/gate0b_claim_publication_install.py" ]]; then
+            return 0  # no project runtime in this release: nothing to re-provision
+        fi
+        command=("$python" -m shared.gate0b_claim_publication_install)
+    fi
+    local last="$STATE_DIR/gate0b-reprovision-last.json" previous="" outcome rc
+    [[ -f "$last" ]] && previous="$(<"$last")"
+    set +e
+    # Only the command's JSON (stdout) is recorded; its stderr passes through to this one's.
+    outcome="$(cd "$ACTIVE_WORKTREE" && "${command[@]}" reprovision --repo "$ACTIVE_WORKTREE" --head "$origin_sha")"
+    rc=$?
+    set -e
+    printf '%s\n' "$outcome" > "$last"
+    if [[ "${1:-}" == "quiet-if-unchanged" && -n "$previous" && "$outcome" == "$previous" ]]; then
+        return 0
+    fi
+    if [[ "$rc" -eq 0 ]]; then
+        echo "hapax-source-activate: gate0b re-provision: $outcome"
+    else
+        echo "hapax-source-activate: gate0b re-provision HELD (claims hold on install mismatch until it is resolved): $outcome. Next action: resolve the named reason (see $STATE_DIR/gate0b-reprovision-last.json); quarantine the receipt by hand only on an operator decision." >&2
+    fi
+}
+
 if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origin_sha" ]]; then
+    reprovision_claim_publication_install quiet-if-unchanged
     discard_launcher_snapshot
     write_receipt "no_op" "skipped_already_active" "0" "origin/main already activated"
     echo "hapax-source-activate: origin/main already activated at ${origin_sha:0:8}"
@@ -1856,6 +1897,7 @@ if [[ "$FORCE" != "1" && "$SKIP_DEPLOY" != "1" && "$previous_success" == "$origi
 fi
 
 if [[ "$SKIP_DEPLOY" == "1" ]]; then
+    reprovision_claim_publication_install
     discard_launcher_snapshot
     write_receipt "completed_skip_deploy" "skipped_by_flag" "0" "activation worktree refreshed; deploy skipped by flag"
     echo "hapax-source-activate: refreshed active source at ${origin_sha:0:8}; deploy skipped"
@@ -1907,6 +1949,7 @@ if [[ "$deploy_rc" -ne 0 ]]; then
     exit "$deploy_rc"
 fi
 
+reprovision_claim_publication_install
 discard_launcher_snapshot
 printf '%s\n' "$origin_sha" > "$LAST_SUCCESS_SHA"
 refresh_active_source_fields

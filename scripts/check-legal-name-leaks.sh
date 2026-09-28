@@ -40,6 +40,10 @@ set -euo pipefail
 LEGAL_NAME_PATTERNS=(
     'Ryan[[:space:]]+Kleeberger'
     'Ryan[[:space:]]+Lee[[:space:]]+Kleeberger'
+    # The family surname alone names every household member, registered as a
+    # principal or not. Opaque principal IDs (principal-<letter><digit>) are
+    # deliberately NOT patterns: they are the vocabulary that replaces names.
+    'Kleeberger'
 )
 
 # Whitelisted paths — leaks here are not flagged. Match by glob.
@@ -58,7 +62,9 @@ WHITELIST_GLOBS=(
     'docs/governance/operator-*'
     'profiles/*'
     'scripts/check-legal-name-leaks.sh'
+    'hooks/scripts/pii-guard.sh'
     'tests/scripts/test_check_legal_name_leaks.py'
+    'tests/hooks/test_pii_guard.py'
 )
 
 is_whitelisted() {
@@ -76,15 +82,15 @@ is_whitelisted() {
 FILES=()
 if [ "$#" -eq 0 ]; then
     # Default: staged files. Empty if nothing staged.
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
         [ -n "$f" ] && FILES+=("$f")
-    done < <(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+    done < <(git diff --cached --name-only -z --diff-filter=ACMR 2>/dev/null || true)
 elif [ "$1" = "--diff" ]; then
     shift
     base_head="${1:?--diff needs <base>..<head>}"
-    while IFS= read -r f; do
+    while IFS= read -r -d '' f; do
         [ -n "$f" ] && FILES+=("$f")
-    done < <(git diff --name-only --diff-filter=ACMR "$base_head" 2>/dev/null || true)
+    done < <(git diff --name-only -z --diff-filter=ACMR "$base_head" 2>/dev/null || true)
 else
     FILES=("$@")
 fi
@@ -94,22 +100,51 @@ if [ "${#FILES[@]}" -eq 0 ]; then
     exit 0
 fi
 
+# Basenames use the existing content pattern array and the local registry.
+# shellcheck source=hooks/scripts/principal-name-map.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hooks/scripts/principal-name-map.sh"
+names_status=0
+registry_names="$(principal_names)" || names_status=$?
+if [ "$names_status" -ne 0 ]; then
+    echo "check-legal-name-leaks: the principal-name-map registry at $(principal_name_map_path) cannot be used (see above)." >&2
+    echo "Repair it (a readable file of valid entries) or remove it. Failing closed." >&2
+    exit 2
+fi
+
 LEAKS=0
 for f in "${FILES[@]}"; do
-    [ -f "$f" ] || continue
     if is_whitelisted "$f"; then
         continue
     fi
+    basename="$(basename -- "$f")"
+    path_digest="$(printf '%s' "$f" | sha256sum | cut -d' ' -f1)"
+    if [ -n "$registry_names" ] && printf '%s\n' "$basename" | grep -qiwF -f <(printf '%s\n' "$registry_names"); then
+        echo "REGISTERED-PRINCIPAL NAME path_sha256=$path_digest (basename withheld)" >&2
+        LEAKS=$((LEAKS + 1))
+    fi
     for pat in "${LEGAL_NAME_PATTERNS[@]}"; do
+        if printf '%s\n' "$basename" | grep -Eiq -- "$pat"; then
+            echo "LEGAL-NAME LEAK path_sha256=$path_digest (basename withheld)" >&2
+            LEAKS=$((LEAKS + 1))
+        fi
+        [ -f "$f" ] || continue
         # -E for ERE, -i case-insensitive, -n line numbers, -H file name.
         # Suppress non-zero exit when no match (set -e propagation).
-        if matches="$(grep -EHin "$pat" "$f" 2>/dev/null || true)" && [ -n "$matches" ]; then
-            echo "LEGAL-NAME LEAK in $f:" >&2
-            echo "$matches" >&2
-            echo "" >&2
+        # File and line numbers only, never the line content: a matched line can
+        # carry another household token, and CI logs on a public repo are public.
+        if matches="$(grep -Ein -- "$pat" "$f" 2>/dev/null | cut -d: -f1 | paste -sd, - || true)" && [ -n "$matches" ]; then
+            echo "LEGAL-NAME LEAK path_sha256=$path_digest:$matches (content withheld)" >&2
             LEAKS=$((LEAKS + 1))
         fi
     done
+    [ -f "$f" ] || continue
+    if [ -n "$registry_names" ]; then
+        lines="$(grep -niwF -f <(printf '%s\n' "$registry_names") -- "$f" 2>/dev/null | cut -d: -f1 | paste -sd, - || true)"
+        if [ -n "$lines" ]; then
+            echo "REGISTERED-PRINCIPAL NAME path_sha256=$path_digest:$lines (name withheld)" >&2
+            LEAKS=$((LEAKS + 1))
+        fi
+    fi
 done
 
 if [ "$LEAKS" -gt 0 ]; then

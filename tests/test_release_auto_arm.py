@@ -21,9 +21,11 @@ from pathlib import Path
 import pytest
 
 from shared.release_gate import (
+    AUDIO_ROUTING_EVIDENCE,
     LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES,
     LIVE_EGRESS_MITIGATION_CHECKS,
     _path_in_consent_containment_lane,
+    _path_is_audio_routing_surface,
     assess_release_auto_arm_estate,
 )
 from shared.sdlc_lifecycle import (
@@ -132,15 +134,215 @@ def test_audio_or_live_egress_sensitive_with_full_evidence_auto_arms() -> None:
     assert assessment.eligible is True
 
 
-def test_canon_map_still_fails_the_class_closed_without_the_wrapper() -> None:
-    # The canon-hashed map (sdlc_lifecycle.py, byte-pinned by the Gate 0A
-    # fixture) is deliberately UNCHANGED: the plain canon assessment still
-    # fails the class closed. The extension lives only in the estate wrapper.
-    fm = _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
-    assessment = assess_release_auto_arm(fm, verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS))
+def test_canon_map_defines_both_egress_classes_by_evidence() -> None:
+    # release-mitigation-gate-audio-or-live-egress-20260927: the canon map now
+    # defines both egress classes. Neither is "unmitigable" (held forever), and
+    # neither is released on the review quorum alone: each tuple names at least
+    # one executed CI check beside the virtual quorum marker.
+    assert RELEASE_MITIGATION_CHECKS["audio_or_live_egress_sensitive"] == (
+        LIVE_EGRESS_MITIGATION_CHECKS
+    )
+    assert RELEASE_MITIGATION_CHECKS["outbound_message_egress_sensitive"] == (
+        "outbound-send-surface-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    )
+    for name in ("audio_or_live_egress_sensitive", "outbound_message_egress_sensitive"):
+        assert set(RELEASE_MITIGATION_CHECKS[name]) - {REVIEW_TEAM_QUORUM_EVIDENCE}
+
+
+def test_every_sensitive_class_has_an_evidence_gate() -> None:
+    # No sensitive class is left without a gate, and so none is left for a
+    # manual arm: a class absent from the map would be held closed forever.
+    from shared.sdlc_lifecycle import SENSITIVE_RISK_FLAGS
+
+    missing = [name for name in SENSITIVE_RISK_FLAGS if not RELEASE_MITIGATION_CHECKS.get(name)]
+    # provider_billing_sensitive's gate is PR #4805 (open at this writing); the
+    # subset form keeps either merge order green.
+    assert set(missing) <= {"provider_billing_sensitive"}
+
+
+def _audio_frontmatter() -> dict[str, object]:
+    return _eligible_frontmatter(risk_flags={"audio_or_live_egress_sensitive": True})
+
+
+def test_audio_routing_surface_without_the_audio_check_stays_held() -> None:
+    # Unsafe case (row item 4): an audio-touching PR with every other mitigation
+    # green but no audio-routing evidence is HELD. Quorum never releases it.
+    assessment = assess_release_auto_arm_estate(
+        _audio_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=["config/hapax/audio-link-map.conf", "shared/capability_adapter_protocol.py"],
+    )
     assert assessment.eligible is False
-    assert "unmitigable_risk_flag:audio_or_live_egress_sensitive" in assessment.blockers
-    assert "audio_or_live_egress_sensitive" not in RELEASE_MITIGATION_CHECKS
+    assert "needs_mitigation:audio_or_live_egress_sensitive:passive-validator" in (
+        assessment.blockers
+    )
+
+
+def test_audio_routing_surface_with_the_audio_check_is_covered() -> None:
+    assessment = assess_release_auto_arm_estate(
+        _audio_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS) | {AUDIO_ROUTING_EVIDENCE},
+        changed_files=["config/hapax/audio-link-map.conf", "shared/audio_topology_inspector.py"],
+    )
+    assert assessment.blockers == ()
+    assert assessment.eligible is True
+
+
+def test_audio_check_does_not_stand_in_for_the_class_evidence() -> None:
+    # The audio validator is additional evidence, never a substitute: with the
+    # quorum (or any class check) missing, the audio-touching PR stays held.
+    for missing in LIVE_EGRESS_MITIGATION_CHECKS:
+        verified = (set(LIVE_EGRESS_MITIGATION_CHECKS) - {missing}) | {AUDIO_ROUTING_EVIDENCE}
+        assessment = assess_release_auto_arm_estate(
+            _audio_frontmatter(),
+            verified_checks=verified,
+            changed_files=["config/hapax/audio-link-map.conf"],
+        )
+        assert assessment.eligible is False, missing
+        assert f"needs_mitigation:audio_or_live_egress_sensitive:{missing}" in (assessment.blockers)
+
+
+def test_audio_surfaces_named_by_the_topology_reference_never_arm_without_audio_evidence() -> None:
+    # docs/audio-topology-reference.md §8 names the audio key files. Each is
+    # either an audio-routing surface (needs the audio check) or outside the pin
+    # coverage (held by the coverage bound): none arms on the class tuple alone.
+    reference = (
+        Path(__file__).resolve().parents[1] / "docs/audio-topology-reference.md"
+    ).read_text()
+    key_files = [
+        line.split("`")[1]
+        for line in reference.split("## 8. Key Files", 1)[1].splitlines()
+        if line.startswith("| `")
+    ]
+    assert len(key_files) >= 9
+    for path in key_files:
+        assessment = assess_release_auto_arm_estate(
+            _audio_frontmatter(),
+            verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+            changed_files=[path],
+        )
+        assert assessment.eligible is False, path
+
+
+def test_audio_key_files_with_executed_suites_release_on_audio_evidence() -> None:
+    # Follow-up item (5): the S-4 scene library and the Faderfox bridge are
+    # exercised by passive-validator (pinned in tests/ci), so audio evidence
+    # releases them.
+    assessment = assess_release_auto_arm_estate(
+        _audio_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS) | {AUDIO_ROUTING_EVIDENCE},
+        changed_files=["shared/s4_scenes.py", "agents/faderfox_bridge.py"],
+    )
+    assert assessment.blockers == ()
+
+
+def test_faderfox_controls_yaml_stays_held_even_with_audio_evidence() -> None:
+    # Documented hold (follow-up item 5): no suite loads the real
+    # config/equipment/faderfox-mx12-controls.yaml (the bridge tests use a
+    # tmp_path config), so audio evidence would not cover it. It stays behind
+    # the coverage bound until a suite exercises the real file.
+    assessment = assess_release_auto_arm_estate(
+        _audio_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS) | {AUDIO_ROUTING_EVIDENCE},
+        changed_files=["config/equipment/faderfox-mx12-controls.yaml"],
+    )
+    assert assessment.eligible is False
+    assert (
+        "egress_evidence_uncovered_paths:config/equipment/faderfox-mx12-controls.yaml"
+        in assessment.blockers
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "surface"),
+    [
+        ("shared/audio_graph/compiler.py", True),
+        ("shared/audio_graph/deep/nested.py", True),
+        ("shared/audio_topology_inspector.py", True),
+        ("scripts/hapax-audio-routing-check", True),
+        ("config/pipewire/hapax-voice-wet.conf", True),
+        ("config/hapax/audio-link-map.conf", True),
+        ("hooks/scripts/pre-audio-guard.sh", True),
+        ("shared/audio_topology/sub.py", False),  # `*` never crosses `/`
+        ("scripts/hapax-audiox", False),
+        ("shared/s4_scenes.py", True),
+        ("agents/faderfox_bridge.py", True),
+        ("config/equipment/faderfox-mx12-controls.yaml", False),
+        ("config/hapax/audio-link-map.conf.bak", False),
+    ],
+)
+def test_audio_routing_surface_matching_follows_path_filter_semantics(
+    path: str, surface: bool
+) -> None:
+    assert _path_is_audio_routing_surface(path) is surface
+
+
+def _outbound_frontmatter(**overrides: object) -> dict[str, object]:
+    return _eligible_frontmatter(
+        risk_flags={"outbound_message_egress_sensitive": True}, **overrides
+    )
+
+
+def test_outbound_send_path_without_egress_evidence_stays_held() -> None:
+    # Unsafe case (row item 4): a PR in the outbound-message class with the
+    # quorum but no passing send-surface scan is HELD.
+    assessment = assess_release_auto_arm_estate(
+        _outbound_frontmatter(),
+        verified_checks={REVIEW_TEAM_QUORUM_EVIDENCE},
+        changed_files=["scripts/new-sender.py"],
+    )
+    assert assessment.eligible is False
+    assert (
+        "needs_mitigation:outbound_message_egress_sensitive:outbound-send-surface-scan"
+        in assessment.blockers
+    )
+
+
+def test_outbound_scan_without_quorum_stays_held() -> None:
+    assessment = assess_release_auto_arm_estate(
+        _outbound_frontmatter(),
+        verified_checks={"outbound-send-surface-scan"},
+        changed_files=["scripts/new-sender.py"],
+    )
+    assert assessment.eligible is False
+    assert (
+        f"needs_mitigation:outbound_message_egress_sensitive:{REVIEW_TEAM_QUORUM_EVIDENCE}"
+        in assessment.blockers
+    )
+
+
+def test_outbound_class_with_its_evidence_arms_over_any_changed_path() -> None:
+    # The scan reads the whole diff, so this class carries no pin-coverage bound:
+    # #4771's managed-settings paths are admitted on scan + quorum.
+    assessment = assess_release_auto_arm_estate(
+        _outbound_frontmatter(),
+        verified_checks={"outbound-send-surface-scan", REVIEW_TEAM_QUORUM_EVIDENCE},
+        changed_files=[
+            "config/claude-code-managed-settings-communication-pathway.json",
+            "shared/managed_settings_deny.py",
+            "tests/test_managed_settings_deny.py",
+        ],
+    )
+    assert assessment.blockers == ()
+    assert assessment.eligible is True
+
+
+def test_communication_pathway_row_derives_outbound_not_audio() -> None:
+    # Row item (6), end to end through the release gate: the #4768 row shape
+    # (tag `egress`, comms sense, no authored audio flag) needs the outbound
+    # evidence and none of the audio/live class's.
+    fm = _eligible_frontmatter(
+        title="Communication pathway child, slice 3: retire the operator-account Gmail send path",
+        tags=["cc-task", "build", "p0", "communication", "egress", "communication-pathway-child"],
+    )
+    assessment = assess_release_auto_arm_estate(
+        fm,
+        verified_checks={"outbound-send-surface-scan", REVIEW_TEAM_QUORUM_EVIDENCE},
+        changed_files=["scripts/send-stakeholder-revenue-brief.py"],
+    )
+    assert not any("audio_or_live_egress" in b for b in assessment.blockers), assessment.blockers
+    assert assessment.eligible is True
 
 
 def test_audio_or_live_egress_sensitive_held_per_missing_mitigation_check() -> None:
@@ -810,3 +1012,109 @@ def test_nonsensitive_task_stays_eligible_with_verified_checks() -> None:
         _eligible_frontmatter(), verified_checks={"secrets-scan", "test"}
     )
     assert assessment.eligible
+
+
+# ── M129: a declared false takes precedence over the keyword deriver ───
+#
+# The title and tags are an upstream free variable. The keyword deriver may add
+# a sensitive class the route omits, but never override the route's authored
+# ``false``. Omitted, non-boolean and unvalidated declarations keep today's
+# derivation: failure narrows.
+
+# "live" is a verb here, as in cc-claim-governed-rebinding-20260914's title.
+_LIVE_VERB_TITLE = "The exclusivity primitive belongs where the lease lock and transaction live"
+_EGRESS = "audio_or_live_egress_sensitive"
+_NON_EGRESS_CHANGED_FILES = ["scripts/cc-claim", "shared/sdlc_claim.py", "tests/test_x.py"]
+
+
+def _live_verb_frontmatter(**overrides: object) -> dict[str, object]:
+    return _eligible_frontmatter(title=_LIVE_VERB_TITLE, **overrides)
+
+
+@pytest.mark.parametrize(
+    "placement",
+    [
+        pytest.param(lambda flags: {"risk_flags": flags}, id="top-level"),
+        pytest.param(lambda flags: {"route_metadata": {"risk_flags": flags}}, id="nested"),
+    ],
+)
+def test_declared_false_vetoes_the_keyword_derived_egress_class(placement) -> None:
+    fm = _live_verb_frontmatter(**placement({_EGRESS: False}))
+
+    assessment = assess_release_auto_arm_estate(
+        fm, verified_checks=set(), changed_files=_NON_EGRESS_CHANGED_FILES
+    )
+
+    assert assessment.eligible is True
+    assert assessment.blockers == ()
+
+
+def test_undeclared_flag_keeps_the_keyword_derivation() -> None:
+    assessment = assess_release_auto_arm(_live_verb_frontmatter())
+
+    assert assessment.eligible is False
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+def test_a_declared_false_on_one_flag_does_not_veto_another_omitted_flag() -> None:
+    # The parsed RiskFlags model defaults an omitted flag to False; only the raw
+    # declaration may veto, so a sibling's false must leave the egress class held.
+    fm = _live_verb_frontmatter(risk_flags={"governance_sensitive": False})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+@pytest.mark.parametrize("title", [_LIVE_VERB_TITLE, "Reform improve dispatch resilience"])
+def test_declared_true_is_kept(title: str) -> None:
+    fm = _eligible_frontmatter(title=title, risk_flags={_EGRESS: True})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert assessment.eligible is False
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+@pytest.mark.parametrize("declared", ["false", "False", "no", 0, None], ids=repr)
+def test_non_boolean_declaration_keeps_the_keyword_derivation(declared: object) -> None:
+    fm = _live_verb_frontmatter(risk_flags={_EGRESS: declared})
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+def test_unvalidated_route_metadata_keeps_the_keyword_derivation() -> None:
+    from shared.route_metadata_schema import RouteMetadataStatus, assess_route_metadata
+
+    fm = _live_verb_frontmatter(
+        risk_flags={_EGRESS: False}, mutation_surface="not-a-mutation-surface"
+    )
+    assert assess_route_metadata(fm).status is RouteMetadataStatus.MALFORMED
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+@pytest.mark.parametrize(
+    ("top_level", "nested", "held"),
+    [
+        pytest.param(True, False, True, id="top-level-true-beats-nested-false"),
+        pytest.param(False, True, False, id="top-level-false-beats-nested-true"),
+    ],
+)
+def test_top_level_risk_flags_win_a_conflict_with_nested(
+    top_level: bool, nested: bool, held: bool
+) -> None:
+    # The veto reads exactly the payload the model validates, where a top-level
+    # ``risk_flags`` replaces ``route_metadata.risk_flags`` wholesale.
+    fm = _live_verb_frontmatter(
+        risk_flags={_EGRESS: top_level},
+        route_metadata={"risk_flags": {_EGRESS: nested}},
+    )
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert (f"risk_flag:{_EGRESS}" in assessment.blockers) is held

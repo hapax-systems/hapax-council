@@ -29,6 +29,19 @@ def _isolate_publication_witness_log(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_coord_event_log(tmp_path_factory, monkeypatch):
+    """Keep coordination events (and the task-note lock root) out of the production tree.
+
+    Claim publications emit a phase observation to the coord event log, which defaults to
+    ~/.cache/hapax/coord; every claim test would otherwise append to the real ledger. The
+    directory is a sibling of the test's tmp_path, never inside it, so tests that snapshot
+    their tmp_path tree see no new files. Tests that pin the default path clear
+    HAPAX_COORD_DIR themselves, which still wins.
+    """
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path_factory.mktemp("coord-isolated")))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_turn_timing_witness(tmp_path, monkeypatch):
     """Keep TurnBudget.emit() receipts out of the production /dev/shm witness.
 

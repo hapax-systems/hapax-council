@@ -333,6 +333,7 @@ class RiskFlags(_RouteModel):
     public_claim_sensitive: bool = False
     aesthetic_theory_sensitive: bool = False
     audio_or_live_egress_sensitive: bool = False
+    outbound_message_egress_sensitive: bool = False
     provider_billing_sensitive: bool = False
 
 
@@ -1605,7 +1606,11 @@ def _derive_hardening_allocation(
     ) in {"implementation", "source", "build"}:
         axes.append("implementation")
 
-    if risk.audio_or_live_egress_sensitive or risk.provider_billing_sensitive:
+    if (
+        risk.audio_or_live_egress_sensitive
+        or risk.outbound_message_egress_sensitive
+        or risk.provider_billing_sensitive
+    ):
         intensity = HardeningIntensity.DEEP
     elif any(axis in axes for axis in ("authority", "privacy", "public_release", "ambiguity")):
         intensity = HardeningIntensity.TARGETED
@@ -1787,6 +1792,7 @@ def _derive_risk_flags(frontmatter: Mapping[str, Any]) -> dict[str, bool]:
         "public_claim_sensitive": _contains_any(combined, ("public", "publication", "claim")),
         "aesthetic_theory_sensitive": _contains_any(combined, ("aesthetic", "theory")),
         "audio_or_live_egress_sensitive": _contains_audio_or_live_egress_marker(combined),
+        "outbound_message_egress_sensitive": _contains_outbound_message_egress_marker(combined),
         "provider_billing_sensitive": _contains_any(combined, ("provider", "billing", "spend")),
     }
 
@@ -2018,7 +2024,9 @@ def _derived_task_demand_payload(
         "branch_worktree_conflict_risk": 4 if mutation == MutationSurface.SOURCE else 1,
         "operator_insight_dependency": 4 if risk.aesthetic_theory_sensitive else 2,
         "failure_cost": 5
-        if risk.audio_or_live_egress_sensitive or risk.provider_billing_sensitive
+        if risk.audio_or_live_egress_sensitive
+        or risk.outbound_message_egress_sensitive
+        or risk.provider_billing_sensitive
         else 4
         if risk.governance_sensitive
         else 2,
@@ -2271,13 +2279,41 @@ def _contains_any(value: str, needles: tuple[str, ...]) -> bool:
     return any(needle in tokens for needle in needles)
 
 
+#: Vocabulary that gives a co-occurring "egress" its outbound-message sense
+#: (mail and messages leaving for people), as on the communication-pathway rows.
+_OUTBOUND_MESSAGE_SENSE_TOKENS = (
+    "communication",
+    "communications",
+    "mail",
+    "email",
+    "gmail",
+    "smtp",
+    "message",
+    "messages",
+    "outbound",
+)
+
+
+def _contains_outbound_message_egress_marker(value: str) -> bool:
+    return _contains_any(value, ("egress",)) and _contains_any(
+        value, _OUTBOUND_MESSAGE_SENSE_TOKENS
+    )
+
+
 def _contains_audio_or_live_egress_marker(value: str) -> bool:
     # "go-live" is the SDLC/program milestone phrase, not evidence that the task
     # mutates a live public/audio egress surface.
     without_go_live = _GO_LIVE_RE.sub("golive", value.lower())
     # "account-live" is quota/account evidence vocabulary, not live egress.
     without_account_live = _ACCOUNT_LIVE_RE.sub("accountlive", without_go_live)
-    return _contains_any(without_account_live, ("audio", "egress", "live"))
+    if _contains_any(without_account_live, ("audio", "live")):
+        return True
+    # A bare "egress" in the outbound-message sense derives that class instead
+    # (_contains_outbound_message_egress_marker). Any other "egress" still reads
+    # as live egress: the carve-out is the comms sense only, never a default.
+    return _contains_any(
+        without_account_live, ("egress",)
+    ) and not _contains_outbound_message_egress_marker(without_account_live)
 
 
 def _optional_frontmatter_string(value: object) -> str | None:

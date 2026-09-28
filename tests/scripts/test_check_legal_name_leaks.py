@@ -8,6 +8,8 @@ never appears as a contiguous literal in source).
 
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,13 +37,198 @@ def fixture_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _run(script_args: list[str]) -> int:
-    """Invoke the guard with the given args; return its exit code."""
+def _run_full(
+    script_args: list[str],
+    env: dict[str, str] | None = None,
+    *,
+    cwd: Path | None = None,
+    script: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    # Never read the host's real principal registry from a test.
+    run_env = {
+        **os.environ,
+        "HAPAX_PRINCIPAL_NAME_MAP": "/nonexistent/hapax-test/principal-name-map.yaml",
+        **(env or {}),
+    }
     return subprocess.run(
-        ["bash", str(SCRIPT), *script_args],
+        ["bash", str(script or SCRIPT), *script_args],
         capture_output=True,
         text=True,
-    ).returncode
+        env=run_env,
+        cwd=cwd,
+    )
+
+
+def _run(script_args: list[str], env: dict[str, str] | None = None) -> int:
+    """Invoke the guard with the given args; return its exit code."""
+    return _run_full(script_args, env).returncode
+
+
+# Registered principals' given names come from the gitignored local registry
+# when it is provisioned. Synthetic token only: no real name in any file.
+_SYNTHETIC = "Zorblaxine"
+
+
+def test_registered_token_in_basename_blocks_without_path_echo(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    target = fixture_dir / f"report-{_SYNTHETIC}.md"
+    target.write_text("clean content\n", encoding="utf-8")
+
+    result = _run_full([str(target)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+
+    assert result.returncode == 1
+    assert hashlib.sha256(str(target).encode()).hexdigest() in result.stderr
+    assert str(target) not in result.stderr + result.stdout
+    assert _SYNTHETIC not in result.stderr + result.stdout
+
+
+def test_clean_basename_stays_green_with_registry(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    target = fixture_dir / "report-clean.md"
+    target.write_text("clean content\n", encoding="utf-8")
+
+    result = _run_full([str(target)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+
+    assert result.returncode == 0
+
+
+def test_staged_added_basename_is_checked(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    repo = fixture_dir / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    target = repo / f"report-{_SYNTHETIC}.md"
+    target.write_text("clean content\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "--", target.name], check=True)
+
+    result = _run_full([], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)}, cwd=repo)
+
+    assert result.returncode == 1
+    assert hashlib.sha256(target.name.encode()).hexdigest() in result.stderr
+    assert target.name not in result.stderr + result.stdout
+
+
+def test_absent_worktree_path_basename_is_checked(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    target = fixture_dir / f"report-{_SYNTHETIC}.md"
+    assert not target.exists()
+
+    result = _run_full([str(target)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+
+    assert result.returncode == 1
+    assert hashlib.sha256(str(target).encode()).hexdigest() in result.stderr
+    assert str(target) not in result.stderr + result.stdout
+
+
+def test_basename_uses_content_pattern_array_without_registry(fixture_dir: Path) -> None:
+    script = fixture_dir / "scripts" / SCRIPT.name
+    script.parent.mkdir(parents=True)
+    source = SCRIPT.read_text(encoding="utf-8")
+    start = source.index("LEGAL_NAME_PATTERNS=(")
+    end = source.index("\n)", start) + 2
+    script.write_text(
+        source[:start] + "LEGAL_NAME_PATTERNS=('Fauxglyph')" + source[end:], encoding="utf-8"
+    )
+    helper = fixture_dir / "hooks" / "scripts" / "principal-name-map.sh"
+    helper.parent.mkdir(parents=True)
+    shutil.copyfile(REPO_ROOT / "hooks" / "scripts" / helper.name, helper)
+    target = fixture_dir / "report-Fauxglyph.md"
+    target.write_text("clean content\n", encoding="utf-8")
+
+    result = _run_full([str(target)], script=script)
+
+    assert result.returncode == 1
+    assert hashlib.sha256(str(target).encode()).hexdigest() in result.stderr
+    assert str(target) not in result.stderr + result.stdout
+    clean = fixture_dir / "report-clean.md"
+    clean.write_text("clean content\n", encoding="utf-8")
+    assert _run_full([str(clean)], script=script).returncode == 0
+
+
+def test_staged_basename_with_newline_is_checked(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    repo = fixture_dir / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    target = repo / f"report-{_SYNTHETIC}\npart.md"
+    target.write_text("clean content\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "--", target.name], check=True)
+
+    result = _run_full([], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)}, cwd=repo)
+
+    assert result.returncode == 1
+    assert hashlib.sha256(target.name.encode()).hexdigest() in result.stderr
+    assert target.name not in result.stderr + result.stdout
+
+
+def test_registry_given_name_fails_without_echoing_it(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    f = fixture_dir / "doc.md"
+    f.write_text(f"met {_SYNTHETIC} today\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 1
+    assert f"{hashlib.sha256(str(f).encode()).hexdigest()}:1" in result.stderr
+    assert str(f) not in result.stderr
+    assert _SYNTHETIC.lower() not in (result.stderr + result.stdout).lower()
+
+
+def test_registry_absent_falls_back_to_the_surname(fixture_dir: Path) -> None:
+    f = fixture_dir / "doc.md"
+    f.write_text(f"met {_SYNTHETIC} today\n", encoding="utf-8")
+    assert _run([str(f)]) == 0
+    f.write_text(f"met {_LAST} today\n", encoding="utf-8")
+    assert _run([str(f)]) == 1
+
+
+def test_unreadable_registry_fails_closed(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.mkdir()
+    f = fixture_dir / "doc.md"
+    f.write_text("clean\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 2
+    assert "principal-name-map" in result.stderr
+
+
+def test_dangling_registry_symlink_fails_closed(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.symlink_to(fixture_dir / "gone.yaml")
+    f = fixture_dir / "doc.md"
+    f.write_text("clean\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 2
+    assert "principal-name-map" in result.stderr
+
+
+def test_surname_match_never_prints_the_line(fixture_dir: Path) -> None:
+    # A line holding the surname AND a registered given name must not print the
+    # given name through the surname path: every match reports file:line only.
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\n", encoding="utf-8")
+    f = fixture_dir / "doc.md"
+    f.write_text(f"{_SYNTHETIC} {_LAST} visited\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 1
+    assert f"{hashlib.sha256(str(f).encode()).hexdigest()}:1" in result.stderr
+    assert str(f) not in result.stderr
+    out = (result.stderr + result.stdout).lower()
+    assert _SYNTHETIC.lower() not in out
+    assert "visited" not in out
+
+
+def test_invalid_registry_entry_fails_closed_naming_the_line(fixture_dir: Path) -> None:
+    registry = fixture_dir / "principal-name-map.yaml"
+    registry.write_text(f"principal-a2: {_SYNTHETIC}\nprincipal-a3: .*zq\n", encoding="utf-8")
+    f = fixture_dir / "doc.md"
+    f.write_text("clean\n", encoding="utf-8")
+    result = _run_full([str(f)], {"HAPAX_PRINCIPAL_NAME_MAP": str(registry)})
+    assert result.returncode == 2
+    assert "line 2" in result.stderr
+    assert ".*zq" not in result.stderr and _SYNTHETIC not in result.stderr
 
 
 def test_clean_file_passes(fixture_dir: Path) -> None:
@@ -66,6 +253,24 @@ def test_case_insensitive_match(fixture_dir: Path) -> None:
     f = fixture_dir / "leak4.md"
     f.write_text(f"{_FULL.lower()}\n", encoding="utf-8")
     assert _run([str(f)]) == 1
+
+
+def test_family_surname_alone_fails(fixture_dir: Path) -> None:
+    # The surname alone names every household member, registered or not.
+    f = fixture_dir / "registered-identity-leak.md"
+    f.write_text(f"subject: {_LAST}\n", encoding="utf-8")
+    assert _run([str(f)]) == 1
+
+
+@pytest.mark.parametrize(
+    "identifier", ["principal-c1", "principal-c2", "principal-a1", "principal-a2"]
+)
+def test_opaque_principal_ids_pass(fixture_dir: Path, identifier: str) -> None:
+    # The opaque IDs replace the names and must stay usable in any file: the
+    # follow-on PRs (#4717, #4558) use them outside the scanner's whitelist.
+    f = fixture_dir / "opaque-principal.md"
+    f.write_text(f"subject: {identifier}\n", encoding="utf-8")
+    assert _run([str(f)]) == 0
 
 
 def test_email_is_not_gated(fixture_dir: Path) -> None:

@@ -13,19 +13,24 @@ import errno
 import fcntl
 import hashlib
 import json
+import logging
 import os
+import random
 import re
 import secrets
 import shutil
 import stat
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import yaml
+
+from shared.cc_task_pr_link import is_nullish
 from shared.coord_projection import (
     CapturedFile,
     FileProjection,
@@ -56,6 +61,8 @@ from shared.execution_admission import (
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.sdlc_lifecycle import (
     TASK_CLAIMABLE_STATUSES,
+    TASK_DISPATCHABLE_STATUSES,
+    TASK_PIPELINE_HELD_STATUSES,
     TASK_RESUMABLE_STATUSES,
     TASK_TERMINAL_STATUSES,
 )
@@ -72,6 +79,12 @@ from shared.task_note_lock import held_by_current_thread, projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+
+#: A lane resumes its own task in a merge-ready state, and also in its own working state after
+#: its lease lapsed (a live claim is resolved as an applied publication before any new intent).
+_OWN_RESUMABLE_STATUSES = TASK_RESUMABLE_STATUSES | (
+    TASK_DISPATCHABLE_STATUSES - TASK_CLAIMABLE_STATUSES
+)
 
 CLAIM_PUBLICATION_SCHEMA = "hapax.claim-publication-transaction.v1"
 CLAIM_PUBLICATION_RECEIPT_SCHEMA = "hapax.claim-publication-receipt.v2"
@@ -97,6 +110,48 @@ _RECOVERABLE_ADMITTED_STATES = frozenset(
 )
 _CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS = 30.0
 _CLAIM_PUBLICATION_LOCK_RETRY_SECONDS = 0.05
+# A peer claim writing into the shared transaction root trips the estate-scope
+# snapshot guard (M101). Inspection is a pure read, so only that global hold is
+# retaken, a bounded number of times; every other inspection result is final.
+_INSPECTION_CHURN_REASON = "fs_snapshot_concurrent_change"
+INSPECTION_CHURN_MAX_ATTEMPTS = 4
+INSPECTION_CHURN_DEADLINE_SECONDS = 30.0
+INSPECTION_CHURN_JITTER_SECONDS = (0.25, 1.5)
+# A write to any other task row while a resolution indexes the whole task store
+# refuses that resolution (M95). Resolution is a pure read too, and its repair is a
+# distinct resolution once the frontier is stable, so these three refusals are retaken
+# under the same bound; every other refusal is final.
+_TASK_FRONTIER_CHURN_REASONS = frozenset(
+    {
+        "task_store_frontier_changed_during_index_build",
+        "task_store_frontier_changed_since_index",
+        "task_store_frontier_changed_during_resolution",
+    }
+)
+#: The next action when task-store churn outlasts the retake bound (M95, M180 class). The refusal
+#: is transient, so the action is a retry, never a repair of the note or of the Gate-0B install.
+TASK_FRONTIER_CHURN_NEXT_ACTION = (
+    "retry after the task-store frontier settles (another task row was written during every "
+    "retake): rerun cc-claim, and if it reports an unresolved claim publication, run "
+    "cc-claim --recover-claim-publications <task_id> first"
+)
+#: One budget for every retake under one publication lock hold, taken once when the lock is
+#: acquired and shared by all the resolutions under it, strictly below the 30 s a peer waits for
+#: the same lock. It bounds the time retakes ADD; the hold's baseline (each phase's first
+#: resolution, about 9-10 s apiece over 5,767 rows) is not the retake's to bound. At that
+#: resolution time it admits one retake across the locked phases (codex on #4829). A running
+#: resolution is not interrupted, so a retake slower than the attempt it was judged by can end
+#: past the deadline: retakes add at most the budget plus the excess of that one slower
+#: resolution, and none starts after it (codex on #4829 round 2).
+_UNDER_LOCK_CHURN_BUDGET_SECONDS = 25.0
+#: The coordination-event type of one claim-publication state write. It is an OBSERVATION for
+#: attributing where a publication spent its time and why it held; it is never claim state, which
+#: lives in the journal and receipt alone (the manifest is re-derived byte for byte as the ownership
+#: proof, so no wall-clock time can live there).
+CLAIM_PUBLICATION_PHASE_OBSERVED = "claim_publication_phase_observed"
+_LOG = logging.getLogger(__name__)
+_churn_sleep = time.sleep
+_churn_clock = time.monotonic
 
 
 class ClaimPublicationError(RuntimeError):
@@ -322,16 +377,13 @@ class ClaimPublicationIntent:
                 "advance the task through a lawful claimable lifecycle projection",
                 f"{task.task_id}:claimable={task.frontmatter.get('claimable')!r}",
             )
-        if from_status in TASK_CLAIMABLE_STATUSES and assigned_to.lower() in {
-            "",
-            "none",
-            "null",
-            "unassigned",
-            "~",
-        }:
+        if from_status in TASK_CLAIMABLE_STATUSES and (
+            assigned_to.lower() in {"", "none", "null", "unassigned", "~"}
+            or assigned_to == binding.lane
+        ):
             claim_mode = "claim"
             to_status = "claimed"
-        elif from_status in TASK_RESUMABLE_STATUSES and assigned_to == binding.lane:
+        elif from_status in _OWN_RESUMABLE_STATUSES and assigned_to == binding.lane:
             claim_mode = "resume"
             to_status = from_status
         else:
@@ -1571,6 +1623,37 @@ class ClaimPublicationRecoveryResult:
     publication_id: str
     state: str
     reason_code: str | None = None
+    successor: ClaimPublicationSuccessor | None = None
+    release: ClaimPublicationRelease | None = None
+
+
+@dataclass(frozen=True)
+class ClaimPublicationSuccessor:
+    """Two verified applied receipts for one task and owner, ordered by claim epoch."""
+
+    predecessor_publication_id: str
+    predecessor_receipt_hash: str
+    successor_publication_id: str
+    successor_receipt_hash: str
+    task_id: str
+    role: str
+    authority_case: str
+    predecessor_epoch: int
+    successor_epoch: int
+
+
+@dataclass(frozen=True)
+class ClaimPublicationRelease:
+    """An applied receipt bound to the governed archive of its old lease sidecars."""
+
+    publication_id: str
+    receipt_hash: str
+    task_id: str
+    role: str
+    session_id: str
+    shape: str
+    archive_path: Path
+    archive_sha256: str
 
 
 @dataclass(frozen=True)
@@ -1991,7 +2074,7 @@ def _validate_intent(intent: ClaimPublicationIntent) -> None:
         or (
             intent.claim_mode == "resume"
             and (
-                intent.from_status not in TASK_RESUMABLE_STATUSES
+                intent.from_status not in _OWN_RESUMABLE_STATUSES
                 or intent.to_status != intent.from_status
             )
         )
@@ -2386,6 +2469,7 @@ def _persist_admitted_manifest_state(
     *,
     state: str,
     reason_code: str | None = None,
+    reason_detail: str | None = None,
 ) -> None:
     _claim_private_payload(
         manifest_path,
@@ -2399,6 +2483,57 @@ def _persist_admitted_manifest_state(
         ),
         overwrite=manifest_path.exists() or manifest_path.is_symlink(),
     )
+    _observe_claim_publication_phase(
+        intent, publication_id, state, reason_code=reason_code, reason_detail=reason_detail
+    )
+
+
+def _observe_claim_publication_phase(
+    intent: ClaimPublicationIntent,
+    publication_id: str,
+    state: str,
+    *,
+    reason_code: str | None,
+    reason_detail: str | None,
+) -> None:
+    """Emit one non-authoritative phase observation to the coordination event log.
+
+    Purely observational, so it never raises and never changes a publication's outcome: a
+    daemon-down append spools (``fail_open``), and any other failure is logged and dropped.
+    On ``recovery_required`` it carries the store's own reason (``reason_detail``), so a
+    held publication's cause is attributable without touching the deterministic manifest.
+    """
+
+    try:
+        from shared.coord_event_log import CoordEvent, CoordWriter, default_event_log
+
+        at = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        digest = hashlib.sha256("\0".join((publication_id, state, at)).encode()).hexdigest()
+        event = CoordEvent(
+            event_id=f"claim-pub-phase-{digest[:32]}",
+            timestamp=at,
+            event_type=CLAIM_PUBLICATION_PHASE_OBSERVED,
+            actor=intent.role,
+            subject=publication_id,
+            payload={
+                "authority": "non_authoritative_observation",
+                "publication_id": publication_id,
+                "reason_code": reason_code,
+                "reason_detail": reason_detail,
+                "role": intent.role,
+                "state": state,
+                "task_id": intent.task_id,
+            },
+        )
+        default_event_log().append(event, writer=CoordWriter.daemon(), fail_open=True)
+    except Exception as exc:  # noqa: BLE001 - an observation never decides a claim
+        _LOG.warning(
+            "claim publication phase observation not emitted (%s: %s); the claim's outcome is "
+            "unaffected. Next action: check the coord event log under $HAPAX_COORD_DIR "
+            "(default ~/.cache/hapax/coord) and its spool, then let the daemon ingest it",
+            type(exc).__name__,
+            exc,
+        )
 
 
 def _persist_projection_blobs(
@@ -3424,20 +3559,132 @@ def _load_any_claim_publication_receipt(
     )
 
 
+def resolve_task_note_through_churn(
+    vault_root: Path,
+    task_id: str,
+    *,
+    deadline_at: float | None = None,
+) -> TaskNoteSnapshot:
+    """Resolve one active task note, retaking a resolution that raced task-store churn.
+
+    Resolution indexes every task row (about 9 s over 5,767 rows on 2026-09-27), and a
+    write to any other row in that window refuses it (M95). A frontier-churn refusal is
+    retaken as a fresh, complete resolution, with jitter, at most
+    ``INSPECTION_CHURN_MAX_ATTEMPTS`` times before ``deadline_at`` (by default M101's
+    ``INSPECTION_CHURN_DEADLINE_SECONDS`` from now); the last refusal is raised. A retake
+    starts only when an attempt as long as the last one fits before the deadline; a running
+    resolution is not interrupted, so a slower retake can end past it by its excess, and no
+    retake starts after that. Only a resolution over a stable frontier returns, and every other
+    refusal is raised at once. Under the publication lock, the lock holder passes one
+    ``deadline_at`` to every resolution under it (``_UNDER_LOCK_CHURN_BUDGET_SECONDS``).
+    """
+
+    deadline = (
+        deadline_at
+        if deadline_at is not None
+        else _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    )
+    attempt = 1
+    while True:
+        started = _churn_clock()
+        try:
+            return resolve_task_note(
+                vault_root, task_id, state="active", require_no_other_state=True
+            )
+        except TaskStoreError as exc:
+            if exc.reason_code not in _TASK_FRONTIER_CHURN_REASONS:
+                raise
+            now = _churn_clock()
+            delay = random.uniform(*INSPECTION_CHURN_JITTER_SECONDS)
+            if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or now + delay + (now - started) > deadline:
+                raise
+            _churn_sleep(delay)
+            if _churn_clock() + (now - started) > deadline:
+                # An oversleep would start the retake past the deadline (codex on #4829 r5).
+                raise
+            attempt += 1
+
+
+def prepare_claim_publication_intent(
+    *,
+    note_path: Path,
+    note_before: bytes,
+    note_after: bytes,
+    cache_dir: Path,
+    binding: ClaimDispatchBinding,
+) -> ClaimPublicationIntent:
+    """The ``cc-claim`` preflight: resolve the task through churn, require it unchanged, bind it.
+
+    ``cc-claim`` runs this isolated (``-I``), where no test can race churn into it, so the
+    preflight lives here and is tested in-process (#4827's follow-up). Churn that outlasts the
+    retake bound refuses with ``TASK_FRONTIER_CHURN_NEXT_ACTION``; a task whose note is not the
+    exact bytes the claim was computed from refuses, as before.
+    """
+
+    try:
+        snapshot = resolve_task_note_through_churn(note_path.parent.parent, binding.task_id)
+    except TaskStoreError as exc:
+        if exc.reason_code not in _TASK_FRONTIER_CHURN_REASONS:
+            raise
+        raise ClaimPublicationError(
+            exc.reason_code, TASK_FRONTIER_CHURN_NEXT_ACTION, exc.detail
+        ) from exc
+    if snapshot.path != note_path.resolve() or snapshot.content != note_before:
+        raise TaskStoreError(
+            "claim_publication_task_changed_during_preflight",
+            "reload the exact active task and repeat claim eligibility checks",
+            binding.task_id,
+        )
+    return ClaimPublicationIntent.create(
+        task=snapshot, cache_dir=cache_dir, note_after=note_after, binding=binding
+    )
+
+
+def claim_publication_hold_message(exc: BaseException, *, intent_ref: str) -> str:
+    """The HOLD line ``cc-claim`` prints when the admitted publication refuses.
+
+    Task-store churn that outlasted the retake bound is transient, so its next action is a
+    retry (M180 class); every other refusal keeps the Gate-0B install action.
+    """
+
+    # Both attributes are load-bearing (glm on #4829 round 4): the locked sites wrap the store's
+    # refusal, so the churn reason is the ClaimPublicationError's `detail` (its reason_code is
+    # claim_publication_task_resolution_refused or _projection_invalid); the preflight and a raw
+    # TaskStoreError carry it as `reason_code`.
+    churned = getattr(exc, "detail", None) in _TASK_FRONTIER_CHURN_REASONS or (
+        getattr(exc, "reason_code", None) in _TASK_FRONTIER_CHURN_REASONS
+    )
+    if churned:
+        return (
+            f"cc-claim: HOLD — task-store churn outlasted the retake bound ({exc}). "
+            f"Next action: {TASK_FRONTIER_CHURN_NEXT_ACTION}; prepared_intent={intent_ref}"
+        )
+    return (
+        f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
+        "claim-publication composition receipt for this HOME through the governed "
+        "install step, then rerun cc-claim; do not use HAPAX_GATE0B_CLAIM_PUBLICATION_OFF "
+        f"unless the operator authorizes emergency fallback; prepared_intent={intent_ref}"
+    )
+
+
 def _locked_preflight(
-    intent: ClaimPublicationIntent, projections: Sequence[FileProjection]
+    intent: ClaimPublicationIntent,
+    projections: Sequence[FileProjection],
+    *,
+    deadline_at: float,
 ) -> None:
     try:
-        task = resolve_task_note(
+        task = resolve_task_note_through_churn(
             intent.note_path.parent.parent,
             intent.task_id,
-            state="active",
-            require_no_other_state=True,
+            deadline_at=deadline_at,
         )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_resolution_refused",
-            "restore exactly one active task note and no closed duplicate",
+            TASK_FRONTIER_CHURN_NEXT_ACTION
+            if exc.reason_code in _TASK_FRONTIER_CHURN_REASONS
+            else "restore exactly one active task note and no closed duplicate",
             exc.reason_code,
         ) from exc
     if (
@@ -3460,18 +3707,19 @@ def _locked_preflight(
         ) from exc
 
 
-def _require_exact_task_postimage(intent: ClaimPublicationIntent) -> None:
+def _require_exact_task_postimage(intent: ClaimPublicationIntent, *, deadline_at: float) -> None:
     try:
-        task = resolve_task_note(
+        task = resolve_task_note_through_churn(
             intent.note_path.parent.parent,
             intent.task_id,
-            state="active",
-            require_no_other_state=True,
+            deadline_at=deadline_at,
         )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_projection_invalid",
-            "hold the claim until exactly one active receipt-bound task note remains",
+            TASK_FRONTIER_CHURN_NEXT_ACTION
+            if exc.reason_code in _TASK_FRONTIER_CHURN_REASONS
+            else "hold the claim until exactly one active receipt-bound task note remains",
             exc.reason_code,
         ) from exc
     if (
@@ -3780,6 +4028,7 @@ def _apply_admitted_claim_publication_transaction(
     )
 
     with _claim_publication_lock(intent, lock_root=lock_root):
+        churn_deadline = _churn_clock() + _UNDER_LOCK_CHURN_BUDGET_SECONDS
         if (
             transaction_directory.exists()
             or transaction_directory.is_symlink()
@@ -3801,7 +4050,7 @@ def _apply_admitted_claim_publication_transaction(
                     f"{publication_id}:{exc.reason_code}",
                 ) from exc
 
-        _locked_preflight(intent, projections)
+        _locked_preflight(intent, projections, deadline_at=churn_deadline)
         consumption.require_source_proofs(intent)
 
         transaction_directory = _create_claim_transaction_directory(root, publication_id)
@@ -3819,7 +4068,7 @@ def _apply_admitted_claim_publication_transaction(
 
         try:
             phase = "pre_projection_preflight"
-            _locked_preflight(intent, projections)
+            _locked_preflight(intent, projections, deadline_at=churn_deadline)
             phase = "journal_projecting"
             _persist_admitted_manifest_state(
                 manifest_path,
@@ -3834,7 +4083,7 @@ def _apply_admitted_claim_publication_transaction(
             phase = "pre_activation_scratch_finalize"
             _finalize_applied_scratches(pre_receipt_projections, pre_receipt_scratches)
             phase = "pre_activation_postimage_validation"
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             phase = "journal_postimage_complete"
@@ -3863,7 +4112,7 @@ def _apply_admitted_claim_publication_transaction(
             phase = "activation_scratch_finalize"
             _finalize_applied_scratches(activation_projections, activation_scratches)
             phase = "postimage_validation"
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             phase = "journal_applied"
@@ -3884,6 +4133,7 @@ def _apply_admitted_claim_publication_transaction(
                 publication_id,
                 state="recovery_required",
                 reason_code=exc.reason_code,
+                reason_detail=exc.detail,
             )
             raise
         except LifecycleTransitionError as exc:
@@ -3900,6 +4150,7 @@ def _apply_admitted_claim_publication_transaction(
                 publication_id,
                 state="recovery_required",
                 reason_code=wrapped.reason_code,
+                reason_detail=wrapped.detail,
             )
             raise wrapped from exc
         except Exception as exc:
@@ -3913,6 +4164,7 @@ def _apply_admitted_claim_publication_transaction(
                     publication_id,
                     state="recovery_required",
                     reason_code=wrapped.reason_code,
+                    reason_detail=wrapped.detail,
                 )
             except ClaimPublicationError:
                 if not phase.startswith("journal_"):
@@ -4486,8 +4738,12 @@ def require_applied_admitted_claim_publication(
                     "recover and require the exact admitted claim publication receipt",
                     f"{publication_id}:{state}",
                 )
-            _require_captured_postimages(snapshot, loaded_projections[:7])
-            _require_captured_task_postimage(current_task, loaded_intent)
+            # The six lease sidecars stay exact. The note (projection 0) is the owner's to edit
+            # once applied, so it is held to the claim's identity, as a resume holds it; a byte
+            # comparison held every live claim whose owner had moved it to in_progress
+            # (claim-applied-note-continuation-test-first-20260927).
+            _require_captured_postimages(snapshot, loaded_projections[1:7])
+            _require_current_task_continues_claim(current_task, loaded_intent)
             receipt = _as_admitted_receipt(
                 journal.manifest_path,
                 _normalized(receipt_path),
@@ -4503,6 +4759,31 @@ def require_applied_admitted_claim_publication(
             return receipt
     except ReadOnlySnapshotError as exc:
         _raise_snapshot_error(exc)
+
+
+def _require_current_task_continues_claim(
+    current_task: TaskNoteSnapshot, intent: ClaimPublicationIntent
+) -> None:
+    """The live note still belongs to this applied claim: its receipt-bound path and mode, the
+    claim's lane as assignee, and its AuthorityCase.
+
+    Once a claim is applied its note is the owner's to edit (``in_progress``, a PR link, session
+    lines), so its bytes are not compared; its lease sidecars are, byte for byte. A resume, a
+    rehydration and a recovery of an applied journal all read the note through this one check.
+    """
+
+    frontmatter = current_task.frontmatter
+    if (
+        current_task.path != intent.note_path
+        or current_task.mode != intent.note_mode
+        or str(frontmatter.get("assigned_to") or "").strip() != intent.binding.lane
+        or str(frontmatter.get("authority_case") or "").strip() != intent.binding.authority_case
+    ):
+        raise ClaimPublicationError(
+            "claim_publication_current_task_identity_mismatch",
+            "restore one active task with the receipt-bound path, lane, and AuthorityCase",
+            current_task.task_id,
+        )
 
 
 def _resolve_applied_captured(
@@ -4615,18 +4896,7 @@ def _resolve_applied_captured(
             "reclaim through the exact applied claim publication",
             current_task.task_id,
         )
-    frontmatter = current_task.frontmatter
-    if (
-        current_task.path != intent.note_path
-        or current_task.mode != intent.note_mode
-        or str(frontmatter.get("assigned_to") or "").strip() != binding.lane
-        or str(frontmatter.get("authority_case") or "").strip() != binding.authority_case
-    ):
-        raise ClaimPublicationError(
-            "claim_publication_current_task_identity_mismatch",
-            "restore one active task with the receipt-bound path, lane, and AuthorityCase",
-            current_task.task_id,
-        )
+    _require_current_task_continues_claim(current_task, intent)
     return AppliedClaimPublicationSnapshot(
         intent=intent,
         current_task=current_task,
@@ -4740,6 +5010,284 @@ def resolve_applied_claim_publication_for_task(
     )
 
 
+def _resolve_applied_successor(
+    *,
+    intent: ClaimPublicationIntent,
+    consumption: ClaimAdmissionConsumption,
+    projections: Sequence[FileProjection],
+    publication_id: str,
+    manifest_path: Path,
+    receipt_path: Path,
+    receipt_root: Path,
+) -> ClaimPublicationSuccessor | None:
+    """Resolve a spent journal from verified same-owner, ordered applied receipts."""
+
+    predecessor = _as_admitted_receipt(
+        manifest_path,
+        receipt_path,
+        intent,
+        consumption,
+        projections,
+        publication_id,
+        recovered=False,
+    )
+    successors: list[ClaimPublicationSuccessor] = []
+    for entry in sorted(manifest_path.parent.parent.iterdir(), key=lambda path: path.name):
+        if (
+            entry.name == publication_id
+            or _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(entry.name) is None
+            or entry.is_symlink()
+        ):
+            continue
+        try:
+            newer_intent, newer_projections, newer_id, newer_state, newer_consumption = (
+                _load_any_manifest(entry / "manifest.json")
+            )
+        except ClaimPublicationError:
+            continue  # A broken candidate is not a successor; its own recovery still HOLDs.
+        if (
+            newer_state != "applied"
+            or not isinstance(newer_consumption, ClaimAdmissionConsumption)
+            or newer_intent.task_id != intent.task_id
+            or newer_intent.role != intent.role
+            or newer_intent.note_path != intent.note_path
+            or newer_intent.cache_dir != intent.cache_dir
+            or newer_intent.binding.authority_case != intent.binding.authority_case
+            or newer_intent.claim_epoch <= intent.claim_epoch
+            or newer_intent.binding.receipt_hash == intent.binding.receipt_hash
+        ):
+            continue
+        successor_paths = {item.path for item in newer_projections[1:7]}
+        try:
+            if any(
+                _file_state(item.path) != (item.after, item.after_mode)
+                for item in projections[1:7]
+                if item.path not in successor_paths
+            ):
+                continue
+        except LifecycleTransitionError:
+            continue
+        try:
+            newer = require_applied_admitted_claim_publication(
+                newer_intent,
+                newer_consumption,
+                transaction_root=manifest_path.parent.parent,
+                receipt_root=receipt_root,
+                _already_locked=True,
+            )
+            newer_hash = newer.receipt_hash
+        except ClaimPublicationError as exc:
+            newer_receipt_path = claim_publication_receipt_path(
+                newer_intent.cache_dir, newer_intent.binding, receipt_root=receipt_root
+            )
+            try:
+                nested = (
+                    _resolve_applied_successor(
+                        intent=newer_intent,
+                        consumption=newer_consumption,
+                        projections=newer_projections,
+                        publication_id=newer_id,
+                        manifest_path=entry / "manifest.json",
+                        receipt_path=newer_receipt_path,
+                        receipt_root=receipt_root,
+                    )
+                    if exc.reason_code == "claim_publication_postimage_drift"
+                    else None
+                )
+                released = (
+                    None
+                    if nested is not None
+                    else _resolve_governed_applied_release(
+                        intent=newer_intent,
+                        consumption=newer_consumption,
+                        projections=newer_projections,
+                        publication_id=newer_id,
+                        manifest_path=entry / "manifest.json",
+                        receipt_path=newer_receipt_path,
+                    )
+                )
+            except ClaimPublicationError:
+                continue
+            if nested is None and released is None:
+                continue
+            newer_hash = (
+                nested.predecessor_receipt_hash if nested is not None else released.receipt_hash
+            )
+        successors.append(
+            ClaimPublicationSuccessor(
+                predecessor_publication_id=publication_id,
+                predecessor_receipt_hash=predecessor.receipt_hash,
+                successor_publication_id=newer_id,
+                successor_receipt_hash=newer_hash,
+                task_id=intent.task_id,
+                role=intent.role,
+                authority_case=intent.binding.authority_case,
+                predecessor_epoch=intent.claim_epoch,
+                successor_epoch=newer_intent.claim_epoch,
+            )
+        )
+    successors.sort(key=lambda item: item.successor_epoch)
+    if len(successors) > 1 and successors[0].successor_epoch == successors[1].successor_epoch:
+        raise ClaimPublicationError(
+            "claim_publication_successor_ambiguous",
+            "preserve the receipts and resolve the competing earliest successors",
+            publication_id,
+        )
+    return successors[0] if successors else None
+
+
+def _release_readme_lines(
+    *,
+    shape: str,
+    intent: ClaimPublicationIntent,
+    publication_id: str,
+    observed_at: str,
+    staging_dir: Path,
+    present: Sequence[FileProjection],
+) -> list[str]:
+    return [
+        "Governed release of claim residue (cc-claim --release-claim-residue).",
+        f"shape: {shape}",
+        f"task_id: {intent.task_id}",
+        f"role: {intent.role}",
+        f"session_id: {intent.session_id}",
+        f"publication_id: {publication_id}",
+        f"released_at: {observed_at}",
+        f"moved originals (kept, never unlinked): {staging_dir}",
+        "to archive (each must equal the journal's after-image, sha256 below):",
+        *(f"  - {item.path} sha256:{_sha256(item.after or b'')}" for item in present),
+    ]
+
+
+def _resolve_governed_applied_release(
+    *,
+    intent: ClaimPublicationIntent,
+    consumption: ClaimAdmissionConsumption,
+    projections: Sequence[FileProjection],
+    publication_id: str,
+    manifest_path: Path,
+    receipt_path: Path,
+) -> ClaimPublicationRelease | None:
+    """Verify a release's immutable receipt, lineage copy and retained staged originals.
+
+    A release moves the old role lease under a publication-bound staging directory and
+    copies its exact bytes into lineage. This is the lifecycle proof for a returned, closed,
+    reassigned or pipeline-held claim; the old applied journal stays untouched.
+    """
+
+    lineage = intent.note_path.parent.parent / "_lineage" / _safe_lineage_component(intent.task_id)
+    if not lineage.is_dir() or lineage.is_symlink():
+        return None
+    receipt = _as_admitted_receipt(
+        manifest_path,
+        receipt_path,
+        intent,
+        consumption,
+        projections,
+        publication_id,
+        recovered=False,
+    )
+    suffix = f"-{_safe_lineage_component(intent.role)}"
+    prefix = "claim-residue-release-"
+    releases: list[ClaimPublicationRelease] = []
+    for archive in sorted(lineage.glob(f"{prefix}*{suffix}")):
+        if archive.is_symlink() or not archive.is_dir():
+            continue
+        stamp = archive.name[len(prefix) : -len(suffix)]
+        if _RELEASE_STAMP_RE.fullmatch(stamp) is None:
+            continue
+        staged = (
+            intent.cache_dir
+            / "claim-residue-release"
+            / _safe_lineage_component(intent.task_id)
+            / f"{stamp}{suffix}"
+        )
+        readme = archive / "README.md"
+        binding = staged / "PUBLICATION"
+        if any(path.is_symlink() or not path.is_file() for path in (readme, binding)):
+            continue
+        try:
+            readme_bytes = readme.read_bytes()
+            lines = readme_bytes.decode("utf-8").splitlines()
+            bound = binding.read_text(encoding="ascii")
+        except (OSError, UnicodeError):
+            continue
+        if len(readme_bytes) > 16 * 1024 or bound != f"{publication_id}\n":
+            continue
+        shapes = (
+            "lapsed_lease",
+            "closed_task",
+            "reassigned_task",
+            "pipeline_held",
+            "returned_claim",
+        )
+        shapes_found = [shape for shape in shapes if lines.count(f"shape: {shape}") == 1]
+        if len(shapes_found) != 1:
+            continue
+        shape = shapes_found[0]
+        archived_projections = tuple(
+            item
+            for item in projections[1:7]
+            if shape != "lapsed_lease" or not _is_claim_activation_projection(item)
+        )
+        expected_lines = _release_readme_lines(
+            shape=shape,
+            intent=intent,
+            publication_id=publication_id,
+            observed_at=stamp,
+            staging_dir=staged,
+            present=archived_projections,
+        )
+        try:
+            archive_names = {path.name for path in archive.iterdir()}
+        except OSError:
+            continue
+        if lines != expected_lines or archive_names != {
+            "README.md",
+            *(item.path.name for item in archived_projections),
+        }:
+            continue
+        material = [readme_bytes]
+        for projection in archived_projections:
+            archived = archive / projection.path.name
+            original = staged / projection.path.name
+            if any(path.is_symlink() or not path.is_file() for path in (archived, original)):
+                break
+            try:
+                archived_state = _file_state(archived)
+                original_state = _file_state(original)
+            except LifecycleTransitionError:
+                break
+            if (
+                archived_state != (projection.after, projection.after_mode)
+                or original_state != archived_state
+                or lines.count(f"  - {projection.path} sha256:{_sha256(archived_state[0] or b'')}")
+                != 1
+            ):
+                break
+            material.extend((archived_state[0] or b"", original_state[0] or b""))
+        else:
+            releases.append(
+                ClaimPublicationRelease(
+                    publication_id=publication_id,
+                    receipt_hash=receipt.receipt_hash,
+                    task_id=intent.task_id,
+                    role=intent.role,
+                    session_id=intent.session_id,
+                    shape=shape,
+                    archive_path=archive,
+                    archive_sha256=_sha256(b"\0".join(material)),
+                )
+            )
+    if len(releases) > 1:
+        raise ClaimPublicationError(
+            "claim_publication_release_ambiguous",
+            "preserve the release archives and resolve the duplicate disposition",
+            publication_id,
+        )
+    return releases[0] if releases else None
+
+
 def _recover_one(
     manifest_path: Path,
     *,
@@ -4776,6 +5324,7 @@ def _recover_one(
         )
 
     with _claim_publication_lock(intent, lock_root=lock_root):
+        churn_deadline = _churn_clock() + _UNDER_LOCK_CHURN_BUDGET_SECONDS
         intent, projections, publication_id, state, consumption = _load_any_manifest(manifest_path)
         if manifest_path.parent.name != publication_id:
             raise ClaimPublicationError(
@@ -4796,13 +5345,48 @@ def _recover_one(
                 publication_id,
             )
         if state == "applied":
-            require_applied_admitted_claim_publication(
-                intent,
-                consumption,
-                transaction_root=manifest_path.parent.parent,
-                receipt_root=receipt_directory,
-                _already_locked=True,
-            )
+            try:
+                require_applied_admitted_claim_publication(
+                    intent,
+                    consumption,
+                    transaction_root=manifest_path.parent.parent,
+                    receipt_root=receipt_directory,
+                    _already_locked=True,
+                )
+            except ClaimPublicationError as exc:
+                if exc.reason_code == "claim_publication_postimage_drift":
+                    successor = _resolve_applied_successor(
+                        intent=intent,
+                        consumption=consumption,
+                        projections=projections,
+                        publication_id=publication_id,
+                        manifest_path=manifest_path,
+                        receipt_path=receipt_path,
+                        receipt_root=receipt_directory,
+                    )
+                    if successor is not None:
+                        return ClaimPublicationRecoveryResult(
+                            publication_id,
+                            "superseded",
+                            "claim_publication_superseded_by_later_applied",
+                            successor=successor,
+                        )
+                release = _resolve_governed_applied_release(
+                    intent=intent,
+                    consumption=consumption,
+                    projections=projections,
+                    publication_id=publication_id,
+                    manifest_path=manifest_path,
+                    receipt_path=receipt_path,
+                )
+                if release is None:
+                    raise
+                return ClaimPublicationRecoveryResult(
+                    publication_id,
+                    "released",
+                    "claim_publication_released_by_governed_archive",
+                    release=release,
+                )
             return ClaimPublicationRecoveryResult(publication_id, "applied", None)
         if state == "aborted":
             if receipt_path.exists() or receipt_path.is_symlink():
@@ -4854,7 +5438,7 @@ def _recover_one(
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             apply_missing_postimages(pre_receipt_projections, pre_receipt_scratches)
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
@@ -4893,7 +5477,7 @@ def _recover_one(
             )
         try:
             apply_missing_postimages(activation_projections, activation_scratches)
-            _require_exact_task_postimage(intent)
+            _require_exact_task_postimage(intent, deadline_at=churn_deadline)
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
@@ -4931,17 +5515,18 @@ _CLAIM_PUBLICATION_DIRECTORY_RE = re.compile(r"^claim-pub-[0-9a-f]{64}$")
 #: stamp. Tightening it requires first giving the estate a quarantine *verb* —
 #: filed separately, not assumed here.
 #:
-#: "No code produces this name" is the SOLE rationale for a deliberately loose pattern that
-#: skips inspection, so it is recheckable rather than asserted. From the repo root::
+#: The verb now exists: :func:`release_claim_residue` (2026-09-27) quarantines a held journal
+#: as ``.quarantined-YYYYMMDDTHHMMSSZ``, and it is the only producer. Recheck from the repo
+#: root::
 #:
 #:     rg -n 'quarantined-' --glob '!*.md' -- scripts shared agents hooks
 #:
-#: Expected as of 2026-09-15, and stated so the output DECIDES something rather than merely
-#: printing: four hits in this file (this comment and the pattern itself) plus exactly one
-#: unrelated hit, ``scripts/hapax-audio-topology`` returning the audio-domain constant
-#: ``"quarantined-declared-inactive"``. **No hit renames, creates or otherwise emits a
-#: ``claim-pub-<sha>.quarantined-<stamp>`` directory.** If that ever changes, this pattern can
-#: and should be tightened to the grammar the new producer emits.
+#: Expected: the hits in this file (this comment, the pattern, and the release's rename and
+#: docstring) plus one unrelated hit, ``scripts/hapax-audio-topology`` returning the
+#: audio-domain constant ``"quarantined-declared-inactive"``. The pattern stays loose anyway.
+#: Hand-applied names of the older shapes above remain on disk, on hosts that cannot all be
+#: inspected from one checkout. Tightening it to the producer's grammar would turn those into
+#: holds. That is a separate decision, taken only after an inventory of every host's roots.
 _CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE = re.compile(
     r"^claim-pub-[0-9a-f]{64}\.quarantined-\S+$"
 )
@@ -5559,8 +6144,47 @@ def inspect_claim_publications(
     expected_publication_id: str | None = None,
     expected_disposition: Literal["terminal_applied", "terminal_aborted"] | None = None,
 ) -> tuple[ClaimPublicationInspection, ...]:
-    """Inspect estate history and unresolved journals without granting current eligibility."""
+    """Inspect estate history and unresolved journals without granting current eligibility.
 
+    A whole-root snapshot that raced a concurrent write is retaken, with jitter,
+    at most ``INSPECTION_CHURN_MAX_ATTEMPTS`` times inside
+    ``INSPECTION_CHURN_DEADLINE_SECONDS``; the last observation is returned.
+    """
+
+    deadline = _churn_clock() + INSPECTION_CHURN_DEADLINE_SECONDS
+    attempt = 1
+    while True:
+        inspections = _inspect_claim_publications_once(
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            receipt_root=receipt_root,
+            task_id=task_id,
+            expected_publication_id=expected_publication_id,
+            expected_disposition=expected_disposition,
+        )
+        raced = (
+            len(inspections) == 1
+            and inspections[0].reason_code == _INSPECTION_CHURN_REASON
+            and inspections[0].publication_id.startswith("transaction-root:")
+        )
+        if not raced:
+            return inspections
+        delay = random.uniform(*INSPECTION_CHURN_JITTER_SECONDS)
+        if attempt >= INSPECTION_CHURN_MAX_ATTEMPTS or _churn_clock() + delay > deadline:
+            return inspections
+        _churn_sleep(delay)
+        attempt += 1
+
+
+def _inspect_claim_publications_once(
+    *,
+    cache_dir: Path | None,
+    transaction_root: Path | None,
+    receipt_root: Path | None,
+    task_id: str | None,
+    expected_publication_id: str | None,
+    expected_disposition: Literal["terminal_applied", "terminal_aborted"] | None,
+) -> tuple[ClaimPublicationInspection, ...]:
     trusted_cache = _normalized(cache_dir or (Path.home() / ".cache" / "hapax"))
     root = _manifest_root(transaction_root, trusted_cache)
     trusted_receipt_root = _receipt_root(trusted_cache, receipt_root)
@@ -6187,13 +6811,129 @@ def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Pa
     return None
 
 
+def _assigned_elsewhere(note: Path, role: str) -> bool:
+    """Whether the note's release-grade frontmatter explicitly assigns the task away from
+    ``role``: to ``unassigned`` or to another named role. An absent, empty, unparseable or
+    duplicated assignment is no proof, so the caller holds (#4826 round 5)."""
+
+    frontmatter = _release_frontmatter(note)
+    value = frontmatter.get("assigned_to") if frontmatter is not None else None
+    return isinstance(value, str) and bool(value.strip()) and value.strip() != role
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """A SafeLoader that refuses any mapping stating one key twice, by YAML key identity, so
+    ``status:`` and ``"status":`` are the same key; PyYAML otherwise keeps the last silently."""
+
+
+def _construct_unique_mapping(loader: UniqueKeyLoader, node: yaml.MappingNode) -> dict:
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if not isinstance(key, Hashable):  # a YAMLError, so the caller holds (glm, #4826 r7)
+            raise yaml.constructor.ConstructorError(
+                None, None, f"found unhashable key {key!r}", key_node.start_mark
+            )
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        mapping[key] = loader.construct_object(value_node, deep=True)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+#: The name #4826's tests import. One class, public since a second module depends on it (the PR
+#: merge watcher's fail-closed witness read, glm on #4828).
+_UniqueKeyLoader = UniqueKeyLoader
+
+
+def _release_frontmatter(note: Path) -> dict | None:
+    """The note's frontmatter when it can ground a release decision, else None.
+
+    A release archives live claim files, and a return rewrites the note, on the strength of
+    its fields, so they must come from frontmatter that parses, states no key twice by YAML
+    key identity (a quoted and a plain spelling are one key; codex on #4826 rounds 4-5), and
+    spells ``status`` plainly exactly once, so that the value read is the line a rewrite
+    changes. A ``status:`` line in the body never counts. Anything else means hold, never
+    release (the seat's 17:05Z and 17:25Z rulings)."""
+
+    try:
+        text = note.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return _release_fields(text)
+
+
+#: The ONE matcher for a top-level frontmatter key line, in any quoting (#4826 rounds 3-6).
+#: The release-grade read counts ``status`` with it, and the return rewrites exactly the lines
+#: it found, by position, so the line validated is always the line changed. A space before the
+#: colon (``status : claimed``) is the same key line to both.
+_FRONTMATTER_KEY_LINE = re.compile(
+    r"""^(?P<quote>["']?)(?P<key>[A-Za-z_][A-Za-z0-9_-]*)(?P=quote)[ \t]*:(?P<value>.*)$""",
+    re.MULTILINE,
+)
+
+
+def _frontmatter_block_span(text: str) -> tuple[int, int] | None:
+    """The frontmatter block's bounds in ``text``: after the opening ``---``, to the next."""
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    return (3, end) if end != -1 else None
+
+
+def _frontmatter_key_lines(text: str, key: str) -> list[re.Match[str]]:
+    """Every frontmatter line that states ``key``, in any quoting, in order."""
+    span = _frontmatter_block_span(text)
+    if span is None:
+        return []
+    return [
+        line for line in _FRONTMATTER_KEY_LINE.finditer(text, *span) if line.group("key") == key
+    ]
+
+
+def _release_fields(text: str) -> dict | None:
+    """Release-grade fields of a note's text (see :func:`_release_frontmatter`), else None."""
+
+    parsed = parse_frontmatter_with_diagnostics(text)
+    span = _frontmatter_block_span(text)
+    if not parsed.ok or parsed.frontmatter is None or span is None:
+        return None
+    try:
+        fields = yaml.load(text[span[0] : span[1]], Loader=UniqueKeyLoader)  # noqa: S506
+    except yaml.YAMLError:
+        return None
+    status_lines = _frontmatter_key_lines(text, "status")
+    if not isinstance(fields, dict) or len(status_lines) != 1 or status_lines[0].group("quote"):
+        return None
+    return fields
+
+
+def _pipeline_held_for(note: Path, role: str) -> bool:
+    """Whether the note's release-grade frontmatter says the pipeline holds it for ``role``."""
+
+    fields = _release_frontmatter(note)
+    return (
+        fields is not None
+        and str(fields.get("status") or "").strip() in TASK_PIPELINE_HELD_STATUSES
+        and str(fields.get("assigned_to") or "").strip() == role
+    )
+
+
 def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
+    """The row's status for a release decision: ``missing`` with no note, ``unreadable`` when
+    its frontmatter cannot ground a release (:func:`_release_frontmatter`). Neither releases."""
+
     task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
     if task_path is None:
         return "missing"
-    text = task_path.read_text(encoding="utf-8")
-    match = re.search(r"^status:[ \t]*(.*)$", text, re.MULTILINE)
-    return (match.group(1).strip() if match else "") or "unknown"
+    fields = _release_frontmatter(task_path)
+    if fields is None:
+        return "unreadable"
+    return str(fields.get("status") or "").strip() or "unknown"
 
 
 def archive_dispatch_only_claim_residue(
@@ -6306,6 +7046,926 @@ def archive_dispatch_only_claim_residue(
     return archived
 
 
+@dataclass(frozen=True)
+class ClaimResidueRelease:
+    """What one governed release of a role's claim residue did."""
+
+    shape: Literal[
+        "held_publication",
+        "lapsed_lease",
+        "closed_task",
+        "reassigned_task",
+        "pipeline_held",
+        "returned_claim",
+    ]
+    publication_id: str
+    archive_dir: Path
+    archived: tuple[Path, ...]
+    quarantined_journal: Path | None
+
+
+@dataclass(frozen=True)
+class _RoleTaskJournal:
+    manifest_path: Path
+    intent: ClaimPublicationIntent
+    projections: tuple[FileProjection, ...]
+    publication_id: str
+    state: str
+
+
+_RELEASE_STAMP_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z$")
+
+
+def _release_hold(reason_code: str, detail: str, next_action: str) -> ClaimResidueArchiveHold:
+    return ClaimResidueArchiveHold(f"HOLD - {reason_code}: {detail}. Next action: {next_action}.")
+
+
+def _role_task_journals(
+    transaction_root: Path, *, role: str, task_id: str
+) -> list[_RoleTaskJournal]:
+    root = _normalized(transaction_root)
+    if not root.is_dir():
+        return []
+    journals: list[_RoleTaskJournal] = []
+    for entry in sorted(root.iterdir(), key=lambda path: path.name):
+        if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(entry.name) is None:
+            continue  # quarantined journals are already released
+        try:
+            intent, projections, publication_id, state, _consumption = _load_any_manifest(
+                entry / "manifest.json"
+            )
+        except ClaimPublicationError:
+            continue  # an unreadable journal proves nothing about this role; recovery reports it
+        if intent.role == role and intent.task_id == task_id and entry.name == publication_id:
+            journals.append(
+                _RoleTaskJournal(
+                    entry / "manifest.json", intent, projections, publication_id, state
+                )
+            )
+    return journals
+
+
+def _journal_residue(journal: _RoleTaskJournal, cache_dir: Path) -> tuple[FileProjection, ...]:
+    """The journal's live projections other than the note. Each must be one of the six
+    sidecars of the journal's own role and session in ``cache_dir``: nothing else is touched."""
+
+    cache = _normalized(cache_dir)
+    keys = (journal.intent.role, f"{journal.intent.role}-{journal.intent.session_id}")
+    allowed = {
+        name
+        for key in keys
+        for name in (
+            f"cc-active-task-{key}",
+            f"cc-claim-epoch-{key}",
+            f"cc-claim-dispatch-{key}.json",
+        )
+    }
+    note_path = _normalized(journal.intent.note_path)
+    residue: list[FileProjection] = []
+    for projection in journal.projections[:7]:
+        if projection.path == note_path:
+            continue
+        if projection.path.parent != cache or projection.path.name not in allowed:
+            raise _release_hold(
+                "claim_residue_foreign_path",
+                f"{journal.publication_id} projects {projection.path}",
+                "preserve the journal and inspect it; a release acts only on the sidecars of "
+                "the journal's own role and session",
+            )
+        residue.append(projection)
+    return tuple(residue)
+
+
+def _residue_state(projection: FileProjection) -> Literal["absent", "after", "other"]:
+    try:
+        content, mode = _file_state(projection.path)
+    except LifecycleTransitionError:
+        return "other"
+    if content is None:
+        return "absent"
+    return "after" if (content, mode) == (projection.after, projection.after_mode) else "other"
+
+
+def _other_live_markers(
+    cache_dir: Path, role: str, task_id: str, residue: Sequence[FileProjection]
+) -> list[Path]:
+    """Markers of this role naming the task that the journal does not account for: another
+    session's live claim, which a release must never take."""
+
+    own = {projection.path for projection in residue}
+    hits: list[Path] = []
+    for path in sorted(_normalized(cache_dir).iterdir()):
+        if path in own or not (
+            path.name == f"cc-active-task-{role}" or path.name.startswith(f"cc-active-task-{role}-")
+        ):
+            continue
+        try:
+            named = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            hits.append(path)  # unreadable: it may name the task, so it counts as live
+            continue
+        if task_id in named:
+            hits.append(path)
+    return hits
+
+
+def _task_in_active(vault_root: Path, task_id: str) -> bool:
+    active = vault_root / "active"
+    return (active / f"{task_id}.md").exists() or any(
+        candidate.name.startswith(f"{task_id}-") and candidate.suffix == ".md"
+        for candidate in (active.iterdir() if active.is_dir() else ())
+    )
+
+
+def _copy_verified(content: bytes, mode: int, target: Path) -> None:
+    """Create ``target`` exclusively with ``content``, fsync it, and verify it. It never
+    replaces a file: an existing target is a collision."""
+
+    try:
+        fd = os.open(
+            target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+    except FileExistsError as exc:
+        raise _release_hold(
+            "claim_residue_archive_collision",
+            f"{target} already exists",
+            "preserve both files and inspect the lineage directory",
+        ) from exc
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(target, mode)
+    if target.read_bytes() != content:
+        raise _release_hold(
+            "claim_residue_archive_unverified",
+            f"{target} does not equal the bytes moved out of the cache",
+            "inspect it; the moved original is kept in the cache staging directory",
+        )
+
+
+def _binding_names(path: Path, line: str) -> bool:
+    """Whether a release binding (lineage README, staging PUBLICATION) carries ``line``. One that
+    cannot be read or decoded carries nothing: the caller holds, never crashes."""
+
+    try:
+        return line in path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+
+
+def _staged_original(projection: FileProjection, journal: _RoleTaskJournal) -> Path | None:
+    """An earlier run's moved original of this file, if a crash left it staged in the cache
+    before its lineage copy: in a staging directory bound to THIS journal's publication_id,
+    and exactly its after-image. Another journal's staging proves nothing, even with the same
+    bytes (a revert)."""
+
+    root = (
+        _normalized(journal.intent.cache_dir)
+        / "claim-residue-release"
+        / _safe_lineage_component(journal.intent.task_id)
+    )
+    suffix = f"-{_safe_lineage_component(journal.intent.role)}"
+    for directory in sorted(root.iterdir()) if root.is_dir() else ():
+        candidate = directory / projection.path.name
+        if not (directory.is_dir() and directory.name.endswith(suffix)) or candidate.is_symlink():
+            continue
+        try:
+            bound = (directory / "PUBLICATION").read_text(encoding="ascii").strip()
+            if bound == journal.publication_id and _file_state(candidate) == (
+                projection.after,
+                projection.after_mode,
+            ):
+                return candidate
+        except (LifecycleTransitionError, OSError, UnicodeError):
+            continue
+    return None
+
+
+def _archive_verified(
+    projection: FileProjection,
+    archive_dir: Path,
+    staging_dir: Path,
+    staged_original: Path | None = None,
+) -> Path:
+    """Move one residue file out of its live name, then archive exactly the bytes moved.
+
+    The live file is renamed into ``staging_dir``, inside the cache's own filesystem, so the
+    move is atomic even where the vault is another filesystem (on appendix it is an NFS
+    mount). A rewrite before the rename is what gets compared; one after it creates a new
+    file this release never touches. The moved bytes, never the journal's image, are copied
+    verified into the lineage. Nothing is unlinked: the moved original stays staged.
+    On a mismatch the moved bytes are kept as ``<name>.live-differed-from-journal`` and the
+    release refuses. A ``staged_original`` left by a crashed run is archived as it stands.
+    """
+
+    staged = staged_original or staging_dir / projection.path.name
+    destination = archive_dir / projection.path.name
+    differed = archive_dir / f"{projection.path.name}.live-differed-from-journal"
+    try:
+        if staged_original is None:
+            os.rename(projection.path, staged)
+    except FileNotFoundError as exc:
+        raise _release_hold(
+            "claim_residue_hash_mismatch",
+            f"{projection.path} vanished during the release",
+            "inspect the cache, then rerun the release",
+        ) from exc
+    try:
+        moved_content, moved_mode = _file_state(staged)
+    except LifecycleTransitionError as exc:
+        raise _release_hold(
+            "claim_residue_live_differed",
+            f"{projection.path} was not a regular file; it is kept at {staged}",
+            "inspect it; nothing was deleted",
+        ) from exc
+    if moved_content is None or moved_mode is None:
+        raise _release_hold(
+            "claim_residue_hash_mismatch",
+            f"{staged} vanished after the move",
+            "inspect the staging directory",
+        )
+    if (moved_content, moved_mode) != (projection.after, projection.after_mode):
+        _copy_verified(moved_content, moved_mode, differed)
+        with (archive_dir / "README.md").open("a", encoding="utf-8") as readme:
+            readme.write(
+                f"live differed from journal: {projection.path} "
+                f"sha256:{_sha256(moved_content)}; kept at {staged} and {differed}\n"
+            )
+        raise _release_hold(
+            "claim_residue_live_differed",
+            f"{projection.path} changed during the release; the bytes moved are kept at "
+            f"{staged} and {differed}",
+            "inspect them; nothing was deleted, and the release stopped before the journal",
+        )
+    _copy_verified(moved_content, moved_mode, destination)
+    return destination
+
+
+def _previously_archived(
+    projection: FileProjection, journal: _RoleTaskJournal, vault_root: Path
+) -> bool:
+    """Whether an earlier release of this role for this task archived exactly this file's
+    after-image: the only way an absent residue file counts as released."""
+
+    lineage = vault_root / "_lineage" / _safe_lineage_component(journal.intent.task_id)
+    suffix = f"-{_safe_lineage_component(journal.intent.role)}"
+    if not lineage.is_dir():
+        return False
+    for directory in sorted(lineage.glob("claim-residue-release-*")):
+        candidate = directory / projection.path.name
+        if not directory.name.endswith(suffix) or candidate.is_symlink():
+            continue
+        try:
+            readme = (directory / "README.md").read_text(encoding="utf-8").splitlines()
+            if (
+                f"publication_id: {journal.publication_id}" in readme
+                and candidate.is_file()
+                and candidate.read_bytes() == projection.after
+            ):
+                return True
+        except (OSError, UnicodeError):
+            continue
+    return False
+
+
+def _residue_archive_plan(
+    present: Sequence[FileProjection],
+    *,
+    journal: _RoleTaskJournal,
+    vault_root: Path,
+    observed_at: str,
+    staged: Mapping[Path, Path] | None = None,
+) -> tuple[Path, Path, list[Path]]:
+    """Where a release of ``present`` archives and stages, and every name already taken.
+
+    One definition for :func:`_archive_residue` and for a caller that must know, before its
+    first mutation, that the archive cannot collide (``return_claim``, codex on #4832 round 2).
+    """
+    intent = journal.intent
+    staged = staged or {}
+    archive_dir = (
+        vault_root
+        / "_lineage"
+        / _safe_lineage_component(intent.task_id)
+        / f"claim-residue-release-{observed_at}-{_safe_lineage_component(intent.role)}"
+    )
+    staging_dir = (
+        _normalized(journal.intent.cache_dir)
+        / "claim-residue-release"
+        / _safe_lineage_component(intent.task_id)
+        / f"{observed_at}-{_safe_lineage_component(intent.role)}"
+    )
+    # Every name this release will create must be free before anything is created: a rename
+    # onto a taken name would replace it silently.
+    taken = [
+        path
+        for projection in present
+        for path in (
+            staging_dir / projection.path.name,
+            archive_dir / projection.path.name,
+            archive_dir / f"{projection.path.name}.live-differed-from-journal",
+        )
+        # A same-stamp rerun's own staged original is the file it recovers, not a collision.
+        if (path.exists() or path.is_symlink()) and path != staged.get(projection.path)
+    ]
+    # A same-stamp rerun may reuse the lineage README and the staging binding, but only this
+    # journal's: archiving under another publication's receipt would be untraceable.
+    readme, bound = archive_dir / "README.md", staging_dir / "PUBLICATION"
+    for existing, line in (
+        (readme, f"publication_id: {journal.publication_id}"),
+        (bound, journal.publication_id),
+    ):
+        if (existing.exists() or existing.is_symlink()) and not _binding_names(existing, line):
+            taken.append(existing)
+    return archive_dir, staging_dir, taken
+
+
+def _archive_residue(
+    present: Sequence[FileProjection],
+    *,
+    journal: _RoleTaskJournal,
+    vault_root: Path,
+    shape: str,
+    observed_at: str,
+    staged: Mapping[Path, Path] | None = None,
+) -> tuple[Path, tuple[Path, ...]]:
+    intent = journal.intent
+    staged = staged or {}
+    archive_dir, staging_dir, taken = _residue_archive_plan(
+        present, journal=journal, vault_root=vault_root, observed_at=observed_at, staged=staged
+    )
+    if taken:
+        raise _release_hold(
+            "claim_residue_archive_collision",
+            f"{taken[0]} already exists (or belongs to another publication)",
+            "preserve every file and inspect the lineage and staging directories",
+        )
+    readme, bound = archive_dir / "README.md", staging_dir / "PUBLICATION"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    os.makedirs(staging_dir, mode=0o700, exist_ok=True)
+    # Bind the staging to this journal: a crashed run's staged originals are recovered only by
+    # a rerun for the same publication (see _staged_original).
+    with suppress(FileExistsError), bound.open("x", encoding="ascii") as binding:
+        binding.write(f"{journal.publication_id}\n")
+    lines = _release_readme_lines(
+        shape=shape,
+        intent=intent,
+        publication_id=journal.publication_id,
+        observed_at=observed_at,
+        staging_dir=staging_dir,
+        present=present,
+    )
+    # Created once: never overwritten or duplicated (an existing one is this journal's, above).
+    with suppress(FileExistsError), readme.open("x", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    archived = tuple(
+        _archive_verified(projection, archive_dir, staging_dir, staged.get(projection.path))
+        for projection in present
+    )
+    return archive_dir, archived
+
+
+def _release_held_publication(
+    journal: _RoleTaskJournal, *, cache_dir: Path, vault_root: Path, observed_at: str
+) -> ClaimResidueRelease:
+    task_id = journal.intent.task_id
+    if journal.state != "recovery_required":
+        raise _release_hold(
+            "claim_residue_journal_not_held",
+            f"{journal.publication_id} is {journal.state}",
+            f"run `cc-claim --recover-claim-publications {task_id}`; only a recovery_required "
+            "journal is released",
+        )
+    note_path = _normalized(journal.intent.note_path)
+    note = next(item for item in journal.projections[:7] if item.path == note_path)
+    try:
+        note_state = _file_state(note.path)
+    except LifecycleTransitionError:
+        note_state = (b"", None)
+    if note_state in {(note.after, note.after_mode), (note.before, note.before_mode)}:
+        raise _release_hold(
+            "claim_residue_recoverable",
+            f"the note of {journal.publication_id} is still at one of its journal images, so "
+            "recovery can finish the publication",
+            f"run `cc-claim --recover-claim-publications {task_id}`",
+        )
+    residue = _journal_residue(journal, cache_dir)
+    present: list[FileProjection] = []
+    staged: dict[Path, Path] = {}
+    for projection in residue:
+        state = _residue_state(projection)
+        if _is_claim_activation_projection(projection):
+            if state != "absent":
+                raise _release_hold(
+                    "claim_residue_live_marker",
+                    f"{projection.path} exists, so this publication reached its markers",
+                    "treat the claim as live: finish it and run cc-close",
+                )
+        elif state == "other":
+            raise _release_hold(
+                "claim_residue_hash_mismatch",
+                f"{projection.path} differs from the after-image of {journal.publication_id}",
+                "preserve the sidecar; it belongs to another claim",
+            )
+        elif state == "after":
+            present.append(projection)
+        elif _previously_archived(projection, journal, vault_root):
+            continue
+        elif (original := _staged_original(projection, journal)) is not None:
+            staged[projection.path] = original  # a crashed run moved it; finish its archive
+            present.append(projection)
+        else:
+            # Absent counts only as already released, or as moved by a crashed run.
+            raise _release_hold(
+                "claim_residue_projection_missing",
+                f"{projection.path} is absent and no earlier release archived its after-image",
+                "preserve the journal and inspect it; every non-note projection must be at its "
+                "after-image or already archived",
+            )
+    drifted = [
+        str(item.path) for item in journal.projections[7:] if _residue_state(item) != "after"
+    ]
+    if drifted:
+        raise _release_hold(
+            "claim_residue_projection_drift",
+            f"admission projections of {journal.publication_id} left their after-image: "
+            + ", ".join(drifted),
+            "preserve the journal and inspect the drifted admission evidence",
+        )
+    if others := _other_live_markers(cache_dir, journal.intent.role, task_id, residue):
+        raise _release_hold(
+            "claim_residue_live_marker",
+            f"{others[0]} names {task_id} or cannot be read",
+            f"inspect the marker at {others[0]}; until then treat the claim as live",
+        )
+    journal_dir = journal.manifest_path.parent
+    quarantined = journal_dir.with_name(f"{journal_dir.name}.quarantined-{observed_at}")
+    if quarantined.exists() or quarantined.is_symlink():
+        raise _release_hold(
+            "claim_residue_quarantine_exists",
+            f"{quarantined} already exists",
+            "preserve both journals and inspect them",
+        )
+    archive_dir, archived = _archive_residue(
+        present,
+        journal=journal,
+        vault_root=vault_root,
+        shape="held_publication",
+        observed_at=observed_at,
+        staged=staged,
+    )
+    os.rename(journal_dir, quarantined)
+    return ClaimResidueRelease(
+        "held_publication", journal.publication_id, archive_dir, archived, quarantined
+    )
+
+
+def _release_applied_residue(
+    journals: Sequence[_RoleTaskJournal],
+    *,
+    cache_dir: Path,
+    vault_root: Path,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    candidates: list[
+        tuple[_RoleTaskJournal, tuple[FileProjection, ...], list[FileProjection], dict[Path, Path]]
+    ] = []
+    mismatched = unaccounted = False
+    for journal in journals:
+        residue = _journal_residue(journal, cache_dir)
+        states = [_residue_state(projection) for projection in residue]
+        if "other" in states:
+            mismatched = True
+            continue
+        present = [item for item, state in zip(residue, states, strict=True) if state == "after"]
+        # As on the held path: an absent epoch or dispatch sidecar must already be archived,
+        # or be staged by a crashed run, whose archive this run then finishes.
+        staged: dict[Path, Path] = {}
+        missing = False
+        for item, state in zip(residue, states, strict=True):
+            if state != "absent" or _is_claim_activation_projection(item):
+                continue
+            if _previously_archived(item, journal, vault_root):
+                continue
+            if (original := _staged_original(item, journal)) is None:
+                missing = True
+            else:
+                staged[item.path] = original
+                present.append(item)
+        if present and missing:
+            unaccounted = True
+        elif present:
+            candidates.append((journal, residue, present, staged))
+    if not candidates:
+        if unaccounted:
+            raise _release_hold(
+                "claim_residue_projection_missing",
+                f"a sidecar of {task_id} is absent and no earlier release archived it",
+                "preserve the sidecars and inspect the journal",
+            )
+        if mismatched:
+            raise _release_hold(
+                "claim_residue_hash_mismatch",
+                f"the role's sidecars for {task_id} differ from every applied journal's "
+                "after-image",
+                "preserve the sidecars; they belong to another claim",
+            )
+        raise _release_hold(
+            "claim_residue_none",
+            f"no residue of this role remains for {task_id}",
+            "nothing to release; rerun cc-claim",
+        )
+    if len(candidates) > 1:
+        raise _release_hold(
+            "claim_residue_ambiguous",
+            f"{len(candidates)} applied journals match the residue for {task_id}",
+            "preserve the sidecars and inspect the journals",
+        )
+    journal, residue, present, staged = candidates[0]
+    if others := _other_live_markers(cache_dir, journal.intent.role, task_id, residue):
+        raise _release_hold(
+            "claim_residue_live_marker",
+            f"{others[0]} names {task_id} or cannot be read",
+            f"inspect the marker at {others[0]}; until then treat the claim as live",
+        )
+    shape: Literal["lapsed_lease", "closed_task", "reassigned_task", "pipeline_held"] = (
+        "lapsed_lease"
+    )
+    if any(_is_claim_activation_projection(projection) for projection in present):
+        status = _task_status_for_any_state(vault_root, task_id)
+        note = _task_note_path_for_any_state(vault_root, task_id)
+        if status in TASK_TERMINAL_STATUSES and not _task_in_active(vault_root, task_id):
+            shape = "closed_task"
+        elif (
+            note is not None
+            and note.parent.name == "active"
+            and _assigned_elsewhere(note, journal.intent.role)
+        ):
+            # Re-offered or reassigned: the note no longer names this role. Publication writes
+            # the note before the markers, so these markers cannot be a live claim.
+            shape = "reassigned_task"
+        elif (
+            note is not None
+            and note.parent.name == "active"
+            and _pipeline_held_for(note, journal.intent.role)
+        ):
+            # Pipeline-held (the seat's 2026-09-27 ruling): the work is done and the pipeline
+            # owes a verdict, so the markers hold no worker. The note keeps this role as its
+            # named resumer; resuming it later publishes fresh markers.
+            shape = "pipeline_held"
+        else:
+            raise _release_hold(
+                "claim_residue_live_marker",
+                f"a marker names {task_id}, which is {status} and assigned to this role",
+                "treat the claim as live: finish it and run cc-close",
+            )
+    archive_dir, archived = _archive_residue(
+        present,
+        journal=journal,
+        vault_root=vault_root,
+        shape=shape,
+        observed_at=observed_at,
+        staged=staged,
+    )
+    return ClaimResidueRelease(shape, journal.publication_id, archive_dir, archived, None)
+
+
+def release_claim_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    role: str,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    """Release one role's claim residue for one task: the governed form of the operator
+    scripts that M166-M173 needed.
+
+    It acts only on files a journal of (``role``, ``task_id``) projected, only when each equals
+    that journal's after-image, and only under the role's publication lock. It never touches
+    the task note, never unlinks anything, and never touches another role's or session's files.
+    Each file is moved into a staging directory in the cache, and the moved bytes are copied,
+    verified, into ``_lineage/<task>/`` (see :func:`_archive_verified`). Shapes:
+
+    - ``held_publication``: a ``recovery_required`` journal whose note has moved past both of
+      its images. Its markers are absent and its admission evidence is intact. The residue is
+      archived and the journal is quarantined in place as ``<id>.quarantined-<observed_at>``.
+    - ``lapsed_lease``: markers absent; the residue matches an applied journal.
+    - ``closed_task``: markers present, but the task is terminal and absent from ``active/``
+      (it was closed from another process).
+    - ``reassigned_task``: markers present, but the active note no longer names this role (it
+      was re-offered or reassigned); publication writes the note before the markers.
+
+    Anything else raises :class:`ClaimResidueArchiveHold` before the first mutation, except
+    ``claim_residue_live_differed``, which stops mid-run keeping every byte moved.
+    """
+
+    if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
+        raise _release_hold(
+            "claim_residue_stamp_invalid",
+            f"{observed_at!r} is not YYYYMMDDTHHMMSSZ",
+            "pass the UTC release time in that form",
+        )
+    journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+    if not journals:
+        raise _release_hold(
+            "claim_residue_no_journal",
+            f"no claim-publication journal of {role} for {task_id}",
+            "run the release as the role that claimed the task, naming the task its residue names",
+        )
+    with _claim_publication_lock(journals[0].intent, lock_root=lock_root):
+        journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+        unfinished = [item for item in journals if item.state not in {"applied", "aborted"}]
+        if len(unfinished) > 1:
+            raise _release_hold(
+                "claim_residue_ambiguous",
+                f"{len(unfinished)} unfinished journals of {role} for {task_id}",
+                f"run `cc-claim --recover-claim-publications {task_id}` and inspect what holds",
+            )
+        if unfinished:
+            return _release_held_publication(
+                unfinished[0], cache_dir=cache_dir, vault_root=vault_root, observed_at=observed_at
+            )
+        return _release_applied_residue(
+            [item for item in journals if item.state == "applied"],
+            cache_dir=cache_dir,
+            vault_root=vault_root,
+            task_id=task_id,
+            observed_at=observed_at,
+        )
+
+
+_SESSION_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _marker_tasks(cache_dir: Path, role: str) -> list[str]:
+    """Every task this role's claim markers name, each once: the bare key, then each session
+    key. A suffix that is not a session UUID belongs to another role (``cx-red`` vs
+    ``cx-red-operator-email``). Every marker counts: a lingering session-keyed one can name a
+    different row from the bare key (codex on #4826). An unreadable marker is skipped here, as
+    scripts/cc-claim's lease loop skips it; :func:`_other_live_markers` then treats it as live
+    and the release holds, so the pair fails closed."""
+
+    prefix = f"cc-active-task-{role}-"
+    markers = [cache_dir / f"cc-active-task-{role}"] + sorted(
+        path
+        for path in cache_dir.glob(f"{prefix}*")
+        if _SESSION_KEY_RE.fullmatch(path.name[len(prefix) :])
+    )
+    tasks: list[str] = []
+    for marker in markers:
+        try:
+            words = marker.read_text(encoding="utf-8").split()
+        except OSError:
+            continue
+        if words and words[0] not in tasks:
+            tasks.append(words[0])
+    return tasks
+
+
+def release_pipeline_held_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    role: str,
+    current_task_id: str,
+    observed_at: str,
+) -> list[ClaimResidueRelease]:
+    """Before a new claim, free this role's slot of every row the pipeline now holds.
+
+    The seat's 2026-09-27 ruling: a pipeline-held row (``TASK_PIPELINE_HELD_STATUSES``) does
+    not count against the role's one-active-task slot. For each such row any of this role's
+    markers names, other than the one being claimed, its residue is released as
+    ``pipeline_held`` (archived, never unlinked). Each row keeps this role as its named resumer.
+    Anything else is left to the claim path, which decides as before.
+
+    Called by scripts/cc-claim before the new claim publishes. The status filter here is a
+    pre-check read outside any lock: :func:`release_claim_residue` re-derives the shape under
+    the role's publication lock from release-grade frontmatter, and holds on any surprise.
+    """
+
+    return [
+        release_claim_residue(
+            vault_root=vault_root,
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            lock_root=lock_root,
+            role=role,
+            task_id=held,
+            observed_at=observed_at,
+        )
+        for held in _marker_tasks(cache_dir, role)
+        if held != current_task_id
+        # A pre-lock filter only: release_claim_residue re-derives the shape under the role's
+        # publication lock from release-grade frontmatter and holds on any change since.
+        and _task_status_for_any_state(vault_root, held) in TASK_PIPELINE_HELD_STATUSES
+    ]
+
+
+#: The keys ``--return-claim`` rewrites, and what each becomes.
+_RETURN_REWRITES = (("status", "offered"), ("assigned_to", "unassigned"), ("claimed_at", "null"))
+
+
+def _returned_note_text(text: str, *, role: str, returned_at: str) -> str:
+    """``text`` returned to offered, each rewritten key's one plain line replaced by position.
+
+    Every line is found with :data:`_FRONTMATTER_KEY_LINE`, the matcher the release-grade read
+    validates with, so the line checked is the line changed (#4826 rounds 3-6). A key that is
+    not stated exactly once, plainly, is a hold, never an append.
+    """
+
+    edits: list[tuple[int, int, str]] = []
+    for key, value in _RETURN_REWRITES:
+        lines = _frontmatter_key_lines(text, key)
+        if len(lines) != 1 or lines[0].group("quote"):
+            raise _release_hold(
+                "claim_return_note_malformed",
+                f"`{key}` is stated {len(lines)} time(s)"
+                + (" in quotes" if lines and lines[0].group("quote") else "")
+                + ", not once plainly",
+                "repair the note's frontmatter by hand (one plain line per key), then rerun",
+            )
+        edits.append((lines[0].start(), lines[0].end(), f"{key}: {value}"))
+    for start, end, line in sorted(edits, reverse=True):
+        text = text[:start] + line + text[end:]
+    entry = f"- {returned_at} {role} returned the claim to offered (cc-claim --return-claim)\n"
+    marker = "## Session log\n"
+    if marker in text:
+        return text.replace(marker, marker + entry, 1)
+    return text.rstrip("\n") + f"\n\n{marker}{entry}"
+
+
+def return_claim(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    role: str,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    """Return this role's own live, unstarted claim to ``offered`` (``cc-claim --return-claim``).
+
+    A locked direct transition, as ``cc-close`` is (the seat's option 1, 2026-09-27). It refuses,
+    changing nothing, unless this role holds exactly one live applied claim on the task, the
+    note is ``claimed`` or ``in_progress`` and assigned to this role, and it names no ``pr`` and
+    no ``branch``: work that has started is never returned. Under the role's publication lock
+    and the note's projection lock, the note is read once; its release-grade fields decide, the
+    same bytes are rewritten by position, and the result must read back as offered before it is
+    written. Then the claim files are archived as ``returned_claim``. A crash between the two
+    leaves the ``reassigned_task`` shape, which :func:`release_claim_residue` releases.
+    """
+
+    if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
+        raise _release_hold(
+            "claim_return_stamp_invalid",
+            f"{observed_at!r} is not YYYYMMDDTHHMMSSZ",
+            "pass the UTC time in that form",
+        )
+    journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+    if not journals:
+        raise _release_hold(
+            "claim_return_not_holder",
+            f"{role} has no claim publication for {task_id}",
+            "only the role that holds the claim can return it",
+        )
+    lock_intent = journals[0].intent
+    with _claim_publication_lock(lock_intent, lock_root=lock_root):
+        journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+        if any(item.state not in {"applied", "aborted"} for item in journals):
+            raise _release_hold(
+                "claim_return_unfinished",
+                f"a claim publication of {role} for {task_id} is unfinished",
+                f"run `cc-claim --recover-claim-publications {task_id}` first",
+            )
+        live = [
+            (journal, residue)
+            for journal in journals
+            if journal.state == "applied"
+            and (residue := _journal_residue(journal, cache_dir))
+            and all(_residue_state(item) == "after" for item in residue)
+            and any(_is_claim_activation_projection(item) for item in residue)
+        ]
+        if len(live) != 1:
+            raise _release_hold(
+                "claim_return_not_live",
+                f"{role} holds no single live claim on {task_id}",
+                f"a lapsed lease is released with `cc-claim --release-claim-residue {task_id}`",
+            )
+        journal, residue = live[0]
+        note = _task_note_path_for_any_state(vault_root, task_id)
+        if note is None or note.parent.name != "active":
+            raise _release_hold(
+                "claim_return_note_missing", f"{task_id} has no active note", "inspect the row"
+            )
+        if others := _other_live_markers(cache_dir, role, task_id, residue):
+            raise _release_hold(
+                "claim_return_live_marker",
+                f"{others[0]} names {task_id} or cannot be read",
+                "inspect that marker; another session may be working the row",
+            )
+        # Every archive name must be free before the note is written, so a collision is a
+        # no-change refusal (codex on #4832 round 2). Every release of this role's residue runs
+        # under the publication lock held here, so no archive can be created in between.
+        _archive_dir, _staging_dir, taken = _residue_archive_plan(
+            list(residue), journal=journal, vault_root=vault_root, observed_at=observed_at
+        )
+        if taken:
+            raise _release_hold(
+                "claim_return_archive_collision",
+                f"{taken[0]} already exists, so the claim files could not be archived",
+                "rerun after a second (the archive is named by the second); if it persists, "
+                "preserve every file and inspect the lineage and staging directories",
+            )
+        # The role lock already holds the projection lock on the note it was taken for; the
+        # note rewritten here must be that one, so this adds no second projection-lock site
+        # (the containment pin in tests/shared/test_task_note_lock.py).
+        if _normalized(note) != _normalized(lock_intent.note_path):
+            raise _release_hold(
+                "claim_return_note_moved",
+                f"{task_id}'s note is {note}, not the path its claim locked",
+                "inspect the row; a moved note is not returned",
+            )
+        text = note.read_text(encoding="utf-8")
+        fields = _release_fields(text)
+        if fields is None:
+            raise _release_hold(
+                "claim_return_note_malformed",
+                f"{task_id}'s frontmatter does not parse, states a key twice, or does not "
+                "spell status plainly once",
+                "repair the note's frontmatter by hand, then rerun",
+            )
+        status = str(fields.get("status") or "").strip()
+        # The estate's one definition of absent (shared.cc_task_pr_link.NULLISH): YAML null,
+        # or a string spelling of it such as "null", "~" or "nil". Anything else names
+        # started work (the seat's clause 7; no fourth copy of the set).
+        started = [
+            key
+            for key in ("pr", "branch")
+            if not (fields.get(key) is None or is_nullish(str(fields[key])))
+        ]
+        if status not in {"claimed", "in_progress"} or started:
+            raise _release_hold(
+                "claim_return_started",
+                f"{task_id} is {status or 'unknown'}"
+                + (f" and names {', '.join(started)}" if started else ""),
+                "work that has started is not returned: finish it and run cc-close, or close "
+                "it as withdrawn",
+            )
+        if str(fields.get("assigned_to") or "").strip() != role:
+            raise _release_hold(
+                "claim_return_not_holder",
+                f"{task_id} is assigned to {fields.get('assigned_to')!r}, not {role}",
+                "only the role that holds the claim can return it",
+            )
+        returned_at = (
+            f"{observed_at[0:4]}-{observed_at[4:6]}-{observed_at[6:8]}T"
+            f"{observed_at[9:11]}:{observed_at[11:13]}:{observed_at[13:15]}Z"
+        )
+        returned = _returned_note_text(text, role=role, returned_at=returned_at)
+        after = _release_fields(returned)
+        if (
+            after is None
+            or after.get("status") != "offered"
+            or after.get("assigned_to") != "unassigned"
+            or after.get("claimed_at") is not None
+        ):
+            raise _release_hold(
+                "claim_return_rewrite_unverified",
+                f"{task_id}'s returned note does not read back as offered and unassigned",
+                "repair the note's frontmatter by hand, then rerun; nothing was written",
+            )
+        tmp = note.with_suffix(note.suffix + ".tmp")  # as cc-close writes a note
+        tmp.write_text(returned, encoding="utf-8")
+        tmp.replace(note)
+        try:
+            archive_dir, archived = _archive_residue(
+                list(residue),
+                journal=journal,
+                vault_root=vault_root,
+                shape="returned_claim",
+                observed_at=observed_at,
+                staged={},
+            )
+        except (ClaimResidueArchiveHold, OSError) as exc:
+            # The note is already returned: the crash-window state, which is recoverable.
+            raise _release_hold(
+                "claim_return_archive_incomplete",
+                f"{task_id} was returned to offered, but its claim files were not archived ({exc})",
+                f"run `cc-claim --release-claim-residue {task_id}` (the reassigned_task shape)",
+            ) from exc
+    return ClaimResidueRelease(
+        "returned_claim", journal.publication_id, archive_dir, archived, None
+    )
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -6321,7 +7981,10 @@ __all__ = [
     "ClaimPublicationInspection",
     "ClaimPublicationReceipt",
     "ClaimPublicationRecoveryResult",
+    "ClaimPublicationRelease",
+    "ClaimPublicationSuccessor",
     "ClaimResidueArchiveHold",
+    "ClaimResidueRelease",
     "admitted_claim_publication_id",
     "archive_dispatch_only_claim_residue",
     "admitted_claim_publication_id",
@@ -6336,9 +7999,14 @@ __all__ = [
     "inspect_claim_publications",
     "recover_claim_publications",
     "rehydrate_applied_activation_projections",
+    "release_claim_residue",
+    "release_pipeline_held_residue",
+    "return_claim",
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
+    "UniqueKeyLoader",
     "resolve_claim_publication_admission_provenance",
+    "resolve_task_note_through_churn",
     "require_applied_admitted_claim_publication",
     "require_applied_claim_publication",
 ]

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]
+# cc-close <task_id> [--pr N] [--status done|withdrawn|superseded] [--reason TEXT] [--witness TEXT]
 #
 # Close out a vault cc-task: rewrite frontmatter (status: done by
 # default; completed_at: now), move the note from active/ to closed/,
 # and clear the session's claim file.
+#
+# A withdrawn or superseded close states why (--reason). A merged_awaiting_runtime_witness row
+# closes done only with its runtime witness (--witness), and needs no claim. Either text goes
+# into the close's own session-log line, in the same locked write (M179, M182).
 #
 # Active blocked-with-evidence work is not a cc-close outcome. Keep the note in
 # active/ with status: blocked, blocked_reason: <machine-code>, and
@@ -27,7 +31,7 @@ if [[ -f "$ROLE_HELPER" ]]; then
 fi
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]" >&2
+  echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded] [--reason TEXT] [--witness TEXT] [--expect-sha256 HEX]" >&2
   echo "       active blocked evidence stays in active/: status=blocked, blocked_reason, blocked_witness" >&2
   exit 1
 fi
@@ -35,12 +39,21 @@ fi
 task_id="$1"; shift
 pr=""
 final_status="done"
+reason=""
+reason_given=0
+witness=""
+witness_given=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr) pr="$2"; shift 2 ;;
     --status) final_status="$2"; shift 2 ;;
+    --reason) reason="$2"; reason_given=1; shift 2 ;;
+    --witness) witness="$2"; witness_given=1; shift 2 ;;
     --debt) debt_reason="$2"; shift 2 ;;
     --retroactive) retroactive=1; shift ;;
+    # The caller decided on these exact note bytes (the PR merge watcher's no-witness
+    # decision); the close re-checks them under the note lock and refuses (exit 4) if they moved.
+    --expect-sha256) expect_sha256="$2"; shift 2 ;;
     *) echo "cc-close: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
@@ -49,6 +62,24 @@ case "$final_status" in
   done|withdrawn|superseded) ;;
   *) echo "cc-close: --status must be done, withdrawn, or superseded (got '$final_status')" >&2; exit 1 ;;
 esac
+
+# Each text becomes part of one session-log line, so it is one non-empty line.
+_cc_close_one_line() {
+  if [[ -z "${2//[[:space:]]/}" || "$2" == *$'\n'* || "$2" == *$'\r'* ]]; then
+    echo "cc-close: REFUSED — $1 takes one non-empty line (it is written into the close's session-log line); nothing was closed. Next action: rerun with $1 \"<one line>\"" >&2
+    exit 1
+  fi
+}
+if [[ "$reason_given" == 1 ]]; then _cc_close_one_line --reason "$reason"; fi
+if [[ "$witness_given" == 1 ]]; then _cc_close_one_line --witness "$witness"; fi
+if [[ "$final_status" != "done" && "$reason_given" != 1 ]]; then
+  echo "cc-close: REFUSED — a $final_status close states why; nothing was closed. Next action: rerun with --reason \"<why, in one line>\"" >&2
+  exit 1
+fi
+if [[ "$witness_given" == 1 && "$final_status" != "done" ]]; then
+  echo "cc-close: REFUSED — --witness closes a merged_awaiting_runtime_witness row done, never $final_status; nothing was closed. Next action: drop --witness, or close done with it" >&2
+  exit 1
+fi
 
 role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
 if [[ -z "$role" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then
@@ -85,6 +116,13 @@ fi
 
 if ! command -v python3 &>/dev/null; then
   echo "cc-close: python3 missing; cannot rewrite frontmatter" >&2
+  exit 3
+fi
+# The locked write reads the row with shared.sdlc_claim's release-grade reader, which needs the
+# project runtime, as cc-claim's does; a bare python3 cannot import it (no `hapax` package).
+PROJECT_PYTHON="$SCRIPT_DIR/../.venv/bin/python"
+if [[ ! -x "$PROJECT_PYTHON" ]]; then
+  echo "cc-close: project_runtime_unprovisioned: expected the pinned interpreter at $PROJECT_PYTHON; nothing was closed. Next action: run 'uv sync' in $(dirname "$SCRIPT_DIR"), then rerun cc-close." >&2
   exit 3
 fi
 
@@ -176,11 +214,12 @@ if [[ "$final_status" == "done" ]]; then
   # (frontier_review_required) tasks close only with a signed acceptance
   # receipt (<task_id>.acceptance.yaml beside the note). The checker honors
   # HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1 directly; non-review-floor tasks
-  # pass through untouched.
+  # pass through untouched. --pr is forwarded so the receipt is bound to the
+  # head of the same PR the merge gate below checks, not to a PR-less reading.
   RECEIPT_CHECKER="$SCRIPT_DIR/cc-close-acceptance-receipt-check.py"
   if [[ -f "$RECEIPT_CHECKER" ]]; then
     set +e
-    python3 "$RECEIPT_CHECKER" "$note_path"
+    python3 "$RECEIPT_CHECKER" "$note_path" ${pr:+--pr "$pr"}
     receipt_rc=$?
     set -e
     if [[ "$receipt_rc" -ne 0 ]]; then
@@ -235,15 +274,22 @@ fi
 # the transition takes. cc-close holds no other lock, so there is no ordering to reconcile.
 _cc_close_repo_root="$(cd "$SCRIPT_DIR/.." && pwd)" || exit 1
 PYTHONPATH="$_cc_close_repo_root:${PYTHONPATH:-}" \
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" <<'PYEOF'
+"$PROJECT_PYTHON" - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" \
+  "${expect_sha256:-}" "$reason" "$witness" <<'PYEOF'
+import hashlib
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from shared.sdlc_claim import _frontmatter_key_lines, _release_fields
+from shared.sdlc_lifecycle import TASK_MERGED_AWAITING_WITNESS_STATUS as AWAITING
 from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
-path, task_id, final_status, pr, role, vault_root = (Path(sys.argv[1]), *sys.argv[2:])
+path, task_id, final_status, pr, role, vault_root, expect_sha256, reason, witness = (
+    Path(sys.argv[1]),
+    *sys.argv[2:],
+)
 closed_dir = path.parent.parent / "closed"
 new_path = closed_dir / path.name
 
@@ -278,10 +324,60 @@ try:
                 file=sys.stderr,
             )
             sys.exit(1)
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
+        if expect_sha256 and hashlib.sha256(raw).hexdigest() != expect_sha256:
+            print(
+                f"cc-close: REFUSED — '{task_id}' changed after its closure was decided (the "
+                f"caller expected sha256 {expect_sha256[:12]}…); nothing was closed. Next action: "
+                "none by hand; the caller decides again from the current note",
+                file=sys.stderr,
+            )
+            sys.exit(4)
+        text = raw.decode("utf-8")
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)
+        # An awaiting row (#4828) closes done only with its runtime witness (M182). Every status
+        # key line counts, in any quoting, so a row that any of them calls awaiting is never
+        # closed blind. Exit 5 is this family of refusals; each changes nothing.
+        status_lines = _frontmatter_key_lines(text, "status")
+        awaiting = any(
+            re.split(r"\s#", line.group("value"), maxsplit=1)[0].strip().strip("'\"") == AWAITING
+            for line in status_lines
+        )
+        if awaiting and final_status == "done" and not witness:
+            print(
+                f"cc-close: REFUSED — '{task_id}' is {AWAITING}: it closes done only with its "
+                "runtime witness; nothing was closed. Next action: observe the witness, then "
+                f'`cc-close {task_id} --pr {pr or "<N>"} --witness "<observation>"`',
+                file=sys.stderr,
+            )
+            sys.exit(5)
+        if witness and not awaiting:
+            print(
+                f"cc-close: REFUSED — --witness closes a {AWAITING} row, and '{task_id}' is not "
+                "one; nothing was closed. Next action: close it without --witness",
+                file=sys.stderr,
+            )
+            sys.exit(5)
+        if awaiting:
+            # The rewrite changes the one plain line the release-grade read found, by position:
+            # the line checked is the line changed (#4826's rounds 3-6).
+            fields = _release_fields(text)
+            if fields is None or str(fields.get("status") or "").strip() != AWAITING:
+                print(
+                    f"cc-close: REFUSED — '{task_id}' does not state its status in a form a close "
+                    "can rewrite exactly: its frontmatter must parse, state no key twice, and have "
+                    f"one plain status line reading {AWAITING}; nothing was closed. Next action: "
+                    "repair the row's frontmatter by hand, then rerun this cc-close",
+                    file=sys.stderr,
+                )
+                sys.exit(5)
+            [line] = status_lines
+            text = text[: line.start()] + f"status: {final_status}" + text[line.end() :]
+        else:
+            text = re.sub(
+                r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE
+            )
         text = re.sub(
             r"^completed_at:.*$", f"completed_at: {now}", text, count=1, flags=re.MULTILINE
         )
@@ -293,8 +389,17 @@ try:
         log_line = f"- {now} {role or 'session'} closed as {final_status}"
         if pr:
             log_line += f" (PR #{pr})"
+        if reason:
+            log_line += f": {reason}"
+        if witness:
+            log_line += f"; runtime witness: {witness}"
         log_line += " (cc-close)\n"
-        text = text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
+        # The reason or witness is part of this line, so a row without the heading gains one
+        # rather than losing it (the merge watcher's awaiting write does the same).
+        if "## Session log\n" in text:
+            text = text.replace("## Session log\n", f"## Session log\n{log_line}", 1)
+        else:
+            text = text.rstrip("\n") + f"\n\n## Session log\n{log_line}"
 
         # Move from active/ to closed/ (both names already locked above).
         new_path.parent.mkdir(parents=True, exist_ok=True)

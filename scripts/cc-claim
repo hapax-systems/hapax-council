@@ -34,6 +34,8 @@ fi
 
 force=false
 recover_claim_publications_only=false
+release_claim_residue_only=false
+return_claim=false
 rehydrate_activation_cache_only=false
 # Default mode publishes through the admitted Gate-0B claim-publication path.
 # The legacy note/cache writer is available only as an explicit slice-1 fallback.
@@ -44,6 +46,8 @@ usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim [--force] [--dispatch-* VALUE ...] -- <task_id>
        cc-claim --recover-claim-publications [<task_id>]
        cc-claim --rehydrate-activation-cache <task_id>
+       cc-claim --release-claim-residue <task_id>
+       cc-claim --return-claim <task_id>
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
 Every --dispatch-* option requires one VALUE from the dispatcher receipt.
@@ -75,6 +79,8 @@ while [[ $# -gt 0 ]]; do
     --force) force=true; shift ;;
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
     --rehydrate-activation-cache) rehydrate_activation_cache_only=true; shift ;;
+    --release-claim-residue) release_claim_residue_only=true; shift ;;
+    --return-claim) release_claim_residue_only=true; return_claim=true; shift ;;
     --dispatch-message-id) require_option_value "$1" "${2:-}"; dispatch_message_id="$2"; shift 2 ;;
     --dispatch-binding-hash) require_option_value "$1" "${2:-}"; dispatch_binding_hash="$2"; shift 2 ;;
     --dispatch-platform) require_option_value "$1" "${2:-}"; dispatch_platform="$2"; shift 2 ;;
@@ -89,6 +95,10 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ "$rehydrate_activation_cache_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$force" == "true" ) ]]; then
   echo "cc-claim: activation_cache_usage_invalid: supply one task id without --force or --recover-claim-publications. Next action: rerun cc-claim --rehydrate-activation-cache <task_id>." >&2
+  exit 1
+fi
+if [[ "$release_claim_residue_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$rehydrate_activation_cache_only" == "true" || "$force" == "true" ) ]]; then
+  echo "cc-claim: release_usage_invalid: supply one task id and no other mode. Next action: rerun cc-claim --release-claim-residue <task_id> (or --return-claim <task_id>), naming the one task." >&2
   exit 1
 fi
 if [[ -z "$task_id" && "$recover_claim_publications_only" != "true" ]]; then
@@ -285,8 +295,93 @@ fi
 . "$ROOT_HELPER"
 cc_task_root_resolve || exit $?
 vault_root_check="$CC_TASK_ROOT"
+# Governed release of this role's claim residue for one task (M166-M173). It runs before the
+# lease scan, because the residue it releases is what that scan and the claim path hold on.
+if [[ "$release_claim_residue_only" == "true" ]]; then
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" "$return_claim" <<'PYEOF'
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+repo_root, vault_root, role, task_id = Path(sys.argv[1]).resolve(), Path(sys.argv[2]), *sys.argv[3:5]
+returning = sys.argv[5] == "true"
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.sdlc_claim import (  # noqa: E402
+    ClaimPublicationError,
+    ClaimResidueArchiveHold,
+    release_claim_residue,
+    return_claim,
+)
+
+roots = default_claim_publication_roots(home=Path.home())
+try:
+    # --return-claim: the holder returns its own unstarted claim to offered; else the governed
+    # release of residue that no live claim owns.
+    released = (return_claim if returning else release_claim_residue)(
+        vault_root=vault_root,
+        cache_dir=Path(roots.claim_cache_dir),
+        transaction_root=Path(roots.claim_transaction_root),
+        lock_root=Path(roots.claim_lock_root),
+        role=role,
+        task_id=task_id,
+        observed_at=datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
+    )
+except ClaimResidueArchiveHold as exc:
+    print(f"cc-claim: {exc.message}", file=sys.stderr)
+    sys.exit(8)
+except ClaimPublicationError as exc:
+    print(f"cc-claim: HOLD - {exc}. Next action: repair the named root, then rerun.", file=sys.stderr)
+    sys.exit(8)
+if returning:
+    print(
+        f"cc-claim: returned '{task_id}' to offered, unassigned; archived "
+        f"{len(released.archived)} claim file(s) to {released.archive_dir}"
+    )
+    sys.exit(0)
+print(
+    f"cc-claim: released {released.shape} residue of {role} for {task_id} "
+    f"(publication {released.publication_id}); archived {len(released.archived)} file(s) to "
+    f"{released.archive_dir}"
+    + (f"; journal quarantined as {released.quarantined_journal}" if released.quarantined_journal else "")
+)
+PYEOF
+  exit $?
+fi
 now_epoch="$(date +%s 2>/dev/null || echo 0)"
 legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+# Whether a role's current task leaves its one-active-task slot free: terminal, or pipeline-held
+# (its work is done and the pipeline owes a verdict; `assigned_to` stays the named resumer).
+# MUST match shared/sdlc_lifecycle.TASK_ROLE_RELEASING_STATUSES (pinned by
+# tests/scripts/test_cc_claim.py). The seat's 2026-09-27 ruling, re-landing #4611's intent: the
+# old list released only five terminal statuses, so finished work held lanes (L-109).
+_cc_role_release_status() {
+  case "$1" in
+    # terminal
+    done|completed|complete|closed|fulfilled|resolved) return 0 ;;
+    withdrawn|withdrawn_stale|superseded|closed_superseded|rejected|refused) return 0 ;;
+    not_applicable|deferred|closed_poisoned) return 0 ;;
+    # pipeline-held
+    pr_open|merge_queue|ci_green|ready|ready_for_review|review_ready|ready_for_merge) return 0 ;;
+    merged_awaiting_runtime_witness) return 0 ;;
+  esac
+  return 1
+}
+# A row's status for that decision, read the way the Python release reads it: from frontmatter
+# that parses and states each key once (shared.sdlc_claim._release_frontmatter), never a body
+# line or the last of duplicate keys; otherwise "unreadable", which frees nothing (#4826 r5).
+_cc_release_status() {
+  NOTE="$1" CC_REPO="$SCRIPT_DIR/.." "$python_runner" -I -c '
+import os, sys
+sys.path.insert(0, os.environ["CC_REPO"])
+from pathlib import Path
+from shared.sdlc_claim import _release_frontmatter
+fields = _release_frontmatter(Path(os.environ["NOTE"]))
+print("unreadable" if fields is None else (str(fields.get("status") or "").strip() or "unknown"))
+' 2>/dev/null || echo unreadable
+}
 # Only this run's lease scan may set the charter-keep grant; a value inherited
 # from the caller's environment would force the charter branch without the
 # child-may-mint check having run for this claim.
@@ -294,6 +389,9 @@ unset HAPAX_CHARTER_KEEP_TASK || true
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
+  # An unreadable marker reads as empty here and is skipped, while the Python release
+  # (shared.sdlc_claim._other_live_markers) treats one as live and holds, so the pair fails
+  # closed. Keep them paired; aligning this side changes the rule for every claim (#4826).
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
@@ -301,6 +399,21 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
       session_existing_task="$(head -n1 "$session_claim_file" | tr -d '[:space:]' || true)"
       session_cf_mtime="$(stat -c %Y "$session_claim_file" 2>/dev/null || echo 0)"
       if [[ -n "$existing_task" && "$session_existing_task" == "$existing_task" ]] && (( now_epoch - session_cf_mtime <= lease_ttl )); then
+        continue
+      fi
+    fi
+    # Release is a property of the row, not of the lease's age. Pipeline-held rows sit past the
+    # TTL as a matter of course, so an expired marker naming a row whose status releases the role
+    # frees the slot like an unexpired one, and the governed release below archives its files
+    # (#4826 round 2, the ordering #4611 had found). A worker-held row's expired lease still holds.
+    if [[ -n "$existing_task" && "$existing_task" != "$task_id" ]]; then
+      expired_note=""
+      for c in "$vault_root_check/active/$existing_task-"*.md "$vault_root_check/active/$existing_task.md" \
+        "$vault_root_check/closed/$existing_task-"*.md "$vault_root_check/closed/$existing_task.md"; do
+        [[ -f "$c" ]] && expired_note="$c" && break
+      done
+      if [[ -n "$expired_note" ]] && \
+        _cc_role_release_status "$(_cc_release_status "$expired_note")"; then
         continue
       fi
     fi
@@ -330,10 +443,8 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     [[ -f "$c" ]] && existing_note="$c" && break
   done
   [[ -n "$existing_note" ]] || continue
-  existing_status="$(grep -oP '^status:\s*\K\S+' "$existing_note" 2>/dev/null || echo "unknown")"
-  case "$existing_status" in
-    done|completed|closed|withdrawn|superseded) continue ;;
-  esac
+  existing_status="$(_cc_release_status "$existing_note")"
+  _cc_role_release_status "$existing_status" && continue
   child_note=""
   for c in "$vault_root_check/active/$task_id-"*.md "$vault_root_check/active/$task_id.md"; do
     [[ -f "$c" ]] && child_note="$c" && break
@@ -356,7 +467,11 @@ sys.exit(0 if ok else 1)
   if grep -q '^claim_form:[[:space:]]*charter[[:space:]]*$' "$existing_note" 2>/dev/null; then
     echo "  The unit was not recorded. Next action: on the '$task_id' note, set parent_charter: '$existing_task' and keep every mutation_scope_ref inside that charter's charter_scope, then rerun cc-claim; or close the charter with cc-close $existing_task if it is terminal." >&2
   else
-    echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+    if [[ "$existing_status" == "unreadable" ]]; then
+      echo "  '$existing_task' cannot be read for a release: its frontmatter does not parse, states a key twice, or does not spell status plainly once, so its slot stays held and nothing was released. Next action: repair that row's frontmatter by hand (one plain status line, no duplicate keys), then rerun cc-claim." >&2
+    else
+      echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead. If you have not started it (no PR, no branch), return it with cc-claim --return-claim $existing_task." >&2
+    fi
   fi
   if [[ "$canon_enforced" == "0" ]]; then
     echo "  Legacy fallback only: cc-claim --force $task_id" >&2
@@ -384,6 +499,11 @@ done
 # requires a literal `-` after the task_id.
 if [[ -z "$note_path" ]] && [[ -f "$vault_root/active/$task_id.md" ]]; then
   note_path="$vault_root/active/$task_id.md"
+fi
+if [[ -z "$note_path" ]] && [[ -f "$vault_root/closed/$task_id.md" ]]; then
+  echo "cc-claim: task '$task_id' is closed; a closed row is never claimed or resumed." >&2
+  echo "Next action: if this role's claim markers still name it (closed from another process, M173), release them with \`cc-claim --release-claim-residue $task_id\`, then claim an active task." >&2
+  exit 2
 fi
 if [[ -z "$note_path" ]]; then
   echo "cc-claim: task '$task_id' not found in $vault_root/active/" >&2
@@ -454,6 +574,8 @@ if str(repo_root) not in sys.path:
 from shared.charter_claim import child_may_mint, sidecar_belongs_to  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
+    TASK_DISPATCHABLE_STATUSES,
+    TASK_MERGED_AWAITING_WITNESS_STATUS,
     TASK_RESUMABLE_STATUSES,
     blocked_reason_from_frontmatter,
     blocked_witness_from_frontmatter,
@@ -479,6 +601,167 @@ def _frontmatter_scalar(note_text: str, key: str) -> str:
     return "" if value.lower() in {"", "null", "none", "~", "[]"} else value
 
 
+def _strip_scalar(value: str) -> str:
+    return value.strip().strip('"').strip("'")
+
+
+_YAML_NULLS = frozenset({"", "null", "none", "~", "[]"})
+
+
+def _is_claimable_assignee(value: str) -> bool:
+    stripped = _strip_scalar(value)
+    return stripped == "unassigned" or stripped.lower() in _YAML_NULLS
+
+
+# Canonical SSOT: a lane may resume an owned task in any merge-ready state, not
+# just pr_open/merge_queue (shared/sdlc_lifecycle.py TASK_RESUMABLE_STATUSES).
+READY_STATUSES = TASK_RESUMABLE_STATUSES
+# A lane may also take back its OWN working row after its lease lapsed: a live claim by this
+# role never reaches the decision (it is answered as an applied publication), so only a lapsed
+# one does. Before this, the seat had to hand-edit the note (2026-09-26, dev44 and dev33).
+OWN_WORKING_STATUSES = TASK_DISPATCHABLE_STATUSES - TASK_CLAIMABLE_STATUSES
+
+
+def _other_claim_markers(cache: Path) -> list[Path]:
+    """Every claim marker naming this task except the caller's own two keys: another role's
+    live claim, or another session's of this role. A self-resume never takes one over."""
+
+    own = {f"cc-active-task-{role}", f"cc-active-task-{role}-{session_id}"}
+    hits: list[Path] = []
+    for marker in sorted(cache.glob("cc-active-task-*")):
+        if marker.name in own:
+            continue
+        try:
+            named = marker.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            hits.append(marker)  # unreadable: it may name the task, so it counts as live
+            continue
+        if task_id in named:
+            hits.append(marker)
+    return hits
+
+
+def _refuse_while_another_claim_holds(verb: str) -> None:
+    others = _other_claim_markers(cache_dir)
+    if others:
+        print(
+            f"cc-claim: refusing to {verb} '{task_id}' — another claim marker names it or cannot "
+            "be read: "
+            + ", ".join(str(path) for path in others)
+            + ". Next action: inspect it. A live claim is handed off to its lane. Residue the note "
+            "no longer names (a re-offered row) is released by the lane that owns the marker, "
+            f"with `cc-claim --release-claim-residue {task_id}`.",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+
+
+status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
+status = status_match.group(1) if status_match else "offered"
+assigned_match = re.search(r"^assigned_to:[ \t]*(.*)$", text, flags=re.MULTILINE)
+assigned_raw = assigned_match.group(1) if assigned_match else "unassigned"
+assigned_to = _strip_scalar(assigned_raw)
+
+
+def _claim_mode_or_refuse() -> str:
+    """``claim`` or ``resume`` for this note, or a refusal (exit 6 or 4) that changes nothing.
+
+    It reads only the note's text and the claim markers, so it can run before anything is
+    released (M181)."""
+
+    if not text.startswith("---") or text.find("\n---", 4) < 0:
+        print(
+            f"cc-claim: FATAL — task note {path} has no closing frontmatter "
+            "delimiter; next action: repair the note (restore the opening and "
+            "closing '---' lines), then re-run cc-claim. No claim caches were written.",
+            file=sys.stderr,
+        )
+        sys.exit(6)
+    if status in TASK_CLAIMABLE_STATUSES:
+        if assigned_match and not _is_claimable_assignee(assigned_raw):
+            if assigned_to != role:
+                print(
+                    f"cc-claim: refusing to claim '{task_id}' — already assigned to "
+                    f"'{assigned_to}'. Next action: ask the assigned lane/operator to release it "
+                    "or claim a different offered task.",
+                    file=sys.stderr,
+                )
+                sys.exit(4)
+        mode = "claim"
+    elif status in READY_STATUSES or status in OWN_WORKING_STATUSES:
+        state_label = "ready-state" if status in READY_STATUSES else "working"
+        if _is_claimable_assignee(assigned_raw):
+            print(
+                f"cc-claim: refusing to resume '{task_id}' — {state_label} task is not assigned "
+                f"to '{role}'. Next action: restore assigned_to: {role} if this lane owns the PR "
+                "follow-up, or claim a different offered task.",
+                file=sys.stderr,
+            )
+            sys.exit(4)
+        if assigned_to != role:
+            print(
+                f"cc-claim: refusing to resume '{task_id}' — assigned to '{assigned_to}', not "
+                f"'{role}'. Next action: hand off to {assigned_to}, ask the operator to reassign "
+                "the task, or claim a task assigned to this lane.",
+                file=sys.stderr,
+            )
+            sys.exit(4)
+        mode = "resume"
+    else:
+        detail = ""
+        if status == "blocked":
+            frontmatter = frontmatter_from_text(text)
+            detail_parts: list[str] = []
+            reason = blocked_reason_from_frontmatter(frontmatter)
+            witness = blocked_witness_from_frontmatter(frontmatter)
+            detail_parts.append(f"blocked_reason: {reason or 'missing'}")
+            if witness:
+                detail_parts.append(f"blocked_witness: {witness}")
+            detail = " (" + "; ".join(detail_parts) + ")"
+        if status == TASK_MERGED_AWAITING_WITNESS_STATUS:
+            # Its one exit is the witnessed close, which needs no claim (M182).
+            pr = _frontmatter_scalar(text, "pr") or "<N>"
+            next_action = (
+                "observe its runtime witness, then close it with "
+                f'`cc-close {task_id} --pr {pr} --witness "<observation>"` (no claim is needed).'
+            )
+        else:
+            next_action = (
+                "move the task through the governed lifecycle to an offered or assigned ready "
+                "state, then rerun cc-claim."
+            )
+        print(
+            f"cc-claim: refusing to claim '{task_id}' — current status is '{status}'{detail}, "
+            f"not 'offered' or an assigned ready state. Next action: {next_action}",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+    # Every claim and every resume refuses while any other claim marker names the task (seat,
+    # 2026-09-27T04:05Z). A stale one left on a re-offered row is released by the lane that
+    # owns it.
+    _refuse_while_another_claim_holds(mode)
+    return mode
+
+
+def _own_marker_names_task() -> bool:
+    """Whether this role's own claim marker already names the task: an existing claim, which its
+    applied publication answers below (exit 0 or a hold), as it always has."""
+
+    for key in (role, f"{role}-{session_id}"):
+        try:
+            named = (cache_dir / f"cc-active-task-{key}").read_text(encoding="utf-8").split()
+        except (OSError, UnicodeError):
+            continue
+        if named[:1] == [task_id]:
+            return True
+    return False
+
+
+# The decision comes before anything is released (M181, 2026-09-27): a refused claim had first
+# archived the role's pipeline-held row. Only an existing claim of this role defers it, to after
+# its applied publication is consulted.
+claim_mode = None if _own_marker_names_task() else _claim_mode_or_refuse()
+
 manual_binding_issued = False
 
 if canon_enforced:
@@ -491,18 +774,19 @@ if canon_enforced:
     )
     from shared.sdlc_claim import (  # noqa: E402
         ClaimPublicationError,
-        ClaimPublicationIntent,
         ClaimResidueArchiveHold,
         archive_dispatch_only_claim_residue,
         inspect_claim_publications,
         recover_claim_publications,
+        release_pipeline_held_residue,
         resolve_applied_claim_publication,
+        claim_publication_hold_message,
+        prepare_claim_publication_intent,
         resolve_applied_claim_publication_for_task,
     )
     from shared.sdlc_task_store import (  # noqa: E402
         ClaimDispatchBinding,
         TaskStoreError,
-        resolve_task_note,
     )
 
     def _archive_dispatch_only_claim_residue(
@@ -649,6 +933,28 @@ if canon_enforced:
         current_task_id=task_id,
         observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
     )
+    # A pipeline-held row does not hold the role's slot (the seat's 2026-09-27 ruling); the
+    # lease check above let this claim through, and its markers are released here, archived,
+    # before this claim publishes. The row keeps this role as its named resumer.
+    try:
+        freed = release_pipeline_held_residue(
+            vault_root=path.parent.parent,
+            cache_dir=cache_dir,
+            transaction_root=transaction_root,
+            lock_root=lock_root,
+            role=role,
+            current_task_id=task_id,
+            observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        )
+    except ClaimResidueArchiveHold as exc:
+        print(f"cc-claim: {exc.message}", file=sys.stderr)
+        sys.exit(8)
+    for released in freed:
+        print(
+            f"cc-claim: the pipeline holds this role's previous row; its claim files were archived "
+            f"to {released.archive_dir} (it stays assigned to {role}, to resume later)",
+            file=sys.stderr,
+        )
     # A unit recorded under a live charter keeps the charter's sidecars; they
     # belong to the parent, not to this task, and must not read as this
     # task's applied publication.
@@ -675,6 +981,24 @@ if canon_enforced:
                 "then rerun cc-claim.",
                 file=sys.stderr,
             )
+            if exc.reason_code in {
+                "claim_cache_missing",
+                "claim_epoch_missing",
+                "claim_dispatch_binding_missing",
+                "claim_task_mismatch",
+            }:
+                try:
+                    residue_task = json.loads(
+                        (cache_dir / f"cc-claim-dispatch-{role}.json").read_text(encoding="utf-8")
+                    )["task_id"]
+                except (OSError, ValueError, KeyError, TypeError):
+                    residue_task = "<the task the role's residue names>"
+                print(
+                    "cc-claim: if that residue is this role's lapsed lease, a held publication, "
+                    "or markers of a row closed from another process, release it with "
+                    f"`cc-claim --release-claim-residue {residue_task}` (it refuses a live claim).",
+                    file=sys.stderr,
+                )
             sys.exit(8)
         binding = applied.intent.binding
         expected_dispatch = {
@@ -719,86 +1043,11 @@ if canon_enforced:
         )
         sys.exit(0)
 
-if not text.startswith("---") or text.find("\n---", 4) < 0:
-    print(
-        f"cc-claim: FATAL — task note {path} has no closing frontmatter "
-        "delimiter; next action: repair the note (restore the opening and "
-        "closing '---' lines), then re-run cc-claim. No claim caches were written.",
-        file=sys.stderr,
-    )
-    sys.exit(6)
-frontmatter = frontmatter_from_text(text)
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _strip_scalar(value: str) -> str:
-    return value.strip().strip('"').strip("'")
-
-
-_YAML_NULLS = frozenset({"", "null", "none", "~", "[]"})
-
-
-def _is_claimable_assignee(value: str) -> bool:
-    stripped = _strip_scalar(value)
-    return stripped == "unassigned" or stripped.lower() in _YAML_NULLS
-
-
-# Canonical SSOT: a lane may resume an owned task in any merge-ready state, not
-# just pr_open/merge_queue (shared/sdlc_lifecycle.py TASK_RESUMABLE_STATUSES).
-READY_STATUSES = TASK_RESUMABLE_STATUSES
-
-
-status_match = re.search(r"^status:\s*(\S+)$", text, flags=re.MULTILINE)
-status = status_match.group(1) if status_match else "offered"
-assigned_match = re.search(r"^assigned_to:[ \t]*(.*)$", text, flags=re.MULTILINE)
-assigned_raw = assigned_match.group(1) if assigned_match else "unassigned"
-assigned_to = _strip_scalar(assigned_raw)
-
-if status in TASK_CLAIMABLE_STATUSES:
-    if assigned_match and not _is_claimable_assignee(assigned_raw):
-        print(
-            f"cc-claim: refusing to claim '{task_id}' — already assigned to '{assigned_to}'. "
-            "Next action: ask the assigned lane/operator to release it or claim a different "
-            "offered task.",
-            file=sys.stderr,
-        )
-        sys.exit(4)
-    claim_mode = "claim"
-elif status in READY_STATUSES:
-    if _is_claimable_assignee(assigned_raw):
-        print(
-            f"cc-claim: refusing to resume '{task_id}' — ready-state task is not assigned to "
-            f"'{role}'. Next action: restore assigned_to: {role} if this lane owns the PR "
-            "follow-up, or claim a different offered task.",
-            file=sys.stderr,
-        )
-        sys.exit(4)
-    if assigned_to != role:
-        print(
-            f"cc-claim: refusing to resume '{task_id}' — assigned to '{assigned_to}', not "
-            f"'{role}'. Next action: hand off to {assigned_to}, ask the operator to reassign "
-            "the task, or claim a task assigned to this lane.",
-            file=sys.stderr,
-        )
-        sys.exit(4)
-    claim_mode = "resume"
-else:
-    detail = ""
-    if status == "blocked":
-        detail_parts: list[str] = []
-        reason = blocked_reason_from_frontmatter(frontmatter)
-        witness = blocked_witness_from_frontmatter(frontmatter)
-        detail_parts.append(f"blocked_reason: {reason or 'missing'}")
-        if witness:
-            detail_parts.append(f"blocked_witness: {witness}")
-        detail = " (" + "; ".join(detail_parts) + ")"
-    print(
-        f"cc-claim: refusing to claim '{task_id}' — current status is '{status}'{detail}, "
-        "not 'offered' or an assigned ready state. Next action: move the task through "
-        "the governed lifecycle to an offered or assigned ready state, then rerun cc-claim.",
-        file=sys.stderr,
-    )
-    sys.exit(4)
+if claim_mode is None:
+    # This role's own marker named the task and no applied publication answered it above, so
+    # the decision runs here, where it always ran for an existing claim (M181).
+    claim_mode = _claim_mode_or_refuse()
 
 
 def _frontmatter_lines(note_text: str) -> list[str]:
@@ -1085,6 +1334,9 @@ if claim_mode == "claim":
                 repo,
             ),
             require_route_metadata_validity=True,
+            # An accepted dependency (valid receipt beside it) no longer blocks its
+            # successor for want of a closed status (M102).
+            note_path=dep_path,
         )
         if not validity.valid:
             unmet.append(f"{dep_id} ({'; '.join(validity.blockers)})")
@@ -1170,7 +1422,12 @@ if claim_mode == "claim":
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"
 else:
     session_suffix = f", session={session_id}" if session_id else ""
-    log_line = f"- {now} {role} resumed ready-state task (cc-claim{session_suffix})\n"
+    resumed = (
+        "resumed its own lapsed claim"
+        if status in OWN_WORKING_STATUSES
+        else "resumed ready-state task"
+    )
+    log_line = f"- {now} {role} {resumed} (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: resumed task '{task_id}' for role '{role}'"
 
 text = re.sub(
@@ -1256,18 +1513,6 @@ if not canon_enforced:
     sys.exit(0)
 
 try:
-    snapshot = resolve_task_note(
-        path.parent.parent,
-        task_id,
-        state="active",
-        require_no_other_state=True,
-    )
-    if snapshot.path != path.resolve() or snapshot.content != note_before:
-        raise TaskStoreError(
-            "claim_publication_task_changed_during_preflight",
-            "reload the exact active task and repeat claim eligibility checks",
-            task_id,
-        )
     binding = ClaimDispatchBinding.create(
         task_id=task_id,
         lane=role,
@@ -1281,11 +1526,11 @@ try:
         binding_hash=dispatch_binding_hash,
         coord_dispatch_idempotency_key=dispatch_idempotency_key or None,
     )
-    intent = ClaimPublicationIntent.create(
-        task=snapshot,
-        cache_dir=cache_dir,
-        note_after=text.encode("utf-8"),
-        binding=binding,
+    # The preflight (a churn-retaking resolve, the exact-bytes check, the intent) is
+    # shared.sdlc_claim's, tested in-process there; this script runs isolated (-I).
+    intent = prepare_claim_publication_intent(
+        note_path=path, note_before=note_before, note_after=text.encode("utf-8"),
+        cache_dir=cache_dir, binding=binding,
     )
 except (ClaimPublicationError, TaskStoreError) as exc:
     print(
@@ -1440,13 +1685,7 @@ try:
         )
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
 except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
-    print(
-        f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
-        "claim-publication composition receipt for this HOME through the governed "
-        "install step, then rerun cc-claim; do not use HAPAX_GATE0B_CLAIM_PUBLICATION_OFF "
-        f"unless the operator authorizes emergency fallback; prepared_intent={intent.intent_ref}",
-        file=sys.stderr,
-    )
+    print(claim_publication_hold_message(exc, intent_ref=intent.intent_ref), file=sys.stderr)
     sys.exit(8)
 
 print(result_message)

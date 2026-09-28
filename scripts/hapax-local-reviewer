@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Local-fleet substitute reviewer seat for the review-team registry (read-only, $0).
+
+Sends the dispatcher's prompt to the fleet's OpenAI-compatible endpoint (vLLM on spark-01df,
+model qwen3.8-flash-next, 262 k context) as one chat completion, with no tools. An
+unreachable or failing endpoint is a route outage, never a reply.
+
+Measured 2026-09-24: reliable, but twice its verdict line contradicted its own text. The
+dispatcher does not trust the verdict line alone: a named critical blocks whatever the verdict
+says, and synthesize_dossier escalates verdict-contradicts-findings.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
+
+WRAPPER = "hapax-local-reviewer"
+DEFAULT_BASE_URL = "http://spark-01df:8000/v1"
+DEFAULT_MODEL = "qwen3.8-flash-next"
+MAX_OUTPUT_TOKENS = 8192
+TIMEOUT_SECONDS = 900
+
+
+def request_body(prompt: str, model: str) -> dict:
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SEAT_PREAMBLE},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+    }
+
+
+def main() -> int:
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
+    base_url = os.environ.get("HAPAX_LOCAL_REVIEW_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    model = os.environ.get("HAPAX_LOCAL_REVIEW_MODEL", DEFAULT_MODEL)
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(request_body(prompt, model)).encode("utf-8"),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return refuse(
+            WRAPPER,
+            f"local review endpoint {base_url} unavailable ({type(exc).__name__}); "
+            "check the fleet's vLLM service",
+        )
+    try:
+        choice = payload["choices"][0]
+        content = choice["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        return refuse(WRAPPER, "local review endpoint returned no choices; check the model id")
+    if choice.get("finish_reason") == "length":
+        return refuse(WRAPPER, f"reply truncated at {MAX_OUTPUT_TOKENS} tokens; not a review")
+    sys.stdout.write(content)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

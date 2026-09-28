@@ -235,6 +235,7 @@ runtimes:
       - lint
       - capability-surface-delta
       - egress-boundary-pin
+      - capability-envelope-containment
       - typecheck
       - test-full-shard
       - test-title-cards
@@ -246,6 +247,7 @@ runtimes:
       - vscode-build
       - secrets-scan
       - security
+      - outbound-send-surface-scan
       - all-green
     run_markers:
       - 'astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b'

@@ -13,8 +13,13 @@ from typing import Any
 
 import yaml
 
+#: A merged row whose declared runtime witnesses are still owed. The PR merge watcher moves such
+#: a row here instead of closing it done; its owner observes them, then closes it.
+TASK_MERGED_AWAITING_WITNESS_STATUS = "merged_awaiting_runtime_witness"
+
 TASK_ACTIVE_STATUSES = frozenset(
     {
+        TASK_MERGED_AWAITING_WITNESS_STATUS,
         "offered",
         "claimed",
         "in_progress",
@@ -85,6 +90,17 @@ TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_F
 
 #: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
 TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
+
+#: Pipeline-held: the lane's work is done and the pipeline owes a verdict (review, merge, a
+#: runtime witness). Such a row holds no worker, and ``assigned_to`` keeps its named resumer.
+TASK_PIPELINE_HELD_STATUSES = TASK_RESUMABLE_STATUSES | frozenset(
+    {TASK_MERGED_AWAITING_WITNESS_STATUS}
+)
+
+#: A role's one-active-task slot is free when its current task is in one of these; the bash
+#: lease check in scripts/cc-claim MUST match (pinned by tests/scripts/test_cc_claim.py). The
+#: seat's 2026-09-27 ruling, re-landing #4611's intent (L-109: 43 lanes held by finished work).
+TASK_ROLE_RELEASING_STATUSES = TASK_TERMINAL_STATUSES | TASK_PIPELINE_HELD_STATUSES
 
 BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
 BLOCKED_WITNESS_FIELDS = ("blocked_witness", "blocked_witness_path")
@@ -330,6 +346,11 @@ def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]
     verdict = _frontmatter_non_null_scalar(loaded.get("verdict"))
     if verdict and verdict.lower() not in ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS:
         blockers.append(f"acceptance_receipt_verdict_not_accepted:{verdict.lower()}")
+    # A vault-only acceptance covers exactly the bytes its manifest records; with no merged
+    # head behind it, the receipt stops counting the moment those bytes change.
+    from shared.review_artifact_manifest import artifact_receipt_blockers
+
+    blockers.extend(artifact_receipt_blockers(loaded))
     return tuple(blockers)
 
 
@@ -382,12 +403,24 @@ def _route_metadata_validation_blockers(frontmatter: Mapping[str, Any]) -> tuple
     return tuple(f"route_metadata:{reason}" for reason in assessment.validation_errors)
 
 
+def _accepted_before_close(
+    frontmatter: Mapping[str, Any], status: str, note_path: Path | None
+) -> bool:
+    if note_path is None or not status or status in TASK_TERMINAL_STATUSES:
+        return False
+    task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
+    if not task_id:
+        return False
+    return not _acceptance_receipt_validity_blockers(acceptance_receipt_path(note_path, task_id))
+
+
 def task_closure_validity(
     text: str,
     *,
     pr_state_lookup: PrStateLookup | None = None,
     require_route_metadata: bool = False,
     require_route_metadata_validity: bool = False,
+    note_path: Path | None = None,
 ) -> TaskClosureValidity:
     """Validate that a cc-task closure may satisfy downstream work.
 
@@ -395,6 +428,12 @@ def task_closure_validity(
     terminal status, no unchecked Acceptance criteria boxes, a merged declared
     PR when a PR can be checked, and valid route metadata when that surface is
     required by the caller.
+
+    Given ``note_path``, a still-active task whose valid acceptance receipt sits
+    beside it (the same receipt authority the close gate reads) satisfies the
+    status requirement: accepted work stops blocking its successor before it is
+    closed (M102). A terminal non-fulfilling status is never revived, and every
+    other requirement still applies.
     """
 
     frontmatter = frontmatter_from_text(text)
@@ -403,7 +442,9 @@ def task_closure_validity(
 
     if status == "blocked":
         blockers.extend(active_blocked_task_blockers(frontmatter))
-    elif status not in TASK_FULFILLING_CLOSED_STATUSES:
+    elif status not in TASK_FULFILLING_CLOSED_STATUSES and not _accepted_before_close(
+        frontmatter, status, note_path
+    ):
         blockers.append(f"status_not_fulfilling:{status or 'missing'}")
 
     ac_state = acceptance_criteria_state(text)
@@ -452,6 +493,7 @@ SENSITIVE_RISK_FLAGS = (
     "governance_sensitive",
     "public_claim_sensitive",
     "audio_or_live_egress_sensitive",
+    "outbound_message_egress_sensitive",
     "privacy_or_secret_sensitive",
     "provider_billing_sensitive",
 )
@@ -503,6 +545,36 @@ RELEASE_MITIGATION_CHECKS: dict[str, tuple[str, ...]] = {
     # CORRECTNESS of such a change is separately gated by the general test/review
     # checks every PR already carries.
     "privacy_or_secret_sensitive": ("secrets-scan",),
+    # An audio/live-egress change (audio routing, live broadcast, the session-send
+    # relay boundary) needs three layers of evidence. First, the behavioural
+    # egress pins (egress-boundary-pin). Second, the authority binding,
+    # capability-surface declaration and secret scan. Third, quorum-accept at the
+    # current head. This folds the estate extension's tuple into the canon map
+    # (shared/release_gate.py kept it outside while the map was treated as frozen).
+    # The map alone is NOT the whole gate for this class. The estate assessment
+    # (release_gate.assess_release_auto_arm_estate, which every autoqueue arm read
+    # uses) adds the PR's changed files. A touched audio-routing surface
+    # additionally needs the passive audio-graph validator, and any other path
+    # the pins do not cover holds the release closed.
+    "audio_or_live_egress_sensitive": (
+        "egress-boundary-pin",
+        "authority-case-check",
+        "capability-surface-delta",
+        "secrets-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
+    # An outbound-message change (mail and messages leaving for people; the
+    # communication pathway's sense of "egress") auto-arms only when the diff scan
+    # (scripts/check-outbound-send-surface-diff.py, CI job of the same name) passes
+    # AND the review team has quorum-accepted the current head. The scan names
+    # every send surface the diff adds, removes or changes, and fails on a new
+    # send path that the reviewed registry (config/outbound-send-surfaces.yaml)
+    # does not name. The scan is a lower bound over the vectors it can parse. The
+    # quorum is the semantic layer, and the same trust split as the billing class.
+    "outbound_message_egress_sensitive": (
+        "outbound-send-surface-scan",
+        REVIEW_TEAM_QUORUM_EVIDENCE,
+    ),
 }
 
 #: Mutation surfaces too high-stakes for the system to auto-authorize release.
@@ -1355,6 +1427,23 @@ def _explicit_risk_flag_true(frontmatter: Mapping[str, Any], name: str) -> bool:
     return _auto_arm_truthy(risk_flags.get(name))
 
 
+def _explicit_risk_flag_false(frontmatter: Mapping[str, Any], name: str) -> bool:
+    """Whether a route-metadata risk flag was explicitly declared false.
+
+    The parsed ``RiskFlags`` model defaults an omitted flag to False, so this reads
+    the raw route payload the model validates (a top-level ``risk_flags`` wins over
+    ``route_metadata.risk_flags``). Only a boolean ``false`` is a declaration; null,
+    strings and every other value are not.
+    """
+
+    from shared.route_metadata_schema import route_metadata_payload_from_frontmatter
+
+    risk_flags = route_metadata_payload_from_frontmatter(frontmatter).get("risk_flags")
+    if not isinstance(risk_flags, Mapping):
+        return False
+    return risk_flags.get(name) is False
+
+
 def _pass_backed_runtime_secret_auto_arm_ok(frontmatter: Mapping[str, Any]) -> bool:
     """True for narrow pass-backed runtime-only secret tooling.
 
@@ -1404,12 +1493,18 @@ def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
     The derived (keyword) pass matters because an explicit-route-metadata task
     can omit ``risk_flags`` entirely yet still be governance/audio/public by its
     title or tags — those must not be auto-armed.
+
+    The title and tags are an upstream free variable, so the deriver may only add
+    a flag the route omits: a validated route's explicit ``false`` is the authored
+    statement and takes precedence (M129). Unvalidated metadata keeps the
+    derivation.
     """
 
     from shared.route_metadata_schema import _derive_risk_flags, assess_route_metadata
 
     flags: set[str] = set()
     derived = _derive_risk_flags(frontmatter)
+    metadata = assess_route_metadata(frontmatter).metadata
     for name in SENSITIVE_RISK_FLAGS:
         if (
             name == "privacy_or_secret_sensitive"
@@ -1418,9 +1513,10 @@ def _effective_sensitive_flags(frontmatter: Mapping[str, Any]) -> list[str]:
             and not _explicit_risk_flag_true(frontmatter, name)
         ):
             continue
+        if metadata is not None and _explicit_risk_flag_false(frontmatter, name):
+            continue
         if derived.get(name):
             flags.add(name)
-    metadata = assess_route_metadata(frontmatter).metadata
     if metadata is not None:
         for name in SENSITIVE_RISK_FLAGS:
             if getattr(metadata.risk_flags, name, False):
@@ -1538,7 +1634,7 @@ def assess_release_auto_arm(
     reform-era model marker); legacy tasks without it are not subject and keep
     their prior autoqueue behavior. A subject task that is not yet armed
     ``needs_arming``; it is ``eligible`` only when it carries no governance,
-    public, audio/live-egress, privacy, or provider-billing veto, its release
+    public, audio/live-egress, outbound-message, privacy, or provider-billing veto, its release
     was authorized-in-principle (``implementation_authorized``), and its AVSDLC
     quality axes permit.
 

@@ -210,6 +210,45 @@
       "ledger_owner": "cx-convergence-coord",
       "dashboard_visibility": "required",
       "lifecycle_state": "active"
+    },
+    {
+      "budget_schema": 1,
+      "budget_id": "tb-20260924-zai-glm-payg-balance-burn",
+      "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+      "approved_by": "operator",
+      "created_at": "2026-09-24T18:00:00Z",
+      "expires_at": "2026-10-24T18:00:00Z",
+      "capacity_pool": "api_paid_spend",
+      "providers_allowed": [
+        "z_ai"
+      ],
+      "profiles_allowed": [
+        "glmcp-review-direct"
+      ],
+      "task_classes_allowed": [
+        "independent-review"
+      ],
+      "quality_floors_allowed": [
+        "frontier_review_required"
+      ],
+      "total_cap_usd": "76.54",
+      "per_task_cap_usd": "5.00",
+      "daily_cap_usd": "20.00",
+      "auto_top_up_allowed": false,
+      "subscription_path_checked_at": "2026-09-24T20:04:04Z",
+      "reason_subscription_path_not_used": "Coding Plan quota_exhausted (1310) until reported reset 2026-09-27T11:36:24Z, re-observed by the seat refresh 2026-09-24T20:04:04Z; operator 2026-09-24 ~18:00Z: burn the existing Z.ai PAYG cash balance USD 76.54 until gone, no top-ups; the cap is that balance",
+      "steady_state_replacement": {
+        "target_route_id": null,
+        "blocker_to_remove": null,
+        "exit_criterion": null
+      },
+      "ledger_owner": "coordinator-seat",
+      "dashboard_visibility": "required",
+      "lifecycle_state": "active",
+      "provider_balance_usd": "76.54",
+      "provider_balance_observed_at": "2026-09-24T18:00:00Z",
+      "provider_balance_covers_spend_before": "2026-09-22T18:00:00Z",
+      "provider_balance_evidence_ref": "operator-console-cash-balance-2026-09-24:memory-glm-payg-balance-burn-authorized-20260924"
     }
   ],
   "spend_receipts": [
@@ -242,6 +281,36 @@
         "artifacts/support/bootstrap-draft.md"
       ],
       "support_artifact_authority": "support_non_authoritative"
+    },
+    {
+      "spend_receipt_schema": 1,
+      "spend_id": "spend-20260924T192012Z-glmcp-payg-identity-probe",
+      "task_id": "glm-payg-balance-burn-admission-20260924",
+      "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+      "route_id": "glmcp.review.direct",
+      "capacity_pool": "api_paid_spend",
+      "budget_id": "tb-20260924-zai-glm-payg-balance-burn",
+      "provider": "z_ai",
+      "model_or_engine": "glm-5.3",
+      "model_id": "z_ai-glm-5.3",
+      "effort": "none",
+      "quantization": "not_applicable",
+      "auth_surface": "api_key",
+      "quality_floor": "frontier_review_required",
+      "quality_preservation_reason": "harmless identity probe before paid review admission",
+      "spend_reason": "quota_exhaustion",
+      "estimated_cost_usd": "0.002651",
+      "actual_cost_usd": "0.000279",
+      "cap_remaining_usd": "76.539721",
+      "created_at": "2026-09-24T19:20:12Z",
+      "reconcile_by": "2026-09-25T19:20:12Z",
+      "reconciliation_state": "reconciled",
+      "reconciled_at": "2026-09-24T19:20:14Z",
+      "reconciliation_reason": "PAYG endpoint returned HTTP 200 serving glm-5.3 for a glm-5.3 request; usage 20 prompt, 0 cached, 57 completion (51 reasoning) tokens at list price docs.z.ai-guides-overview-pricing-20260924; not an invoice figure",
+      "artifact_refs": [
+        "vault:30-areas/hapax/frame/coordinator-succession-20260924/glm-payg/probe-20260924T192011Z.json"
+      ],
+      "support_artifact_authority": "none"
     }
   ],
   "spend_gate_decisions": [

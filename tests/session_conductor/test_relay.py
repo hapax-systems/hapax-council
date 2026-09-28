@@ -30,7 +30,7 @@ def _make_bash_event(output: str, session_id: str = "sess-alpha") -> HookEvent:
         tool_name="Bash",
         tool_input={"command": "gh pr create ..."},
         session_id=session_id,
-        user_message=output,
+        tool_output=output,
     )
 
 

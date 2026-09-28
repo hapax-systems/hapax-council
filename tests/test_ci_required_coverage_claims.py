@@ -646,3 +646,19 @@ def test_a_rename_out_of_a_gated_path_is_visible_to_the_changed_file_set(tmp_pat
 
     # The fix: the delete re-enters the set, so the gate sees a non-docs path.
     assert ".github/pr-admission-state.yaml" in decomposed
+
+
+def test_ci_runs_for_stacked_pull_requests_not_only_main_based_ones() -> None:
+    """M90: `pull_request: branches: [main]` skipped every PR stacked on another branch,
+    so three PRs merged with no tests and no gitleaks (dev4, 2026-09-24). Every base-aware
+    step already diffs against the PR's own base ref and sha, which is right for a stack."""
+    import yaml
+
+    workflow = yaml.safe_load(_read(".github/workflows/ci.yml"))
+    triggers = workflow.get("on", workflow.get(True))
+    pull_request = triggers["pull_request"]
+
+    assert pull_request is None or "branches" not in pull_request
+    assert "branches-ignore" not in (pull_request or {})
+    assert triggers["push"]["branches"] == ["main"]
+    assert "merge_group" in triggers

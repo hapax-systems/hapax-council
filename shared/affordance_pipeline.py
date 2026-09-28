@@ -151,10 +151,9 @@ def _emit_consent_refusal(*, axiom: str, surface: str, reason: str) -> None:
     registry holds no active consent (or the loader itself raised),
     so consent_required capabilities are about to be blocked.
 
-    The cache TTL on the consent gate (60s) bounds emission rate to
-    at most one append per minute per pipeline instance — the gate
-    only loads contracts on cache miss, and emit is conditional on
-    the load returning False.
+    Emission is deduplicated per (cause, capability, category) key within
+    a 60s window per pipeline instance, so a hot path refusing the same
+    candidate appends at most once a minute.
 
     Best-effort: writer failures swallowed so an observability hiccup
     never breaks the consent decision path.
@@ -174,6 +173,51 @@ def _emit_consent_refusal(*, axiom: str, surface: str, reason: str) -> None:
         )
     except Exception:
         pass
+
+
+class ConsentSnapshotChanged(RuntimeError):
+    """The contracts changed while they were being loaded."""
+
+    reason = "contracts_changed_during_load"
+
+
+def _contracts_fingerprint(directory: Path | None) -> tuple:
+    """Stat-level identity of the contracts directory a registry loads from.
+
+    Any write, removal, addition or permission change to a contract file
+    changes its mtime or ctime, so a registry is reused only while the
+    bytes it was parsed from are still the bytes on disk. A stat failure
+    other than a missing directory raises, and the caller refuses.
+
+    The file selection must be exactly the one ``ConsentRegistry.load``
+    parses (top-level ``*.yaml``, symlinks followed; ``revoked/`` and other
+    subdirectories are not read). A file the loader reads but this skips
+    could change under a warm grant unseen; the selection is pinned
+    against the loader's actual reads in the tests.
+    """
+    if directory is None:
+        return ("unconfigured",)
+    try:
+        dir_stat = directory.stat()
+    except FileNotFoundError:
+        return ("missing",)
+    entries = []
+    for path in sorted(directory.glob("*.yaml")):
+        st = path.stat()
+        entries.append((path.name, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+    return (dir_stat.st_ino, dir_stat.st_mtime_ns, dir_stat.st_ctime_ns, tuple(entries))
+
+
+def _consent_failure_cause(exc: BaseException) -> str:
+    """Sanitized cause for a failed consent check: the exception class, plus
+    its class-level ``reason`` token when that is a bare snake_case one.
+    Never the message, which may name a subject or a path, and never an
+    instance ``reason``, which is runtime data that could carry one too."""
+    name = type(exc).__name__
+    reason = getattr(type(exc), "reason", None)
+    if isinstance(reason, str) and reason.isidentifier() and reason.islower() and len(reason) <= 48:
+        return f"{name}:{reason}"
+    return name
 
 
 def _posterior_mtime_ns(path: Path) -> int | None:
@@ -304,12 +348,14 @@ class AffordancePipeline:
             sigma_explore=0.10,
         )
         self._prev_source_hash: float = 0.0
-        # Consent gate cache (see _consent_allows): keyed by concrete
-        # (person_id, data_category) requirement so one unrelated active
-        # contract cannot authorize every consent_required capability.
-        self._consent_scope_cache: dict[tuple[str, str], bool] = {}
-        self._consent_refusal_keys: set[tuple[str, str, str]] = set()
+        # Consent gate (see _consent_allows): only the loaded registry is
+        # cached, together with the contracts-directory fingerprint it was
+        # loaded from. Decisions are never cached — each one re-runs the
+        # registry check against a snapshot whose fingerprint still matches.
+        self._consent_refusal_keys: set[tuple[str, ...]] = set()
+        self._consent_refusal_window_at: float = 0.0
         self._consent_registry: Any = None
+        self._consent_fingerprint: tuple | None = None
         self._consent_loaded_at: float = 0.0
         # D-26: active-programme cache for the monetization gate. Loaded on
         # first gate-passing select() call and refreshed every
@@ -495,18 +541,26 @@ class AffordancePipeline:
         self._seeking = seeking
 
     def _consent_allows(self, candidate: SelectionCandidate) -> bool:
-        """Gate ``consent_required`` candidates by explicit contract scope."""
+        """Gate ``consent_required`` candidates by explicit contract scope.
+
+        Only an affirmative ``True`` from a current registry check allows.
+        Every failure shape refuses: a loader or check exception (including
+        an identity-custody failure raised by the check), a malformed or
+        unreadable contract, a missing contracts directory, contracts that
+        change mid-load, or a non-boolean answer. A positive decision is
+        never served from cache: each call re-runs the check on a registry
+        whose source fingerprint still matches (see ``_consent_snapshot``).
+        """
         if not candidate.payload.get("consent_required"):
             return True
 
         now = time.time()
-        if now - self._consent_loaded_at > _CONSENT_CACHE_TTL_S:
-            self._consent_scope_cache.clear()
+        # Refusal-emission dedup window only; it no longer bounds any grant.
+        if now - self._consent_refusal_window_at > _CONSENT_CACHE_TTL_S:
             self._consent_refusal_keys.clear()
-            self._consent_registry = None
-            self._consent_loaded_at = now
+            self._consent_refusal_window_at = now
 
-        def _emit_once(reason_key: tuple[str, str, str], reason: str) -> None:
+        def _emit_once(reason_key: tuple[str, ...], reason: str) -> None:
             if reason_key in self._consent_refusal_keys:
                 return
             self._consent_refusal_keys.add(reason_key)
@@ -539,43 +593,77 @@ class AffordancePipeline:
             return False
         data_category = data_category.strip()
 
-        requirement = (person_id, data_category)
-        if requirement not in self._consent_scope_cache:
-            try:
-                from shared.governance.consent import load_contracts
+        # Audit reasons carry the capability, the data category, a sanitized
+        # cause and a remedy — never the subject identifier.
+        capability = candidate.capability_name
+        try:
+            answer = self._consent_snapshot(now).contract_check(person_id, data_category)
+        except Exception as exc:
+            self._drop_consent_snapshot()
+            cause = _consent_failure_cause(exc)
+            log.warning(
+                "Consent check failed for %s (%s) — blocking (fail-closed)", capability, cause
+            )
+            _emit_once(
+                ("check_exception", capability, data_category, cause),
+                reason=(
+                    f"consent check raised an exception ({cause}); remedy: repair the "
+                    f"contract registry, then retry — {capability} blocked"
+                ),
+            )
+            return False
+        if answer is True:
+            return True
+        if answer is not False:
+            _emit_once(
+                ("malformed_answer", capability, data_category),
+                reason=(
+                    "consent check returned a non-boolean answer; remedy: repair the "
+                    f"contract registry — {capability} blocked"
+                ),
+            )
+            return False
+        _emit_once(
+            ("no_match", capability, data_category),
+            reason=(
+                f"no matching active consent contract for scope {data_category}; remedy: "
+                f"record the subject's opt-in for that scope — {capability} blocked"
+            ),
+        )
+        return False
 
-                if self._consent_registry is None:
-                    self._consent_registry = load_contracts(strict=True)
-                    self._consent_loaded_at = now
-                allowed = bool(
-                    self._consent_registry.contract_check(
-                        requirement[0],
-                        requirement[1],
-                    )
-                )
-                self._consent_scope_cache[requirement] = allowed
-                self._consent_loaded_at = now
-                if not allowed:
-                    _emit_once(
-                        ("no_match", requirement[0], requirement[1]),
-                        reason=(
-                            "no matching active consent contract for "
-                            f"{requirement[0]}:{requirement[1]} — candidate blocked"
-                        ),
-                    )
-            except Exception:
-                log.warning(
-                    "Consent gate failed for %s — blocking (fail-closed)",
-                    candidate.capability_name,
-                )
-                self._consent_scope_cache[requirement] = False
-                self._consent_registry = None
-                self._consent_loaded_at = now
-                _emit_once(
-                    ("loader_exception", requirement[0], requirement[1]),
-                    reason="contract loader exception — gate failed closed",
-                )
-        return self._consent_scope_cache[requirement]
+    def _drop_consent_snapshot(self) -> None:
+        self._consent_registry = None
+        self._consent_fingerprint = None
+        self._consent_loaded_at = 0.0
+
+    def _consent_snapshot(self, now: float) -> Any:
+        """Return a registry whose source bytes are the bytes on disk now.
+
+        The held registry is reused only while the contracts-directory
+        fingerprint is unchanged since its load and it is younger than
+        ``_CONSENT_CACHE_TTL_S`` measured from that load (never re-stamped
+        by later checks). Otherwise it reloads strictly; if the directory
+        changed during the load, the snapshot is incoherent and this raises.
+        """
+        from shared.governance import consent as consent_mod
+
+        directory = getattr(consent_mod, "_CONTRACTS_DIR", None)
+        fingerprint = _contracts_fingerprint(directory)
+        if (
+            self._consent_registry is not None
+            and fingerprint == self._consent_fingerprint
+            and now - self._consent_loaded_at <= _CONSENT_CACHE_TTL_S
+        ):
+            return self._consent_registry
+        self._drop_consent_snapshot()
+        registry = consent_mod.load_contracts(strict=True)
+        if _contracts_fingerprint(directory) != fingerprint:
+            raise ConsentSnapshotChanged
+        self._consent_registry = registry
+        self._consent_fingerprint = fingerprint
+        self._consent_loaded_at = now
+        return registry
 
     def _apply_programme_bias(
         self, candidates: list[SelectionCandidate], programme: Any

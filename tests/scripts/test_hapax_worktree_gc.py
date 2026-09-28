@@ -573,3 +573,294 @@ def test_fetch_prune_drops_stale_remote_tracking_ref(tmp_path: Path) -> None:
         ).returncode
         != 0
     )
+
+
+# --- Release retention: count cap, no --force, stray-mode class, maps/unit guards ---
+#
+# The 2026-09-25 appendix reap found 103 releases (998 GiB logical) because the timer was never
+# enabled there. It also found that the release pass used `worktree remove --force` (which would
+# silently discard a real diff), and that its live guard read only cwd/exe (a daemon importing
+# from a release .venv is visible only in /proc/<pid>/maps: the venv's python symlinks outside it).
+
+
+def _run_gc_args(
+    repo: Path, now: int, env: dict[str, str], *extra: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            "main",
+            "--no-fetch",
+            "--now",
+            str(now),
+            # empty URL: send_ntfy_alert returns before curl AND before hapax-alert
+            # --record-only, so refusal paths post nothing and record no incident
+            "--ntfy-url",
+            "",
+            *extra,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+
+def _release_env(tmp_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["HAPAX_SOURCE_ACTIVATION_CURRENT"] = str(_write_unrelated_current_json(tmp_path))
+    units = tmp_path / "units"
+    units.mkdir(exist_ok=True)
+    env["HAPAX_WORKTREE_GC_UNIT_DIRS"] = str(units)
+    # The orphan spawn-tree pre-pass acts on the REAL host's tmux/proc, not the test repo.
+    env["HAPAX_WORKTREE_GC_REAP_ORPHANS"] = "0"
+    return env
+
+
+def _young_releases(tmp_path: Path, repo: Path, now: int, count: int) -> list[Path]:
+    """`count` releases, all younger than the 48 h rule; index 0 is the OLDEST."""
+    releases = []
+    for i in range(count):
+        release = _make_release_worktree(tmp_path, repo, f"cafe{i:08d}")
+        _age_path(release, now=now, seconds_old=(count - i) * 600)
+        releases.append(release)
+    return releases
+
+
+def test_release_count_cap_reaps_young_releases_beyond_keep(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    releases = _young_releases(tmp_path, repo, now, 7)
+
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--release-keep", "5")
+
+    assert result.returncode == 0, result.stderr
+    assert not releases[0].exists()
+    assert not releases[1].exists()
+    for kept in releases[2:]:
+        assert kept.exists(), kept
+    assert "removed=2" in result.stdout
+
+
+def test_release_count_cap_default_keeps_five(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    releases = _young_releases(tmp_path, repo, now, 6)
+
+    result = _run_gc_args(repo, now, _release_env(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert not releases[0].exists()
+    assert all(r.exists() for r in releases[1:])
+
+
+def test_release_count_cap_never_removes_live_or_locked_over_cap(tmp_path: Path) -> None:
+    """The unsafe case of the cap: a release ranked over the cap is still refused when it
+    is locked or live."""
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    releases = _young_releases(tmp_path, repo, now, 8)
+    _git(repo, "worktree", "lock", "--reason", "hook substrate pin", str(releases[0]))
+
+    with _live_process(["sleep", "300"], cwd=releases[1]):
+        result = _run_gc_args(repo, now, _release_env(tmp_path), "--release-keep", "5")
+
+    assert result.returncode == 0, result.stderr
+    assert releases[0].exists(), "locked release over the cap must survive"
+    assert releases[1].exists(), "live release over the cap must survive"
+    assert not releases[2].exists()
+    assert all(r.exists() for r in releases[3:])
+    assert "skip locked release" in result.stdout
+    assert "refuse live release" in result.stdout
+
+
+def test_release_retained_sha_is_neither_counted_nor_removed(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    releases = _young_releases(tmp_path, repo, now, 5)
+    active = _make_release_worktree(tmp_path, repo, "aaaaaaaa")
+    # NEWEST of all: if the retained release consumed a cap slot it would rank first and
+    # push the oldest of the five over the cap.
+    _age_path(active, now=now, seconds_old=60)
+
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--release-keep", "5")
+
+    assert result.returncode == 0, result.stderr
+    assert active.exists(), "active release (current.json) must never be reaped"
+    assert all(r.exists() for r in releases), "retained release must not consume a cap slot"
+    assert "removed=0" in result.stdout
+
+
+def test_release_mode_only_diff_is_restored_then_removed_without_force(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    _commit(repo, "scripts/tool", "#!/bin/sh\necho hi\n", "tool, committed 644")
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeefmode")
+    (release / "scripts" / "tool").chmod(0o755)
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    result = _run_gc_args(repo, now, _release_env(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert not release.exists()
+    assert "restored stray mode" in result.stdout
+    assert "scripts/tool" in result.stdout
+    assert "removed release" in result.stdout
+
+
+def test_release_content_diff_is_refused_never_forced(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    _commit(repo, "scripts/tool", "#!/bin/sh\necho hi\n", "tool")
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeefedit")
+    tool = release / "scripts" / "tool"
+    tool.write_text("#!/bin/sh\necho edited\n", encoding="utf-8")
+    tool.chmod(0o755)  # mode AND content: not the stray-mode class
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    result = _run_gc_args(repo, now, _release_env(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert release.exists()
+    assert tool.read_text(encoding="utf-8") == "#!/bin/sh\necho edited\n"
+    assert "refuse dirty release" in result.stdout
+    assert "removed=0" in result.stdout
+
+
+def test_release_untracked_file_is_refused(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeefuntr")
+    (release / "notes.txt").write_text("someone's scratch\n", encoding="utf-8")
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    result = _run_gc_args(repo, now, _release_env(tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert release.exists()
+    assert (release / "notes.txt").exists()
+    assert "refuse dirty release" in result.stdout
+
+
+def test_release_mode_only_dry_run_changes_nothing(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    _commit(repo, "scripts/tool", "#!/bin/sh\necho hi\n", "tool")
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeefdry0")
+    (release / "scripts" / "tool").chmod(0o755)
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--dry-run")
+
+    assert result.returncode == 0, result.stderr
+    assert release.exists()
+    assert os.access(release / "scripts" / "tool", os.X_OK), "dry-run must not restore modes"
+    assert "dry-run would restore stray mode" in result.stdout
+
+
+def test_refuses_release_mapped_by_live_process(tmp_path: Path) -> None:
+    """cwd and exe are both outside the release; only /proc/<pid>/maps references it
+    (the shape of a daemon importing .so files from a release .venv)."""
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeefmaps")
+    common = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    (common / "info").mkdir(parents=True, exist_ok=True)
+    with (common / "info" / "exclude").open("a", encoding="utf-8") as fh:
+        fh.write("lib.so\n")  # ignored, like a .venv file: the release stays clean
+    blob = release / "lib.so"
+    blob.write_bytes(b"\0" * 4096)
+    _age_path(release, now=now, seconds_old=49 * 3600)
+
+    mapper = (
+        "import mmap, sys, time\n"
+        "f = open(sys.argv[1], 'rb')\n"
+        "m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)\n"
+        "f.close()\n"
+        "print('mapped', flush=True)\n"
+        "time.sleep(300)\n"
+    )
+    proc = subprocess.Popen(
+        ["python3", "-c", mapper, str(blob)], cwd=tmp_path, stdout=subprocess.PIPE
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == b"mapped"
+        result = _run_gc_args(repo, now, _release_env(tmp_path))
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+    assert result.returncode == 0, result.stderr
+    assert release.exists()
+    assert "refuse live release" in result.stdout
+    assert "(maps)" in result.stdout
+
+
+def test_releases_only_mode_touches_nothing_but_releases(tmp_path: Path) -> None:
+    """--releases-only runs the release pass alone: a merged, clean, stale branch worktree
+    that the legacy sweep WOULD remove survives, the orphan and registry pre-passes do not
+    run, and a stale release is still reaped."""
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    merged = tmp_path / "hapax-council--merged-clean"
+    _git(repo, "branch", "merged-clean", "main")
+    _git(repo, "worktree", "add", str(merged), "merged-clean")
+    _age_path(merged, now=now, seconds_old=49 * 3600)
+    release = _make_release_worktree(tmp_path, repo, "deadbeefonly")
+    _age_path(release, now=now, seconds_old=49 * 3600)
+    env = _release_env(tmp_path)
+    env["HAPAX_WORKTREE_GC_REAP_ORPHANS"] = "1"  # would run, were the mode not honoured
+    env["HAPAX_WORKTREE_GC_REGISTRY"] = "1"
+    registry_dir = tmp_path / "registry"
+    env["HAPAX_WORKTREE_REGISTRY_DIR"] = str(registry_dir)
+
+    result = _run_gc_args(repo, now, env, "--releases-only")
+
+    assert result.returncode == 0, result.stderr
+    assert merged.exists(), "releases-only must not run the merged-worktree sweep"
+    assert _git(repo, "branch", "--list", "merged-clean") != ""
+    assert not release.exists()
+    assert "orphan-reaper" not in result.stdout
+    # the registry pre-pass's backfill would have written one record per worktree
+    assert not registry_dir.exists() or not any(registry_dir.iterdir())
+    assert "releases-only" in result.stdout
+
+
+def test_releases_only_mode_via_environment(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    merged = tmp_path / "hapax-council--merged-env"
+    _git(repo, "branch", "merged-env", "main")
+    _git(repo, "worktree", "add", str(merged), "merged-env")
+    _age_path(merged, now=now, seconds_old=49 * 3600)
+    env = _release_env(tmp_path)
+    env["HAPAX_WORKTREE_GC_RELEASES_ONLY"] = "1"
+
+    result = _run_gc_args(repo, now, env)
+
+    assert result.returncode == 0, result.stderr
+    assert merged.exists()
+    assert "releases-only" in result.stdout
+
+
+def test_refuses_release_referenced_by_a_unit(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    release = _make_release_worktree(tmp_path, repo, "deadbeefunit")
+    _age_path(release, now=now, seconds_old=49 * 3600)
+    env = _release_env(tmp_path)
+    unit = Path(env["HAPAX_WORKTREE_GC_UNIT_DIRS"]) / "hapax-example.service"
+    unit.write_text(f"[Service]\nExecStart={release}/scripts/run\n", encoding="utf-8")
+
+    result = _run_gc_args(repo, now, env)
+
+    assert result.returncode == 0, result.stderr
+    assert release.exists()
+    assert "refuse unit-referenced release" in result.stdout
+    assert "hapax-example.service" in result.stdout

@@ -47,6 +47,17 @@ _DURATION_LINE_RE = re.compile(
     r"(?P<nodeid>tests/.+)$"
 )
 
+# A shard killed at the wrapper timeout never reaches pytest's summary, so it
+# writes no --durations lines. That is the normal shape of a KILL, not a reason
+# to refuse: the post-run invocation failed here, and because that step ran
+# before pytest's own exit code was classified, the merge group saw a selector
+# error instead of the timeout. The fallback records the shard's deterministic
+# assignment (the selected units it was given) in place of measured durations
+# and names itself, so a consumer can tell the two apart.
+_DURATION_SOURCE_MEASURED = "pytest --durations=0 --durations-min=0"
+_DURATION_SOURCE_SELECTED_UNITS_FALLBACK = "deterministic_selected_units_fallback"
+_NO_DURATION_LINES_REASON = "no_pytest_duration_lines"
+
 
 def parse_collect_output(collect_output: str) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -264,11 +275,13 @@ def build_pytest_duration_artifact(
     run_attempt: str,
     head_sha: str,
     event_name: str,
+    duration_source: str = _DURATION_SOURCE_MEASURED,
+    duration_fallback: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    artifact: dict[str, Any] = {
         "schema_version": 1,
         "artifact_type": "pytest_node_durations",
-        "duration_source": "pytest --durations=0 --durations-min=0",
+        "duration_source": duration_source,
         "run": {
             "id": run_id,
             "attempt": run_attempt,
@@ -290,6 +303,9 @@ def build_pytest_duration_artifact(
             for item in durations
         ],
     }
+    if duration_fallback is not None:
+        artifact["duration_fallback"] = dict(duration_fallback)
+    return artifact
 
 
 def write_pytest_duration_artifact(
@@ -341,14 +357,39 @@ def main(argv: list[str] | None = None) -> int:
 
         pytest_output = args.pytest_output.read_text(encoding="utf-8")
         durations = parse_pytest_duration_output(pytest_output)
-        if args.require_durations and not durations:
-            parser.error("no pytest duration lines were found")
         selected_units: tuple[str, ...] = ()
         if args.selected_units is not None and args.selected_units.exists():
             selected_units = tuple(
                 line.strip()
                 for line in args.selected_units.read_text(encoding="utf-8").splitlines()
                 if line.strip()
+            )
+        duration_source = _DURATION_SOURCE_MEASURED
+        duration_fallback: dict[str, Any] | None = None
+        if args.require_durations and not durations:
+            if not selected_units:
+                # Nothing measured and nothing deterministic to record: fail
+                # closed rather than write an artifact that claims a split it
+                # does not have.
+                parser.error(
+                    "no pytest duration lines were found and no --selected-units basis "
+                    "was given, so the duration artifact has no deterministic split "
+                    "to fall back to. Next action: pass --selected-units <file>, the "
+                    "shard's selected units, or restore the duration output."
+                )
+            duration_source = _DURATION_SOURCE_SELECTED_UNITS_FALLBACK
+            duration_fallback = {
+                "reason": _NO_DURATION_LINES_REASON,
+                "deterministic_basis": "selected_units",
+                "selected_unit_count": len(selected_units),
+            }
+            print(
+                "ci_select_pytest_shard: no pytest duration lines were found in the run "
+                f"output ({_NO_DURATION_LINES_REASON}); falling back to the deterministic "
+                f"split of {len(selected_units)} selected unit(s) instead of failing. This "
+                "is the expected shape when a shard is killed at the wrapper timeout, or "
+                "when the run was pre-empted before pytest's summary.",
+                file=sys.stderr,
             )
         artifact = build_pytest_duration_artifact(
             durations,
@@ -359,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
             run_attempt=args.run_attempt,
             head_sha=args.head_sha,
             event_name=args.event_name,
+            duration_source=duration_source,
+            duration_fallback=duration_fallback,
         )
         write_pytest_duration_artifact(artifact, args.duration_artifact)
         return 0

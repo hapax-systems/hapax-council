@@ -29,7 +29,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,8 +89,20 @@ LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 #: Dossier filename suffix; the dossier lives beside the task note.
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
 
-#: The only dossier verdict that admits a PR.
+#: The only dossier verdict that admits a PR, except under the seat's T2 rule below.
 QUORUM_ACCEPT = "quorum-accept"
+
+#: The seat's T2 release rule (dev1-seat, 2026-09-25T00:24Z; encoded by
+#: admission-encode-seat-t2-release-rule-20260925). For a T2 row reviewed as t2_standard,
+#: the accept quorum with at least one accept from a family other than the writer's
+#: satisfies the every-seat-voted family floor and the ``no-quorum`` that floor recorded.
+#: It satisfies nothing else: a reseat, a short quorum, too few accept families, a
+#: writer-family majority and a named critical still block, and T1 keeps its floor.
+T2_FAMILY_FLOOR_RELEASE_RULE = "seat-t2-distinct-family-accept-20260925T0024Z"
+T2_FAMILY_FLOOR_RELEASE_AUTHORITY = (
+    "vault:30-areas/hapax/frame/COORDINATOR-SEAT.md 'Review rule (00:24Z)'; "
+    "narrow tier ruling dev1-seat 2026-09-25T09:24:38Z"
+)
 
 #: Reviewer verdicts that count toward the accept quorum.
 ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
@@ -118,7 +130,26 @@ REVIEWER_VERDICTS = frozenset(
     }
 )
 FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})
+#: Verdicts that are votes. Every other verdict is an outage or a failure and never a vote.
+VOTING_VERDICTS = frozenset({"accept", "accept-with-findings", "block"})
 TEAM_CLASS_RANK = {"t3_docs": 0, "t2_standard": 1, "t1_critical": 2}
+
+#: Per-seat diff-coverage fields on a review record (M142 corollary: a seat that
+#: reviewed a truncated diff may stop a merge but never certify one). They are
+#: written by dispatcher/wrapper machinery ONLY — never parsed from reviewer
+#: output (the strict review-yaml key set already refuses extra keys there):
+#: bytes of the full PR diff, bytes of the diff actually delivered into the
+#: seat's prompt, and whether the seat fetched the full diff itself (tool-using
+#: seats only, witnessed by the fetch). No current registry seat is tool-using,
+#: so the dispatcher records ``diff_full_fetch_witnessed: False`` for every seat.
+DIFF_FULL_BYTES_FIELD = "diff_full_bytes"
+DIFF_DELIVERED_BYTES_FIELD = "diff_delivered_bytes"
+DIFF_FULL_FETCH_WITNESSED_FIELD = "diff_full_fetch_witnessed"
+
+#: Historical derivation for unstamped dossiers written before per-seat byte
+#: coverage existed. New dossiers carry dispatcher-measured coverage and never
+#: derive it from this legacy character threshold.
+DIFF_FULL_COVERAGE_MAX_CHARS = 80_000
 
 #: Provider usage-wall shapes (the 2026-06-12 claude weekly-wall text is the
 #: canonical fixture; the rest cover the codex/gemini/glm families' phrasings).
@@ -457,6 +488,65 @@ def load_lens_registry(path: Path | None = None) -> dict[str, Any]:
     return loaded
 
 
+class DiffCapacityConfigError(ValueError):
+    """The declared review diff or prompt capacity is invalid."""
+
+
+def seat_diff_capacity(seat_id: str, registry: Mapping[str, Any]) -> dict[str, Any]:
+    """Declared byte limit and evidence for a seat; new seats inherit unmeasured 80 KB."""
+
+    capacity = registry.get("diff_capacity")
+    if not isinstance(capacity, Mapping):
+        raise DiffCapacityConfigError("review diff_capacity config missing")
+    default = capacity.get("default")
+    seats = capacity.get("seats")
+    if not isinstance(default, Mapping) or not isinstance(seats, Mapping):
+        raise DiffCapacityConfigError("review diff_capacity default/seats malformed")
+    override = seats.get(seat_id, {})
+    if not isinstance(override, Mapping):
+        raise DiffCapacityConfigError(f"review diff_capacity seat {seat_id} malformed")
+    entry = {**default, **override}
+    limit = entry.get("limit_bytes")
+    prompt_limit = entry.get("prompt_limit_bytes")
+    status = entry.get("status")
+    if type(limit) is not int or limit <= 0 or status not in {"measured", "unmeasured"}:
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} has invalid limit/status"
+        )
+    if type(prompt_limit) is not int or prompt_limit <= 0:
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} has invalid prompt limit"
+        )
+    if status == "unmeasured" and limit != 80_000:
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} must use 80000 unmeasured"
+        )
+    if status == "unmeasured":
+        measured_prompt_limits = []
+        for measured_id, measured in seats.items():
+            if not isinstance(measured, Mapping):
+                raise DiffCapacityConfigError(f"review diff_capacity seat {measured_id} malformed")
+            if measured.get("status") == "measured":
+                measured_prompt_limit = measured.get("prompt_limit_bytes")
+                if type(measured_prompt_limit) is not int or measured_prompt_limit <= 0:
+                    raise DiffCapacityConfigError(
+                        f"review diff_capacity seat {measured_id} has invalid prompt limit"
+                    )
+                measured_prompt_limits.append(measured_prompt_limit)
+        if not measured_prompt_limits:
+            raise DiffCapacityConfigError("review diff_capacity has no measured prompt limit")
+        entry["prompt_limit_bytes"] = min(prompt_limit, min(measured_prompt_limits))
+    if (
+        not isinstance(entry.get("measurement_file"), str)
+        or not isinstance(entry.get("measurement_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", entry["measurement_sha256"])
+    ):
+        raise DiffCapacityConfigError(
+            f"review diff_capacity seat {seat_id} lacks measurement citation"
+        )
+    return dict(entry)
+
+
 def _matches(path: str, pattern: str) -> bool:
     """Glob match per registry semantics: ``dir/**`` is a prefix, else fnmatch."""
 
@@ -668,6 +758,25 @@ def review_registry_with_route_families(
         for entry in review_family_entries(registry, platform_registry=platform_registry)
     ]
     return out
+
+
+def substitute_families(registry: Mapping[str, Any]) -> frozenset[str]:
+    """Families declared ``substitute: true``: they fill seats the core families cannot.
+
+    A substitute is never part of t1's every-family requirement, and it is seated only after
+    every available core family (writer included) is, so it never displaces a core family.
+    """
+
+    return frozenset(
+        str(entry.get("family") or "").strip()
+        for entry in review_family_entries(registry)
+        if entry.get("substitute") is True
+    )
+
+
+def _core_roster(registry: Mapping[str, Any]) -> list[str]:
+    substitutes = substitute_families(registry)
+    return [e["family"] for e in review_family_entries(registry) if e["family"] not in substitutes]
 
 
 def review_family_route_ids(registry: Mapping[str, Any]) -> dict[str, str]:
@@ -952,13 +1061,21 @@ def constitute_team(
     available_families: Sequence[str] | None = None,
     outage_families: frozenset[str] | set[str] = frozenset(),
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    size_excluded_families: frozenset[str] | set[str] = frozenset(),
 ) -> Constitution:
     """Constitute the review team for a class — deterministic, fail-closed.
 
     Rules (spec §2/§3): t3 = 2 seats / 2 families; t2 = 3 seats, >=2 families;
-    t1 = 4-5 seats, ALL roster families or :class:`ValueError`. The writer's
+    t1 = 4-5 seats, ALL core roster families or :class:`ValueError`. The writer's
     family never holds the majority alone (cap = ``size // 2``); non-writer
     families seat first, rotated by ``pr_number`` for fairness.
+
+    DISTINCT-FAMILY FLOOR (review-constitution-walled-family-substitution-20260924):
+    every seat is a different family. A second seat from the same family is lost
+    coverage, never a substitute. Seats go to non-writer core families, then the
+    writer's family, then declared substitute families (``substitute: true``); if
+    fewer distinct families are available than the class seats, this raises
+    ``same_family_reseat`` rather than repeat one.
 
     DEGRADATION RULE (n-tier symmetry principal; postmortem 2026-06-12,
     failure class #1): when a roster family is out on an OBSERVED quota wall
@@ -993,13 +1110,15 @@ def constitute_team(
     degraded: list[str] = []
     route_degraded: dict[str, tuple[str, ...]] = {}
 
+    substitutes = substitute_families(registry)
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
         if sizing.get("require_all_families"):
-            missing = [f for f in roster if f not in available]
+            missing = [f for f in roster if f not in available and f not in substitutes]
             degradable = set(outage_families) | set(route_blocked)
-            if missing and all(f in degradable for f in missing):
-                degraded = sorted(missing)
+            other_missing = [f for f in missing if f not in size_excluded_families]
+            if other_missing and all(f in degradable for f in other_missing):
+                degraded = sorted(other_missing)
                 route_degraded = {
                     family: route_blocked[family]
                     for family in sorted(missing)
@@ -1015,10 +1134,10 @@ def constitute_team(
                     )
                 )
                 notes.append("degraded_to:t2_standard")
-            elif missing:
+            elif other_missing:
                 raise ValueError(
                     "t1_critical requires every model family on the team; "
-                    f"unavailable family: {','.join(missing)}"
+                    f"unavailable family: {','.join(other_missing)}"
                 )
     else:
         size = int(sizing["team_size"])
@@ -1042,32 +1161,31 @@ def constitute_team(
             f"only available: {','.join(available)}"
         )
 
-    rot = pr_number % len(available)
-    rotated = available[rot:] + available[:rot]
-    non_writer = [f for f in rotated if f != writer_family]
-    writer_cap = size // 2  # strict-majority guard: writer seats can never reach size//2 + 1
+    def rotated(families: list[str]) -> list[str]:
+        if not families:
+            return []
+        rot = pr_number % len(families)
+        return families[rot:] + families[:rot]
 
-    seat_families: list[str] = []
-    for family in non_writer:  # one seat per non-writer family first
-        if len(seat_families) < size:
-            seat_families.append(family)
-    writer_seats = 0
-    if writer_family in rotated and len(seat_families) < size and writer_seats < writer_cap:
-        seat_families.append(writer_family)
-        writer_seats += 1
-    fill = 0
-    while len(seat_families) < size:
-        if non_writer:
-            seat_families.append(non_writer[fill % len(non_writer)])
-            fill += 1
-        elif writer_seats < writer_cap:
-            seat_families.append(writer_family)
-            writer_seats += 1
-        else:
-            raise ValueError(
-                "cannot constitute team: only the writer's own family is available "
-                "and it would hold the majority alone"
-            )
+    # Core families rotate for fairness. Substitutes are taken in declared order (the registry
+    # lists them by measured reliability), so declaring them never changes which core
+    # families a PR draws.
+    core = rotated([f for f in available if f not in substitutes])
+    subs = [f for f in available if f in substitutes]
+    writer_cap = size // 2  # strict-majority guard: writer seats can never reach size//2 + 1
+    order = [f for f in core if f != writer_family]
+    if writer_family in core and writer_cap >= 1:
+        order.append(writer_family)
+    order.extend(f for f in subs if f != writer_family)
+    if writer_family in subs and writer_cap >= 1:
+        order.append(writer_family)
+    seat_families = order[:size]
+    if len(seat_families) < size:
+        raise ValueError(
+            f"same_family_reseat: {team_class} seats {size} distinct model families; "
+            f"only {len(seat_families)} available ({','.join(seat_families) or 'none'}), "
+            "and a second seat from one family is not a substitute"
+        )
     if len(set(seat_families)) < min_families:
         raise ValueError(
             f"constituted team spans {len(set(seat_families))} families; "
@@ -1274,6 +1392,36 @@ _NAMESPACE_CORRUPTION_RE = re.compile(
 )
 _BACKTICK_LITERAL_RE = re.compile(r"`([^`\n]{3,200})`")
 
+#: Only exact missing-parameter assertions are refutable; semantic claims stand.
+_PARAMETER_WORD = r"(?:parameter|argument|keyword)"
+_NAMED_PARAMETER = r"`([A-Za-z_][A-Za-z0-9_]*)`"
+# An assertion must end at a clause boundary. A following word can change its meaning
+# (for example, a claim about validation), so it remains blocking.
+_PARAMETER_ASSERTION_END = r"(?=$|[.;,)\n])"
+_MISSING_PARAMETER_RE = re.compile(
+    rf"\bunexpected\s+keyword\s+argument\s+{_NAMED_PARAMETER}{_PARAMETER_ASSERTION_END}|"
+    rf"\bno\s+(?:such\s+)?{_PARAMETER_WORD}\s+{_NAMED_PARAMETER}{_PARAMETER_ASSERTION_END}|"
+    rf"{_NAMED_PARAMETER}\s+{_PARAMETER_WORD}\s+is\s+not\s+(?:accepted|declared){_PARAMETER_ASSERTION_END}|"
+    rf"\bhas\s+no\s+{_NAMED_PARAMETER}\s+{_PARAMETER_WORD}{_PARAMETER_ASSERTION_END}",
+    re.IGNORECASE,
+)
+_NEGATED_MISSING_PARAMETER_RE = re.compile(
+    r"\b(?:not|isn'?t|is\s+not|are\s+not|never)\s+(?:a\s+|an\s+|the\s+)?"
+    rf"(?:missing|no)\s+{_PARAMETER_WORD}\b|"
+    r"\b(?:not|isn'?t|is\s+not|never)\s+(?:a\s+|an\s+)?unexpected\s+keyword\s+argument",
+    re.IGNORECASE,
+)
+_PLAIN_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: A backticked IDENTIFIER, of any length: `_dossier_validity_blockers` and `f` alike. The
+#: general-purpose ``_BACKTICK_LITERAL_RE`` requires three characters, so it never sees `f`.
+_BACKTICK_IDENTIFIER_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
+_BACKTICK_SUBJECT_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::)[A-Za-z_][A-Za-z0-9_]*)?)`")
+_PARAMETER_ONLY_SUFFIX_RE = re.compile(
+    r"[\s,.;:()\-—]*(?:TypeError(?:\s+at\s+(?:the\s+)?call)?|unexpected\s+keyword\s+argument)?[\s,.;:()\-—]*",
+    re.IGNORECASE,
+)
+
+
 #: Killswitch — set to "1" to disable the go-gate (every critical blocks; the pre-go-gate behaviour).
 _GO_GATE_OFF_ENV = "HAPAX_REVIEW_GO_GATE_OFF"
 
@@ -1290,6 +1438,120 @@ def _is_syntax_compile_claim(finding: Mapping[str, Any]) -> bool:
 def _is_namespace_corruption_claim(finding: Mapping[str, Any]) -> bool:
     text = f"{finding.get('title', '')} {finding.get('detail', '')}"
     return bool(_NAMESPACE_CORRUPTION_RE.search(text))
+
+
+def _is_missing_parameter_claim(finding: Mapping[str, Any]) -> bool:
+    """True iff the critical ASSERTS that a named function/method lacks a named parameter.
+
+    Matched on the assertion, never on the word ``TypeError`` alone: a reviewer can mention a
+    TypeError while making a semantic claim, and that critical must stand. A negated claim ("is not
+    a missing keyword argument") is never matched."""
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    if _NEGATED_MISSING_PARAMETER_RE.search(text):
+        return False
+    return bool(_MISSING_PARAMETER_RE.search(text))
+
+
+def _missing_parameter_claim_qualifier(finding: Mapping[str, Any], func_name: str) -> str | None:
+    """The class named alongside the function (``Class.method`` / ``Class::method``), or None."""
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    pattern = re.compile(rf"(?P<cls>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\.|::)\s*{re.escape(func_name)}\b")
+    classes = list(dict.fromkeys(match.group("cls") for match in pattern.finditer(text)))
+    return classes[0] if len(classes) == 1 else None
+
+
+def _missing_parameter_function(
+    finding: Mapping[str, Any], tree: ast.Module
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """The single def the claim's subject names, or ``None`` when it is not unambiguous.
+
+    The subject is the one identifier before the marker that RESOLVES TO A DEF in the file at head:
+    a name that resolves to nothing is prose, not the function the claim is about. Several
+    def-resolving names, or several defs of the surviving name, return ``None``."""
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    marker = _MISSING_PARAMETER_RE.search(text)
+    if marker is None:
+        return None
+    before = text[: marker.start()]
+    defs = [
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    def_names = {node.name for node in defs}
+    named = {token for token in _PLAIN_IDENTIFIER_RE.findall(before) if token in def_names}
+    if len(named) != 1:
+        return None
+    func_name = next(iter(named))
+    qualifier = _missing_parameter_claim_qualifier(finding, func_name)
+    if qualifier is None:
+        candidates = [node for node in defs if node.name == func_name]
+    else:
+        candidates = [
+            node
+            for cls in ast.walk(tree)
+            if isinstance(cls, ast.ClassDef) and cls.name == qualifier
+            for node in cls.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name
+        ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _missing_parameter_refutation(finding: Mapping[str, Any], source: str) -> str | None:
+    """Return AST evidence only for a unique def accepting the one claimed parameter."""
+    try:
+        cited_line = int(finding.get("line") or 0)
+    except (TypeError, ValueError):
+        cited_line = 0
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    fn = _missing_parameter_function(finding, tree)
+    if fn is None:
+        return None
+    claimed = _parameter_candidates_of(finding)
+    if len(claimed) != 1:
+        return None
+    declared = [arg.arg for arg in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs)]
+    # **kwargs accepts any keyword, including one absent from the named args.
+    takes_kwargs = fn.args.kwarg is not None
+    if not takes_kwargs and not set(claimed) <= set(declared):
+        return None
+    accepts = "takes **kwargs" if takes_kwargs else f"declares {sorted(claimed)}"
+    return (
+        f"missing-parameter claim refuted at head: def {fn.name} at line {fn.lineno} {accepts}; "
+        f"args {declared}, **kwargs {'yes' if takes_kwargs else 'no'}"
+        + (f"; claim cited line {cited_line}" if cited_line else "")
+    )
+
+
+def _parameter_candidates_of(finding: Mapping[str, Any]) -> list[str]:
+    """One token bound by one allow-listed assertion, or no unambiguous parameter."""
+    text = f"{finding.get('title', '')}\n{finding.get('detail', '')}"
+    matches = list(_MISSING_PARAMETER_RE.finditer(text))
+    if len(matches) != 1:
+        return []
+    named = [(index, group) for index, group in enumerate(matches[0].groups()) if group is not None]
+    if len(named) != 1:
+        return []
+    shape, parameter = named[0]
+    # A second named token after the assertion could be another parameter claim.
+    # The function subject and a class qualifier are allowed; all else stands.
+    prefix = text[: matches[0].start()]
+    subjects = list(_BACKTICK_SUBJECT_RE.finditer(prefix))
+    if len(subjects) != 1:
+        return []
+    subject = subjects[0]
+    lead = prefix[: subject.start()].strip(" :\t\n")
+    connector = prefix[subject.end() :].strip(" :\t\n")
+    allowed_connectors = ({"", "gets", "raises"}, {"", "has"}, {""}, {""})
+    if lead not in {"", "TypeError"} or connector not in allowed_connectors[shape]:
+        return []
+    if not _PARAMETER_ONLY_SUFFIX_RE.fullmatch(text[matches[0].end() :]):
+        return []
+    extras = set(_BACKTICK_IDENTIFIER_RE.findall(text)) - {parameter, subject.group(1)}
+    if extras:
+        return []
+    return [parameter]
 
 
 def _is_path_like_at_literal(literal: str) -> bool:
@@ -1392,47 +1654,58 @@ def _repo_head_matches(repo_root: Path, head_sha: str) -> bool:
     return bool(got) and (got == want or got.startswith(want) or want.startswith(got))
 
 
-def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
-    """Return True if the critical STANDS; False ONLY for a DEFINITIVELY-refuted syntax/compile
-    phantom. A critical is invalidated only when it is a SYNTAX/COMPILE claim AND the cited Python
-    file ``ast.parse``-s clean. Every other case — not a syntax/compile claim (ALL semantic
-    criticals), a missing/unreadable/non-Python file — KEEPS the critical. Uncertainty never
-    suppresses."""
+def _literal_defect_verdict(finding: Mapping[str, Any], repo_root: Path) -> tuple[bool, str | None]:
+    """``(stands, evidence)`` for one critical, from ONE read of the cited file.
+
+    The evidence must come from the same read as the decision: a second read could be a different
+    file than the one the decision was made on, which is how a TOCTOU slips into a gate whose whole
+    value is that it is deterministic at head."""
     syntax_claim = _is_syntax_compile_claim(finding)
     namespace_claim = _is_namespace_corruption_claim(finding)
-    if not syntax_claim and not namespace_claim:
-        return (
-            True  # not a syntax/compile claim — never invalidate (every semantic critical is safe)
-        )
+    missing_param_claim = _is_missing_parameter_claim(finding)
+    if not syntax_claim and not namespace_claim and not missing_param_claim:
+        return True, None  # never invalidate (every semantic critical is safe)
     rel = str(finding.get("file") or "").strip()
     if not rel:
-        return True  # ungrounded — cannot DISPROVE, keep
+        return True, None  # ungrounded — cannot DISPROVE, keep
     path = repo_root / rel
     if not path.is_file():
-        return True  # cites a file not in the tree — cannot verify, keep
+        return True, None  # cites a file not in the tree — cannot verify, keep
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return True  # unreadable — cannot verify, keep
+        return True, None  # unreadable — cannot verify, keep
     rdf_format = _rdf_parse_format(path)
     if rdf_format is not None:
         parses_clean = _rdf_parses_clean(path, rdf_format)
         if syntax_claim:
-            return not parses_clean
-        return not (
+            return (not parses_clean), None
+        stands = not (
             namespace_claim and parses_clean and _line_literal_claim_refuted(finding, source)
         )
+        return stands, None
     if namespace_claim and _line_literal_claim_refuted(finding, source):
-        return False
+        return False, None
     if path.suffix != ".py":
-        return True  # cannot verify this syntax claim class — keep (conservative)
+        return True, None  # cannot verify this class on this file type — keep (conservative)
+    if missing_param_claim:
+        # The second refutable class. The head's AST settles it: the def at head declares every
+        # parameter the claim names, or takes **kwargs. Anything the extractor cannot settle comes
+        # back None and the critical stands.
+        evidence = _missing_parameter_refutation(finding, source)
+        return (evidence is None), evidence
     if not syntax_claim:
-        return True
+        return True, None
     try:
         ast.parse(source)
     except SyntaxError:
-        return True  # really does not parse — the claim stands
-    return False  # parses clean — the syntax/compile claim is a phantom
+        return True, None  # really does not parse — the claim stands
+    return False, None  # parses clean — the syntax/compile claim is a phantom
+
+
+def verify_literal_defect_critical(finding: Mapping[str, Any], repo_root: Path) -> bool:
+    """Whether a critical stands when no dossier evidence is needed."""
+    return _literal_defect_verdict(finding, repo_root)[0]
 
 
 def _blocking_criticals(
@@ -1455,8 +1728,17 @@ def _blocking_criticals(
     blocking: list[tuple[str, dict]] = []
     phantom: list[tuple[str, dict]] = []
     for reviewer_id, finding in criticals:
-        target = blocking if verify_literal_defect_critical(finding, root) else phantom
-        target.append((reviewer_id, finding))
+        if _is_missing_parameter_claim(finding):
+            stands, evidence = _literal_defect_verdict(finding, root)
+        else:
+            stands, evidence = verify_literal_defect_critical(finding, root), None
+        if stands:
+            blocking.append((reviewer_id, finding))
+            continue
+        phantom_finding = dict(finding)
+        if evidence is not None:
+            phantom_finding["go_gate_evidence"] = evidence
+        phantom.append((reviewer_id, phantom_finding))
     return blocking, phantom
 
 
@@ -1476,6 +1758,10 @@ def _reviews_with_phantom_resolutions(
     phantom_keys = {
         _finding_key(reviewer_id, finding) for reviewer_id, finding in phantom_criticals
     }
+    phantom_evidence = {
+        _finding_key(reviewer_id, finding): str(finding.get("go_gate_evidence") or "")
+        for reviewer_id, finding in phantom_criticals
+    }
     out: list[dict[str, Any]] = []
     for review in reviews:
         reviewer_id = str(review.get("id"))
@@ -1486,11 +1772,14 @@ def _reviews_with_phantom_resolutions(
                 findings.append(finding)
                 continue
             finding_record = dict(finding)
-            if _finding_key(reviewer_id, finding_record) in phantom_keys:
+            key = _finding_key(reviewer_id, finding_record)
+            if key in phantom_keys:
                 finding_record["resolved"] = True
                 finding_record["resolution_source"] = "review-go-gate"
+                detail = "literal-defect critical refuted by the file at head"
+                evidence = phantom_evidence.get(key)
                 finding_record["resolution_detail"] = (
-                    "literal-defect critical refuted by the file at head"
+                    f"{detail}; {evidence}" if evidence else detail
                 )
             findings.append(finding_record)
         record["findings"] = findings
@@ -1576,6 +1865,97 @@ def _checklist_complete_accepts(
     return [r for r in _accepting(reviews) if not _review_checklist_blockers(r, lenses)]
 
 
+def seat_partial_diff_coverage(review: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The seat's partial-coverage record, or ``None`` when the review may certify.
+
+    A review certifies only on the whole diff: the delivered diff bytes equal
+    the full diff bytes, or trusted machinery witnessed the seat fetch the full
+    diff itself (tool-using seats only; the witness field is written by the
+    dispatcher/wrapper, never by reviewer output). Unrecorded or malformed
+    coverage fails closed — coverage that is not recorded cannot be proven full
+    (M142 corollary: partial evidence may stop a merge, never certify one).
+    """
+
+    if review.get(DIFF_FULL_FETCH_WITNESSED_FIELD) is True:
+        return None
+    full = review.get(DIFF_FULL_BYTES_FIELD)
+    delivered = review.get(DIFF_DELIVERED_BYTES_FIELD)
+    if (
+        not isinstance(full, int)
+        or isinstance(full, bool)
+        or not isinstance(delivered, int)
+        or isinstance(delivered, bool)
+        or full < 0
+        or delivered < 0
+    ):
+        return {"kind": "unrecorded", "delivered_bytes": None, "full_bytes": None}
+    if delivered >= full:
+        return None
+    return {"kind": "truncated", "delivered_bytes": delivered, "full_bytes": full}
+
+
+def _split_partial_coverage_accepts(
+    accepts: Sequence[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], list[tuple[Mapping[str, Any], dict[str, Any]]]]:
+    """(quorum-counting accepts, (partial accept, coverage) pairs)."""
+
+    counting: list[Mapping[str, Any]] = []
+    partial: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
+    for review in accepts:
+        coverage = seat_partial_diff_coverage(review)
+        if coverage is None:
+            counting.append(review)
+        else:
+            partial.append((review, coverage))
+    return counting, partial
+
+
+def _coverage_unstamped(review: Mapping[str, Any]) -> bool:
+    """No coverage stamp at all (a pre-coverage dossier): every field absent.
+
+    A record with SOME fields present but missing/invalid others is malformed,
+    not unstamped — derivation never rescues a partial stamp.
+    """
+
+    return (
+        DIFF_FULL_BYTES_FIELD not in review
+        and DIFF_DELIVERED_BYTES_FIELD not in review
+        and DIFF_FULL_FETCH_WITNESSED_FIELD not in review
+    )
+
+
+def _with_derived_diff_coverage(
+    reviews: Sequence[Mapping[str, Any]],
+    *,
+    full_diff_chars: int | None,
+) -> list[Mapping[str, Any]]:
+    """Inject derived coverage into UNSTAMPED review records (pre-coverage dossiers).
+
+    ``full_diff_chars`` is the dispatcher-measured full diff size at the dossier
+    head, in chars — the historical dispatcher applied
+    ``DIFF_FULL_COVERAGE_MAX_CHARS`` to this value — or None when unmeasurable. At or under
+    the threshold the seats saw the whole diff; over it the seat's packet was
+    truncated at the threshold (delivered is recorded as the cap, an upper
+    bound). Unmeasurable returns the records unchanged, so unstamped accepts
+    still fail closed downstream. Stamped records are authoritative and are
+    never touched.
+    """
+
+    if full_diff_chars is None:
+        return list(reviews)
+    out: list[Mapping[str, Any]] = []
+    for review in reviews:
+        if not _coverage_unstamped(review):
+            out.append(review)
+            continue
+        record = dict(review)
+        record[DIFF_FULL_BYTES_FIELD] = full_diff_chars
+        record[DIFF_DELIVERED_BYTES_FIELD] = min(full_diff_chars, DIFF_FULL_COVERAGE_MAX_CHARS)
+        record[DIFF_FULL_FETCH_WITNESSED_FIELD] = False
+        out.append(record)
+    return out
+
+
 def _required_team_size(sizing: Mapping[str, Any]) -> int:
     return int(sizing.get("team_size") or sizing.get("team_size_min") or 1)
 
@@ -1626,7 +2006,7 @@ def synthesize_dossier(
     """
 
     sizing = registry["sizing"][team_class]
-    roster = [entry["family"] for entry in review_family_entries(registry)]
+    roster = _core_roster(registry)  # t1's every-family rule counts core families only
     # an outage-degraded constitution judges itself by the DEGRADED rules:
     # t2 sizing, roster minus the walled families (postmortem 2026-06-12 —
     # otherwise require_all_families would seal the verdict it already
@@ -1642,6 +2022,12 @@ def synthesize_dossier(
         if str(n).startswith("degraded_family_route_blocked:")
     )
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
+    size_replaced = sorted(
+        n.split(":", 1)[1]
+        for n in constitution_notes
+        if str(n).startswith("family_replaced_for_size:")
+    )
+    roster = [f for f in roster if f not in size_replaced]
     if degraded_families:
         # roster shrinks for ANY outage-degraded class; the t1->t2 sizing
         # swap applies only when the constitution actually degraded sizing
@@ -1653,7 +2039,9 @@ def synthesize_dossier(
     block_reviews = [r for r in reviews if str(r.get("verdict", "")).lower() == "block"]
     criticals, phantom_criticals = _blocking_criticals(reviews, repo_root, head_sha=head_sha)
     quorum_reviews = _reviews_for_quorum(reviews, criticals, phantom_criticals)
-    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
+    accepts, partial_accepts = _split_partial_coverage_accepts(
+        _checklist_complete_accepts(quorum_reviews, lenses)
+    )
     accept_families = {str(r.get("family")) for r in accepts}
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
@@ -1672,6 +2060,8 @@ def synthesize_dossier(
             }
         )
     for reviewer_id, finding in phantom_criticals:
+        evidence = str(finding.get("go_gate_evidence") or "")
+        detail = "literal-defect critical refuted by the file at head (fail-closed go-gate)"
         escalations.append(
             {
                 "kind": "invalidated-phantom-critical",
@@ -1680,7 +2070,7 @@ def synthesize_dossier(
                 "file": finding.get("file"),
                 "line": finding.get("line"),
                 "lens": finding.get("lens"),
-                "detail": "literal-defect critical refuted by the file at head (fail-closed go-gate)",
+                "detail": f"{detail}; {evidence}" if evidence else detail,
             }
         )
     if accepts and block_reviews:
@@ -1720,6 +2110,37 @@ def synthesize_dossier(
                     "detail": blocker,
                 }
             )
+    for review in reviews:
+        if str(review.get("verdict", "")).lower() in ACCEPT_VERDICTS and any(
+            isinstance(f, Mapping) and str(f.get("severity", "")).lower() == "critical"
+            for f in review.get("findings") or []
+        ):
+            escalations.append(
+                {
+                    "kind": "verdict-contradicts-findings",
+                    "reviewer": str(review.get("id")),
+                    "family": str(review.get("family")),
+                    "detail": "an accept verdict names a critical finding; the critical stands",
+                }
+            )
+    for review, coverage in partial_accepts:
+        if coverage["kind"] == "truncated":
+            detail = (
+                "accept excluded from quorum: the seat reviewed "
+                f"{coverage['delivered_bytes']}/{coverage['full_bytes']} diff bytes "
+                "and no full-diff fetch was witnessed"
+            )
+        else:
+            detail = "accept excluded from quorum: diff coverage unrecorded"
+        escalations.append(
+            {
+                "kind": "partial-coverage",
+                "reviewer": str(review.get("id")),
+                "family": str(review.get("family")),
+                "detail": detail,
+            }
+        )
+    family_floor = _family_floor(reviews)
 
     if criticals and sizing.get("block_on_named_critical", True):
         verdict = "blocked"
@@ -1730,6 +2151,8 @@ def synthesize_dossier(
             quorum_met = False
         if quorum_met and sizing.get("require_all_families"):
             quorum_met = set(roster) <= accept_families
+        if quorum_met and not family_floor["met"]:
+            quorum_met = False
         verdict = QUORUM_ACCEPT if quorum_met else "no-quorum"
 
     return {
@@ -1749,13 +2172,105 @@ def synthesize_dossier(
         "constitution_notes": list(constitution_notes),
         "degraded_family_outage": degraded_outage,
         "degraded_family_route_blocked": degraded_route_blocked,
+        "size_replaced_families": size_replaced,
         "post_recovery_rereview_required": bool(degraded_outage),
         "post_route_receipt_rereview_required": bool(degraded_route_blocked),
         "lenses": list(lenses),
         "reviewers": _reviews_with_phantom_resolutions(reviews, phantom_criticals),
         "escalations": escalations,
         "accept_count": len(accepts),
+        "family_floor": family_floor,
         "review_team_verdict": verdict,
+    }
+
+
+def _family_floor(reviews: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The distinct-family floor: every seat a different family, and every seat voted.
+
+    A walled, dead, empty or unparseable seat is an outage, so its family did not review;
+    a reseated family is lost coverage. Either leaves the team below the floor it was
+    constituted at, and a team below its floor never reaches quorum-accept. A partial-coverage
+    accept does not vote here either (a seat that saw a truncated diff did not review the PR);
+    a partial-coverage BLOCK still votes — partial evidence may stop a merge.
+    """
+
+    seated = [str(r.get("family")) for r in reviews]
+    voting = sorted(
+        {
+            str(r.get("family"))
+            for r in reviews
+            if str(r.get("verdict") or "").lower() in VOTING_VERDICTS
+            and not (
+                str(r.get("verdict") or "").lower() in ACCEPT_VERDICTS
+                and seat_partial_diff_coverage(r) is not None
+            )
+        }
+    )
+    return {
+        "seated_families": sorted(set(seated)),
+        "voting_families": voting,
+        "met": bool(seated) and len(set(seated)) == len(seated) == len(voting),
+    }
+
+
+def t2_family_floor_release(
+    dossier: Mapping[str, Any],
+    *,
+    frontmatter: Mapping[str, Any] | None,
+    registry: Mapping[str, Any],
+    accepts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Evidence that the seat's T2 rule stands in for the every-seat-voted floor, else None.
+
+    ``accepts`` are the checklist-complete accepts the admission gate counted. The rule
+    holds only for a row whose ``risk_tier`` is T2 reviewed by a ``t2_standard`` team, with
+    the accept quorum met and at least one accept from a family other than the writer's.
+    The writer's families are the dossier's recorded ones plus the row's lane; an
+    unresolvable lane refuses the rule.
+    """
+
+    if frontmatter is None:
+        return None
+    row_tier = str(frontmatter.get("risk_tier") or "").strip().upper()
+    team_class = str(dossier.get("team_class") or "")
+    if row_tier != "T2" or team_class != "t2_standard":
+        return None
+    try:
+        quorum = int(registry["sizing"][team_class]["quorum_accept"])
+        row_writer = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
+    except (KeyError, TypeError, ValueError):
+        return None
+    writer_families = {
+        str(dossier.get(field) or "").strip()
+        for field in ("writer_family", "constitution_writer_family")
+    } | {row_writer}
+    writer_families.discard("")
+    distinct = [r for r in accepts if str(r.get("family")) not in writer_families]
+    if len(accepts) < quorum or not distinct:
+        return None
+    reviews = [r for r in dossier.get("reviewers") or [] if isinstance(r, Mapping)]
+    floor = _family_floor(reviews)
+    return {
+        "rule": T2_FAMILY_FLOOR_RELEASE_RULE,
+        "authority": T2_FAMILY_FLOOR_RELEASE_AUTHORITY,
+        "tier": {"row_risk_tier": row_tier, "team_class": team_class},
+        "writer_families": sorted(writer_families),
+        "quorum_required": quorum,
+        "accept_count": len(accepts),
+        "distinct_family_accepts": [
+            {"id": str(r.get("id")), "family": str(r.get("family"))} for r in distinct
+        ],
+        "seated_families": floor["seated_families"],
+        "voting_families": floor["voting_families"],
+        "non_voting_seats": [
+            {
+                "id": str(r.get("id")),
+                "family": str(r.get("family")),
+                "verdict": str(r.get("verdict")),
+            }
+            for r in reviews
+            if str(r.get("verdict") or "").lower() not in VOTING_VERDICTS
+        ],
     }
 
 
@@ -1781,7 +2296,21 @@ def _dossier_validity_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    floor_release_out: dict[str, Any] | None = None,
+    diff_size_measurer: Callable[[int, str], int | None] | None = None,
+    capacity_evidence_measurer: Callable[
+        [int, str, tuple[str, ...]], tuple[int, Mapping[str, int]] | None
+    ]
+    | None = None,
 ) -> tuple[str, ...]:
+    """Blockers for a recorded dossier; ``floor_release_out`` receives the T2 rule's evidence
+    when the rule stood in for the family floor (the dossier may still carry other blockers).
+
+    ``diff_size_measurer(pr_number, dossier_head_sha)`` returns the dispatcher-measured
+    full diff size in chars at the dossier head, or None when unmeasurable. It is
+    consulted only when an accept-verdict review carries no coverage stamp (a
+    pre-coverage dossier); without it, unstamped accepts fail closed."""
+
     blockers: list[str] = []
     scoped_files = (
         tuple(f.strip() for f in changed_files if f and f.strip())
@@ -1832,6 +2361,12 @@ def _dossier_validity_blockers(
     _field_route_blocked = sorted(
         str(f) for f in (dossier.get("degraded_family_route_blocked") or [])
     )
+    _note_size_replaced = sorted(
+        n.split(":", 1)[1] for n in _notes if n.startswith("family_replaced_for_size:")
+    )
+    _field_size_replaced = sorted(str(f) for f in (dossier.get("size_replaced_families") or []))
+    if _note_size_replaced != _field_size_replaced:
+        blockers.append("review_dossier_size_replacements_inconsistent")
     _note_route_block_reasons, malformed_reason_notes = _route_block_reason_notes(_notes)
     degraded_outage: list[str] = []
     degraded_route_blocked: list[str] = []
@@ -2017,6 +2552,83 @@ def _dossier_validity_blockers(
         blockers.append(
             "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
         )
+    stamped_sizes = {
+        r.get(DIFF_FULL_BYTES_FIELD) for r in reviews if type(r.get(DIFF_FULL_BYTES_FIELD)) is int
+    }
+    substitution = dossier.get("family_substitution") or {}
+    if not isinstance(substitution, Mapping):
+        substitution = {}
+    if (
+        _note_size_replaced
+        or _field_size_replaced
+        or substitution.get("excluded_for_size")
+        or substitution.get("excluded_for_prompt")
+        or substitution.get("size_replaced_seats")
+        or ("size_replaced_families" in dossier and len(stamped_sizes) > 1)
+    ):
+        size_excluded = substitution.get("excluded_for_size", {})
+        prompt_excluded = substitution.get("excluded_for_prompt") or {}
+        prompt_bytes = substitution.get("prompt_bytes_by_seat") or {}
+        prompt_over: set[str] = set()
+        prompt_invalid = (
+            not isinstance(size_excluded, Mapping)
+            or not isinstance(prompt_excluded, Mapping)
+            or not isinstance(prompt_bytes, Mapping)
+        )
+        measure_pr = pr_number if pr_number is not None else None
+        measured = None
+        if (
+            capacity_evidence_measurer is not None
+            and measure_pr is not None
+            and pr_head_sha is not None
+            and isinstance(prompt_excluded, Mapping)
+        ):
+            try:
+                measured = capacity_evidence_measurer(
+                    measure_pr,
+                    pr_head_sha,
+                    tuple(f"{family}-1" for family in prompt_excluded),
+                )
+            except (OSError, ValueError, TypeError, RuntimeError):
+                pass  # unmeasurable capacity evidence refuses below
+        if measured is None:
+            blockers.append("review_dossier_capacity_evidence_unavailable")
+        live_full, live_prompts = measured if measured is not None else (None, {})
+        if live_full is not None and stamped_sizes != {live_full}:
+            blockers.append("review_dossier_diff_size_unverified")
+        if not prompt_invalid:
+            for family, evidence in prompt_excluded.items():
+                capacity = seat_diff_capacity(f"{family}-1", registry)
+                if (
+                    not isinstance(evidence, Mapping)
+                    or type(evidence.get("prompt_bytes")) is not int
+                    or evidence["prompt_bytes"] <= capacity["prompt_limit_bytes"]
+                    or evidence.get("prompt_limit_bytes") != capacity["prompt_limit_bytes"]
+                    or prompt_bytes.get(f"{family}-1") != evidence["prompt_bytes"]
+                ):
+                    prompt_invalid = True
+                    break
+                seat_id = f"{family}-1"
+                if (
+                    type(live_prompts.get(seat_id)) is not int
+                    or live_prompts[seat_id] <= capacity["prompt_limit_bytes"]
+                ):
+                    blockers.append(f"review_dossier_prompt_size_unverified:{family}")
+                else:
+                    prompt_over.add(str(family))
+        if len(stamped_sizes) != 1 or prompt_invalid or live_full is None:
+            blockers.append("review_dossier_size_replacements_wrong_for_diff")
+        else:
+            expected_size_excluded = {
+                family
+                for family in roster
+                if seat_diff_capacity(f"{family}-1", registry)["limit_bytes"] < live_full
+            }
+            expected_excluded = sorted(expected_size_excluded | prompt_over)
+            if _note_size_replaced != expected_excluded or (
+                "excluded_for_size" in substitution and set(size_excluded) != expected_size_excluded
+            ):
+                blockers.append("review_dossier_size_replacements_wrong_for_diff")
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
     if degraded_families:
         seated_degraded = sorted({str(r.get("family")) for r in reviews} & degraded_families)
@@ -2041,9 +2653,41 @@ def _dossier_validity_blockers(
             "review_dossier_unknown_reviewer_verdict:" + ",".join(sorted(unknown_verdicts))
         )
 
+    # Pre-coverage dossiers carry no per-seat coverage stamp (seat ruling
+    # 2026-09-26): derive coverage from the dispatcher-measured full diff size
+    # at the dossier head rather than failing closed wholesale. At or under the
+    # dispatcher's truncation threshold the seats saw the whole diff; only an
+    # unmeasurable dossier fails closed. Stamped records are authoritative and
+    # never derived over. The measurer runs at most once, and only when an
+    # accept-verdict review is unstamped.
+    if diff_size_measurer is not None and any(
+        _coverage_unstamped(r) and str(r.get("verdict") or "").lower() in ACCEPT_VERDICTS
+        for r in reviews
+    ):
+        measure_pr = pr_number
+        if measure_pr is None:
+            try:
+                measure_pr = int(dossier.get("pr"))
+            except (TypeError, ValueError):
+                measure_pr = None
+        derived_chars = (
+            diff_size_measurer(measure_pr, dossier_sha) if measure_pr is not None else None
+        )
+        reviews = _with_derived_diff_coverage(reviews, full_diff_chars=derived_chars)
+
     required_size = _required_team_size(sizing)
     if len(reviews) < required_size:
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
+    # The distinct-family floor binds merge admission too, so a dossier written before the
+    # rule (a reseated family, or a seat that never voted) cannot admit a merge.
+    seated_families = [str(r.get("family") or "missing") for r in reviews]
+    reseated = sorted({f for f in seated_families if seated_families.count(f) > 1})
+    if reseated:
+        blockers.append("review_dossier_same_family_reseat:" + ",".join(reseated))
+    floor = _family_floor(reviews)
+    # A T2 row may satisfy the floor under the seat's rule, which needs the accepts counted
+    # below; the blocker keeps this position in the list whenever the rule does not hold.
+    floor_blocker_at = len(blockers) if not reseated and not floor["met"] else None
 
     # go-gate: drop literal-defect phantoms only against a checkout proven to be
     # the reviewed head. Local autoqueue often runs outside the PR checkout, so
@@ -2078,7 +2722,38 @@ def _dossier_validity_blockers(
         blockers.extend(_review_checklist_blockers(review, lenses))
 
     quorum_reviews = _reviews_for_quorum(reviews, criticals, phantoms)
-    accepts = _checklist_complete_accepts(quorum_reviews, lenses)
+    accepts, partial_accepts = _split_partial_coverage_accepts(
+        _checklist_complete_accepts(quorum_reviews, lenses)
+    )
+    truncated_coverages: list[dict[str, Any]] = []
+    for review, coverage in partial_accepts:
+        # Named per seat (M142 corollary): a partial accept never certifies, and the
+        # autoqueue blocker text says which seat reviewed a truncated diff. A block or
+        # critical from the same seat still counts above — partial evidence may stop
+        # a merge, never certify one.
+        blockers.append(f"review_seat_partial_coverage:{review.get('id')}")
+        if coverage["kind"] == "truncated":
+            truncated_coverages.append(coverage)
+    if truncated_coverages:
+        # The oversize PR's named remedy: split it, or seat tool-using full-fetch
+        # reviewers. There is no silent pass on a truncated diff.
+        blockers.append(
+            "review_diff_truncated_split_or_full_fetch:"
+            f"{truncated_coverages[0]['delivered_bytes']}/{truncated_coverages[0]['full_bytes']}"
+        )
+    floor_release = None
+    if floor_blocker_at is not None:
+        floor_release = t2_family_floor_release(
+            dossier, frontmatter=frontmatter, registry=registry, accepts=accepts
+        )
+        if floor_release is None:
+            blockers.insert(
+                floor_blocker_at,
+                "review_dossier_below_family_floor:"
+                f"voting={len(floor['voting_families'])}/seated={len(seated_families)}",
+            )
+        elif floor_release_out is not None:
+            floor_release_out.update(floor_release)
     unknown_accept_families = {str(r.get("family")) for r in accepts} - roster
     if unknown_accept_families:
         blockers.append(
@@ -2104,7 +2779,9 @@ def _dossier_validity_blockers(
             f"review_dossier_family_diversity:accept_families={len(accept_families)}/{min_families}"
         )
     if sizing.get("require_all_families"):
-        missing_families = roster - {str(r.get("family")) for r in accepts}
+        missing_families = (roster - substitute_families(registry) - set(_note_size_replaced)) - {
+            str(r.get("family")) for r in accepts
+        }
         if missing_families:
             blockers.append(
                 "review_dossier_family_diversity:missing_accept_from="
@@ -2119,7 +2796,9 @@ def _dossier_validity_blockers(
             )
 
     verdict = str(dossier.get("review_team_verdict") or "missing").lower()
-    if verdict != QUORUM_ACCEPT:
+    # The synthesizer records no-quorum for a team below the floor; the T2 rule, recomputed
+    # here, is the only thing that excuses that verdict, and never a blocked one.
+    if verdict != QUORUM_ACCEPT and not (floor_release is not None and verdict == "no-quorum"):
         blockers.append(f"review_team_verdict_not_quorum_accept:{verdict}")
     return tuple(blockers)
 
@@ -2136,8 +2815,14 @@ def review_dossier_validity_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    floor_release_out: dict[str, Any] | None = None,
+    diff_size_measurer: Callable[[int, str], int | None] | None = None,
 ) -> tuple[str, ...]:
-    """Validate a recorded review dossier without honoring any gate killswitch."""
+    """Validate a recorded review dossier without honoring any gate killswitch.
+
+    ``floor_release_out`` receives the seat's T2 rule evidence when the rule stood in for
+    the family floor, so a receipt minted on these blockers can record it.
+    """
 
     task_id = str(frontmatter.get("task_id") or "").strip()
     if not task_id:
@@ -2170,6 +2855,8 @@ def review_dossier_validity_blockers(
         outage_state_path=outage_state_path,
         admission_time=admission_time,
         route_blocked_families=route_blocked_families,
+        floor_release_out=floor_release_out,
+        diff_size_measurer=diff_size_measurer,
     )
 
 
@@ -2185,6 +2872,7 @@ def review_team_verdict_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    diff_size_measurer: Callable[[int, str], int | None] | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
 
@@ -2211,4 +2899,5 @@ def review_team_verdict_blockers(
         outage_state_path=outage_state_path,
         admission_time=admission_time,
         route_blocked_families=route_blocked_families,
+        diff_size_measurer=diff_size_measurer,
     )

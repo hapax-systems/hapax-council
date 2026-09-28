@@ -20,9 +20,10 @@ def _make_state() -> SessionState:
 
 
 def _make_user_msg_event(message: str) -> HookEvent:
+    # An operator turn: the operator's own words, on the operator-turn event (M103).
     return HookEvent(
-        event_type="post_tool_use",
-        tool_name="Agent",
+        event_type="user_prompt",
+        tool_name="",
         tool_input={},
         session_id="sess-alpha",
         user_message=message,
@@ -44,7 +45,7 @@ def _make_bash_pr_event(pr_url: str) -> HookEvent:
         tool_name="Bash",
         tool_input={"command": "gh pr create"},
         session_id="sess-alpha",
-        user_message=pr_url,
+        tool_output=pr_url,
     )
 
 
@@ -74,7 +75,7 @@ def test_activates_on_user_message():
     rule = SmokeRule(topology, state)
 
     event = _make_user_msg_event("let's do a smoke test of the new feature")
-    rule.on_post_tool_use(event)
+    rule.on_user_prompt(event)
 
     assert state.smoke_test_active is True
 

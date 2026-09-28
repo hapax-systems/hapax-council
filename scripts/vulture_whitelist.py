@@ -4161,9 +4161,49 @@ PerceptionPoint._geometry_policy
 
 # pydantic @model_serializer(mode="wrap") — invoked by pydantic during
 # model_dump, not by an explicit static call site.
+# The extensionless hapax-quota-telemetry-writer calls these for its v2
+# measurement projection, read-only --check, and operator-report subcommand.
+from shared.quota_headroom import collect_measurements, enrich_ledger, operator_report  # noqa: E402
+from shared.quota_spend_ledger import QuotaSpendLedger as _QuotaHeadroomLedger  # noqa: E402
 from shared.quota_spend_ledger import SpendReceipt as _QuotaSpendLedgerSpendReceipt  # noqa: E402
 
+collect_measurements
+enrich_ledger
+operator_report
+_QuotaHeadroomLedger.schema_v1_payload
+
 _QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
+
+from shared.quota_spend_ledger import (  # noqa: E402
+    TransitionBudget as _QuotaSpendLedgerTransitionBudget,
+)
+
+_QuotaSpendLedgerTransitionBudget._serialize_without_absent_provider_balance
+
+# GLMCP PAYG spend helpers: called by the extensionless scripts/hapax-glmcp-reviewer
+# (reservation before the paid call, usage-based reconciliation or freeze after it) and
+# scripts/hapax-quota-telemetry-writer (freezing untrusted receipts), which vulture does not scan.
+from shared.quota_spend_ledger import (  # noqa: E402
+    frozen_spend_receipt_payload as _frozen_spend_receipt_payload,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_reservation_usd as _glmcp_payg_reservation_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_usage_ceiling_usd as _glmcp_payg_usage_ceiling_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_usage_cost_usd as _glmcp_payg_usage_cost_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    settle_spend_covered_by_provider_balance as _settle_spend_covered_by_provider_balance,
+)
+
+_frozen_spend_receipt_payload
+_settle_spend_covered_by_provider_balance
+_glmcp_payg_reservation_usd
+_glmcp_payg_usage_ceiling_usd
+_glmcp_payg_usage_cost_usd
 
 # Platform session contract v1: exported adapter-conformance helpers are invoked
 # by fixture suites and future trainyard adapter runners. Pydantic field validators
@@ -4718,6 +4758,12 @@ _hkp_collect_evidence
 # classify_failure is the review-plane measurement-spine API (CapabilityAdapter thread): it maps the
 # channel-trust classifiers to a shared FailureReceipt. Consumed by the forthcoming worker-path +
 # dispatch-telemetry slices, not yet by a static caller. capability-adapter-failure-classification.
+# seat_diff_capacity is the tested support API consumed by PR #4871, stacked on
+# this precursor; the diff-only unused-function gate cannot see that child PR.
+from scripts.review_team import seat_diff_capacity as _review_seat_diff_capacity  # noqa: E402
+
+_review_seat_diff_capacity
+
 try:
     from scripts.review_team import (
         classify_failure as _adapter_classify_failure,  # noqa: F401, E402
@@ -5129,6 +5175,29 @@ from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: 
 
 _ = (record_identifies_its_checkout,)
 
+# DETECTOR BLIND SPOT, not dead code (the second kind, see above). Every one of these has a real
+# production caller in scripts/hapax-estate-store-registry — an extensionless Python script that
+# vulture never parses (registry --list, canary originate/export, peer-check, sweep, grandfather).
+# Registration-at-production Stage 1 (report-only), 2026-09-02; task row
+# `registration-at-production-stage1-20260902`.
+from shared.estate_registration import (  # noqa: E402
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+)
+from shared.estate_store_registry import enumerate_stores  # noqa: E402
+
+_ = (
+    export_canary_health,
+    grandfather_fragment,
+    originate_canaries,
+    run_peer_command,
+    sweep,
+    enumerate_stores,
+)
+
 # Claim Verification Council dossier split (2026-09-02, row
 # cvc-dossier-evidence-not-process-trace-20260902): Pydantic invokes these `model_validator`s
 # dynamically to populate `evidentiary_rationale` / `process_trace` / `execution_receipt` from the
@@ -5142,6 +5211,17 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# 2026-09-05: the Stage-1 registration identity binding is called from the extension-less
+# executable scripts/hapax-estate-store-registry (bind_host_identity at its lines 196 and 440,
+# observed_host_identity at 359), which vulture's *.py walk cannot see.
+from shared.estate_registration import bind_host_identity as _bind_host_identity  # noqa: E402
+from shared.estate_registration import (  # noqa: E402
+    observed_host_identity as _observed_host_identity,
+)
+
+_bind_host_identity
+_observed_host_identity
 
 # Native load-set observation is called by the extensionless
 # scripts/hapax-platform-capability-receipts producer; Pydantic invokes the
@@ -5184,3 +5264,193 @@ _ = (
     _charter_write_obligation_report,
     _charter_obligation_breaches,
 )
+
+# ENCOUNTERED-MACHINERY auditor. The pure evaluation module is called only by the extensionless
+# producer `scripts/hapax-encountered-machinery-audit` (declared in
+# config/determination-producers.json and run by hapax-determine). Vulture does not scan that
+# script.
+from shared.encountered_machinery_audit import Trend as _EmaTrend  # noqa: E402
+from shared.encountered_machinery_audit import (  # noqa: E402
+    parse_catalogue as _ema_parse_catalogue,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    parse_ledger as _ema_parse_ledger,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    render_flag_drop as _ema_render_flag_drop,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    render_pile_status as _ema_render_pile_status,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    render_reduction_row as _ema_render_reduction_row,
+)
+from shared.encountered_machinery_audit import (  # noqa: E402
+    split_frontmatter as _ema_split_frontmatter,
+)
+
+_ = (
+    _EmaTrend.unobserved,
+    _ema_parse_catalogue,
+    _ema_parse_ledger,
+    _ema_render_flag_drop,
+    _ema_render_pile_status,
+    _ema_render_reduction_row,
+    _ema_split_frontmatter,
+)
+
+# Transcript custody (transcript-backup-custody-all-harnesses-20260927): these are called by the
+# extensionless scripts/hapax-transcript-custody CLI (run by hapax-backup-transcripts.service) and by
+# tests/test_transcript_custody.py's forget-policy scan. Vulture scans .py modules but not
+# extensionless entrypoints, so it cannot see those call sites.
+from scripts.transcript_custody import (  # noqa: E402
+    backup_args as _tc_backup_args,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    count_snapshot as _tc_count_snapshot,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    credential_nodes as _tc_credential_nodes,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    forget_protects_transcripts as _tc_forget_protects_transcripts,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    listing_expected as _tc_listing_expected,  # the Windows-host pull, also CLI-only
+)
+from scripts.transcript_custody import (  # noqa: E402
+    parse_windows_inventory as _tc_parse_windows_inventory,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    resolve_paths as _tc_resolve_paths,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    tar_nodes as _tc_tar_nodes,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    windows_backup_args as _tc_windows_backup_args,
+)
+from scripts.transcript_custody import (  # noqa: E402
+    windows_inventory_script as _tc_windows_inventory_script,
+)
+
+_ = (
+    _tc_backup_args,
+    _tc_count_snapshot,
+    _tc_credential_nodes,
+    _tc_forget_protects_transcripts,
+    _tc_resolve_paths,
+    _tc_listing_expected,
+    _tc_parse_windows_inventory,
+    _tc_tar_nodes,
+    _tc_windows_backup_args,
+    _tc_windows_inventory_script,
+)
+
+# cc-task communication-pathway-audience-channel-reception-20260925, slice 7: the escalation
+# detector ships ahead of its runner. The runner (a follow-up slice-7 PR that records the
+# findings) is the static caller; it removes these entries and carries a red-first test that
+# they are gone.
+from shared.escalation_detector import (  # noqa: E402
+    docker_findings as _ed_docker_findings,
+)
+from shared.escalation_detector import (  # noqa: E402
+    journal_findings as _ed_journal_findings,
+)
+
+_ = (
+    _ed_docker_findings,
+    _ed_journal_findings,
+)
+
+# The cc-claim preflight and publish HOLD (cc-task claim-preflight-extract-churn-tested-20260927):
+# the only production caller is the inline-python heredoc in extensionless bash scripts/cc-claim.
+# DETECTOR BLIND SPOT, not dead code: vulture never parses that heredoc. Exercised in-process
+# through task-store churn by tests/shared/test_sdlc_claim.py; the delegation is pinned by
+# tests/scripts/test_cc_claim.py::test_the_claim_preflight_and_hold_are_shared_sdlc_claims.
+from shared.sdlc_claim import (  # noqa: E402
+    claim_publication_hold_message as _claim_publication_hold_message,
+)
+from shared.sdlc_claim import (  # noqa: E402
+    prepare_claim_publication_intent as _prepare_claim_publication_intent,
+)
+
+_ = (
+    _claim_publication_hold_message,
+    _prepare_claim_publication_intent,
+)
+
+# cc-task communication-pathway-audience-channel-reception-20260925, slice 1: the
+# canonicaliser and mechanical checks ship ahead of their producer. Slice 2 (the gate's
+# evaluate() child) is the static caller; it removes these entries and carries a red-first
+# test that they are gone.
+from shared.communication_pathway import (  # noqa: E402
+    act_seen as _cp_act_seen,
+)
+from shared.communication_pathway import (  # noqa: E402
+    bare_line_ends as _cp_bare_line_ends,
+)
+from shared.communication_pathway import (  # noqa: E402
+    canonical_digest as _cp_canonical_digest,
+)
+from shared.communication_pathway import (  # noqa: E402
+    duplicated_parts as _cp_duplicated_parts,
+)
+from shared.communication_pathway import (  # noqa: E402
+    email_manifest as _cp_email_manifest,
+)
+from shared.communication_pathway import (  # noqa: E402
+    long_lines as _cp_long_lines,
+)
+from shared.communication_pathway import (  # noqa: E402
+    markdown_flags as _cp_markdown_flags,
+)
+from shared.communication_pathway import (  # noqa: E402
+    norm_table_missing as _cp_norm_table_missing,
+)
+from shared.communication_pathway import (  # noqa: E402
+    subject_problems as _cp_subject_problems,
+)
+from shared.communication_pathway import (  # noqa: E402
+    to_crlf as _cp_to_crlf,
+)
+from shared.communication_pathway import (  # noqa: E402
+    url_punctuation_flags as _cp_url_punctuation_flags,
+)
+from shared.communication_pathway import (  # noqa: E402
+    within_window as _cp_within_window,
+)
+
+_ = (
+    _cp_act_seen,
+    _cp_bare_line_ends,
+    _cp_canonical_digest,
+    _cp_duplicated_parts,
+    _cp_email_manifest,
+    _cp_long_lines,
+    _cp_markdown_flags,
+    _cp_norm_table_missing,
+    _cp_subject_problems,
+    _cp_to_crlf,
+    _cp_url_punctuation_flags,
+    _cp_within_window,
+)
+
+# billing-scan-input-validation-20260928: scripts/check-billing-surface-diff.py
+# calls this after the scanner layer lands; removed by #4844.
+from scripts.billing_surface_input import (  # noqa: E402
+    materialise_post_image as _billing_materialise_post_image,
+)
+
+_ = _billing_materialise_post_image
+
+# billing-scan-diff-grammar-20260928: scripts/check-billing-surface-diff.py
+# calls these after the scanner layer lands; removed by #4844.
+from scripts.billing_surface_input import (  # noqa: E402
+    post_image_blob as _billing_post_image_blob,
+)
+from scripts.billing_surface_input import (
+    regenerated_added_lines as _billing_regenerated_added_lines,
+)
+
+_ = (_billing_post_image_blob, _billing_regenerated_added_lines)

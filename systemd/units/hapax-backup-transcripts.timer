@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly transcript backup and verification (every harness, by real path)
+
+[Timer]
+# After podium's tier-1 job (03:00 plus up to 30 min, about 5 min long), whose forget --prune takes the repository's
+# exclusive lock.
+OnCalendar=*-*-* 04:15:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

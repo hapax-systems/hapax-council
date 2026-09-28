@@ -1,0 +1,7 @@
+I'll ground this review by inspecting the actual policy mechanism the PR relies on, since the worktree contains the pre-PR base.
+
+`★ Insight ─────────────────────────────────────`
+The PR is manifest+test only and claims "no hook or policy code changes," so the base-tree `shared/mcp_connector_policy.py` in this worktree is the exact classifier the diff depends on. Reading it lets me check the two load-bearing invariants: (1) whether newly-aliased read names actually dodge the mutating-verb regex, and (2) whether the receipt gate really admits reads without a claim.
+`─────────────────────────────────────────────────`
+
+Let me inspect the classifier source and the base manifest.
