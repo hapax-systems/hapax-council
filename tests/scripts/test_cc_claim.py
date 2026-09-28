@@ -2768,6 +2768,26 @@ def test_the_holder_returns_an_unstarted_claim_and_frees_its_slot(tmp_path: Path
     assert _claim(home, "next-row").returncode == 0  # the slot is free
 
 
+def test_governed_recovery_reports_a_returned_claim_as_released(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home, "returned-row")
+    assert _return(home, "returned-row").returncode == 0
+    before = _tree_bytes(home)
+
+    recovered = _claim(
+        home,
+        "returned-row",
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=["--recover-claim-publications"],
+    )
+
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert ":released:claim_publication_released_by_governed_archive" in recovered.stdout
+    assert note.read_bytes() == before[note]
+    assert _tree_bytes(home) == before
+
+
 #: One per review specimen from #4826 rounds 3-6: each must hold, changing nothing.
 _RETURN_SPECIMENS = {
     "duplicate_status": ("status: claimed", "status: claimed\nstatus: in_progress"),

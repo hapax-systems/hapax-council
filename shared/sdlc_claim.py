@@ -1623,6 +1623,37 @@ class ClaimPublicationRecoveryResult:
     publication_id: str
     state: str
     reason_code: str | None = None
+    successor: ClaimPublicationSuccessor | None = None
+    release: ClaimPublicationRelease | None = None
+
+
+@dataclass(frozen=True)
+class ClaimPublicationSuccessor:
+    """Two verified applied receipts for one task and owner, ordered by claim epoch."""
+
+    predecessor_publication_id: str
+    predecessor_receipt_hash: str
+    successor_publication_id: str
+    successor_receipt_hash: str
+    task_id: str
+    role: str
+    authority_case: str
+    predecessor_epoch: int
+    successor_epoch: int
+
+
+@dataclass(frozen=True)
+class ClaimPublicationRelease:
+    """An applied receipt bound to the governed archive of its old lease sidecars."""
+
+    publication_id: str
+    receipt_hash: str
+    task_id: str
+    role: str
+    session_id: str
+    shape: str
+    archive_path: Path
+    archive_sha256: str
 
 
 @dataclass(frozen=True)
@@ -4979,6 +5010,257 @@ def resolve_applied_claim_publication_for_task(
     )
 
 
+def _resolve_applied_successor(
+    *,
+    intent: ClaimPublicationIntent,
+    consumption: ClaimAdmissionConsumption,
+    projections: Sequence[FileProjection],
+    publication_id: str,
+    manifest_path: Path,
+    receipt_path: Path,
+    receipt_root: Path,
+) -> ClaimPublicationSuccessor | None:
+    """Resolve a spent applied journal from two receipts, not from live sidecar drift.
+
+    The predecessor's immutable receipt must still match its journal. A successor must be a
+    later admitted publication for the same task, lane and AuthorityCase, and its *current*
+    task note and six sidecars must verify. An unfinished or contradictory candidate cannot
+    terminate the predecessor. The applied predecessor journal is never rewritten.
+    """
+
+    predecessor = _as_admitted_receipt(
+        manifest_path,
+        receipt_path,
+        intent,
+        consumption,
+        projections,
+        publication_id,
+        recovered=False,
+    )
+    successors: list[ClaimPublicationSuccessor] = []
+    for entry in sorted(manifest_path.parent.parent.iterdir(), key=lambda path: path.name):
+        if (
+            entry.name == publication_id
+            or _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(entry.name) is None
+            or entry.is_symlink()
+        ):
+            continue
+        try:
+            newer_intent, newer_projections, newer_id, newer_state, newer_consumption = (
+                _load_any_manifest(entry / "manifest.json")
+            )
+        except ClaimPublicationError:
+            continue  # A broken candidate is not a successor; its own recovery still HOLDs.
+        if (
+            newer_state != "applied"
+            or not isinstance(newer_consumption, ClaimAdmissionConsumption)
+            or newer_intent.task_id != intent.task_id
+            or newer_intent.role != intent.role
+            or newer_intent.note_path != intent.note_path
+            or newer_intent.cache_dir != intent.cache_dir
+            or newer_intent.binding.authority_case != intent.binding.authority_case
+            or newer_intent.claim_epoch <= intent.claim_epoch
+            or newer_intent.binding.receipt_hash == intent.binding.receipt_hash
+        ):
+            continue
+        # A later publication may replace the role-wide lease, but a predecessor's
+        # session-only lease still has to be exact unless that predecessor was released.
+        # Otherwise an unrelated intact successor would conceal damaged old evidence.
+        successor_paths = {item.path for item in newer_projections[1:7]}
+        try:
+            if any(
+                _file_state(item.path) != (item.after, item.after_mode)
+                for item in projections[1:7]
+                if item.path not in successor_paths
+            ):
+                continue
+        except LifecycleTransitionError:
+            continue
+        try:
+            newer = require_applied_admitted_claim_publication(
+                newer_intent,
+                newer_consumption,
+                transaction_root=manifest_path.parent.parent,
+                receipt_root=receipt_root,
+                _already_locked=True,
+            )
+            newer_hash = newer.receipt_hash
+        except ClaimPublicationError as exc:
+            newer_receipt_path = claim_publication_receipt_path(
+                newer_intent.cache_dir, newer_intent.binding, receipt_root=receipt_root
+            )
+            try:
+                nested = (
+                    _resolve_applied_successor(
+                        intent=newer_intent,
+                        consumption=newer_consumption,
+                        projections=newer_projections,
+                        publication_id=newer_id,
+                        manifest_path=entry / "manifest.json",
+                        receipt_path=newer_receipt_path,
+                        receipt_root=receipt_root,
+                    )
+                    if exc.reason_code == "claim_publication_postimage_drift"
+                    else None
+                )
+                released = (
+                    None
+                    if nested is not None
+                    else _resolve_governed_applied_release(
+                        intent=newer_intent,
+                        consumption=newer_consumption,
+                        projections=newer_projections,
+                        publication_id=newer_id,
+                        manifest_path=entry / "manifest.json",
+                        receipt_path=newer_receipt_path,
+                    )
+                )
+            except ClaimPublicationError:
+                continue
+            if nested is None and released is None:
+                continue
+            newer_hash = (
+                nested.predecessor_receipt_hash if nested is not None else released.receipt_hash
+            )
+        successors.append(
+            ClaimPublicationSuccessor(
+                predecessor_publication_id=publication_id,
+                predecessor_receipt_hash=predecessor.receipt_hash,
+                successor_publication_id=newer_id,
+                successor_receipt_hash=newer_hash,
+                task_id=intent.task_id,
+                role=intent.role,
+                authority_case=intent.binding.authority_case,
+                predecessor_epoch=intent.claim_epoch,
+                successor_epoch=newer_intent.claim_epoch,
+            )
+        )
+    successors.sort(key=lambda item: item.successor_epoch)
+    if len(successors) > 1 and successors[0].successor_epoch == successors[1].successor_epoch:
+        raise ClaimPublicationError(
+            "claim_publication_successor_ambiguous",
+            "preserve the receipts and resolve the competing earliest successors",
+            publication_id,
+        )
+    return successors[0] if successors else None
+
+
+def _resolve_governed_applied_release(
+    *,
+    intent: ClaimPublicationIntent,
+    consumption: ClaimAdmissionConsumption,
+    projections: Sequence[FileProjection],
+    publication_id: str,
+    manifest_path: Path,
+    receipt_path: Path,
+) -> ClaimPublicationRelease | None:
+    """Verify a release's immutable receipt, lineage copy and retained staged originals.
+
+    A release moves the old role lease under a publication-bound staging directory and
+    copies its exact bytes into lineage. This is the lifecycle proof for a returned, closed,
+    reassigned or pipeline-held claim; the old applied journal stays untouched.
+    """
+
+    lineage = intent.note_path.parent.parent / "_lineage" / _safe_lineage_component(intent.task_id)
+    if not lineage.is_dir() or lineage.is_symlink():
+        return None
+    receipt = _as_admitted_receipt(
+        manifest_path,
+        receipt_path,
+        intent,
+        consumption,
+        projections,
+        publication_id,
+        recovered=False,
+    )
+    suffix = f"-{_safe_lineage_component(intent.role)}"
+    prefix = "claim-residue-release-"
+    releases: list[ClaimPublicationRelease] = []
+    for archive in sorted(lineage.glob(f"{prefix}*{suffix}")):
+        if archive.is_symlink() or not archive.is_dir():
+            continue
+        stamp = archive.name[len(prefix) : -len(suffix)]
+        if _RELEASE_STAMP_RE.fullmatch(stamp) is None:
+            continue
+        staged = (
+            intent.cache_dir
+            / "claim-residue-release"
+            / _safe_lineage_component(intent.task_id)
+            / f"{stamp}{suffix}"
+        )
+        readme = archive / "README.md"
+        binding = staged / "PUBLICATION"
+        if any(path.is_symlink() or not path.is_file() for path in (readme, binding)):
+            continue
+        try:
+            readme_bytes = readme.read_bytes()
+            lines = readme_bytes.decode("utf-8").splitlines()
+            bound = binding.read_text(encoding="ascii")
+        except (OSError, UnicodeError):
+            continue
+        if len(readme_bytes) > 16 * 1024 or bound != f"{publication_id}\n":
+            continue
+        shapes = (
+            "lapsed_lease",
+            "closed_task",
+            "reassigned_task",
+            "pipeline_held",
+            "returned_claim",
+        )
+        shapes_found = [shape for shape in shapes if lines.count(f"shape: {shape}") == 1]
+        expected = (
+            f"task_id: {intent.task_id}",
+            f"role: {intent.role}",
+            f"session_id: {intent.session_id}",
+            f"publication_id: {publication_id}",
+            f"released_at: {stamp}",
+            f"moved originals (kept, never unlinked): {staged}",
+        )
+        if len(shapes_found) != 1 or any(lines.count(line) != 1 for line in expected):
+            continue
+        material = [readme_bytes]
+        for projection in projections[1:7]:
+            if _is_claim_activation_projection(projection):
+                continue
+            archived = archive / projection.path.name
+            original = staged / projection.path.name
+            if any(path.is_symlink() or not path.is_file() for path in (archived, original)):
+                break
+            try:
+                archived_state = _file_state(archived)
+                original_state = _file_state(original)
+            except LifecycleTransitionError:
+                break
+            if (
+                archived_state != (projection.after, projection.after_mode)
+                or original_state != archived_state
+                or lines.count(f"  - {projection.path} sha256:{_sha256(projection.after or b'')}")
+                != 1
+            ):
+                break
+            material.extend((archived_state[0] or b"", original_state[0] or b""))
+        else:
+            releases.append(
+                ClaimPublicationRelease(
+                    publication_id=publication_id,
+                    receipt_hash=receipt.receipt_hash,
+                    task_id=intent.task_id,
+                    role=intent.role,
+                    session_id=intent.session_id,
+                    shape=shapes_found[0],
+                    archive_path=archive,
+                    archive_sha256=_sha256(b"\0".join(material)),
+                )
+            )
+    if len(releases) > 1:
+        raise ClaimPublicationError(
+            "claim_publication_release_ambiguous",
+            "preserve the release archives and resolve the duplicate disposition",
+            publication_id,
+        )
+    return releases[0] if releases else None
+
+
 def _recover_one(
     manifest_path: Path,
     *,
@@ -5036,13 +5318,48 @@ def _recover_one(
                 publication_id,
             )
         if state == "applied":
-            require_applied_admitted_claim_publication(
-                intent,
-                consumption,
-                transaction_root=manifest_path.parent.parent,
-                receipt_root=receipt_directory,
-                _already_locked=True,
-            )
+            try:
+                require_applied_admitted_claim_publication(
+                    intent,
+                    consumption,
+                    transaction_root=manifest_path.parent.parent,
+                    receipt_root=receipt_directory,
+                    _already_locked=True,
+                )
+            except ClaimPublicationError as exc:
+                if exc.reason_code == "claim_publication_postimage_drift":
+                    successor = _resolve_applied_successor(
+                        intent=intent,
+                        consumption=consumption,
+                        projections=projections,
+                        publication_id=publication_id,
+                        manifest_path=manifest_path,
+                        receipt_path=receipt_path,
+                        receipt_root=receipt_directory,
+                    )
+                    if successor is not None:
+                        return ClaimPublicationRecoveryResult(
+                            publication_id,
+                            "superseded",
+                            "claim_publication_superseded_by_later_applied",
+                            successor=successor,
+                        )
+                release = _resolve_governed_applied_release(
+                    intent=intent,
+                    consumption=consumption,
+                    projections=projections,
+                    publication_id=publication_id,
+                    manifest_path=manifest_path,
+                    receipt_path=receipt_path,
+                )
+                if release is None:
+                    raise
+                return ClaimPublicationRecoveryResult(
+                    publication_id,
+                    "released",
+                    "claim_publication_released_by_governed_archive",
+                    release=release,
+                )
             return ClaimPublicationRecoveryResult(publication_id, "applied", None)
         if state == "aborted":
             if receipt_path.exists() or receipt_path.is_symlink():
@@ -7644,6 +7961,8 @@ __all__ = [
     "ClaimPublicationInspection",
     "ClaimPublicationReceipt",
     "ClaimPublicationRecoveryResult",
+    "ClaimPublicationRelease",
+    "ClaimPublicationSuccessor",
     "ClaimResidueArchiveHold",
     "ClaimResidueRelease",
     "admitted_claim_publication_id",
