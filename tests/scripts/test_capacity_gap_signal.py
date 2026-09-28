@@ -192,6 +192,20 @@ def test_mimo_manifest_minus_ledger_done_is_queued_work(tmp_path: Path) -> None:
     assert gap._appliance_demand(tmp_path) == 2
 
 
+def test_mimo_verified_remote_completion_overrides_blank_template(tmp_path: Path) -> None:
+    kit = tmp_path / "mimo-talus/kit"
+    kit.mkdir(parents=True)
+    (kit / "MANIFEST-v2.json").write_text('{"count":2000}')
+    (kit / "LEDGER-v2.md").write_text("| Task | Status |\n|---|---|\n")
+    (tmp_path / "mimo-talus/VERIFY-v2.md").write_text(
+        "Talus readback: `LEDGER-v2.md` has exactly 2,000 unique task rows, "
+        "no gaps, all marked `DONE`.\n"
+    )
+    assert gap._appliance_demand(tmp_path) == 0
+    (kit / "MANIFEST-v2.json").write_text('{"count":2001}')
+    assert gap._appliance_demand(tmp_path) == 2001
+
+
 def test_catalogue_importers_require_exact_zero_price_and_featherless_data() -> None:
     catalogues = {
         "https://openrouter.ai/api/v1/models": {
@@ -215,6 +229,47 @@ def test_fugu_wall_importer_uses_live_pane_reset_and_expires() -> None:
     assert (
         gap.fugu_wall({"hapax-fugu-ci": pane}, datetime(2026, 10, 5, 0, 1, tzinfo=UTC))[0]
         == "unknown"
+    )
+
+
+def test_provider_panes_reads_past_kimi_input_box(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(argv, _timeout=5):
+        calls.append(argv)
+        if argv[1] == "ls":
+            return "hapax-fugu-ci\nhapax-kimi-kimi-2\nhapax-glmcp-ci\nother\n"
+        return "pane"
+
+    monkeypatch.setattr(gap, "run", fake_run)
+    assert set(gap.provider_panes()) == {"hapax-fugu-ci", "hapax-kimi-kimi-2", "hapax-glmcp-ci"}
+    assert all(int(call[-1]) <= -60 for call in calls[1:])
+
+
+def test_kimi_and_generic_wall_hold_assigned_rows() -> None:
+    kimi = (
+        "Error: [provider.auth_error] 403 You've reached your weekly (7-day) usage\n"
+        "limit. Your quota will reset when the current 7-day window ends.\n"
+        + "\n".join(f"old output {i}" for i in range(70))
+        + "\n› Input"
+    )
+    panes = {
+        "hapax-kimi-kimi-2": kimi,
+        "hapax-glmcp-ci": "Error: provider quota exhausted; requests blocked\n› Input",
+        "hapax-grok-ci": "403 forbidden: credential invalid",
+    }
+    walls = gap.provider_walls(panes, NOW)
+    assert walls["kimi"][0] == "walled"
+    assert walls["glmcp"][0] == "walled"
+    assert "grok" not in walls
+    rows = [
+        {"task_id": f"kimi-{i}", "status": "claimed", "assigned_to": "kimi-dev"} for i in range(7)
+    ]
+    demand = gap.waiting_demand(
+        rows, {family for family, (state, _) in walls.items() if state == "walled"}
+    )
+    assert "WALLED_WITH_DEMAND:kimi:rows=7" in gap.judge_gaps(
+        {family: state for family, (state, _) in walls.items()}, demand, set()
     )
 
 
