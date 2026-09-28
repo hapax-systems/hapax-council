@@ -1,8 +1,4 @@
-"""Read-only capacity discovery and gap judgement; one state file and lanebus mail.
-
-V1 consumes the installed capacity observer and live, zero-spend probes. It does not
-claim that a free GPU is an idle service: only a request counter window does that.
-"""
+"""Discover capacity, judge gaps, and write state and seat mail."""
 
 from __future__ import annotations
 
@@ -46,7 +42,7 @@ def stamp(now: datetime) -> str:
 
 
 def load_observations(path: Path, now: datetime) -> list[dict[str, Any]]:
-    """Read the recent tail; malformed lines cannot turn stale input into healthy input."""
+    """Read recent valid observations."""
     if not path.is_file():
         return []
     rows = []
@@ -75,7 +71,7 @@ class Inventory:
 
 
 def inventory_repo(root: Path) -> Inventory:
-    """Scan the whole source tree for unit/compose endpoint declarations each run."""
+    """Find unit and compose endpoints."""
     inventory = Inventory()
     for directory, subdirs, files in os.walk(root):
         subdirs[:] = [
@@ -135,7 +131,7 @@ def tailnet_devices() -> tuple[set[str], set[str]]:
 
 
 def host_runtime(host: str) -> str:
-    """Inspect units, containers and processes; no mutation and no model invocation."""
+    """Read service processes and GPU memory."""
     if not HOST_RE.fullmatch(host):
         return ""
     command = (
@@ -149,7 +145,7 @@ def host_runtime(host: str) -> str:
 
 
 def runtime_membership(runtime: dict[str, str], answering: set[str]) -> dict[str, set[str]]:
-    """Join hosts on a process/model signature; never infer a member is its own API."""
+    """Join TP workers to API endpoints."""
     signatures: dict[str, set[str]] = defaultdict(set)
     for host, output in runtime.items():
         for model in MODEL_RE.findall(output):
@@ -199,7 +195,7 @@ def classify_local(
     endpoints: dict[str, dict[str, Any]],
     now: datetime,
 ) -> dict[str, str]:
-    """Request deltas decide idleness; GPU samples only describe resource headroom."""
+    """Use request deltas to classify idle."""
     del observations, members
     states = {}
     for key, endpoint in endpoints.items():
@@ -229,7 +225,7 @@ def unserved_metal(
     members: dict[str, set[str]],
     now: datetime,
 ) -> set[str]:
-    """Two fresh observations and no serving process identify an unserved GPU host."""
+    """Require two samples and no serving process."""
     if len(observations) < 2:
         return set()
     first, last = observations[0], observations[-1]
