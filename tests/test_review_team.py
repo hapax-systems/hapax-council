@@ -3976,16 +3976,15 @@ class TestGoGateMissingParameter:
     not accept a named parameter (the "unexpected keyword argument" class). Refuted ONLY on an
     unambiguous AST refutation at head; every other shape keeps the critical STANDING.
 
-    Replay of the stacking phantom (row review-go-gate-refutes-missing-parameter-claims-20260928):
-    #4893 at a269a4c6c, glm-1's critical that the renamed validator's signature "gains no"
-    parameter, where the def sits outside the diff and the call at the cited line binds."""
+    Replay: #4893 at `a269a4c6c`, glm-1's critical, VERBATIM from that head's review dossier. The
+    def sits outside the diff; the call at the cited line binds."""
 
     def _py(self, root: Path, rel: str, src: str) -> None:
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(src, encoding="utf-8")
 
-    def _lit(self, title: str, file: str = "scripts/review_team.py", line: int = 2786) -> dict:
+    def _lit(self, title: str, file: str = "scripts/review_team.py", line: int = 2794) -> dict:
         return {
             "severity": "critical",
             "lens": "exit-predicate-adequacy",
@@ -4005,132 +4004,177 @@ class TestGoGateMissingParameter:
         "    return []\n"
     )
 
-    def test_4893_replay_missing_parameter_claim_is_refuted(self, tmp_path: Path) -> None:
-        rt = _load_review_team_module()
-        self._py(tmp_path, "scripts/review_team.py", self._DEF)
-        f = self._lit(
-            "`_dossier_validity_blockers` signature gains no `capacity_evidence_measurer`, "
-            "TypeError at the call",
-        )
-        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+    # Verbatim from review-plan-remote-diff-20260928.review-dossier.yaml (reviewer glm-1, critical,
+    # head a269a4c6c). Not paraphrased: the next forced #4893 round presents exactly this text.
+    _GLM_TITLE = "Dossier validation raises TypeError instead of returning blockers"
+    _GLM_DETAIL = (
+        "Confirmed on current head a269a4c6c. review_dossier_validity_blockers passes\n"
+        "capacity_evidence_measurer=capacity_evidence_measurer to _dossier_validity_blockers\n"
+        "(line 2794), and review_team_verdict_blockers forwards the same keyword, but the\n"
+        "diff's only hunk touching _dossier_validity_blockers inserts the two helpers\n"
+        'above it; its signature (diff line 0379, "def _dossier_validity_blockers(dossier:\n'
+        'Mapping[str, Any], *") gains no capacity_evidence_measurer parameter. Any dossier\n'
+        "reaching this call raises TypeError: unexpected keyword argument, crashing the\n"
+        "admission/validity gate (fail-open-by-crash, not fail-closed). Add the parameter\n"
+        "and implement the capacity check inside the inner function, then exercise the\n"
+        "public gate path end to end.\n"
+    )
 
-    def test_refutation_records_the_def_line_and_args(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        """Exit-predicate (5): the refutation records the def line and the args list in the dossier,
-        through the same classifier and recording path the existing go-gate uses."""
+    def _glm_finding(self, tmp_path: Path) -> tuple[dict, Path]:
+        self._py(tmp_path, "scripts/review_team.py", self._DEF)
+        finding = self._lit(self._GLM_TITLE)
+        finding["detail"] = self._GLM_DETAIL
+        return finding, tmp_path
+
+    def test_4893_verbatim_glm_critical_is_refuted(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        finding, root = self._glm_finding(tmp_path)
+
+        assert rt._is_missing_parameter_claim(finding) is True
+        assert rt.verify_literal_defect_critical(finding, root) is False
+
+    def test_refutation_records_the_def_line_and_args(self, tmp_path: Path, monkeypatch) -> None:
+        """Exit-predicate (5): the def line and the args list are recorded in the dossier, through the
+        same classifier and recording path the existing go-gate uses."""
         rt = _load_review_team_module()
         monkeypatch.setattr(rt, "_repo_head_matches", lambda *a, **k: True)
-        self._py(tmp_path, "scripts/review_team.py", self._DEF)
-        critical = self._lit("`_dossier_validity_blockers` gains no `capacity_evidence_measurer`")
+        finding, root = self._glm_finding(tmp_path)
         reviews = [
             _review("gemini-1", "gemini", "accept"),
-            _review("glm-1", "glm", "block", findings=[critical]),
+            _review("glm-1", "glm", "block", findings=[finding]),
             _review("codex-1", "codex", "accept"),
         ]
 
-        blocking, phantoms = rt._blocking_criticals(reviews, tmp_path, head_sha="a" * 40)
+        blocking, phantoms = rt._blocking_criticals(reviews, root, head_sha="a" * 40)
         assert blocking == []
         assert len(phantoms) == 1
         evidence = phantoms[0][1]["go_gate_evidence"]
         assert "def _dossier_validity_blockers at line 1" in evidence
-        assert "capacity_evidence_measurer" in evidence and "floor_release_out" in evidence
+        assert "capacity_evidence_measurer" in evidence
+        assert "floor_release_out" in evidence
+        assert "**kwargs no" in evidence
 
         recorded = rt._reviews_with_phantom_resolutions(reviews, phantoms)
         glm = next(r for r in recorded if r["id"] == "glm-1")
-        detail = glm["findings"][0]["resolution_detail"]
         assert glm["findings"][0]["resolved"] is True
-        assert "line 1" in detail and "capacity_evidence_measurer" in detail
+        assert "line 1" in glm["findings"][0]["resolution_detail"]
 
-        dossier = _synth(rt, reviews, repo_root=tmp_path)
+        dossier = _synth(rt, reviews, repo_root=root)
         escalations = [
             e for e in dossier["escalations"] if e["kind"] == "invalidated-phantom-critical"
         ]
         assert len(escalations) == 1
         assert "def _dossier_validity_blockers at line 1" in escalations[0]["detail"]
 
-    def test_genuinely_absent_parameter_stands(self, tmp_path: Path) -> None:
+    def test_semantic_claims_are_never_refuted(self, tmp_path: Path) -> None:
+        """codex-1's two fixtures, verbatim. "has no <semantic thing> for/on <param>" names a
+        parameter but does NOT claim it is absent: the first is about validation, the second about a
+        bounds check on a def that takes **kwargs. The pre-fix matcher refuted both."""
         rt = _load_review_team_module()
-        self._py(tmp_path, "scripts/review_team.py", "def f(a, *, b=None):\n    return a\n")
-        f = self._lit("`f` gains no `c`, TypeError at the call")
-        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+        self._py(
+            tmp_path,
+            "scripts/review_team.py",
+            "def f(value, *, other=None):\n    return value\n"
+            "\n\n"
+            "def g(**kwargs):\n    return kwargs\n",
+        )
+        validation = self._lit("`f` has no validation for `value`")
+        bounds = self._lit("`g` has no bounds check on `size`")
+        for finding in (validation, bounds):
+            assert rt._is_missing_parameter_claim(finding) is False
+            assert rt.verify_literal_defect_critical(finding, tmp_path) is True
+
+    def test_wrong_parameter_stands(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        self._py(
+            tmp_path, "scripts/review_team.py", "def f(value, *, other=None):\n    return value\n"
+        )
+        finding = self._lit("`f` has no `missing_one` parameter")
+        assert rt.verify_literal_defect_critical(finding, tmp_path) is True
+
+    def test_negated_claim_stands(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        finding, root = self._glm_finding(tmp_path)
+        # In class when read on its own ("gains no `b` parameter"), so the negation guard is what
+        # keeps it standing — a fixture that is out of class either way would pin nothing.
+        negated = self._lit(
+            "`_dossier_validity_blockers` gains no `capacity_evidence_measurer` parameter — "
+            "this is not a missing parameter claim; the ordering is wrong"
+        )
+        assert rt.verify_literal_defect_critical(negated, root) is True
 
     def test_two_defs_of_the_same_name_stand(self, tmp_path: Path) -> None:
-        """The FIRST def declares the parameter, so a uniqueness-blind verifier would refute it."""
+        """The FIRST def declares the parameter, so a uniqueness-blind verifier would refute."""
         rt = _load_review_team_module()
         self._py(
             tmp_path,
             "scripts/review_team.py",
             "def f(a, b=None):\n    return a\n\n\ndef f(a):\n    return a\n",
         )
-        f = self._lit("`f` gains no `b`, TypeError")
-        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+        finding = self._lit("`f` gains no `b` parameter")
+        assert rt.verify_literal_defect_critical(finding, tmp_path) is True
 
-    def test_semantic_claim_mentioning_a_parameter_stands(self, tmp_path: Path) -> None:
-        """A semantic claim that names two identifiers and a TypeError still STANDS: the class is
-        the ASSERTION that the parameter is missing, never the word TypeError. The head here
-        declares the parameter, so a gate that matched on TypeError alone would refute it."""
+    def test_ambiguous_subject_stands(self, tmp_path: Path) -> None:
+        """Two def-resolving names before the marker: the subject is not unambiguous, so it stands."""
         rt = _load_review_team_module()
-        self._py(tmp_path, "scripts/review_team.py", self._DEF)
-        f = self._lit(
-            "`_dossier_validity_blockers` receives the wrong value for `capacity_evidence_measurer`, "
-            "so the call raises TypeError"
+        self._py(
+            tmp_path,
+            "scripts/review_team.py",
+            self._DEF + "\n\ndef review_dossier_validity_blockers(\n"
+            "    a, capacity_evidence_measurer=None\n"
+            "):\n    return []\n",
         )
-        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+        finding = self._lit(
+            "`review_dossier_validity_blockers` and `_dossier_validity_blockers` gains no "
+            "`capacity_evidence_measurer` parameter"
+        )
+        assert rt.verify_literal_defect_critical(finding, tmp_path) is True
 
-    def test_negated_claim_stands(self, tmp_path: Path) -> None:
-        """A negated claim naming both identifiers STANDS: the declaration at head does not make
-        "this is NOT a missing keyword argument" false, so the negation guard is load-bearing."""
+    def test_class_qualified_method_is_refuted(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
-        self._py(tmp_path, "scripts/review_team.py", self._DEF)
-        f = self._lit(
-            "`_dossier_validity_blockers` is not a missing keyword argument for "
-            "`capacity_evidence_measurer`; the ordering is wrong"
+        self._py(
+            tmp_path,
+            "scripts/review_team.py",
+            "class Widget:\n    def render(self, *, throttle: int = 0) -> None:\n        return None\n",
         )
-        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+        finding = self._lit("`Widget.render` gains no `throttle` parameter")
+        assert rt.verify_literal_defect_critical(finding, tmp_path) is False
 
-    def test_ambiguous_names_stand(self, tmp_path: Path) -> None:
-        """Three backticked identifiers, or none: the extractor cannot settle it, so it stands.
-
-        The three-name fixture also carries a resolvable call form, so a verifier that ignored the
-        exactly-two rule would settle the pair and refute a claim it has no licence to judge."""
+    def test_class_qualified_method_without_such_class_stands(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
-        self._py(tmp_path, "scripts/review_team.py", self._DEF)
-        three = self._lit(
-            "`_dossier_validity_blockers` gains no `capacity_evidence_measurer` in `scripts`; "
-            "the call `_dossier_validity_blockers(...)` binds at the cited line"
+        self._py(
+            tmp_path,
+            "scripts/review_team.py",
+            "class Other:\n    def render(self, *, throttle: int = 0) -> None:\n        return None\n",
         )
-        assert rt.verify_literal_defect_critical(three, tmp_path) is True
-        none = self._lit("the signature gains no parameter, TypeError at the call")
-        assert rt.verify_literal_defect_critical(none, tmp_path) is True
+        finding = self._lit("`Widget.render` gains no `throttle` parameter")
+        assert rt.verify_literal_defect_critical(finding, tmp_path) is True
 
     def test_unparseable_head_keeps_the_critical(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "scripts/review_team.py", "def f(:\n")
-        f = self._lit("`f` gains no `b`, TypeError")
-        assert rt.verify_literal_defect_critical(f, tmp_path) is True
+        finding = self._lit("`f` gains no `b` parameter")
+        assert rt.verify_literal_defect_critical(finding, tmp_path) is True
 
-    def test_kwargs_def_takes_any_keyword(self, tmp_path: Path) -> None:
+    def test_kwargs_def_refutes_only_the_explicit_class(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         self._py(tmp_path, "scripts/review_team.py", "def f(a, **kwargs):\n    return a\n")
-        f = self._lit("`f` gains no `b`, unexpected keyword argument")
-        assert rt.verify_literal_defect_critical(f, tmp_path) is False
+        explicit = self._lit("`f` gains no `b` parameter")
+        assert rt.verify_literal_defect_critical(explicit, tmp_path) is False
+        semantic = self._lit("`f` has no validation for `b`")
+        assert rt.verify_literal_defect_critical(semantic, tmp_path) is True
 
     def test_go_gate_killswitch_keeps_every_critical(self, tmp_path: Path, monkeypatch) -> None:
         """Exit-predicate (3): HAPAX_REVIEW_GO_GATE_OFF disables this class with the rest."""
         rt = _load_review_team_module()
-        self._py(tmp_path, "scripts/review_team.py", self._DEF)
-        critical = self._lit("`_dossier_validity_blockers` gains no `capacity_evidence_measurer`")
-        reviews = [{"id": "g-1", "family": "glm", "verdict": "block", "findings": [critical]}]
+        finding, root = self._glm_finding(tmp_path)
+        reviews = [{"id": "glm-1", "family": "glm", "verdict": "block", "findings": [finding]}]
         monkeypatch.delenv("HAPAX_REVIEW_GO_GATE_OFF", raising=False)
-        # Control arm: with the killswitch off the same claim is refuted at the verifier.
-        assert rt.verify_literal_defect_critical(critical, tmp_path) is False
-        # With the killswitch on, the critical blocks, exactly as before the go-gate. The
-        # killswitch returns before the checkout is bound, so the head sha is not what decides this.
+        assert rt.verify_literal_defect_critical(finding, root) is False
+        # With the killswitch on, the critical blocks, exactly as before the go-gate. The killswitch
+        # returns before the checkout is bound, so the head sha is not what decides this.
         monkeypatch.setenv("HAPAX_REVIEW_GO_GATE_OFF", "1")
-        blocking_off, phantoms_off = rt._blocking_criticals(
-            reviews, tmp_path, head_sha="deadbeef" * 5
-        )
+        blocking_off, phantoms_off = rt._blocking_criticals(reviews, root, head_sha="deadbeef" * 5)
         assert len(blocking_off) == 1
         assert phantoms_off == []
 
