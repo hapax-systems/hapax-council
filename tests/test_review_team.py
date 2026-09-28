@@ -1352,6 +1352,66 @@ class TestSizeReplacementNoteValidity:
             == ()
         )
 
+    def test_live_capacity_evidence_binds_diff_head_and_note(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        note = tmp_path / "task-x.md"
+        note.write_text("task context", encoding="utf-8")
+        head = "a" * 40
+        view_heads = [head, head]
+        calls = 0
+
+        def gh(cmd: list[str], **_kwargs) -> SimpleNamespace:
+            nonlocal calls
+            calls += 1
+            body = "diff text" if "diff" in cmd else json.dumps({"headRefOid": view_heads.pop(0)})
+            return SimpleNamespace(returncode=0, stdout=body)
+
+        monkeypatch.setattr(rt.subprocess, "run", gh)
+        constituted_at = datetime.now(UTC).isoformat()
+        evidence = rt._live_capacity_evidence(
+            99,
+            head,
+            ("gemini-1",),
+            note_path=note,
+            frontmatter={"pr_repo": "hapax-systems/hapax-council"},
+            registry=rt.load_lens_registry(),
+            constituted_at=constituted_at,
+        )
+        assert calls == 3
+        assert evidence is not None and evidence[0] == len("diff text")
+        assert evidence[1]["gemini-1"] > evidence[0]
+        view_heads[:] = [head, "b" * 40]
+        assert (
+            rt._live_capacity_evidence(
+                99,
+                "a" * 40,
+                ("gemini-1",),
+                note_path=note,
+                frontmatter={"pr_repo": "hapax-systems/hapax-council"},
+                registry=rt.load_lens_registry(),
+                constituted_at=constituted_at,
+            )
+            is None
+        )
+        note.write_text("changed task context", encoding="utf-8")
+        changed_at = datetime.fromisoformat(constituted_at).timestamp() + 1
+        os.utime(note, (changed_at, changed_at))
+        view_heads[:] = [head, head]
+        assert (
+            rt._live_capacity_evidence(
+                99,
+                head,
+                ("gemini-1",),
+                note_path=note,
+                frontmatter={"pr_repo": "hapax-systems/hapax-council"},
+                registry=rt.load_lens_registry(),
+                constituted_at=constituted_at,
+            )
+            is None
+        )
+
     @pytest.mark.parametrize(
         ("case", "blocker"),
         [
