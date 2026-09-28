@@ -5584,3 +5584,13 @@ from shared.entitlement_census import (
 )
 
 _ = (_census_attach_history, _census_render_view)
+
+# The extensionless E1 CLI loads and joins the tagged capability inventory before host I/O.
+from shared.entitlement_census import (  # noqa: E402
+    load_inventory_dispositions as _census_load_inventory_dispositions,
+)
+from shared.entitlement_census import (
+    validate_registry_inventory_join as _census_validate_registry_inventory_join,
+)
+
+_ = (_census_load_inventory_dispositions, _census_validate_registry_inventory_join)

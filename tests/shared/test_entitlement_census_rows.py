@@ -48,6 +48,7 @@ def _row(config, holdings, prior=None, readbacks=None):
         readbacks=readbacks or {},
         cache=None,
         registry={},
+        inventory_dispositions={},
         ledger=None,
         prior=prior,
     )
@@ -118,6 +119,7 @@ def test_spent_budget_makes_serving_row_unobserved_without_probe():
         now=NOW,
         http_get=lambda *_: (_ for _ in ()).throw(AssertionError("probe forbidden after deadline")),
         registry={},
+        inventory_dispositions={},
         prior=None,
         remaining=0,
     )

@@ -519,12 +519,16 @@ def test_group_sweep_premise_pinned_to_the_real_producer_registry() -> None:
 
     encountered-machinery-audit (2026-09-25) re-verified: its only children are synchronous
     `git -C <vault> log/show/rev-parse` calls via subprocess.run with a timeout, with no
-    start_new_session and no daemonizing, so they stay in the harness's process group."""
+    start_new_session and no daemonizing, so they stay in the harness's process group.
+
+    entitlement-census (2026-09-28): its local and remote holdings, secret resolution,
+    scout and intake commands use synchronous subprocess.run with no detached process group."""
     producers = det.load_registry(det.DEFAULT_REGISTRY)
     assert sorted(p["id"] for p in producers) == [
         "agy-review-quota",
         "claude-account-live",
         "encountered-machinery-audit",
+        "entitlement-census",
     ]
 
 

@@ -39,6 +39,7 @@ def _run():
         now=NOW,
         holdings=[HostHoldings(host_id="appendix", reachable=True, observed_at=NOW)],
         registry={},
+        inventory_dispositions={},
         ledger=None,
         prior_view=None,
         resolve_secret=lambda _: None,
