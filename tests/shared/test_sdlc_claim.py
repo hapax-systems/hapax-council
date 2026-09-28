@@ -5242,6 +5242,126 @@ def test_release_refuses_a_held_publication_with_a_live_marker(tmp_path: Path) -
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
 
 
+def _held_publication_with_markers(
+    tmp_path: Path, *, status: str
+) -> tuple[ClaimFixture, Path, tuple[object, ...]]:
+    """Fail the postimage check after both activation markers were projected."""
+
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    original = sdlc_claim._require_exact_task_postimage
+    checks = 0
+
+    def fail_after_markers(intent: object, *, deadline_at: float) -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            raise ClaimPublicationError("claim_publication_task_projection_invalid", "retry")
+        original(intent, deadline_at=deadline_at)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sdlc_claim, "_require_exact_task_postimage", fail_after_markers)
+        with pytest.raises(ClaimPublicationError):
+            sdlc_claim._apply_admitted_claim_publication_transaction(
+                fixture.intent,
+                active.consumption,
+                transaction_root=fixture.transactions,
+                receipt_root=tmp_path / "receipts",
+                lock_root=fixture.locks,
+                now=active.checked_at,
+            )
+    assert checks == 2
+    journal = fixture.transactions / admitted_claim_publication_id(
+        fixture.intent, active.consumption
+    )
+    _intent, projections, _id, state, _consumption = sdlc_claim._load_admitted_manifest(
+        journal / "manifest.json"
+    )
+    assert state == "recovery_required"
+    markers = [item for item in projections[:7] if item.path.name.startswith("cc-active-task-")]
+    assert len(markers) == 2 and all(item.path.read_bytes() == item.after for item in markers)
+    note = fixture.intent.note_path
+    note.write_bytes(note.read_bytes().replace(b"status: claimed", f"status: {status}".encode()))
+    return fixture, journal, projections
+
+
+@pytest.mark.parametrize("route", ["direct", "next_claim"])
+def test_pipeline_held_row_releases_a_held_publication_with_matching_markers(
+    tmp_path: Path, route: str
+) -> None:
+    fixture, journal, projections = _held_publication_with_markers(tmp_path, status="pr_open")
+    manifest_bytes = (journal / "manifest.json").read_bytes()
+    note_before = fixture.intent.note_path.read_bytes()
+    receipt_before = _tree_snapshot(tmp_path / "receipts")
+    admission_before = tuple((item.path, item.path.read_bytes()) for item in projections[7:])
+    residue = _residue_projections(projections)
+    markers = [item for item in projections[:7] if item.path.name.startswith("cc-active-task-")]
+
+    if route == "direct":
+        released = _release_held(fixture)
+    else:
+        (released,) = sdlc_claim.release_pipeline_held_residue(
+            vault_root=fixture.vault,
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            role="cx-red",
+            current_task_id="next-task",
+            observed_at=_RELEASE_STAMP,
+        )
+
+    assert released.shape == "pipeline_held"
+    assert not journal.exists()
+    assert released.quarantined_journal is not None
+    assert (released.quarantined_journal / "manifest.json").read_bytes() == manifest_bytes
+    assert fixture.intent.note_path.read_bytes() == note_before
+    assert _tree_snapshot(tmp_path / "receipts") == receipt_before
+    assert tuple((path, path.read_bytes()) for path, _ in admission_before) == admission_before
+    for item in (*residue, *markers):
+        assert not item.path.exists()
+        assert (released.archive_dir / item.path.name).read_bytes() == item.after
+    assert (released.archive_dir / "README.md").is_file()
+    assert (
+        recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            task_id="task-alpha",
+        )
+        == ()
+    )
+
+
+def test_pipeline_held_row_refuses_a_marker_not_bound_to_the_held_journal(
+    tmp_path: Path,
+) -> None:
+    fixture, _journal, projections = _held_publication_with_markers(tmp_path, status="pr_open")
+    marker = next(item for item in projections[:7] if item.path.name.startswith("cc-active-task-"))
+    marker.path.write_bytes(b"another-task\n")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_live_marker" in raised.value.message
+    assert "inspect the marker" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
+def test_non_pipeline_held_row_keeps_its_matching_markers(
+    tmp_path: Path,
+) -> None:
+    fixture, _journal, _projections = _held_publication_with_markers(tmp_path, status="in_progress")
+    before = (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions))
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as raised:
+        _release_held(fixture)
+
+    assert "claim_residue_live_marker" in raised.value.message
+    assert "finish it and run cc-close" in raised.value.message
+    assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
+
+
 def test_release_refuses_a_held_publication_whose_residue_differs(tmp_path: Path) -> None:
     fixture, _journal, projections = _held_publication(tmp_path)
     epoch = next(item for item in projections[:7] if item.path.name.startswith("cc-claim-epoch-"))

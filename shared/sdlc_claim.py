@@ -7450,6 +7450,9 @@ def _release_held_publication(
             "recovery can finish the publication",
             f"run `cc-claim --recover-claim-publications {task_id}`",
         )
+    pipeline_held = note.path.parent.name == "active" and _pipeline_held_for(
+        note.path, journal.intent.role
+    )
     residue = _journal_residue(journal, cache_dir)
     present: list[FileProjection] = []
     staged: dict[Path, Path] = {}
@@ -7457,10 +7460,18 @@ def _release_held_publication(
         state = _residue_state(projection)
         if _is_claim_activation_projection(projection):
             if state != "absent":
+                if state == "after" and pipeline_held:
+                    present.append(projection)
+                    continue
                 raise _release_hold(
                     "claim_residue_live_marker",
-                    f"{projection.path} exists, so this publication reached its markers",
-                    "treat the claim as live: finish it and run cc-close",
+                    f"{projection.path} differs from the marker of {journal.publication_id}"
+                    if state == "other"
+                    else f"{projection.path} exists, so this publication reached its markers",
+                    f"inspect the marker at {projection.path}; preserve its bytes and reconcile "
+                    "ownership before retrying release"
+                    if state == "other"
+                    else "treat the claim as live: finish it and run cc-close",
                 )
         elif state == "other":
             raise _release_hold(
@@ -7507,18 +7518,21 @@ def _release_held_publication(
             f"{quarantined} already exists",
             "preserve both journals and inspect them",
         )
+    shape: Literal["held_publication", "pipeline_held"] = (
+        "pipeline_held"
+        if pipeline_held and any(_is_claim_activation_projection(item) for item in present)
+        else "held_publication"
+    )
     archive_dir, archived = _archive_residue(
         present,
         journal=journal,
         vault_root=vault_root,
-        shape="held_publication",
+        shape=shape,
         observed_at=observed_at,
         staged=staged,
     )
     os.rename(journal_dir, quarantined)
-    return ClaimResidueRelease(
-        "held_publication", journal.publication_id, archive_dir, archived, quarantined
-    )
+    return ClaimResidueRelease(shape, journal.publication_id, archive_dir, archived, quarantined)
 
 
 def _release_applied_residue(
@@ -7654,6 +7668,9 @@ def release_claim_residue(
     - ``held_publication``: a ``recovery_required`` journal whose note has moved past both of
       its images. Its markers are absent and its admission evidence is intact. The residue is
       archived and the journal is quarantined in place as ``<id>.quarantined-<observed_at>``.
+    - ``pipeline_held``: matching markers on a row assigned to this role and held by the
+      review/merge pipeline. A ``recovery_required`` journal is also quarantined, preserving
+      its bytes alongside the archived residue.
     - ``lapsed_lease``: markers absent; the residue matches an applied journal.
     - ``closed_task``: markers present, but the task is terminal and absent from ``active/``
       (it was closed from another process).
