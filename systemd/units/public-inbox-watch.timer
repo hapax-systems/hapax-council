@@ -1,0 +1,12 @@
+[Unit]
+Description=Check forwarded public inbox mail every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=5min
+AccuracySec=1s
+Persistent=true
+Unit=public-inbox-watch.service
+
+[Install]
+WantedBy=timers.target

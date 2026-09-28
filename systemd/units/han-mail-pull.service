@@ -1,5 +1,6 @@
 [Unit]
 Description=HAN inbound mail to private foreign-data quarantine
+ConditionHost=hapax-appendix
 After=network-online.target
 
 [Service]

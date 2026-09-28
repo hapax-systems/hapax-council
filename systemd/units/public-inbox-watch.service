@@ -1,0 +1,18 @@
+[Unit]
+Description=Alert on Gmail-forwarded public inbox mail using headers only
+ConditionHost=hapax-podium
+After=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=NTFY_BASE_URL=http://hapax-appendix.tailf9491.ts.net:8090
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m scripts.public_inbox_monitor watch
+UMask=0077
+NoNewPrivileges=true
+TimeoutStartSec=240
+MemoryMax=256M
