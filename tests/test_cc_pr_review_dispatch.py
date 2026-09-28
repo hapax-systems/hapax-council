@@ -817,8 +817,15 @@ class TestApply:
         measured = dispatch.review_team.seat_diff_capacity("gemini-1", registry)
         assert measured["limit_bytes"] == 39_974
         unmeasured = dispatch.review_team.seat_diff_capacity("new-family-1", registry)
-        assert unmeasured["limit_bytes"] == 80_000
+        assert unmeasured["limit_bytes"] == 39_974
         assert unmeasured["status"] == "unmeasured"
+        registry["diff_capacity"]["seats"]["glm-1"]["limit_bytes"] = 30_000
+        assert (
+            dispatch.review_team.seat_diff_capacity("new-family-1", registry)["limit_bytes"]
+            == 30_000
+        )
+        vibe = dispatch.review_team.seat_diff_capacity("vibe-1", registry)
+        assert (vibe["limit_bytes"], vibe["status"]) == (22_000, "measured-refusal")
 
     def test_bad_diff_capacity_returns_named_status(self, tmp_path: Path) -> None:
         registry = dispatch.review_team.load_lens_registry()
