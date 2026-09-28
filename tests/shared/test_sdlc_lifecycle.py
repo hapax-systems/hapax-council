@@ -12,6 +12,7 @@ the live vault showed status->stage is not a function; see
 from __future__ import annotations
 
 import ast
+import hashlib
 import tomllib
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -924,6 +925,25 @@ class TestAcceptanceReceiptEnforcement:
         self._receipt(tmp_path, "task-r", self.VALID_RECEIPT)
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ()
+
+    def test_review_team_receipt_stops_covering_replaced_dossier(self, tmp_path: Path) -> None:
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        dossier = tmp_path / "task-r.review-dossier.yaml"
+        original = b"review_team_verdict: quorum-accept\n"
+        dossier.write_bytes(original)
+        digest = hashlib.sha256(original).hexdigest()
+        self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace("acceptor: operator", "acceptor: review-team:codex,gemini")
+            + f"dossier_sha256: sha256:{digest}\n",
+        )
+        frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+        dossier.write_bytes(b"review_team_verdict: blocked\n")
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_dossier_sha256_mismatch",
+        )
 
     def test_receipt_missing_fields_block(self, tmp_path: Path) -> None:
         note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})

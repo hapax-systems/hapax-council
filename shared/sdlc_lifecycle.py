@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -346,6 +347,24 @@ def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]
     verdict = _frontmatter_non_null_scalar(loaded.get("verdict"))
     if verdict and verdict.lower() not in ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS:
         blockers.append(f"acceptance_receipt_verdict_not_accepted:{verdict.lower()}")
+    acceptor = _frontmatter_non_null_scalar(loaded.get("acceptor")) or ""
+    if acceptor.startswith("review-team:"):
+        recorded = _frontmatter_non_null_scalar(loaded.get("dossier_sha256"))
+        if recorded:
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", recorded) is None:
+                blockers.append("acceptance_receipt_dossier_sha256_malformed")
+            else:
+                task_id = receipt_path.name.removesuffix(ACCEPTANCE_RECEIPT_SUFFIX)
+                dossier_path = receipt_path.with_name(f"{task_id}.review-dossier.yaml")
+                try:
+                    actual = hashlib.sha256(dossier_path.read_bytes()).hexdigest()
+                except FileNotFoundError:
+                    blockers.append("acceptance_receipt_dossier_missing")
+                except OSError as exc:
+                    blockers.append(f"acceptance_receipt_dossier_unreadable:{type(exc).__name__}")
+                else:
+                    if actual != recorded.removeprefix("sha256:"):
+                        blockers.append("acceptance_receipt_dossier_sha256_mismatch")
     # A vault-only acceptance covers exactly the bytes its manifest records; with no merged
     # head behind it, the receipt stops counting the moment those bytes change.
     from shared.review_artifact_manifest import artifact_receipt_blockers

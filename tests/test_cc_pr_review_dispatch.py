@@ -14,9 +14,11 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import date
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
+from threading import Event
 from types import ModuleType
 from typing import Any
 
@@ -3503,6 +3505,60 @@ public_gate_authority:
         assert result["status"] == "dispatched"
         assert (note.parent / "task-a.acceptance.yaml").is_file()
 
+    def test_acceptance_receipt_binds_published_dossier_bytes(self, tmp_path: Path) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        assert result["status"] == "dispatched"
+        dossier_bytes = (note.parent / "task-a.review-dossier.yaml").read_bytes()
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        assert receipt["dossier_sha256"] == f"sha256:{sha256(dossier_bytes).hexdigest()}"
+
+    def test_receipt_withheld_if_published_dossier_is_another_round(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+        other_round = dict(result["dossier"], constituted_at="2026-06-11T21:01:00+00:00")
+        (note.parent / "task-a.review-dossier.yaml").write_text(
+            yaml.safe_dump(other_round, sort_keys=False), encoding="utf-8"
+        )
+        monkeypatch.setattr(
+            dispatch.review_team, "review_dossier_validity_blockers", lambda *a, **k: ()
+        )
+        frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
+        written = dispatch.write_acceptance_receipt_if_due(
+            frontmatter,
+            note,
+            "task-a",
+            result["dossier"],
+            pr_url="https://github.com/owner/repo/pull/42",
+            now_iso="2026-06-11T21:00:00+00:00",
+        )
+        assert written is None
+        assert not receipt_path.exists()
+
+    def test_atomic_yaml_replace_failure_keeps_original_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "task-a.review-dossier.yaml"
+        original = b"review_team_verdict: quorum-accept\n"
+        path.write_bytes(original)
+
+        def refuse_replace(source: str | Path, target: str | Path) -> None:
+            assert Path(source).parent == tmp_path
+            assert Path(target) == path
+            raise OSError("simulated atomic rename failure")
+
+        monkeypatch.setattr(dispatch.os, "replace", refuse_replace)
+        with pytest.raises(OSError, match="simulated atomic rename failure"):
+            dispatch.atomic_write_yaml(path, {"review_team_verdict": "blocked"})
+        assert path.read_bytes() == original
+        assert list(tmp_path.glob(".task-a.review-dossier.yaml.*.tmp")) == []
+
     def test_gate_rejected_dossier_does_not_write_acceptance_receipt(self, tmp_path: Path) -> None:
         reviewers = RecordingReviewers(replies={"glm": BLOCK_REPLY})
         result, _, _, note = _review(
@@ -3631,6 +3687,137 @@ public_gate_authority:
         receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
         assert receipt["head_sha"] == "c" * 40
         assert receipt["acceptor"].startswith("review-team:")
+
+    def test_forced_same_head_round_replaces_its_own_receipt(self, tmp_path: Path) -> None:
+        _, _, _, note = _review(tmp_path, task_kwargs={"quality_floor": "frontier_review_required"})
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        first_receipt = receipt_path.read_bytes()
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=True,
+            force=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:01:00+00:00",
+            route_blocked_families={},
+        )
+        assert result["status"] == "dispatched"
+        dossier_bytes = (note.parent / "task-a.review-dossier.yaml").read_bytes()
+        receipt = yaml.safe_load(receipt_path.read_text())
+        assert receipt["dossier_sha256"] == f"sha256:{sha256(dossier_bytes).hexdigest()}"
+        assert any(
+            path.read_bytes() == first_receipt
+            for path in note.parent.glob("task-a.acceptance.*.yaml")
+        )
+
+    def test_second_round_refuses_without_writing_while_first_is_running(
+        self, tmp_path: Path
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault, quality_floor="frontier_review_required")
+        entered = Event()
+        release = Event()
+
+        def slow_reviewer(seat: Any, family_cfg: dict, prompt: str) -> str:
+            entered.set()
+            assert release.wait(20)
+            return GOOD_REPLY
+
+        common = {
+            "repo": "owner/repo",
+            "repo_root": REPO_ROOT,
+            "vault_root": vault,
+            "apply": True,
+            "gh_runner": FakeGh(),
+            "wake_dir": tmp_path / "wake",
+            "send_runner": lambda cmd: None,
+            "route_blocked_families": {},
+        }
+        second_reviewers = RecordingReviewers()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first_future = pool.submit(
+                dispatch.review_pr, 42, reviewer_runner=slow_reviewer, **common
+            )
+            assert entered.wait(10)
+            before = {
+                path.name: path.read_bytes() for path in note.parent.iterdir() if path.is_file()
+            }
+            try:
+                second = dispatch.review_pr(42, reviewer_runner=second_reviewers, **common)
+                after = {
+                    path.name: path.read_bytes() for path in note.parent.iterdir() if path.is_file()
+                }
+            finally:
+                release.set()
+            first = first_future.result(timeout=30)
+        assert first["status"] == "dispatched"
+        assert second["status"] == "round_in_progress"
+        assert second_reviewers.invocations == []
+        assert after == before
+
+    def test_expired_dead_holder_takeover_records_predecessor(self, tmp_path: Path) -> None:
+        dossier_path = tmp_path / "task-a.review-dossier.yaml"
+        lock_path = dossier_path.with_name(f"{dossier_path.name}.lock")
+        prior = dispatch._review_round_holder()
+        prior["pid"] = 2**30
+        prior["lease_expires_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+        original = (json.dumps(prior, sort_keys=True) + "\n").encode()
+        lock_path.write_bytes(original)
+
+        with dispatch.review_round_lock(dossier_path) as refusal:
+            assert refusal is None
+            successor = json.loads(lock_path.read_text())
+            predecessor = successor["predecessor"]
+            assert predecessor["holder"] == prior
+            assert predecessor["dead_proof"] == "same_host_pid_absent"
+            assert predecessor["sha256"] == sha256(original).hexdigest()
+            assert Path(predecessor["archive"]).read_bytes() == original
+            assert successor["host"] == os.uname().nodename
+            assert successor["pid"] == os.getpid()
+            assert successor["role"]
+            assert datetime.fromisoformat(successor["lease_expires_at"]) > datetime.now(UTC)
+
+        assert not lock_path.exists()
+        assert not (tmp_path / f"{lock_path.name}.transition").exists()
+
+    def test_expired_remote_holder_cannot_be_taken_over_without_death_proof(
+        self, tmp_path: Path
+    ) -> None:
+        dossier_path = tmp_path / "task-a.review-dossier.yaml"
+        lock_path = dossier_path.with_name(f"{dossier_path.name}.lock")
+        prior = dispatch._review_round_holder()
+        prior["host"] = f"other-host-{prior['host']}"
+        prior["lease_expires_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+        original = (json.dumps(prior, sort_keys=True) + "\n").encode()
+        lock_path.write_bytes(original)
+
+        with dispatch.review_round_lock(dossier_path) as refusal:
+            assert refusal is not None
+            assert refusal["status"] == "round_lock_stale_unverified"
+            assert refusal["reason"] == "cross_host_liveness_unverified"
+
+        assert lock_path.read_bytes() == original
+        assert not list(tmp_path.glob("*.predecessor.*"))
+
+    def test_expired_live_holder_cannot_be_taken_over(self, tmp_path: Path) -> None:
+        dossier_path = tmp_path / "task-a.review-dossier.yaml"
+        lock_path = dossier_path.with_name(f"{dossier_path.name}.lock")
+        prior = dispatch._review_round_holder()
+        prior["lease_expires_at"] = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+        original = (json.dumps(prior, sort_keys=True) + "\n").encode()
+        lock_path.write_bytes(original)
+
+        with dispatch.review_round_lock(dossier_path) as refusal:
+            assert refusal is not None
+            assert refusal["status"] == "round_lock_stale_unverified"
+            assert refusal["reason"] == "same_host_holder_alive"
+
+        assert lock_path.read_bytes() == original
 
     def test_no_receipt_for_non_review_floor(self, tmp_path: Path) -> None:
         _, _, _, note = _review(tmp_path)  # frontier_required, not review floor
