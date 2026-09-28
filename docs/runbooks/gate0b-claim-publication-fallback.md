@@ -258,6 +258,8 @@ anything, and never touches the task note. It covers four shapes:
 | `lapsed_lease` (M168) | Epoch and dispatch sidecars with no `cc-active-task-*` marker; the next claim holds on `claim_cache_missing`. | Archives the sidecars. |
 | `closed_task` (M173) | Markers, epochs and dispatch naming a row that another process closed (it is terminal and absent from `active/`); the next claim holds on `claim_task_mismatch`. | Archives all six sidecars. |
 | `reassigned_task` | Markers naming an active row whose note no longer names this role (re-offered or reassigned). Every other role's claim or resume of it refuses on them. | Archives all six sidecars, run by the lane that owns them. |
+| `pipeline_held` (#4826) | Markers naming this role's row that the pipeline now holds (`pr_open` through `merged_awaiting_runtime_witness`). | Archived automatically by the next `cc-claim` of another row, which frees the slot; the row stays assigned to this role, its named resumer. |
+| `returned_claim` (#4832) | This role's own live, unstarted claim, returned with `cc-claim --return-claim` (below). | The note is returned to `offered` first; then all six sidecars are archived. |
 
 It refuses, with exit 8 and a named `claim_residue_*` reason, before the first mutation (except
 `live-differed`, below):
@@ -290,6 +292,71 @@ before the journal; inspect them before rerunning.
 **Emergency path.** The release has no override flag and no bypass. If it refuses and the operator
 decides the residue must go anyway, the Manual Stale-Lease Release below is the emergency path,
 run with operator approval and recorded in the row's lineage.
+
+### Return An Unstarted Claim
+
+A role that claimed a row and has not started it (no PR, no branch) returns it itself:
+
+```bash
+cc-claim --return-claim <task-id>
+```
+
+Under the role's publication lock and the note's projection lock, the note is read once and
+rewritten, by position, to `status: offered`, `assigned_to: unassigned` and `claimed_at: null`,
+with a session-log line. The rewritten note must read back that way before it is written. Then the
+six sidecars are archived as `returned_claim`. It refuses, with exit 8 and a `claim_return_*`
+reason, changing nothing:
+- `claim_return_started`: the row names a `pr` or a `branch`, or is not `claimed` or `in_progress`.
+  Finish it and run `cc-close`, or close it `withdrawn`.
+- `claim_return_not_holder`: the calling role has no claim on the row, or the row is assigned
+  elsewhere.
+- `claim_return_not_live`: no single live claim. A lapsed lease goes through
+  `--release-claim-residue`.
+- `claim_return_note_malformed`: the frontmatter does not parse, states a key twice, or does not
+  state `status`, `assigned_to` and `claimed_at` each exactly once and plainly. Repair it by hand,
+  then rerun.
+- `claim_return_archive_collision`: an archive name for this second is already taken. It is checked
+  before the note is written, so nothing changed; rerun after a second.
+- `claim_return_unfinished`, `claim_return_live_marker`, `claim_return_rewrite_unverified`: follow
+  the printed next action.
+
+The one exception to "changing nothing": `claim_return_archive_incomplete` means the note **was**
+returned to `offered` but the claim files could not be archived (an I/O failure). That is the same
+state a crash between the note write and the archive leaves, the `reassigned_task` shape, and
+`cc-claim --release-claim-residue <task-id>` releases it.
+
+Recheck after a return, or after the claim path released a `pipeline_held` row. The output decides
+the next step:
+
+```bash
+role="${HAPAX_AGENT_ROLE:?}"
+tasks=~/Documents/Personal/20-projects/hapax-cc-tasks
+# A return: expect `status: offered`, `assigned_to: unassigned`, `claimed_at: null`.
+# A pipeline_held release: expect the row's pipeline status, still assigned to the role.
+grep -E '^(status|assigned_to|claimed_at):' "$tasks/active/<task-id>.md"
+# Expect no marker of the role still naming the task.
+grep -lx '<task-id>' ~/.cache/hapax/cc-active-task-"${role}"* 2>/dev/null || echo "no marker names <task-id>"
+# Expect `shape: returned_claim` or `shape: pipeline_held` in the newest archive.
+grep -h '^shape:' "$tasks/_lineage/<task-id>"/claim-residue-release-*/README.md
+```
+
+### An Unreadable Held Row
+
+**Symptom.** `cc-claim <next>` refuses with
+`role '<role>' already has active task '<held>' (status: unreadable)`.
+
+**Why.** The held row's frontmatter does not parse, states a key twice (a quoted and a plain
+spelling are one key), or does not spell `status` plainly exactly once. A release decides only from
+frontmatter that can ground it, so the row's slot stays held, and **nothing is released**: not by
+the claim path, not by `--release-claim-residue`, not by `--return-claim`.
+
+**Emergency path.**
+1. Repair the held row's frontmatter by hand: one plain `status:` line, no duplicated keys, and no
+   `status:` only in the body. Keep every other field.
+2. Rerun `cc-claim <next>`. The row's own status now decides:
+   - a pipeline-held row is released by the claim path;
+   - a worker-held row keeps the slot, and the refusal names close, resume, or return.
+3. Never hand-write or delete claim markers to get past it.
 
 ## Manual Stale-Lease Release
 

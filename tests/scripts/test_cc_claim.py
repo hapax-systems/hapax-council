@@ -5,7 +5,7 @@ import subprocess
 import sys
 import textwrap
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -2231,15 +2231,15 @@ def test_a_pipeline_held_row_frees_the_slot_and_keeps_its_named_resumer(tmp_path
     assert marker.read_text(encoding="utf-8").split()[0] == "next-row"
 
 
-def test_every_marker_is_checked_so_a_second_held_row_is_released_too(tmp_path: Path) -> None:
-    # codex on #4826: only the first readable marker was checked. A pipeline-held row named by a
-    # lingering session-keyed marker stayed held although the lease scan counted it free.
-    home = tmp_path / "home"
-    first_session, second_session, third_session = (
-        _SESSION_ID,
-        "1f9f9f9f-1111-2222-3333-444455556666",
-        "2f9f9f9f-1111-2222-3333-444455556666",
-    )
+_THIRD_SESSION = "2f9f9f9f-1111-2222-3333-444455556666"
+
+
+def _two_held_rows_with_a_lingering_marker(home: Path) -> tuple[Path, str]:
+    """older-row and newer-row pipeline-held, older-row's first-session files lingering.
+
+    Returns the cache and the stamp of older-row's first release (by newer-row's claim).
+    """
+    first_session, second_session = _SESSION_ID, "1f9f9f9f-1111-2222-3333-444455556666"
     older = _write_task(home, "active", "older-row")
     newer = _write_task(home, "active", "newer-row")
     _write_task(home, "active", "next-row")
@@ -2247,27 +2247,70 @@ def test_every_marker_is_checked_so_a_second_held_row_is_released_too(tmp_path: 
     _set_status(older, "claimed", "pr_open")
     assert _claim(home, "newer-row", session_id=second_session).returncode == 0
     _set_status(newer, "claimed", "pr_open")
-    # older-row's session-keyed files linger (as sessions from before this change can leave them).
+    # older-row's session-keyed files linger (as sessions from before #4826 can leave them).
     cache = home / ".cache" / "hapax"
     (staged,) = (cache / "claim-residue-release" / "older-row").iterdir()
     for kept in staged.iterdir():
         if first_session in kept.name:
             (cache / kept.name).write_bytes(kept.read_bytes())
-            os.chmod(
-                cache / kept.name, kept.stat().st_mode & 0o777
-            )  # the residue check reads modes
+            os.chmod(cache / kept.name, kept.stat().st_mode & 0o777)  # the check reads modes
     assert (cache / f"cc-active-task-cx-test-{first_session}").exists()
-    # Releases are stamped to the second, and this fixture releases one publication twice; a
-    # same-second second release holds on the taken staging name (fail closed). Real residue is
-    # not released twice, so the test steps past the second rather than widen the stamp.
-    time.sleep(1.1)
+    (first,) = _release_archives(home, "older-row")
+    return cache, first.name.removeprefix("claim-residue-release-").split("-")[0]
 
-    taken = _claim(home, "next-row", session_id=third_session)
 
-    assert taken.returncode == 0, taken.stderr
+def _release_held(home: Path, cache: Path, *, observed_at: str) -> list[object]:
+    from shared.sdlc_claim import release_pipeline_held_residue
+
+    roots = default_claim_publication_roots(home=home)
+    return release_pipeline_held_residue(
+        vault_root=_task_root(home),
+        cache_dir=cache,
+        transaction_root=Path(roots.claim_transaction_root),
+        lock_root=Path(roots.claim_lock_root),
+        role="cx-test",
+        current_task_id="next-row",
+        observed_at=observed_at,
+    )
+
+
+def test_every_marker_is_checked_so_a_second_held_row_is_released_too(tmp_path: Path) -> None:
+    # codex on #4826: only the first readable marker was checked. A pipeline-held row named by a
+    # lingering session-keyed marker stayed held although the lease scan counted it free. The
+    # release is driven with an injected stamp one second after the first release, instead of
+    # sleeping past it (the seat's clause 6i on the return-verb row).
+    home = tmp_path / "home"
+    cache, first_stamp = _two_held_rows_with_a_lingering_marker(home)
+    later = (datetime.strptime(first_stamp, "%Y%m%dT%H%M%SZ") + timedelta(seconds=1)).strftime(
+        "%Y%m%dT%H%M%SZ"
+    )
+
+    released = _release_held(home, cache, observed_at=later)
+
+    assert sorted(item.shape for item in released) == ["pipeline_held", "pipeline_held"]
     assert _lineage_shapes(home, "older-row") == ["pipeline_held", "pipeline_held"]
     assert _lineage_shapes(home, "newer-row") == ["pipeline_held"]
-    assert not (cache / f"cc-active-task-cx-test-{first_session}").exists()
+    assert not (cache / f"cc-active-task-cx-test-{_SESSION_ID}").exists()
+    taken = _claim(home, "next-row", session_id=_THIRD_SESSION)
+    assert taken.returncode == 0, taken.stderr
+
+
+def test_a_same_second_second_release_holds_on_the_taken_staging_name(tmp_path: Path) -> None:
+    # The fail-closed case the every-marker test used to sleep past, pinned directly: a second
+    # release of one publication within the same second collides on its staging and archive
+    # names and holds, moving none of that row's files.
+    from shared.sdlc_claim import ClaimResidueArchiveHold
+
+    home = tmp_path / "home"
+    cache, first_stamp = _two_held_rows_with_a_lingering_marker(home)
+    lingering = cache / f"cc-active-task-cx-test-{_SESSION_ID}"
+    before = lingering.read_bytes()
+
+    with pytest.raises(ClaimResidueArchiveHold) as held:
+        _release_held(home, cache, observed_at=first_stamp)
+
+    assert "claim_residue_archive_collision" in held.value.message
+    assert lingering.read_bytes() == before
 
 
 _MALFORMED = [
@@ -2688,3 +2731,420 @@ def test_an_expired_lease_on_a_worker_held_row_still_holds(tmp_path: Path) -> No
 
     assert refused.returncode == 7
     assert "expired claim" in refused.stderr
+
+
+# ── cc-claim --return-claim: the holder returns its own unstarted claim ──────
+# claim-plane-return-claim-verb-20260927 (split out of #4826 by the seat's stop rule)
+
+
+def _return(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
+    return _claim(
+        home, task_id, dispatch=False, install_gate0b=False, extra_args=["--return-claim"]
+    )
+
+
+def _claimed_row(home: Path, task_id: str = "unstarted-row") -> Path:
+    note = _write_task(home, "active", task_id)
+    assert _claim(home, task_id).returncode == 0
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+    return note
+
+
+def test_the_holder_returns_an_unstarted_claim_and_frees_its_slot(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    _write_task(home, "active", "next-row")
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 0, returned.stderr
+    assert "returned 'unstarted-row' to offered" in returned.stdout
+    text = note.read_text(encoding="utf-8")
+    assert "status: offered" in text and "status: claimed" not in text
+    assert "assigned_to: unassigned" in text and "claimed_at: null" in text
+    assert "cx-test returned the claim to offered (cc-claim --return-claim)" in text
+    assert _lineage_shapes(home, "unstarted-row") == ["returned_claim"]
+    assert all(not path.exists() for path in _role_sidecars(home)["marker"])
+    assert _claim(home, "next-row").returncode == 0  # the slot is free
+
+
+#: One per review specimen from #4826 rounds 3-6: each must hold, changing nothing.
+_RETURN_SPECIMENS = {
+    "duplicate_status": ("status: claimed", "status: claimed\nstatus: in_progress"),
+    "later_branch_null_hides_a_branch": (
+        "status: claimed",
+        "status: claimed\nbranch: feat/started\nbranch: null",
+    ),
+    "quoted_duplicate_status": ("status: claimed", 'status: claimed\n"status": claimed'),
+    "quoted_branch_null_hides_a_branch": (
+        "status: claimed",
+        'status: claimed\nbranch: feat/started\n"branch": null',
+    ),
+    "quoted_only_assigned_to": ("assigned_to: cx-test", '"assigned_to": cx-test'),
+    "claimed_at_absent_is_a_hold_never_an_append": ("claimed_at:", "claimed_on:"),
+    "duplicate_in_a_flow_mapping": ("status: claimed", 'status: claimed\nroute: {a: 1, "a": 2}'),
+}
+
+
+@pytest.mark.parametrize("specimen", sorted(_RETURN_SPECIMENS))
+def test_a_malformed_note_is_never_returned(tmp_path: Path, specimen: str) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    old, new = _RETURN_SPECIMENS[specimen]
+    note.write_text(note.read_text(encoding="utf-8").replace(old, new, 1), encoding="utf-8")
+    before, markers = note.read_bytes(), _bytes_of(_role_sidecars(home)["marker"])
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 8, returned.stderr
+    assert "claim_return_note_malformed" in returned.stderr
+    assert note.read_bytes() == before
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
+    assert _lineage_shapes(home, "unstarted-row") == []
+
+
+def test_a_space_before_the_colon_is_the_same_status_line(tmp_path: Path) -> None:
+    # gemini on #4826 round 6: validation accepted `status : claimed` while the rewrite matched
+    # only `^status:`, so it appended a second status. One matcher: the line is replaced.
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("status: claimed", "status : claimed", 1),
+        encoding="utf-8",
+    )
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 0, returned.stderr
+    frontmatter = note.read_text(encoding="utf-8").split("\n---", 1)[0]
+    assert [line for line in frontmatter.splitlines() if line.startswith("status")] == [
+        "status: offered"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("edit", "code"),
+    [
+        (("status: claimed", "status: claimed\npr: 4999"), "claim_return_started"),
+        (("status: claimed", "status: claimed\nbranch: feat/started"), "claim_return_started"),
+        (("assigned_to: cx-test", "assigned_to: cx-other"), "claim_return_not_holder"),
+    ],
+    ids=["names_a_pr", "names_a_branch", "assigned_elsewhere"],
+)
+def test_the_return_refuses_started_or_foreign_rows(
+    tmp_path: Path, edit: tuple[str, str], code: str
+) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    note.write_text(note.read_text(encoding="utf-8").replace(*edit, 1), encoding="utf-8")
+    before = note.read_bytes()
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 8, returned.stderr
+    assert code in returned.stderr
+    assert note.read_bytes() == before
+    assert _lineage_shapes(home, "unstarted-row") == []
+
+
+def test_a_claim_that_is_not_live_is_not_returned(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    for marker in _role_sidecars(home)["marker"]:
+        marker.unlink()  # the claim files are gone: nothing live to return
+    before = note.read_bytes()
+
+    returned = _return(home, "unstarted-row")
+
+    assert returned.returncode == 8, returned.stderr
+    assert "claim_return_not_live" in returned.stderr
+    assert note.read_bytes() == before
+
+
+def test_a_role_without_a_claim_cannot_return_it(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "unclaimed-row")
+    before = note.read_bytes()
+
+    returned = _return(home, "unclaimed-row")
+
+    assert returned.returncode == 8, returned.stderr
+    assert "claim_return_not_holder" in returned.stderr
+    assert note.read_bytes() == before
+
+
+def test_a_crash_between_the_note_and_the_archive_is_released_as_reassigned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The note is written first; a crash before the archive leaves the claim files naming a row
+    # that is no longer assigned to this role: the reassigned_task shape, which
+    # --release-claim-residue already releases.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    roots = default_claim_publication_roots(home=home)
+
+    def crash(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("crash before the archive")
+
+    monkeypatch.setattr(sdlc_claim, "_archive_residue", crash)
+    with pytest.raises(RuntimeError):
+        sdlc_claim.return_claim(
+            vault_root=_task_root(home),
+            cache_dir=home / ".cache" / "hapax",
+            transaction_root=Path(roots.claim_transaction_root),
+            lock_root=Path(roots.claim_lock_root),
+            role="cx-test",
+            task_id="unstarted-row",
+            observed_at="20260927T230000Z",
+        )
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    assert any(path.exists() for path in _role_sidecars(home)["marker"])
+
+    released = _claim(
+        home,
+        "unstarted-row",
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=["--release-claim-residue"],
+    )
+
+    assert released.returncode == 0, released.stderr
+    assert _lineage_shapes(home, "unstarted-row") == ["reassigned_task"]
+
+
+def test_the_slot_refusal_names_the_return_verb(tmp_path: Path) -> None:
+    # codex on #4826 round 7, clause (5): an unstarted row blocking the slot can be returned.
+    home = tmp_path / "home"
+    _claimed_row(home)
+    _write_task(home, "active", "next-row")
+
+    blocked = _claim(home, "next-row")
+
+    assert blocked.returncode != 0
+    assert "cc-claim --return-claim unstarted-row" in blocked.stderr
+
+
+def test_a_rewrite_that_does_not_read_back_as_offered_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Defense in depth: the returned text is re-read through the release-grade reader before it
+    # is written; one that does not read back as offered and unassigned is a hold.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    before, markers = note.read_bytes(), _bytes_of(_role_sidecars(home)["marker"])
+    roots = default_claim_publication_roots(home=home)
+    monkeypatch.setattr(
+        sdlc_claim,
+        "_returned_note_text",
+        lambda text, **_kwargs: text.replace("status: claimed", "status: offered\nstatus: x", 1),
+    )
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as held:
+        sdlc_claim.return_claim(
+            vault_root=_task_root(home),
+            cache_dir=home / ".cache" / "hapax",
+            transaction_root=Path(roots.claim_transaction_root),
+            lock_root=Path(roots.claim_lock_root),
+            role="cx-test",
+            task_id="unstarted-row",
+            observed_at="20260927T230000Z",
+        )
+
+    assert "claim_return_rewrite_unverified" in held.value.message
+    assert note.read_bytes() == before
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
+
+
+@pytest.mark.parametrize(
+    ("edit", "returned"),
+    [
+        (("status: claimed", 'status: claimed\nbranch: "null"'), True),
+        (("status: claimed", "status: claimed\npr: nil"), True),
+        (("status: claimed", 'status: claimed\nbranch: "main"'), False),
+    ],
+    ids=["quoted_null_branch_is_absent", "nil_pr_is_absent", "main_branch_is_started"],
+)
+def test_the_started_guard_uses_the_estate_null_convention(
+    tmp_path: Path, edit: tuple[str, str], returned: bool
+) -> None:
+    # The seat's clause 7 (codex on #4832 round 1): absent is shared.cc_task_pr_link.NULLISH,
+    # not a fourth copy. A quoted "null" is absent by that convention; "main" names work.
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    note.write_text(note.read_text(encoding="utf-8").replace(*edit, 1), encoding="utf-8")
+    before = note.read_bytes()
+
+    result = _return(home, "unstarted-row")
+
+    if returned:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 8 and "claim_return_started" in result.stderr
+        assert note.read_bytes() == before
+
+
+def test_another_sessions_marker_is_a_live_marker_hold(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    other = home / ".cache" / "hapax" / f"cc-active-task-cx-test-{_THIRD_SESSION}"
+    other.write_text("unstarted-row\n", encoding="utf-8")
+    before = note.read_bytes()
+
+    result = _return(home, "unstarted-row")
+
+    assert result.returncode == 8, result.stderr
+    assert "claim_return_live_marker" in result.stderr
+    assert note.read_bytes() == before
+
+
+def _return_in_process(home: Path, *, observed_at: str = "20260927T230000Z") -> object:
+    import shared.sdlc_claim as sdlc_claim
+
+    roots = default_claim_publication_roots(home=home)
+    return sdlc_claim.return_claim(
+        vault_root=_task_root(home),
+        cache_dir=home / ".cache" / "hapax",
+        transaction_root=Path(roots.claim_transaction_root),
+        lock_root=Path(roots.claim_lock_root),
+        role="cx-test",
+        task_id="unstarted-row",
+        observed_at=observed_at,
+    )
+
+
+def test_a_malformed_stamp_is_refused(tmp_path: Path) -> None:
+    from shared.sdlc_claim import ClaimResidueArchiveHold
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    before = note.read_bytes()
+
+    with pytest.raises(ClaimResidueArchiveHold) as held:
+        _return_in_process(home, observed_at="2026-09-27T23:00:00Z")
+
+    assert "claim_return_stamp_invalid" in held.value.message
+    assert note.read_bytes() == before
+
+
+def test_an_unfinished_publication_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dataclasses
+
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    before = note.read_bytes()
+    real = sdlc_claim._role_task_journals
+
+    def unfinished(*args: object, **kwargs: object) -> list[object]:
+        return [dataclasses.replace(item, state="projecting") for item in real(*args, **kwargs)]
+
+    monkeypatch.setattr(sdlc_claim, "_role_task_journals", unfinished)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as held:
+        _return_in_process(home)
+
+    assert "claim_return_unfinished" in held.value.message
+    assert note.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("front", "reads"),
+    [
+        ("status : pr_open", True),  # the same status line to the one matcher
+        ('"status": pr_open', False),  # quoted only: not spelled plainly
+        ("status: pr_open\nstatus: claimed", False),  # stated twice
+    ],
+    ids=["space_before_colon", "quoted_only", "stated_twice"],
+)
+def test_the_release_grade_reader_counts_status_with_the_one_matcher(
+    front: str, reads: bool
+) -> None:
+    # glm on #4832 round 1: the refactored reader, tested directly.
+    from shared.sdlc_claim import _release_fields
+
+    fields = _release_fields(f"---\ntask_id: row\n{front}\n---\n\nbody\n")
+
+    assert (fields is not None) == reads
+    if fields is not None:
+        assert fields["status"] == "pr_open"
+
+
+def test_the_release_grade_reader_refuses_an_unclosed_frontmatter() -> None:
+    from shared.sdlc_claim import _release_fields
+
+    unclosed = "---\ntask_id: row\nstatus: pr_open\nbody without a closing delimiter\n"
+    assert _release_fields(unclosed) is None
+
+
+def test_an_archive_collision_is_a_no_change_refusal(tmp_path: Path) -> None:
+    # codex on #4832 round 2: the archive names were checked only after the note was written,
+    # so a collision left the note offered with the claim still live. They are checked first.
+    from shared.sdlc_claim import ClaimResidueArchiveHold
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    stamp = "20260927T230000Z"
+    archive = (
+        _task_root(home) / "_lineage" / "unstarted-row" / f"claim-residue-release-{stamp}-cx-test"
+    )
+    archive.mkdir(parents=True)
+    (archive / "cc-active-task-cx-test").write_text("someone else's\n", encoding="utf-8")
+    before, markers = note.read_bytes(), _bytes_of(_role_sidecars(home)["marker"])
+
+    with pytest.raises(ClaimResidueArchiveHold) as held:
+        _return_in_process(home, observed_at=stamp)
+
+    assert "claim_return_archive_collision" in held.value.message
+    assert note.read_bytes() == before
+    assert _bytes_of(_role_sidecars(home)["marker"]) == markers
+
+
+def test_an_archive_failure_after_the_note_names_the_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Anything the pre-check cannot foresee (an I/O error) leaves the crash-window state; the
+    # hold says so and names the release that recovers it.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+
+    def disk_full(*_args: object, **_kwargs: object) -> None:
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(sdlc_claim, "_archive_residue", disk_full)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as held:
+        _return_in_process(home)
+
+    assert "claim_return_archive_incomplete" in held.value.message
+    assert "cc-claim --release-claim-residue unstarted-row" in held.value.message
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_a_note_other_than_the_locked_one_is_never_rewritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The return writes only the note the role lock's own projection lock covers (the lock
+    # containment pin in tests/shared/test_task_note_lock.py): a note resolved at another path
+    # holds, and neither copy is written.
+    import shared.sdlc_claim as sdlc_claim
+
+    home = tmp_path / "home"
+    note = _claimed_row(home)
+    elsewhere = note.with_name("unstarted-row-moved.md")
+    elsewhere.write_bytes(note.read_bytes())
+    before = note.read_bytes()
+    monkeypatch.setattr(sdlc_claim, "_task_note_path_for_any_state", lambda *_a, **_k: elsewhere)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold) as held:
+        _return_in_process(home)
+
+    assert "claim_return_note_moved" in held.value.message
+    assert note.read_bytes() == before
+    assert elsewhere.read_bytes() == before

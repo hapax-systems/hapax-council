@@ -866,11 +866,16 @@ def test_a_forked_child_does_not_inherit_the_parents_locks(tmp_path: Path) -> No
 def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> None:
     """Containment: the projection lock is taken inside the role lock and nowhere else here.
 
-    ``sdlc_claim``'s role lock is acquired in exactly four places, all inside
+    ``sdlc_claim``'s role lock is acquired in exactly five places, all inside
     ``_claim_publication_lock``, and the projection lock is taken inside it — so the order is
     always role-then-note. The fourth, ``release_claim_residue`` (2026-09-27), was re-derived
     when it was added: it is a top-level entry that ``cc-claim --release-claim-residue`` calls
     holding no lock, and it takes nothing else under the role lock, so it adds no new direction.
+    The fifth, ``return_claim`` (2026-09-27, #4832), was re-derived the same way: a top-level
+    entry that ``cc-claim --return-claim`` calls holding no lock, it takes nothing else under the
+    role lock. It writes only the note the role lock's own projection lock covers, and holds
+    (``claim_return_note_moved``) when the note is not that path, so it adds no projection-lock
+    site either.
     This is a containment check, not the enforcement: the inversion that
     matters (a note-holder calling onward into claim publication) needs no new acquisition site,
     so a site count cannot see it (round 5, claude-1). The direction itself is asserted at the
@@ -886,8 +891,8 @@ def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> 
     stripped = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in source.splitlines())
 
     takers = re.findall(r"with _claim_publication_lock\(", stripped)
-    assert len(takers) == 4, (
-        f"the role lock is now taken in {len(takers)} places, not 4 — re-derive the ordering "
+    assert len(takers) == 5, (
+        f"the role lock is now taken in {len(takers)} places, not 5 — re-derive the ordering "
         "argument before assuming role-then-note is still the only direction"
     )
 
