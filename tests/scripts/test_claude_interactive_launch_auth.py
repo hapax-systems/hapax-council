@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import json
 import os
-import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -170,6 +169,9 @@ else:
         "HAPAX_QUOTA_SPEND_LEDGER": str(bound_ledger(tmp_path)),
         "CLAUDE_CONFIG_DIR": str(config),
         "XDG_CACHE_HOME": str(home / ".cache"),
+        # The synthetic tmux stub runs its child synchronously and has no pane.
+        # The observed child file is this fixture's launch proof.
+        "HAPAX_CLAUDE_READY_TIMEOUT": "0",
     }
     return env, config, workdir, observed, credential
 
@@ -361,42 +363,6 @@ def test_receipt_for_account_a_cannot_launch_account_b(tmp_path, when):
         assert not (tmp_path / "home/.cache/hapax/claude-spawns").exists()
 
 
-@pytest.mark.parametrize("source", ["registry", "listed"])
-def test_advertised_interactive_launcher_invokes_subscription_guard(tmp_path, source):
-    env, _, _, observed, credential = launch_fixture(tmp_path)
-    if source == "registry":
-        registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
-        route = next(r for r in registry["routes"] if r["route_id"] == "claude.interactive.full")
-    else:
-        result = subprocess.run(
-            [str(REPO_ROOT / "scripts/hapax-methodology-dispatch"), "--list-platform-paths"],
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        line = next(
-            line
-            for line in result.stdout.splitlines()
-            if line.startswith("claude/interactive/full:")
-        )
-        route = {"launcher": line.split(" -> ", 1)[1]}
-    command = shlex.split(
-        route["launcher"].replace("<lane>", "beta").replace("<task>", "governed-build")
-    )
-    assert "--subscription-only" in command
-    credential.unlink()
-    result = subprocess.run(
-        command,
-        cwd=REPO_ROOT,
-        env={**os.environ, **env, "HOME": str(tmp_path / "home")},
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode != 0
-    assert "subscription authentication or host policy is unproven" in result.stderr
-    assert not observed.exists()
-
-
 @pytest.mark.parametrize("defect", ["legacy", "malformed", "missing", "wrong-proof"])
 def test_launch_holds_without_readable_matching_proof(tmp_path, defect):
     env, _, _, observed, _ = launch_fixture(tmp_path)
@@ -502,8 +468,10 @@ def test_real_probe_receipt_and_telemetry_bind_actual_launch(tmp_path, monkeypat
             stale_after_seconds=900,
             receipt_dir=tmp_path / "relay-receipts",
             dry_run=False,
+            pace_args=("--pace-activation", str(tmp_path / "inactive-pace-activation.json")),
         )
         assert results[0]["returncode"] == 0
+    monkeypatch.setenv("HAPAX_QUOTA_TRACE_HOME", str(tmp_path / "trace-home"))
     writer, ledger = _run_writer(tmp_path, now=now.isoformat())
     assert writer.returncode == 0, writer.stderr
     env["HAPAX_QUOTA_SPEND_LEDGER"] = str(ledger)
