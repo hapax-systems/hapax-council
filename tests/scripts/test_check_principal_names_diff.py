@@ -550,6 +550,8 @@ def _hook_repo(tmp_path: Path, hook: str) -> Path:
     repo = tmp_path / "hook-repo"
     (repo / "scripts").mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "scripts" / hook, repo / "scripts" / hook)
+    if hook == "pre-commit":
+        (repo / ".pre-commit-config.yaml").write_text("repos: []\n")
     _git(repo, "init", "-q", ".")
     return repo
 
@@ -575,7 +577,7 @@ def test_tracked_pre_commit_delegates_to_the_pre_commit_framework(tmp_path: Path
     assert result.returncode == 0, result.stderr
     assert (
         log.read_text(encoding="utf-8").strip()
-        == "hook-impl --config=.pre-commit-config.yaml --hook-type=pre-commit -- staged.py"
+        == f"hook-impl --config={repo / '.pre-commit-config.yaml'} --hook-type=pre-commit -- staged.py"
     )
 
 

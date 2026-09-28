@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # git pre-commit hook: delegate to the pre-commit framework under the shared hooksPath.
 #
-# Setting core.hooksPath=scripts replaces Git's hook-lookup directory, so the
+# Setting core.hooksPath to the activation scripts directory replaces Git's hook lookup, so the
 # framework-generated .git/hooks/pre-commit is not consulted. This tracked hook
 # keeps the runbook's commit-time gates working under that one setting by
 # invoking the framework's own hook implementation.
 set -euo pipefail
+hook_dir="$(dirname "$(readlink -f "$0")")"
+config="$(dirname "$hook_dir")/.pre-commit-config.yaml"
+
+if [ ! -f "$config" ]; then
+  echo "pre-commit: missing activation .pre-commit-config.yaml; refusing" >&2
+  exit 1
+fi
 
 if ! command -v pre-commit >/dev/null 2>&1; then
   echo "pre-commit: the pre-commit CLI is not on PATH; refusing" >&2
@@ -14,6 +21,6 @@ if ! command -v pre-commit >/dev/null 2>&1; then
 fi
 
 exec pre-commit hook-impl \
-  --config=.pre-commit-config.yaml \
+  --config="$config" \
   --hook-type=pre-commit \
   -- "$@"
