@@ -410,13 +410,13 @@ def test_nested_label_active_content_is_neutralized_in_delivery(
     receipt = deliver_result(
         desk,
         request_id="req-nested",
-        markdown=f"![{label}](https://tracker.example/p.gif) [a [b]](javascript:alert(1))",
+        markdown=f"![{label}](https://tracker.example/p.gif) [{label}](javascript:alert(1))",
     )
     drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
     assert drop.frontmatter["withheld_images"] == 1
     assert drop.frontmatter["withheld_links"] == 1
     assert "![" not in drop.body
-    assert "[a [b]](javascript:" not in drop.body
+    assert f"[{label}](javascript:" not in drop.body
 
 
 def test_unbalanced_image_label_is_neutralized_in_delivery(desk: ResearchDeskConfig) -> None:
