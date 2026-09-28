@@ -916,9 +916,14 @@ loaded_unit_property() {
 
 verify_effective_service_unit() {
     local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
-    local expected_exec expected_failure expected_user actual_fragment actual_dropins
+    local expected_exec expected_failure expected_user actual_fragment actual_dropins instance
     local actual_exec actual_failure actual_user
     expected_exec="$(source_unit_value "$rel" ExecStart)" || return 1
+    if [[ "$unit" == *@* ]]; then
+        instance="${unit#*@}"
+        instance="${instance%.service}"
+        expected_exec="${expected_exec//%i/$instance}"
+    fi
     expected_failure="$(source_unit_optional_value "$rel" OnFailure)"
     expected_failure="${expected_failure//%n/$unit}"
     expected_user="$(source_unit_optional_value "$rel" User)"
