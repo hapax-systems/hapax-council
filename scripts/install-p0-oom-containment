@@ -35,6 +35,9 @@ OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 OOM_HOST_PROFILE_DEST="${HAPAX_OOM_HOST_PROFILE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
+OOM_UDEV_DEST="${HAPAX_OOM_UDEV_DEST:-/etc/udev/rules.d/99-hapax-zram-swappiness.rules}"
+OOM_UDEVADM="${HAPAX_OOM_UDEVADM:-/usr/bin/udevadm}"
+OOM_SYSCTL="${HAPAX_OOM_SYSCTL:-/usr/bin/sysctl}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
 SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
 SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
@@ -598,6 +601,9 @@ for profile in appendix podium; do
         host_policy_sources+=("config/root-required/oom-host-policy/$profile/$rel")
     done
 done
+for profile in appendix podium; do
+    host_policy_sources+=("config/root-required/oom-host-policy/$profile/config/udev/99-hapax-zram-swappiness.rules")
+done
 package_files=(
     "$package_manifest_source"
     scripts/install-p0-oom-containment
@@ -796,7 +802,7 @@ select_host_policy() {
 
 policy_src_path() {
     case "$1" in
-        systemd/units/app.slice.d/oom-containment.conf|systemd/system/user-1000.slice.d/oom-containment.conf|systemd/system/user@1000.service.d/oom.conf|systemd/system/system.slice.d/oom-containment.conf)
+        systemd/units/app.slice.d/oom-containment.conf|systemd/system/user-1000.slice.d/oom-containment.conf|systemd/system/user@1000.service.d/oom.conf|systemd/system/system.slice.d/oom-containment.conf|config/udev/99-hapax-zram-swappiness.rules)
             printf '%s/config/root-required/oom-host-policy/%s/%s\n' "$SOURCE" "$HOST_PROFILE" "$1" ;;
         *) src_path "$1" ;;
     esac
@@ -807,6 +813,17 @@ require_host_policy_value() {
     actual="$(source_unit_value "$rel" "$key")" || return 1
     if [ "$actual" != "$expected" ]; then
         echo "host policy mismatch: $rel $key=$actual expected=$expected; repair $host_profile_source" >&2
+        return 1
+    fi
+}
+
+verify_zram_rule_source() {
+    local rule expected count
+    rule="$(policy_src_path config/udev/99-hapax-zram-swappiness.rules)"
+    expected="ACTION==\"change\", KERNEL==\"zram0\", ATTR{initstate}==\"1\", SYSCTL{vm.swappiness}=\"$SWAPPINESS\""
+    count="$(grep -Fxc "$expected" "$rule" 2>/dev/null || true)"
+    if [ "$count" != "1" ] || [ "$(grep -Ec '^[[:space:]]*ACTION=.*SYSCTL\{vm.swappiness\}' "$rule" 2>/dev/null || true)" != "1" ]; then
+        echo "zram swappiness rule mismatch: $rule must set vm.swappiness=$SWAPPINESS after 30-zram.rules; next action: reconcile the selected host profile rule" >&2
         return 1
     fi
 }
@@ -1062,6 +1079,7 @@ check_source() {
     require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryHigh "$SYSTEM_HIGH" || return 1
     require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryMax "$SYSTEM_MAX" || return 1
     require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryLow "$SYSTEM_LOW" || return 1
+    verify_zram_rule_source || return 1
     [ -x "$(src_path "$oom_trigger_source")" ] || {
         echo "OOM startup trigger is not executable: $(src_path "$oom_trigger_source"); next action: chmod +x scripts/hapax-oom-score-trigger" >&2
         return 1
@@ -1433,6 +1451,9 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$OOM_HOST_PROFILE_DEST")"
     run_root install -m 0644 "$(src_path "$host_profile_source")" "$OOM_HOST_PROFILE_DEST"
     echo "  '$host_profile_source' -> '$OOM_HOST_PROFILE_DEST'"
+    run_root install -d -m 0755 "$(dirname "$OOM_UDEV_DEST")"
+    run_root install -m 0644 "$(policy_src_path config/udev/99-hapax-zram-swappiness.rules)" "$OOM_UDEV_DEST"
+    run_root "$OOM_UDEVADM" control --reload-rules
     run_root install -d -m 0755 "$(dirname "$ROOT_REQUIRED_AUDIT_DEST")"
     run_root install -m 0755 "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     echo "  '$root_required_audit_source' -> '$ROOT_REQUIRED_AUDIT_DEST'"
@@ -1499,6 +1520,7 @@ install_live() {
         }
     done
     if [ "$APPLY_RUNTIME" -eq 1 ]; then
+        run_root "$OOM_SYSCTL" -w "vm.swappiness=$SWAPPINESS" >/dev/null
         apply_system_runtime_memory system.slice systemd/system/system.slice.d/oom-containment.conf
         apply_system_runtime_memory user.slice systemd/system/user.slice.d/oom-containment.conf
         apply_system_runtime_memory user-1000.slice systemd/system/user-1000.slice.d/oom-containment.conf
@@ -1671,6 +1693,13 @@ verify_live() {
     verify_root_artifact_trust "$OOM_POLICY_AUDIT_DEST" 755
     verify_pair "$(src_path "$host_profile_source")" "$OOM_HOST_PROFILE_DEST"
     verify_root_artifact_trust "$OOM_HOST_PROFILE_DEST" 644
+    verify_pair "$(policy_src_path config/udev/99-hapax-zram-swappiness.rules)" "$OOM_UDEV_DEST"
+    verify_root_artifact_trust "$OOM_UDEV_DEST" 644
+    actual_swappiness="$("$OOM_SYSCTL" -n vm.swappiness 2>/dev/null || true)"
+    if [ "$actual_swappiness" != "$SWAPPINESS" ]; then
+        echo "live vm.swappiness drift: actual=$actual_swappiness expected=$SWAPPINESS; next action: rerun the governed OOM installer and inspect the zram udev event" >&2
+        return 1
+    fi
     verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     verify_root_artifact_trust "$ROOT_REQUIRED_AUDIT_DEST" 755
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"

@@ -147,6 +147,22 @@ def test_host_policy_cli_emits_selected_fields_only() -> None:
     assert result.stdout == "appendix\t32G\t37G\t32G\t38G\t16G\t20G\t12G\t16384\t10\n"
 
 
+def test_swappiness_audit_catches_vendor_value_after_zram_event(tmp_path: Path) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    selected = namespace["load_host_policy"](
+        REPO_ROOT / "config/root-required/oom-host-profiles.tsv", "hapax-appendix", 63310084
+    )
+    live = tmp_path / "swappiness"
+    live.write_text("150\n", encoding="utf-8")
+    rule = tmp_path / "99-hapax-zram-swappiness.rules"
+    rule.write_text(
+        'ACTION=="change", KERNEL=="zram0", ATTR{initstate}=="1", SYSCTL{vm.swappiness}="10"\n',
+        encoding="utf-8",
+    )
+    checks = namespace["audit_swappiness"](selected, live, rule)
+    assert {item.name: item.status for item in checks}["vm_swappiness"] == "gap"
+
+
 RECOVERY_SYSTEM_UNIT_SCORES = {
     "apcupsd.service": -900,
     "systemd-logind.service": -800,
@@ -384,6 +400,14 @@ def _run(
     if proc_root is None:
         proc_root = tmp_path / "proc"
         proc_root.mkdir(exist_ok=True)
+    swappiness_path = proc_root / "sys" / "vm" / "swappiness"
+    swappiness_path.parent.mkdir(parents=True, exist_ok=True)
+    swappiness_path.write_text("10\n", encoding="utf-8")
+    udev_rule = tmp_path / "99-hapax-zram-swappiness.rules"
+    udev_rule.write_text(
+        'ACTION=="change", KERNEL=="zram0", ATTR{initstate}=="1", SYSCTL{vm.swappiness}="10"\n',
+        encoding="utf-8",
+    )
     if not (proc_root / "900").exists():
         _write_proc(proc_root, 900, name="systemd", uid=1000, oom_score=100)
     if not (proc_root / "920").exists():
@@ -490,6 +514,7 @@ def _run(
         "HAPAX_OOM_AUDIT_TEST_MODE": "1",
         "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-podium",
         "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "131009480",
+        "HAPAX_OOM_AUDIT_TEST_UDEV_RULE": str(udev_rule),
         "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(tmp_path / "root-state" / ".lock"),
     }
     return subprocess.run(

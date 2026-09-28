@@ -10,6 +10,8 @@ config/root-required/oom-host-policy/podium/systemd/units/app.slice.d/oom-contai
 config/root-required/oom-host-policy/podium/systemd/system/user-1000.slice.d/oom-containment.conf
 config/root-required/oom-host-policy/podium/systemd/system/user@1000.service.d/oom.conf
 config/root-required/oom-host-policy/podium/systemd/system/system.slice.d/oom-containment.conf
+config/root-required/oom-host-policy/appendix/config/udev/99-hapax-zram-swappiness.rules
+config/root-required/oom-host-policy/podium/config/udev/99-hapax-zram-swappiness.rules
 config/root-required/hapax-oom-score-enforce.sudoers
 systemd/system/system.slice.d/oom-containment.conf
 systemd/system/user.slice.d/oom-containment.conf

@@ -226,6 +226,7 @@ def current_host_policy() -> HostPolicy:
         "HAPAX_OOM_AUDIT_TEST_HOSTNAME",
         "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB",
         "HAPAX_OOM_AUDIT_PROC_ROOT",
+        "HAPAX_OOM_AUDIT_TEST_UDEV_RULE",
     )
     selected = [key for key in test_keys if key in os.environ]
     if installed and selected:
@@ -782,6 +783,54 @@ def audit_system_slice_reservation(policy: HostPolicy | None = None) -> list[Che
     return checks
 
 
+def audit_swappiness(
+    policy: HostPolicy, live_path: Path | None = None, rule_path: Path | None = None
+) -> list[Check]:
+    live = live_path or PROC_ROOT / "sys/vm/swappiness"
+    rule = rule_path or Path(
+        os.environ.get(
+            "HAPAX_OOM_AUDIT_TEST_UDEV_RULE", "/etc/udev/rules.d/99-hapax-zram-swappiness.rules"
+        )
+    )
+    expected_rule = (
+        'ACTION=="change", KERNEL=="zram0", ATTR{initstate}=="1", '
+        f'SYSCTL{{vm.swappiness}}="{policy.swappiness}"'
+    )
+    try:
+        live_value = live.read_text(encoding="ascii").strip()
+    except OSError as exc:
+        live_value = f"unreadable: {exc}"
+    try:
+        rule_lines = rule.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        rule_lines = [f"unreadable: {exc}"]
+    live_ok = live_value == str(policy.swappiness)
+    rule_ok = (
+        rule_lines.count(expected_rule) == 1
+        and sum(
+            line.startswith('ACTION=="change"') and "SYSCTL{vm.swappiness}" in line
+            for line in rule_lines
+        )
+        == 1
+    )
+    return [
+        Check(
+            "vm_swappiness",
+            "pass" if live_ok else "gap",
+            str(policy.swappiness),
+            live_value,
+            "" if live_ok else "zram device event or live sysctl restored another value",
+        ),
+        Check(
+            "zram_swappiness_rule",
+            "pass" if rule_ok else "gap",
+            expected_rule,
+            str(rule),
+            "" if rule_ok else "later /etc/udev rule is absent or differs from host policy",
+        ),
+    ]
+
+
 def audit_user_slice_reservation() -> list[Check]:
     expected: dict[str, int | None] = {
         "MemoryHigh": None,
@@ -1220,6 +1269,7 @@ def main(argv: list[str] | None = None) -> int:
                 *audit_recovery_system_units(),
                 *audit_sshd_policy(),
                 *audit_system_slice_reservation(policy),
+                *audit_swappiness(policy),
                 *audit_user_slice_reservation(),
                 *audit_system_memory_unit(f"user-{args.uid}.slice", policy),
                 *audit_system_memory_unit(f"user@{args.uid}.service", policy),

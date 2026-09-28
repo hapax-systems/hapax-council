@@ -167,6 +167,34 @@ def test_install_without_check_rejects_committed_bad_selected_file_before_mutati
     assert not system_dir.exists()
 
 
+def test_source_check_rejects_zram_rule_that_restores_vendor_swappiness(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _copy_oom_package(source)
+    target = (
+        source
+        / "config/root-required/oom-host-policy/appendix/config/udev/99-hapax-zram-swappiness.rules"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        'ACTION=="change", KERNEL=="zram0", ATTR{initstate}=="1", SYSCTL{vm.swappiness}="150"\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--check", "--no-runtime"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-appendix",
+            "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "63310084",
+        },
+    )
+    assert result.returncode != 0
+    assert "zram swappiness rule mismatch" in result.stderr
+
+
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
@@ -204,6 +232,22 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "HAPAX_OOM_HOST_PROFILE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
     )
+    monkeypatch.setenv(
+        "HAPAX_OOM_UDEV_DEST", str(tmp_path / "udev" / "99-hapax-zram-swappiness.rules")
+    )
+    fake_udevadm = tmp_path / "udevadm"
+    fake_udevadm.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_udevadm.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_UDEVADM", str(fake_udevadm))
+    fake_sysctl = tmp_path / "sysctl"
+    monkeypatch.setenv("HAPAX_OOM_SYSCTL_CALLS", str(tmp_path / "sysctl-calls"))
+    fake_sysctl.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HAPAX_OOM_SYSCTL_CALLS"\n'
+        'if [ "$1" = "-n" ]; then printf "10\\n"; fi\nexit 0\n',
+        encoding="utf-8",
+    )
+    fake_sysctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_SYSCTL", str(fake_sysctl))
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
         str(tmp_path / "sbin" / "hapax-root-required-deploy-audit"),
@@ -764,6 +808,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert (tmp_path / "share" / "oom-host-profiles.tsv").read_bytes() == (
         REPO_ROOT / "config/root-required/oom-host-profiles.tsv"
     ).read_bytes()
+    assert (tmp_path / "udev" / "99-hapax-zram-swappiness.rules").read_bytes() == (
+        REPO_ROOT
+        / "config/root-required/oom-host-policy/appendix/config/udev/99-hapax-zram-swappiness.rules"
+    ).read_bytes()
+    assert "-w vm.swappiness=10" in (tmp_path / "sysctl-calls").read_text(encoding="utf-8")
     app_dropin = user_dir / "app.slice.d" / "oom-containment.conf"
     assert app_dropin.is_file()
     assert not app_dropin.is_symlink()
