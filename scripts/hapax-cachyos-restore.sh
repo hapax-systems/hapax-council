@@ -1,0 +1,841 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================================================
+# Hapax CachyOS Restore — Fresh install to fully operational system
+# =============================================================================
+#
+# PREREQS:
+#   1. Fresh CachyOS install with:
+#      - Limine bootloader (default)
+#      - btrfs with default subvolumes (@, @home, @root, @srv, @cache, @tmp, @log)
+#      - NVIDIA open modules selected in installer
+#      - User account created (same username)
+#      - Network connected
+#   2. SATA drive: Phase 11 handles partitioning OR mounting if already partitioned
+#
+# HOW TO GET THIS SCRIPT (pick one):
+#
+#   Option A — GitHub (authenticate via browser):
+#     sudo pacman -S git github-cli
+#     gh auth login              # browser OAuth, no SSH key needed
+#     gh repo clone ryanklee/distro-work
+#     ./distro-work/hapax-cachyos-restore.sh
+#
+#   Option B — B2 (needs key ID + app key):
+#     sudo pacman -S rclone
+#     rclone config create b2 b2 account YOUR_KEY_ID key YOUR_APP_KEY
+#     rclone copy b2:hapax-backups/dr-scripts/hapax-cachyos-restore.sh .
+#     chmod +x hapax-cachyos-restore.sh
+#     ./hapax-cachyos-restore.sh
+#
+#   Option C — USB stick (copy script before wiping)
+#
+# YOU NEED TO KNOW:
+#   1. Restic encryption password
+#   2. Backblaze B2 key ID + application key
+#   3. GPG passphrase
+#
+# =============================================================================
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[0;33m'; NC='\033[0m'
+log()  { echo -e "${CYAN}[DR]${NC} $1"; }
+ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+fail() { echo -e "${RED}[FAIL]${NC} $1"; }
+ask()  { read -rp "$1: " "$2"; }
+
+# ─── Phase 0: Collect secrets ───────────────────────────────────────────────
+log "=== Phase 0: Collect recovery secrets ==="
+
+if [[ -z "${RESTIC_PASSWORD:-}" ]]; then
+    read -rsp "Restic encryption password: " RESTIC_PASSWORD; echo
+    export RESTIC_PASSWORD
+fi
+if [[ -z "${B2_KEY_ID:-}" ]]; then
+    ask "Backblaze B2 Key ID" B2_KEY_ID; export B2_KEY_ID
+fi
+if [[ -z "${B2_APP_KEY:-}" ]]; then
+    read -rsp "Backblaze B2 Application Key: " B2_APP_KEY; echo
+    export B2_APP_KEY
+fi
+
+# ─── Phase 1: Bootstrap ────────────────────────────────────────────────────
+log "=== Phase 1: Bootstrap toolchain ==="
+
+sudo pacman -Syu --noconfirm --needed \
+    restic rclone gnupg pass curl wget git jq base-devel \
+    > /dev/null 2>&1
+ok "Core packages installed"
+
+# Install paru (AUR helper) if not present
+if ! command -v paru &>/dev/null; then
+    log "Installing paru..."
+    PARU_DIR=$(mktemp -d)
+    git clone https://aur.archlinux.org/paru-bin.git "$PARU_DIR" > /dev/null 2>&1
+    (cd "$PARU_DIR" && makepkg -si --noconfirm > /dev/null 2>&1)
+    rm -rf "$PARU_DIR"
+    ok "paru installed"
+fi
+
+# Configure rclone
+mkdir -p ~/.config/rclone
+if ! rclone listremotes 2>/dev/null | grep -q '^b2:'; then
+    cat > ~/.config/rclone/rclone.conf <<RCLONE
+[b2]
+type = b2
+account = ${B2_KEY_ID}
+key = ${B2_APP_KEY}
+RCLONE
+    ok "rclone configured for B2"
+fi
+
+# Verify backup access
+export RESTIC_REPOSITORY="rclone:b2:hapax-backups/restic"
+log "Verifying backup repository..."
+if ! restic snapshots --no-lock --latest 1 > /dev/null 2>&1; then
+    fail "Cannot access B2 backup. Check credentials."
+    exit 1
+fi
+ok "Backup accessible"
+
+# ─── Phase 2: Restore from backup ──────────────────────────────────────────
+log "=== Phase 2: Restore files from B2 ==="
+
+RESTORE_DIR="/tmp/hapax-restore"
+rm -rf "$RESTORE_DIR"
+mkdir -p "$RESTORE_DIR"
+
+log "Restoring latest snapshot..."
+restic restore latest --target "$RESTORE_DIR" --no-lock --verbose 2>&1 | tail -3
+ok "Snapshot restored"
+
+# Determine restored home path (username may differ)
+RHOME=$(find "$RESTORE_DIR/home" -maxdepth 1 -mindepth 1 -type d | head -1)
+if [[ -z "$RHOME" ]]; then
+    fail "No home directory found in backup!"
+    exit 1
+fi
+ok "Found restored home: $RHOME"
+
+# ─── Phase 3: Identity (GPG, pass, SSH) ────────────────────────────────────
+log "=== Phase 3: Restore secrets & identity ==="
+
+# GPG keys (must come from backup — can't be regenerated)
+if [[ -d "$RHOME/.gnupg" ]]; then
+    rm -rf ~/.gnupg
+    cp -a "$RHOME/.gnupg" ~/
+    ok "Restored ~/.gnupg"
+fi
+
+# SSH keys (from backup)
+if [[ -d "$RHOME/.ssh" ]]; then
+    rm -rf ~/.ssh
+    cp -a "$RHOME/.ssh" ~/
+    ok "Restored ~/.ssh"
+fi
+
+# Pass store (clone from GitHub — source controlled)
+if [[ ! -d ~/.password-store/.git ]]; then
+    gh repo clone ryanklee/pass-store ~/.password-store > /dev/null 2>&1 && \
+        ok "Cloned pass store from GitHub" || {
+        # Fallback: restore from backup
+        if [[ -d "$RHOME/.password-store" ]]; then
+            rm -rf ~/.password-store
+            cp -a "$RHOME/.password-store" ~/
+            ok "Restored ~/.password-store (from backup)"
+        fi
+    }
+fi
+chmod 700 ~/.gnupg ~/.ssh 2>/dev/null || true
+chmod 600 ~/.gnupg/* ~/.ssh/id_* 2>/dev/null || true
+chmod 644 ~/.ssh/*.pub ~/.ssh/known_hosts 2>/dev/null || true
+
+# Verify pass
+pass ls > /dev/null 2>&1 && ok "pass store verified" || warn "pass may need GPG passphrase unlock"
+
+# Store B2 creds in pass
+echo "$B2_KEY_ID" | pass insert -e backblaze/key-id 2>/dev/null || true
+echo "$B2_APP_KEY" | pass insert -e backblaze/app-key 2>/dev/null || true
+echo "$RESTIC_PASSWORD" | pass insert -e backblaze/restic-password 2>/dev/null || true
+echo "$RESTIC_PASSWORD" | pass insert -e backups/restic-password 2>/dev/null || true
+ok "Backup credentials stored in pass"
+
+# ─── Phase 4: User configs ─────────────────────────────────────────────────
+log "=== Phase 4: Restore user configuration ==="
+
+# Dotfiles repo (symlinked config — fish, git, hyprland, waybar, tmux)
+if [[ ! -d "$HOME/dotfiles" ]]; then
+    gh repo clone ryanklee/dotfiles "$HOME/dotfiles" > /dev/null 2>&1 && \
+        ok "Cloned dotfiles repo" || warn "dotfiles clone failed"
+fi
+if [[ -f "$HOME/dotfiles/install.sh" ]]; then
+    bash "$HOME/dotfiles/install.sh"
+    ok "Dotfiles symlinked"
+fi
+
+# XDG config dirs NOT covered by dotfiles
+for d in foot fuzzel mako kanshi environment.d aichat mods autostart \
+         gtk-3.0 gtk-4.0 qt6ct rclone hapax-daimonion wireplumber pipewire gh atuin fabric; do
+    if [[ -d "$RHOME/.config/$d" ]]; then
+        mkdir -p ~/.config
+        rm -rf ~/.config/"$d"
+        cp -a "$RHOME/.config/$d" ~/.config/
+        ok "~/.config/$d"
+    fi
+done
+[[ -f "$RHOME/.config/starship.toml" ]] && cp -a "$RHOME/.config/starship.toml" ~/.config/
+[[ -f "$RHOME/.config/mimeapps.list" ]] && cp -a "$RHOME/.config/mimeapps.list" ~/.config/
+
+# Systemd user units
+if [[ -d "$RHOME/.config/systemd/user" ]]; then
+    mkdir -p ~/.config/systemd/user
+    cp -a "$RHOME/.config/systemd/user/"* ~/.config/systemd/user/
+    ok "systemd user units"
+fi
+
+# Claude Code config (source controlled — clone, don't copy from backup)
+if [[ ! -d "$HOME/.claude/.git" ]]; then
+    gh repo clone ryanklee/claude-code-config "$HOME/.claude-restore" > /dev/null 2>&1
+    if [[ -d "$HOME/.claude-restore" ]]; then
+        mkdir -p ~/.claude
+        cp -a "$HOME/.claude-restore/"* ~/.claude/ 2>/dev/null
+        cp -a "$HOME/.claude-restore/".* ~/.claude/ 2>/dev/null || true
+        rm -rf "$HOME/.claude-restore"
+        ok "Claude Code config restored from repo"
+    else
+        # Fallback: copy from backup
+        [[ -d "$RHOME/.claude" ]] && cp -a "$RHOME/.claude" ~/ && ok "~/.claude (from backup)"
+    fi
+fi
+
+# Custom scripts
+if [[ -d "$RHOME/.local/bin" ]]; then
+    mkdir -p ~/.local/bin
+    cp -a "$RHOME/.local/bin/"* ~/.local/bin/
+    find ~/.local/bin -name '*.sh' -exec chmod +x {} \; 2>/dev/null
+    find ~/.local/bin -name '*.py' -exec chmod +x {} \; 2>/dev/null
+    find ~/.local/bin/hypr-scripts -type f -exec chmod +x {} \; 2>/dev/null
+    find ~/.local/bin/waybar-scripts -type f -exec chmod +x {} \; 2>/dev/null
+    find ~/.local/bin/llm-hotkeys -type f -exec chmod +x {} \; 2>/dev/null
+    ok "~/.local/bin"
+fi
+
+# Local share data
+for d in atuin hapax-daimonion keyrings fonts; do
+    if [[ -d "$RHOME/.local/share/$d" ]]; then
+        mkdir -p ~/.local/share
+        rm -rf ~/.local/share/"$d"
+        cp -a "$RHOME/.local/share/$d" ~/.local/share/
+        ok "~/.local/share/$d"
+    fi
+done
+# WirePlumber state (persisted volumes, default devices)
+if [[ -d "$RHOME/.local/state/wireplumber" ]]; then
+    mkdir -p ~/.local/state/wireplumber
+    cp -a "$RHOME/.local/state/wireplumber/"* ~/.local/state/wireplumber/
+    ok "~/.local/state/wireplumber (volume state)"
+fi
+
+fc-cache -f 2>/dev/null && ok "Font cache rebuilt" || true
+
+# Models (Piper TTS)
+for d in "$RESTORE_DIR/home"/*/models; do
+    if [[ -d "$d" ]]; then
+        cp -a "$d" ~/
+        ok "~/models"
+        break
+    fi
+done
+
+# llm-stack (full directory)
+for d in "$RESTORE_DIR/home"/*/llm-stack; do
+    if [[ -d "$d" ]]; then
+        mkdir -p ~/llm-stack
+        cp -a "$d"/* ~/llm-stack/
+        ok "~/llm-stack"
+        break
+    fi
+done
+
+# ─── Phase 5: System configs ───────────────────────────────────────────────
+log "=== Phase 5: Restore system configuration ==="
+
+RETC="$RESTORE_DIR/etc"
+
+# Save restored fstab for reference (UUIDs will differ)
+[[ -f "$RETC/fstab" ]] && sudo cp "$RETC/fstab" /etc/fstab.restored
+log "Old fstab saved to /etc/fstab.restored (UUIDs will differ)"
+
+# Docker daemon config
+[[ -f "$RETC/docker/daemon.json" ]] && sudo mkdir -p /etc/docker && \
+    sudo cp "$RETC/docker/daemon.json" /etc/docker/daemon.json && ok "/etc/docker/daemon.json"
+
+# Bluetooth
+[[ -f "$RETC/bluetooth/main.conf" ]] && \
+    sudo cp "$RETC/bluetooth/main.conf" /etc/bluetooth/main.conf && ok "bluetooth config"
+
+# udev rules
+if [[ -d "$RETC/udev/rules.d" ]]; then
+    sudo cp "$RETC/udev/rules.d/"*.rules /etc/udev/rules.d/ 2>/dev/null
+    ok "udev rules"
+fi
+
+# sysctl
+if [[ -d "$RETC/sysctl.d" ]]; then
+    for f in "$RETC/sysctl.d/"90-*.conf; do
+        [[ -f "$f" ]] && sudo cp "$f" /etc/sysctl.d/
+    done
+    sudo sysctl --system > /dev/null 2>&1
+    ok "sysctl tuning"
+fi
+
+# NetworkManager
+if [[ -d "$RETC/NetworkManager/conf.d" ]]; then
+    sudo mkdir -p /etc/NetworkManager/conf.d
+    sudo cp "$RETC/NetworkManager/conf.d/"99-*.conf /etc/NetworkManager/conf.d/ 2>/dev/null
+    ok "NetworkManager config"
+fi
+
+# journald
+if [[ -d "$RETC/systemd/journald.conf.d" ]]; then
+    sudo mkdir -p /etc/systemd/journald.conf.d
+    sudo cp "$RETC/systemd/journald.conf.d/"* /etc/systemd/journald.conf.d/
+    ok "journald config"
+fi
+
+# modprobe.d configs from backup (NVIDIA handled separately in Phase 6)
+if [[ -d "$RETC/modprobe.d" ]]; then
+    for f in "$RETC/modprobe.d/"*.conf; do
+        [[ -f "$f" ]] || continue
+        fname=$(basename "$f")
+        # Skip nvidia.conf — Phase 6 writes a known-good version
+        [[ "$fname" == "nvidia.conf" ]] && continue
+        sudo cp "$f" /etc/modprobe.d/
+    done
+    ok "modprobe.d configs (usbcore, uvcvideo, v4l2loopback)"
+fi
+
+sudo udevadm control --reload-rules 2>/dev/null || true
+
+# ─── Phase 6: NVIDIA modprobe ──────────────────────────────────────────────
+log "=== Phase 6: NVIDIA kernel module options ==="
+
+sudo tee /etc/modprobe.d/nvidia.conf > /dev/null <<'NVIDIA'
+options nvidia NVreg_UsePageAttributeTable=1
+options nvidia_drm modeset=1
+options nvidia NVreg_PreserveVideoMemoryAllocations=1
+options nvidia NVreg_TemporaryFilePath=/var
+options nvidia NVreg_DynamicPowerManagement=0x00
+NVIDIA
+ok "NVIDIA modprobe options"
+
+# Kernel modules
+sudo tee /etc/modules-load.d/hapax.conf > /dev/null <<'MODULES'
+snd-virmidi
+v4l2loopback
+MODULES
+ok "Kernel modules (snd-virmidi, v4l2loopback)"
+
+# ─── Phase 7: Install packages ─────────────────────────────────────────────
+log "=== Phase 7: Install system packages ==="
+
+# Hyprland + Wayland desktop
+PKGS_DESKTOP=(
+    hyprland hyprlock hypridle hyprpaper xdg-desktop-portal-hyprland
+    foot fuzzel waybar mako wl-clipboard cliphist slurp grim
+    wlsunset playerctl brightnessctl
+    blueman pavucontrol qt6ct qt6-wayland
+    kanshi wf-recorder wtype
+)
+
+# GPU + CUDA — detect which kernel's nvidia module to install
+NVIDIA_MODULE=""
+if pacman -Q linux-cachyos-lts &>/dev/null; then
+    NVIDIA_MODULE="linux-cachyos-lts-nvidia-open"
+elif pacman -Q linux-cachyos &>/dev/null; then
+    NVIDIA_MODULE="linux-cachyos-nvidia-open"
+fi
+PKGS_GPU=(
+    ${NVIDIA_MODULE:+$NVIDIA_MODULE} nvidia-utils lib32-nvidia-utils
+    cuda nvidia-container-toolkit nvtop mangohud
+)
+
+# Docker
+PKGS_DOCKER=(
+    docker docker-compose docker-buildx
+)
+
+# CLI tools
+PKGS_CLI=(
+    fish tmux direnv jq ripgrep bat fd eza zoxide fzf
+    git git-delta github-cli pandoc-cli imagemagick
+    starship atuin pass gnupg ydotool micro
+    ttf-jetbrains-mono-nerd noto-fonts-emoji
+)
+
+# System services
+PKGS_SYSTEM=(
+    earlyoom restic rclone tailscale smartmontools
+    python-pipx alsa-utils qpwgraph irqbalance
+    flatpak rnnoise noise-suppression-for-voice
+    v4l2loopback-dkms v4l2loopback-utils
+)
+
+# Dev toolchain
+PKGS_DEV=(
+    base-devel cmake rustup python python-pip
+)
+
+# Btrfs maintenance (no grub-btrfs — system uses Limine)
+PKGS_BTRFS=(
+    snapper snap-pac
+)
+
+sudo pacman -S --noconfirm --needed \
+    "${PKGS_DESKTOP[@]}" "${PKGS_GPU[@]}" "${PKGS_DOCKER[@]}" \
+    "${PKGS_CLI[@]}" "${PKGS_SYSTEM[@]}" "${PKGS_DEV[@]}" "${PKGS_BTRFS[@]}" \
+    2>&1 | tail -5
+
+ok "Pacman packages installed"
+
+# AUR packages
+log "Installing AUR packages..."
+paru -S --noconfirm --needed wlogout 2>&1 | tail -3 || warn "wlogout AUR install failed"
+ok "AUR packages"
+
+# ─── Phase 8: Standalone tools ──────────────────────────────────────────────
+log "=== Phase 8: Install standalone toolchain ==="
+
+# Rust (via rustup, already installed by pacman)
+if ! rustup show | grep -q stable; then
+    rustup default stable > /dev/null 2>&1
+    ok "Rust stable toolchain"
+fi
+
+# uv (Python)
+if ! command -v uv &>/dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+    ok "uv installed"
+fi
+
+# fnm (Node.js)
+if ! command -v fnm &>/dev/null; then
+    curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell > /dev/null 2>&1
+    export PATH="$HOME/.local/share/fnm:$PATH"
+    eval "$(fnm env)"
+    fnm install 22
+    ok "fnm + Node 22"
+fi
+
+# pnpm
+if ! command -v pnpm &>/dev/null; then
+    npm install -g pnpm > /dev/null 2>&1
+    ok "pnpm"
+fi
+
+# Claude Code (pinned version — check memory for latest known-good)
+if ! command -v claude &>/dev/null; then
+    npm install -g @anthropic-ai/claude-code > /dev/null 2>&1
+    ok "Claude Code"
+fi
+
+# Claude Code plugins (reinstall from marketplace)
+if command -v claude &>/dev/null; then
+    log "Installing Claude Code plugins..."
+    CLAUDE_PLUGINS=(
+        superpowers frontend-design feature-dev commit-commands
+        security-guidance rust-analyzer-lsp claude-code-setup
+        ralph-loop claude-md-management pr-review-toolkit
+        hookify playground
+    )
+    for plugin in "${CLAUDE_PLUGINS[@]}"; do
+        claude plugins install "$plugin" > /dev/null 2>&1 && ok "plugin: $plugin" || true
+    done
+    # Community marketplaces
+    claude plugins marketplace add existential-birds/beagle > /dev/null 2>&1 || true
+    claude plugins marketplace add L3DigitalNet/Claude-Code-Plugins > /dev/null 2>&1 || true
+    claude plugins install beagle-python > /dev/null 2>&1 && ok "plugin: beagle-python" || true
+    claude plugins install beagle-react > /dev/null 2>&1 && ok "plugin: beagle-react" || true
+    claude plugins install beagle-ai > /dev/null 2>&1 && ok "plugin: beagle-ai" || true
+    claude plugins install linux-sysadmin > /dev/null 2>&1 && ok "plugin: linux-sysadmin" || true
+fi
+
+# Go
+if ! command -v go &>/dev/null; then
+    sudo pacman -S --noconfirm go > /dev/null 2>&1
+    ok "Go"
+fi
+
+# Cargo tools
+command -v aichat &>/dev/null || cargo install aichat > /dev/null 2>&1 && ok "aichat" || true
+
+# Go tools
+export PATH="/usr/bin:$HOME/go/bin:$PATH"
+command -v mods &>/dev/null || go install github.com/charmbracelet/mods@latest > /dev/null 2>&1 && ok "mods" || true
+command -v fabric &>/dev/null || go install github.com/danielmiessler/fabric@latest > /dev/null 2>&1 && ok "fabric" || true
+
+# pipx tools
+pipx install llm > /dev/null 2>&1 || true
+pipx install shell-gpt > /dev/null 2>&1 || true
+ok "pipx tools"
+
+# ─── Phase 9: Flatpak apps ─────────────────────────────────────────────────
+log "=== Phase 9: Install Flatpak apps ==="
+
+flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null
+
+FLATPAK_APPS=(
+    io.github.aandrew_me.ytdn
+)
+
+for app in "${FLATPAK_APPS[@]}"; do
+    flatpak install -y --noninteractive flathub "$app" > /dev/null 2>&1 && ok "Flatpak: $app" || warn "Flatpak: $app failed"
+done
+
+ok "Flatpak apps installed"
+
+# ─── Phase 10: System configuration ────────────────────────────────────────
+log "=== Phase 10: System services & groups ==="
+
+# User groups
+sudo usermod -aG docker,input "$USER" 2>/dev/null || true
+
+# NVIDIA container runtime
+sudo nvidia-ctk runtime configure --runtime=docker > /dev/null 2>&1 || true
+
+# Ensure fish is default shell (CachyOS default, but verify)
+if [[ "$SHELL" != "$(which fish)" ]] && command -v fish &>/dev/null; then
+    sudo chsh -s "$(which fish)" "$USER" && ok "Default shell: fish"
+fi
+
+# Enable system services
+sudo systemctl enable --now docker 2>/dev/null || true
+sudo systemctl enable --now bluetooth 2>/dev/null || true
+sudo systemctl enable --now earlyoom 2>/dev/null || true
+sudo systemctl enable --now tailscaled 2>/dev/null || true
+sudo systemctl enable --now smartd 2>/dev/null || true
+sudo systemctl enable --now fstrim.timer 2>/dev/null || true
+sudo systemctl enable --now irqbalance 2>/dev/null || true
+
+# Btrfs snapshots
+# Create snapper config for root if it doesn't exist yet
+if [[ ! -f /etc/snapper/configs/root ]]; then
+    sudo snapper -c root create-config / 2>/dev/null && ok "Snapper config created for /" || warn "Snapper create-config failed"
+fi
+sudo systemctl enable --now snapper-cleanup.timer 2>/dev/null || true
+sudo systemctl enable --now btrfs-scrub@-.timer 2>/dev/null || true
+
+# Tune snapper retention (default 50 is too many)
+if [[ -f /etc/snapper/configs/root ]]; then
+    sudo sed -i 's/NUMBER_LIMIT="50"/NUMBER_LIMIT="15"/' /etc/snapper/configs/root
+    sudo sed -i 's/NUMBER_LIMIT_IMPORTANT="50"/NUMBER_LIMIT_IMPORTANT="10"/' /etc/snapper/configs/root
+    ok "Snapper retention tuned (15 normal, 10 important)"
+fi
+
+# earlyoom config (Arch uses /etc/default/earlyoom)
+sudo tee /etc/default/earlyoom > /dev/null <<'EARLYOOM'
+EARLYOOM_ARGS="-m 5 -s 5 --prefer '(ollama|comfyui|qwen|deepseek|audio_processor|litellm|clickhouse)' --avoid '(Hyprland|pipewire|wireplumber|dockerd|containerd|bluetoothd|systemd|foot|waybar)'"
+EARLYOOM
+sudo systemctl restart earlyoom 2>/dev/null || true
+ok "earlyoom configured"
+
+# SMART monitoring
+sudo tee /etc/smartd.conf > /dev/null <<'SMARTD'
+DEVICESCAN -a -o on -S on -n standby,q -s (S/../.././02|L/../../6/03) -W 4,35,45 -m root -M exec /usr/share/smartmontools/smartd_warning.sh
+SMARTD
+sudo systemctl restart smartd 2>/dev/null || true
+ok "SMART monitoring enabled"
+
+ok "System services configured"
+
+# ─── Phase 11: SATA drive ──────────────────────────────────────────────────
+log "=== Phase 11: SATA drive setup ==="
+
+# Detect SATA drive
+SATA_DEV=""
+for dev in /dev/sda /dev/sdb; do
+    if [[ -b "$dev" ]] && ! mount | grep -q "$dev"; then
+        SATA_DEV="$dev"
+        break
+    fi
+done
+
+if [[ -n "$SATA_DEV" ]]; then
+    log "Found SATA drive: $SATA_DEV"
+    if lsblk "$SATA_DEV" | grep -q part; then
+        log "SATA drive already partitioned"
+    else
+        log "Partitioning $SATA_DEV (600G docker + rest data)..."
+        sudo parted "$SATA_DEV" --script mklabel gpt
+        sudo parted "$SATA_DEV" --script mkpart docker ext4 1MiB 600GiB
+        sudo parted "$SATA_DEV" --script mkpart data ext4 600GiB 100%
+        sudo mkfs.ext4 -L docker "${SATA_DEV}1"
+        sudo mkfs.ext4 -L data "${SATA_DEV}2"
+        ok "SATA drive partitioned"
+    fi
+
+    # Ensure mountpoints exist
+    sudo mkdir -p /var/lib/docker /data /data/backups/restic
+
+    # Add fstab entries if not already present
+    DOCKER_UUID=$(sudo blkid -s UUID -o value "${SATA_DEV}1")
+    DATA_UUID=$(sudo blkid -s UUID -o value "${SATA_DEV}2")
+
+    if [[ -n "$DOCKER_UUID" ]] && ! grep -q "$DOCKER_UUID" /etc/fstab; then
+        echo "UUID=${DOCKER_UUID} /var/lib/docker ext4 defaults,noatime,commit=60 0 2" | sudo tee -a /etc/fstab
+        ok "Added /var/lib/docker to fstab"
+    fi
+    if [[ -n "$DATA_UUID" ]] && ! grep -q "$DATA_UUID" /etc/fstab; then
+        echo "UUID=${DATA_UUID} /data ext4 defaults,noatime,commit=60 0 2" | sudo tee -a /etc/fstab
+        ok "Added /data to fstab"
+    fi
+
+    # Mount if not already mounted
+    mountpoint -q /var/lib/docker || sudo mount /var/lib/docker 2>/dev/null || warn "/var/lib/docker mount failed"
+    mountpoint -q /data || sudo mount /data 2>/dev/null || warn "/data mount failed"
+    sudo mkdir -p /data/backups/restic
+    ok "SATA drive mounted"
+else
+    warn "No unmounted SATA drive found — skipping"
+fi
+
+# tmpfs for /tmp
+if ! mount | grep -q "tmpfs on /tmp"; then
+    echo "tmpfs /tmp tmpfs defaults,noatime,size=8G 0 0" | sudo tee -a /etc/fstab
+    sudo mount -t tmpfs -o defaults,noatime,size=8G tmpfs /tmp
+    ok "tmpfs /tmp"
+fi
+
+# ─── Phase 12: Docker stack ────────────────────────────────────────────────
+log "=== Phase 12: Start Docker stack + restore databases ==="
+
+DUMP="$RESTORE_DIR/tmp/hapax-backup-dumps-remote"
+[[ ! -d "$DUMP" ]] && DUMP="$RESTORE_DIR/tmp/hapax-backup-dumps"
+
+if [[ -f ~/llm-stack/docker-compose.yml ]]; then
+    log "Starting Docker stack..."
+    cd ~/llm-stack
+    set +u; source .envrc 2>/dev/null || true; set -u
+    sudo systemctl restart docker 2>/dev/null
+    # Use sudo — docker group not active until re-login
+    sudo docker compose up -d 2>&1 | tail -5
+    ok "Docker stack starting"
+
+    # Wait for postgres
+    log "Waiting for PostgreSQL..."
+    for i in $(seq 1 30); do
+        sudo docker exec postgres pg_isready -U postgres > /dev/null 2>&1 && break
+        sleep 2
+    done
+
+    # Restore PostgreSQL
+    if [[ -f "$DUMP/postgres-all.sql" ]]; then
+        sudo docker exec -i postgres psql -U postgres < "$DUMP/postgres-all.sql" > /dev/null 2>&1 && \
+            ok "PostgreSQL restored" || warn "PostgreSQL restore had errors (may be OK)"
+    fi
+
+    # Wait for Qdrant
+    log "Waiting for Qdrant..."
+    for i in $(seq 1 30); do
+        curl -sf http://127.0.0.1:6333/healthz > /dev/null 2>&1 && break
+        sleep 2
+    done
+
+    # Restore Qdrant
+    if [[ -d "$DUMP/qdrant" ]]; then
+        for snap in "$DUMP/qdrant/"*.snapshot; do
+            [[ ! -f "$snap" ]] && continue
+            coll=$(basename "$snap" .snapshot)
+            curl -sf -X POST "http://127.0.0.1:6333/collections/${coll}/snapshots/upload" \
+                -H 'Content-Type: multipart/form-data' \
+                -F "snapshot=@${snap}" > /dev/null 2>&1 && \
+                ok "Qdrant: $coll" || warn "Qdrant: $coll failed"
+        done
+    fi
+    cd ~
+fi
+
+# ─── Phase 12b: Ollama models ────────────────────────────────────────────
+log "=== Phase 12b: Pull Ollama models ==="
+
+if command -v ollama &>/dev/null || pacman -Q ollama-cuda &>/dev/null 2>&1; then
+    sudo systemctl enable --now ollama 2>/dev/null || true
+    sleep 3
+    OLLAMA_MODELS=(nomic-embed-text nomic-embed-cpu qwen3:4b qwen3:8b gemma3:4b phi4-mini)
+    for model in "${OLLAMA_MODELS[@]}"; do
+        log "Pulling $model..."
+        ollama pull "$model" 2>&1 | tail -1 && ok "Ollama: $model" || warn "Ollama: $model failed"
+    done
+else
+    warn "Ollama not installed — install ollama-cuda and pull models manually"
+fi
+
+# ─── Phase 13: Git repos ───────────────────────────────────────────────────
+log "=== Phase 13: Clone git repositories ==="
+
+mkdir -p ~/projects
+
+# Repos with remotes (clone from GitHub)
+# Try SSH first, fall back to gh (uses OAuth token from gh auth login)
+declare -A REPOS=(
+    [distro-work]="ryanklee/distro-work"
+    [hapax-constitution]="ryanklee/hapax-constitution"
+    [hapax-council]="ryanklee/hapax-council"
+    [hapax-officium]="ryanklee/hapax-officium"
+    [hapax-watch]="ryanklee/hapax-watch"
+    [hapax-mcp]="ryanklee/hapax-mcp"
+    [hapax-phone]="ryanklee/hapax-phone"
+)
+
+for repo in "${!REPOS[@]}"; do
+    if [[ ! -d "$HOME/projects/$repo" ]]; then
+        if git clone "git@github.com:${REPOS[$repo]}.git" "$HOME/projects/$repo" > /dev/null 2>&1; then
+            ok "Cloned $repo (SSH)"
+        elif gh repo clone "${REPOS[$repo]}" "$HOME/projects/$repo" > /dev/null 2>&1; then
+            ok "Cloned $repo (gh)"
+        else
+            warn "Failed to clone $repo"
+        fi
+    else
+        ok "$repo already exists"
+    fi
+done
+
+# Public repos (no auth needed)
+if [[ ! -d "$HOME/projects/tabbyAPI" ]]; then
+    git clone https://github.com/theroyallab/tabbyAPI "$HOME/projects/tabbyAPI" > /dev/null 2>&1 && \
+        ok "Cloned tabbyAPI" || warn "Failed to clone tabbyAPI"
+fi
+
+# Repos without remotes — restore from git bundles
+BUNDLES="$DUMP/git-bundles"
+for repo in obsidian-hapax sample-search hapax-system; do
+    if [[ ! -d "$HOME/projects/$repo" ]]; then
+        if [[ -f "$BUNDLES/${repo}.bundle" ]]; then
+            git clone "$BUNDLES/${repo}.bundle" "$HOME/projects/$repo" > /dev/null 2>&1 && \
+                ok "Restored $repo from bundle" || warn "Failed to restore $repo"
+        else
+            warn "$repo has no remote and no bundle — manual recovery needed"
+        fi
+    fi
+done
+
+# Restore git dirty state (uncommitted work)
+for repo in ~/projects/*/; do
+    name=$(basename "$repo")
+    patch="$DUMP/git-diff-${name}.patch"
+    if [[ -f "$patch" && -s "$patch" ]]; then
+        git -C "$repo" apply "$patch" > /dev/null 2>&1 && \
+            log "Applied uncommitted changes to $name" || true
+    fi
+done
+
+# Documents/Work vault (git repo, no remote — restore from bundle)
+if [[ ! -d ~/Documents/Work ]]; then
+    mkdir -p ~/Documents
+    if [[ -f "$BUNDLES/Work.bundle" ]]; then
+        git clone "$BUNDLES/Work.bundle" ~/Documents/Work > /dev/null 2>&1 && ok "Documents/Work"
+    else
+        warn "Documents/Work has no bundle — sync via Obsidian Sync"
+    fi
+fi
+
+# ─── Phase 14: Local backup repo ───────────────────────────────────────────
+log "=== Phase 14: Initialize local backup repo ==="
+
+if [[ -d /data ]]; then
+    mkdir -p /data/backups/restic
+    RESTIC_PASSWORD="$RESTIC_PASSWORD" restic -r /data/backups/restic init 2>/dev/null || \
+        ok "Local restic repo already initialized"
+    ok "Local backup repo ready at /data/backups/restic"
+else
+    warn "/data not mounted — local backup skipped"
+fi
+
+# ─── Phase 15: Enable user services & timers ───────────────────────────────
+log "=== Phase 15: Enable systemd user services & timers ==="
+
+systemctl --user daemon-reload
+
+# Core services
+SERVICES=(
+    hapax-secrets
+    logos-api officium-api
+    hapax-daimonion hapax-watch-receiver
+    studio-compositor studio-fx-output visual-layer-aggregator
+    audio-recorder rag-ingest
+    keychron-keepalive ydotool
+    llm-stack llm-stack-analytics
+)
+for svc in "${SERVICES[@]}"; do
+    systemctl --user enable "$svc.service" 2>/dev/null && ok "service: $svc" || true
+done
+
+# Timers
+TIMERS=(
+    hapax-backup-local hapax-backup-remote
+    health-monitor stack-maintenance
+    daily-briefing digest profile-update
+    audio-processor av-correlator
+    drift-detector knowledge-maint scout
+    llm-backup llm-cost-alert log-anomaly-alert manifest-snapshot
+    chrome-sync claude-code-sync gcalendar-sync gdrive-sync gmail-sync
+    git-sync langfuse-sync stimmung-sync weather-sync
+    health-connect-parse obsidian-sync youtube-sync
+    cache-cleanup dev-story-index disk-space-check flow-journal
+    gpg-keyboxd-watchdog mixer-keepalive rclone-gdrive-drop
+    screen-context storage-arbiter tmp-monitor
+    video-processor video-retention vram-watchdog
+)
+for timer in "${TIMERS[@]}"; do
+    systemctl --user enable "$timer.timer" 2>/dev/null && ok "timer: $timer" || true
+done
+
+# Set Yeti capture gain to 73% (+8dB) — persisted by WirePlumber state after first set
+wpctl set-volume alsa_input.usb-Blue_Microphones_Yeti_Stereo_Microphone_REV8-00.analog-stereo 0.73 2>/dev/null && \
+    ok "Yeti capture gain: 73%" || true
+
+# ─── Phase 16: Arch-specific adjustments ───────────────────────────────────
+log "=== Phase 16: CachyOS-specific tweaks ==="
+
+# Verify fish config was restored
+if [[ -f ~/.config/fish/config.fish ]]; then
+    ok "Fish config present"
+else
+    warn "Fish config missing — may need manual setup"
+fi
+
+# Pacman parallel downloads + colors
+sudo sed -i 's/#ParallelDownloads/ParallelDownloads/' /etc/pacman.conf 2>/dev/null
+sudo sed -i 's/#Color/Color/' /etc/pacman.conf 2>/dev/null
+ok "Pacman optimized (parallel downloads, color)"
+
+# ─── Summary ────────────────────────────────────────────────────────────────
+echo ""
+log "=========================================="
+log "  CachyOS Restore Complete"
+log "=========================================="
+echo ""
+log "Manual steps:"
+echo "  1. Log out and back in (docker group activation)"
+echo "  2. Select Hyprland session at login screen"
+echo "  3. tailscale up   (authenticate)"
+echo "  4. Add SSH pubkey to GitHub if regenerated: cat ~/.ssh/id_ed25519.pub"
+echo "  5. Verify: docker compose -f ~/llm-stack/docker-compose.yml ps"
+echo "  6. Verify: pass show api/anthropic"
+echo "  7. Verify: claude --version && claude plugins list"
+echo "  8. cd ~/projects/hapax-council && uv sync"
+echo "  9. systemctl --user start logos-api && systemctl --user start hapax-daimonion"
+echo " 10. First local backup: ~/.local/bin/hapax-backup-local.sh"
+echo ""
+log "Verification:"
+echo "  nvidia-smi                    # GPU"
+echo "  snapper list                  # btrfs snapshots"
+echo "  sudo smartctl -a /dev/nvme0n1 # disk health"
+echo "  systemctl --user --failed     # failed services"
+echo "  pass ls                       # secrets"
+echo "  claude plugins list           # claude plugins"
+echo ""
+log "Estimated time from fresh CachyOS install to here: ~20 minutes"
+echo ""
