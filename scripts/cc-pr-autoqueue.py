@@ -70,6 +70,7 @@ from github_pr_status import (  # noqa: E402
     fetch_status_check_rollup_rest,
     get_pr_status_graphql,
     get_pull_rest,
+    get_pull_rest_routed,
     graphql_pool_blocked,
     list_open_pr_statuses,
     listing_unavailable_detail,
@@ -3094,9 +3095,11 @@ def _current_base_branch_blocker(
     When the cycle has ruled REST out, hold the write until that evidence is
     available; a stale listing cannot justify an arm.
     """
-    if route is not None and route.rest_blocked:
+    rest_eligible, payload = get_pull_rest_routed(
+        pr.number, route=route, repo=repo, repo_root=repo_root, runner=runner
+    )
+    if not rest_eligible:
         return "current_base_branch_unverified:rest_unavailable"
-    payload = get_pull_rest(pr.number, repo=repo, repo_root=repo_root, runner=runner)
     if not isinstance(payload, dict):
         return "current_base_branch_unverified:pr_unreadable"
     head = payload.get("head")
