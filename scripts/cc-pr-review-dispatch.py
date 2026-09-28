@@ -2140,6 +2140,11 @@ def write_split_required_notices(
             f"- {seat}: {value['limit_bytes']:,} ({value['status']})"
             for seat, value in sorted(limits.items())
         ),
+        "Rendered prompt bytes / prompt ceiling by seat:",
+        *(
+            f"- {seat}: {size:,} / {limits[seat]['prompt_limit_bytes']:,}"
+            for seat, size in sorted(substitution["prompt_bytes_by_seat"].items())
+        ),
         "Largest diff files:",
         *(f"- {row['file']}: {row['bytes']:,} bytes" for row in largest_files),
         "Next action: split the PR into reviewable pieces, with hold on every stacked piece at creation.",
@@ -3964,9 +3969,76 @@ def review_pr(
             "reason": str(exc),
             "next_action": "Repair diff_capacity in config/review-lenses/registry.yaml, then retry.",
         }
+    if constitution is not None:
+        prior_criticals = [
+            finding
+            for path, _, match_task_id in keyed_matches
+            for finding in _prior_unresolved_criticals(
+                review_team.review_dossier_path(path, match_task_id)
+            )
+        ]
+        changed_source_excerpt_files = [
+            rel for rel in pr_info.files if rel in _REVIEW_SOURCE_EXCERPT_SYMBOLS
+        ]
+        if prior_criticals or changed_source_excerpt_files:
+            ensure_head_object(repo_root, pr_info.head_sha, pr_number)
+        prior_file_excerpts, prior_evidence_records = build_prior_file_excerpts(
+            prior_criticals, repo_root=repo_root, head_sha=pr_info.head_sha
+        )
+        changed_file_excerpts, changed_source_evidence_records = build_changed_file_excerpts(
+            changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
+        )
+        reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
+        task_note_text = "\n\n".join(
+            f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
+            for path, _, _ in keyed_matches
+        )
+        charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
+        candidate_prompts = {
+            seat_id: render_reviewer_prompt(
+                seat=review_team.Seat(id=seat_id, family=seat_id.removesuffix("-1")),
+                pr_info=pr_info,
+                diff_source=pr_diff.source,
+                comparison_base=pr_diff.comparison_base,
+                task_id=task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
+                team_class=team_class,
+                lenses=lenses,
+                charters=charters,
+                pr_body=pr_info.body,
+                task_note_text=task_note_text,
+                diff=pr_diff,
+                prior_criticals=prior_criticals,
+                prior_file_excerpts=reviewer_source_excerpts,
+            )
+            for seat_id, capacity in substitution["seat_limits"].items()
+            if diff_bytes <= capacity["limit_bytes"]
+        }
+        try:
+            constitution, substitution, constitution_error = constitute_with_substitution(
+                team_class,
+                writer_family,
+                registry,
+                inputs,
+                effective_route_blocked_families,
+                pr_number=pr_number,
+                diff_bytes=diff_bytes,
+                prompt_bytes_by_seat={
+                    seat_id: len(prompt.encode("utf-8"))
+                    for seat_id, prompt in candidate_prompts.items()
+                },
+            )
+        except review_team.DiffCapacityConfigError as exc:
+            return {
+                "status": "diff_capacity_config_invalid",
+                "pr": pr_number,
+                "reason": str(exc),
+                "next_action": "Repair diff_capacity in config/review-lenses/registry.yaml, then retry.",
+            }
     if constitution is None:
         causes = [f"eligible_team:{constitution_error}"]
-        split_required = bool(substitution["excluded_for_size"])
+        split_required = bool(
+            substitution["excluded_for_size"] or substitution["excluded_for_prompt"]
+        )
         if split_required:
             baseline, _, baseline_error = constitute_with_substitution(
                 team_class,
@@ -4037,50 +4109,8 @@ def review_pr(
     }
     if not apply:
         return {"status": "planned", "plan": plan}
-
-    prior_criticals = [
-        finding
-        for path, _, match_task_id in keyed_matches
-        for finding in _prior_unresolved_criticals(
-            review_team.review_dossier_path(path, match_task_id)
-        )
-    ]
-    changed_source_excerpt_files = [
-        rel for rel in pr_info.files if rel in _REVIEW_SOURCE_EXCERPT_SYMBOLS
-    ]
-    if prior_criticals or changed_source_excerpt_files:
-        ensure_head_object(repo_root, pr_info.head_sha, pr_number)
-    prior_file_excerpts, prior_evidence_records = build_prior_file_excerpts(
-        prior_criticals, repo_root=repo_root, head_sha=pr_info.head_sha
-    )
-    changed_file_excerpts, changed_source_evidence_records = build_changed_file_excerpts(
-        changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
-    )
-    reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
     diff = pr_diff
-    task_note_text = "\n\n".join(
-        f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
-        for path, _, _ in keyed_matches
-    )
-    charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
-    prompts = [
-        render_reviewer_prompt(
-            seat=seat,
-            pr_info=pr_info,
-            diff_source=pr_diff.source,
-            comparison_base=pr_diff.comparison_base,
-            task_id=task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
-            team_class=team_class,
-            lenses=lenses,
-            charters=charters,
-            pr_body=pr_info.body,
-            task_note_text=task_note_text,
-            diff=diff,
-            prior_criticals=prior_criticals,
-            prior_file_excerpts=reviewer_source_excerpts,
-        )
-        for seat in constitution.seats
-    ]
+    prompts = [candidate_prompts[seat.id] for seat in constitution.seats]
     task_hash: str | None = None
     task_hash_source_task_id: str | None = None
     task_hash_source_note: str | None = None

@@ -831,6 +831,59 @@ class TestApply:
         assert all(r["diff_delivered_bytes"] == full for r in dossier["reviewers"])
         assert dossier["review_team_verdict"] == "quorum-accept"
 
+    def test_rendered_prompt_over_ceiling_replaces_seat_even_when_diff_fits(
+        self, tmp_path: Path
+    ) -> None:
+        gh = FakeGh()
+        gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 2_300
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            gh=gh,
+            task_kwargs={"exit_predicate": "P" * 45_000},
+        )
+        assert len(gh.diff.encode("utf-8")) < 39_974
+        assert result["status"] == "dispatched"
+        substitution = result["plan"]["family_substitution"]
+        assert {"gemini", "glm"} <= set(substitution["excluded_for_prompt"])
+        assert not substitution["excluded_for_size"]
+        assert substitution["prompt_bytes_by_seat"]["gemini-1"] > 70_205
+        assert all(
+            len(prompt.encode("utf-8"))
+            <= dispatch.review_team.seat_diff_capacity(
+                f"{family}-1", dispatch.review_team.load_lens_registry()
+            )["prompt_limit_bytes"]
+            for _, family, prompt in reviewers.invocations
+        )
+
+    def test_reseat_pairing_mismatch_returns_named_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seats = dispatch.review_team.Seat
+        constitution = dispatch.review_team.Constitution
+        calls = 0
+
+        def mismatched_constitution(*_args: Any, **_kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            team = (seats("claude-1", "claude"), seats("codex-1", "codex"))
+            if calls == 1:
+                team += (seats("gemini-1", "gemini"),)
+            return constitution("t2_standard", 2, team, ())
+
+        monkeypatch.setattr(dispatch.review_team, "constitute_team", mismatched_constitution)
+        inputs = dispatch.ConstitutionInputs({}, frozenset(), {}, None, {})
+        formed, _, error = dispatch.constitute_with_substitution(
+            "t2_standard",
+            "claude",
+            dispatch.review_team.load_lens_registry(),
+            inputs,
+            {},
+            pr_number=42,
+            diff_bytes=50_000,
+        )
+        assert formed is None
+        assert error == "size_reseat_pairing_mismatch:removed=1,added=0"
+
     def test_t1_90kb_diff_splits_on_same_family_reseat(self, tmp_path: Path) -> None:
         gh = FakeGh()
         gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "+payload\n" * 10_000

@@ -4387,6 +4387,8 @@ class TestDispatcherRepoThreading:
 
         class _PrInfo:
             number = 7
+            title = "repo-qualified task match"
+            body = ""
             is_draft = False
             files = ["scripts/review_team.py"]
             changed_file_count = 1
