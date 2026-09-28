@@ -1,0 +1,11 @@
+[Unit]
+Description=Check public inbox routes hourly
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=1h
+Persistent=true
+Unit=public-inbox-routes.service
+
+[Install]
+WantedBy=timers.target

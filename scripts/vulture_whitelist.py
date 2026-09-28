@@ -5443,3 +5443,9 @@ from scripts.billing_surface_input import (  # noqa: E402
 )
 
 _ = _billing_materialise_post_image
+
+# HTMLParser.feed() dynamically invokes this callback while crawling public
+# site links for inbox coverage. The test exercises feed(), not a direct call.
+from scripts.public_inbox_monitor import Links as _PublicInboxLinks  # noqa: E402
+
+_ = _PublicInboxLinks.handle_starttag
