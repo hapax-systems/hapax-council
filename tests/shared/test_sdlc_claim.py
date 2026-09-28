@@ -4494,10 +4494,11 @@ def _churning_task_store(
     point: str = "index_build",
     churn_on: Callable[[int], bool] = lambda _resolution: True,
 ) -> list[int]:
-    """Make a peer lane append a session-log line to its own row inside a resolution.
+    """Change a peer task identity inside a resolution.
 
-    The line lands at ``point``, so the task store's own frontier check sees a real
-    change. ``churn_on(n)`` decides per resolution attempt; the list counts attempts.
+    Session-log appends are now accepted when identity is stable. This fixture changes
+    the peer's task_id at ``point`` so each refusal remains an identity-frontier race.
+    ``churn_on(n)`` decides per resolution attempt; the list counts attempts.
     """
 
     peer = vault / "active" / "peer-row.md"
@@ -4511,35 +4512,50 @@ def _churning_task_store(
             )
         )
     attempts: list[int] = []
+    index_build_pending = [False]
 
     def peer_writes() -> None:
         if churn_on(len(attempts)):
-            with peer.open("ab") as handle:
-                handle.write(f"- peer log line {len(attempts)}\n".encode())
+            content = peer.read_bytes()
+            if b"task_id: peer-row\n" in content:
+                peer.write_bytes(
+                    content.replace(b"task_id: peer-row\n", b"task_id: peer-row-alt\n")
+                )
+            else:
+                peer.write_bytes(
+                    content.replace(b"task_id: peer-row-alt\n", b"task_id: peer-row\n")
+                )
 
+    original_build = sdlc_task_store.build_task_identity_index
     original_entry = sdlc_task_store._index_entry
-    original_validate = sdlc_task_store.validate_task_identity_index
+    original_reconcile = sdlc_task_store._reconcile_nonidentity_frontier
     original_snapshot = sdlc_task_store._snapshot
 
-    def index_entry(path: Path, **kwargs: object) -> object:
-        if path.name == "peer-row.md":  # once per index build, so once per attempt
-            attempts.append(len(attempts) + 1)
-            if point == "index_build":
-                peer_writes()
-        return original_entry(path, **kwargs)  # type: ignore[arg-type]
+    def build(vault_root: Path) -> object:
+        attempts.append(len(attempts) + 1)
+        index_build_pending[0] = point == "index_build"
+        return original_build(vault_root)
 
-    def validate(index: object) -> None:
-        if point == "since_index":
+    def index_entry(path: Path, **kwargs: object) -> object:
+        entry = original_entry(path, **kwargs)  # type: ignore[arg-type]
+        if path.name == "peer-row.md" and index_build_pending[0]:
+            index_build_pending[0] = False
             peer_writes()
-        original_validate(index)  # type: ignore[arg-type]
+        return entry
+
+    def reconcile(index: object, *, reason_code: str, **kwargs: object) -> object:
+        if point == "since_index" and reason_code == "task_store_frontier_changed_since_index":
+            peer_writes()
+        return original_reconcile(index, reason_code=reason_code, **kwargs)  # type: ignore[arg-type]
 
     def snapshot(path: Path, **kwargs: object) -> object:
         if point == "during_resolution":
             peer_writes()
         return original_snapshot(path, **kwargs)  # type: ignore[arg-type]
 
+    monkeypatch.setattr(sdlc_task_store, "build_task_identity_index", build)
     monkeypatch.setattr(sdlc_task_store, "_index_entry", index_entry)
-    monkeypatch.setattr(sdlc_task_store, "validate_task_identity_index", validate)
+    monkeypatch.setattr(sdlc_task_store, "_reconcile_nonidentity_frontier", reconcile)
     monkeypatch.setattr(sdlc_task_store, "_snapshot", snapshot)
     return attempts
 
