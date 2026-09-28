@@ -5064,13 +5064,8 @@ class TestMergeQueueRefHintReconciliation:
         assert report["decisions"][0]["action"] == "already_queued"
 
 
-def test_stale_release_arm_stamp_does_not_block_rearm(tmp_path: Path) -> None:
-    """Ledger 8.1 re-arm-follows-head: a stamp naming another head is stale.
-
-    The mismatch must not classify as a release_authorized_head_mismatch blocker;
-    the re-arm is evaluated against the current head and the staleness is
-    surfaced informationally on the decision.
-    """
+def test_stale_release_arm_stamp_blocks_admission(tmp_path: Path) -> None:
+    """A stamp for an earlier head cannot authorize the current PR head."""
     vault = _make_vault(tmp_path)
     _write_task(
         vault,
@@ -5096,9 +5091,251 @@ def test_stale_release_arm_stamp_does_not_block_rearm(tmp_path: Path) -> None:
         expected_auto_merge_method_source="test",
     )
 
-    assert decision.action == "queue"
-    assert not any(reason.startswith("release_authorized_head_") for reason in decision.reasons)
-    assert "release_authorized_head_stale:authorized=sha-old:current=sha-727" in decision.notes
+    assert decision.action == "blocked"
+    assert "release_authorized_head_mismatch:authorized=sha-old:current=sha-727" in decision.reasons
+
+
+def _reviewers_with_open_major() -> list[dict[str, Any]]:
+    reviewers = [
+        {
+            "id": f"{family}-1",
+            "family": family,
+            "verdict": "accept-with-findings" if family == "codex" else "accept",
+            "findings": [],
+            "checklist": COMPLETE_ALWAYS_ON_CHECKLIST,
+        }
+        for family in ("codex", "claude", "gemini")
+    ]
+    reviewers[0]["findings"] = [
+        {
+            "severity": "major",
+            "file": "shared/foo.py",
+            "line": 17,
+            "title": "Major defect",
+            "lens": "tests-cover-the-diff",
+            "resolved": False,
+        }
+    ]
+    return reviewers
+
+
+def test_open_major_withholds_sensitive_release_quorum(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="major-governance",
+        status="pr_open",
+        pr=42,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {"governance_sensitive": True},
+        },
+    )
+    _write_review_dossier(
+        vault, "major-governance", head_sha="sha-42", reviewers=_reviewers_with_open_major()
+    )
+    task = autoqueue.load_task_notes(vault)[0]
+    verified = autoqueue._release_mitigation_verified_checks(
+        {"authority-case-check"},
+        task,
+        task.frontmatter,
+        pr_number=42,
+        pr_head_sha="sha-42",
+        changed_files=("shared/foo.py",),
+        changed_file_count=1,
+    )
+    assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in verified
+
+
+def test_explicit_row_disposition_clears_open_major_for_current_head(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    ruling = tmp_path / "Documents/Personal/30-areas/hapax/lanebus/dev1/seat-ruling.md"
+    ruling.parent.mkdir(parents=True)
+    ruling.write_text("---\nfrom: claude/dev1\n---\nAccept Major defect at sha-42.\n")
+    _write_task(
+        vault,
+        task_id="dispositioned-governance",
+        status="pr_open",
+        pr=42,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {"governance_sensitive": True},
+            "release_finding_dispositions": [
+                {
+                    "head_sha": "sha-42",
+                    "reviewer_id": "codex-1",
+                    "file": "shared/foo.py",
+                    "line": 17,
+                    "title": "Major defect",
+                    "lens": "tests-cover-the-diff",
+                    "disposition": "accepted",
+                    "source": "30-areas/hapax/lanebus/dev1/seat-ruling.md",
+                }
+            ],
+        },
+    )
+    _write_review_dossier(
+        vault,
+        "dispositioned-governance",
+        head_sha="sha-42",
+        reviewers=_reviewers_with_open_major(),
+    )
+    task = autoqueue.load_task_notes(vault)[0]
+    verified = autoqueue._release_mitigation_verified_checks(
+        {"authority-case-check"},
+        task,
+        task.frontmatter,
+        pr_number=42,
+        pr_head_sha="sha-42",
+        changed_files=("shared/foo.py",),
+        changed_file_count=1,
+    )
+    assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE in verified
+
+
+@pytest.mark.parametrize(
+    ("disposition_head", "sender", "ruling_body"),
+    [
+        ("sha-old", "claude/dev1", "Accept Major defect at sha-42."),
+        ("sha-42", "codex-conductor", "Accept Major defect at sha-42."),
+        ("sha-42", "claude/dev1", "General note at sha-42."),
+    ],
+)
+def test_stale_or_author_written_disposition_cannot_clear_major(
+    tmp_path: Path, disposition_head: str, sender: str, ruling_body: str
+) -> None:
+    vault = _make_vault(tmp_path)
+    ruling = tmp_path / "Documents/Personal/30-areas/hapax/lanebus/dev1/ruling.md"
+    ruling.parent.mkdir(parents=True)
+    ruling.write_text(f"---\nfrom: {sender}\n---\n{ruling_body}\n")
+    _write_task(
+        vault,
+        task_id="unsafe-disposition",
+        status="pr_open",
+        pr=42,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "risk_flags": {"governance_sensitive": True},
+            "release_finding_dispositions": [
+                {
+                    "head_sha": disposition_head,
+                    "reviewer_id": "codex-1",
+                    "file": "shared/foo.py",
+                    "line": 17,
+                    "title": "Major defect",
+                    "lens": "tests-cover-the-diff",
+                    "disposition": "accepted",
+                    "source": "30-areas/hapax/lanebus/dev1/ruling.md",
+                }
+            ],
+        },
+    )
+    _write_review_dossier(
+        vault, "unsafe-disposition", head_sha="sha-42", reviewers=_reviewers_with_open_major()
+    )
+    task = autoqueue.load_task_notes(vault)[0]
+    verified = autoqueue._release_mitigation_verified_checks(
+        {"authority-case-check"},
+        task,
+        task.frontmatter,
+        pr_number=42,
+        pr_head_sha="sha-42",
+        changed_files=("shared/foo.py",),
+        changed_file_count=1,
+    )
+    assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in verified
+
+
+def test_head_scoped_seat_hold_blocks_then_lapses(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="held-ordinary",
+        status="pr_open",
+        pr=42,
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_seat_hold_head_sha": "sha-42",
+        },
+    )
+    tasks = autoqueue.load_task_notes(vault)
+
+    def classify(head_sha: str) -> autoqueue.Decision:
+        payload = _pr(42)
+        payload["headRefOid"] = head_sha
+        pr = autoqueue._parse_pr(payload)
+        assert pr is not None
+        return autoqueue.classify_pr(
+            pr,
+            tasks=tasks,
+            queued_prs=set(),
+            expected_auto_merge_method="SQUASH",
+            expected_auto_merge_method_source="test",
+        )
+
+    held = classify("sha-42")
+    assert held.action == "blocked"
+    assert "release_seat_hold:sha-42" in held.reasons
+    moved = classify("sha-new")
+    assert moved.auto_arm
+
+
+def test_seat_hold_rechecked_at_arm_write(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="seat-hold-at-write",
+        status="pr_open",
+        pr=42,
+        branch="feat/42",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_seat_hold_head_sha": "sha-42",
+        },
+    )
+    task = autoqueue.load_task_notes(vault)[0]
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(42)]
+    ledger = tmp_path / "ledger.jsonl"
+    ok, reason = autoqueue.arm_release_for_task(
+        task,
+        ledger_path=ledger,
+        pr_number=42,
+        head_ref="feat/42",
+        expected_head_sha="sha-42",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+    )
+    assert not ok
+    assert reason == "current_task_gate_blocked:release_seat_hold:sha-42"
+    assert "release_authorized: false" in note.read_text(encoding="utf-8")
+    assert not ledger.exists()
+
+
+def test_non_sensitive_major_does_not_change_auto_arm(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="ordinary-major",
+        status="pr_open",
+        pr=42,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    _write_review_dossier(
+        vault, "ordinary-major", head_sha="sha-42", reviewers=_reviewers_with_open_major()
+    )
+    task = autoqueue.load_task_notes(vault)[0]
+    verified = autoqueue._release_mitigation_verified_checks(
+        set(),
+        task,
+        task.frontmatter,
+        pr_number=42,
+        pr_head_sha="sha-42",
+        changed_files=("shared/foo.py",),
+        changed_file_count=1,
+    )
+    assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE in verified
 
 
 def test_fresh_release_arm_stamp_carries_no_stale_note(tmp_path: Path) -> None:
@@ -7011,13 +7248,8 @@ def test_sensitive_path_waiver_uses_current_note_at_revalidation(
     )
 
 
-def test_head_locked_sensitive_path_stale_head_follows_current_head(tmp_path: Path) -> None:
-    """Ledger 8.1: the stale stamp is informational even on a sensitive path.
-
-    The armed note's sensitive-path waiver machinery already records the
-    governance waiver for an authorized task; the stale stamp joins it as an
-    informational waiver while the re-arm is evaluated against the current head.
-    """
+def test_head_locked_sensitive_path_stale_head_blocks(tmp_path: Path) -> None:
+    """A sensitive-path waiver cannot excuse a stamp for an earlier head."""
     vault = _make_vault(tmp_path)
     _write_task(
         vault,
@@ -7046,46 +7278,19 @@ def test_head_locked_sensitive_path_stale_head_follows_current_head(tmp_path: Pa
     )
 
     decision = next(item for item in report["decisions"] if item["pr"] == 763)
-    assert decision["action"] == "queue"
-    assert not any(
-        reason.startswith("release_authorized_head_") for reason in decision.get("reasons", [])
+    assert decision["action"] == "blocked"
+    assert (
+        "release_authorized_head_mismatch:authorized=sha-before-force-push:current=sha-763"
+        in decision["reasons"]
     )
-    assert decision["notes"] == [
-        "release_authorized_head_stale:authorized=sha-before-force-push:current=sha-763"
-    ]
-    assert any(
-        item["pr"] == 763
-        and item["action"] == "release_authorization_waiver"
-        and item["waivers"]
-        == [
-            "release_authorized_head_stale:authorized=sha-before-force-push:current=sha-763",
-            "sensitive_path_waived_by_release_authorization:hapax-council/CLAUDE.md",
-        ]
-        for item in report["mutations"]
-    )
-    assert [
-        "gh",
-        "pr",
-        "merge",
-        "763",
-        "--repo",
-        "owner/repo",
-        "--auto",
-        "--squash",
-        "--match-head-commit",
-        "sha-763",
-    ] in runner.calls
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
-def test_sensitive_path_stale_head_during_revalidation_follows_head(
+def test_sensitive_path_stale_head_during_revalidation_blocks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stamp repointed to an old head mid-flight is stale, not a stop.
-
-    Ledger 8.1: revalidation continues against the current head; the staleness
-    is recorded as an informational waiver beside the sensitive-path waiver.
-    """
+    """A mid-flight stamp change stops the release mutation."""
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -7130,36 +7335,11 @@ def test_sensitive_path_stale_head_during_revalidation_follows_head(
         runner=runner,
     )
 
-    assert not any(
-        item["pr"] == 764 and item["action"] == "release_head_revalidation"
-        for item in report["mutations"]
-        if not item["ok"]
-    )
     assert any(
-        item["pr"] == 764
-        and item["action"] == "release_authorization_waiver"
-        and "release_authorized_head_stale:authorized=sha-old:current=sha-764" in item["waivers"]
-        and "sensitive_path_waived_by_release_authorization:hapax-council/CLAUDE.md"
-        in item["waivers"]
+        item["pr"] == 764 and item["action"] == "release_head_revalidation" and not item["ok"]
         for item in report["mutations"]
     )
-    assert any(
-        call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-764"]
-        and "state=success" in call
-        for call in runner.calls
-    )
-    assert [
-        "gh",
-        "pr",
-        "merge",
-        "764",
-        "--repo",
-        "owner/repo",
-        "--auto",
-        "--squash",
-        "--match-head-commit",
-        "sha-764",
-    ] in runner.calls
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_already_queued_replays_full_current_auto_arm_blockers_before_success_proof(
@@ -8525,13 +8705,8 @@ def test_arm_release_for_task_requires_head_sha_for_pr_linked_write(tmp_path: Pa
     assert not ledger.exists()
 
 
-def test_arm_release_for_task_restamps_stale_armed_note_at_current_head(tmp_path: Path) -> None:
-    """Ledger 8.1: an armed note whose stamp names another head is re-pointed.
-
-    The stale stamp does not refuse the arm; the note is re-stamped at the
-    current (evidence-revalidated) head and the staleness is named in the
-    result message and the ledger trail.
-    """
+def test_arm_release_for_task_rejects_stale_armed_note(tmp_path: Path) -> None:
+    """The write boundary must refuse a stamp for an earlier head."""
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -8562,18 +8737,15 @@ def test_arm_release_for_task_restamps_stale_armed_note_at_current_head(tmp_path
         runner=runner,
     )
 
-    assert ok is True
+    assert ok is False
     assert message == (
-        "release re-armed stranded-stale-armed-head:"
-        "release_authorized_head_stale:authorized=sha-old:current=sha-728"
+        "current_task_gate_blocked:"
+        "release_authorized_head_mismatch:authorized=sha-old:current=sha-728"
     )
     current = note.read_text(encoding="utf-8")
     assert "release_authorized: true" in current
-    assert "release_authorized_head_sha: sha-728" in current
-    assert "sha-old" not in current
-    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[0])
-    assert record["kind"] == "release_auto_arm"
-    assert record["pr_head_sha"] == "sha-728"
+    assert "release_authorized_head_sha: sha-old" in current
+    assert not ledger.exists()
 
 
 def test_arm_release_for_task_rejects_headless_already_armed_note(tmp_path: Path) -> None:
@@ -8611,13 +8783,8 @@ def test_arm_release_for_task_rejects_headless_already_armed_note(tmp_path: Path
     assert not ledger.exists()
 
 
-def test_release_authorized_stale_stamp_rearms_at_current_head(tmp_path: Path) -> None:
-    """Ledger 8.1: a stamp naming another head is stale; the re-arm follows head.
-
-    The mismatch no longer blocks admission as release_authorized_head_mismatch;
-    the PR arms at its current head and the staleness is surfaced
-    informationally on the decision and as a release-authorization waiver.
-    """
+def test_release_authorized_stale_stamp_blocks_current_head(tmp_path: Path) -> None:
+    """An old stamp cannot release a later head through reconciliation."""
     vault = _make_vault(tmp_path)
     _write_task(
         vault,
@@ -8643,32 +8810,11 @@ def test_release_authorized_stale_stamp_rearms_at_current_head(tmp_path: Path) -
     )
 
     decision = next(item for item in report["decisions"] if item["pr"] == 727)
-    assert decision["action"] == "queue"
-    assert not any(
-        reason.startswith("release_authorized_head_") for reason in decision.get("reasons", [])
-    )
-    assert decision["notes"] == [
-        "release_authorized_head_stale:authorized=sha-before-force-push:current=sha-727"
-    ]
-    assert any(
-        item["pr"] == 727
-        and item["action"] == "release_authorization_waiver"
-        and "release_authorized_head_stale:authorized=sha-before-force-push:current=sha-727"
-        in item["waivers"]
-        for item in report["mutations"]
-    )
-    assert [
-        "gh",
-        "pr",
-        "merge",
-        "727",
-        "--repo",
-        "owner/repo",
-        "--auto",
-        "--squash",
-        "--match-head-commit",
-        "sha-727",
-    ] in runner.calls
+    assert decision["action"] == "blocked"
+    assert (
+        "release_authorized_head_mismatch:authorized=sha-before-force-push:current=sha-727"
+    ) in decision["reasons"]
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_release_head_boundary_reports_unreadable_current_note(
@@ -9079,16 +9225,11 @@ def test_queue_failure_after_success_admission_rewrites_failure_status(
     )
 
 
-def test_release_head_boundary_stale_stamp_keeps_already_queued(
+def test_release_head_boundary_stale_stamp_refuses_already_queued(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stamp repointed to an old head mid-flight must not dequeue the PR.
-
-    Ledger 8.1: the stale stamp is surfaced as an informational waiver and the
-    queued entry is retained; the current-head evidence revalidation is the
-    guard, not the stale stamp.
-    """
+    """A queued PR loses release admission when its stamp changes mid-flight."""
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -9131,23 +9272,13 @@ def test_release_head_boundary_stale_stamp_keeps_already_queued(
         runner=runner,
     )
 
-    assert not any(
+    assert any(
         item["pr"] == 736 and item["action"] == "release_head_revalidation" and not item["ok"]
         for item in report["mutations"]
     )
-    assert any(
-        item["pr"] == 736
-        and item["action"] == "release_authorization_waiver"
-        and "release_authorized_head_stale:authorized=sha-old:current=sha-736" in item["waivers"]
-        for item in report["mutations"]
-    )
-    assert any(
+    assert not any(
         call[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-736"]
         and "state=success" in call
-        for call in runner.calls
-    )
-    assert not any(
-        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
         for call in runner.calls
     )
 
@@ -9658,15 +9789,10 @@ def test_merge_pr_revalidates_current_release_authorization_before_head_locked_m
     assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
-def test_merge_pr_revalidates_repointed_stamp_follows_current_head(
+def test_merge_pr_revalidates_repointed_stamp_and_refuses(
     tmp_path: Path,
 ) -> None:
-    """Ledger 8.1: a stamp repointed to an old head before the merge is stale.
-
-    merge_pr still re-reads the note and revalidates the current head before
-    arming; the stale stamp is informational and the arm follows the current
-    head, guarded by --match-head-commit.
-    """
+    """The final merge command refuses a stamp for another head."""
     vault = _make_vault(tmp_path)
     note = _write_task(
         vault,
@@ -9708,22 +9834,12 @@ def test_merge_pr_revalidates_repointed_stamp_follows_current_head(
         runner=runner,
     )
 
-    assert ok is True, message
-    # The merge-time revalidation still reads the current note and fetches the
-    # current head's release evidence before arming.
-    assert any("repos/owner/repo/pulls/736" in part for call in runner.calls for part in call)
-    assert [
-        "gh",
-        "pr",
-        "merge",
-        "736",
-        "--repo",
-        "owner/repo",
-        "--auto",
-        "--squash",
-        "--match-head-commit",
-        "sha-736",
-    ] in runner.calls
+    assert ok is False
+    assert message == (
+        "current_task_gate_blocked:"
+        "release_authorized_head_mismatch:authorized=sha-old:current=sha-736"
+    )
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
 
 
 def test_head_guard_required_merge_fails_when_head_sha_missing(tmp_path: Path) -> None:

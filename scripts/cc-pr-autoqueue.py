@@ -104,6 +104,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     REVIEW_TEAM_QUORUM_EVIDENCE,
     TASK_MERGE_READY_STATUSES,
     ReleaseAutoArmAssessment,
+    _effective_sensitive_flags,
     acceptance_receipt_blockers,
     apply_release_auto_arm,
     assess_release_auto_arm,
@@ -350,8 +351,7 @@ class Decision:
     auto_arm: bool = False
     auto_arm_verified_checks: tuple[str, ...] = ()
     expected_auto_merge_method: str | None = None
-    # Informational, never blocking: e.g. a stale release-arm stamp surfaced by
-    # the re-arm-follows-head evaluation (ledger 8.1).
+    # Informational diagnostics that do not alter admission.
     notes: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -2746,33 +2746,21 @@ def _release_authorized_head_blockers(
         expected_head_sha=pr_head_sha,
         expected_label="current",
     )
-    if blocker and not blocker.startswith("release_authorized_head_mismatch:"):
-        return (blocker,)
-    # A mismatch is a stale stamp, not a stop: ledger 8.1 re-arm-follows-head
-    # evaluates the arm against the current head and surfaces the staleness
-    # informationally via _release_authorized_head_stale_note.
-    return ()
+    return (blocker,) if blocker else ()
 
 
-def _release_authorized_head_stale_note(
-    frontmatter: dict[str, Any],
-    *,
-    pr_head_sha: str | None,
-) -> str | None:
-    """Informational staleness token for an armed note whose stamp names another head.
-
-    Ledger 8.1 (ratified 2026-09-14): a ``release_authorized_head_sha`` that is
-    not the current PR head is stale by definition; re-arm evaluation follows
-    the current head and the staleness is surfaced, never blocked on.
-    """
+def _release_seat_hold_blockers(
+    frontmatter: dict[str, Any], *, pr_head_sha: str | None
+) -> tuple[str, ...]:
+    """A seat hold applies to its named head and expires when the head changes."""
+    if "release_seat_hold_head_sha" not in frontmatter:
+        return ()
+    held_head = _scalar(frontmatter.get("release_seat_hold_head_sha"))
+    if not held_head:
+        return ("release_seat_hold_head_missing",)
     if not pr_head_sha:
-        return None
-    if not assess_release_auto_arm(frontmatter).armed:
-        return None
-    authorized_head_sha = _scalar(frontmatter.get("release_authorized_head_sha"))
-    if not authorized_head_sha or authorized_head_sha == pr_head_sha:
-        return None
-    return f"release_authorized_head_stale:authorized={authorized_head_sha}:current={pr_head_sha}"
+        return ("release_seat_hold_current_head_unavailable",)
+    return (f"release_seat_hold:{held_head}",) if held_head == pr_head_sha else ()
 
 
 def _task_blockers(
@@ -2845,6 +2833,7 @@ def _task_blockers(
             blockers.append("release_authorized_false")
 
     blockers.extend(_release_authorized_head_blockers(task.frontmatter, pr_head_sha=pr_head_sha))
+    blockers.extend(_release_seat_hold_blockers(task.frontmatter, pr_head_sha=pr_head_sha))
 
     avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
     blockers.extend(f"avsdlc_release_gate:{blocker}" for blocker in avsdlc_gate.blockers)
@@ -2875,7 +2864,114 @@ def _review_team_quorum_evidence_blockers(
         # The seat's T2 rule admits a merge below the family floor; it is not the
         # quorum-accept that sensitive classes need to auto-arm, so the seat still releases them.
         return (*blockers, f"review_team_quorum_by_seat_rule:{floor_release['rule']}")
-    return blockers
+    if blockers:
+        return blockers
+    return _open_major_release_findings_blockers(task, frontmatter, pr_head_sha=pr_head_sha)
+
+
+def _open_major_release_findings_blockers(
+    task: TaskNote, frontmatter: dict[str, Any], *, pr_head_sha: str | None
+) -> tuple[str, ...]:
+    """Keep a valid quorum from becoming sensitive release evidence over an open major.
+
+    The ordinary dossier validity gate already blocks unresolved criticals.
+    An accepted dossier can still carry majors, so this release-only check reads
+    those findings and the row's seat-sourced dispositions at the same head.
+    """
+    if not any(
+        REVIEW_TEAM_QUORUM_EVIDENCE in RELEASE_MITIGATION_CHECKS.get(flag, ())
+        for flag in _effective_sensitive_flags(frontmatter)
+    ):
+        return ()
+    if not pr_head_sha:
+        return ("release_review_head_unavailable",)
+    dossier_path = review_team.review_dossier_path(task.path, task.task_id)
+    try:
+        dossier = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return ("release_review_dossier_unreadable",)
+    if not isinstance(dossier, dict) or dossier.get("head_sha") != pr_head_sha:
+        return ("release_review_dossier_head_mismatch",)
+    reviews = dossier.get("reviewers")
+    if not isinstance(reviews, list):
+        return ("release_review_dossier_reviewers_unreadable",)
+    dispositions = frontmatter.get("release_finding_dispositions")
+    dispositions = dispositions if isinstance(dispositions, list) else []
+    # The row's source is a seat mail inside the canonical vault, not a bare
+    # author-written marker. The relative binding keeps test and host roots alike.
+    vault_root = task.path.parents[3]
+    open_majors = 0
+    for review in reviews:
+        if not isinstance(review, dict):
+            return ("release_review_dossier_reviewers_unreadable",)
+        for finding in review.get("findings") or []:
+            if not isinstance(finding, dict):
+                return ("release_review_dossier_findings_unreadable",)
+            if str(finding.get("severity") or "").lower() != "major":
+                continue
+            if finding.get("resolved") is True:
+                continue
+            finding_key = (
+                str(review.get("id") or ""),
+                str(finding.get("file") or ""),
+                str(finding.get("line") or ""),
+                str(finding.get("title") or ""),
+                str(finding.get("lens") or ""),
+            )
+            dispositioned = False
+            for item in dispositions:
+                if not isinstance(item, dict) or item.get("head_sha") != pr_head_sha:
+                    continue
+                item_key = tuple(
+                    str(item.get(name) or "")
+                    for name in ("reviewer_id", "file", "line", "title", "lens")
+                )
+                source = item.get("source")
+                if (
+                    item_key != finding_key
+                    or item.get("disposition") not in {"accepted", "deferred"}
+                    or not isinstance(source, str)
+                    or not _seat_disposition_source_valid(
+                        vault_root, source, pr_head_sha=pr_head_sha, finding_title=finding_key[3]
+                    )
+                ):
+                    continue
+                dispositioned = True
+                break
+            if not dispositioned:
+                open_majors += 1
+    return (f"release_review_open_major:{open_majors}",) if open_majors else ()
+
+
+def _seat_disposition_source_valid(
+    vault_root: Path, source: str, *, pr_head_sha: str, finding_title: str
+) -> bool:
+    rel = Path(source)
+    seat_dir = vault_root / "30-areas/hapax/lanebus/dev1"
+    if (
+        rel.is_absolute()
+        or ".." in rel.parts
+        or rel.parts[:4] != ("30-areas", "hapax", "lanebus", "dev1")
+    ):
+        return False
+    path = (vault_root / rel).resolve()
+    if not path.is_relative_to(seat_dir.resolve()):
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    # Seat mail is a source of authority; its path alone is not that proof.
+    if not text.startswith("---\n"):
+        return False
+    end = text.find("\n---", 4)
+    if end < 0:
+        return False
+    return (
+        bool(re.search(r"(?m)^from: (?:claude/)?dev1\s*$", text[4:end]))
+        and pr_head_sha in text[end:]
+        and finding_title in text[end:]
+    )
 
 
 def _release_mitigation_verified_checks(
@@ -3102,16 +3198,6 @@ def classify_pr(
     matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
     notes: list[str] = []
-    for matched_task in matches:
-        stale_stamp_note = _release_authorized_head_stale_note(
-            matched_task.frontmatter, pr_head_sha=pr.head_sha
-        )
-        if stale_stamp_note:
-            notes.append(
-                stale_stamp_note
-                if len(matches) == 1
-                else f"task_note:{matched_task.task_id}:{stale_stamp_note}"
-            )
     if not matches:
         if TASK_NOTE_PARSE_FAILURES:
             broken = ",".join(name for name, _ in TASK_NOTE_PARSE_FAILURES[:4])
@@ -3642,18 +3728,7 @@ def _release_head_boundary_blocker(
         expected_label="current",
     )
     if stamp_blocker:
-        if not stamp_blocker.startswith("release_authorized_head_mismatch:"):
-            return stamp_blocker
-        # Ledger 8.1 re-arm-follows-head: a stamp naming another head is stale
-        # by definition. It does not stop the re-arm; evaluation continues
-        # against the current head below, and the staleness is surfaced as an
-        # informational release-authorization waiver.
-        if release_authorization_waivers is not None:
-            stale_note = _release_authorized_head_stale_note(
-                current_frontmatter, pr_head_sha=decision.pr.head_sha
-            )
-            if stale_note:
-                release_authorization_waivers.append(stale_note)
+        return stamp_blocker
     evidence_ok, current_head_sha, current_verified_checks = fetch_pr_release_evidence(
         decision.pr.number,
         repo=repo,
@@ -3870,43 +3945,7 @@ def arm_release_for_task(
                 expected_head_sha=expected_head_sha,
             )
             if head_stamp_blocker:
-                if not head_stamp_blocker.startswith("release_authorized_head_mismatch:"):
-                    return False, head_stamp_blocker
-                # Ledger 8.1 re-arm-follows-head: re-point the stale stamp at the
-                # current head (already evidence-revalidated above) instead of
-                # refusing the re-arm.
-                stale_note = _release_authorized_head_stale_note(
-                    current_frontmatter, pr_head_sha=expected_head_sha
-                )
-                restamped = apply_release_auto_arm(
-                    text,
-                    now_iso=now_iso,
-                    role=role,
-                    head_sha=expected_head_sha,
-                    head_ref=head_ref,
-                )
-                if restamped == text:
-                    return False, "note_unchanged"
-                try:
-                    task.path.write_text(restamped, encoding="utf-8")
-                except OSError as exc:
-                    return False, f"note_write_failed:{exc}"
-                post_arm_assessment = assess_release_auto_arm(
-                    frontmatter_from_text(restamped), verified_checks=verified_checks
-                )
-                _append_release_auto_arm_ledger(
-                    task,
-                    ledger_path=ledger_path,
-                    now_iso=now_iso,
-                    role=role,
-                    frontmatter=current_frontmatter,
-                    pr_head_sha=expected_head_sha,
-                    pr_head_ref=head_ref,
-                    verified_checks=verified_checks,
-                    pre_arm_assessment=pre_arm_assessment,
-                    post_arm_assessment=post_arm_assessment,
-                )
-                return True, f"release re-armed {task.task_id}:{stale_note}"
+                return False, head_stamp_blocker
             return True, "note_unchanged"
         reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"
