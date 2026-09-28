@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import uuid
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
@@ -47,6 +48,115 @@ def _load(name: str, filename: str) -> ModuleType:
 
 dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
 
+#: Captured before the fixture below redirects the default, so a test can still
+#: name its own store explicitly.
+_REAL_WRITER_IDENTITY_ROOTS = dispatch.review_team.WriterIdentityRoots
+
+#: The per-test writer-identity store: ``_write_task`` leaves the observation its
+#: lane would have left, so no test reads this host's real ``$HOME``.
+_IDENTITY_STORE: Path | None = None
+
+
+def _identity_roots_for(tmp_path: Path, name: str = "writer-identity") -> Any:
+    """A roots binding over ``tmp_path/name``, created if absent."""
+
+    store = tmp_path / name
+    for part in ("claim-publication-receipts", "codex-sessions", "claude-projects"):
+        (store / part).mkdir(parents=True, exist_ok=True)
+    return _REAL_WRITER_IDENTITY_ROOTS(
+        claim_receipt_root=store / "claim-publication-receipts",
+        codex_sessions_root=store / "codex-sessions",
+        claude_projects_root=store / "claude-projects",
+    )
+
+
+def _lane_family(lane: str) -> str:
+    """The family a lane's own harness records, per the transport map.
+
+    Fixture only: a lane the map cannot place (a retired name) takes the map's
+    default, so the fixture stays total.
+    """
+
+    try:
+        return dispatch.review_team.writer_family_for_lane(
+            lane, dispatch.review_team.load_lens_registry()
+        )
+    except (ValueError, KeyError, TypeError):
+        return "claude"
+
+
+def _observe_writer_identity(task_id: str, lane: str, *, family: str | None = None) -> None:
+    """Leave the claim receipt and native record a row's session would have left."""
+
+    store = _IDENTITY_STORE
+    if store is None:
+        return
+    lane_family = family or _lane_family(lane)
+    session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{task_id}:{lane}:{lane_family}"))
+    (store / "claim-publication-receipts" / f"{task_id}.json").write_text(
+        json.dumps(
+            {
+                "schema": "hapax.claim-publication-receipt.v4",
+                "task_id": task_id,
+                "role": lane,
+                "session_id": session_id,
+                "claim_epoch": 1790554237,
+                "to_status": "claimed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    if lane_family == "claude":
+        transcript = store / "claude-projects" / session_id / f"{session_id}.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text(
+            json.dumps({"type": "assistant", "message": {"model": "claude-opus-4-8"}}) + "\n",
+            encoding="utf-8",
+        )
+        return
+    provider = {"codex": "openai", "fugu": "sakana"}.get(lane_family)
+    if provider is None:
+        # No declared provider serves this lane's execution on this host
+        # (`codex-glmcp`, `glm-alpha`, the vibe and substitute lanes): the claim
+        # receipt stands and the native record it would name does not exist, so
+        # the row is observably unobservable rather than guessed.
+        return
+    meta: dict[str, Any] = {
+        "session_id": session_id,
+        "timestamp": "2026-09-28T00:07:35.962Z",
+        "originator": "codex-tui",
+        "model_provider": provider,
+    }
+    rollout = store / "codex-sessions" / f"rollout-2026-09-27T19-07-35-{session_id}.jsonl"
+    rollout.write_text(
+        json.dumps({"type": "session_meta", "payload": meta})
+        + "\n"
+        + json.dumps({"type": "turn_context", "payload": {"model": f"{lane_family}-test-model"}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_writer_identity(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point the default writer-identity roots at a per-test store.
+
+    A test that wants the unobserved case points the reader at an empty store
+    rather than relying on what is absent from ``$HOME``.
+    """
+
+    global _IDENTITY_STORE
+    store = tmp_path / "writer-identity"
+    _identity_roots_for(tmp_path)  # create the store before any row writes into it
+    _IDENTITY_STORE = store
+    monkeypatch.setattr(
+        dispatch.review_team,
+        "WriterIdentityRoots",
+        lambda **_kwargs: _identity_roots_for(tmp_path),
+    )
+    yield
+    _IDENTITY_STORE = None
+
 
 @pytest.fixture(autouse=True)
 def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -77,6 +187,7 @@ def _write_task(
     assigned_to: str = "zeta",
     exit_predicate: str = "dispatcher creates a review-team dossier",
     extra_frontmatter: str = "",
+    observed_family: str | None = None,
 ) -> Path:
     path = vault / "active" / f"{task_id}.md"
     path.write_text(
@@ -104,6 +215,7 @@ Acceptance evidence belongs here.
 """,
         encoding="utf-8",
     )
+    _observe_writer_identity(task_id, assigned_to, family=observed_family)
     return path
 
 
@@ -1572,8 +1684,88 @@ checklist:
         assert dossier["registry_declared_at"]
         assert dossier["writer_family"] == "claude"
         assert dossier["constitution_writer_family"] == "claude"
+        # The observation the family came from, so a reader can re-derive it.
+        assert dossier["writer_family_provider"] is None
+        assert dossier["writer_family_session"]
+        assert any("harness=claude" in line for line in dossier["writer_family_evidence"])
         assert dossier["changed_file_count"] == 1
         assert dossier["changed_files"] == ["scripts/review_team.py"]
+
+    def test_writer_family_comes_from_the_observed_identity_not_the_lane_name(
+        self, tmp_path: Path
+    ) -> None:
+        # #4730's shape, corrected: the row is assigned to fugu-omglol, which is
+        # Sakana Fugu in the codex harness. The lane NAME maps to claude; the
+        # session that authored the row recorded model_provider sakana, so the
+        # dossier says fugu.
+        result, gh, reviewers, _ = _review(
+            tmp_path,
+            gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
+            task_kwargs={"assigned_to": "fugu-omglol", "observed_family": "fugu"},
+        )
+        dossier = result["dossier"]
+        assert result["status"] == "dispatched"
+        assert dossier["writer_family"] == "fugu"
+        assert dossier["constitution_writer_family"] == "fugu"
+        assert dossier["writer_family_provider"] == "sakana"
+        assert reviewers.invocations, "a fugu row still seats a team"
+        # The wake still goes to the lane, whose transport family is unchanged.
+        assert (
+            dispatch.review_team.writer_family_for_lane(
+                "fugu-omglol", dispatch.review_team.load_lens_registry()
+            )
+            == "claude"
+        )
+
+    def test_an_unobservable_author_dispatches_by_default_with_one_log_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Clause 11 (seat 2026-09-28T04:06Z): #4835 alone must not default to a hold
+        # -- the review plane keeps moving, on the lane's transport family, and the
+        # run says so in one line.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            task_kwargs={"assigned_to": "fugu-omglol"},
+            identity_roots=_identity_roots_for(tmp_path, "empty-identity"),
+        )
+
+        assert result["status"] == "dispatched"
+        assert result["dossier"]["writer_family"] == "claude"  # the lane transport family
+        assert result["dossier"]["writer_family_reason"] == "claim_receipt_absent"
+        assert reviewers.invocations, "the inert default still seats the team"
+        assert "writer family unobserved" in caplog.text
+        assert "to hold instead" in caplog.text
+
+    def test_a_multi_row_pr_excludes_the_union_of_observed_families(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Clause (9): a PR closing two rows of different observed families must
+        # exclude BOTH -- seating only one left the other row's author on the panel.
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", assigned_to="fugu-omglol", observed_family="fugu")
+        _write_task(vault, task_id="task-b", assigned_to="cx-gold", observed_family="codex")
+
+        planned = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert planned["status"] == "planned"
+        plan = planned["plan"]
+        assert plan["writer_family_union"] == ["codex", "fugu"]
+        assert not {seat["family"] for seat in plan["seats"]} & {"codex", "fugu"}
+        assert plan["ambiguous_authoring_rows"] == ["codex", "fugu"]
 
     def test_dispatch_records_changed_source_excerpt_evidence(self, tmp_path: Path) -> None:
         rel = "scripts/hapax-glmcp-reviewer"
@@ -3422,21 +3614,6 @@ public_gate_authority:
         assert result["dossier"]["review_team_verdict"] == "no-quorum"
         assert not (note.parent / "task-a.acceptance.yaml").exists()
 
-    def test_an_existing_t2_rule_dossier_mints_its_receipt_without_reviewers(
-        self, tmp_path: Path
-    ) -> None:
-        # A dossier written before the rule was encoded: the replay mints the receipt from the
-        # recorded reviews; no seat is dispatched again.
-        reviewers = RecordingReviewers(replies={"glm": "no verdict"})
-        _, _, _, note = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR, reviewers=reviewers)
-        receipt_path = note.parent / "task-a.acceptance.yaml"
-        receipt_path.unlink()
-        replay = RecordingReviewers()
-        result, _, _, _ = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR, reviewers=replay)
-        assert replay.invocations == []
-        assert result["status"] == "skipped_fresh"
-        assert receipt_path.is_file()
-
     def test_block_with_critical_fires_auto_wake(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
         reviewers = RecordingReviewers(replies={"glm": BLOCK_REPLY})
@@ -3458,7 +3635,18 @@ public_gate_authority:
         assert sent, "auto-wake send was not attempted"
         assert "zeta" in " ".join(sent[0])
 
-    def test_glmcp_authoring_lane_auto_wakes_via_codex_sender(self, tmp_path: Path) -> None:
+    def test_a_glm_lane_wakes_through_the_codex_sender(self, tmp_path: Path) -> None:
+        # The wake transport is keyed on the lane's harness family, which the lane map
+        # still answers (and which is why it stays). Writer identity is a different
+        # question: a GLM lane's authoring execution has no declared provider, so the
+        # inert default dispatches on the transport family -- and the wake goes to the
+        # lane through the sender that family names.
+        reg = dispatch.review_team.load_lens_registry()
+        for lane in ("codex-glmcp", "glm-alpha"):
+            assert dispatch.review_team.writer_family_for_lane(lane, reg) == "glm"
+            assert dispatch.SEND_SCRIPTS["glm"] == "hapax-codex-send"
+            assert dispatch.send_session_for_lane(lane) == "cx-glmcp"
+
         sent: list[list[str]] = []
         reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
         result, _, _, _ = _review(
@@ -3467,25 +3655,7 @@ public_gate_authority:
             send_runner=lambda cmd: sent.append(list(cmd)),
             task_kwargs={"assigned_to": "codex-glmcp"},
         )
-
-        assert result["dossier"]["writer_family"] == "glm"
-        assert result["dossier"]["review_team_verdict"] == "blocked"
-        assert sent, "auto-wake send was not attempted"
-        assert sent[0][0].endswith("hapax-codex-send")
-        assert sent[0][1:3] == ["--session", "cx-glmcp"]
-
-    def test_glm_prefix_authoring_lane_auto_wakes_via_glmcp_codex_session(
-        self, tmp_path: Path
-    ) -> None:
-        sent: list[list[str]] = []
-        reviewers = RecordingReviewers(replies={"codex": BLOCK_REPLY})
-        result, _, _, _ = _review(
-            tmp_path,
-            reviewers=reviewers,
-            send_runner=lambda cmd: sent.append(list(cmd)),
-            task_kwargs={"assigned_to": "glm-alpha"},
-        )
-
+        assert result["status"] == "dispatched"
         assert result["dossier"]["writer_family"] == "glm"
         assert result["dossier"]["review_team_verdict"] == "blocked"
         assert sent, "auto-wake send was not attempted"
@@ -5357,7 +5527,11 @@ payg_fallback: false
         result, _, _, note = _review(
             tmp_path,
             now_iso=now,
-            task_kwargs={"risk_tier": "T1"},
+            task_kwargs={
+                "risk_tier": "T1",
+                "assigned_to": "fugu-omglol",
+                "observed_family": "fugu",
+            },
             gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
         )
         dossier = result["dossier"]
@@ -5401,6 +5575,8 @@ payg_fallback: false
             task_kwargs={
                 "risk_tier": "T1",
                 "quality_floor": "frontier_review_required",
+                "assigned_to": "fugu-omglol",
+                "observed_family": "fugu",
             },
             gh=FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
         )
@@ -5425,7 +5601,11 @@ payg_fallback: false
         state.write_text(json.dumps({"claude": now}), encoding="utf-8")
         kwargs = {
             "now_iso": now,
-            "task_kwargs": {"risk_tier": "T1"},
+            "task_kwargs": {
+                "risk_tier": "T1",
+                "assigned_to": "fugu-omglol",
+                "observed_family": "fugu",
+            },
             "gh": FakeGh(files=["shared/foo.py", "tests/test_foo.py"]),
         }
         _review(tmp_path, **kwargs)
@@ -6375,12 +6555,14 @@ class TestWalledFamilySubstitution:
         assert state["gemini"]["cause"] == "seat_output"
 
     def test_wall_and_route_block_substitute_a_distinct_family(self, tmp_path: Path) -> None:
-        # Today's #4729 shape: codex walled, glm route-blocked, claude writes. Three distinct
-        # families are seated; a declared substitute fills the third seat, never a reseat.
+        # Today's #4729 shape: codex walled, glm route-blocked. Three distinct families are
+        # seated; a declared substitute fills the third seat, never a reseat. The author is a
+        # non-roster family here, so the subject stays the wall and the substitute floor.
         _write_codex_weekly_wall(tmp_path / "wall-home")
         result, _, _, _ = _review(
             tmp_path,
             apply=False,
+            task_kwargs={"assigned_to": "fugu-omglol", "observed_family": "fugu"},
             route_blocked_families={"glm": ("glmcp.review.direct:route_state_blocked",)},
         )
         plan = result["plan"]

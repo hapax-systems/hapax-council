@@ -44,6 +44,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.cc_task_pr_link import is_nullish, same_repo  # noqa: E402
+from shared.execution_observer import (  # noqa: E402
+    observe_claude_transcript,
+    observe_codex_rollout,
+)
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
     STRUCTURED_PROVIDER_OUTAGE_ERROR_CLASSES,
@@ -548,7 +552,14 @@ def strongest_team_class(classes: Sequence[str]) -> str:
 
 
 def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str:
-    """Model family of the authoring lane (exact map, then prefixes, then default)."""
+    """TRANSPORT family of a lane name (exact map, then prefixes, then default).
+
+    Answers "which harness carries a wake message to this lane", which is a
+    question about a name. It is NOT writer identity and must never be used as
+    one: a lane name is compatible with any model, so ``fugu-omglol`` (Sakana
+    Fugu in the codex harness) resolves here to ``claude``. A dossier's
+    ``writer_family`` comes from :func:`observed_writer_identity` instead.
+    """
 
     lane_families = registry["lane_families"]
     lane_norm = (lane or "").strip().lower()
@@ -565,6 +576,393 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
         if lane_norm.startswith(prefix):
             return family
     return lane_families["default"]
+
+
+#: A family no observation supports: a dossier carrying it asserts nothing.
+WRITER_FAMILY_UNOBSERVED = "unobserved"
+
+#: Clause 11 of the row (seat rulings 2026-09-28T04:06Z / 04:25Z): the hold on an
+#: unobservable author is INERT unless this names it. By default such a row
+#: dispatches on the lane's transport family, as it did before this change, with
+#: one log line. Measured, the claim plane's session id joins to a native record
+#: for 18 of 234 receipts (7.7%), so a default hold would stall ~86% of rows.
+WRITER_FAMILY_ENFORCE_ENV = "HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE"
+
+
+def writer_family_enforcement_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether an unobservable author holds. True only under the switch.
+
+    Any value other than a truthy one keeps the inert default, so a typo cannot
+    stop the review plane.
+    """
+
+    source = os.environ if environ is None else environ
+    return str(source.get(WRITER_FAMILY_ENFORCE_ENV, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enforce",
+    }
+
+
+DEFAULT_CLAIM_RECEIPT_ROOT = Path.home() / ".cache" / "hapax" / "claim-publication-receipts"
+DEFAULT_CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
+DEFAULT_CLAUDE_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
+
+#: ``-<uuid>.jsonl`` / ``<uuid>.jsonl`` — the session a native record belongs to.
+_SESSION_ID_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+
+
+@dataclass(frozen=True)
+class WriterIdentityRoots:
+    """Where an observed authoring identity is read from.
+
+    Injectable so a caller (and every test) reads a root it names rather than
+    whatever happens to be in ``$HOME``.
+    """
+
+    claim_receipt_root: Path = DEFAULT_CLAIM_RECEIPT_ROOT
+    codex_sessions_root: Path = DEFAULT_CODEX_SESSIONS_ROOT
+    claude_projects_root: Path = DEFAULT_CLAUDE_PROJECTS_ROOT
+
+
+@dataclass(frozen=True)
+class ObservedWriterIdentity:
+    """What the execution record says about who authored a row.
+
+    ``family`` is a registry family or :data:`WRITER_FAMILY_UNOBSERVED`; there is
+    no third state. ``evidence`` is the replayable chain (claim receipt -> session
+    -> native record -> provider), ``reason`` the machine-readable disposition
+    behind ``family``, and ``fallback_family`` what the transport map answers for
+    the lane.
+    """
+
+    task_id: str
+    lane: str
+    family: str
+    reason: str = ""
+    provider: str | None = None
+    harness: str | None = None
+    models: tuple[str, ...] = ()
+    session_id: str | None = None
+    claim_role: str | None = None
+    fallback_family: str | None = None
+    evidence: tuple[str, ...] = ()
+
+    @property
+    def observed(self) -> bool:
+        return self.family != WRITER_FAMILY_UNOBSERVED
+
+
+# Stat-only tree-signature guards: they catch an added AND a rewritten file,
+# which a directory mtime does not.
+_CLAIM_RECEIPT_INDEX: dict[str, tuple[tuple, dict[str, tuple[tuple[int, str, str, str], ...]]]] = {}
+_NATIVE_SESSION_INDEX: dict[tuple[str, str], tuple[tuple, dict[str, Path]]] = {}
+
+
+def _tree_signature(root: Path) -> tuple[tuple[str, int, int], ...]:
+    """(path, mtime_ns, size) for every entry under ``root``; () when unreadable."""
+
+    try:
+        entries = list(root.rglob("*"))
+    except OSError:
+        return ()
+    signature: list[tuple[str, int, int]] = []
+    for path in entries:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        # Nanoseconds, not seconds: a receipt rewritten within the same second
+        # and to the same length must still invalidate the index.
+        signature.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(sorted(signature))
+
+
+def _claim_receipt_index(root: Path) -> dict[str, tuple[tuple[int, str, str, str], ...]]:
+    """task_id -> every claim receipt for it, oldest first.
+
+    (claim_epoch, session_id, role, receipt ref) -- ALL of them: the highest epoch
+    is not the author.
+    """
+
+    key = str(root)
+    stamp = _tree_signature(root)
+    if not stamp:
+        return {}
+    cached = _CLAIM_RECEIPT_INDEX.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    index: dict[str, list[tuple[int, str, str, str]]] = {}
+    try:
+        candidates = sorted(root.glob("*.json"))
+    except OSError:
+        candidates = []
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        task_id = str(payload.get("task_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        if not task_id or not session_id:
+            continue
+        try:
+            epoch = int(payload.get("claim_epoch") or 0)
+        except (TypeError, ValueError):
+            epoch = 0
+        role = str(payload.get("role") or "").strip()
+        index.setdefault(task_id, []).append((epoch, session_id, role, path.name))
+    frozen = {task_id: tuple(sorted(claims)) for task_id, claims in index.items()}
+    _CLAIM_RECEIPT_INDEX[key] = (stamp, frozen)
+    return frozen
+
+
+def _native_session_index(root: Path, kind: str) -> dict[str, Path]:
+    """session id -> the native record that session wrote, for one harness."""
+
+    key = (str(root), kind)
+    stamp = _tree_signature(root)
+    if not stamp:
+        return {}
+    cached = _NATIVE_SESSION_INDEX.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    index: dict[str, Path] = {}
+    pattern = "rollout-*.jsonl" if kind == "codex" else "*.jsonl"
+    try:
+        candidates = root.rglob(pattern)
+    except OSError:
+        candidates = []
+    for path in candidates:
+        match = _SESSION_ID_RE.search(path.name)
+        if match is not None:
+            index.setdefault(match.group(1), path)
+    _NATIVE_SESSION_INDEX[key] = (stamp, index)
+    return index
+
+
+def _codex_session_provider(path: Path) -> str | None:
+    """``session_meta.model_provider`` of a codex rollout, or None if unreadable."""
+
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(record, Mapping):
+                    continue
+                if record.get("type") != "session_meta":
+                    continue
+                payload = record.get("payload")
+                if isinstance(payload, Mapping):
+                    provider = payload.get("model_provider")
+                    if isinstance(provider, str) and provider.strip():
+                        return provider.strip()
+                return None
+    except OSError:
+        return None
+    return None
+
+
+def _native_session_observation(
+    session_id: str, roots: WriterIdentityRoots
+) -> tuple[str | None, str, tuple[str, ...], str] | None:
+    """(provider, harness, models, ref) for the record a session wrote, or None.
+
+    A Claude transcript is written by the Anthropic-only Claude Code harness, so
+    it has no provider field to read; the harness is the observation there.
+    """
+
+    codex_path = _native_session_index(roots.codex_sessions_root, "codex").get(session_id)
+    if codex_path is not None:
+        models = tuple(sorted(observe_codex_rollout(codex_path).models))
+        return (
+            _codex_session_provider(codex_path),
+            "codex",
+            models,
+            f"{codex_path.name}",
+        )
+    claude_path = _native_session_index(roots.claude_projects_root, "claude").get(session_id)
+    if claude_path is not None:
+        models = tuple(sorted(observe_claude_transcript(claude_path).models))
+        return (None, "claude", models, f"{claude_path}")
+    return None
+
+
+def claim_receipts_for(
+    task_id: str, roots: WriterIdentityRoots | None = None
+) -> tuple[tuple[int, str, str, str], ...]:
+    """Every claim receipt for a task, oldest first.
+
+    (claim_epoch, session_id, role, receipt ref). Public so a caller can decide
+    whether it needs the reviewed head's commit time at all: with a sole claim
+    there is nothing to bind, and with several the commit time is what decides.
+    """
+
+    roots = roots or WriterIdentityRoots()
+    return _claim_receipt_index(roots.claim_receipt_root).get(str(task_id).strip(), ())
+
+
+def _authoring_claim(
+    claims: Sequence[tuple[int, str, str, str]],
+    *,
+    head_committed_at: int | float | None,
+) -> tuple[tuple[int, str, str, str] | None, str, tuple[str, ...]]:
+    """The claim that authored the reviewed head: (claim, reason, evidence).
+
+    A task can carry several claims (the author's, a recovery's, a later
+    reassignment's), and recency is not authorship. The claim is bound to the
+    reviewed head's commit time: the LATEST claim not after it. With no head time
+    only a sole claim is attributable; several are UNOBSERVED rather than guessed
+    by epoch order -- for #4730 the earliest claim is the lane the row was taken
+    FROM, and the latest is the lane that did the work.
+    """
+
+    if not claims:
+        return None, "claim_receipt_absent", ()
+    described = "; ".join(f"epoch={epoch} role={role or '?'}" for epoch, _s, role, _r in claims)
+    if head_committed_at is not None:
+        in_force = [claim for claim in claims if claim[0] <= head_committed_at]
+        if not in_force:
+            return (
+                None,
+                "claim_after_reviewed_head",
+                (f"every claim for this task ({described}) postdates the reviewed head",),
+            )
+        chosen = max(in_force, key=lambda claim: claim[0])
+        return (
+            chosen,
+            "claim_in_force_at_head",
+            (f"claim in force when the head was committed (of {described})",),
+        )
+    if len(claims) == 1:
+        return claims[0], "sole_claim", (f"sole claim for this task (epoch={claims[0][0]})",)
+    return (
+        None,
+        "ambiguous_claims_without_head",
+        (
+            f"{len(claims)} claims for this task ({described}) and no reviewed-head commit "
+            "time to bind one; recency is not authorship",
+        ),
+    )
+
+
+def observed_writer_identity(
+    task_id: str,
+    lane: str | None,
+    registry: Mapping[str, Any],
+    *,
+    roots: WriterIdentityRoots | None = None,
+    head_committed_at: int | float | None = None,
+) -> ObservedWriterIdentity:
+    """Derive the authoring family from an observed execution record.
+
+    Fail-closed: an unresolved link yields :data:`WRITER_FAMILY_UNOBSERVED` with a
+    ``reason`` and the caller holds. Never the lane name -- the lane is only the
+    subject of the claim, and its transport family is reported separately as
+    ``fallback_family``.
+    """
+
+    roots = roots or WriterIdentityRoots()
+    lane_norm = (lane or "").strip().lower()
+    try:
+        fallback = writer_family_for_lane(lane_norm, registry)
+    except (KeyError, TypeError, ValueError):
+        fallback = None
+
+    def unobserved(reason: str, *evidence: str) -> ObservedWriterIdentity:
+        return ObservedWriterIdentity(
+            task_id=task_id,
+            lane=lane_norm,
+            family=WRITER_FAMILY_UNOBSERVED,
+            reason=reason,
+            fallback_family=fallback,
+            evidence=evidence,
+        )
+
+    declared = registry.get("observed_identity_families")
+    if not isinstance(declared, Mapping):
+        return unobserved(
+            "registry_has_no_observation_table",
+            "registry carries no observed_identity_families block",
+        )
+    providers = declared.get("providers") or {}
+    harnesses = declared.get("harnesses") or {}
+
+    claims = claim_receipts_for(task_id, roots)
+    claim, claim_reason, claim_evidence = _authoring_claim(
+        claims, head_committed_at=head_committed_at
+    )
+    if claim is None:
+        return unobserved(
+            claim_reason,
+            *claim_evidence,
+            f"claim receipts read from {roots.claim_receipt_root}",
+        )
+    _epoch, session_id, claim_role, receipt_ref = claim
+    receipt_evidence = f"claim receipt {receipt_ref}: session={session_id}"
+
+    native = _native_session_observation(session_id, roots)
+    if native is None:
+        return unobserved(
+            "native_session_record_absent",
+            receipt_evidence,
+            f"no native session record for session {session_id} "
+            f"(codex rollouts / claude transcripts, "
+            f"{roots.codex_sessions_root} + {roots.claude_projects_root})",
+        )
+    provider, harness, models, native_ref = native
+    native_evidence = (
+        f"native session record {native_ref}: harness={harness} "
+        f"provider={provider or 'unobserved'} models={','.join(models) or 'none'}"
+    )
+
+    if provider is not None:
+        family = providers.get(provider)
+        if not isinstance(family, str) or not family:
+            # A served provider this registry does not declare is unobserved.
+            # Falling back to the harness here would readmit exactly the
+            # collision item (3) of the row names: codex harness, Sakana
+            # provider, recorded as OpenAI Codex.
+            return unobserved(
+                "provider_not_declared",
+                receipt_evidence,
+                native_evidence,
+                f"provider {provider!r} is not declared in observed_identity_families.providers",
+            )
+    else:
+        family = harnesses.get(harness)
+        if not isinstance(family, str) or not family:
+            return unobserved(
+                "harness_not_provider_exclusive",
+                receipt_evidence,
+                native_evidence,
+                f"harness {harness!r} is not provider-exclusive in "
+                "observed_identity_families.harnesses and no provider was observed",
+            )
+
+    return ObservedWriterIdentity(
+        task_id=task_id,
+        lane=lane_norm,
+        family=family,
+        reason="provider_observed" if provider is not None else "harness_observed",
+        provider=provider,
+        harness=harness,
+        models=models,
+        session_id=session_id,
+        claim_role=claim_role,
+        fallback_family=fallback,
+        evidence=(*claim_evidence, receipt_evidence, native_evidence, f"family={family}"),
+    )
 
 
 @dataclass(frozen=True)
@@ -998,7 +1396,7 @@ def task_scoped_paid_review_route_blocked_families(
 
 def constitute_team(
     team_class: str,
-    writer_family: str,
+    writer_family: str | Sequence[str] | None,
     registry: Mapping[str, Any],
     *,
     pr_number: int,
@@ -1050,6 +1448,17 @@ def constitute_team(
         for f in roster
         if f not in available and f not in out and f not in blocked
     ]
+    # Every family that could have authored this head: one PR can close several
+    # rows, and excluding only one seats another row's author as a reviewer
+    # (clause (9); codex + gemini critical, #4835 r2).
+    if isinstance(writer_family, str) or writer_family is None:
+        writer_set = frozenset({writer_family} if writer_family else ())
+    else:
+        writer_set = frozenset(str(family) for family in writer_family if str(family))
+    if len(writer_set) > 1:
+        notes.append("writer_family_union:" + ",".join(sorted(writer_set)))
+    if writer_set:
+        notes.append("writer_family_excluded:" + ",".join(sorted(writer_set)))
     degraded: list[str] = []
     route_degraded: dict[str, tuple[str, ...]] = {}
 
@@ -1057,7 +1466,14 @@ def constitute_team(
     if team_class == "t1_critical":
         size = int(sizing["team_size_min"])
         if sizing.get("require_all_families"):
-            missing = [f for f in roster if f not in available and f not in substitutes]
+            # "Every family" means every family that MAY review this work: a family
+            # in the authoring set is not missing, it is excluded, and demanding it
+            # would make an author from the roster unsatisfiable at T1.
+            missing = [
+                f
+                for f in roster
+                if f not in available and f not in substitutes and f not in writer_set
+            ]
             degradable = set(outage_families) | set(route_blocked)
             if missing and all(f in degradable for f in missing):
                 degraded = sorted(missing)
@@ -1114,13 +1530,11 @@ def constitute_team(
     # families a PR draws.
     core = rotated([f for f in available if f not in substitutes])
     subs = [f for f in available if f in substitutes]
-    writer_cap = size // 2  # strict-majority guard: writer seats can never reach size//2 + 1
-    order = [f for f in core if f != writer_family]
-    if writer_family in core and writer_cap >= 1:
-        order.append(writer_family)
-    order.extend(f for f in subs if f != writer_family)
-    if writer_family in subs and writer_cap >= 1:
-        order.append(writer_family)
+    # A family that may have authored the work never takes a seat -- from any class,
+    # and not merely after the core families: T1 seats every roster family, so
+    # ordering is seating there (clause (10); codex critical, #4835 r3).
+    order = [f for f in core if f not in writer_set]
+    order.extend(f for f in subs if f not in writer_set)
     seat_families = order[:size]
     if len(seat_families) < size:
         raise ValueError(
@@ -1987,8 +2401,10 @@ def t2_family_floor_release(
     ``accepts`` are the checklist-complete accepts the admission gate counted. The rule
     holds only for a row whose ``risk_tier`` is T2 reviewed by a ``t2_standard`` team, with
     the accept quorum met and at least one accept from a family other than the writer's.
-    The writer's families are the dossier's recorded ones plus the row's lane; an
-    unresolvable lane refuses the rule.
+    The writer's families are the dossier's own recorded ones -- an observed authoring
+    identity, never the row's lane name (a name is compatible with any model, so reading
+    one here would hand the rule a family the execution record never supported). A dossier
+    that records no writer family refuses the rule.
     """
 
     if frontmatter is None:
@@ -1999,14 +2415,15 @@ def t2_family_floor_release(
         return None
     try:
         quorum = int(registry["sizing"][team_class]["quorum_accept"])
-        row_writer = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
     except (KeyError, TypeError, ValueError):
         return None
     writer_families = {
         str(dossier.get(field) or "").strip()
         for field in ("writer_family", "constitution_writer_family")
-    } | {row_writer}
+    }
     writer_families.discard("")
+    if not writer_families:
+        return None
     distinct = [r for r in accepts if str(r.get("family")) not in writer_families]
     if len(accepts) < quorum or not distinct:
         return None
@@ -2462,12 +2879,19 @@ def _dossier_validity_blockers(
                 "review_dossier_family_diversity:missing_accept_from="
                 + ",".join(sorted(missing_families))
             )
-    if frontmatter is not None and accepts:
-        writer_family = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
-        writer_accepts = sum(1 for r in accepts if str(r.get("family")) == writer_family)
+    # The dossier's OWN recorded writer family governs the majority guard. It
+    # is derived from an observed authoring identity by the dispatcher; taking
+    # it back from the lane name here would re-ask a question the record already
+    # answered, and would answer it with the transport default.
+    recorded_writer_family = str(dossier.get("writer_family") or "").strip().lower()
+    if recorded_writer_family == WRITER_FAMILY_UNOBSERVED:
+        blockers.append("review_dossier_writer_family_unobserved")
+    if recorded_writer_family and recorded_writer_family != WRITER_FAMILY_UNOBSERVED and accepts:
+        writer_accepts = sum(1 for r in accepts if str(r.get("family")) == recorded_writer_family)
         if writer_accepts > len(accepts) // 2:
             blockers.append(
-                f"review_dossier_writer_family_majority:{writer_family}:{writer_accepts}/{len(accepts)}"
+                "review_dossier_writer_family_majority:"
+                f"{recorded_writer_family}:{writer_accepts}/{len(accepts)}"
             )
 
     verdict = str(dossier.get("review_team_verdict") or "missing").lower()

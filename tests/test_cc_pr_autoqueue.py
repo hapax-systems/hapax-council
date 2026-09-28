@@ -305,7 +305,10 @@ class TestReviewTeamGate:
     )
 
     def _writer_seat_dead_dossier(self, vault: Path) -> None:
-        _write_review_dossier(
+        # The seat's T2 rule reads the dossier's RECORDED writer family (the
+        # dispatcher derives it from an observed authoring identity), so this
+        # fixture declares one rather than relying on the row's lane name.
+        dossier_path = _write_review_dossier(
             vault,
             "task-a",
             head_sha="sha-42",
@@ -321,6 +324,10 @@ class TestReviewTeamGate:
                 for family, verdict in self.WRITER_SEAT_DEAD
             ],
         )
+        written = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+        written["writer_family"] = "claude"
+        written["constitution_writer_family"] = "claude"
+        dossier_path.write_text(yaml.safe_dump(written, sort_keys=False), encoding="utf-8")
 
     @pytest.mark.parametrize(("risk_tier", "action"), [("T2", "queue"), ("T1", "blocked")])
     def test_a_writer_seat_below_the_floor_admits_only_a_t2_row(

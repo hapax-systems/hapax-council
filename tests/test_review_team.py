@@ -512,9 +512,10 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
         assert 4 <= len(team.seats) <= 5
-        # every CORE family; substitute families only fill seats the core cannot
+        # every CORE family the author was not; substitutes only fill what that cannot
         roster = {entry["family"] for entry in reg["families"] if not entry.get("substitute")}
-        assert roster <= {seat.family for seat in team.seats}
+        assert roster - {"claude"} <= {seat.family for seat in team.seats}
+        assert "claude" not in {seat.family for seat in team.seats}
 
     def test_t1_route_blocked_family_degrades_with_receipt_reason(self) -> None:
         rt = _load_review_team_module()
@@ -778,6 +779,63 @@ class TestConstitution:
                 rt.writer_family_for_lane(lane, reg)
 
 
+class TestObservedWriterIdentity:
+    """review-dossier-writer-family-from-observed-author-20260924: a dossier's
+    writer_family is a claim about execution, so it comes from the record the
+    authoring session wrote. Unsafe cases first: an identity that cannot be
+    observed is UNOBSERVED -- guessing it decides who may review the work."""
+
+    def test_the_hold_is_inert_unless_the_killswitch_names_it(self) -> None:
+        # Clause 11 (seat 2026-09-28T04:06Z): the hold on an unobservable author must
+        # be inert, or a merged state would stall the review plane for ~86% of rows.
+        rt = _load_review_team_module()
+        assert rt.writer_family_enforcement_enabled({}) is False
+        for value in ("1", "true", "on", "enforce"):
+            assert rt.writer_family_enforcement_enabled({rt.WRITER_FAMILY_ENFORCE_ENV: value})
+        # A typo must not stop the review plane.
+        for value in ("", "0", "no", "observe", "enforc"):
+            assert (
+                rt.writer_family_enforcement_enabled({rt.WRITER_FAMILY_ENFORCE_ENV: value}) is False
+            )
+
+
+class TestAuthoringFamilyExclusion:
+    """Clause (10) of the row, added by the seat 2026-09-28T04:08Z on the codex
+    critical: the observed authoring families are excluded from T1 teams too, and
+    not merely placed after the core families -- T1 seats every roster family, so
+    ordering is seating there. The cap that allowed one writer seat is gone."""
+
+    def test_a_t1_team_never_seats_the_authoring_family(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t1_critical", ["codex"], reg, pr_number=11)
+
+        seated = {seat.family for seat in team.seats}
+        assert "codex" not in seated
+        assert len(team.seats) >= 4
+        assert "writer_family_excluded:codex" in team.notes
+
+    def test_excluding_the_author_does_not_shrink_a_t1_team_below_its_floor(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        team = rt.constitute_team("t1_critical", ["claude", "codex"], reg, pr_number=11)
+
+        seated = {seat.family for seat in team.seats}
+        assert not seated & {"claude", "codex"}
+        assert len(seated) == len(team.seats) >= 4
+        assert "writer_family_excluded:claude,codex" in team.notes
+
+    def test_no_writer_family_ever_takes_a_seat(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+
+        for team_class in ("t2_standard", "t3_docs", "t1_critical"):
+            team = rt.constitute_team(team_class, "gemini", reg, pr_number=5)
+            assert "gemini" not in {seat.family for seat in team.seats}, team_class
+
+
 class TestDistinctFamilyFloor:
     """review-constitution-walled-family-substitution-20260924, seat finding 21:05:30Z: the
     diversity floor is distinct families. A second seat from the same family is never a
@@ -816,11 +874,13 @@ class TestDistinctFamilyFloor:
     def test_substitute_fills_only_what_core_cannot(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
-        full = rt.constitute_team("t2_standard", "claude", reg, pr_number=42)
+        # A non-roster author, so this test is about the substitute floor and not
+        # about the authoring family's exclusion.
+        full = rt.constitute_team("t2_standard", "fugu", reg, pr_number=42)
         assert not {seat.family for seat in full.seats} & self.SUBSTITUTES
         short = rt.constitute_team(
             "t2_standard",
-            "claude",
+            "fugu",
             reg,
             pr_number=42,
             outage_families={"codex"},
@@ -847,13 +907,16 @@ class TestDistinctFamilyFloor:
     def test_t1_requires_every_core_family_not_the_substitutes(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
-        team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
+        # A non-roster author: T1 seats every core family, and substitutes never
+        # stand in for one that is present.
+        team = rt.constitute_team("t1_critical", "fugu", reg, pr_number=7)
         families = {seat.family for seat in team.seats}
         assert families == {"claude", "codex", "gemini", "glm"}
         dossier = _synth(
             rt,
             [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
             team_class="t1_critical",
+            writer_family="claude",
         )
         assert dossier["review_team_verdict"] == "quorum-accept"
 
@@ -864,6 +927,7 @@ class TestDistinctFamilyFloor:
             rt,
             [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
             team_class="t1_critical",
+            writer_family="claude",
         )
         blockers = rt._dossier_validity_blockers(
             dossier, pr_head_sha="a" * 40, registry=reg, route_blocked_families={}
@@ -1068,24 +1132,6 @@ class TestSeatT2FamilyFloorRelease:
         assert "review_dossier_below_family_floor:voting=1/seated=3" in blockers
         assert sink == {}
 
-    def test_the_rows_writer_family_counts_as_the_writers_too(self) -> None:
-        # The dossier recorded claude; the row now names a codex lane. Neither family's accept
-        # is distinct from the writer's, so the floor stands.
-        rt = _load_review_team_module()
-        dossier = _synth(
-            rt,
-            [
-                _review("claude-1", "claude", "accept"),
-                _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "invalid-output"),
-            ],
-            writer_family="claude",
-        )
-        sink: dict = {}
-        blockers = self._blockers(rt, dossier, self._frontmatter(assigned_to="cx-blue"), sink=sink)
-        assert self.FLOOR in blockers
-        assert sink == {}
-
     def test_a_short_quorum_is_not_rescued(self) -> None:
         rt = _load_review_team_module()
         dossier = _synth(
@@ -1143,8 +1189,10 @@ class TestSeatT2FamilyFloorRelease:
         assert "review_dossier_unresolved_critical:1" in blockers
 
     def test_an_unresolvable_writer_or_quorum_refuses_the_rule(self) -> None:
-        # The rule's fallback narrows: a retired writer lane, or a registry without the t2
-        # quorum, returns no release rather than raising or guessing.
+        # The rule's fallback narrows: a dossier that records no writer family, or a
+        # registry without the t2 quorum, returns no release rather than raising or
+        # guessing. The row's lane is never consulted -- a retired lane name no longer
+        # decides anything here, because no lane name is writer identity.
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
         dossier = self._writer_seat_dead(rt)
@@ -1156,6 +1204,15 @@ class TestSeatT2FamilyFloorRelease:
             rt.t2_family_floor_release(
                 dossier,
                 frontmatter=self._frontmatter(assigned_to="agy-1"),
+                registry=reg,
+                accepts=accepts,
+            )
+            is not None
+        )
+        assert (
+            rt.t2_family_floor_release(
+                {**dossier, "writer_family": None, "constitution_writer_family": None},
+                frontmatter=self._frontmatter(),
                 registry=reg,
                 accepts=accepts,
             )
@@ -1489,6 +1546,7 @@ class TestDiffCoverageQuorum:
                 _review("gemini-1", "gemini", "accept", diff_full_bytes=None),
                 _review("claude-1", "claude", "accept", diff_full_bytes=None),
             ],
+            writer_family="claude",
         )
         dossier["review_team_verdict"] = "quorum-accept"
         dossier["accept_count"] = 3
@@ -1729,6 +1787,7 @@ class TestVerdictBlockers:
                 _review("gemini-1", "gemini", "accept"),
                 _review("claude-1", "claude", "accept"),
             ],
+            writer_family="claude",
         )
 
     def _glm_seated_dossier(self, rt) -> dict:
@@ -1739,6 +1798,7 @@ class TestVerdictBlockers:
                 _review("claude-1", "claude", "accept"),
                 _review("glm-1", "glm", "accept"),
             ],
+            writer_family="claude",
         )
 
     def _glmcp_payg_evidence_refs(self, rt) -> tuple[str, ...]:
@@ -1954,6 +2014,7 @@ class TestVerdictBlockers:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
 
     def test_route_blocked_degraded_dossier_passes_while_route_still_blocked(
@@ -2004,6 +2065,7 @@ class TestVerdictBlockers:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
 
@@ -2047,6 +2109,7 @@ class TestVerdictBlockers:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
 
@@ -2089,6 +2152,7 @@ class TestVerdictBlockers:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
 
@@ -2362,6 +2426,7 @@ class TestVerdictBlockers:
                 _review("claude-2", "claude", "accept"),
                 _review("claude-3", "claude", "accept"),
             ],
+            writer_family="claude",
         )
         dossier["review_team_verdict"] = "quorum-accept"
         note = _write_dossier(tmp_path, "task-x", dossier)
@@ -2370,6 +2435,49 @@ class TestVerdictBlockers:
         )
         assert any(b.startswith("review_dossier_family_diversity:") for b in blockers)
         assert any(b.startswith("review_dossier_writer_family_majority:") for b in blockers)
+
+    def test_the_recorded_family_governs_and_the_lane_name_does_not(self, tmp_path: Path) -> None:
+        # The row's lane is fugu-omglol, whose NAME the transport map calls claude.
+        # The dossier records the observed writer as codex, and two codex seats
+        # accepted: the writer's family holds the majority of the accepts and must
+        # not certify the work. Reading the lane name would have called the writer
+        # claude and let exactly this majority through.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("codex-2", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+            ],
+            writer_family="codex",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert any(b.startswith("review_dossier_writer_family_majority:codex:") for b in blockers)
+
+    def test_a_codex_majority_does_not_block_a_fugu_writer(self, tmp_path: Path) -> None:
+        # A distinct observed family is not a writer majority: the observed
+        # identity is `fugu`, and fugu seats no reviewer here.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("codex-2", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+            ],
+            writer_family="fugu",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert not any(b.startswith("review_dossier_writer_family_majority") for b in blockers)
 
     def test_incomplete_accept_checklist_blocks_even_if_verdict_lies(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
@@ -2917,6 +3025,7 @@ class TestFamilyOutageDegradation:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
 
     def test_degraded_t1_dossier_passes_admission_validation(self, tmp_path: Path) -> None:
@@ -2995,6 +3104,7 @@ class TestFamilyOutageDegradation:
             ],
             team_class="t2_standard",
             constitution_notes=notes,
+            writer_family="claude",
         )
         assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
         assert dossier["degraded_family_outage"] == ["claude"]
