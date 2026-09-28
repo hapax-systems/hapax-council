@@ -526,6 +526,25 @@ def test_stamp_refuses_a_row_with_no_status_line(desk: ResearchDeskConfig) -> No
     assert "status" in exc.value.repair_action
 
 
+def test_stamp_refuses_a_symlinked_row(desk: ResearchDeskConfig) -> None:
+    path = write_request(desk, "req-stamp-link")
+    outside = desk.vault_root / "outside-stamp.md"
+    path.rename(outside)
+    path.symlink_to(outside)
+    original = outside.read_bytes()
+    with pytest.raises(ResearchDeskError) as exc:
+        stamp_request_row(
+            path,
+            receipt_id="rd-test",
+            delivered_at="2026-09-28T18:00:00Z",
+            drop_relpath="drop.md",
+            citation_count=0,
+        )
+    assert exc.value.reason_code == "request_not_found"
+    assert path.is_symlink()
+    assert outside.read_bytes() == original
+
+
 def test_stamp_replaces_rather_than_duplicates_an_existing_delivery_field(
     desk: ResearchDeskConfig,
 ) -> None:

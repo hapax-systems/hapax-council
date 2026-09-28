@@ -428,12 +428,7 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
 
 
 def normalize_citations(citations: Any) -> tuple[dict[str, str], ...]:
-    """Accept ``["https://…"]`` or ``[{"url": …, "title": …}]``; emit one shape.
-
-    Anything that is not an ``http``/``https`` URL is refused: a citation list is
-    written into the operator's vault, and ``file:``/``javascript:`` entries there
-    are a hazard, not a citation.
-    """
+    """Validate and normalize HTTP(S) citations."""
     if citations is None:
         return ()
     if not isinstance(citations, (list, tuple)):
@@ -653,14 +648,7 @@ def get_request(config: ResearchDeskConfig, request_id: str) -> ResearchRequest:
 
 
 class _RequestLock:
-    """Exclusive per-request lock on a HOME-local inode.
-
-    ``flock`` is reliable only on a local filesystem, which is why the lock lives
-    under ``~/.cache`` and never in the NFS vault. It makes the read-row /
-    write-drop / stamp-row sequence a critical section; the row's own
-    ``delivery_receipt`` field remains the single source of truth for whether a
-    delivery happened.
-    """
+    """Serialize one delivery with a local advisory lock."""
 
     def __init__(self, path: Path) -> None:
         self._path = path
@@ -752,12 +740,7 @@ def render_drop(
     receipt_id: str,
     delivered_at: str,
 ) -> str:
-    """The lanebus drop: estate-authored frontmatter, then neutralised external prose.
-
-    The body and the model notes both pass through :func:`neutralize_markdown`; the
-    counts land in the frontmatter so a reader can see that the control ran and what
-    it took, rather than trusting that it did.
-    """
+    """Render an untrusted lanebus drop and count withheld content."""
     neutralized = neutralize_markdown(markdown)
     neutralized_notes = neutralize_markdown(model_notes)
     markdown = neutralized.markdown
@@ -827,12 +810,7 @@ def render_drop(
 
 
 def _atomic_write(path: Path, data: bytes, *, mode: int = 0o644) -> None:
-    """Write via a same-directory temp file and ``rename(2)``.
-
-    Plain ``os.replace`` on purpose: the vault is NFS, which rejects ``renameat2``
-    with any non-zero flag, so the flag-carrying atomic-exchange primitives are not
-    available here.
-    """
+    """Atomically replace a vault file using same-directory rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     tmp = Path(tmp_name)
@@ -856,13 +834,15 @@ def stamp_request_row(
     drop_relpath: str,
     citation_count: int,
 ) -> None:
-    """Flip ``status`` to ``delivered`` and record the receipt, touching nothing else.
-
-    A line edit rather than a YAML round-trip: re-emitting the document would
-    reorder and requote every field in a governance-tracked row and bury the one
-    real change in a whole-file diff.
-    """
-    original = path.read_text(encoding="utf-8")
+    """Stamp the row while preserving unrelated frontmatter."""
+    try:
+        original = _read_request_file(path)
+    except (OSError, UnicodeDecodeError):
+        raise ResearchDeskError(
+            "request_not_found",
+            "use an ordinary active request row, not a symlink or special file",
+            detail=path.name,
+        ) from None
     result = parse_frontmatter_with_diagnostics(original)
     if not result.ok or result.frontmatter is None:
         raise ResearchDeskError(
@@ -920,12 +900,7 @@ def deliver_result(
     model_notes: str = "",
     now: datetime | None = None,
 ) -> DeliveryReceipt:
-    """File one answer. Idempotent on ``request_id``.
-
-    A second call for an already-delivered request returns the first receipt and
-    writes no second file — the row's ``delivery_receipt`` field is the authority,
-    read under a local per-request lock.
-    """
+    """Deliver once per request, recovering a prior committed drop."""
     request_id = validate_request_id(request_id)
     markdown = _screen_text(markdown or "", field_name="markdown", max_bytes=MAX_MARKDOWN_BYTES)
     if not markdown.strip():
