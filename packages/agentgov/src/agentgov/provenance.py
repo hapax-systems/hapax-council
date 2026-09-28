@@ -14,6 +14,8 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
+from agentgov.consent import identity_operation, resolve_contract_id
+
 
 class ProvenanceOp(enum.Enum):
     """Binary operations in the provenance semiring."""
@@ -83,6 +85,7 @@ class ProvenanceExpr:
             return self
         return ProvenanceExpr(op=ProvenanceOp.PLUS, left=self, right=other)
 
+    @identity_operation()
     def evaluate(self, active_contracts: frozenset[str]) -> bool:
         """Evaluate provenance against active contracts."""
         if self._is_zero:
@@ -90,7 +93,9 @@ class ProvenanceExpr:
         if self._is_one:
             return True
         if self.contract_id is not None:
-            return self.contract_id in active_contracts
+            return (resolve_contract_id(self.contract_id) or self.contract_id) in {
+                resolve_contract_id(cid) or cid for cid in active_contracts
+            }
         if self.op is ProvenanceOp.TENSOR:
             assert self.left is not None and self.right is not None
             return self.left.evaluate(active_contracts) and self.right.evaluate(active_contracts)

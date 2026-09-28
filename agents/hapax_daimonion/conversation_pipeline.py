@@ -575,7 +575,7 @@ class ConversationPipeline:
 
         # Refresh consent contracts to pick up any new ones
         if self._consent_reader:
-            self._consent_reader.reload_contracts()
+            await asyncio.to_thread(self._consent_reader.reload_contracts)
 
         if self.buffer:
             self.buffer.activate()
@@ -1846,7 +1846,9 @@ class ConversationPipeline:
                 result = json.dumps({"error": "consent_gate_unavailable", "tool": tc["name"]})
             else:
                 try:
-                    result = self._consent_reader.filter_tool_result(tc["name"], result)
+                    result = await asyncio.to_thread(
+                        self._consent_reader.filter_tool_result, tc["name"], result
+                    )
                 except Exception:
                     log.warning(
                         "Consent filtering raised for %s — redacting tool result",

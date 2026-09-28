@@ -133,3 +133,83 @@ report = propagator.revoke("alice")  # cascading purge
 ## License
 
 MIT
+
+
+### Identity migration binding
+
+Select the installation binding before resolving identities:
+
+| Selection | Configuration | Behavior |
+| --- | --- | --- |
+| Non-migrating | `AGENTGOV_IDENTITY_MIGRATION=none` | Exact identifiers; no council or Reins import. |
+| Required | `AGENTGOV_IDENTITY_MIGRATION=required` and `AGENTGOV_IDENTITY_PROVIDER` | Each operation loads a validated snapshot from the declared provider module. |
+| Unconfigured | Unset, empty or unknown mode; required provider absent or not importable | Resolution refuses with `identity_unconfigured`; consent and matching cannot be granted. |
+
+Applications may instead call `agentgov.consent.configure_identity_migration(mode, provider)`
+once at startup. This explicit application selection takes precedence over environment
+configuration. Importing the package does not load any provider or custody data.
+The council entry points select `required` with provider `shared.governance.consent`;
+the authoritative council registry and resolver enforce that binding independently.
+
+Providers export `load_identity_snapshot()`. Its result implements
+`resolve_principal_id(candidate)` and `resolve_contract_id(candidate)`, returning a
+canonical string or the candidate itself for an unknown identifier. The portable
+resolver also preserves the candidate when a provider returns `None` for an unknown
+identifier. Required custody validates the document, not registry membership;
+unknown identifiers retain exact matching. Required provider failures never choose
+non-migrating behavior. Use `identity_operation()` around a compound
+operation so nested resolution shares the same snapshot. The snapshot is discarded
+on exit; the next operation loads again. Registry operations establish this scope
+automatically. Do not retain a scope between operations or use cached custody data.
+
+Ordinary missing-contract errors retain the requested identifier. A request that
+resolves as a predecessor instead receives a sanitized registry error. Providers
+may implement `contains_predecessor(text)` to classify parse diagnostics without
+exporting correspondence: ordinary load errors retain their filename and cause,
+while predecessor-bearing diagnostics are sanitized. Required providers without
+this optional classifier conservatively suppress load details. Registry errors
+are not converted into identity-migration failures.
+
+The council provider reads the single `consent-identifier-compatibility` FileStore
+entry through the installed Reins API selected by `HAPAX_REINS_API`. Its version 1
+JSON document has `principals` and `contracts` correspondence objects plus a declared
+`inventory` array. Both objects must be nonempty; every inventory label must map,
+every mapped label must be declared, duplicates and overlapping or cyclic labels
+refuse. Values and inventory belong exclusively in private custody. No plaintext
+mirror, digest correspondence, or secret environment payload is used. The reader
+replaces only the initializing key accessor with an existing-key read; it neither
+creates storage nor changes FileStore cryptography. FileStore's absent and
+integrity-failed `None` outcomes are distinguished by entry presence: absence refuses
+as `compat_missing`, while an existing unreadable entry reports cause class
+`CompatibilityIntegrityError` with `compat_unreadable`. Read/import failures also
+use `compat_unreadable`, invalid documents `compat_malformed`, duplicate or cyclic
+correspondence `compat_conflict`, and inventory gaps `compat_incomplete`.
+
+Failures expose only reason tokens and sanitized `cause_class` fields; WARNINGs for
+unreadable custody include the cause class, safe missing module name when available,
+and `remedy=restore_compat_custody`, never exception messages, paths or document text.
+Reason-token remedies:
+
+- `identity_unconfigured`: select the installation binding and install its declared provider.
+- `compat_missing`: provision the compatibility entry through private custody.
+- `compat_unreadable`: `restore_compat_custody` — restore the installed API, store access and valid existing key/entry; use the cause class to locate the failing component.
+- `compat_malformed`: repair the private document to the version 1 schema.
+- `compat_conflict`: reconcile duplicate, overlapping or cyclic labels in private custody.
+- `compat_incomplete`: reconcile the declared inventory with all mapped labels in private custody.
+
+Revocation reports distinguish `contract_revoked` from `purge_complete`. Structured
+`PurgeResult` outcomes retain completed deletion counts and token-only `failures`.
+A failed purge keeps consent revoked, retains pending contracts in
+`retry_contract_ids`, and can be retried with `RevocationPropagator.retry_purge(report)`
+after reloading contracts and registering the same handlers. Prior effects and
+failures remain in `prior_purge_results`; retry never reactivates consent. These
+fields, including completion status, survive dataclass serialization in the existing
+report path. The council API appends `purge_pending` records (canonical person and
+outstanding contract IDs) to the existing archive purge audit, `<archive_root>/purge.log`,
+and sends an operator notification at HTTP 503. Successful retries append `purge_complete`
+for the completed contracts; historical audit entries stay intact. Startup reads this
+residue and warns without re-running a purge. `POST /api/consent/retry/{person_id}` uses
+reports retained by the current app process only; after restart it returns 404 pointing
+to the durable audit for manual reconciliation. The audit contains no executable retry
+report or journal. Private provisioning, inventory reconciliation, validation on implicated
+hosts, retention and runtime activation remain deployment responsibilities.

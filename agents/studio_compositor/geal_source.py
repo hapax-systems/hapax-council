@@ -235,7 +235,7 @@ class GealCairoSource(CairoSource):
 
         Phase 2 also spawns a G2 latch-and-fade: ``hash(source_id) %
         num_cells`` picks a deterministic L2 sub-triangle sliver; same
-        source_id → same cell, so repeated recognitions ("Jason",
+        source_id → same cell, so repeated recognitions ("principal-a1",
         "paper-42") build a spatial memory the viewer learns.
         """
         if not _gate_enabled():

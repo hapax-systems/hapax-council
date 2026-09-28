@@ -14,6 +14,15 @@ from pathlib import Path
 
 import pytest
 
+# The estate consent registry is bound `required` and refuses identity operations
+# without a validated custody document, so every test process supplies a synthetic
+# one. Registered as a plugin from this initial conftest (rather than from whichever
+# test module happens to be collected first) so a partial run — one module, one
+# directory, the portable package's tests beside the estate tree — sees the same
+# custody a full run does. Running packages/agentgov/tests alone needs
+# `-p tests.shared.synthetic_custody`, since this conftest is not on its path.
+pytest_plugins = ("tests.shared.synthetic_custody",)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_publication_witness_log(tmp_path, monkeypatch):
