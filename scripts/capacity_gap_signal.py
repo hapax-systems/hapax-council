@@ -18,8 +18,10 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -35,6 +37,11 @@ MODEL_RE = re.compile(r"(?:/models/|--model[= ])([A-Za-z0-9_.-]+)")
 HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,99}")
 METRIC_RE = re.compile(r"^vllm:request_success_total(?:\{[^}]*\})?\s+([\d.]+)$")
 GPU_MEMORY_RE = re.compile(r"(?im)^.*(?:nvidia|geforce|rtx).*?,\s*(\d+) MiB,\s*(\d+) MiB\s*$")
+FUGU_RESET_RE = re.compile(
+    r"Try again at ([A-Za-z]{3}) (\d+)(?:st|nd|rd|th), (\d{4}) (\d{1,2}):(\d{2}) (AM|PM)"
+)
+OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models"
+FEATHERLESS_MODELS = "https://api.featherless.ai/v1/models"
 
 
 def instant(value: str) -> datetime:
@@ -281,7 +288,10 @@ def waiting_demand(rows: list[dict[str, Any]], walled_families: set[str]) -> Dem
         ):
             demand.waiting_rows.append(task_id)
         for family in walled_families:
-            if family in assigned and status not in {"done", "closed", "cancelled", "abandoned"}:
+            held_by_family = assigned == family or assigned.startswith(
+                (f"{family}-", f"cx-{family}")
+            )
+            if held_by_family and status not in {"done", "closed", "cancelled", "abandoned"}:
                 demand.walled_rows.setdefault(family, []).append(task_id)
     return demand
 
@@ -333,6 +343,17 @@ def _state(path: Path) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def input_staleness(state: dict[str, Any], healthy: dict[str, bool]) -> set[str]:
+    failures = state.get("input_failures") or {}
+    gaps = set()
+    for source, is_healthy in healthy.items():
+        failures[source] = 0 if is_healthy else int(failures.get(source) or 0) + 1
+        if failures[source] >= 2:
+            gaps.add(f"INPUT_STALE:{source}")
+    state["input_failures"] = failures
+    return gaps
 
 
 def _write_state(path: Path, state: dict[str, Any]) -> None:
@@ -440,6 +461,93 @@ def codex_headroom(sessions_root: Path, now: datetime) -> tuple[str, str]:
     return "unknown", "codex headroom=unknown"
 
 
+def fetch_catalogue(url: str) -> dict[str, Any] | None:
+    """GET metadata only. No completion endpoint or credential is used."""
+    request = urllib.request.Request(url, headers={"User-Agent": "hapax-capacity-gap-signal/1"})
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read(16_000_000))
+        return payload if isinstance(payload, dict) else None
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+
+
+def catalogue_capabilities(catalogues: dict[str, dict[str, Any] | None]) -> dict[str, str]:
+    states = {"space-bunny": "unknown", "featherless": "unknown"}
+    openrouter = catalogues.get(OPENROUTER_MODELS) or {}
+    for item in openrouter.get("data") or []:
+        if not isinstance(item, dict) or item.get("id") != "stealth/space-bunny-alpha":
+            continue
+        pricing = item.get("pricing") or {}
+        try:
+            states["space-bunny"] = (
+                "price0"
+                if Decimal(str(pricing["prompt"])) == 0 and Decimal(str(pricing["completion"])) == 0
+                else "priced"
+            )
+        except (KeyError, InvalidOperation, TypeError):
+            states["space-bunny"] = "unknown"
+        break
+    featherless = catalogues.get(FEATHERLESS_MODELS) or {}
+    models = featherless.get("data") or []
+    if isinstance(models, list) and models:
+        states["featherless"] = f"available:{len(models)}"
+    return states
+
+
+def provider_panes() -> dict[str, str]:
+    names = run(["tmux", "ls", "-F", "#{session_name}"], 5).splitlines()
+    return {
+        name: run(["tmux", "capture-pane", "-pt", name, "-S", "-120"], 5)
+        for name in names
+        if re.fullmatch(r"hapax-[a-z][a-z0-9]*-.+", name)
+    }
+
+
+def fugu_wall(panes: dict[str, str], now: datetime) -> tuple[str, str | None]:
+    resets = []
+    for pane in panes.values():
+        if "usage limit" not in pane.lower():
+            continue
+        match = FUGU_RESET_RE.search(pane)
+        if not match:
+            continue
+        month, day, year, hour, minute, ampm = match.groups()
+        try:
+            local = datetime.strptime(
+                f"{month} {day} {year} {hour}:{minute} {ampm}", "%b %d %Y %I:%M %p"
+            )
+            reset = local.replace(
+                tzinfo=ZoneInfo(os.environ.get("HAPAX_CAPACITY_PANE_TZ", "America/Chicago"))
+            ).astimezone(UTC)
+        except ValueError:
+            continue
+        if reset > now:
+            resets.append(reset)
+    return ("walled", stamp(max(resets))) if resets else ("unknown", None)
+
+
+def provider_walls(panes: dict[str, str], now: datetime) -> dict[str, tuple[str, str | None]]:
+    """Classify quota walls from provider panes without retaining pane text."""
+    walls: dict[str, tuple[str, str | None]] = {}
+    for name, pane in panes.items():
+        match = re.fullmatch(r"hapax-([a-z][a-z0-9]*)-.+", name)
+        if not match:
+            continue
+        family = match.group(1)
+        if family == "fugu":
+            state, reset = fugu_wall({name: pane}, now)
+            if state == "walled":
+                walls[family] = (state, reset)
+            continue
+        if re.search(
+            r"(?is)(?:usage\s+limit|quota\s+(?:exhausted|limit|will reset)|rate\s+limit\s+(?:exceeded|reached))",
+            pane,
+        ):
+            walls[family] = ("walled", None)
+    return walls
+
+
 def _claude_pace(repo: Path) -> tuple[str, str] | None:
     raw = run(["python", str(repo / "scripts/hapax-claude-pool-pace"), "status", "--json"], 25)
     try:
@@ -487,14 +595,25 @@ def _appliance_demand(bus: Path) -> int:
     if manifest.is_file() and ledger.is_file():
         try:
             total = int(json.loads(manifest.read_text(encoding="utf-8"))["count"])
-            done = {
-                fields[0]
-                for line in ledger.read_text(encoding="utf-8").splitlines()
-                if (fields := [field.strip() for field in line.strip("|").split("|")])
-                and len(fields) >= 2
-                and fields[0].isdigit()
-                and fields[1] == "DONE"
-            }
+            statuses = {}
+            for line in ledger.read_text(encoding="utf-8").splitlines():
+                fields = [field.strip() for field in line.strip("|").split("|")]
+                if len(fields) >= 2 and fields[0].isdigit():
+                    statuses[fields[0]] = fields[1]
+            done = {task for task, status in statuses.items() if status == "DONE"}
+            pending = {task for task, status in statuses.items() if status != "DONE"}
+            # The local kit is a blank copy; Talus owns the execution ledger.
+            # Its seat readback certifies a complete remote set for this manifest.
+            verification = kit.parent / "VERIFY-v2.md"
+            if verification.is_file():
+                report = verification.read_text(encoding="utf-8")
+                match = re.search(
+                    r"Talus readback:[^\n]*`LEDGER-v2\.md` has exactly ([\d,]+) "
+                    r"unique task rows, no gaps, all marked `DONE`",
+                    report,
+                )
+                if match and int(match.group(1).replace(",", "")) == total:
+                    return len(pending)
             return max(0, total - len(done))
         except (OSError, ValueError, KeyError, TypeError):
             pass
@@ -568,8 +687,12 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     known = set(state.get("known_endpoints") or [])
     states = {key: value for key, value in states.items() if value != "lost" or key in known}
     quota = _subscribed_state(args.quota_ledger, now)
+    quota_fresh = bool(quota)
     codex_state, codex_detail = codex_headroom(args.codex_sessions, now)
     quota["codex"] = codex_state
+    panes = provider_panes()
+    pane_walls = provider_walls(panes, now)
+    quota.update({family: value[0] for family, value in pane_walls.items()})
     states.update(quota)
     rows = read_tasks(args.tasks)
     walled = {key for key, value in quota.items() if value == "walled"}
@@ -595,6 +718,36 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     }
     gaps = judge_gaps(states, demand, registered)
     gaps |= registration_gaps(discovered, registered, answering=discovered)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        catalogues = dict(
+            zip(
+                (OPENROUTER_MODELS, FEATHERLESS_MODELS),
+                pool.map(fetch_catalogue, (OPENROUTER_MODELS, FEATHERLESS_MODELS)),
+                strict=True,
+            )
+        )
+    catalogue_states = catalogue_capabilities(catalogues)
+    if (
+        catalogue_states["space-bunny"] == "price0"
+        and "stealth/space-bunny-alpha" not in registered_text
+    ):
+        gaps.add("UNREGISTERED:openrouter:stealth/space-bunny-alpha")
+    elif catalogue_states["space-bunny"] == "priced":
+        gaps.add("PRICE_CHANGED:openrouter:stealth/space-bunny-alpha")
+    if (
+        catalogue_states["featherless"].startswith("available")
+        and "featherless" not in registered_text.lower()
+    ):
+        gaps.add("UNREGISTERED:featherless")
+    gaps |= input_staleness(
+        state,
+        {
+            "tailnet": bool(tailnet),
+            "provider-catalogues": "unknown" not in catalogue_states.values(),
+            "quota-ledger": quota_fresh,
+            "provider-panes": bool(panes),
+        },
+    )
     for endpoint in answering:
         if endpoint in registered_text:
             continue
@@ -602,17 +755,9 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
         if any(model not in registered_text for model in models):
             gaps.add(f"UNREGISTERED:{endpoint}:{','.join(sorted(models))}")
     for key in known - answering:
-        if key.split(":", 1)[0] in online:
-            gaps.add(f"LOST:{key}")
+        gaps.add(f"LOST:{key}")
     if stale:
         gaps.add("INPUT_STALE:capacity-observer")
-    if not tailnet:
-        failures = int(state.get("tailnet_failures") or 0) + 1
-        state["tailnet_failures"] = failures
-        if failures >= 2:
-            gaps.add("INPUT_STALE:tailnet")
-    else:
-        state["tailnet_failures"] = 0
     pace = _claude_pace(args.repo)
     if pace:
         gaps.add(pace[0])
@@ -622,7 +767,7 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     state["request_counters"] = request_counters
     state["known_endpoints"] = sorted(known | answering)
     _write_state(args.state, state)
-    detail = f"Waiting rows: {len(demand.waiting_rows)}; review queue: {demand.review_queue}; writer queue: {demand.writer_queue}; MiMo queued work: {demand.appliance_queue}. {codex_detail}. {pace[1] if pace else 'Claude pace=within line or unknown'}. Endpoint fit remains unmeasured unless a work-spec profile supplies it. TP membership: {json.dumps({key: sorted(value) for key, value in members.items()}, sort_keys=True)}"
+    detail = f"Waiting rows: {len(demand.waiting_rows)}; review queue: {demand.review_queue}; writer queue: {demand.writer_queue}; MiMo queued work: {demand.appliance_queue}. {codex_detail}. Provider pane walls={json.dumps({family: {'state': value[0], 'reset': value[1] or 'unknown'} for family, value in sorted(pane_walls.items())}, sort_keys=True)}; Featherless={catalogue_states['featherless']}; Space Bunny={catalogue_states['space-bunny']}. {pace[1] if pace else 'Claude pace=within line or unknown'}. Endpoint fit remains unmeasured unless a work-spec profile supplies it. TP membership: {json.dumps({key: sorted(value) for key, value in members.items()}, sort_keys=True)}"
     recipient, inbox_name = seat_role(args.seat_document)
     deliver(gaps, args.state, args.lanebus / inbox_name, now, detail, recipient=recipient)
     return gaps
