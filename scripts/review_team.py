@@ -633,21 +633,30 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
     return lane_families["default"]
 
 
-#: A family no observation supports.
+#: A family no observation supports: a dossier carrying it asserts nothing.
 WRITER_FAMILY_UNOBSERVED = "unobserved"
+
+#: Why a family is what it is. ``observed`` means an execution record named it;
+#: ``fallback`` means none did and the transport map answered instead.
+WRITER_FAMILY_SOURCE_OBSERVED = "observed"
+WRITER_FAMILY_SOURCE_FALLBACK = "fallback"
+
 
 DEFAULT_CLAIM_RECEIPT_ROOT = Path.home() / ".cache" / "hapax" / "claim-publication-receipts"
 DEFAULT_CODEX_SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 DEFAULT_CLAUDE_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
-#: ``-<uuid>.jsonl`` — the session a native record belongs to.
+#: ``-<uuid>.jsonl`` / ``<uuid>.jsonl`` — the session a native record belongs to.
 _SESSION_ID_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
 
 
 @dataclass(frozen=True)
 class WriterIdentityRoots:
-    """Where an observed authoring identity is read from; injectable, so a caller
-    reads a root it names rather than whatever is in ``$HOME``."""
+    """Where an observed authoring identity is read from.
+
+    Injectable so a caller (and every test) reads a root it names rather than
+    whatever happens to be in ``$HOME``.
+    """
 
     claim_receipt_root: Path = DEFAULT_CLAIM_RECEIPT_ROOT
     codex_sessions_root: Path = DEFAULT_CODEX_SESSIONS_ROOT
@@ -3266,12 +3275,63 @@ def _dossier_validity_blockers(
                 "review_dossier_family_diversity:missing_accept_from="
                 + ",".join(sorted(missing_families))
             )
-    if frontmatter is not None and accepts:
-        writer_family = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
-        writer_accepts = sum(1 for r in accepts if str(r.get("family")) == writer_family)
+    # The dossier's OWN recorded writer family governs the majority guard. It
+    # is derived from an observed authoring identity by the dispatcher; taking
+    # it back from the lane name here would re-ask a question the record already
+    # answered, and would answer it with the transport default.
+    recorded_writer_family = str(dossier.get("writer_family") or "").strip().lower()
+    if not recorded_writer_family:
+        blockers.append("review_dossier_writer_family_missing")
+    elif recorded_writer_family == WRITER_FAMILY_UNOBSERVED:
+        blockers.append("review_dossier_writer_family_unobserved")
+    else:
+        # Verify the recorded family's own evidence. An OMITTED source is a dossier
+        # written before this rule (legacy): it is ADMITTED, and it is NOT re-rounded --
+        # refusing it would block every PR whose current-head dossier predates the rule.
+        # (Re-rounding legacy dossiers, and checking a `fallback` family against the
+        # lane's transport family, are follow-up work:
+        # row writer-family-legacy-reround-and-fallback-family-check-20260928.)
+        # A source that is present but EMPTY, or names something undeclared, is malformed
+        # and refuses (codex review of #4839: an absent key and a present-but-empty value
+        # both collapsed to "", so a malformed source skipped validation entirely), and
+        # `observed` must carry its observation.
+        if "writer_family_source" in dossier:
+            writer_family_source = str(dossier.get("writer_family_source") or "").strip().lower()
+            if not writer_family_source:
+                blockers.append("review_dossier_writer_family_source_empty")
+            elif writer_family_source not in {
+                WRITER_FAMILY_SOURCE_OBSERVED,
+                WRITER_FAMILY_SOURCE_FALLBACK,
+            }:
+                blockers.append(
+                    f"review_dossier_writer_family_source_unknown:{writer_family_source}"
+                )
+            elif writer_family_source == WRITER_FAMILY_SOURCE_OBSERVED:
+                if not str(dossier.get("writer_family_session") or "").strip():
+                    blockers.append("review_dossier_writer_family_evidence_missing:session")
+                if not [line for line in dossier.get("writer_family_evidence") or [] if str(line)]:
+                    blockers.append("review_dossier_writer_family_evidence_missing:evidence")
+            elif writer_family_source == WRITER_FAMILY_SOURCE_FALLBACK:
+                # `fallback` claims no observation existed, so the record must say why
+                # (codex major, #4840): the gate refuses what it cannot check.
+                unobserved_record = dossier.get("writer_family_unobserved")
+                if not isinstance(unobserved_record, Mapping):
+                    blockers.append("review_dossier_writer_family_fallback_unsubstantiated")
+                else:
+                    if not str(unobserved_record.get("reason") or "").strip():
+                        blockers.append("review_dossier_writer_family_fallback_reason_missing")
+                    if not [
+                        line
+                        for line in unobserved_record.get("evidence") or []
+                        if str(line).strip()
+                    ]:
+                        blockers.append("review_dossier_writer_family_fallback_evidence_missing")
+    if recorded_writer_family and recorded_writer_family != WRITER_FAMILY_UNOBSERVED and accepts:
+        writer_accepts = sum(1 for r in accepts if str(r.get("family")) == recorded_writer_family)
         if writer_accepts > len(accepts) // 2:
             blockers.append(
-                f"review_dossier_writer_family_majority:{writer_family}:{writer_accepts}/{len(accepts)}"
+                "review_dossier_writer_family_majority:"
+                f"{recorded_writer_family}:{writer_accepts}/{len(accepts)}"
             )
 
     verdict = str(dossier.get("review_team_verdict") or "missing").lower()
