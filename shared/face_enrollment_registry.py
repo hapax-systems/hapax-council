@@ -11,7 +11,7 @@ This module ships the registry + match/revoke primitives. Wiring the
 matcher into the live ``FaceDetector`` and into the consent gate's
 ``consent_to_enroll`` activation path lands as follow-up cc-tasks per
 the parent spec
-``docs/research/2026-05-01-arcface-jason-matcher-reconcile.md``.
+for the per-person consent matcher.
 
 Per the "revoke ships before matcher gate" invariant
 (``cc-task: arcface-per-person-matcher-gate``), ``revoke_enrollment``
@@ -23,9 +23,12 @@ place.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
+
+from shared.governance.consent import estate_identity_operation, resolve_principal_id
 
 if TYPE_CHECKING:
     import numpy as np
@@ -42,12 +45,10 @@ ENROLL_SCOPE: Final[str] = "face_enrollment"
 class _ConsentScopeChecker(Protocol):
     """Minimum surface required to verify face-enrollment consent.
 
-    The ``ConsentRegistry.active_contract_for`` method on
-    ``shared.governance.consent.ConsentRegistry`` matches this shape; tests
-    use a stub.
+    The consent check covers all active contracts for the principal.
     """
 
-    def active_contract_for(self, person_id: str) -> object | None: ...
+    def contract_check(self, person_id: str, data_category: str) -> bool: ...
 
 
 class FaceEnrollmentError(RuntimeError):
@@ -59,24 +60,77 @@ def _enrollment_path(principal_id: str, *, root: Path | None = None) -> Path:
         raise FaceEnrollmentError(
             f"invalid principal_id {principal_id!r}; must be a path-safe slug"
         )
+    principal_id = resolve_principal_id(principal_id) or principal_id
     base = root if root is not None else ENROLLMENT_DIR_DEFAULT
     return base / f"{principal_id}.npz"
 
 
 def _has_face_enrollment_scope(consent: _ConsentScopeChecker, principal_id: str) -> bool:
-    contract = consent.active_contract_for(principal_id)
-    if contract is None:
-        return False
-    scope: object = getattr(contract, "scope", None)
-    if scope is None:
-        return False
-    if isinstance(scope, str):
-        return scope == ENROLL_SCOPE
-    if isinstance(scope, Iterable):
-        return ENROLL_SCOPE in scope
-    return False
+    principal_id = resolve_principal_id(principal_id) or principal_id
+    return consent.contract_check(principal_id, ENROLL_SCOPE)
 
 
+def _matching_enrollment_paths(principal_id: str, *, root: Path | None = None) -> list[Path]:
+    """Locate current and predecessor filenames without retaining predecessor text."""
+    canonical = _enrollment_path(principal_id, root=root)
+    return sorted(
+        path
+        for path in canonical.parent.glob("*.npz")
+        if (resolve_principal_id(path.stem) or path.stem) == canonical.stem
+    )
+
+
+def _fsync_fd(fd: int) -> None:
+    """Flush one descriptor to stable storage.
+
+    A named seam, so a test can deny durability without denying the file's creation: a
+    marker that was written but not fsynced is not a persisted marker.
+    """
+
+    os.fsync(fd)
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Flush a directory entry so creations, renames and unlinks in it are durable.
+
+    A named seam too: the marker's *removal* is ordered against predecessor removals only
+    if the directory is fsynced between them, and a crash is exactly when that ordering
+    matters. Flushing the file is not enough — the name is a directory entry.
+    """
+
+    dir_fd = os.open(directory, os.O_RDONLY)
+    try:
+        _fsync_fd(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _persist_marker(marker: Path) -> None:
+    """Create a revocation marker durably, before anything that can fail after it.
+
+    Revocation is a biometric-consent act, so the marker must outlive a crash and must not
+    depend on a later step: the file is created and fsynced, and its directory entry is
+    fsynced too, so a marker that this function returns from is on disk. Callers write it
+    BEFORE scanning, so a scan that raises (or a predecessor that survives) can never leave
+    the principal matchable.
+    """
+
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            _fsync_fd(fd)
+        finally:
+            os.close(fd)
+        _fsync_dir(marker.parent)
+    except OSError as exc:
+        raise FaceEnrollmentError(
+            f"Enrollment revocation incomplete ({type(exc).__name__}); the canonical marker could "
+            "not be persisted, so matching is NOT disabled; correct storage access and retry"
+        ) from None
+
+
+@estate_identity_operation()
 def enroll_principal(
     principal_id: str,
     embedding: NDArray[np.float32],
@@ -96,6 +150,7 @@ def enroll_principal(
 
     import numpy as np
 
+    principal_id = resolve_principal_id(principal_id) or principal_id
     if not _has_face_enrollment_scope(consent, principal_id):
         raise FaceEnrollmentError(
             f"refusing to enroll {principal_id!r}: no active "
@@ -122,10 +177,39 @@ def enroll_principal(
         # numpy ≥1.22 honours the explicit .npz extension; in that case the
         # tmp path itself was used.
         tmp.replace(target)
+    # Order is a durability contract, not a statement about process order. The new
+    # canonical file is fsynced into its directory first, so a rename that is not yet on
+    # disk can never be the reason a later step runs.
+    _fsync_dir(target.parent)
+    # Only a successful, consent-checked enrollment supersedes revocation, and it must not
+    # resurrect a predecessor: a revocation that could not delete every equivalent file leaves
+    # one behind, and ``load_enrollment`` falls back to it when the canonical file is later
+    # absent. Remove the survivors BEFORE clearing the marker, so clearing the marker can never
+    # expose an older enrollment.
+    for stale in _matching_enrollment_paths(principal_id, root=root):
+        if stale != target:
+            try:
+                stale.unlink()
+                log.info("Removed superseded enrollment file for %s", principal_id)
+            except OSError as exc:
+                raise FaceEnrollmentError(
+                    f"refusing to clear the revocation marker for {principal_id!r}: a superseded "
+                    f"enrollment file could not be removed ({type(exc).__name__}); correct storage "
+                    "access and retry"
+                ) from None
+    # The survivor removals are made durable before the marker goes. Without this fsync the
+    # marker's removal could reach disk while a predecessor's unlink does not, and
+    # ``load_enrollment`` would fall back to the old embedding after a crash.
+    _fsync_dir(target.parent)
+    target.with_suffix(".revoked").unlink(missing_ok=True)
+    # Then the marker's own removal is durable, so a completed re-enrollment is not blocked
+    # by a marker that survived the crash.
+    _fsync_dir(target.parent)
     log.info("Enrolled principal %s at %s", principal_id, target)
     return target
 
 
+@estate_identity_operation()
 def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[np.float32] | None:
     """Read a principal's embedding from disk.
 
@@ -135,44 +219,77 @@ def load_enrollment(principal_id: str, *, root: Path | None = None) -> NDArray[n
 
     import numpy as np
 
-    path = _enrollment_path(principal_id, root=root)
-    if not path.exists():
-        return None
+    path = None
     try:
+        path = _enrollment_path(principal_id, root=root)
+        if path.with_suffix(".revoked").exists():
+            return None
+        if not path.exists():
+            matches = _matching_enrollment_paths(principal_id, root=root)
+            if not matches:
+                return None
+            path = matches[0]
         with np.load(path) as data:
             embedding = data["embedding"]
         return np.asarray(embedding, dtype=np.float32)
-    except Exception:
-        log.warning("Failed to load enrollment for %s", principal_id, exc_info=True)
+    except Exception as exc:
+        with estate_identity_operation() as snapshot:
+            private = snapshot.contains_predecessor(f"{principal_id}: {path}: {exc}")
+        if private:
+            log.warning("enrollment_read_failed")
+        else:
+            log.warning("Failed to load enrollment for %s", principal_id, exc_info=True)
         return None
 
 
+@estate_identity_operation()
 def revoke_enrollment(principal_id: str, *, root: Path | None = None) -> bool:
-    """Delete a principal's on-disk embedding.
+    """Disable matching durably, then delete all equivalent enrollment files.
 
     Per the cc-task invariant, revocation must ship before any matcher
-    gate. Returns True if a file was removed, False if none existed.
-    Never raises — revocation must always succeed at the operator's
-    intent regardless of disk state.
+    gate. Returns True only if every matching file was removed, False if
+    none existed or deletion was incomplete. A canonical revocation marker
+    blocks surviving aliases until a new consent-checked enrollment succeeds.
+    Raises FaceEnrollmentError if that marker cannot be persisted; storage
+    access must be corrected and revocation retried in that case.
+
+    Order is the contract, not an implementation detail: the canonical marker is
+    persisted (and fsynced) BEFORE the disk is scanned, and it is written even when
+    nothing matches. A scan that raises therefore leaves matching disabled rather
+    than leaving the enrollment matchable, and it is reported as
+    :class:`FaceEnrollmentError` with the same next action.
     """
 
-    path = _enrollment_path(principal_id, root=root)
-    if not path.exists():
-        return False
+    principal_id = resolve_principal_id(principal_id) or principal_id
+    # Marker first: nothing below may be the only thing standing between a revoked
+    # principal and a match.
+    _persist_marker(_enrollment_path(principal_id, root=root).with_suffix(".revoked"))
     try:
-        path.unlink()
-        log.info("Revoked enrollment for principal %s (%s)", principal_id, path)
-        return True
-    except Exception:
-        log.warning(
-            "Failed to revoke enrollment for %s at %s",
-            principal_id,
-            path,
-            exc_info=True,
-        )
+        paths = _matching_enrollment_paths(principal_id, root=root)
+    except OSError as exc:
+        raise FaceEnrollmentError(
+            f"Enrollment revocation incomplete ({type(exc).__name__}); matching is disabled by the "
+            "canonical marker, but the equivalent enrollment files could not be enumerated. "
+            "Correct storage access and retry"
+        ) from None
+    if not paths:
         return False
+    complete = True
+    for path in paths:
+        try:
+            path.unlink()
+            log.info("Revoked enrollment for principal %s", principal_id)
+        except OSError as exc:
+            complete = False
+            log.warning(
+                "Enrollment revocation incomplete (%s); matching remains disabled. "
+                "Correct storage access and retry",
+                type(exc).__name__,
+            )
+    return complete
 
 
+@estate_identity_operation()
 def list_enrollments(*, root: Path | None = None) -> list[str]:
     """Return enrolled principal ids (sorted, no embedding content).
 
@@ -183,7 +300,7 @@ def list_enrollments(*, root: Path | None = None) -> list[str]:
     base = root if root is not None else ENROLLMENT_DIR_DEFAULT
     if not base.exists():
         return []
-    return sorted(p.stem for p in base.glob("*.npz"))
+    return sorted({resolve_principal_id(p.stem) or p.stem for p in base.glob("*.npz")})
 
 
 def _cosine_similarity(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
@@ -196,6 +313,7 @@ def _cosine_similarity(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
     return float(np.dot(a, b) / (norm_a * norm_b))
 
 
+@estate_identity_operation()
 def match_principal(
     embedding: NDArray[np.float32] | None,
     *,
@@ -236,7 +354,7 @@ def match_principal(
         score = _cosine_similarity(arr, enrolled)
         if score >= threshold and score > best_score:
             best_score = score
-            best_id = pid
+            best_id = resolve_principal_id(pid) or pid
     return best_id
 
 
