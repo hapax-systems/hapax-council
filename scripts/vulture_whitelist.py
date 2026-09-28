@@ -5435,3 +5435,11 @@ _ = (
     _cp_url_punctuation_flags,
     _cp_within_window,
 )
+
+# billing-scan-input-validation-20260928: scripts/check-billing-surface-diff.py
+# calls this after the scanner layer lands; removed by #4844.
+from scripts.billing_surface_input import (  # noqa: E402
+    materialise_post_image as _billing_materialise_post_image,
+)
+
+_ = _billing_materialise_post_image
