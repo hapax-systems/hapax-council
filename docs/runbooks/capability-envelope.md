@@ -64,6 +64,42 @@ expand. `HAPAX_ENVELOPE_REQUIRE_BWRAP=1` makes a sandbox that cannot be built fa
 
 Recheck: `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope/test_envelope.py -q -k "refused or carrier"`.
 
+## Audit on a real harness (canary C10)
+
+`shared.capability_envelope.sentinel.OpenWatch` records inotify open events on sentinel files. It needs no privilege,
+and it sees opens through bind mounts. What the model says it saw is complementary evidence only.
+
+`scripts/capability-envelope-import-audit` is the rerunnable witness.
+- It builds a sentinel world.
+- It launches the harness the way its reviewer wrapper does, against a mirror of the home (the operator's own files
+  are **read as the harness would read them, and never changed** — the baseline's root is read-only and the mirrored
+  home and the audit's marker spool are the only writable places), and then again inside the envelope.
+- It exits 0 when the enveloped run imported nothing **and** the baseline control witnessed an import on a run that
+  completed, 1 on a leak, and 64 when it refuses. **Anything that leaves the observation incomplete is 2
+  (inconclusive), never 0:** the enveloped run did not complete; the baseline control witnessed nothing
+  (`clean-no-control` — a run whose control proved nothing is not evidence); the baseline itself failed, so its
+  coverage of the sentinels is unknown; or the watch queue **overflowed**, which means the kernel dropped events and
+  an open can be missing from the record.
+- Vibe runs only on the Team allowance.
+
+```bash
+TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json
+```
+
+The recipe for a harness is in this script's `LAUNCHES`; the same recipes for the other harnesses in use — opencode,
+grok, agy, codex and kimi — travel with the mutation-check and recipes PR, stacked on this one.
+
+| harness | report (each row claims only what its report shows) | recheck |
+|---|---|---|
+| claude | `frame/harness-import-scrub-20260925/measure/audit-claude.json` (`clean`, 20260925T104357Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness claude --out /tmp/claude.json` |
+| vibe | `frame/harness-import-scrub-20260925/measure/audit-vibe.json` (`clean`, 20260925T104411Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness vibe --out /tmp/vibe.json` |
+| muse | `frame/harness-import-scrub-20260925/measure/audit-muse.json` (`clean`, 20260925T104432Z) | `TMPDIR=/store-fast/tmp uv run python scripts/capability-envelope-import-audit --harness muse --out /tmp/muse.json` |
+
+Codex, agy, grok and kimi are inventoried in ENCOUNTERED-MACHINERY M153; opencode's default imports are measured in
+the vault at `frame/harness-import-scrub-20260925/HARNESS-IMPORTS.md`. Their **recipes** — the machinery that
+measures them with this script — are in the stacked mutation-check and recipes PR, which is also where their reports
+are claimed.
+
 ## Not covered here
 
 - **Network egress:** shared with the host (the fabric's R9 gate).
