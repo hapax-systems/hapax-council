@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# git pre-push hook: chain the registered-name scan and the secret/home-path scan.
+#
+# This file is named for git's hook protocol and lives in scripts/ so the shared
+# rule is version-controlled. A clone opts in with:
+#     git config core.hooksPath scripts
+# A relative value is resolved against each worktree's top level, so one setting
+# covers the primary checkout and every linked worktree.
+#
+# The secret scanner is not version-controlled yet. Resolve it from the worktree
+# first, then from the primary checkout beside the common git dir; if neither
+# copy exists, refuse rather than let a push leave without that scan.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+common="$(git rev-parse --path-format=absolute --git-common-dir)"
+refs="$(cat || true)"
+
+resolve() {
+  local relative="$1" primary
+  if [ -f "$root/$relative" ]; then
+    printf '%s\n' "$root/$relative"
+  elif [ -f "$common/../$relative" ]; then
+    printf '%s\n' "$common/../$relative"
+  else
+    return 1
+  fi
+}
+
+name_scan="$(resolve scripts/check-principal-names-diff.py)" || {
+  echo "pre-push: missing scripts/check-principal-names-diff.py — refusing" >&2
+  echo "Remedy: restore the tracked scanner in this worktree (update or rebase the branch) and retry." >&2
+  exit 3
+}
+printf '%s' "$refs" | python3 "$name_scan" --root "$root"
+
+secret_scan="$(resolve scripts/hapax-prepush-secret-scan)" || {
+  echo "pre-push: missing scripts/hapax-prepush-secret-scan — refusing" >&2
+  echo "Remedy: restore the scanner in the worktree or the primary checkout and retry." >&2
+  exit 3
+}
+printf '%s' "$refs" | python3 "$secret_scan" "$@"

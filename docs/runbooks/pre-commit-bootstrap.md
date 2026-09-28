@@ -44,11 +44,46 @@ scripts/install-git-hooks.sh
 Worktrees share the common git dir, so this only needs doing once per
 underlying repository.
 
+## Shared hooks (council)
+
+`scripts/pre-commit` and `scripts/pre-push` are tracked. The pre-commit hook
+delegates to the pre-commit framework, so the commit-time gates in
+`.pre-commit-config.yaml` still run under the shared setting. The pre-push hook
+chains the registered-principal name scan and the existing secret/home-path
+scan, and refuses when either scanner is missing. Enable both once per clone
+with the relative value the hook headers name:
+
+```bash
+git config core.hooksPath scripts
+git config --get core.hooksPath   # scripts
+```
+
+On the council host, after this lands, the seat sets that relative value and
+reads it back from a Codex worktree.
+
+A relative value is resolved against each worktree's top level, so one setting
+covers the primary checkout and every linked worktree, and no worktree depends
+on an absolute path into another checkout. A worktree whose branch does not yet
+carry both tracked hooks has no hook at that boundary; update or rebase it
+before relying on the setting. The pre-commit CLI must be on `PATH`, as the
+one-time install section above provides.
+
 ## Verify
 
 ```bash
 test -x .git/hooks/pre-commit
 sed -n '1,12p' .git/hooks/pre-commit
+test -x "$(git rev-parse --show-toplevel)/scripts/pre-commit"
+test -x "$(git rev-parse --show-toplevel)/scripts/pre-push"
+```
+
+Recheck hook resolution from a linked worktree:
+
+```bash
+git -C /path/to/linked-worktree config --show-origin core.hooksPath
+git -C /path/to/linked-worktree rev-parse --git-path hooks
+git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-commit
+git -C /path/to/linked-worktree rev-parse --git-path hooks/pre-push
 ```
 
 For a task-scoped verification, run pre-commit on the files you touched:
@@ -64,7 +99,8 @@ scope.
 
 ## Why this is a bootstrap step, not a committed hook
 
-`.git/hooks/` is per-clone and outside version control, so the active hook
-cannot ship in a PR — only the config and this bootstrap can. Run the
-install once per clone, and again after any `git config` change that affects
-hook resolution.
+The framework's generated hook is per-clone and outside version control, so it
+cannot ship in a PR. The tracked `scripts/pre-commit` and `scripts/pre-push`
+are what let the relative `core.hooksPath` setting cover linked worktrees. Run
+the framework install once per clone, and again after any `git config` change
+that affects hook resolution.
