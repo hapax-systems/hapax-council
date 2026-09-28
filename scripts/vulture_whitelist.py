@@ -5548,3 +5548,33 @@ _ = (_census_surface_deltas, _census_delta_file)
 from shared.entitlement_census import run_census as _census_run_census  # noqa: E402
 
 _ = _census_run_census
+
+# The E1 trend readers are called from the extensionless CLI and the renderer slice; vulture
+# does not scan the CLI and the staged tests only exercise these boundaries directly.
+from shared.entitlement_census import (  # noqa: E402
+    compute_trend as _census_compute_trend,
+)
+from shared.entitlement_census import (
+    load_history as _census_load_history,
+)
+from shared.entitlement_census import (
+    provider_calls_for as _census_provider_calls_for,
+)
+from shared.entitlement_census import (
+    read_dispatched_demand as _census_read_dispatched_demand,
+)
+from shared.entitlement_census import (
+    read_queued_demand as _census_read_queued_demand,
+)
+from shared.entitlement_census import (
+    read_wall_witness as _census_read_wall_witness,
+)
+
+_ = (
+    _census_compute_trend,
+    _census_load_history,
+    _census_provider_calls_for,
+    _census_read_dispatched_demand,
+    _census_read_queued_demand,
+    _census_read_wall_witness,
+)
