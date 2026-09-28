@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import subprocess
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/hapax-oom-docker-limits"
 CONTAINER_ID = "a" * 64
 
 
 def _env(
-    tmp_path: Path, *, ps_failure: bool = False, wrong_identity: bool = False
+    tmp_path: Path,
+    *,
+    ps_failure: bool = False,
+    wrong_identity: bool = False,
+    inventory_flip: bool = False,
 ) -> dict[str, str]:
     audit = tmp_path / "audit"
     audit.write_text(
@@ -21,18 +28,28 @@ def _env(
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"Memory": 0, "MemorySwap": 0}), encoding="utf-8")
     calls = tmp_path / "docker-calls"
+    counter = tmp_path / "inventory-count"
     docker = tmp_path / "docker"
     inspected_id = "b" * 64 if wrong_identity else CONTAINER_ID
+    ps_handler = (
+        "  count=int(counter.read_text()) if counter.exists() else 0\n"
+        "  counter.write_text(str(count+1))\n"
+        "  if count: sys.exit(0)\n"
+        if inventory_flip
+        else ""
+    )
     docker.write_text(
         "#!/usr/bin/python3\n"
         "import json, os, pathlib, sys\n"
         f"state=pathlib.Path({str(state)!r})\n"
         f"calls=pathlib.Path({str(calls)!r})\n"
+        f"counter=pathlib.Path({str(counter)!r})\n"
         f"cid={CONTAINER_ID!r}\n"
         "args=sys.argv[1:]\n"
         "with calls.open('a') as f: f.write(' '.join(args)+'\\n')\n"
         "args=args[4:]\n"
         "if args == ['ps','-aq','--no-trunc']:\n"
+        f"{ps_handler}"
         f"  {'sys.exit(2)' if ps_failure else 'print(cid)'}\n"
         "elif args[:2] == ['inspect','--format']:\n"
         "  value=json.loads(state.read_text())\n"
@@ -87,3 +104,19 @@ def test_changed_inspect_identity_cannot_update_container(tmp_path: Path) -> Non
     assert result.returncode != 0
     assert "identity" in result.stderr
     assert " update " not in (tmp_path / "docker-calls").read_text(encoding="utf-8")
+
+
+def test_audit_refuses_changing_inventory(tmp_path: Path) -> None:
+    result = _run(_env(tmp_path, inventory_flip=True), "--audit")
+    assert result.returncode == 1
+    check = json.loads(result.stdout)["checks"][0]
+    assert check["name"] == "docker_inventory" and check["status"] == "error"
+
+
+def test_installed_helper_refuses_test_docker_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    selector = namespace["_tools"]
+    monkeypatch.setitem(selector.__globals__, "__file__", "/usr/local/sbin/hapax-oom-docker-limits")
+    monkeypatch.setenv("HAPAX_OOM_DOCKER_TEST_MODE", "1")
+    with pytest.raises(namespace["DockerPolicyError"], match="installed Docker policy refuses"):
+        selector()

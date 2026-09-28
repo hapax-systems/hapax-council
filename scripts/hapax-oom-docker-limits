@@ -138,6 +138,8 @@ def _checks(docker: Path, system_max: int) -> list[dict[str, str]]:
                 "actual": f"Memory={memory},MemorySwap={swap},OomKillDisable={oom_disabled}",
             }
         )
+    if _inventory(docker) != ids:
+        raise DockerPolicyError("Docker inventory changed during audit")
     if not checks:
         checks.append(
             {
