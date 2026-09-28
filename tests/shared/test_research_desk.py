@@ -377,23 +377,6 @@ def test_delivery_preserves_every_other_row_field(desk: ResearchDeskConfig) -> N
     assert parse_frontmatter_with_diagnostics(path).body.strip() == "Full brief lives here."
 
 
-def test_retry_refuses_an_unstamped_drop_without_creating_another(
-    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    write_request(desk, "req-interrupted")
-
-    def fail_stamp(*args: object, **kwargs: object) -> None:
-        raise OSError("simulated stamp failure")
-
-    monkeypatch.setattr("shared.research_desk.stamp_request_row", fail_stamp)
-    with pytest.raises(OSError, match="simulated stamp failure"):
-        deliver_result(desk, request_id="req-interrupted", markdown="first answer")
-    with pytest.raises(ResearchDeskError) as exc:
-        deliver_result(desk, request_id="req-interrupted", markdown="second answer")
-    assert exc.value.reason_code == "delivery_drop_unstamped"
-    assert len(list(desk.lanebus_dir.glob("*.md"))) == 1
-
-
 @pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]"])
 def test_nested_label_active_content_is_neutralized_in_delivery(
     desk: ResearchDeskConfig, label: str
@@ -825,3 +808,68 @@ def test_a_clean_answer_carries_zero_withheld_counts_and_no_banner(
     assert drop.frontmatter["withheld_images"] == 0
     assert drop.frontmatter["withheld_links"] == 0
     assert "Active content removed:" not in drop.body
+
+
+def test_delivery_is_idempotent_and_files_no_second_drop(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-twice")
+    first = deliver_result(desk, request_id="req-twice", markdown="first answer")
+    second = deliver_result(desk, request_id="req-twice", markdown="a different answer")
+
+    assert second.duplicate is True
+    assert second.receipt_id == first.receipt_id
+    drops = sorted(desk.lanebus_dir.glob("*.md"))
+    assert len(drops) == 1
+    assert "first answer" in drops[0].read_text(encoding="utf-8")
+
+
+def test_receipt_payload_uses_vault_relative_drop_path(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-payload")
+    receipt = deliver_result(desk, request_id="req-payload", markdown="answer")
+    payload = receipt.to_payload(vault_root=desk.vault_root)
+    assert payload["receipt_id"] == receipt.receipt_id
+    assert payload["delivery_drop"] == receipt.drop_path.relative_to(desk.vault_root).as_posix()
+    assert payload["duplicate"] is False
+
+
+def test_delivery_recovers_drop_after_stamp_failure(
+    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_request(desk, "req-interrupted")
+    real_stamp = stamp_request_row
+
+    def fail_stamp(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated stamp failure")
+
+    monkeypatch.setattr("shared.research_desk.stamp_request_row", fail_stamp)
+    with pytest.raises(OSError, match="simulated stamp failure"):
+        deliver_result(
+            desk,
+            request_id="req-interrupted",
+            markdown="first answer",
+            now=datetime(2026, 9, 16, 4, 5, 6, tzinfo=UTC),
+        )
+    monkeypatch.setattr("shared.research_desk.stamp_request_row", real_stamp)
+    first_drop = next(desk.lanebus_dir.glob("*.md"))
+    first_receipt = parse_frontmatter_with_diagnostics(first_drop).frontmatter["receipt_id"]
+    retry = deliver_result(
+        desk,
+        request_id="req-interrupted",
+        markdown="second answer",
+        now=datetime(2026, 9, 16, 4, 5, 7, tzinfo=UTC),
+    )
+    assert [first_drop] == list(desk.lanebus_dir.glob("*.md"))
+    assert retry.receipt_id == first_receipt
+    assert parse_frontmatter_with_diagnostics(first_drop).body.find("first answer") >= 0
+    assert get_request(desk, "req-interrupted").frontmatter["delivery_receipt"] == first_receipt
+
+
+def test_delivery_refuses_an_unverifiable_prior_drop(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-invalid-prior")
+    desk.lanebus_dir.mkdir(parents=True, exist_ok=True)
+    path = desk.lanebus_dir / "20260916T040506Z-perplexity-desk-req-invalid-prior.md"
+    path.write_text("---\nrequest_id: req-invalid-prior\n---\npartial\n", encoding="utf-8")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-invalid-prior", markdown="answer")
+    assert exc.value.reason_code == "delivery_drop_unverifiable"
+    assert len(list(desk.lanebus_dir.glob("*.md"))) == 1
+    assert get_request(desk, "req-invalid-prior").status == "offered"

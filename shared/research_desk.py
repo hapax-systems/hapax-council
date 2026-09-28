@@ -217,6 +217,21 @@ class DeliveryReceipt:
     duplicate: bool
     bytes_written: int
 
+    def to_payload(self, *, vault_root: Path) -> dict[str, Any]:
+        try:
+            relative = self.drop_path.relative_to(vault_root).as_posix()
+        except ValueError:
+            relative = self.drop_path.as_posix()
+        return {
+            "ok": True,
+            "receipt_id": self.receipt_id,
+            "request_id": self.request_id,
+            "delivered_at": self.delivered_at,
+            "delivery_drop": relative,
+            "duplicate": self.duplicate,
+            "bytes_written": self.bytes_written,
+        }
+
 
 def _compact_stamp(now: datetime | None = None) -> str:
     return (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
@@ -618,6 +633,58 @@ def get_request(config: ResearchDeskConfig, request_id: str) -> ResearchRequest:
     return parsed
 
 
+def _existing_receipt(request: ResearchRequest) -> DeliveryReceipt | None:
+    receipt_id = str(request.frontmatter.get("delivery_receipt") or "").strip()
+    if not receipt_id:
+        return None
+    drop = str(request.frontmatter.get("delivery_drop") or "").strip()
+    return DeliveryReceipt(
+        receipt_id=receipt_id,
+        request_id=request.request_id,
+        drop_path=Path(drop),
+        delivered_at=str(request.frontmatter.get("delivered_at") or "").strip(),
+        duplicate=True,
+        bytes_written=0,
+    )
+
+
+def _unstamped_drop(
+    config: ResearchDeskConfig, request_id: str
+) -> tuple[Path, dict[str, Any]] | None:
+    """Find a committed drop after an interrupted stamp."""
+    suffix = f"-perplexity-desk-{request_id}.md"
+    candidates = sorted(config.lanebus_dir.glob(f"*{suffix}"))
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise ResearchDeskError(
+            "delivery_drop_ambiguous",
+            "inspect the existing drops for this request before retrying",
+            detail=request_id,
+        )
+    path = candidates[0]
+    parsed = parse_frontmatter_with_diagnostics(path)
+    fm = parsed.frontmatter if parsed.ok else None
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or not isinstance(fm, dict)
+        or fm.get("request_id") != request_id
+        or fm.get("source") != "perplexity-computer"
+        or fm.get("content_trust") != "untrusted_external"
+        or not isinstance(fm.get("receipt_id"), str)
+        or not fm.get("receipt_id")
+        or not isinstance(fm.get("created_at"), (str, datetime))
+        or not isinstance(fm.get("citations"), list)
+    ):
+        raise ResearchDeskError(
+            "delivery_drop_unverifiable",
+            "inspect the existing drop for this request before retrying",
+            detail=path.name,
+        )
+    return path, fm
+
+
 def _receipt_id(request_id: str, stamp: str, payload: bytes) -> str:
     digest = hashlib.sha256(f"{request_id}\x00{stamp}".encode() + payload).hexdigest()[:12]
     return f"rd-{stamp}-{digest}"
@@ -821,7 +888,7 @@ def deliver_result(
     model_notes: str = "",
     now: datetime | None = None,
 ) -> DeliveryReceipt:
-    """Deliver once per request; refuse an interrupted prior delivery."""
+    """Deliver once per request, recovering a prior committed drop."""
     request_id = validate_request_id(request_id)
     markdown = _screen_text(markdown or "", field_name="markdown", max_bytes=MAX_MARKDOWN_BYTES)
     if not markdown.strip():
@@ -836,6 +903,9 @@ def deliver_result(
 
     with projected_path_lock(request_id, (config.requests_dir / f"{request_id}.md",)):
         request = get_request(config, request_id)
+        existing = _existing_receipt(request)
+        if existing is not None:
+            return existing
         if request.status == DELIVERED_STATUS:
             raise ResearchDeskError(
                 "request_already_delivered",
@@ -849,11 +919,29 @@ def deliver_result(
                 detail=f"{request_id} has status {request.status!r}",
             )
 
-        if next(config.lanebus_dir.glob(f"*-perplexity-desk-{request_id}.md"), None):
-            raise ResearchDeskError(
-                "delivery_drop_unstamped",
-                "inspect the prior drop and request row before retrying",
-                detail=request_id,
+        prior = _unstamped_drop(config, request_id)
+        if prior is not None:
+            prior_path, prior_fm = prior
+            try:
+                relative = prior_path.relative_to(config.vault_root).as_posix()
+            except ValueError:
+                relative = prior_path.as_posix()
+            receipt_id = prior_fm["receipt_id"]
+            delivered_at = str(prior_fm["created_at"])
+            stamp_request_row(
+                request.path,
+                receipt_id=receipt_id,
+                delivered_at=delivered_at,
+                drop_relpath=relative,
+                citation_count=len(prior_fm["citations"]),
+            )
+            return DeliveryReceipt(
+                receipt_id=receipt_id,
+                request_id=request_id,
+                drop_path=prior_path,
+                delivered_at=delivered_at,
+                duplicate=True,
+                bytes_written=0,
             )
 
         moment = now or datetime.now(UTC)
