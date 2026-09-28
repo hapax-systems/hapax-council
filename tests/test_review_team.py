@@ -4386,6 +4386,9 @@ class TestDispatcherRepoThreading:
         )
 
         class _PrInfo:
+            number = 7
+            title = "repo-qualified task match"
+            body = ""
             is_draft = False
             files = ["scripts/review_team.py"]
             changed_file_count = 1
@@ -4394,6 +4397,11 @@ class TestDispatcherRepoThreading:
             changed_files = ["scripts/review_team.py"]
 
         monkeypatch.setattr(dispatch, "fetch_pr", lambda *a, **k: _PrInfo())
+        monkeypatch.setattr(
+            dispatch,
+            "fetch_pr_diff",
+            lambda *a, **k: dispatch.PrDiff("", source="test", comparison_base="test"),
+        )
         # Constitution reads quota wall traces; keep this test off the host's live traces.
         monkeypatch.setattr(dispatch, "WALL_TRACE_HOME", tmp_path / "wall-home")
         seen: list[tuple] = []
