@@ -595,14 +595,13 @@ def _appliance_demand(bus: Path) -> int:
     if manifest.is_file() and ledger.is_file():
         try:
             total = int(json.loads(manifest.read_text(encoding="utf-8"))["count"])
-            done = {
-                fields[0]
-                for line in ledger.read_text(encoding="utf-8").splitlines()
-                if (fields := [field.strip() for field in line.strip("|").split("|")])
-                and len(fields) >= 2
-                and fields[0].isdigit()
-                and fields[1] == "DONE"
-            }
+            statuses = {}
+            for line in ledger.read_text(encoding="utf-8").splitlines():
+                fields = [field.strip() for field in line.strip("|").split("|")]
+                if len(fields) >= 2 and fields[0].isdigit():
+                    statuses[fields[0]] = fields[1]
+            done = {task for task, status in statuses.items() if status == "DONE"}
+            pending = {task for task, status in statuses.items() if status != "DONE"}
             # The local kit is a blank copy; Talus owns the execution ledger.
             # Its seat readback certifies a complete remote set for this manifest.
             verification = kit.parent / "VERIFY-v2.md"
@@ -614,7 +613,7 @@ def _appliance_demand(bus: Path) -> int:
                     report,
                 )
                 if match and int(match.group(1).replace(",", "")) == total:
-                    return 0
+                    return len(pending)
             return max(0, total - len(done))
         except (OSError, ValueError, KeyError, TypeError):
             pass
@@ -756,8 +755,7 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
         if any(model not in registered_text for model in models):
             gaps.add(f"UNREGISTERED:{endpoint}:{','.join(sorted(models))}")
     for key in known - answering:
-        if key.split(":", 1)[0] in online:
-            gaps.add(f"LOST:{key}")
+        gaps.add(f"LOST:{key}")
     if stale:
         gaps.add("INPUT_STALE:capacity-observer")
     pace = _claude_pace(args.repo)
