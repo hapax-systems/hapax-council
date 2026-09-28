@@ -1,9 +1,0 @@
-[Unit]
-Description=Record live lane identities for host reboot recovery
-After=graphical-session.target
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/hapax-host-recovery capture
-MemoryMax=256M
-TimeoutStartSec=45
