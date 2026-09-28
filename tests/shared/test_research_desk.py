@@ -432,6 +432,20 @@ def test_unbalanced_image_label_is_neutralized_in_delivery(desk: ResearchDeskCon
     assert "https://tracker.example" not in drop.body
 
 
+def test_raw_html_is_inert_in_delivery(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-html")
+    markup = (
+        '<iframe src="//t"></iframe><link rel="stylesheet" href="//t">'
+        '<video src="//t"></video><audio src="//t"><source src="//t"></audio>'
+        '<object data="//t"></object><embed src="//t">'
+        '<svg><image href="//t"/></svg><div style="background:url(//t)">x</div>'
+    )
+    receipt = deliver_result(desk, request_id="req-html", markdown=markup)
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert "<" not in drop.body
+    assert "&lt;" in drop.body
+
+
 def test_delivery_refuses_a_request_that_is_not_open(desk: ResearchDeskConfig) -> None:
     write_request(desk, "req-closed", status="refused")
     with pytest.raises(ResearchDeskError) as exc:
