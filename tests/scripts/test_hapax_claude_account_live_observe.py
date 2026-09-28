@@ -104,7 +104,7 @@ def _durable_sink_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     root = tmp_path / "durable-sink"
     root.mkdir()
     monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(root))
-    # Synthetic receipts must not read this host's armed live pacing marker.
+    # An armed marker on the workstation must not govern synthetic writer calls.
     monkeypatch.setenv("HAPAX_CLAUDE_POOL_PACE_ACTIVATION", str(tmp_path / "unarmed-pace.json"))
     return root
 
@@ -151,7 +151,7 @@ def test_a_probe_without_a_writable_sink_root_mints_nothing(
     observation = obs.Observation(
         kind="served",
         at=obs._parse_ts("2026-09-24T18:06:36Z"),
-        source="claude-cli-stream-json",
+        source="active-probe",
         model="claude-opus-5",
         scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
         windows={
@@ -189,7 +189,7 @@ def test_a_failed_ledger_append_admits_nothing(monkeypatch, tmp_path: Path, caps
     observation = obs.Observation(
         kind="served",
         at=obs._parse_ts("2026-09-24T18:06:36Z"),
-        source="claude-cli-stream-json",
+        source="active-probe",
         model="claude-opus-5",
         scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
         windows={
@@ -248,7 +248,7 @@ def test_a_pace_hold_is_not_a_probe_failure(monkeypatch, tmp_path: Path, capsys)
     observation = obs.Observation(
         kind="served",
         at=obs._parse_ts("2026-09-24T18:06:36Z"),
-        source="claude-cli-stream-json",
+        source="active-probe",
         model="claude-opus-5",
         scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
         windows={
@@ -382,12 +382,12 @@ def test_probe_windows_reach_the_ledger_reader(
     assert rows["claude.subscription.five_hour"].quantity == 8.0
 
 
-def test_a_passive_serve_mints_no_numbers(tmp_path: Path) -> None:
-    passive = obs.Observation("served", NOW, "session-transcript", model="claude-opus-5-5")
-    receipts = mint(passive, tmp_path)
-    assert receipts[0]["returncode"] == 0, receipts
-    text = next(tmp_path.glob("*.yaml")).read_text(encoding="utf-8")
-    assert "used_percent" not in text and "resets_at" not in text
+@pytest.mark.parametrize("source", ["session-transcript", "headless-result"])
+def test_an_unbound_serve_cannot_mint_subscription_evidence(tmp_path: Path, source: str) -> None:
+    passive = obs.Observation("served", NOW, source, model="claude-opus-5-5")
+    receipts = mint(passive, tmp_path, route_ids=obs.DEFAULT_ROUTE_IDS)
+    assert all(r.get("skipped") == "unbound-passive-serve" for r in receipts)
+    assert list(tmp_path.glob("*.yaml")) == []
 
 
 def run_writer(
@@ -488,7 +488,7 @@ def test_writer_refuses_a_window_it_cannot_vouch_for(
     assert "next action" in result.stderr
 
 
-# H1 #15: read the quantity before probing for it; probe only when it is stale.
+# Quantity freshness is diagnostic; route admission still needs the controlled probe.
 
 
 def iso(at: datetime) -> str:
@@ -547,11 +547,14 @@ def run_main(monkeypatch, tmp_path: Path, capsys, *extra: str, probe_result=None
     return rc, json.loads(capsys.readouterr().out), calls
 
 
-def test_a_fresh_quantity_is_not_probed_again(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_a_fresh_quantity_does_not_replace_subscription_probe(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
     window_receipt(tmp_path, NOW - timedelta(minutes=10))
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
-    assert rc == 0 and calls == []
+    assert rc == 4 and calls == [NOW]
+    assert payload["verdict"] == "no_evidence"
     assert payload["quantity"]["stale"] is False
     assert payload["quantity"]["newest_reading_at"] == iso(NOW - timedelta(minutes=10))
 
@@ -573,7 +576,7 @@ def test_a_stale_or_missing_quantity_is_probed_and_the_receipt_keeps_it(
     )
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=probed)
     assert rc == 0 and calls == [NOW]
-    assert payload["probe"]["requested_for_routes"] == []
+    assert payload["probe"]["requested_for_routes"] == list(obs.DEFAULT_ROUTE_IDS)
     assert payload["probe"]["quantity"]["stale"] is True
     newest = read_claude_wall_and_spend(
         tmp_path / "receipts", tmp_path / "none", now=NOW, stream_root=tmp_path / "none"
@@ -581,7 +584,7 @@ def test_a_stale_or_missing_quantity_is_probed_and_the_receipt_keeps_it(
     assert (newest.quantity, newest.observed_at) == (11.0, NOW.replace(microsecond=0))
 
 
-def test_an_unreadable_quantity_source_never_triggers_a_probe(
+def test_an_unreadable_quantity_source_does_not_vouch_for_a_route(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
     receipts = tmp_path / "receipts"
@@ -591,12 +594,13 @@ def test_an_unreadable_quantity_source_never_triggers_a_probe(
     )
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
-    assert calls == []
+    assert calls == [NOW]
+    assert payload["verdict"] == "no_evidence"
     assert payload["quantity"]["read_error"] == "corrupt_or_unreadable_quantity_source"
     assert payload["quantity"]["stale"] is False
 
 
-def test_a_walled_account_is_not_probed_for_its_quantity(
+def test_an_unbound_passive_wall_does_not_suppress_subscription_probe(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
     passive_serve(tmp_path, NOW - timedelta(minutes=5))
@@ -636,24 +640,23 @@ def test_a_quantity_probe_that_hits_a_wall_holds_the_route(
     assert minted(tmp_path) == []
 
 
-def test_a_failed_quantity_probe_keeps_the_passive_admission(
+def test_a_failed_quantity_probe_mints_no_passive_admission(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    # The passive admission is minted; the broken instrument still surfaces (exit 7).
+    # The broken instrument surfaces; an unbound serve cannot admit the route.
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
     broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
     assert calls == [NOW]
-    assert (payload["verdict"], rc) == ("served", 7)
+    assert (payload["verdict"], rc) == ("probe_failed", 7)
     assert payload["probe"]["outcome"] == "probe_failed"
-    assert len(minted(tmp_path)) == 3
-    assert any("interactive-full" in name for name in minted(tmp_path))
+    assert minted(tmp_path) == []
 
 
-def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
+def test_a_failed_probe_mints_no_route_from_passive_evidence(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    # A Fable serve witnesses headless.full; review and interactive still need a probe.
+    # A Fable transcript has no subscription-auth binding for either route.
     path = tmp_path / "projects/proj/session.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -665,19 +668,14 @@ def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
     broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
     assert calls == [NOW] and rc == 7
-    assert payload["probe"]["requested_for_routes"] == [
-        "claude.review.opus",
-        "claude.interactive.full",
-    ]
-    assert len(minted(tmp_path)) == 1
-    assert "headless-full" in minted(tmp_path)[0]
+    assert payload["probe"]["requested_for_routes"] == list(obs.DEFAULT_ROUTE_IDS)
+    assert minted(tmp_path) == []
 
 
 def test_a_refused_requests_reading_is_still_the_current_quantity(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    # The quantity is the provider's number whether or not it served that request; a fresh one
-    # is not re-bought. Admission is decided by walls and serves, not by this check.
+    # The provider's quantity can be fresh even when the passive request was unbound.
     stream = tmp_path / "headless/lane/output.jsonl"
     stream.parent.mkdir(parents=True)
     records = [
@@ -693,7 +691,8 @@ def test_a_refused_requests_reading_is_still_the_current_quantity(
     stream.write_text("".join(json.dumps(r) + "\n" for r in records))
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
-    assert payload["quantity"]["stale"] is False and calls == []
+    assert payload["quantity"]["stale"] is False and calls == [NOW]
+    assert payload["verdict"] == "no_evidence"
 
 
 @pytest.mark.parametrize(
@@ -703,7 +702,7 @@ def test_a_refused_requests_reading_is_still_the_current_quantity(
         {"seven_day": (9.0, NOW - timedelta(minutes=1))},
     ],
 )
-def test_a_probe_without_a_live_weekly_window_witnesses_only_missing_routes(
+def test_a_probe_without_a_live_weekly_window_still_uses_bound_evidence(
     monkeypatch, tmp_path: Path, capsys, windows
 ) -> None:
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
@@ -717,7 +716,7 @@ def test_a_probe_without_a_live_weekly_window_witnesses_only_missing_routes(
     probed = obs.Observation("served", NOW, "active-probe", model="claude-opus-5", windows=windows)
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=probed)
     assert calls == [NOW] and by_route
-    assert all(evidence.source == "session-transcript" for evidence in by_route.values())
+    assert all(evidence.source == "active-probe" for evidence in by_route.values())
 
 
 def test_a_reading_whose_window_has_reset_is_stale(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -786,11 +785,10 @@ def test_a_probe_witnesses_the_subscription_only_on_an_explicit_non_overage_serv
         assert ("subscription_served: true" in text) is witnessed
 
 
-def test_a_failed_probe_mints_exactly_what_passive_evidence_alone_would(
+def test_a_failed_probe_and_no_probe_both_mint_no_passive_evidence(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    # The probe failing is an instrument fault, not evidence against the account: the routes it
-    # leaves minted are the ones a run that never probes would mint from the same serves.
+    # Neither a broken probe nor no probe can turn a passive serve into subscription evidence.
     path = tmp_path / "projects/proj/session.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -805,8 +803,8 @@ def test_a_failed_probe_mints_exactly_what_passive_evidence_alone_would(
     for receipt in (tmp_path / "receipts").glob("*.yaml"):
         receipt.unlink()
     rc_passive, _, _ = run_main(monkeypatch, tmp_path, capsys, "--no-probe")
-    assert rc == 7 and rc_passive == 0
-    assert with_failed_probe and with_failed_probe == minted(tmp_path)
+    assert rc == 7 and rc_passive == 4
+    assert with_failed_probe == minted(tmp_path) == []
 
 
 def test_a_refused_reading_never_suppresses_a_route_probe(monkeypatch, tmp_path: Path, capsys):
