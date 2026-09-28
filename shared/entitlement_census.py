@@ -1138,6 +1138,66 @@ EXTRACTORS: Mapping[str, Callable[[Any, datetime, str], Extracted]] = MappingPro
 )
 
 
+# --- holds now: vendor caches ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VendorCacheReading:
+    cache_id: str
+    fetched_at: datetime | None
+    facts: dict[str, FactValue]
+    reason: str | None = None
+
+
+def _grok_cache(raw: bytes) -> tuple[datetime | None, dict[str, FactValue]]:
+    outer = json.loads(raw)
+    payload = outer.get("payload") if isinstance(outer, dict) else None
+    inner = json.loads(payload) if isinstance(payload, str) else payload
+    return _instant(_get(inner, "fetched_at")), {
+        "tier": _safe_fact(_get(inner, "settings", "subscription_tier_display"))
+    }
+
+
+def _vibe_cache(raw: bytes) -> tuple[datetime | None, dict[str, FactValue]]:
+    entries = [e for e in (json.loads(raw) or {}).values() if isinstance(e, dict)]
+    stamped = [(_instant(_get(e, "stored_at_timestamp")), e) for e in entries]
+    stamped = [(t, e) for t, e in stamped if t is not None]
+    if not stamped:
+        return None, {}
+    at, newest = max(stamped, key=lambda pair: pair[0])
+    return at, {
+        "plan_type": _safe_fact(_get(newest, "payload", "plan_type")),
+        "plan_name": _safe_fact(_get(newest, "payload", "plan_name")),
+        "cached_accounts": len(stamped),
+    }
+
+
+VENDOR_CACHES: Mapping[
+    str, tuple[str, Callable[[bytes], tuple[datetime | None, dict[str, FactValue]]]]
+] = MappingProxyType(
+    {
+        "grok_settings_cache": (".grok/settings_cache.json", _grok_cache),
+        "vibe_whoami_cache": (".vibe/whoami_cache.json", _vibe_cache),
+    }
+)
+
+
+def read_vendor_cache(
+    cache_id: str, read_home_file: Callable[[str], bytes | None]
+) -> VendorCacheReading:
+    rel, parse = VENDOR_CACHES[cache_id]
+    raw = read_home_file(rel)
+    if raw is None:
+        return VendorCacheReading(cache_id, None, {}, "cache_absent")
+    try:
+        fetched_at, facts = parse(raw)
+    except (ValueError, TypeError, AttributeError):
+        return VendorCacheReading(cache_id, None, {}, "cache_unparseable")
+    return VendorCacheReading(
+        cache_id, fetched_at, {k: v for k, v in facts.items() if v is not None}
+    )
+
+
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     ReadbackRef._allow_listed,
