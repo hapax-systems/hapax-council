@@ -781,6 +781,25 @@ class TestConstitution:
                 "t1_critical", "claude", reg, pr_number=5, available_families=("claude", "codex")
             )
 
+    def test_t1_size_excluded_families_can_be_replaced(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        eligible = ("claude", "codex", "muse", "vibe", "local")
+        with pytest.raises(ValueError, match="unavailable family"):
+            rt.constitute_team(
+                "t1_critical", "claude", registry, pr_number=5, available_families=eligible
+            )
+        team = rt.constitute_team(
+            "t1_critical",
+            "claude",
+            registry,
+            pr_number=5,
+            available_families=eligible,
+            size_excluded_families={"gemini", "glm"},
+        )
+        assert len(team.seats) >= 4
+        assert {seat.family for seat in team.seats}.isdisjoint({"gemini", "glm"})
+
     def test_writer_family_from_lane(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
@@ -1315,6 +1334,62 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs
         constituted_at="2026-06-11T20:00:00+00:00",
         **kwargs,
     )
+
+
+class TestSizeReplacementNoteValidity:
+    @pytest.mark.parametrize(
+        ("case", "blocker"),
+        [
+            ("inconsistent", "review_dossier_size_replacements_inconsistent"),
+            ("wrong_for_diff", "review_dossier_size_replacements_wrong_for_diff"),
+        ],
+    )
+    def test_valid_dossier_passes_and_invalid_dossier_blocks(self, case: str, blocker: str) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=50_000),
+                _review("codex-1", "codex", diff_full_bytes=50_000),
+                _review("muse-1", "muse", diff_full_bytes=50_000),
+            ],
+            constitution_notes=(
+                "family_replaced_for_size:gemini",
+                "family_replaced_for_size:glm",
+            ),
+        )
+
+        def blockers() -> tuple[str, ...]:
+            return rt._dossier_validity_blockers(
+                dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+            )
+
+        assert blockers() == ()
+        if case == "inconsistent":
+            dossier["size_replaced_families"] = ["gemini"]
+        else:
+            dossier["constitution_notes"] = ["family_replaced_for_size:gemini"]
+            dossier["size_replaced_families"] = ["gemini"]
+        assert blocker in blockers()
+
+    def test_forged_size_replacement_note_cannot_remove_core_family(self) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", diff_full_bytes=10_000),
+                _review("codex-1", "codex", diff_full_bytes=10_000),
+                _review("muse-1", "muse", diff_full_bytes=10_000),
+            ],
+            team_class="t1_critical",
+            constitution_notes=("family_replaced_for_size:gemini",),
+        )
+        blockers = rt._dossier_validity_blockers(
+            dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
+        )
+        assert "review_dossier_size_replacements_wrong_for_diff" in blockers
 
 
 class TestSynthesizeDossier:

@@ -2187,6 +2187,9 @@ def _dossier_validity_blockers(
     _note_size_replaced = sorted(
         n.split(":", 1)[1] for n in _notes if n.startswith("family_replaced_for_size:")
     )
+    _field_size_replaced = sorted(str(f) for f in (dossier.get("size_replaced_families") or []))
+    if _note_size_replaced != _field_size_replaced:
+        blockers.append("review_dossier_size_replacements_inconsistent")
     _note_route_block_reasons, malformed_reason_notes = _route_block_reason_notes(_notes)
     degraded_outage: list[str] = []
     degraded_route_blocked: list[str] = []
@@ -2372,6 +2375,44 @@ def _dossier_validity_blockers(
         blockers.append(
             "review_dossier_unknown_reviewer_family:" + ",".join(sorted(unknown_reviewer_families))
         )
+    stamped_sizes = {
+        r.get(DIFF_FULL_BYTES_FIELD) for r in reviews if type(r.get(DIFF_FULL_BYTES_FIELD)) is int
+    }
+    if _note_size_replaced:
+        substitution = dossier.get("family_substitution") or {}
+        if not isinstance(substitution, Mapping):
+            substitution = {}
+        prompt_excluded = substitution.get("excluded_for_prompt") or {}
+        prompt_bytes = substitution.get("prompt_bytes_by_seat") or {}
+        prompt_over: set[str] = set()
+        prompt_invalid = not isinstance(prompt_excluded, Mapping) or not isinstance(
+            prompt_bytes, Mapping
+        )
+        if not prompt_invalid:
+            for family, evidence in prompt_excluded.items():
+                capacity = seat_diff_capacity(f"{family}-1", registry)
+                if (
+                    not isinstance(evidence, Mapping)
+                    or type(evidence.get("prompt_bytes")) is not int
+                    or evidence["prompt_bytes"] <= capacity["prompt_limit_bytes"]
+                    or evidence.get("prompt_limit_bytes") != capacity["prompt_limit_bytes"]
+                    or prompt_bytes.get(f"{family}-1") != evidence["prompt_bytes"]
+                ):
+                    prompt_invalid = True
+                    break
+                prompt_over.add(str(family))
+        if len(stamped_sizes) != 1 or prompt_invalid:
+            blockers.append("review_dossier_size_replacements_wrong_for_diff")
+        else:
+            full_bytes = next(iter(stamped_sizes))
+            expected_excluded = sorted(
+                family
+                for family in roster
+                if seat_diff_capacity(f"{family}-1", registry)["limit_bytes"] < full_bytes
+                or family in prompt_over
+            )
+            if _note_size_replaced != expected_excluded:
+                blockers.append("review_dossier_size_replacements_wrong_for_diff")
     degraded_families = set(degraded_outage) | set(degraded_route_blocked)
     if degraded_families:
         seated_degraded = sorted({str(r.get("family")) for r in reviews} & degraded_families)
