@@ -1379,9 +1379,16 @@ def test_dispatch_receipt_uses_only_declared_workload_shape(
     route = module.PlatformPath("codex", "headless", "full", "gpu-launcher", "serving", True, "")
 
     path = module.write_receipt(
-        task_id="task", lane="test", platform="codex", mode="headless", profile="full",
-        route=route, validation=module.Validation(True, "ok", task), prompt=None,
-        launched=True, launch_returncode=0,
+        task_id="task",
+        lane="test",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        route=route,
+        validation=module.Validation(True, "ok", task),
+        prompt=None,
+        launched=True,
+        launch_returncode=0,
     )
 
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -1393,9 +1400,15 @@ def test_dispatch_receipt_without_task_cannot_infer_shape(tmp_path: Path, monkey
     module = _dispatcher_module()
     monkeypatch.setattr(module, "orchestration_ledger_dir", lambda: tmp_path)
     path = module.write_receipt(
-        task_id="gpu-batch-serving", lane="test", platform="codex", mode="headless",
-        profile="full", route=None, validation=module.Validation(False, "task absent"),
-        prompt=None, launched=False,
+        task_id="gpu-batch-serving",
+        lane="test",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        route=None,
+        validation=module.Validation(False, "task absent"),
+        prompt=None,
+        launched=False,
     )
     assert json.loads(path.read_text(encoding="utf-8"))["workload_shape"] == "unknown"
 

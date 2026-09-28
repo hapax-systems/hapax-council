@@ -154,9 +154,7 @@ CAPACITY_INVARIANT = (
     "degradation is permitted. Capacity may be reduced only by task-platform "
     "fit, quota state, resource contention, or explicit operator hold."
 )
-WORKLOAD_SHAPES = frozenset(
-    {"serving", "bulk_read_only", "agentic_build", "gpu_batch", "other"}
-)
+WORKLOAD_SHAPES = frozenset({"serving", "bulk_read_only", "agentic_build", "gpu_batch", "other"})
 DEFAULT_P0_CODEX_DRAIN_LANES = ("cx-p0", "cx-crit")
 DEFAULT_INVARIANT_MANIFEST = REPO_ROOT_FOR_IMPORTS / "config" / "invariant-manifest.yaml"
 
