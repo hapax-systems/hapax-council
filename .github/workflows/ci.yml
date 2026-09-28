@@ -586,7 +586,7 @@ jobs:
     if: github.event_name == 'merge_group' && needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
     name: test-full-shard (${{ matrix.shard }}/${{ matrix.shard_count }})
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -749,7 +749,22 @@ jobs:
           set +e
           # Preserve the blocked test's Python stacks before the outer timeout
           # kills a stalled shard. This emits diagnostics without ending tests.
-          timeout -s KILL 1200 \
+          #
+          # Kill-timeout stopgap (2026-09-28, ci-full-shard-kill-timeout-stopgap-20260928):
+          # the wrapper budget rises 20m → 30m (1200 → 1800s) and this job's
+          # cap 35 → 40 min, so the kill still fires before the job cap
+          # (~2 min setup + 30 min pytest). This is a stopgap, not a reversal,
+          # of the "Timeout reduced 25m → 20m" reduction above: that retired the
+          # post-session socket hang (~10-14 min of pure tax), and the hang is
+          # still fixed — what overruns the wrapper now is real test execution.
+          # Measured green full shards on 09-27 ran 10.7-16 min, yet a slow
+          # hosted runner ejected green merge groups on a full shard: #4819
+          # (shard 4, 14:51Z), #4600 (shard 4, 20:34Z), #4830 (shard 1, 23:40Z);
+          # each ejection was followed by
+          # `ci_select_pytest_shard.py: error: no pytest duration lines were found`.
+          # The durable fix (shard rebalancing, distinct kill reporting) stays on
+          # merge-group-ci-flakes-shard-selector-and-title-cards-20260902.
+          timeout -s KILL 1800 \
             xargs -d '\n' -a "$shard_files" uv run --no-sync pytest -q --tb=line \
               --durations=0 --durations-min=0 \
               -o faulthandler_timeout=120 \
@@ -874,7 +889,7 @@ jobs:
     needs: [docs_only_filter, post_merge_duplicate_filter, test-full-shard, test-title-cards]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - name: Post-merge duplicate required-check sentinel
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group == 'true'
@@ -1070,7 +1085,22 @@ jobs:
           # compositor/runtime PRs exercise enough slow end-band tests that
           # the prior 15m wrapper killed otherwise-successful runs at 99%.
           set +e
-          timeout -s KILL 1200 \
+          #
+          # Kill-timeout stopgap (2026-09-28, ci-full-shard-kill-timeout-stopgap-20260928):
+          # the wrapper budget rises 20m → 30m (1200 → 1800s) and this job's
+          # cap 35 → 40 min, so the kill still fires before the job cap
+          # (~2 min setup + 30 min pytest). This is a stopgap, not a reversal,
+          # of the "Timeout reduced 25m → 20m" reduction above: that retired the
+          # post-session socket hang (~10-14 min of pure tax), and the hang is
+          # still fixed — what overruns the wrapper now is real test execution.
+          # Measured green full shards on 09-27 ran 10.7-16 min, yet a slow
+          # hosted runner ejected green merge groups on a full shard: #4819
+          # (shard 4, 14:51Z), #4600 (shard 4, 20:34Z), #4830 (shard 1, 23:40Z);
+          # each ejection was followed by
+          # `ci_select_pytest_shard.py: error: no pytest duration lines were found`.
+          # The durable fix (shard rebalancing, distinct kill reporting) stays on
+          # merge-group-ci-flakes-shard-selector-and-title-cards-20260902.
+          timeout -s KILL 1800 \
             uv run --no-sync pytest tests/ -q --tb=line --durations=25 \
               --benchmark-disable \
               --cov=agents --cov=logos --cov=shared \
