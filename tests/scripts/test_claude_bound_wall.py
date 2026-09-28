@@ -73,8 +73,8 @@ def admitted(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HAPAX_QUOTA_TRACE_HOME", str(tmp_path / "trace-home"))
     env, _, _, child, _ = launch_fixture(tmp_path)
     now = datetime.now(UTC).replace(microsecond=0)
-    rc, _ = observe(tmp_path, monkeypatch, capsys, env, now - timedelta(minutes=2), "served")
-    assert rc == 0
+    rc, payload = observe(tmp_path, monkeypatch, capsys, env, now - timedelta(minutes=2), "served")
+    assert rc == 0, payload.get("receipts")
     writer, ledger = _run_writer(tmp_path, now=now.isoformat())
     assert writer.returncode == 0, writer.stderr
     assert claude_interactive_credential_admitted(load_quota_spend_ledger(ledger), TOKEN, now=now)

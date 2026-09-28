@@ -174,8 +174,8 @@ else:
         "HAPAX_QUOTA_SPEND_LEDGER": str(bound_ledger(tmp_path)),
         "CLAUDE_CONFIG_DIR": str(config),
         "XDG_CACHE_HOME": str(home / ".cache"),
-        # The synthetic tmux stub runs its child synchronously and has no pane.
-        # The observed child file is this fixture's launch proof.
+        # The synthetic tmux stub runs its child synchronously and provides no
+        # pane witness. The observed child file is this fixture's launch proof.
         "HAPAX_CLAUDE_READY_TIMEOUT": "0",
     }
     return env, config, workdir, observed, credential
