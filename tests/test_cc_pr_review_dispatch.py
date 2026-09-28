@@ -486,6 +486,28 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
 
 
 class TestDryRun:
+    def test_plan_never_fetches_head_source_or_diff(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+            pytest.fail("plan mode reached a head, source, diff, or git subprocess")
+
+        for name in (
+            "ensure_head_object",
+            "build_prior_file_excerpts",
+            "build_changed_file_excerpts",
+            "fetch_pr_diff",
+        ):
+            monkeypatch.setattr(dispatch, name, forbidden)
+        for name in ("run", "Popen", "check_output", "check_call"):
+            monkeypatch.setattr(subprocess, name, forbidden)
+
+        gh = FakeGh(files=["scripts/cc-pr-review-dispatch.py"])
+        result, _, reviewers, _ = _review(tmp_path, apply=False, gh=gh)
+        assert result["status"] == "planned"
+        assert all(cmd[0] == "gh" for cmd in gh.calls)
+        assert not reviewers.invocations
+
     @pytest.mark.parametrize("blocked", [False, True])
     def test_plan_diff_source_never_fetches_local(
         self, monkeypatch: pytest.MonkeyPatch, blocked: bool
@@ -824,7 +846,10 @@ class TestApply:
             diff_bytes=50_000,
         )
         assert formed is None
-        assert error == "size_reseat_pairing_mismatch:removed=1,added=0"
+        assert error == (
+            "size_reseat_pairing_mismatch:removed=1,added=0; "
+            "next_action=split the PR diff and reconstitute independent seats"
+        )
 
     def test_prompt_only_capacity_excludes_over_ceiling_family(self) -> None:
         registry = dispatch.review_team.load_lens_registry()

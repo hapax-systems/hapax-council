@@ -1547,7 +1547,10 @@ def constitute_with_substitution(
             return (
                 None,
                 substitution,
-                (f"size_reseat_pairing_mismatch:removed={len(removed)},added={len(added)}"),
+                (
+                    f"size_reseat_pairing_mismatch:removed={len(removed)},added={len(added)}; "
+                    "next_action=split the PR diff and reconstitute independent seats"
+                ),
             )
         substitution["size_replaced_seats"] = [
             {"removed": old, "replacement": new} for old, new in zip(removed, added, strict=True)

@@ -2574,6 +2574,10 @@ class TestVerdictBlockers:
             self._frontmatter(), note, pr_head_sha="a" * 40, pr_number=100
         )
         assert "review_dossier_pr_mismatch:99!=100" in blockers
+        fallback = rt.review_dossier_validity_blockers(
+            {"task_id": "task-x", "pr": 100}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_pr_mismatch:99!=100" in fallback
 
     def test_unknown_reviewer_family_blocks_even_when_not_accepting(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
