@@ -185,6 +185,12 @@ def scope_readback(
     for name, value in expected.items():
         if (root / name).read_text().strip() != value:
             raise ValueError(f"lane scope {name} differs from desired ceiling")
+    limits = (proc_root / pid / "limits").read_text().splitlines()
+    nofile = next((line.split()[3:5] for line in limits if line.startswith("Max open files")), [])
+    if len(nofile) != 2 or not all(value.isdecimal() for value in nofile):
+        raise ValueError("lane soft NOFILE readback unavailable")
+    if int(nofile[0]) < 65536 or int(nofile[1]) < 65536:
+        raise ValueError("lane soft NOFILE below 65536")
 
 
 def transcript_id(provider: str, argv: list[str]) -> str:
@@ -331,6 +337,9 @@ def launch_args(entry: dict) -> list[str]:
         "MemoryMax=7G",
         "-p",
         "MemorySwapMax=1G",
+        "prlimit",
+        "--nofile=65536:1048576",
+        "--",
         *env,
         *command,
     ]

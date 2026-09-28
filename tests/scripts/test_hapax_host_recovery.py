@@ -110,6 +110,7 @@ def test_restore_rebuilds_bounded_commands_and_reports_failures(
         assert "MemoryHigh=5G" in command
         assert "MemoryMax=7G" in command
         assert "MemorySwapMax=1G" in command
+        assert "prlimit --nofile=65536:1048576 -- env" in command
         assert TRANSCRIPT in command
         assert "SEAT " not in command
     assert "hapax-claude-dev1-seat" in result["failed"]
@@ -248,6 +249,9 @@ def test_scope_readback_rejects_unbounded_lane(tmp_path: Path) -> None:
     group = "/user.slice/user-1000.slice/user@1000.service/app.slice/run-p1.scope"
     (proc / "123").mkdir(parents=True)
     (proc / "123" / "cgroup").write_text(f"0::{group}\n")
+    (proc / "123" / "limits").write_text(
+        "Max open files            1024                 1048576              files\n"
+    )
     scope = cgroup / group.lstrip("/")
     scope.mkdir(parents=True)
     for name, value in {
@@ -259,6 +263,11 @@ def test_scope_readback_rejects_unbounded_lane(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="memory.max"):
         module.scope_readback("123", proc, cgroup)
     (scope / "memory.max").write_text("7516192768")
+    with pytest.raises(ValueError, match="soft NOFILE"):
+        module.scope_readback("123", proc, cgroup)
+    (proc / "123" / "limits").write_text(
+        "Max open files            65536                1048576              files\n"
+    )
     module.scope_readback("123", proc, cgroup)
 
 

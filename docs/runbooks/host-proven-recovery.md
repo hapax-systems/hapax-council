@@ -46,9 +46,11 @@ The local mail remains in `~/.local/state/hapax/host-recovery/mail/`.
 
 The boot service restores declared units first. It then recreates only missing
 tmux lanes from allowlisted provider, role, transcript, workdir, and inbox
-fields. Each lane starts inside its own systemd scope at the recorded limits.
-Readback checks the live process role, transcript, session ID, and cgroup
-limits. Existing tmux sessions are checked without replacement. The report
+fields. Each lane starts inside its own systemd scope at the recorded memory
+limits, with soft NOFILE=65536. Readback checks the live process role,
+transcript, session ID, cgroup limits, and `/proc/<pid>/limits`; a lane with a
+lower soft NOFILE is refused. Existing tmux sessions are checked without
+replacement. The report
 names units started, lanes restored, lanes already live, and every failure.
 Invalid manifests are refused and reported. Re-running restore on a complete
 same-boot state is a no-op.
