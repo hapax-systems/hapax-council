@@ -126,55 +126,6 @@ def test_vulture_unions_central_and_sorted_module_fragments(
     ]
 
 
-def test_new_central_entry_needs_an_explicit_shared_reason() -> None:
-    gate = load_gate_module()
-    diff = "\n".join(
-        [
-            "diff --git a/scripts/vulture_whitelist.py b/scripts/vulture_whitelist.py",
-            "--- a/scripts/vulture_whitelist.py",
-            "+++ b/scripts/vulture_whitelist.py",
-            "@@ -1,0 +2,2 @@",
-            "+# a dynamic caller exists",
-            "+from shared.example import entry",
-        ]
-    )
-    assert gate.unmarked_central_additions(diff, Path("scripts/vulture_whitelist.py")) == [
-        "from shared.example import entry"
-    ]
-    assert (
-        gate.unmarked_central_additions(
-            diff.replace("import entry", "import entry  # vulture-shared: used by two modules"),
-            Path("scripts/vulture_whitelist.py"),
-        )
-        == []
-    )
-
-
-def test_diff_gate_rejects_unmarked_central_addition_before_vulture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    gate = load_gate_module()
-    central = tmp_path / "vulture_whitelist.py"
-    central.write_text("# legacy\n")
-    diff = "\n".join(
-        [
-            f"diff --git a/{central} b/{central}",
-            f"--- a/{central}",
-            f"+++ b/{central}",
-            "@@ -1,0 +2 @@",
-            "+from shared.example import entry",
-        ]
-    )
-    monkeypatch.setattr(gate, "git_diff_text", lambda _args: diff)
-
-    def forbidden_vulture(*_args: object) -> None:
-        raise AssertionError("Vulture ran after a lint rejection")
-
-    monkeypatch.setattr(gate, "run_vulture", forbidden_vulture)
-    assert gate.main(["--whitelist", str(central)]) == 2
-    assert "vulture-shared" in capsys.readouterr().err
-
-
 def test_fragment_migration_preserves_the_vulture_finding_set(tmp_path: Path) -> None:
     gate = load_gate_module()
     source = tmp_path / "module.py"

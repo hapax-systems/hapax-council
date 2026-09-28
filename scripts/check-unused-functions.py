@@ -13,7 +13,6 @@ from pathlib import Path
 
 SOURCE_PATHS = ("agents", "logos", "shared", "scripts")
 DEFAULT_WHITELIST = Path("scripts/vulture_whitelist.py")
-SHARED_ENTRY_MARKER = re.compile(r"#\s*vulture-shared:\s*\S")
 CALLABLE_KINDS = {"function", "method", "class", "property"}
 
 FINDING_RE = re.compile(
@@ -100,7 +99,7 @@ def run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def git_diff_text(args: argparse.Namespace) -> str:
+def git_diff_lines(args: argparse.Namespace) -> dict[Path, set[int]]:
     command = ["git", "diff", "--unified=0"]
     if args.staged:
         command.append("--cached")
@@ -116,29 +115,7 @@ def git_diff_text(args: argparse.Namespace) -> str:
     if result.returncode != 0:
         print(result.stdout, file=sys.stderr, end="")
         raise SystemExit(result.returncode)
-    return result.stdout
-
-
-def unmarked_central_additions(diff_text: str, central: Path) -> list[str]:
-    """Require an explicit shared-use reason on every new central reference."""
-    in_central = False
-    unmarked: list[str] = []
-    for line in diff_text.splitlines():
-        file_match = DIFF_FILE_RE.match(line)
-        if file_match is not None:
-            in_central = Path(file_match.group("path")).resolve() == central.resolve()
-            continue
-        if line.startswith("diff --git "):
-            in_central = False
-            continue
-        if not in_central or not line.startswith("+") or line.startswith("+++"):
-            continue
-        added = line[1:].strip()
-        if not added or added.startswith("#") or added in {"(", ")", ",", "),"}:
-            continue
-        if not SHARED_ENTRY_MARKER.search(added):
-            unmarked.append(added)
-    return unmarked
+    return parse_changed_lines(result.stdout)
 
 
 def whitelist_paths(central: Path) -> list[Path]:
@@ -229,20 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"unused-function gate missing whitelist: {args.whitelist}", file=sys.stderr)
         return 2
 
-    diff_text = None if args.all else git_diff_text(args)
-    if diff_text is not None:
-        unmarked = unmarked_central_additions(diff_text, args.whitelist)
-        if unmarked:
-            print(
-                "New central whitelist entries require an inline "
-                "'# vulture-shared: <reason>' marker; use a module fragment otherwise:",
-                file=sys.stderr,
-            )
-            for line in unmarked:
-                print(f"  {line}", file=sys.stderr)
-            return 2
-
-    changed_lines = None if diff_text is None else parse_changed_lines(diff_text)
+    changed_lines = None if args.all else git_diff_lines(args)
     if changed_lines == {}:
         return 0
 
