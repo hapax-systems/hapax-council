@@ -10,6 +10,7 @@ import http.server
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,32 @@ def _seed_native_binding(home: Path, client: str) -> tuple[Path, Path]:
     return native, receipt
 
 
+def _seed_activation_state(parent: Path) -> Path:
+    state = parent / "source-activation"
+    head = "a" * 40
+    release = state / "releases" / head
+    source = release / "config/agent-instructions/AGENTS.md"
+    helper = release / "shared/canonical_instruction_ingestion.py"
+    preflight = release / "scripts/hapax-review-native-instruction-preflight"
+    source.parent.mkdir(parents=True)
+    helper.parent.mkdir(parents=True)
+    preflight.parent.mkdir(parents=True)
+    source.write_bytes((REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes())
+    shutil.copyfile(REPO_ROOT / "shared/canonical_instruction_ingestion.py", helper)
+    shutil.copyfile(REPO_ROOT / "scripts/hapax-review-native-instruction-preflight", preflight)
+    (state / "worktree").symlink_to(release, target_is_directory=True)
+    (state / "current.json").write_text(
+        json.dumps(
+            {
+                "active_source_head": head,
+                "active_source_path": str(state / "worktree"),
+                "active_source_target": str(release),
+            }
+        )
+    )
+    return state
+
+
 def _run(
     wrapper: str, prompt: str, env: dict[str, str], *, seed_native: bool = True
 ) -> subprocess.CompletedProcess:
@@ -67,17 +94,29 @@ def _run(
     client = {"hapax-muse-reviewer": "muse", "hapax-vibe-reviewer": "vibe"}.get(wrapper)
     with tempfile.TemporaryDirectory(prefix="hapax-review-test-home-") as temp_home:
         merged = {**base, **env}
+        argv = [sys.executable, str(SCRIPTS / wrapper)]
         if client:
             merged["HOME"] = env.get("HOME", temp_home)
-            merged.setdefault("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
+            if "HAPAX_SOURCE_ACTIVATE_WORKTREE" not in env:
+                merged.pop("HAPAX_SOURCE_ACTIVATE_WORKTREE", None)
             if "XDG_CONFIG_HOME" not in env:
                 merged.pop("XDG_CONFIG_HOME", None)
             if "VIBE_HOME" not in env:
                 merged.pop("VIBE_HOME", None)
             if seed_native:
                 _seed_native_binding(Path(merged["HOME"]), client)
+            state = _seed_activation_state(Path(temp_home))
+            argv = [
+                sys.executable,
+                "-c",
+                "import runpy,sys; from pathlib import Path; "
+                "module=runpy.run_path(sys.argv[1],run_name='hapax_test'); "
+                "raise SystemExit(module['main'](test_activation_state=Path(sys.argv[2])))",
+                str(SCRIPTS / wrapper),
+                str(state),
+            ]
         return subprocess.run(
-            [sys.executable, str(SCRIPTS / wrapper)],
+            argv,
             input=prompt,
             capture_output=True,
             text=True,
@@ -293,6 +332,26 @@ def test_substitute_native_binding_refuses_before_child(
     result = _run(f"hapax-{client}-reviewer", "REVIEW", env, seed_native=False)
     _assert_route_outage(result)
     assert "instruction" in result.stderr
+    assert not record.exists()
+
+
+@pytest.mark.parametrize("client", ["muse", "vibe"])
+def test_substitute_reviewer_refuses_caller_selected_source_root(
+    tmp_path: Path, client: str
+) -> None:
+    fake, record = _fake_cli(tmp_path, client)
+    home = _vibe_home(tmp_path, TODAY) if client == "vibe" else tmp_path / "muse-home"
+    _seed_native_binding(home, client)
+    env = {
+        "HOME": str(home),
+        "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(REPO_ROOT),
+        ("HAPAX_MUSE_BIN" if client == "muse" else "HAPAX_VIBE_BIN"): str(fake),
+    }
+    if client == "vibe":
+        env["MISTRAL_API_KEY"] = ""
+    result = _run(f"hapax-{client}-reviewer", "REVIEW", env, seed_native=False)
+    _assert_route_outage(result)
+    assert "activated" in result.stderr
     assert not record.exists()
 
 

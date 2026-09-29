@@ -10,6 +10,7 @@ import pytest
 
 from shared.canonical_instruction_ingestion import (
     InstructionIngestionError,
+    activated_source_root,
     read_canonical_instructions,
 )
 
@@ -104,3 +105,55 @@ def test_invalid_native_or_source_refuses(tmp_path: Path, failure: str) -> None:
         read_canonical_instructions(
             source_root=root, operator_home=home, native_binding=("agy", ".gemini/GEMINI.md")
         )
+
+
+def test_activated_source_identity_accepts_matching_receipt(tmp_path: Path) -> None:
+    state = tmp_path / "source-activation"
+    head = "b" * 40
+    release = state / "releases" / head
+    release.mkdir(parents=True)
+    alias = state / "worktree"
+    alias.symlink_to(release, target_is_directory=True)
+    (state / "current.json").write_text(
+        json.dumps(
+            {
+                "active_source_head": head,
+                "active_source_path": str(alias),
+                "active_source_target": str(release),
+            }
+        )
+    )
+    assert activated_source_root(activation_state=state) == release
+
+
+@pytest.mark.parametrize("failure", ["caller-source", "receipt-target", "swapped-link", "missing"])
+def test_activated_source_identity_refuses_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    state = tmp_path / "source-activation"
+    head = "b" * 40
+    release = state / "releases" / head
+    release.mkdir(parents=True)
+    alias = state / "worktree"
+    alias.symlink_to(release, target_is_directory=True)
+    receipt = state / "current.json"
+    data = {
+        "active_source_head": head,
+        "active_source_path": str(alias),
+        "active_source_target": str(release),
+    }
+    receipt.write_text(json.dumps(data))
+    if failure == "caller-source":
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(tmp_path / "other-source"))
+    elif failure == "receipt-target":
+        data["active_source_target"] = str(tmp_path / "other-source")
+        receipt.write_text(json.dumps(data))
+    elif failure == "swapped-link":
+        other = state / "releases" / ("c" * 40)
+        other.mkdir()
+        alias.unlink()
+        alias.symlink_to(other, target_is_directory=True)
+    else:
+        receipt.unlink()
+    with pytest.raises(InstructionIngestionError, match="activated release identity"):
+        activated_source_root(activation_state=state)

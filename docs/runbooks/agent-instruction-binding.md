@@ -141,6 +141,12 @@ per-session loader witness names the file and its exact bytes.
 `hapax-muse-reviewer` and `hapax-vibe-reviewer` check the selected release,
 neutral installation, installer receipt and their native global file before
 starting the review child. An alternate Muse config home or Vibe home refuses.
+The source is the account's active `source-activation/worktree` target, checked
+against its activation receipt at each invocation. Caller source-root and
+Council-directory variables cannot select a different policy body. An alternate
+HOME can qualify when its neutral and native binding receipts match that same
+activated body. Tests inject a temporary activation state through the wrapper
+function; deployed CLI entry points expose no alternate-root argument.
 This checks launches through these wrappers only. It does not prove the native
 client loaded the body, cover a direct `muse` or `vibe` invocation, or admit
 either route without a per-invocation exact-body witness.
