@@ -303,6 +303,66 @@ def test_activation_has_no_mode_to_repair() -> None:
     )
 
 
+_RAM_FILESYSTEMS = frozenset({"tmpfs", "ramfs"})
+
+
+def _activator_ram_skip_reason(fstype: str) -> str | None:
+    """Why the real activation must not run on this filesystem, or ``None`` (M117).
+
+    Activation materialises a full release venv (torch, triton, CUDA wheels). On disk with the
+    host uv cache on the same filesystem that is hardlinks and near-zero new bytes; on a RAM
+    filesystem nothing can be hardlinked in and it is gigabytes of RAM. On 2026-09-25 this test
+    filled appendix's 8 GB /tmp tmpfs and stalled every lane.
+    """
+    if fstype in _RAM_FILESYSTEMS:
+        return (
+            f"tmp_path is on {fstype} (RAM): the real activation would materialise a multi-GB "
+            "release venv in memory (M117). Run with --basetemp on disk, e.g. "
+            "--basetemp=/store-fast/tmp/hapax-wt/<role>-pytest"
+        )
+    return None
+
+
+def _host_uv_cache() -> Path | None:
+    """The uv cache of the real environment, resolved before HOME is redirected."""
+    try:
+        out = subprocess.run(
+            ["uv", "cache", "dir"], capture_output=True, text=True, timeout=30, check=True
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return Path(out).resolve() if out else None
+
+
+def _activator_sandbox_env(
+    *, home: Path, canonical: Path, state: Path, local_bin: Path, host_uv_cache: Path | None
+) -> dict[str, str]:
+    """The activator's environment: every write redirected into the sandbox but the uv cache.
+
+    HOME is redirected (see the test), which by default would move uv's cache into tmp_path too
+    and make ``uv sync --all-extras`` download every wheel into it. The host cache is shared
+    instead and linked by hardlink: uv locks its cache for concurrent use, and a cache is
+    content-addressed state, not live configuration.
+    """
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "HAPAX_SOURCE_ACTIVATE_CANONICAL": str(canonical),
+        "HAPAX_SOURCE_ACTIVATE_STATE_DIR": str(state),
+        "HAPAX_SOURCE_ACTIVATE_RELEASES_DIR": str(state / "releases"),
+        "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(state / "worktree"),
+        "HAPAX_SOURCE_ACTIVATE_LOCAL_BIN": str(local_bin),
+    }
+    if host_uv_cache is not None:
+        env["UV_CACHE_DIR"] = str(host_uv_cache)
+        env["UV_LINK_MODE"] = "hardlink"
+    return env
+
+
+# Measured on appendix 2026-09-25 (basetemp on /store-fast, host uv cache hardlinked): the tree's
+# apparent size is 9.9 GB but it owns 430 MiB, the canonical clone plus the release worktree
+# checkout. Before M117 it owned the whole 7.7 GB wheel set.
+@pytest.mark.tmp_path_budget(1024**3)
 def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> None:
     """Runs ``scripts/hapax-source-activate`` itself. Nothing here is a surrogate.
 
@@ -320,6 +380,12 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
     releases dir, active worktree symlink, and local bin. The worktrees it creates are registered
     in the CLONE, so they die with tmp_path rather than accumulating in the real repository.
     """
+    from tests.tmp_path_budget import filesystem_type  # noqa: PLC0415
+
+    skip_reason = _activator_ram_skip_reason(filesystem_type(tmp_path))
+    if skip_reason is not None:
+        pytest.skip(skip_reason)
+
     head = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
         capture_output=True,
@@ -391,15 +457,13 @@ def test_the_real_activator_leaves_its_release_tree_clean(tmp_path: Path) -> Non
     # an enumerated allowlist of variables cannot do.
     home = sandbox / "home"
     (home / ".config" / "hapax").mkdir(parents=True)
-    env = {
-        **os.environ,
-        "HOME": str(home),
-        "HAPAX_SOURCE_ACTIVATE_CANONICAL": str(canonical),
-        "HAPAX_SOURCE_ACTIVATE_STATE_DIR": str(state),
-        "HAPAX_SOURCE_ACTIVATE_RELEASES_DIR": str(state / "releases"),
-        "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(state / "worktree"),
-        "HAPAX_SOURCE_ACTIVATE_LOCAL_BIN": str(local_bin),
-    }
+    env = _activator_sandbox_env(
+        home=home,
+        canonical=canonical,
+        state=state,
+        local_bin=local_bin,
+        host_uv_cache=_host_uv_cache(),
+    )
     proc = subprocess.run(
         [str(REPO_ROOT / "scripts" / "hapax-source-activate"), "--skip-deploy"],
         capture_output=True,
