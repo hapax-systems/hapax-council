@@ -93,7 +93,9 @@ def _refuse_lost_note(note_path: Path, task_id: str) -> int:
     except (CcTaskRootUnavailable, OSError) as exc:
         print(
             f"cc-close: REFUSED — task root could not be re-resolved after {note_path} "
-            f"moved during the merge check: {exc}. Original root: {original_root}",
+            f"moved during the merge check: {exc}. Original root: {original_root}. "
+            "Check HAPAX_CC_TASKS_ROOT or PERSONAL_VAULT_PATH and directory access, "
+            "locate the task in active/ or closed/, then retry cc-close",
             file=sys.stderr,
         )
         return 1

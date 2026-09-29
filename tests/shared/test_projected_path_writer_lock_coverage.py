@@ -906,7 +906,9 @@ print("RELEASED", flush=True)
 """
 
 
-@pytest.mark.parametrize("scenario", ["missing", "replacement", "root_changed", "scan_error"])
+@pytest.mark.parametrize(
+    "scenario", ["missing", "replacement", "root_changed", "scan_error", "root_unavailable"]
+)
 def test_cc_close_merge_check_refuses_a_move_between_resolve_and_read(
     probe: tuple[Path, Path, dict[str, str]],
     monkeypatch: pytest.MonkeyPatch,
@@ -945,6 +947,14 @@ def test_cc_close_merge_check_refuses_a_move_between_resolve_and_read(
     monkeypatch.setitem(
         main.__globals__, "_check_pr_merged", lambda *_args: checked.append("called")
     )
+    root_resolutions: list[str] = []
+    if scenario == "root_unavailable":
+
+        def unavailable_root() -> None:
+            root_resolutions.append("attempted")
+            raise module["CcTaskRootUnavailable"]("test root unavailable")
+
+        monkeypatch.setitem(main.__globals__, "resolve_cc_task_root", unavailable_root)
     original_read = Path.read_text
     original_glob = Path.glob
 
@@ -972,9 +982,15 @@ def test_cc_close_merge_check_refuses_a_move_between_resolve_and_read(
         assert "task root changed while checking merge evidence" in refusal
     elif scenario == "scan_error":
         assert "could not recheck task paths" in refusal
+    elif scenario == "root_unavailable":
+        assert "task root could not be re-resolved" in refusal
+        assert "Check HAPAX_CC_TASKS_ROOT or PERSONAL_VAULT_PATH and directory access" in refusal
+        assert str(vault_root) in refusal
+        assert root_resolutions == ["attempted"]
     else:
         assert "neither active/ nor closed/" in refusal
-    assert f"ls {resolved_root}/*/lock-probe-1*" in refusal
+    if scenario != "root_unavailable":
+        assert f"ls {resolved_root}/*/lock-probe-1*" in refusal
     assert checked == []
 
 
