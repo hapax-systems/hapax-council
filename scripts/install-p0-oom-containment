@@ -787,7 +787,7 @@ select_host_policy() {
         echo "OOM host policy selection refused; inspect hostname, MemTotal and $host_profile_source" >&2
         return 1
     }
-    IFS=$'\t' read -r HOST_PROFILE APP_HIGH APP_MAX UID_HIGH UID_MAX SYSTEM_HIGH SYSTEM_MAX ZRAM_MIB SWAPPINESS <<< "$fields"
+    IFS=$'\t' read -r HOST_PROFILE APP_HIGH APP_MAX UID_HIGH UID_MAX SYSTEM_HIGH SYSTEM_MAX SYSTEM_LOW ZRAM_MIB SWAPPINESS <<< "$fields"
     case "$HOST_PROFILE" in
         appendix|podium) ;;
         *) echo "OOM host policy profile unsupported; repair $host_profile_source" >&2; return 1 ;;
@@ -1061,6 +1061,7 @@ check_source() {
     done
     require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryHigh "$SYSTEM_HIGH" || return 1
     require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryMax "$SYSTEM_MAX" || return 1
+    require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryLow "$SYSTEM_LOW" || return 1
     [ -x "$(src_path "$oom_trigger_source")" ] || {
         echo "OOM startup trigger is not executable: $(src_path "$oom_trigger_source"); next action: chmod +x scripts/hapax-oom-score-trigger" >&2
         return 1
@@ -1383,7 +1384,6 @@ scrub_legacy_user_oom_overrides() {
 
 install_live() {
     local rel dest timer control_dropin_dir user_pid mem_high mem_max mem_swap
-    check_source
     preflight_root
     for rel in "${system_dropins[@]}"; do
         dest="$(system_dest "$rel")"
@@ -2032,6 +2032,7 @@ fi
 [ "$INSTALL" -eq 0 ] || validate_root_required_deferral
 if [ "$INSTALL" -eq 1 ]; then
     select_host_policy
+    check_source
     install_live
 fi
 if [ "$VERIFY_LIVE" -eq 1 ]; then

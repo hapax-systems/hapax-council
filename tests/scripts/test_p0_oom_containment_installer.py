@@ -94,6 +94,7 @@ def _copy_oom_package(dest_root: Path) -> None:
     "rel,needle",
     (
         ("system.slice.d/oom-containment.conf", "MemoryMax="),
+        ("system.slice.d/oom-containment.conf", "MemoryLow=12G"),
         ("user@1000.service.d/oom.conf", "OOMScoreAdjust=100"),
         ("user@1000.service.d/oom.conf", "OOMPolicy=continue"),
         ("user@1000.service.d/oom.conf", "MemorySwapMax=8G"),
@@ -105,7 +106,8 @@ def test_source_check_rejects_host_policy_file_mismatch(
     source = tmp_path / "source"
     _copy_oom_package(source)
     selected = source / "config/root-required/oom-host-policy/appendix/systemd/system" / rel
-    selected.write_text(selected.read_text().replace(needle, ""))
+    replacement = "MemoryLow=13G" if needle == "MemoryLow=12G" else ""
+    selected.write_text(selected.read_text().replace(needle, replacement))
     monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
     monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_HOSTNAME", "hapax-appendix")
     monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB", "63310084")
@@ -117,6 +119,52 @@ def test_source_check_rejects_host_policy_file_mismatch(
     )
     assert result.returncode != 0
     assert needle.split("=")[0].replace("OOMPolicy", "continue") in result.stderr
+
+
+def test_install_without_check_rejects_committed_bad_selected_file_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _copy_oom_package(source)
+    selected = (
+        source
+        / "config/root-required/oom-host-policy/appendix/systemd/system/user@1000.service.d/oom.conf"
+    )
+    selected.write_text(
+        selected.read_text(encoding="utf-8").replace("OOMPolicy=continue\n", ""),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-b", "main"], cwd=source, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "oom-test@example.test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "OOM Test"], cwd=source, check=True)
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-m", "bad selected policy"], cwd=source, check=True, capture_output=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    system_dir = tmp_path / "systemd-system"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/bin/sh\nexit 77\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_SYSTEM_DIR", str(system_dir))
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMCTL", str(fake_systemctl))
+    monkeypatch.setenv("HAPAX_OOM_ENFORCER_DEST", str(tmp_path / "sbin/hapax-oom-score-enforce"))
+    monkeypatch.setenv("HAPAX_ROOT_FAILURE_INTAKE_DEST", str(tmp_path / "sbin/hapax-root-failure-intake"))
+    monkeypatch.setenv("HAPAX_OOM_EARLYOOM_DEST", str(tmp_path / "earlyoom"))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(source))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_PACKAGE_SHA", candidate_sha)
+    monkeypatch.setenv("HAPAX_OOM_INSTALL_SUDO", "")
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--install", "--no-runtime"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "user@1000 OOM drop-in must continue" in result.stderr
+    assert not system_dir.exists()
 
 
 @pytest.fixture(autouse=True)
@@ -522,6 +570,30 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     tmp_path: Path,
 ) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _copy_oom_package(source)
+    # Fix the source selector's host and RAM for this isolated install. The
+    # selector refuses inherited test variables, so the installer must scrub
+    # them while the rest of the package follows the real install path.
+    audit_source = source / "scripts/hapax-oom-policy-audit"
+    audit_source.write_text(
+        "#!/usr/bin/python3\n"
+        "import os, sys\n"
+        "assert sys.argv[1:] == ['--print-host-policy']\n"
+        "assert not any(key.startswith('HAPAX_OOM_AUDIT_TEST_') for key in os.environ)\n"
+        "print('appendix\\t32G\\t37G\\t32G\\t38G\\t16G\\t20G\\t12G\\t16384\\t10')\n",
+        encoding="utf-8",
+    )
+    audit_source.chmod(0o755)
+    subprocess.run(["git", "init", "-b", "main"], cwd=source, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "oom-test@example.test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "OOM Test"], cwd=source, check=True)
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-m", "isolated OOM package"], cwd=source, check=True, capture_output=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, text=True, capture_output=True
+    ).stdout.strip()
     system_dir = tmp_path / "systemd-system"
     target_home = tmp_path / "target-home"
     root_home = tmp_path / "root-home"
@@ -601,7 +673,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     fake_runuser.chmod(0o755)
 
     result = subprocess.run(
-        [str(INSTALLER), "--install", "--verify-live"],
+        [str(INSTALLER), "--source", str(source), "--install", "--verify-live"],
         text=True,
         capture_output=True,
         check=False,
@@ -622,8 +694,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
-            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
-            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": candidate_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(source),
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
             "HAPAX_OOM_AUDIT_TEST_MODE": "1",
             "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-podium",
@@ -635,7 +707,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert sibling_dir.exists()
     assert (
         tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha"
-    ).read_text().strip() == REPO_HEAD
+    ).read_text().strip() == candidate_sha
     assert (installed_source / "scripts" / "install-p0-oom-containment").is_file()
     assert not snapshot_dest.is_symlink()
     assert snapshot_dest.read_bytes() == INSTALLER.read_bytes()

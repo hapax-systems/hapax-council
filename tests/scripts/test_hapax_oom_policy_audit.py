@@ -18,8 +18,8 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-oom-policy-audit"
 def test_host_policy_refuses_aggregate_overcommit(tmp_path: Path) -> None:
     table = tmp_path / "profiles.tsv"
     table.write_text(
-        "hapax-appendix\t59\t61\tappendix\t32G\t38G\t36G\t46G\t14G\t18G\t16384\t10\n"
-        "hapax-podium\t123\t125\tpodium\t72G\t80G\t76G\t96G\t32G\t40G\t32768\t10\n",
+        "hapax-appendix\t59\t61\tappendix\t32G\t38G\t36G\t46G\t14G\t18G\t12G\t16384\t10\n"
+        "hapax-podium\t123\t125\tpodium\t72G\t80G\t76G\t96G\t32G\t40G\t24G\t32768\t10\n",
         encoding="utf-8",
     )
     policy = runpy.run_path(str(SCRIPT))
@@ -30,8 +30,8 @@ def test_host_policy_refuses_aggregate_overcommit(tmp_path: Path) -> None:
 def test_host_policy_selects_exact_host_and_ram_interval(tmp_path: Path) -> None:
     table = tmp_path / "profiles.tsv"
     table.write_text(
-        "hapax-appendix\t59\t61\tappendix\t32G\t37G\t33G\t39G\t14G\t18G\t16384\t10\n"
-        "hapax-podium\t123\t125\tpodium\t68G\t76G\t72G\t80G\t32G\t40G\t32768\t10\n",
+        "hapax-appendix\t59\t61\tappendix\t32G\t37G\t33G\t39G\t14G\t18G\t12G\t16384\t10\n"
+        "hapax-podium\t123\t125\tpodium\t68G\t76G\t72G\t80G\t32G\t40G\t24G\t32768\t10\n",
         encoding="utf-8",
     )
     policy = runpy.run_path(str(SCRIPT))
@@ -54,6 +54,40 @@ def test_appendix_profile_matches_observed_live_ceiling_handoff() -> None:
     )
     assert (selected.uid_high, selected.uid_max) == (32 * 1024**3, 38 * 1024**3)
     assert (selected.system_high, selected.system_max) == (16 * 1024**3, 20 * 1024**3)
+
+
+def test_selected_system_low_matches_installed_host_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    table = REPO_ROOT / "config/root-required/oom-host-profiles.tsv"
+    for host, memtotal in (("hapax-appendix", 63310084), ("hapax-podium", 131009480)):
+        selected = namespace["load_host_policy"](table, host, memtotal)
+        source = (
+            REPO_ROOT
+            / "config/root-required/oom-host-policy"
+            / selected.profile
+            / "systemd/system/system.slice.d/oom-containment.conf"
+        )
+        low = next(
+            line.split("=", 1)[1]
+            for line in source.read_text(encoding="utf-8").splitlines()
+            if line.startswith("MemoryLow=")
+        )
+        observed = int(low[:-1]) * 1024**3
+        monkeypatch.setitem(
+            namespace["audit_system_slice_reservation"].__globals__,
+            "_show",
+            lambda _unit, keys: {
+                "MemoryHigh": str(selected.system_high),
+                "MemoryMax": str(selected.system_max),
+                "MemorySwapMax": "infinity",
+                "MemoryLow": str(observed),
+                "MemoryMin": str(12 * 1024**3),
+            },
+        )
+        checks = namespace["audit_system_slice_reservation"](selected)
+        assert {item.name: item.status for item in checks}["system_slice_MemoryLow"] == "pass"
 
 
 def test_installed_audit_refuses_test_host_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -110,7 +144,7 @@ def test_host_policy_cli_emits_selected_fields_only() -> None:
         },
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "appendix\t32G\t37G\t32G\t38G\t16G\t20G\t16384\t10\n"
+    assert result.stdout == "appendix\t32G\t37G\t32G\t38G\t16G\t20G\t12G\t16384\t10\n"
 
 
 RECOVERY_SYSTEM_UNIT_SCORES = {

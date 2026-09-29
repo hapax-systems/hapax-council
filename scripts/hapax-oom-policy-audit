@@ -100,6 +100,7 @@ class HostPolicy:
     uid_max: int
     system_high: int
     system_max: int
+    system_low: int
     zram_mib: int
     swappiness: int
 
@@ -133,8 +134,8 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
         if not raw or raw.startswith("#"):
             continue
         fields = raw.split("\t")
-        if len(fields) != 12:
-            raise HostPolicyError(f"line {number}: expected exactly 12 tab-separated fields")
+        if len(fields) != 13:
+            raise HostPolicyError(f"line {number}: expected exactly 13 tab-separated fields")
         (
             host,
             low,
@@ -146,6 +147,7 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
             uid_max,
             sys_hi,
             sys_max,
+            sys_low,
             zram,
             swap,
         ) = fields
@@ -160,16 +162,18 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
         sizes = [
             _policy_gib(value, name, number)
             for value, name in zip(
-                (app_hi, app_max, uid_hi, uid_max, sys_hi, sys_max),
-                ("app_high", "app_max", "uid_high", "uid_max", "system_high", "system_max"),
+                (app_hi, app_max, uid_hi, uid_max, sys_hi, sys_max, sys_low),
+                ("app_high", "app_max", "uid_high", "uid_max", "system_high", "system_max", "system_low"),
                 strict=True,
             )
         ]
-        app_hi_b, app_max_b, uid_hi_b, uid_max_b, sys_hi_b, sys_max_b = sizes
+        app_hi_b, app_max_b, uid_hi_b, uid_max_b, sys_hi_b, sys_max_b, sys_low_b = sizes
         if not (app_hi_b < app_max_b <= uid_max_b and app_hi_b <= uid_hi_b < uid_max_b):
             raise HostPolicyError(f"line {number}: app and UID ceilings are unordered")
         if not (12 * BYTES_1G <= sys_hi_b < sys_max_b):
             raise HostPolicyError(f"line {number}: system ceiling is below its 12G floor")
+        if not (12 * BYTES_1G <= sys_low_b <= sys_hi_b):
+            raise HostPolicyError(f"line {number}: system low must be 12G..system high")
         if uid_max_b + sys_max_b > (floor - 2) * BYTES_1G:
             raise HostPolicyError(
                 f"line {number}: aggregate ceiling leaves less than 2G kernel margin"
@@ -191,6 +195,7 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
             uid_max_b,
             sys_hi_b,
             sys_max_b,
+            sys_low_b,
             zram_mib,
             swappiness,
         )
@@ -749,7 +754,7 @@ def audit_system_slice_reservation(policy: HostPolicy | None = None) -> list[Che
         "MemoryHigh": policy.system_high if policy else None,
         "MemoryMax": policy.system_max if policy else None,
         "MemorySwapMax": None,
-        "MemoryLow": min(BYTES_24G, policy.system_high) if policy else BYTES_24G,
+        "MemoryLow": policy.system_low if policy else BYTES_24G,
         "MemoryMin": BYTES_12G,
     }
     values = _show("system.slice", list(expected))
@@ -1186,6 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
             policy.uid_max,
             policy.system_high,
             policy.system_max,
+            policy.system_low,
         )
         print(
             "\t".join(
