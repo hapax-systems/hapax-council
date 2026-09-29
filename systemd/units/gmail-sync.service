@@ -5,15 +5,18 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStartPre=/home/hapax/.local/bin/hapax-env-setup
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.gmail_sync --auto
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.local/bin/hapax-env-setup
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.gmail_sync --auto
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
-Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=GNUPGHOME=%h/.gnupg
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=gmail-sync
-MemoryMax=512M
+# Measured 2026-09-24 on podium: 512M ran pinned at the cap (+50M swap);
+# uncapped, an incremental run peaked at 658M. 1536M is ~2.3x that peak.
+MemoryMax=1536M
 CPUQuota=30%
