@@ -14,6 +14,7 @@ import os
 import re
 import resource
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -24,6 +25,7 @@ INNER_MARKER = "HAPAX_SEAT_LAUNCH_INNER"
 LAUNCH_ID_VAR = "HAPAX_SEAT_LAUNCH_ID"
 SEAT_MODEL = "gpt-6-sol"
 SEAT_EFFORT = "high"
+PINNED_CODEX_CLI_VERSION = "0.158.0"
 
 
 class SeatBindingError(ValueError):
@@ -114,6 +116,23 @@ def _raise_nofile() -> None:
         resource.setrlimit(resource.RLIMIT_NOFILE, (65536, hard))
 
 
+def _verified_codex_binary() -> str:
+    """Pin the executable actually passed into the seat scope."""
+    found = shutil.which("codex")
+    if not found:
+        raise SeatBindingError("codex_cli_missing")
+    binary = str(Path(found).resolve())
+    try:
+        version = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=5, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SeatBindingError("codex_cli_version_unavailable") from exc
+    if version.returncode != 0 or version.stdout.strip() != f"codex-cli {PINNED_CODEX_CLI_VERSION}":
+        raise SeatBindingError("codex_cli_version_drift")
+    return binary
+
+
 def _require_inner_session() -> None:
     if os.environ.get(INNER_MARKER) != SEAT_SESSION or not os.environ.get("TMUX"):
         raise SeatBindingError("inner_invocation_outside_seat_launcher")
@@ -134,6 +153,7 @@ def _inner_codex(home: Path) -> None:
     _require_inner_session()
     verify_codex_binding(home, os.environ)
     _raise_nofile()
+    binary = _verified_codex_binary()
     environment = os.environ.copy()
     environment.pop(INNER_MARKER, None)
     launch_id = environment.pop(LAUNCH_ID_VAR)
@@ -155,7 +175,7 @@ def _inner_codex(home: Path) -> None:
         "MemoryHigh=5G",
         "-p",
         "MemoryMax=7G",
-        "codex",
+        binary,
         "-s",
         "danger-full-access",
         "-a",
@@ -164,6 +184,8 @@ def _inner_codex(home: Path) -> None:
         SEAT_MODEL,
         "-c",
         f"model_reasoning_effort={SEAT_EFFORT}",
+        "-c",
+        "check_for_update_on_startup=false",
         prompt,
     ]
     os.chdir(home / "projects")
@@ -274,6 +296,12 @@ def main() -> int:
         print(f"hapax-seat-launch: REFUSED {exc}", file=sys.stderr)
         return 2
     if args.check:
+        try:
+            _verified_codex_binary()
+        except SeatBindingError as exc:
+            print(f"hapax-seat-launch: REFUSED {exc}", file=sys.stderr)
+            return 2
+        evidence["codex_cli_version"] = PINNED_CODEX_CLI_VERSION
         print(json.dumps(evidence, sort_keys=True))
         return 0
     if args.inner_codex:
@@ -291,6 +319,11 @@ def main() -> int:
             f"hapax-seat-launch: REFUSED live session {SEAT_SESSION} already exists",
             file=sys.stderr,
         )
+        return 2
+    try:
+        _verified_codex_binary()
+    except SeatBindingError as exc:
+        print(f"hapax-seat-launch: REFUSED {exc}", file=sys.stderr)
         return 2
     try:
         timeout = _startup_timeout(os.environ)

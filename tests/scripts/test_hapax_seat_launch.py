@@ -6,6 +6,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -18,11 +19,13 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 assert spec is not None
 seat = importlib.util.module_from_spec(spec)
 loader.exec_module(seat)
+VERIFY_BINARY = seat._verified_codex_binary
 PREFIX = b"<!-- Generated from Council config/agent-instructions; edit the source. -->\n\n"
 
 
 @pytest.fixture
-def binding(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+def binding(tmp_path: Path, monkeypatch) -> tuple[Path, dict[str, str]]:
+    monkeypatch.setattr(seat, "_verified_codex_binary", lambda: "codex")
     default = tmp_path / ".codex"
     seat_home = tmp_path / ".codex-seat"
     state = tmp_path / ".config/hapax/agent-instructions"
@@ -342,6 +345,26 @@ def test_live_session_refuses_before_tmux_creation(binding, monkeypatch):
     assert calls == [["tmux", "has-session", "-t", "hapax-codex-seat"]]
 
 
+def test_version_drift_refuses_before_creating_session(binding, monkeypatch):
+    home, environment = binding
+    calls = []
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(seat.os, "environ", environment)
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(seat, "_verified_codex_binary", VERIFY_BINARY)
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(command, 0, stdout="codex-cli 0.156.1\n")
+        return subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    assert seat.main() == 2
+    assert not any(command[:2] == ["tmux", "new-session"] for command in calls)
+
+
 def test_inner_wrong_tmux_session_refuses_before_scope(binding, monkeypatch):
     home, environment = binding
     environment.update(
@@ -403,8 +426,9 @@ def test_inner_launch_checks_nofile_scope_and_identity(binding, monkeypatch):
         "-c",
     ]
     assert command[16] == "model_reasoning_effort=high"
-    assert "HANDOFF-seat-claude-to-codex-20260929.md" in command[17]
-    assert "Seat startup receipt: " + "a" * 32 in command[17]
+    assert command[17:19] == ["-c", "check_for_update_on_startup=false"]
+    assert "HANDOFF-seat-claude-to-codex-20260929.md" in command[19]
+    assert "Seat startup receipt: " + "a" * 32 in command[19]
     assert child_env["CODEX_HOME"] == str(home / ".codex-seat")
     assert child_env["HAPAX_AGENT_ROLE"] == "dev1-seat-codex"
     assert "HAPAX_SEAT_LAUNCH_INNER" not in child_env
