@@ -84,8 +84,32 @@ def test_provider_host_with_explicit_port_is_detected_without_prefix_false_posit
     assert "provider-api-endpoint" in _pattern_only_classes('url = "https://api.openai.com:443/v1"')
     assert "provider-api-endpoint" in _text_classes('url = "https://api.openai.com:443/v1"')
     assert "provider-api-endpoint" not in _pattern_only_classes(
+        'url = "https://api.openai.com.evil:443/v1"'
+    )
+    # A malformed port after the exact provider host remains suspicious.
+    assert "provider-api-endpoint" in _pattern_only_classes(
         'url = "https://api.openai.com:443.evil/v1"'
     )
+
+
+@pytest.mark.parametrize("scheme", ["http", "HTTPS"])
+@pytest.mark.parametrize(
+    "authority", ["API.OPENAI.COM", "api.openai.com.", "user:pass@api.openai.com:443"]
+)
+@pytest.mark.parametrize("suffix", ["/v1", "?model=gpt"])
+def test_provider_url_normalization_matrix(scheme: str, authority: str, suffix: str) -> None:
+    assert "provider-api-endpoint" in _pattern_only_classes(
+        f'url = "{scheme}://{authority}{suffix}"'
+    )
+
+
+@pytest.mark.parametrize("url", ["https://api.openai.com.evil/v1", "https://not-api.openai.com/v1"])
+def test_provider_url_normalization_rejects_similar_hosts(url: str) -> None:
+    assert "provider-api-endpoint" not in _pattern_only_classes(f'url = "{url}"')
+
+
+def test_scheme_relative_provider_url_is_detected() -> None:
+    assert "provider-api-endpoint" in _pattern_only_classes('url = "//api.openai.com/v1"')
 
 
 def test_provider_constructor_with_other_arguments_requires_same_call_proxy() -> None:
@@ -106,6 +130,55 @@ def test_provider_constructor_with_other_arguments_requires_same_call_proxy() ->
     ]
     assert [(f.line, f.kind) for f in allowed] == [(4, "governed-proxy-route")]
     assert "provider-api-endpoint" in _text_classes("OpenAI(timeout=30)")
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected_finding"),
+    [
+        ("OpenAI()", True),
+        ("OpenAI(timeout=30)", True),
+        ("openai.OpenAI(max_retries=2)", True),
+        ("Anthropic(**settings)", True),
+        ("OpenAI(base_url=route)", True),
+        ('OpenAI(base_url="http://localhost:443.evil")', True),
+        ('OpenAI(timeout=30, base_url="http://localhost:4000")', False),
+    ],
+)
+def test_constructor_argument_shape_matrix(expression: str, expected_finding: bool) -> None:
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", expression, {1})
+    assert parsed
+    assert bool(findings) is expected_finding
+    assert bool(allowed) is not expected_finding
+
+
+@pytest.mark.parametrize(
+    "name", ["OPENAI_API_KEY", "openai_api_key", "ANTHROPIC_AUTH_TOKEN", "NEWPROVIDER_API_KEY"]
+)
+@pytest.mark.parametrize(
+    "form",
+    [
+        'os.environ["{}"]',
+        'os.getenv("{}")',
+        "process.env.{}",
+        'process.env["{}"]',
+        "export {}=fixture",
+    ],
+)
+def test_credential_name_form_matrix(name: str, form: str) -> None:
+    assert "credential-env-read" in _text_classes(form.format(name))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Authorization: Bearer token",
+        "Proxy-Authorization: Bearer token",
+        'headers = {"authorization": "bearer token"}',
+        'headers["AUTHORIZATION"] = f"BEARER {token}"',
+    ],
+)
+def test_declared_bearer_header_forms(line: str) -> None:
+    assert "api-key-route" in _text_classes(line)
 
 
 def test_non_provider_call_still_reports_nested_credential_read() -> None:
