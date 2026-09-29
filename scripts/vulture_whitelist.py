@@ -5496,3 +5496,8 @@ _ = (
     _census_default_http_get,
     _census_default_resolve_secret,
 )
+
+# The cache reader is called by the later joined-row slice, not by this catalogue-only slice.
+from shared.entitlement_census import read_vendor_cache as _census_read_vendor_cache  # noqa: E402
+
+_ = _census_read_vendor_cache
