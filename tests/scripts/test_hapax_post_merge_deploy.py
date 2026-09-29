@@ -51,9 +51,10 @@ P0_USER_OOM_DROPINS = {
 }
 P0_OOM_AUDIT_FILES = {
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
+    "scripts/hapax-oom-seat-alert": "#!/usr/bin/env python3\n",
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
     "systemd/units/hapax-oom-policy-audit.service": (
-        "[Unit]\nDescription=OOM audit\nOnFailure=notify-failure@%n.service\n"
+        "[Unit]\nDescription=OOM audit\nOnFailure=notify-failure@%n.service hapax-oom-policy-seat-alert@%n.service\n"
         "[Service]\nType=oneshot\n"
         "TimeoutStartSec=2min\n"
         "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin\n"
@@ -62,6 +63,11 @@ P0_OOM_AUDIT_FILES = {
     "systemd/units/hapax-oom-policy-audit.timer": (
         "[Unit]\nDescription=OOM audit timer\n[Timer]\nOnBootSec=2min\n"
         "OnUnitActiveSec=5min\nUnit=hapax-oom-policy-audit.service\n"
+    ),
+    "systemd/units/hapax-oom-policy-seat-alert@.service": (
+        "[Unit]\nDescription=OOM seat alert\n"
+        "[Service]\nType=oneshot\n"
+        "ExecStart=/usr/local/sbin/hapax-oom-seat-alert %i\n"
     ),
     "systemd/units/hapax-root-required-deploy-audit.service": (
         "[Unit]\nDescription=Root deploy audit\nOnFailure=notify-failure@%n.service\n"
@@ -466,7 +472,8 @@ def _effective_safety_unit_show_script(system_dir: Path, user_dir: Path) -> str:
             "hapax-oom-policy-audit.service",
             user_dir / "hapax-oom-policy-audit.service",
             "/usr/local/sbin/hapax-oom-policy-audit --json",
-            "notify-failure@hapax-oom-policy-audit.service.service",
+            "notify-failure@hapax-oom-policy-audit.service.service "
+            "hapax-oom-policy-seat-alert@hapax-oom-policy-audit.service.service",
         ),
         (
             "user",

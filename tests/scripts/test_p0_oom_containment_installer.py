@@ -270,6 +270,7 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv(
         "HAPAX_OOM_POLICY_AUDIT_DEST", str(tmp_path / "sbin" / "hapax-oom-policy-audit")
     )
+    monkeypatch.setenv("HAPAX_OOM_SEAT_ALERT_DEST", str(tmp_path / "sbin" / "hapax-oom-seat-alert"))
     monkeypatch.setenv(
         "HAPAX_OOM_HOST_PROFILE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
     )
@@ -406,9 +407,26 @@ def _systemctl_user_unit_cases(
                 f"  *--user\\ show\\ {audit_unit}\\ -p\\ ExecStart\\ --value*) "
                 f"printf '%s\\n' '{{ path={exec_start.split()[0]} ; argv[]={exec_start} ; }}' ;;",
                 f"  *--user\\ show\\ {audit_unit}\\ -p\\ OnFailure\\ --value*) "
-                f"printf '%s\\n' 'notify-failure@{audit_unit}.service' ;;",
+                f"printf '%s\\n' 'notify-failure@{audit_unit}.service"
+                + (
+                    f" hapax-oom-policy-seat-alert@{audit_unit}.service"
+                    if audit_unit == "hapax-oom-policy-audit.service"
+                    else ""
+                )
+                + "' ;;",
                 f"  *--user\\ show\\ {audit_unit}\\ -p\\ User\\ --value*) printf '\\n' ;;",
             ]
+        )
+    alert_unit = "hapax-oom-policy-seat-alert@hapax-oom-policy-audit.service.service"
+    for prop, value in {
+        "FragmentPath": "${HAPAX_OOM_SYSTEMD_USER_DIR:-/home/hapax/.config/systemd/user}/hapax-oom-policy-seat-alert@.service",
+        "DropInPaths": "",
+        "ExecStart": "{ path=/usr/local/sbin/hapax-oom-seat-alert ; argv[]=/usr/local/sbin/hapax-oom-seat-alert hapax-oom-policy-audit.service ; }",
+        "OnFailure": "",
+        "User": "",
+    }.items():
+        cases.append(
+            f'  *--user\\ show\\ {alert_unit}\\ -p\\ {prop}\\ --value*) printf "%s\\n" "{value}" ;;'
         )
     for timer, target, on_boot, on_active in (
         (
@@ -902,10 +920,12 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert sudoers_reference.stat().st_gid == os.getgid()
     assert root_failure_dest.is_file()
     assert (tmp_path / "sbin" / "hapax-oom-policy-audit").is_file()
+    assert (tmp_path / "sbin" / "hapax-oom-seat-alert").is_file()
     assert (tmp_path / "sbin" / "hapax-root-required-deploy-audit").is_file()
     for unit in (
         "hapax-oom-policy-audit.service",
         "hapax-oom-policy-audit.timer",
+        "hapax-oom-policy-seat-alert@.service",
         "hapax-root-required-deploy-audit.service",
         "hapax-root-required-deploy-audit.timer",
     ):

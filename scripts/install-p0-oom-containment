@@ -34,6 +34,7 @@ OOM_SUDOERS_OWNER_UID="${HAPAX_OOM_SUDOERS_OWNER_UID:-0}"
 OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
+OOM_SEAT_ALERT_DEST="${HAPAX_OOM_SEAT_ALERT_DEST:-/usr/local/sbin/hapax-oom-seat-alert}"
 OOM_HOST_PROFILE_DEST="${HAPAX_OOM_HOST_PROFILE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
 OOM_UDEV_DEST="${HAPAX_OOM_UDEV_DEST:-/etc/udev/rules.d/99-hapax-zram-swappiness.rules}"
 OOM_UDEVADM="${HAPAX_OOM_UDEVADM:-/usr/bin/udevadm}"
@@ -557,6 +558,7 @@ system_units=(
 user_audit_units=(
     systemd/units/hapax-oom-policy-audit.service
     systemd/units/hapax-oom-policy-audit.timer
+    systemd/units/hapax-oom-policy-seat-alert@.service
     systemd/units/hapax-root-required-deploy-audit.service
     systemd/units/hapax-root-required-deploy-audit.timer
 )
@@ -589,6 +591,7 @@ oom_trigger_source="scripts/hapax-oom-score-trigger"
 oom_sudoers_source="config/root-required/hapax-oom-score-enforce.sudoers"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
+oom_seat_alert_source="scripts/hapax-oom-seat-alert"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
 package_manifest_source="config/root-required/oom-containment.files"
 host_profile_source="config/root-required/oom-host-profiles.tsv"
@@ -620,6 +623,7 @@ package_files=(
     "$oom_trigger_source"
     "$root_failure_intake_source"
     "$oom_policy_audit_source"
+    "$oom_seat_alert_source"
     "$root_required_audit_source"
 )
 recovery_unit_scores=(
@@ -912,9 +916,14 @@ loaded_unit_property() {
 
 verify_effective_service_unit() {
     local manager="$1" unit="$2" rel="$3" expected_fragment="$4"
-    local expected_exec expected_failure expected_user actual_fragment actual_dropins
+    local expected_exec expected_failure expected_user actual_fragment actual_dropins instance
     local actual_exec actual_failure actual_user
     expected_exec="$(source_unit_value "$rel" ExecStart)" || return 1
+    if [[ "$unit" == *@* ]]; then
+        instance="${unit#*@}"
+        instance="${instance%.service}"
+        expected_exec="${expected_exec//%i/$instance}"
+    fi
     expected_failure="$(source_unit_optional_value "$rel" OnFailure)"
     expected_failure="${expected_failure//%n/$unit}"
     expected_user="$(source_unit_optional_value "$rel" User)"
@@ -1018,6 +1027,9 @@ verify_effective_safety_units() {
     verify_effective_service_unit user hapax-oom-policy-audit.service \
         systemd/units/hapax-oom-policy-audit.service \
         "$SYSTEMD_USER_DIR/hapax-oom-policy-audit.service" || return 1
+    verify_effective_service_unit user hapax-oom-policy-seat-alert@hapax-oom-policy-audit.service.service \
+        systemd/units/hapax-oom-policy-seat-alert@.service \
+        "$SYSTEMD_USER_DIR/hapax-oom-policy-seat-alert@.service" || return 1
     verify_effective_timer_unit user hapax-oom-policy-audit.timer \
         systemd/units/hapax-oom-policy-audit.timer \
         "$SYSTEMD_USER_DIR/hapax-oom-policy-audit.timer" || return 1
@@ -1448,6 +1460,8 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$OOM_POLICY_AUDIT_DEST")"
     run_root install -m 0755 "$(src_path "$oom_policy_audit_source")" "$OOM_POLICY_AUDIT_DEST"
     echo "  '$oom_policy_audit_source' -> '$OOM_POLICY_AUDIT_DEST'"
+    run_root install -m 0755 "$(src_path "$oom_seat_alert_source")" "$OOM_SEAT_ALERT_DEST"
+    echo "  '$oom_seat_alert_source' -> '$OOM_SEAT_ALERT_DEST'"
     run_root install -d -m 0755 "$(dirname "$OOM_HOST_PROFILE_DEST")"
     run_root install -m 0644 "$(src_path "$host_profile_source")" "$OOM_HOST_PROFILE_DEST"
     echo "  '$host_profile_source' -> '$OOM_HOST_PROFILE_DEST'"
@@ -1691,6 +1705,8 @@ verify_live() {
     verify_root_artifact_trust "$ROOT_FAILURE_INTAKE_DEST" 755
     verify_pair "$(src_path "$oom_policy_audit_source")" "$OOM_POLICY_AUDIT_DEST"
     verify_root_artifact_trust "$OOM_POLICY_AUDIT_DEST" 755
+    verify_pair "$(src_path "$oom_seat_alert_source")" "$OOM_SEAT_ALERT_DEST"
+    verify_root_artifact_trust "$OOM_SEAT_ALERT_DEST" 755
     verify_pair "$(src_path "$host_profile_source")" "$OOM_HOST_PROFILE_DEST"
     verify_root_artifact_trust "$OOM_HOST_PROFILE_DEST" 644
     verify_pair "$(policy_src_path config/udev/99-hapax-zram-swappiness.rules)" "$OOM_UDEV_DEST"
