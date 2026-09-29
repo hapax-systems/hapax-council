@@ -5501,3 +5501,8 @@ _ = (
 from shared.entitlement_census import read_vendor_cache as _census_read_vendor_cache  # noqa: E402
 
 _ = _census_read_vendor_cache
+
+# The staged E1 readback helper is called from the joined census run in the next slice.
+from shared.entitlement_census import run_readback as _census_run_readback  # noqa: E402
+
+_ = _census_run_readback

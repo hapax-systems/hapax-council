@@ -1141,6 +1141,108 @@ EXTRACTORS: Mapping[str, Callable[[Any, datetime, str], Extracted]] = MappingPro
 )
 
 
+class ReadbackResult(_Strict):
+    readback_id: str
+    outcome: Literal["live", "dead", "unobserved"]
+    http_status: int | None
+    observed_at: datetime
+    reason: str | None = None
+    facts: dict[str, FactValue] = Field(default_factory=dict)
+    measurements: tuple[dict[str, Any], ...] = ()
+
+
+def _outcome(
+    readback_id: str,
+    response: HttpResponse,
+    extractor: str,
+    *,
+    now: datetime,
+) -> ReadbackResult:
+    source = f"entitlement-census:{readback_id}"
+    # Only 401 proves the credential was rejected. A 403 can be an edge block (Featherless answers
+    # 403 to urllib's default User-Agent and 200 to curl's, same key, 2026-09-25T00:31Z) or a scope
+    # the key lacks (OpenRouter /activity), so it narrows to unobserved: never dead, never held.
+    if response.status == 401:
+        return ReadbackResult(
+            readback_id=readback_id,
+            outcome="dead",
+            http_status=401,
+            observed_at=now,
+            reason="http_401_credential_rejected",
+        )
+    if response.status == 403:
+        return ReadbackResult(
+            readback_id=readback_id,
+            outcome="unobserved",
+            http_status=403,
+            observed_at=now,
+            reason="http_403_forbidden_unclassified (credential, scope or edge block)",
+        )
+    if response.status is None:
+        return ReadbackResult(
+            readback_id=readback_id,
+            outcome="unobserved",
+            http_status=None,
+            observed_at=now,
+            reason=f"transport_{response.error or 'error'}",
+        )
+    if response.status != 200:
+        return ReadbackResult(
+            readback_id=readback_id,
+            outcome="unobserved",
+            http_status=response.status,
+            observed_at=now,
+            reason=f"http_{response.status}",
+        )
+    try:
+        payload = json.loads(response.body) if response.body else {}
+    except ValueError:
+        return ReadbackResult(
+            readback_id=readback_id,
+            outcome="live",
+            http_status=200,
+            observed_at=now,
+            reason="body_unparseable",
+        )
+    extracted = EXTRACTORS[extractor](payload, now, source)
+    facts = {k: v for k, v in extracted.facts.items() if v is not None}
+    return ReadbackResult(
+        readback_id=readback_id,
+        outcome="live",
+        http_status=200,
+        observed_at=now,
+        facts=facts,
+        measurements=tuple(extracted.measurements),
+    )
+
+
+def run_readback(
+    ref: ReadbackRef,
+    *,
+    now: datetime,
+    resolve_secret: Callable[[str], str | None],
+    http_get: Callable[[str, dict[str, str], float], HttpResponse],
+    secrets: SecretRegister,
+    timeout: float = READBACK_TIMEOUT_S,
+) -> ReadbackResult:
+    spec = READBACKS[ref.readback_id]
+    assert ref.secret is not None
+    value = resolve_secret(ref.secret)
+    if not value:
+        return ReadbackResult(
+            readback_id=ref.readback_id,
+            outcome="unobserved",
+            http_status=None,
+            observed_at=now,
+            reason="secret_unresolvable",
+        )
+    secrets.remember(value)
+    header, template = _AUTH_HEADERS[spec.auth]
+    headers = {header: template.format(value), **dict(spec.extra_headers)}
+    response = http_get(spec.url, headers, timeout)
+    return _outcome(ref.readback_id, response, spec.extractor, now=now)
+
+
 # --- holds now: vendor caches ---------------------------------------------------------------------
 
 
