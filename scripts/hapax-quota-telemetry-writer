@@ -486,9 +486,10 @@ CLAUDE_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
 CLAUDE_ADMISSION_PROBE_ENV_SCRUBBED = (
     "ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_API_KEY,ANTHROPIC_MODEL"
 )
-# The composite ledger evidence ref MUST end with this suffix so the availability guarantor's
-# _account_live_quota_observed_ref attests. Lane/session presence never produces it.
-CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX = "account-live-quota:observed"
+# The preceding composite fragment already ends in a colon. This writer suffix is
+# bare; the ledger regex constant includes its own leading colon for matching.
+# Lane/session presence never produces this account-live suffix.
+_WRITER_ACCOUNT_LIVE_SUFFIX_BARE = "account-live-quota:observed"
 CLAUDE_ADMISSION_RECEIPT_GLOB = "*claude-subscription-quota-admission*.yaml"
 CLAUDE_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
     r"\A[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml\Z"
@@ -541,6 +542,7 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
         "auth_surface",
         "observation",
         "probe_environment_scrubbed",
+        "credential_binding",
         "observed_at",
         "stale_after_seconds",
         "evidence_ref",
@@ -1757,6 +1759,13 @@ def active_claude_admission_receipts(
             reject(path, "observation missing or unsupported", route_id)
             continue
         probe_environment_scrubbed = fields.get("probe_environment_scrubbed", "").strip()
+        credential_binding = fields.get("credential_binding", "")
+        if (
+            "credential_binding" in fields
+            and re.fullmatch(r"[0-9a-f]{64}", credential_binding) is None
+        ):
+            reject(path, "credential binding malformed", route_id)
+            continue
         if (
             probe_environment_scrubbed
             and probe_environment_scrubbed != CLAUDE_ADMISSION_PROBE_ENV_SCRUBBED
@@ -1828,7 +1837,8 @@ def active_claude_admission_receipts(
                     f"route_id:{route_id}:"
                     f"observed_at:{_iso_z_seconds(observed_at)}:"
                     f"fresh_until:{_iso_z_seconds(fresh_until)}:"
-                    f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
+                    + (f"credential_binding:{credential_binding}:" if credential_binding else "")
+                    + f"{_WRITER_ACCOUNT_LIVE_SUFFIX_BARE}"
                 ),
                 observed_at=observed_at,
                 fresh_until=fresh_until,
