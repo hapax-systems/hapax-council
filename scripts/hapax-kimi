@@ -32,11 +32,15 @@ SESSION="hapax-kimi-$ROLE"
 SESSION_UUID="$(cat /proc/sys/kernel/random/uuid)"
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 WORKDIR="${HAPAX_KIMI_WORKDIR:-$HOME}"
+SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+PREFLIGHT="$SCRIPT_DIR/hapax-kimi-instruction-preflight"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "hapax-kimi: session $SESSION already exists — attach with: tmux attach -t $SESSION" >&2
   exit 12
 fi
+
+python3 "$PREFLIGHT"
 
 printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
 
@@ -65,6 +69,7 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export HAPAX_AGENT_INTERFACE=kimi\n'
   printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+  printf 'python3 %q\n' "$PREFLIGHT"
   printf 'exec %q' "$KIMI_BIN"
   for arg in "${KIMI_ARGS[@]}"; do
     printf ' %q' "$arg"
