@@ -42,7 +42,7 @@ def reply(**changes):
 
 
 @pytest.fixture
-def rig(tmp_path, monkeypatch):
+def rig(tmp_path, monkeypatch, request):
     driver = load_driver()
     agents = (ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
     installed = tmp_path / "AGENTS.md"
@@ -68,6 +68,10 @@ def rig(tmp_path, monkeypatch):
         originals.append((system, user))
     manifest = tmp_path / "inputs.manifest.json"
     manifest.write_text(json.dumps(rows))
+    # Synthetic CI exercises downstream contracts with an explicit test-only pin.
+    # Substitution and custody tests retain the unmodified production identity.
+    if getattr(request, "param", True):
+        monkeypatch.setattr(driver, "APPROVED_INPUTS_SHA256", digest(manifest.read_bytes()))
     output = tmp_path / "evidence"
     args = [
         "--execute",
@@ -270,7 +274,7 @@ def test_final_wire_exact_inputs_single_agents_identity_and_fixed_paths(rig, mon
         urllib.error.URLError("offline-credential"),
     ],
 )
-def test_refusals_stop_future_cases_and_preserve(rig, response):
+def test_refusals_stop_future_cases_and_preserve(rig, response, capsys):
     _, _, output, calls, responses, _ = rig
     responses[0] = response
     assert run_observed(rig) == 2
@@ -280,6 +284,9 @@ def test_refusals_stop_future_cases_and_preserve(rig, response):
     assert json.loads((output / "01.meta.json").read_bytes())["status"] == "held"
     assert (output / "02.request.json").read_bytes() == b""
     assert all("offline-credential" not in p.read_text() for p in output.iterdir())
+    diagnostic = capsys.readouterr().err
+    assert "Arm A case 01 held:" in diagnostic
+    assert "offline-credential" not in diagnostic
 
 
 @pytest.mark.parametrize("status", [301, 302, 303, 307, 308, 401, 429, 500])
@@ -307,6 +314,43 @@ def test_redacts_credential_echo_without_continuing(rig):
     assert all("offline-credential" not in p.read_text() for p in output.iterdir())
 
 
+@pytest.mark.parametrize("rig", [False], indirect=True)
+def test_substituted_manifest_with_matching_caller_hash_is_refused(rig, monkeypatch):
+    driver, _, output, calls, *_ = rig
+    secrets = []
+    monkeypatch.setattr(
+        driver.transport, "read_secret", lambda entry: secrets.append(entry) or "offline-credential"
+    )
+    # All twelve synthetic cases and the caller's hash agree. Production must
+    # still refuse this replacement before credential lookup or transport.
+    assert run_observed(rig) == 2
+    assert calls == secrets == []
+    assert json.loads((output / "01.meta.json").read_bytes()) == {
+        "status": "held",
+        "request_issued": False,
+    }
+    assert (output / "01.request.json").read_bytes() == b""
+
+
+@pytest.mark.parametrize("target", ["manifest", "case"])
+def test_invalid_input_json_is_recorded_hold(rig, monkeypatch, target):
+    driver, args, output, calls, *_ = rig
+    manifest = Path(args[args.index("--inputs") + 1])
+    path = (
+        manifest if target == "manifest" else Path(json.loads(manifest.read_bytes())[0]["source"])
+    )
+    path.write_bytes(b"not json")
+    if target == "manifest":
+        args[args.index("--inputs-sha256") + 1] = digest(manifest.read_bytes())
+        monkeypatch.setattr(driver, "APPROVED_INPUTS_SHA256", digest(manifest.read_bytes()))
+    secrets = []
+    monkeypatch.setattr(driver.transport, "read_secret", lambda entry: secrets.append(entry))
+    assert run_observed(rig) == 2
+    assert calls == secrets == []
+    assert json.loads((output / "01.error.json").read_bytes())["kind"] == "JSONDecodeError"
+    assert json.loads((output / "01.meta.json").read_bytes())["request_issued"] is False
+
+
 @pytest.mark.parametrize("kind", ["manifest", "system", "user", "combined", "agents", "duplicate"])
 def test_preflight_mismatch_stops_before_secret_and_transport(rig, kind, monkeypatch):
     driver, args, _, calls, _, _ = rig
@@ -332,6 +376,7 @@ def test_preflight_mismatch_stops_before_secret_and_transport(rig, kind, monkeyp
         prompt.write_text(json.dumps(data))
         manifest.write_text(json.dumps(rows))
         args[args.index("--inputs-sha256") + 1] = digest(manifest.read_bytes())
+        monkeypatch.setattr(driver, "APPROVED_INPUTS_SHA256", digest(manifest.read_bytes()))
     secrets = []
     monkeypatch.setattr(driver.transport, "read_secret", lambda entry: secrets.append(entry))
     assert run_observed(rig) == 2
@@ -405,13 +450,15 @@ def test_real_redirect_handler_stops_at_first_response(rig, monkeypatch):
 _REAL_BUILD_OPENER = __import__("urllib.request", fromlist=["build_opener"]).build_opener
 
 
-@pytest.mark.skipif(
-    not os.environ.get("HAPAX_ARM_A_ORIGINAL_INPUTS"),
-    reason="original vault custody fixture not supplied",
-)
+@pytest.mark.contract
+@pytest.mark.parametrize("rig", [False], indirect=True)
 def test_original_twelve_inputs_at_transport(rig, monkeypatch):
     _, args, _, _, _, originals = rig
-    path = Path(os.environ["HAPAX_ARM_A_ORIGINAL_INPUTS"])
+    binding = os.environ.get("HAPAX_ARM_A_ORIGINAL_INPUTS")
+    assert binding, (
+        "Custody gate requires HAPAX_ARM_A_ORIGINAL_INPUTS; synthetic CI is insufficient"
+    )
+    path = Path(binding)
     args[args.index("--inputs") + 1] = str(path)
     args[args.index("--inputs-sha256") + 1] = digest(path.read_bytes())
     originals[:] = [

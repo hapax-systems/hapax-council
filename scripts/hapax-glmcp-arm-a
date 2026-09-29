@@ -35,6 +35,10 @@ loader.exec_module(transport)
 
 ENDPOINT = "https://api.z.ai/api/coding/paas/v4/chat/completions"
 MODEL = "glm-5.3"
+# Approved original manifest bytes; changing custody requires source review.
+APPROVED_INPUTS_SHA256 = (
+    "60b1611bac0d5d1885ef45d4a4c4b91e62d377e1c435e528ecee1490a025322d"  # pragma: allowlist secret
+)
 SECRET_ENTRY = "glmcp/api-key"  # pragma: allowlist secret
 SUFFIXES = ("request.json", "response.json", "error.json", "meta.json")
 
@@ -63,6 +67,8 @@ def inputs(args: argparse.Namespace) -> tuple[list[dict], dict]:
     if not agents or agents != (ROOT / "config/agent-instructions/AGENTS.md").read_bytes():
         raise Hold("shared AGENTS differs from this source revision")
     body = checked(args.inputs, args.inputs_sha256)
+    if sha(body) != APPROVED_INPUTS_SHA256:
+        raise Hold("manifest is not the approved original")
     rows = json.loads(body)
     if not isinstance(rows, list) or len(rows) != 12:
         raise Hold("expected the twelve-case manifest")
@@ -249,6 +255,7 @@ def record(args: argparse.Namespace) -> None:
             )
             write(prefix + "meta.json", encode(meta))
             if reason:
+                print(f"Arm A case {index:02d} held: {reason}", file=sys.stderr)
                 raise Hold("case held; preserve attempt and obtain independent disposition")
 
 
