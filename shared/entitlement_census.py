@@ -62,6 +62,7 @@ from shared.capability_surface_delta import (
     SurfaceKind,
     build_surface_delta,
 )
+from shared.durable_jsonl_sink import DurableJsonlSink
 from shared.entitlement_capability import EntitlementShape, classify_entitlement
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -2661,6 +2662,284 @@ def render_view(run: CensusRun, *, now: datetime) -> dict[str, Any]:
             for d in run.deltas
         ],
     }
+
+
+def _cell(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return text.replace("|", "/").replace("\n", " ")
+
+
+def _quantities(row: Mapping[str, Any]) -> str:
+    parts = []
+    for m in row.get("measurements") or []:
+        reset = f" -> {m['resets_at']}" if m.get("resets_at") else ""
+        parts.append(f"{m['capacity_id'].split('.', 1)[-1]} {m['quantity']:g} {m['unit']}{reset}")
+    for key in ("plan", "tier", "plan_name", "models"):
+        if row.get("facts", {}).get(key):
+            parts.append(f"{key} {row['facts'][key]}")
+    return "; ".join(parts)
+
+
+def render_markdown(view: Mapping[str, Any]) -> str:
+    lines = [
+        "---",
+        "type: generated-projection",
+        f"generated_at: {view['generated_at']}",
+        f"producer: {view['producer']}",
+        f"task: {view['task']}",
+        "lineage: frame/ENTITLEMENT-CENSUS-20260924.md (R1), frame/ENTITLEMENT-CENSUS-R2-20260924.md (R2, accepted)",
+        "---",
+        "",
+        "# Entitlement census (live projection)",
+        "",
+        "**Generated. Do not edit.** Regenerated on every producer run. The JSON beside it is",
+        "`~/.cache/hapax/entitlement-census/view.json`; quantities go to the quota ledger. A row that is stale",
+        "or missing shows as stale or missing: nothing is dropped.",
+        "",
+        f"Summary: {json.dumps(view['summary']['by_state'])}; recruitment stages "
+        f"{json.dumps(view['summary']['by_recruitment_stage'])}; {view['summary']['deltas']} deltas.",
+        "Recruitment stage is the routing table's ladder. It is not formal admission.",
+        "",
+        f"## Underuse (paid capacity going unused; {len(view.get('underuse') or [])} flagged, "
+        f"{view.get('utilization_unjudged', 0)} not judgeable from the evidence)",
+        "",
+        "| entitlement | $/month | basis | used-% | pace | why |",
+        "|---|---|---|---|---|---|",
+        *(
+            [
+                f"| {u['entitlement_id']} | {_cell(u['monthly_cost_usd'])} | {u['basis']} | "
+                f"{_cell(u['used_pct'])} | {_cell(u['pace_ratio'])} | {_cell(u['reason'])} |"
+                for u in view.get("underuse") or []
+            ]
+            or ["| none flagged | | | | | |"]
+        ),
+        "",
+        *(
+            [
+                "Paid, but utilization cannot be judged from the evidence:",
+                "",
+                *(
+                    f"- {u['entitlement_id']} (${_cell(u['monthly_cost_usd'])}/month): "
+                    f"{_cell(u['reason'])}"
+                    for u in view.get("paid_unjudged") or []
+                ),
+                "",
+            ]
+            if view.get("paid_unjudged")
+            else []
+        ),
+        "## Hosts",
+        "",
+        "| host | reachable | observed | credential names | pass names | env names | error |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for h in view["hosts"]:
+        lines.append(
+            f"| {h['host_id']} | {h['reachable']} | {h['observed_at'] or ''} | {h['credential_names']} | "
+            f"{h['pass_names']} | {h['env_names']} | {_cell(h['error'])} |"
+        )
+    sections = (
+        ("Cognition", lambda r: r["kind"] == "cognition" and r["identified"]),
+        (
+            "Grounding and modality",
+            lambda r: r["kind"] in {"grounding", "modality"} and r["identified"],
+        ),
+        ("Serving endpoints (owned compute)", lambda r: r["kind"] == "local"),
+        ("Resources", lambda r: r["kind"] == "resource" and r["identified"]),
+        (
+            "Unidentified (credential names outside the catalogue, classified by name)",
+            lambda r: not r["identified"],
+        ),
+    )
+    for title, keep in sections:
+        rows = [r for r in view["rows"] if keep(r)]
+        lines += [
+            "",
+            f"## {title} ({len(rows)})",
+            "",
+            "| entitlement | state | freshness | stage | cost | evidence · observed | quantities | hosts | declared | ledger | reasons |",
+            "|---|---|---|---|---|---|---|---|---|---|---|",
+        ]
+        for r in rows:
+            declared = ", ".join([*r["declared_routes"], *r["declared_shapes"]])
+            lines.append(
+                f"| {r['entitlement_id']} | {r['state']} | {r['freshness']} | {r['recruitment_stage']} | "
+                f"{r['cost_class']} | {r['evidence_class']} · {r['observed_at'] or '—'} | {_cell(_quantities(r))} | "
+                f"{', '.join(r['hosts'])} | {_cell(declared)} | {_cell(', '.join(r['ledger']))} | "
+                f"{_cell('; '.join(r['reasons']))} |"
+            )
+    unc = view["unclassified_names"]
+    lines += [
+        "",
+        f"## Unclassified credential names ({unc['count']}; {unc['withheld']} withheld as identity- or money-sensitive)",
+        "",
+        "Infrastructure credentials the classifier does not treat as capability. Listed, never dropped.",
+        "",
+        ", ".join(f"`{n['name']}`" for n in unc["names"]) or "none",
+        "",
+        "## Deltas emitted to the capability-surface intake",
+        "",
+    ]
+    lines += [
+        f"- `{d['surface_id']}`: {d['delta_kind']} (`{d['delta_id']}`)" for d in view["deltas"]
+    ] or ["- none"]
+    lines += _trend_markdown(view.get("trend") or {})
+    pot = view["potential"]
+    lines += [
+        "",
+        "## Potential face: owned metal (dispatch never reads this)",
+        "",
+        "Stages: "
+        + " -> ".join(pot["stage_order"])
+        + ". Filters: "
+        + "; ".join(f"{k}: {v}" for k, v in pot["filters"].items())
+        + ".",
+        "",
+        "| stage | item | detail | source |",
+        "|---|---|---|---|",
+    ]
+    for stage, items in pot["stages"].items():
+        for item in items:
+            name = item.get("component") or item.get("model") or item.get("endpoint")
+            detail = item.get("candidates") or item.get("models") or item.get("evidence")
+            if isinstance(detail, list):
+                detail = ", ".join(detail)
+            lines.append(
+                f"| {stage} | {_cell(name)} | {_cell(detail)} | {_cell(item.get('source'))} |"
+            )
+    lines += [
+        "",
+        "| host | device | memory GB | availability | until | readback | stale |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for hw in pot["hardware"]:
+        lines.append(
+            f"| {hw['host_id']} | {_cell(hw['device'])} | {hw['memory_gb']:g} | {hw['availability']} | "
+            f"{_cell(hw.get('until'))} | {_cell(hw.get('readback'))} | {hw['stale']} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _trend_markdown(trend: Mapping[str, Any]) -> list[str]:
+    lines = [
+        "",
+        "## Ratchet: usage and availability against demand",
+        "",
+        '*"I want to know if we are ratcheting up our capability usage and availability for demand."* '
+        "(operator, 2026-09-24T23:33:04Z)",
+        "",
+    ]
+    if not trend.get("points"):
+        return [*lines, f"No trend yet: {trend.get('note', 'no history')}."]
+    availability, usage, demand = trend["availability"], trend["usage"], trend["demand"]
+    lines += [
+        f"Window: {trend['points']} runs from {trend['since']} to {trend['until']} "
+        f"({trend['span_hours']} h, trend window {trend['window_days']} d).",
+        "",
+        "| axis | first | last | direction |",
+        "|---|---|---|---|",
+        f"| availability (entitlements live or held) | {availability['first']} | {availability['last']} | "
+        f"{availability['direction']} |",
+        f"| usage (mean used-% over {usage['windows_compared']} windows) | "
+        f"{_cell(usage['first_mean_used_pct'])} | {_cell(usage['last_mean_used_pct'])} | {usage['direction']} |",
+        f"| queued demand (offered + ready task rows) | {_cell(demand['queued_first'])} | "
+        f"{_cell(demand['queued_last'])} | {demand['queued_direction']} |",
+        f"| dispatched demand (route decisions, 24 h) | {_cell(demand['dispatched_24h_first'])} | "
+        f"{_cell(demand['dispatched_24h_last'])} | "
+        + (
+            "record STALE since " + str(demand["dispatch_record_last_at"])
+            if demand.get("dispatch_record_stale")
+            else "record fresh"
+        )
+        + " |",
+        "",
+        "**Wall events per pool** (windows at 100 % used; an episode is one run of consecutive readings at the wall):",
+        "",
+        "| window | episodes | readings at wall | first | last | at wall now |",
+        "|---|---|---|---|---|---|",
+    ]
+    by_window = trend["walls"]["by_window"]
+    lines += [
+        f"| {cid} | {w['episodes']} | {w['records_at_wall']} | {w['first_at']} | {w['last_at']} | "
+        f"{w['at_wall_now']} |"
+        for cid, w in by_window.items()
+    ] or ["| none in window | | | | | |"]
+    pools = ", ".join(f"{pool}: {n}" for pool, n in trend["walls"]["by_pool"].items()) or "none"
+    witness = (
+        "; ".join(
+            f"{family} {' '.join(f'{k}={v}' for k, v in entry.items())}"
+            for family, entry in trend["walls"]["witness"].items()
+        )
+        or "none"
+    )
+    lines += [
+        "",
+        f"Episodes per pool: {pools}. Estate wall witness (review plane): {_cell(witness)}.",
+    ]
+    lines += ["", "| window | first | last | min | max | direction |", "|---|---|---|---|---|---|"]
+    lines += [
+        f"| {cid} | {w['first']:g} | {w['last']:g} | {w['min']:g} | {w['max']:g} | {w['direction']} |"
+        for cid, w in trend["windows"].items()
+    ]
+    return lines
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def write_outputs(
+    run: CensusRun,
+    *,
+    output_root: Path,
+    projection_md: Path | None,
+    now: datetime,
+    history_sink_root: Path | None = None,
+) -> dict[str, Path]:
+    """Render everything, scan everything, and only then write anything.
+
+    The history record goes to the durable sink stream ``HISTORY_STREAM`` (the configured sink root
+    unless ``history_sink_root`` is given); an unusable root raises and the caller reports it."""
+    view = render_view(run, now=now)
+    rendered: dict[Path, str] = {
+        output_root / "view.json": json.dumps(view, indent=2, sort_keys=True) + "\n",
+        output_root / "measurements.json": json.dumps(
+            {"producer": PRODUCER_REF, "generated_at": _iso(now), "measurements": run.measurements},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    }
+    deltas = delta_file(run)
+    if deltas is not None:
+        rendered[output_root / "surface-deltas.json"] = deltas.model_dump_json(indent=2) + "\n"
+    if projection_md is not None:
+        rendered[projection_md] = render_markdown(view)
+    history_line = (
+        json.dumps(run.history_record, sort_keys=True, separators=(",", ":")) + "\n"
+        if run.history_record is not None
+        else None
+    )
+    for path, text in rendered.items():
+        run.secrets.require_clean(text, label=path.name)
+    if history_line is not None:
+        run.secrets.require_clean(history_line, label=HISTORY_STREAM)
+    for path, text in rendered.items():
+        _atomic_write(path, text)
+    written = {path.name: path for path in rendered}
+    if run.history_record is not None:
+        sink = DurableJsonlSink(history_sink_root)
+        sink.append(
+            stream_id=HISTORY_STREAM,
+            data_class="entitlement_census_history",
+            source_receipt_ref=f"{PRODUCER_REF}@{_iso(now)}",
+            payload=run.history_record,
+        )
+        written[HISTORY_STREAM] = sink.path_for_stream(HISTORY_STREAM)
+    return written
 
 
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.
