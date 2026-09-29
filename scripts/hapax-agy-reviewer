@@ -4,12 +4,38 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+_local_source = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(
+    os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+    or (
+        _local_source
+        if (_local_source / "config/agent-instructions/AGENTS.md").is_file()
+        else Path.home() / ".cache/hapax/source-activation/worktree"
+    )
+).resolve()
+
+
+def _canonical_binding():
+    path = SOURCE_ROOT / "shared/canonical_instruction_ingestion.py"
+    spec = importlib.util.spec_from_file_location("hapax_review_instruction_ingestion", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("canonical instruction resolver is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.read_canonical_instructions(
+        source_root=SOURCE_ROOT,
+        native_binding=("agy", ".gemini/GEMINI.md"),
+    )
+
 
 DEFAULT_MODEL = "gemini-3.1-pro-high"
 DEFAULT_PRINT_TIMEOUT = "20m0s"
@@ -197,12 +223,28 @@ def main(argv: list[str] | None = None) -> int:
         return 64
     cli_model = PINNED_REVIEW_MODEL
 
+    # The review HOME is intentionally isolated. Carry the installed native
+    # binding into it only after matching the release source and the operator
+    # home's installer receipt. This is an invocation requirement, not ambient
+    # instruction discovery from the target repository.
+    try:
+        instructions = _canonical_binding()
+    except (ValueError, OSError) as exc:
+        print(f"hapax-agy-reviewer: instruction admission refused: {exc}", file=sys.stderr)
+        return 9
+
     dossier = sys.stdin.read()
     prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
     with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
         workdir = Path(tmp)
         sandbox_home = workdir / "home"
         sandbox_home.mkdir(parents=True, exist_ok=True)
+        sandbox_native = sandbox_home / ".gemini/GEMINI.md"
+        sandbox_native.parent.mkdir(parents=True, exist_ok=True)
+        sandbox_native.write_bytes(instructions.native_body or b"")
+        if sandbox_native.read_bytes() != instructions.native_body:
+            print("hapax-agy-reviewer: staged native instruction readback failed", file=sys.stderr)
+            return 9
         guarded = _seed_agy_oauth(sandbox_home)
         prompt_path = workdir / "review-dossier.md"
         prompt_path.write_text(prompt, encoding="utf-8")

@@ -2616,9 +2616,16 @@
             "kind": "configuration",
             "sha256": null,
             "required": false
+          },
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of installed Claude binding containing the canonical shared body; reviewer also sends that body in its appended system prompt. # pragma: allowlist secret",
+            "required": true
           }
         ],
-        "memory_scope": "Intended blind review: --safe-mode requests auto-memory disabled; --no-session-persistence requested. Managed policy and effective native inputs remain unobserved.",
+        "memory_scope": "Blind target evidence is preserved. The wrapper checks the installed Claude binding and delivers the exact shared body through --append-system-prompt; --safe-mode requests auto-memory disabled and --no-session-persistence requested. Native loading and effective provider context remain unobserved until an invocation witness.",
         "plugins": [],
         "skills": [],
         "hooks": null,
@@ -4278,9 +4285,16 @@
             "kind": "configuration",
             "sha256": null,
             "required": false
+          },
+          {
+            "root": "native_home",
+            "path": "GEMINI.md",
+            "kind": "instructions",
+            "sha256": "3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5", "digest_description": "Public SHA-256 of installed agy binding containing the canonical shared body; staged into the isolated review HOME. # pragma: allowlist secret",
+            "required": true
           }
         ],
-        "memory_scope": "per-invocation temporary HOME/XDG/workspace; wrapper seeds only its OAuth binding and writes review-dossier.md. Native/provider memory behavior remains unobserved.",
+        "memory_scope": "per-invocation temporary HOME/XDG/workspace; wrapper verifies the installed agy binding and stages exact GEMINI.md alongside its OAuth binding and review-dossier.md. Native/provider loading remains unobserved until an invocation witness.",
         "plugins": null,
         "skills": null,
         "hooks": null,

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = REPO_ROOT / "scripts" / "hapax-agy-reviewer"
@@ -14,9 +17,41 @@ FAKE_ACCESS_TOKEN = "ya29.fake-access-token-for-tests-0123456789abcdef"
 FAKE_REFRESH_TOKEN = "1//fake-refresh-token-for-tests-0123456789"
 
 
+def _seed_instructions(operator_home: Path) -> None:
+    source = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
+    neutral = operator_home / ".config/hapax/agent-instructions/AGENTS.md"
+    native = operator_home / ".gemini/GEMINI.md"
+    neutral.parent.mkdir(parents=True, exist_ok=True)
+    native.parent.mkdir(parents=True, exist_ok=True)
+    neutral.write_bytes(source)
+    rendered = (
+        b"<!-- Generated from Council config/agent-instructions; edit the source. -->\n\n" + source
+    )
+    native.write_bytes(rendered)
+    receipt = {
+        "files": [
+            {
+                "binding": "shared",
+                "path": str(neutral),
+                "sha256": hashlib.sha256(source).hexdigest(),
+            },
+            {"binding": "agy", "path": str(native), "sha256": hashlib.sha256(rendered).hexdigest()},
+        ]
+    }
+    (neutral.parent / "current.json").write_text(json.dumps(receipt), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _seed_test_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "test-home"
+    _seed_instructions(home)
+    monkeypatch.setenv("HOME", str(home))
+
+
 def _seed_operator_token(operator_home: Path) -> Path:
     """Write a token file shaped like the live one (JSON, nested leaves)."""
 
+    _seed_instructions(operator_home)
     token_dir = operator_home / ".gemini" / "antigravity-cli"
     token_dir.mkdir(parents=True, exist_ok=True)
     token = token_dir / "antigravity-oauth-token"
@@ -45,6 +80,7 @@ def test_agy_reviewer_invokes_sandboxed_print_mode(tmp_path: Path) -> None:
     home_file = tmp_path / "home.txt"
     roots_file = tmp_path / "roots.txt"
     prompt_copy = tmp_path / "prompt.md"
+    native_copy = tmp_path / "native.md"
     secret_file = tmp_path / "secret.txt"
     operator_home = tmp_path / "operator-home"
     fake_agy = bin_dir / "agy"
@@ -53,6 +89,7 @@ def test_agy_reviewer_invokes_sandboxed_print_mode(tmp_path: Path) -> None:
 printf '%s\\0' "$@" > {calls}
 pwd > {cwd_file}
 cp review-dossier.md {prompt_copy}
+cp "$HOME/.gemini/GEMINI.md" {native_copy}
 printf '%s\\n' "$HOME" > {home_file}
 printf '%s\\0' "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" > {roots_file}
 printf '%s\\n' "${{HAPAX_SHOULD_NOT_LEAK:-unset}}" > {secret_file}
@@ -106,6 +143,8 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "minor_finding" in prompt
     assert "severity, lens, file, line, title, and detail" in prompt
     assert "diff --git a/x b/x" in prompt
+    canonical = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
+    assert native_copy.read_bytes().count(canonical) == 1
     assert not cwd_file.read_text(encoding="utf-8").strip().startswith(str(REPO_ROOT))
     assert home_file.read_text(encoding="utf-8").strip() != str(operator_home)
     assert secret_file.read_text(encoding="utf-8").strip() == "unset"
@@ -137,7 +176,7 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     route = next(item for item in registry["routes"] if item["route_id"] == "agy.review.direct")
     declared = route["native_load_set"]
     assert declared["native_home"] == ".gemini" and declared["home_env"] is None
-    assert len(declared["files"]) == 1
+    assert len(declared["files"]) == 2
     configured = declared["files"][0]
     assert (configured["root"], configured["path"], configured["kind"]) == (
         "native_home",
@@ -145,6 +184,14 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
         "configuration",
     )
     assert configured["sha256"] is None and configured["required"] is False
+    required = declared["files"][1]
+    assert (required["root"], required["path"], required["kind"], required["required"]) == (
+        "native_home",
+        "GEMINI.md",
+        "instructions",
+        True,
+    )
+    assert isinstance(required["sha256"], str) and len(required["sha256"]) == 64
     assert declared["loading_flags"] == [
         "--sandbox",
         "--dangerously-skip-permissions",
@@ -156,15 +203,16 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "scripts/hapax-agy-reviewer" in declared["source_refs"]
 
 
-def test_agy_reviewer_seeds_only_the_oauth_token_into_sandbox_home(tmp_path: Path) -> None:
+def test_agy_reviewer_seeds_oauth_and_canonical_binding_into_sandbox_home(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator-home"
+    _seed_instructions(operator_home)
     token_dir = operator_home / ".gemini" / "antigravity-cli"
     token_dir.mkdir(parents=True)
     (token_dir / "antigravity-oauth-token").write_bytes(b"token-bytes-not-a-secret-in-tests")
     (token_dir / "conversations").mkdir()
     (token_dir / "conversations" / "leak.json").write_text("nope", encoding="utf-8")
     (token_dir / "settings.json").write_text("{}", encoding="utf-8")
-    (token_dir.parent / "GEMINI.md").write_text("worker-only instructions", encoding="utf-8")
+    (token_dir.parent / "OTHER.md").write_text("worker-only instructions", encoding="utf-8")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -193,7 +241,39 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "conversations" not in seen
     assert "leak.json" not in seen
     assert "settings.json" not in seen
-    assert "GEMINI.md" not in seen
+    assert "GEMINI.md" in seen
+    assert "OTHER.md" not in seen
+
+
+@pytest.mark.parametrize("break_kind", ["missing", "stale", "wrong-home"])
+def test_agy_reviewer_refuses_invalid_canonical_binding(tmp_path: Path, break_kind: str) -> None:
+    operator_home = tmp_path / "operator-home"
+    _seed_instructions(operator_home)
+    native = operator_home / ".gemini/GEMINI.md"
+    receipt = operator_home / ".config/hapax/agent-instructions/current.json"
+    if break_kind == "missing":
+        native.unlink()
+    elif break_kind == "stale":
+        native.write_bytes(b"stale body")
+    else:
+        payload = json.loads(receipt.read_text())
+        payload["files"][1]["path"] = str(tmp_path / "other-home/.gemini/GEMINI.md")
+        receipt.write_text(json.dumps(payload))
+    child_called = tmp_path / "child-called"
+    fake_agy = tmp_path / "agy"
+    fake_agy.write_text(f"#!/bin/sh\ntouch {child_called}\nexit 0\n")
+    fake_agy.chmod(0o755)
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(fake_agy)],
+        input="review\n",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(operator_home)},
+        timeout=5,
+    )
+    assert result.returncode == 9
+    assert "instruction admission refused" in result.stderr
+    assert not child_called.exists()
 
 
 def test_agy_reviewer_refuses_output_that_echoes_the_seeded_token(tmp_path: Path) -> None:
@@ -293,6 +373,7 @@ printf 'findings: [{severity: minor, detail: the access_token handling is fine}]
 def test_agy_reviewer_names_the_missing_login_next_action(tmp_path: Path) -> None:
     operator_home = tmp_path / "operator-home"
     operator_home.mkdir()
+    _seed_instructions(operator_home)
 
     fake_agy = tmp_path / "agy"
     fake_agy.write_text(
