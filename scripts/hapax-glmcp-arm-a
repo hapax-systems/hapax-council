@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Fixed-input Arm A recorder. No executor, retries, fallback, or native harness.
+
+Source-only packet: live use requires a separately admitted activation task.
+The explicit --execute switch is an accident guard, never an authority grant.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+from contextlib import ExitStack
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+TRANSPORT_SOURCE = ROOT / "scripts/hapax-glmcp-reviewer"
+# Reuse the existing source contracts without changing the reserved reviewer or
+# calling its prompt/config/PAYG workflow. Import has no provider/secret effect.
+loader = importlib.machinery.SourceFileLoader("glmcp_arm_a_transport", str(TRANSPORT_SOURCE))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+transport = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = transport
+loader.exec_module(transport)
+
+ENDPOINT = "https://api.z.ai/api/coding/paas/v4/chat/completions"
+MODEL = "glm-5.3"
+SECRET_ENTRY = "glmcp/api-key"  # pragma: allowlist secret
+SUFFIXES = ("request.json", "response.json", "error.json", "meta.json")
+
+
+class Hold(ValueError):
+    """Preserve this attempt; do not issue another case."""
+
+
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def encode(value: object) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def checked(path: Path, expected: str) -> bytes:
+    data = path.read_bytes()
+    if sha(data) != expected:
+        raise Hold("input hash mismatch")
+    return data
+
+
+def inputs(args: argparse.Namespace) -> tuple[list[dict], dict]:
+    agents = checked(args.agents, args.agents_sha256)
+    if not agents or agents != (ROOT / "config/agent-instructions/AGENTS.md").read_bytes():
+        raise Hold("shared AGENTS differs from this source revision")
+    body = checked(args.inputs, args.inputs_sha256)
+    rows = json.loads(body)
+    if not isinstance(rows, list) or len(rows) != 12:
+        raise Hold("expected the twelve-case manifest")
+    cases = []
+    seen = set()
+    for index, row in enumerate(rows, 1):
+        case = row["case"]
+        if not isinstance(case, str) or not re.fullmatch(rf"c{index:02d}_[a-z0-9_]+", case):
+            raise Hold("case identity/order mismatch")
+        source = Path(row["source"])
+        if source in seen:
+            raise Hold("duplicate case source")
+        seen.add(source)
+        prompt = json.loads(source.read_bytes())
+        messages = [{"role": role, "content": prompt[role]} for role in ("system", "user")]
+        for message in messages:
+            content = message["content"]
+            if (
+                not isinstance(content, str)
+                or sha(content.encode()) != row[message["role"] + "_sha256"]
+            ):
+                raise Hold("original message hash mismatch")
+        combined = (prompt["system"] + "\n\n" + prompt["user"]).encode()
+        if len(combined) != row["combined_bytes"] or sha(combined) != row["combined_sha256"]:
+            raise Hold("combined input mismatch")
+        # Original packets already include the current shared body. Preserve all
+        # original bytes, identify its offset, and refuse duplicate/stale delivery.
+        system = prompt["system"].encode()
+        if system.count(agents) != 1 or agents in prompt["user"].encode():
+            raise Hold("shared AGENTS must occur exactly once in original system")
+        cases.append({"case": case, "messages": messages, "agents_offset": system.index(agents)})
+    return cases, {
+        "inputs_sha256": sha(body),
+        "agents_sha256": sha(agents),
+        "agents_bytes": len(agents),
+    }
+
+
+def request_body(case: dict) -> dict:
+    return {
+        "model": MODEL,
+        "messages": case["messages"],
+        "stream": False,
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "max",
+        "max_tokens": 32768,
+    }
+
+
+def response_observation(raw: bytes) -> tuple[dict, str | None]:
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise Hold("response is not an object")
+    observed = asdict(transport._provider_observation(payload))
+    observed.update(
+        {"id": payload.get("id"), "model": payload.get("model"), "usage": payload.get("usage")}
+    )
+    choices = payload.get("choices")
+    if payload.get("model") != MODEL or not isinstance(payload.get("id"), str) or not payload["id"]:
+        return observed, "missing or mismatching response identity"
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        return observed, "expected one response choice"
+    choice = choices[0]
+    message = choice.get("message")
+    if choice.get("finish_reason") != "stop":
+        return observed, "response did not finish normally"
+    if not isinstance(message, dict):
+        return observed, "missing response message"
+    if message.get("tool_calls") or message.get("function_call"):
+        return observed, "tool-call response refused"
+    if not isinstance(message.get("content"), str) or not message["content"].strip():
+        return observed, "nontext or empty response refused"
+    return observed, None
+
+
+def record(args: argparse.Namespace) -> None:
+    # Predeclare every destination before input admission or credential access.
+    # A spent attempt can never be resumed, even if it stopped before the call.
+    args.output.mkdir(mode=0o700)
+    with ExitStack() as stack:
+        directory = os.open(args.output, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, directory)
+        files = {}
+        names = ["manifest.json"] + [f"{i:02d}.{s}" for i in range(1, 13) for s in SUFFIXES]
+        for name in names:
+            fd = os.open(
+                name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory
+            )
+            files[name] = stack.enter_context(os.fdopen(fd, "wb"))
+
+        def write(name: str, data: bytes) -> None:
+            handle = files.pop(name)  # one write per predeclared destination
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        write(
+            "manifest.json",
+            encode(
+                {
+                    "endpoint": ENDPOINT,
+                    "model": MODEL,
+                    "secret_binding": "filestore:" + SECRET_ENTRY,  # pragma: allowlist secret
+                    "driver_sha256": sha(Path(__file__).read_bytes()),
+                    "transport_sha256": sha(TRANSPORT_SOURCE.read_bytes()),
+                    "files": names[1:],
+                    "attempt": args.output.name,
+                    "native_instruction_loading": False,
+                    "payg": False,
+                    "retry": False,
+                    "thinking": "enabled",
+                    "reasoning_effort": "max",
+                    "max_tokens": 32768,
+                }
+            ),
+        )
+        try:
+            cases, provenance = inputs(args)
+            key = transport.read_secret(SECRET_ENTRY)
+        except Exception as exc:
+            write(
+                "01.error.json",
+                encode(
+                    {"reason": "input/credential admission refused", "kind": type(exc).__name__}
+                ),
+            )
+            write("01.meta.json", encode({"status": "held", "request_issued": False}))
+            raise Hold("input/credential admission refused") from exc
+
+        for index, case in enumerate(cases, 1):
+            prefix = f"{index:02d}."
+            start = time.monotonic()
+            meta = {
+                **provenance,
+                "case": case["case"],
+                "agents_offset": case["agents_offset"],
+                "started_at": datetime.now(UTC).isoformat(),
+                "request_issued": False,
+                "status": "held",
+            }
+            reason = None
+            raw = b""
+            try:
+                payload = request_body(case)
+                request = urllib.request.Request(
+                    ENDPOINT,
+                    data=encode(payload),
+                    method="POST",
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                )
+                # Capture the final serialized body on the object passed to the
+                # reused transport. No request, key, or header object is logged.
+                wire = request.data
+                write(prefix + "request.json", wire)
+                if json.loads(wire) != payload or json.loads(wire)["messages"] != case["messages"]:
+                    raise Hold("serialized request differs from admitted input")
+                meta["request_sha256"] = sha(wire)
+                meta["request_bytes"] = len(wire)
+                meta["request_issued"] = True
+                with transport.open_no_redirect(request, timeout=900) as response:
+                    raw = response.read()
+                meta["response_sha256"] = sha(raw)
+                if key.encode() in raw:
+                    raw = raw.replace(key.encode(), b"<credential-redacted>")
+                    raise Hold("credential echo redacted")
+                observed, reason = response_observation(raw)
+                meta["response"] = observed
+            except urllib.error.HTTPError as exc:
+                raw = exc.read().replace(key.encode(), b"<credential-redacted>")
+                meta["http_status"] = exc.code
+                reason = "HTTP refusal; no redirect, retry or fallback"
+            except Exception as exc:
+                # Provider exception strings/headers can contain credentials or
+                # terminal escapes. Preserve body as data, record only local type.
+                reason = "call refused: " + type(exc).__name__
+            write(prefix + "response.json", raw)
+            write(prefix + "error.json", encode({"reason": reason}))
+            meta.update(
+                {
+                    "status": "held" if reason else "recorded",
+                    "duration_seconds": time.monotonic() - start,
+                    "finished_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            write(prefix + "meta.json", encode(meta))
+            if reason:
+                raise Hold("case held; preserve attempt and obtain independent disposition")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--inputs", type=Path, required=True)
+    parser.add_argument("--inputs-sha256", required=True)
+    parser.add_argument(
+        "--agents", type=Path, default=Path.home() / ".config/hapax/agent-instructions/AGENTS.md"
+    )
+    parser.add_argument("--agents-sha256", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(argv)
+    if not args.execute:
+        parser.error(
+            "--execute requires a separately authorized activation; this source row is offline only"
+        )
+    try:
+        record(args)
+    except (Hold, OSError):
+        print(
+            "Arm A held. Preserve evidence; request independent disposition before a fresh attempt.",
+            file=sys.stderr,
+        )
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
