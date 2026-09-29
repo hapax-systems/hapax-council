@@ -272,6 +272,24 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setenv("HAPAX_OOM_SEAT_ALERT_DEST", str(tmp_path / "sbin" / "hapax-oom-seat-alert"))
     monkeypatch.setenv(
+        "HAPAX_OOM_DOCKER_LIMITS_DEST", str(tmp_path / "sbin" / "hapax-oom-docker-limits")
+    )
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\nif [ "$5" = "ps" ]; then exit 0; fi\nexit 3\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    audit_selector = tmp_path / "docker-policy-audit"
+    audit_selector.write_text(
+        "#!/bin/sh\nprintf 'appendix\\t32G\\t37G\\t32G\\t38G\\t16G\\t20G\\t12G\\t16384\\t10\\n'\n",
+        encoding="utf-8",
+    )
+    audit_selector.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_DOCKER_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_DOCKER_TEST_DOCKER", str(docker))
+    monkeypatch.setenv("HAPAX_OOM_DOCKER_TEST_AUDIT", str(audit_selector))
+    monkeypatch.setenv(
         "HAPAX_OOM_HOST_PROFILE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
     )
     monkeypatch.setenv(
@@ -921,6 +939,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert root_failure_dest.is_file()
     assert (tmp_path / "sbin" / "hapax-oom-policy-audit").is_file()
     assert (tmp_path / "sbin" / "hapax-oom-seat-alert").is_file()
+    assert (tmp_path / "sbin" / "hapax-oom-docker-limits").is_file()
     assert (tmp_path / "sbin" / "hapax-root-required-deploy-audit").is_file()
     for unit in (
         "hapax-oom-policy-audit.service",

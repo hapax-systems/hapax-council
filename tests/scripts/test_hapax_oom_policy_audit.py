@@ -396,6 +396,7 @@ def _run(
     extra_user_sibling_floor: bool = False,
     extra_app_sibling_floor: bool = False,
     extra_session_sibling_floor: bool = False,
+    docker_uncapped: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if proc_root is None:
         proc_root = tmp_path / "proc"
@@ -483,6 +484,27 @@ def _run(
             child_dir.mkdir(parents=True, exist_ok=True)
             (child_dir / "memory.low").write_text(f"{memory_low}\n", encoding="utf-8")
             (child_dir / "memory.min").write_text(f"{memory_min}\n", encoding="utf-8")
+    docker = tmp_path / "docker-empty"
+    docker.write_text(
+        "#!/bin/sh\n"
+        + (
+            'if [ "$5" = ps ]; then printf "%s\\n" "' + "a" * 64 + '"; '
+            'else printf \'{"Id":"'
+            + "a" * 64
+            + '","HostConfig":{"Memory":0,"MemorySwap":0,"OomKillDisable":false}}\\n\'; fi\n'
+            if docker_uncapped
+            else ""
+        )
+        + "exit 0\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    docker_policy = tmp_path / "docker-policy"
+    docker_policy.write_text(
+        "#!/bin/sh\nprintf 'podium\\t68G\\t76G\\t72G\\t80G\\t32G\\t40G\\t24G\\t32768\\t10\\n'\n",
+        encoding="utf-8",
+    )
+    docker_policy.chmod(0o755)
     env = {
         **os.environ,
         "HAPAX_SYSTEMCTL": str(
@@ -515,6 +537,9 @@ def _run(
         "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-podium",
         "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "131009480",
         "HAPAX_OOM_AUDIT_TEST_UDEV_RULE": str(udev_rule),
+        "HAPAX_OOM_DOCKER_TEST_MODE": "1",
+        "HAPAX_OOM_DOCKER_TEST_DOCKER": str(docker),
+        "HAPAX_OOM_DOCKER_TEST_AUDIT": str(docker_policy),
         "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(tmp_path / "root-state" / ".lock"),
     }
     return subprocess.run(
@@ -529,6 +554,15 @@ def _run(
 def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_path: Path) -> None:
     result = _run(tmp_path)
     assert result.returncode == 0, result.stderr
+
+
+def test_audit_reports_uncapped_docker_container(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_uncapped=True)
+    assert result.returncode == 1
+    checks = json.loads(result.stdout)["checks"]
+    assert any(
+        item["name"].startswith("docker_container_") and item["status"] == "gap" for item in checks
+    )
     payload = json.loads(result.stdout)
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
     targets = {check["name"]: check["target"] for check in payload["checks"]}

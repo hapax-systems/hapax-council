@@ -1,0 +1,228 @@
+#!/usr/bin/python3
+"""Apply and audit bounded Docker memory ceilings from the exact OOM host policy."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+INSTALLED = Path("/usr/local/sbin/hapax-oom-docker-limits")
+DOCKER = Path("/usr/bin/docker")
+AUDIT = Path("/usr/local/sbin/hapax-oom-policy-audit")
+SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin"
+GIB = 1024**3
+ID = re.compile(r"[0-9a-f]{64}\Z")
+
+
+class DockerPolicyError(RuntimeError):
+    pass
+
+
+def _tools() -> tuple[Path, Path]:
+    names = (
+        "HAPAX_OOM_DOCKER_TEST_MODE",
+        "HAPAX_OOM_DOCKER_TEST_DOCKER",
+        "HAPAX_OOM_DOCKER_TEST_AUDIT",
+    )
+    selected = [name for name in names if name in os.environ]
+    installed = Path(__file__).resolve() == INSTALLED
+    if installed and selected:
+        raise DockerPolicyError("installed Docker policy refuses test selectors")
+    if selected and os.environ.get("HAPAX_OOM_DOCKER_TEST_MODE") != "1":
+        raise DockerPolicyError("source Docker policy test selectors require TEST_MODE=1")
+    if selected:
+        return Path(os.environ.get("HAPAX_OOM_DOCKER_TEST_DOCKER", DOCKER)), Path(
+            os.environ.get("HAPAX_OOM_DOCKER_TEST_AUDIT", AUDIT)
+        )
+    return DOCKER, AUDIT if installed else Path(__file__).with_name("hapax-oom-policy-audit")
+
+
+def _run(args: list[str], *, timeout: int = 15) -> str:
+    try:
+        result = subprocess.run(
+            args,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            env={"PATH": SAFE_PATH, "HOME": "/nonexistent"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DockerPolicyError(f"command unavailable: {exc}") from exc
+    if result.returncode or len(result.stdout) > 16384 or len(result.stderr) > 2048:
+        raise DockerPolicyError(
+            f"command failed or exceeded output bound: {args[0]} rc={result.returncode}"
+        )
+    return result.stdout
+
+
+def _limits(audit: Path) -> tuple[int, int, int]:
+    fields = _run([str(audit), "--print-host-policy"]).strip().split("\t")
+    if len(fields) != 10 or fields[0] not in {"appendix", "podium"}:
+        raise DockerPolicyError("invalid exact-host OOM profile output")
+    expected = "20G" if fields[0] == "appendix" else "40G"
+    if fields[6] != expected:
+        raise DockerPolicyError("unexpected system.slice maximum in OOM profile")
+    system_max = int(expected[:-1]) * GIB
+    memory = system_max * 2 // 5
+    return memory, memory + 2 * GIB, system_max
+
+
+def _docker(docker: Path, *args: str) -> str:
+    return _run(
+        [
+            str(docker),
+            "--host",
+            "unix:///var/run/docker.sock",
+            "--config",
+            "/nonexistent/hapax-oom-docker-limits",
+            *args,
+        ]
+    )
+
+
+def _inventory(docker: Path) -> list[str]:
+    try:
+        output = _docker(docker, "ps", "-aq", "--no-trunc")
+    except DockerPolicyError as exc:
+        raise DockerPolicyError(f"Docker inventory unavailable: {exc}") from exc
+    ids = output.splitlines()
+    if (
+        len(ids) > 128
+        or len(ids) != len(set(ids))
+        or any(ID.fullmatch(value) is None for value in ids)
+    ):
+        raise DockerPolicyError("Docker inventory has invalid, duplicate or excessive IDs")
+    return sorted(ids)
+
+
+def _inspect(docker: Path, container_id: str) -> tuple[int, int, bool]:
+    output = _docker(docker, "inspect", "--format", "{{json .}}", container_id)
+    lines = output.splitlines()
+    if len(lines) != 1:
+        raise DockerPolicyError(f"Docker inspect record count drift for {container_id}")
+    try:
+        data = json.loads(lines[0])
+        if data["Id"] != container_id:
+            raise DockerPolicyError(f"Docker inspect identity drift for {container_id}")
+        host = data["HostConfig"]
+        memory, swap, oom_disabled = host["Memory"], host["MemorySwap"], host["OomKillDisable"]
+        if (
+            type(memory) is not int
+            or type(swap) is not int
+            or (oom_disabled is not None and type(oom_disabled) is not bool)
+        ):
+            raise ValueError("invalid Docker memory fields")
+        if memory < 0 or swap < 0:
+            raise ValueError("negative Docker memory field")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DockerPolicyError(f"invalid Docker inspect record for {container_id}: {exc}") from exc
+    return memory, swap, oom_disabled is True
+
+
+def _checks(docker: Path, system_max: int) -> list[dict[str, str]]:
+    ids = _inventory(docker)
+    checks: list[dict[str, str]] = []
+    for container_id in ids:
+        memory, swap, oom_disabled = _inspect(docker, container_id)
+        status = "pass" if 0 < memory <= system_max and not oom_disabled else "gap"
+        checks.append(
+            {
+                "name": f"docker_container_{container_id[:12]}_memory",
+                "status": status,
+                "target": f"1..{system_max} bytes, OOM killer enabled",
+                "actual": f"Memory={memory},MemorySwap={swap},OomKillDisable={oom_disabled}",
+            }
+        )
+    if _inventory(docker) != ids:
+        raise DockerPolicyError("Docker inventory changed during audit")
+    if not checks:
+        checks.append(
+            {
+                "name": "docker_inventory",
+                "status": "pass",
+                "target": "all containers bounded",
+                "actual": "empty",
+            }
+        )
+    return checks
+
+
+def _apply(docker: Path, memory_target: int, swap_target: int, system_max: int) -> None:
+    before = _inventory(docker)
+    uncapped = []
+    for container_id in before:
+        memory, _, oom_disabled = _inspect(docker, container_id)
+        if oom_disabled:
+            raise DockerPolicyError(
+                f"Docker OOM killer disabled for {container_id}; recreate through its owner"
+            )
+        if memory == 0:
+            uncapped.append(container_id)
+        elif memory > system_max:
+            raise DockerPolicyError(
+                f"Docker memory exceeds host system cap for {container_id}; reconcile its owner"
+            )
+    for container_id in uncapped:
+        _docker(
+            docker,
+            "update",
+            "--memory",
+            str(memory_target),
+            "--memory-swap",
+            str(swap_target),
+            container_id,
+        )
+        actual_memory, actual_swap, _ = _inspect(docker, container_id)
+        if (actual_memory, actual_swap) != (memory_target, swap_target):
+            raise DockerPolicyError(f"Docker update readback drift for {container_id}")
+    if _inventory(docker) != before:
+        raise DockerPolicyError(
+            "Docker inventory changed during cap application; rerun the governed installer"
+        )
+    if any(item["status"] != "pass" for item in _checks(docker, system_max)):
+        raise DockerPolicyError("Docker cap audit failed after application")
+
+
+def main(argv: list[str]) -> int:
+    if argv not in (["--audit"], ["--apply"]):
+        print("usage: hapax-oom-docker-limits --audit|--apply", file=sys.stderr)
+        return 2
+    try:
+        docker, audit = _tools()
+        memory_target, swap_target, system_max = _limits(audit)
+        if argv == ["--apply"]:
+            _apply(docker, memory_target, swap_target, system_max)
+            print("Docker OOM limits applied and read back")
+            return 0
+        checks = _checks(docker, system_max)
+        print(json.dumps({"checks": checks}, sort_keys=True))
+        return int(any(item["status"] != "pass" for item in checks))
+    except DockerPolicyError as exc:
+        if argv == ["--audit"]:
+            print(
+                json.dumps(
+                    {
+                        "checks": [
+                            {
+                                "name": "docker_inventory",
+                                "status": "error",
+                                "target": "bounded local Docker inventory",
+                                "actual": str(exc),
+                            }
+                        ]
+                    },
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(f"Docker OOM limit application refused: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

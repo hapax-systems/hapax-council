@@ -35,6 +35,7 @@ OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 OOM_SEAT_ALERT_DEST="${HAPAX_OOM_SEAT_ALERT_DEST:-/usr/local/sbin/hapax-oom-seat-alert}"
+OOM_DOCKER_LIMITS_DEST="${HAPAX_OOM_DOCKER_LIMITS_DEST:-/usr/local/sbin/hapax-oom-docker-limits}"
 OOM_HOST_PROFILE_DEST="${HAPAX_OOM_HOST_PROFILE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
 OOM_UDEV_DEST="${HAPAX_OOM_UDEV_DEST:-/etc/udev/rules.d/99-hapax-zram-swappiness.rules}"
 OOM_UDEVADM="${HAPAX_OOM_UDEVADM:-/usr/bin/udevadm}"
@@ -592,6 +593,7 @@ oom_sudoers_source="config/root-required/hapax-oom-score-enforce.sudoers"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 oom_seat_alert_source="scripts/hapax-oom-seat-alert"
+oom_docker_limits_source="scripts/hapax-oom-docker-limits"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
 package_manifest_source="config/root-required/oom-containment.files"
 host_profile_source="config/root-required/oom-host-profiles.tsv"
@@ -624,6 +626,7 @@ package_files=(
     "$root_failure_intake_source"
     "$oom_policy_audit_source"
     "$oom_seat_alert_source"
+    "$oom_docker_limits_source"
     "$root_required_audit_source"
 )
 recovery_unit_scores=(
@@ -1092,6 +1095,11 @@ check_source() {
     require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryMax "$SYSTEM_MAX" || return 1
     require_host_policy_value systemd/system/system.slice.d/oom-containment.conf MemoryLow "$SYSTEM_LOW" || return 1
     verify_zram_rule_source || return 1
+    if [ ! -x "$(src_path "$oom_docker_limits_source")" ] \
+        || [ "$(head -n 1 "$(src_path "$oom_docker_limits_source")")" != "#!/usr/bin/python3" ]; then
+        echo "Docker OOM limit helper must be an executable /usr/bin/python3 source file; next action: restore $oom_docker_limits_source" >&2
+        return 1
+    fi
     [ -x "$(src_path "$oom_trigger_source")" ] || {
         echo "OOM startup trigger is not executable: $(src_path "$oom_trigger_source"); next action: chmod +x scripts/hapax-oom-score-trigger" >&2
         return 1
@@ -1462,6 +1470,8 @@ install_live() {
     echo "  '$oom_policy_audit_source' -> '$OOM_POLICY_AUDIT_DEST'"
     run_root install -m 0755 "$(src_path "$oom_seat_alert_source")" "$OOM_SEAT_ALERT_DEST"
     echo "  '$oom_seat_alert_source' -> '$OOM_SEAT_ALERT_DEST'"
+    run_root install -m 0755 "$(src_path "$oom_docker_limits_source")" "$OOM_DOCKER_LIMITS_DEST"
+    echo "  '$oom_docker_limits_source' -> '$OOM_DOCKER_LIMITS_DEST'"
     run_root install -d -m 0755 "$(dirname "$OOM_HOST_PROFILE_DEST")"
     run_root install -m 0644 "$(src_path "$host_profile_source")" "$OOM_HOST_PROFILE_DEST"
     echo "  '$host_profile_source' -> '$OOM_HOST_PROFILE_DEST'"
@@ -1562,6 +1572,10 @@ install_live() {
             write_oom_score_or_warn "$user_pid" 100 "user@1000.service"
         fi
         apply_user_process_oom_floor
+        run_root "$OOM_DOCKER_LIMITS_DEST" --apply || {
+            echo "Docker OOM cap application failed; next action: inspect the bounded local Docker inventory and rerun the governed OOM installer" >&2
+            return 1
+        }
     fi
 }
 
@@ -1707,6 +1721,12 @@ verify_live() {
     verify_root_artifact_trust "$OOM_POLICY_AUDIT_DEST" 755
     verify_pair "$(src_path "$oom_seat_alert_source")" "$OOM_SEAT_ALERT_DEST"
     verify_root_artifact_trust "$OOM_SEAT_ALERT_DEST" 755
+    verify_pair "$(src_path "$oom_docker_limits_source")" "$OOM_DOCKER_LIMITS_DEST"
+    verify_root_artifact_trust "$OOM_DOCKER_LIMITS_DEST" 755
+    run_root "$OOM_DOCKER_LIMITS_DEST" --audit >/dev/null || {
+        echo "live Docker OOM cap audit failed; next action: inspect the bounded local Docker inventory and rerun the governed OOM installer" >&2
+        return 1
+    }
     verify_pair "$(src_path "$host_profile_source")" "$OOM_HOST_PROFILE_DEST"
     verify_root_artifact_trust "$OOM_HOST_PROFILE_DEST" 644
     verify_pair "$(policy_src_path config/udev/99-hapax-zram-swappiness.rules)" "$OOM_UDEV_DEST"

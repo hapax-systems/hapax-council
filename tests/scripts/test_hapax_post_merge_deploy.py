@@ -52,6 +52,7 @@ P0_USER_OOM_DROPINS = {
 P0_OOM_AUDIT_FILES = {
     "scripts/hapax-oom-policy-audit": "#!/usr/bin/env python3\n",
     "scripts/hapax-oom-seat-alert": "#!/usr/bin/env python3\n",
+    "scripts/hapax-oom-docker-limits": "#!/usr/bin/python3\n",
     "scripts/hapax-root-required-deploy-audit": "#!/usr/bin/env bash\n",
     "systemd/units/hapax-oom-policy-audit.service": (
         "[Unit]\nDescription=OOM audit\nOnFailure=notify-failure@%n.service hapax-oom-policy-seat-alert@%n.service\n"
