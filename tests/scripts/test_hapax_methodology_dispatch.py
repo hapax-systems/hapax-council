@@ -4189,6 +4189,24 @@ printf '%s\\n' "$@" > {launcher_args}
 
 
 def test_glmcp_platform_receipt_uses_sanctioned_review_wrapper_check(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    source = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
+    neutral = home / ".config/hapax/agent-instructions/AGENTS.md"
+    neutral.parent.mkdir(parents=True)
+    neutral.write_bytes(source)
+    (neutral.parent / "current.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "binding": "shared",
+                        "path": str(neutral),
+                        "sha256": hashlib.sha256(source).hexdigest(),
+                    }
+                ]
+            }
+        )
+    )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
     secret_stub = bin_dir / "hapax-secret"
@@ -4219,6 +4237,7 @@ exit 1
         ],
         env={
             **os.environ,
+            "HOME": str(home),
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "REINS_SECRET_STORE": str(tmp_path / "empty-secrets"),
         },
