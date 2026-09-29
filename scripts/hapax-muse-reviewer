@@ -16,9 +16,18 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+_local_source = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(
+    os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+    or os.environ.get("HAPAX_COUNCIL_DIR")
+    or (
+        _local_source
+        if (_local_source / "config/agent-instructions/AGENTS.md").is_file()
+        else Path.home() / ".cache/hapax/source-activation/worktree"
+    )
+).resolve()
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
 
@@ -60,6 +69,20 @@ def main() -> int:
             WRAPPER,
             f"prompt of {size} bytes exceeds the measured muse ceiling of {MAX_PROMPT_BYTES}; "
             "the constitution substitutes another family",
+        )
+    preflight = subprocess.run(
+        [
+            sys.executable,
+            str(SOURCE_ROOT / "scripts/hapax-review-native-instruction-preflight"),
+            "muse",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if preflight.returncode != 0:
+        return refuse(
+            WRAPPER, preflight.stderr.strip() or "native instruction preflight unavailable"
         )
     binary = muse_bin()
     if not binary:

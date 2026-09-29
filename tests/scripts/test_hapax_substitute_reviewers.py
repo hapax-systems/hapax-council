@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -33,18 +34,58 @@ def _review_team():
     return module
 
 
-def _run(wrapper: str, prompt: str, env: dict[str, str]) -> subprocess.CompletedProcess:
-    base = {k: v for k, v in os.environ.items() if k not in {"TMUX", "TMUX_PANE"}}
-    return subprocess.run(
-        [sys.executable, str(SCRIPTS / wrapper)],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        env={**base, **env},
-        cwd=REPO_ROOT,
-        timeout=60,
-        check=False,
+def _seed_native_binding(home: Path, client: str) -> tuple[Path, Path]:
+    source = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
+    neutral = home / ".config/hapax/agent-instructions/AGENTS.md"
+    native = home / {"muse": ".config/muse/AGENTS.md", "vibe": ".vibe/AGENTS.md"}[client]
+    neutral.parent.mkdir(parents=True, exist_ok=True)
+    native.parent.mkdir(parents=True, exist_ok=True)
+    neutral.write_bytes(source)
+    native.write_bytes(b"# Native fixture\n" + source)
+    receipt = neutral.parent / "current.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "binding": binding,
+                        "path": str(path),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                    for binding, path in (("shared", neutral), (client, native))
+                ]
+            }
+        )
     )
+    return native, receipt
+
+
+def _run(
+    wrapper: str, prompt: str, env: dict[str, str], *, seed_native: bool = True
+) -> subprocess.CompletedProcess:
+    base = {k: v for k, v in os.environ.items() if k not in {"TMUX", "TMUX_PANE"}}
+    client = {"hapax-muse-reviewer": "muse", "hapax-vibe-reviewer": "vibe"}.get(wrapper)
+    with tempfile.TemporaryDirectory(prefix="hapax-review-test-home-") as temp_home:
+        merged = {**base, **env}
+        if client:
+            merged["HOME"] = env.get("HOME", temp_home)
+            merged.setdefault("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
+            if "XDG_CONFIG_HOME" not in env:
+                merged.pop("XDG_CONFIG_HOME", None)
+            if "VIBE_HOME" not in env:
+                merged.pop("VIBE_HOME", None)
+            if seed_native:
+                _seed_native_binding(Path(merged["HOME"]), client)
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / wrapper)],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            env=merged,
+            cwd=REPO_ROOT,
+            timeout=60,
+            check=False,
+        )
 
 
 def _assert_route_outage(result: subprocess.CompletedProcess) -> None:
@@ -221,6 +262,38 @@ class TestVibeReviewer:
         _assert_route_outage(result)
         assert "0 B at 45-87 KB" in result.stderr
         assert not record.exists()
+
+
+@pytest.mark.parametrize("client", ["muse", "vibe"])
+@pytest.mark.parametrize("failure", ["missing", "stale", "wrong-home", "alternate-home"])
+def test_substitute_native_binding_refuses_before_child(
+    tmp_path: Path, client: str, failure: str
+) -> None:
+    fake, record = _fake_cli(tmp_path, client)
+    home = _vibe_home(tmp_path, TODAY) if client == "vibe" else tmp_path / "muse-home"
+    native, receipt = _seed_native_binding(home, client)
+    env = {
+        "HOME": str(home),
+        ("HAPAX_MUSE_BIN" if client == "muse" else "HAPAX_VIBE_BIN"): str(fake),
+    }
+    if client == "vibe":
+        env["MISTRAL_API_KEY"] = ""
+    if failure == "missing":
+        native.unlink()
+    elif failure == "stale":
+        native.write_bytes(b"old native instructions")
+    elif failure == "wrong-home":
+        data = json.loads(receipt.read_text())
+        data["files"][1]["path"] = str(tmp_path / "other-home/AGENTS.md")
+        receipt.write_text(json.dumps(data))
+    elif client == "muse":
+        env["XDG_CONFIG_HOME"] = str(tmp_path / "other-xdg")
+    else:
+        env["VIBE_HOME"] = str(tmp_path / "other-vibe")
+    result = _run(f"hapax-{client}-reviewer", "REVIEW", env, seed_native=False)
+    _assert_route_outage(result)
+    assert "instruction" in result.stderr
+    assert not record.exists()
 
 
 class _Completions(http.server.BaseHTTPRequestHandler):

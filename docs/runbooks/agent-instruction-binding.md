@@ -138,6 +138,13 @@ The tmux runner repeats the check immediately before executing Kimi. This is a
 prelaunch admission check; actual Kimi native loading remains unobserved until a
 per-session loader witness names the file and its exact bytes.
 
+`hapax-muse-reviewer` and `hapax-vibe-reviewer` check the selected release,
+neutral installation, installer receipt and their native global file before
+starting the review child. An alternate Muse config home or Vibe home refuses.
+This checks launches through these wrappers only. It does not prove the native
+client loaded the body, cover a direct `muse` or `vibe` invocation, or admit
+either route without a per-invocation exact-body witness.
+
 The repository core is below Grok's cap. Full domain instructions were moved
 verbatim to `council-domain-context.md`; the core requires reading the applicable
 sections before domain work. Codex's global plus repository body fits its default
