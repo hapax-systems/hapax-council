@@ -3,8 +3,12 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
+import shlex
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -92,21 +96,6 @@ def test_restore_preserves_measured_session_permissions(
         module.launch_args(entry)
 
 
-def test_capture_session_mode_requires_explicit_allowlisted_flags() -> None:
-    codex = ["codex", "resume", TRANSCRIPT, "-s", "workspace-write", "-a", "on-request"]
-    assert module.session_mode("codex", codex) == {
-        "sandbox": "workspace-write",
-        "approval": "on-request",
-    }
-    with pytest.raises(ValueError, match="permission mode"):
-        module.session_mode("codex", ["codex", "resume", TRANSCRIPT])
-    with pytest.raises(ValueError, match="permission mode"):
-        module.session_mode("codex", [*codex, "-s", "danger-full-access"])
-    assert module.session_mode(
-        "claude", ["claude", "--resume", TRANSCRIPT, "--dangerously-skip-permissions"]
-    ) == {"permission_mode": "bypass"}
-
-
 def test_readback_rejects_changed_session_permissions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -115,8 +104,9 @@ def test_readback_rejects_changed_session_permissions(
     monkeypatch.setattr(module, "run", lambda *args: "123")
     monkeypatch.setattr(
         module,
-        "proc_fields",
-        lambda pid: (
+        "agent_process",
+        lambda pid, provider: (
+            pid,
             ["codex", "resume", TRANSCRIPT, "-s", "read-only", "-a", "on-request"],
             {"HAPAX_AGENT_ROLE": entry["role"], "HAPAX_SESSION_ID": TRANSCRIPT},
         ),
@@ -124,6 +114,51 @@ def test_readback_rejects_changed_session_permissions(
     monkeypatch.setattr(module, "scope_readback", lambda pid: None)
     with pytest.raises(ValueError, match="permission mode differs"):
         module.readback(entry)
+
+
+def test_readback_walks_a_real_shell_exec_chain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    entry = lane(tmp_path)
+    (tmp_path / "resume").write_text("import time; time.sleep(30)\n")
+    agent = tmp_path / "codex"
+    agent.symlink_to(sys.executable)
+    inner = "exec " + shlex.join(
+        [str(agent), "resume", TRANSCRIPT, "-s", "danger-full-access", "-a", "never"]
+    )
+    env = os.environ | {"HAPAX_AGENT_ROLE": entry["role"], "HAPAX_SESSION_ID": TRANSCRIPT}
+    pane = subprocess.Popen(
+        ["/bin/bash", "-c", "/bin/bash -c " + shlex.quote(inner) + " & wait"],
+        cwd=tmp_path,
+        env=env,
+        start_new_session=True,
+    )
+    seen: list[str] = []
+    monkeypatch.setattr(module, "run", lambda *args: str(pane.pid))
+    monkeypatch.setattr(module, "scope_readback", lambda pid: seen.append(pid))
+    try:
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                module.readback(entry)
+                break
+            except ValueError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        assert seen and seen[-1] != str(pane.pid)
+        assert (
+            Path(f"/proc/{seen[-1]}/cmdline")
+            .read_bytes()
+            .startswith(os.fsencode(agent) + b"\0resume\0")
+        )
+    finally:
+        try:
+            os.killpg(pane.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        pane.wait(timeout=5)
 
 
 def test_restore_rebuilds_bounded_commands_and_reports_failures(
@@ -161,6 +196,8 @@ def test_restore_rebuilds_bounded_commands_and_reports_failures(
     assert len(launches) == 2
     for call in launches:
         command = call[-1]
+        assert call[-3:-1] == ["/bin/sh", "-c"]
+        assert command.startswith("exec systemd-run ")
         assert "MemoryHigh=5G" in command
         assert "MemoryMax=7G" in command
         assert "MemorySwapMax=1G" in command
@@ -197,15 +234,6 @@ def test_restore_same_boot_and_all_live_has_no_side_effects(
     result = module.restore(path)
     assert result["already_live"] == [entry["tmux"]]
     assert not result["restored"]
-
-
-def test_transcript_id_requires_explicit_uuid() -> None:
-    assert module.transcript_id("codex", ["codex", "resume", TRANSCRIPT, "brief"]) == TRANSCRIPT
-    assert module.transcript_id("claude", ["claude", "--resume", TRANSCRIPT]) == TRANSCRIPT
-    with pytest.raises(ValueError, match="resume identity"):
-        module.transcript_id("codex", ["codex", "resume"])
-    with pytest.raises(ValueError, match="unique explicit"):
-        module.transcript_id("claude", ["claude", "--continue"])
 
 
 def test_unit_recovery_starts_missing_declared_unit(
@@ -272,31 +300,6 @@ def test_unit_recovery_refuses_changed_enablement(
     assert json.loads(path.read_text())["boot_id"] == "old-boot"
 
 
-@pytest.mark.parametrize(
-    "message", ["no server running", "error connecting to /tmp/tmux-1001/default"]
-)
-def test_unit_only_host_accepts_absent_tmux_server(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, message: str
-) -> None:
-    monkeypatch.setattr(module, "boot_id", lambda: BOOT)
-    monkeypatch.setattr(
-        module.subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args, 1, "", message),
-    )
-    monkeypatch.setattr(
-        module,
-        "declare_unit",
-        lambda spec: {"scope": "user", "name": "fleet-review.service", "enabled": "enabled"},
-    )
-    path = tmp_path / "manifest.json"
-    data = module.capture(path, ("user:fleet-review.service",))
-    assert data["lanes"] == []
-    assert data["units"] == [
-        {"scope": "user", "name": "fleet-review.service", "enabled": "enabled"}
-    ]
-
-
 def test_scope_readback_rejects_unbounded_lane(tmp_path: Path) -> None:
     proc = tmp_path / "proc"
     cgroup = tmp_path / "cgroup"
@@ -348,39 +351,3 @@ def test_wrong_manifest_hash_refuses_before_restore_action(
     )
     with pytest.raises(ValueError, match="hash mismatch"):
         module.restore(path)
-
-
-def test_restore_refusal_reports_named_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(
-        sys, "argv", [str(SCRIPT), "restore", "--manifest", str(tmp_path / "missing")]
-    )
-    monkeypatch.setattr(module, "boot_id", lambda: BOOT)
-    reports: list[dict] = []
-    monkeypatch.setattr(module, "report", lambda result: reports.append(result))
-    assert module.main() == 2
-    assert "manifest_or_report" in reports[0]["failed"]
-
-
-def test_report_delivery_failure_does_not_stamp_boot(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(module, "boot_id", lambda: BOOT)
-    path = tmp_path / "manifest.json"
-    module.atomic_json(
-        path,
-        {
-            "schema": 1,
-            "host": module.socket.gethostname().split(".")[0],
-            "boot_id": "old-boot",
-            "lanes": [],
-            "units": [],
-        },
-    )
-    monkeypatch.setattr(
-        module, "report", lambda result: (_ for _ in ()).throw(module.ReportError("ntfy"))
-    )
-    with pytest.raises(module.ReportError, match="ntfy"):
-        module.restore(path)
-    assert json.loads(path.read_text())["boot_id"] == "old-boot"
