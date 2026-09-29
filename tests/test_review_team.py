@@ -836,6 +836,47 @@ class TestObservedWriterIdentity:
         assert identity.family == "unobserved"
         assert identity.reason == "registry_has_no_observation_table"
 
+    @pytest.mark.parametrize(
+        ("provider", "reason"),
+        [("unlisted-provider", "provider_not_declared"), (None, "harness_not_provider_exclusive")],
+    )
+    def test_unmapped_native_identity_is_unobserved(
+        self, tmp_path: Path, provider: str | None, reason: str
+    ) -> None:
+        rt = _load_review_team_module()
+        receipts, sessions = tmp_path / "receipts", tmp_path / "sessions"
+        receipts.mkdir()
+        sessions.mkdir()
+        session_id = "01a0e556-a50e-7fd3-8e73-95b63b386898"
+        (receipts / "task-x.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "task-x",
+                    "role": "fugu-omglol",
+                    "session_id": session_id,
+                    "claim_epoch": 100,
+                    "to_status": "claimed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (sessions / f"rollout-{session_id}.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "session_meta",
+                    "payload": {"session_id": session_id, "model_provider": provider},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        roots = rt.WriterIdentityRoots(receipts, sessions, tmp_path / "claude")
+        identity = rt.observed_writer_identity(
+            "task-x", "fugu-omglol", rt.load_lens_registry(), roots=roots
+        )
+        assert identity.family == "unobserved"
+        assert identity.reason == reason
+
     def test_missing_claim_receipt_is_unobserved_not_a_lane_default(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
         roots = rt.WriterIdentityRoots(
@@ -1082,6 +1123,7 @@ class TestDistinctFamilyFloor:
             rt,
             [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
             team_class="t1_critical",
+            writer_family="fugu",
         )
         assert dossier["review_team_verdict"] == "quorum-accept"
 
@@ -1092,6 +1134,7 @@ class TestDistinctFamilyFloor:
             rt,
             [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
             team_class="t1_critical",
+            writer_family="claude",
         )
         blockers = rt._dossier_validity_blockers(
             dossier, pr_head_sha="a" * 40, registry=reg, route_blocked_families={}
@@ -1553,6 +1596,7 @@ class TestSizeReplacementNoteValidity:
         dossier = _synth(
             rt,
             [_review(f"{family}-1", family) for family in ("claude", "codex", "gemini")],
+            writer_family="fugu",
         )
         dossier["family_substitution"] = {"excluded_for_size": {}, "excluded_for_prompt": {}}
         assert (
@@ -1636,6 +1680,7 @@ class TestSizeReplacementNoteValidity:
                 _review("glm-1", "glm", diff_full_bytes=10_000),
             ],
             constitution_notes=("family_replaced_for_size:gemini",),
+            writer_family="fugu",
         )
         dossier["family_substitution"] = {
             "excluded_for_prompt": {
@@ -1691,6 +1736,7 @@ class TestSizeReplacementNoteValidity:
                 "family_replaced_for_size:gemini",
                 "family_replaced_for_size:glm",
             ),
+            writer_family="fugu",
         )
 
         def blockers() -> tuple[str, ...]:
@@ -1723,6 +1769,7 @@ class TestSizeReplacementNoteValidity:
             ],
             team_class="t1_critical",
             constitution_notes=("family_replaced_for_size:gemini",),
+            writer_family="fugu",
         )
         blockers = rt._dossier_validity_blockers(
             dossier, pr_head_sha="a" * 40, registry=registry, route_blocked_families={}
@@ -1740,6 +1787,7 @@ class TestSizeReplacementNoteValidity:
                 _review("glm-1", "glm", diff_full_bytes=10_000),
             ],
             constitution_notes=("family_replaced_for_size:gemini",),
+            writer_family="fugu",
         )
         ceiling = rt.seat_diff_capacity("gemini-1", registry)["prompt_limit_bytes"]
         dossier["family_substitution"] = {
@@ -1971,6 +2019,7 @@ class TestDiffCoverageQuorum:
                 _review("gemini-1", "gemini", "accept", diff_full_bytes=None),
                 _review("claude-1", "claude", "accept", diff_full_bytes=None),
             ],
+            writer_family="claude",
         )
         dossier["review_team_verdict"] = "quorum-accept"
         dossier["accept_count"] = 3
@@ -2211,6 +2260,7 @@ class TestVerdictBlockers:
                 _review("gemini-1", "gemini", "accept"),
                 _review("claude-1", "claude", "accept"),
             ],
+            writer_family="claude",
         )
 
     def _glm_seated_dossier(self, rt) -> dict:
@@ -2221,6 +2271,7 @@ class TestVerdictBlockers:
                 _review("claude-1", "claude", "accept"),
                 _review("glm-1", "glm", "accept"),
             ],
+            writer_family="claude",
         )
 
     def _glmcp_payg_evidence_refs(self, rt) -> tuple[str, ...]:
@@ -2436,6 +2487,7 @@ class TestVerdictBlockers:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
 
     def test_route_blocked_degraded_dossier_passes_while_route_still_blocked(
@@ -2486,6 +2538,7 @@ class TestVerdictBlockers:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
 
@@ -2529,6 +2582,7 @@ class TestVerdictBlockers:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
 
@@ -2571,6 +2625,7 @@ class TestVerdictBlockers:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
         note = _write_dossier(tmp_path, "task-x", dossier)
 
@@ -2848,6 +2903,7 @@ class TestVerdictBlockers:
                 _review("claude-2", "claude", "accept"),
                 _review("claude-3", "claude", "accept"),
             ],
+            writer_family="claude",
         )
         dossier["review_team_verdict"] = "quorum-accept"
         note = _write_dossier(tmp_path, "task-x", dossier)
@@ -2937,6 +2993,225 @@ class TestVerdictBlockers:
         note.write_text("---\ntype: cc-task\n---\n", encoding="utf-8")
         blockers = rt.review_team_verdict_blockers({}, note, pr_head_sha="a" * 40)
         assert blockers == ("review_dossier_unkeyable:missing_task_id",)
+
+    def test_a_dossier_with_no_recorded_writer_family_is_refused(self, tmp_path: Path) -> None:
+        # The field is not decorative: absent, it says nothing about who wrote
+        # the work, and a claim about independence cannot be built on silence.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "zeta"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_missing" in blockers
+
+    def test_a_dossier_recording_an_unobserved_writer_family_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+            writer_family="unobserved",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "zeta"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_unobserved" in blockers
+
+    def test_a_dossier_claiming_observed_without_evidence_is_refused(self, tmp_path: Path) -> None:
+        # Verified when stated: a dossier that says its family came from an
+        # observation must carry the observation.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+            writer_family="fugu",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        dossier["writer_family_source"] = "observed"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_evidence_missing:session" in blockers
+        assert "review_dossier_writer_family_evidence_missing:evidence" in blockers
+
+        dossier["writer_family_session"] = "01a0e556-a50e-7fd3-8e73-95b63b386898"
+        dossier["writer_family_evidence"] = ["claim receipt x: session=…", "family=fugu"]
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        assert (
+            rt.review_team_verdict_blockers(
+                {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+            )
+            == ()
+        )
+
+    def test_a_dossier_with_an_unknown_family_source_is_refused(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+            writer_family="fugu",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        dossier["writer_family_source"] = "inferred-from-a-vibe"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_source_unknown:inferred-from-a-vibe" in blockers
+
+    def test_a_legacy_dossier_without_a_source_is_not_refused_for_that(
+        self, tmp_path: Path
+    ) -> None:
+        # A dossier written before the observation rule carries no source. Refusing
+        # it would block every PR whose current-head dossier predates the rule --
+        # the review-plane stall the observation mode exists to avoid -- so the
+        # absence is left to the dispatcher's re-round, and the family it records
+        # still governs the majority guard.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("claude-1", "claude", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("codex-1", "codex", "accept"),
+            ],
+            writer_family="fugu",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert blockers == ()
+
+    def test_a_malformed_writer_family_source_refuses_and_an_omitted_one_does_not(
+        self, tmp_path: Path
+    ) -> None:
+        # codex major, #4839 round 1: an absent key and a present-but-empty value
+        # collapsed to "", so a malformed source skipped validation. An OMITTED field
+        # is legacy (left to the dispatcher's re-round; 5 of 642 dossiers in active/,
+        # none live); a value that is present and empty, or undeclared, refuses.
+        rt = _load_review_team_module()
+
+        def blockers_for(source, *, present: bool) -> tuple:
+            dossier = _synth(
+                rt,
+                [
+                    _review("claude-1", "claude", "accept"),
+                    _review("gemini-1", "gemini", "accept"),
+                    _review("codex-1", "codex", "accept"),
+                ],
+                writer_family="fugu",
+            )
+            dossier["review_team_verdict"] = "quorum-accept"
+            if present:
+                dossier["writer_family_source"] = source
+            note = _write_dossier(tmp_path, "task-x", dossier)
+            return rt.review_team_verdict_blockers(
+                {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+            )
+
+        assert blockers_for(None, present=False) == ()
+        for malformed in ("", None, "   "):
+            assert "review_dossier_writer_family_source_empty" in blockers_for(
+                malformed, present=True
+            ), malformed
+        assert "review_dossier_writer_family_source_unknown:inferred" in blockers_for(
+            "inferred", present=True
+        )
+        assert "review_dossier_writer_family_evidence_missing:session" in blockers_for(
+            "observed", present=True
+        )
+
+    def test_a_fallback_source_must_carry_its_reason_and_evidence(self, tmp_path: Path) -> None:
+        # codex major: `fallback` claims no observation existed, so the record must say
+        # why -- a fallback with no reason/evidence is an unevidenced claim.
+        rt = _load_review_team_module()
+
+        def blockers_for(record) -> tuple:
+            dossier = _synth(
+                rt,
+                [
+                    _review("claude-1", "claude", "accept"),
+                    _review("gemini-1", "gemini", "accept"),
+                    _review("codex-1", "codex", "accept"),
+                ],
+                writer_family="fugu",
+            )
+            dossier["review_team_verdict"] = "quorum-accept"
+            dossier["writer_family_source"] = "fallback"
+            if record is not None:
+                dossier["writer_family_unobserved"] = record
+            note = _write_dossier(tmp_path, "task-x", dossier)
+            return rt.review_team_verdict_blockers(
+                {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+            )
+
+        assert "review_dossier_writer_family_fallback_unsubstantiated" in blockers_for(None)
+        assert "review_dossier_writer_family_fallback_reason_missing" in blockers_for(
+            {"evidence": ["claim receipt x"]}
+        )
+        assert "review_dossier_writer_family_fallback_evidence_missing" in blockers_for(
+            {"reason": "claim_receipt_absent"}
+        )
+        # A substantiated fallback admits.
+        assert (
+            blockers_for(
+                {
+                    "reason": "claim_receipt_absent",
+                    "evidence": ["claim receipts read from ~/.cache"],
+                }
+            )
+            == ()
+        )
+
+    def test_the_recorded_family_governs_and_the_lane_name_does_not(self, tmp_path: Path) -> None:
+        # The row's lane is fugu-omglol, whose NAME the transport map calls claude.
+        # The dossier records the observed writer as codex, and two codex seats
+        # accepted: the writer's family holds the majority of the accepts and must
+        # not certify the work. Reading the lane name would have called the writer
+        # claude and let exactly this majority through.
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("codex-2", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+            ],
+            writer_family="codex",
+        )
+        dossier["review_team_verdict"] = "quorum-accept"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert any(b.startswith("review_dossier_writer_family_majority:codex:") for b in blockers)
 
 
 class TestLensCharters:
@@ -3403,6 +3678,7 @@ class TestFamilyOutageDegradation:
             ],
             team_class="t1_critical",
             constitution_notes=notes,
+            writer_family="claude",
         )
 
     def test_degraded_t1_dossier_passes_admission_validation(self, tmp_path: Path) -> None:
@@ -3481,6 +3757,7 @@ class TestFamilyOutageDegradation:
             ],
             team_class="t2_standard",
             constitution_notes=notes,
+            writer_family="claude",
         )
         assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
         assert dossier["degraded_family_outage"] == ["claude"]
