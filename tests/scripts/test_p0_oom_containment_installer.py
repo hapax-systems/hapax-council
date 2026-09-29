@@ -329,23 +329,23 @@ def _systemctl_system_memory_cases(
         '  *"show hapax-oom-score-enforce.timer -p DropInPaths --value"*) printf "\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p Unit --value"*) printf "hapax-oom-score-enforce.service\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p TimersMonotonic --value"*) printf "%s\\n" "OnBootUSec=30s OnUnitActiveUSec=30s" ;;',
-        '  *"show system.slice -p MemoryHigh --value"*) printf "15032385536\\n" ;;',
-        '  *"show system.slice -p MemoryMax --value"*) printf "19327352832\\n" ;;',
+        '  *"show system.slice -p MemoryHigh --value"*) printf "17179869184\\n" ;;',
+        '  *"show system.slice -p MemoryMax --value"*) printf "21474836480\\n" ;;',
         '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
-        '  *"show system.slice -p MemoryLow --value"*) printf "15032385536\\n" ;;',
+        '  *"show system.slice -p MemoryLow --value"*) printf "12884901888\\n" ;;',
         '  *"show system.slice -p MemoryMin --value"*) printf "12884901888\\n" ;;',
         '  *"show user.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user.slice -p MemoryMin --value"*) printf "10737418240\\n" ;;',
-        '  *"show user-1000.slice -p MemoryHigh --value"*) printf "35433480192\\n" ;;',
-        '  *"show user-1000.slice -p MemoryMax --value"*) printf "41875931136\\n" ;;',
+        '  *"show user-1000.slice -p MemoryHigh --value"*) printf "34359738368\\n" ;;',
+        '  *"show user-1000.slice -p MemoryMax --value"*) printf "40802189312\\n" ;;',
         '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
         '  *"show user-1000.slice -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user-1000.slice -p MemoryMin --value"*) printf "10737418240\\n" ;;',
-        '  *"show user@1000.service -p MemoryHigh --value"*) printf "35433480192\\n" ;;',
-        '  *"show user@1000.service -p MemoryMax --value"*) printf "41875931136\\n" ;;',
+        '  *"show user@1000.service -p MemoryHigh --value"*) printf "34359738368\\n" ;;',
+        '  *"show user@1000.service -p MemoryMax --value"*) printf "40802189312\\n" ;;',
         '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
         '  *"show user@1000.service -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user@1000.service -p MemoryMin --value"*) printf "10737418240\\n" ;;',
@@ -649,7 +649,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         encoding="utf-8"
     )
     assert "OOMScoreAdjust=100" in user_manager_dropin
-    assert "MemoryMax=39G" in user_manager_dropin
+    assert "MemoryMax=38G" in user_manager_dropin
     assert (tmp_path / "share" / "oom-host-profiles.tsv").read_bytes() == (
         REPO_ROOT / "config/root-required/oom-host-profiles.tsv"
     ).read_bytes()
@@ -667,7 +667,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "MemoryMin=10G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
-    assert "MemoryLow=14G" in (system_dir / "system.slice.d" / "oom-containment.conf").read_text(
+    assert "MemoryLow=12G" in (system_dir / "system.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
     assert "EARLYOOM_ARGS=" in earlyoom_dest.read_text(encoding="utf-8")
@@ -1621,10 +1621,10 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
             score
         )
     calls = systemctl_calls.read_text(encoding="utf-8")
-    assert "set-property --runtime system.slice MemoryHigh=14G MemoryMax=18G" in calls
+    assert "set-property --runtime system.slice MemoryHigh=16G MemoryMax=20G" in calls
     assert "set-property --runtime user.slice MemoryHigh=infinity MemoryMax=infinity" in calls
-    assert "set-property --runtime user-1000.slice MemoryHigh=33G MemoryMax=39G" in calls
-    assert "set-property --runtime user@1000.service MemoryHigh=33G MemoryMax=39G" in calls
+    assert "set-property --runtime user-1000.slice MemoryHigh=32G MemoryMax=38G" in calls
+    assert "set-property --runtime user@1000.service MemoryHigh=32G MemoryMax=38G" in calls
     assert (
         "set-property --runtime app.slice MemoryHigh=32G MemoryMax=37G MemorySwapMax=8G MemoryLow=16G MemoryMin=8G"
         in calls
