@@ -52,14 +52,17 @@ import json
 import logging
 import os
 import re
+import secrets
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -3620,14 +3623,246 @@ def build_changed_file_excerpts(
     return rendered, records
 
 
-def archive_stale_review_team_receipt(
-    receipt_path: Path, task_id: str, current_head: str
-) -> Path | None:
-    """Move a review-team receipt for another head aside; return the archive path.
+def atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
+    """Publish one YAML artifact by same-directory write and atomic replace."""
 
-    Receipts from any other acceptor (e.g. operator-signed), unreadable receipts, and receipts
-    for the current head are left in place (returns None).
-    """
+    data = yaml.safe_dump(payload, sort_keys=False).encode("utf-8")
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+REVIEW_ROUND_LEASE = timedelta(hours=6)
+
+
+def _review_round_proc_start(pid: int) -> int | None:
+    """Return Linux process start ticks; absence is a dead PID, other errors hold."""
+
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    return int(raw.rsplit(") ", 1)[1].split()[19])
+
+
+def _review_round_holder(predecessor: dict[str, Any] | None = None) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    holder: dict[str, Any] = {
+        "schema": "hapax.review_round_lock.v1",
+        "token": secrets.token_hex(16),
+        "host": os.uname().nodename,
+        "pid": os.getpid(),
+        "role": (
+            os.environ.get("HAPAX_AGENT_ROLE")
+            or os.environ.get("CODEX_ROLE")
+            or os.environ.get("CLAUDE_ROLE")
+            or "review-dispatcher"
+        ),
+        "proc_start_ticks": _review_round_proc_start(os.getpid()),
+        "acquired_at": now.isoformat(),
+        "lease_expires_at": (now + REVIEW_ROUND_LEASE).isoformat(),
+    }
+    if predecessor is not None:
+        holder["predecessor"] = predecessor
+    return holder
+
+
+def _exclusive_review_round_file(path: Path, holder: dict[str, Any]) -> int:
+    """The O_EXCL create is the cross-host arbitration point."""
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        payload = (json.dumps(holder, sort_keys=True) + "\n").encode("utf-8")
+        while payload:
+            written = os.write(fd, payload)
+            if written <= 0:
+                raise OSError("short_review_round_lock_write")
+            payload = payload[written:]
+        os.fsync(fd)
+    except BaseException:
+        # An interrupted publication stays visible and blocks review until governed repair.
+        os.close(fd)
+        raise
+    return fd
+
+
+def _read_review_round_file(path: Path) -> tuple[bytes, dict[str, Any], os.stat_result]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as handle:
+        identity = os.fstat(handle.fileno())
+        if not stat.S_ISREG(identity.st_mode) or identity.st_size > 16384:
+            raise ValueError("lock_not_small_regular_file")
+        raw = handle.read(16385)
+    if len(raw) != identity.st_size:
+        raise ValueError("lock_size_changed")
+    holder = json.loads(raw)
+    if not isinstance(holder, dict) or holder.get("schema") != "hapax.review_round_lock.v1":
+        raise ValueError("lock_holder_invalid")
+    return raw, holder, identity
+
+
+def _review_round_holder_dead(holder: dict[str, Any]) -> tuple[bool, str]:
+    if holder.get("host") != os.uname().nodename:
+        return False, "cross_host_liveness_unverified"
+    try:
+        pid = int(holder["pid"])
+        expected_start = int(holder["proc_start_ticks"])
+        if pid <= 0 or not Path("/proc/self/stat").is_file():
+            return False, "process_identity_unavailable"
+        actual_start = _review_round_proc_start(pid)
+    except (KeyError, TypeError, ValueError, OSError):
+        return False, "process_identity_unavailable"
+    if actual_start is None:
+        return True, "same_host_pid_absent"
+    if actual_start != expected_start:
+        return True, "same_host_pid_reused"
+    return False, "same_host_holder_alive"
+
+
+def _release_review_round_file(path: Path, fd: int) -> None:
+    try:
+        held = os.fstat(fd)
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            LOG.warning("review round lock disappeared before release: %s", path)
+            return
+        if (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+            LOG.warning("review round lock changed inode; preserving replacement: %s", path)
+            return
+        path.unlink()
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def review_round_lock(dossier_path: Path) -> Any:
+    """Claim one round; interrupted O_EXCL transitions hold for manual repair."""
+
+    path = dossier_path.with_name(f"{dossier_path.name}.lock")
+    transition = path.with_name(f"{path.name}.transition")
+    gate_fd: int | None = None
+    lock_fd: int | None = None
+    keep_transition = False
+    try:
+        try:
+            gate_fd = _exclusive_review_round_file(transition, _review_round_holder())
+        except FileExistsError:
+            yield {
+                "status": "round_in_progress",
+                "reason": "lock_transition_held",
+                "lock": str(path),
+            }
+            return
+        except OSError as exc:
+            yield {
+                "status": "round_lock_unavailable",
+                "reason": type(exc).__name__,
+                "lock": str(path),
+            }
+            return
+
+        try:
+            lock_fd = _exclusive_review_round_file(path, _review_round_holder())
+        except FileExistsError:
+            try:
+                raw, prior, prior_stat = _read_review_round_file(path)
+                expiry = datetime.fromisoformat(str(prior["lease_expires_at"]))
+                if expiry.tzinfo is None:
+                    raise ValueError("lease_without_timezone")
+            except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                yield {
+                    "status": "round_lock_malformed",
+                    "reason": type(exc).__name__,
+                    "lock": str(path),
+                }
+                return
+            if datetime.now(UTC) < expiry:
+                yield {"status": "round_in_progress", "reason": "lease_active", "lock": str(path)}
+                return
+            dead, proof = _review_round_holder_dead(prior)
+            if not dead:
+                yield {"status": "round_lock_stale_unverified", "reason": proof, "lock": str(path)}
+                return
+            digest = hashlib.sha256(raw).hexdigest()
+            archive = path.with_name(
+                f"{path.name}.predecessor.{digest[:12]}.{secrets.token_hex(4)}"
+            )
+            try:
+                os.link(path, archive, follow_symlinks=False)
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) != (prior_stat.st_dev, prior_stat.st_ino):
+                    raise OSError("predecessor_changed_during_takeover")
+                path.unlink()
+                predecessor = {
+                    "archive": str(archive),
+                    "sha256": digest,
+                    "holder": prior,
+                    "dead_proof": proof,
+                    "taken_over_at": datetime.now(UTC).isoformat(),
+                }
+                lock_fd = _exclusive_review_round_file(path, _review_round_holder(predecessor))
+            except OSError as exc:
+                # Keep the gate if takeover stopped after predecessor removal.
+                keep_transition = not path.exists()
+                yield {
+                    "status": "round_lock_unavailable",
+                    "reason": type(exc).__name__,
+                    "lock": str(path),
+                }
+                return
+        except OSError as exc:
+            yield {
+                "status": "round_lock_unavailable",
+                "reason": type(exc).__name__,
+                "lock": str(path),
+            }
+            return
+
+        _release_review_round_file(transition, gate_fd)
+        gate_fd = None
+        yield None
+    finally:
+        if lock_fd is not None:
+            _release_review_round_file(path, lock_fd)
+        if gate_fd is not None and not keep_transition:
+            _release_review_round_file(transition, gate_fd)
+        elif gate_fd is not None:
+            os.close(gate_fd)
+
+
+@contextmanager
+def review_round_locks(dossier_paths: list[Path]) -> Any:
+    with ExitStack() as stack:
+        for path in sorted(dossier_paths):
+            refusal = stack.enter_context(review_round_lock(path))
+            if refusal is not None:
+                yield refusal
+                return
+        yield None
+
+
+def archive_stale_review_team_receipt(
+    receipt_path: Path,
+    task_id: str,
+    current_head: str,
+    current_dossier_sha256: str | None = None,
+) -> Path | None:
+    """Archive a superseded review-team receipt; preserve all other receipts."""
 
     try:
         existing = yaml.safe_load(receipt_path.read_text(encoding="utf-8")) or {}
@@ -3637,11 +3872,15 @@ def archive_stale_review_team_receipt(
         return None
     existing_acceptor = str(existing.get("acceptor") or "")
     existing_head = str(existing.get("head_sha") or "")
+    existing_digest = str(existing.get("dossier_sha256") or "")
     if not (
         existing_acceptor.startswith("review-team:")
         and existing_head
         and current_head
-        and existing_head != current_head
+        and (
+            existing_head != current_head
+            or (current_dossier_sha256 is not None and existing_digest != current_dossier_sha256)
+        )
     ):
         return None
     short = _head_short(existing_head)
@@ -3726,8 +3965,26 @@ def write_acceptance_receipt_if_due(
     if not requires_acceptance_receipt(frontmatter):
         return None
     receipt_path = acceptance_receipt_path(note_path, task_id)
+    dossier_path = review_team.review_dossier_path(note_path, task_id)
+    try:
+        dossier_bytes = dossier_path.read_bytes()
+        published_dossier = yaml.safe_load(dossier_bytes)
+    except (OSError, yaml.YAMLError) as exc:
+        LOG.warning("acceptance receipt withheld; dossier unreadable: %s", type(exc).__name__)
+        return None
+    if not isinstance(published_dossier, dict) or published_dossier != yaml.safe_load(
+        yaml.safe_dump(dossier, sort_keys=False)
+    ):
+        LOG.warning("acceptance receipt withheld; published dossier differs from reviewed round")
+        return None
+    dossier_digest = f"sha256:{hashlib.sha256(dossier_bytes).hexdigest()}"
     if receipt_path.exists() and (
-        archive_stale_review_team_receipt(receipt_path, task_id, str(dossier.get("head_sha") or ""))
+        archive_stale_review_team_receipt(
+            receipt_path,
+            task_id,
+            str(dossier.get("head_sha") or ""),
+            dossier_digest,
+        )
         is None
     ):
         LOG.info("acceptance receipt already present, not overwriting: %s", receipt_path)
@@ -3736,7 +3993,8 @@ def write_acceptance_receipt_if_due(
         "acceptor": _review_team_authority_issuer(list(dossier["reviewers"])),
         "verdict": "accepted",
         "timestamp": now_iso,
-        "artifact": f"{review_team.review_dossier_path(note_path, task_id)} ({pr_url})",
+        "artifact": f"{dossier_path} ({pr_url})",
+        "dossier_sha256": dossier_digest,
         "pr": dossier.get("pr"),
         "head_sha": dossier.get("head_sha"),
         "review_team_verdict": dossier.get("review_team_verdict"),
@@ -3757,7 +4015,7 @@ def write_acceptance_receipt_if_due(
         }
     _apply_public_gate_authority_context(receipt, frontmatter)
     _sign_public_gate_authority_evidence(receipt)
-    receipt_path.write_text(yaml.safe_dump(receipt, sort_keys=False), encoding="utf-8")
+    atomic_write_yaml(receipt_path, receipt)
     LOG.info("acceptance receipt written: %s", receipt_path)
     return receipt_path
 
@@ -3936,7 +4194,7 @@ def _review_registry_and_route_blocks(
     return registry, effective
 
 
-def review_pr(
+def _review_pr_unlocked(
     pr_number: int,
     *,
     repo: str = DEFAULT_REPO,
@@ -3952,6 +4210,8 @@ def review_pr(
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
     route: ListingRoute | None = None,
+    _pr_info: PRInfo | None = None,
+    _matches: list[tuple[Path, dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Constitute (and with ``apply``, dispatch) the review team for one PR.
 
@@ -3977,7 +4237,9 @@ def review_pr(
             "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
         }
 
-    pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
+    pr_info = _pr_info or fetch_pr(
+        pr_number, repo=repo, repo_root=repo_root, runner=gh_runner, route=route
+    )
     if pr_info.is_draft:
         return {"status": "draft_skipped", "pr": pr_number}
     if not pr_info.files:
@@ -3992,8 +4254,12 @@ def review_pr(
             "changed_files": pr_info.changed_file_count,
         }
 
-    matches = review_team.find_task_notes(
-        vault_root, pr_number=pr_number, head_ref=pr_info.head_ref, pr_repo=repo
+    matches = (
+        _matches
+        if _matches is not None
+        else review_team.find_task_notes(
+            vault_root, pr_number=pr_number, head_ref=pr_info.head_ref, pr_repo=repo
+        )
     )
     if not matches:
         LOG.warning("PR #%d has no linked cc-task note — cannot review-team it", pr_number)
@@ -4460,7 +4726,7 @@ def _apply_review(
             )
         _apply_public_gate_authority_context(dossier, target_frontmatter)
         _sign_public_gate_authority_evidence(dossier)
-        target_dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+        atomic_write_yaml(target_dossier_path, dossier)
         LOG.info(
             "dossier written: %s (verdict %s)",
             target_dossier_path,
@@ -4513,6 +4779,66 @@ def _apply_review(
             "side_effects": only["side_effects"],
         }
     return {"status": "multi_dispatched", "plan": plan, "results": results}
+
+
+def review_pr(
+    pr_number: int,
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    apply: bool = False,
+    force: bool = False,
+    gh_runner: Any = None,
+    reviewer_runner: Any = None,
+    wake_dir: Path = DEFAULT_WAKE_DIR,
+    send_runner: Any = None,
+    registry_path: Path | None = None,
+    now_iso: str | None = None,
+    route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+    route: ListingRoute | None = None,
+) -> dict[str, Any]:
+    """Hold each linked task's exclusive lock from constitution through publication."""
+
+    options = {
+        "repo": repo,
+        "repo_root": repo_root,
+        "vault_root": vault_root,
+        "apply": apply,
+        "force": force,
+        "gh_runner": gh_runner,
+        "reviewer_runner": reviewer_runner,
+        "wake_dir": wake_dir,
+        "send_runner": send_runner,
+        "registry_path": registry_path,
+        "now_iso": now_iso,
+        "route_blocked_families": route_blocked_families,
+        "route": route,
+    }
+    if not apply:
+        return _review_pr_unlocked(pr_number, **options)
+
+    pr_info = fetch_pr(
+        pr_number,
+        repo=repo,
+        repo_root=repo_root or REPO_ROOT,
+        runner=gh_runner or subprocess.run,
+        route=route,
+    )
+    matches = review_team.find_task_notes(
+        vault_root, pr_number=pr_number, head_ref=pr_info.head_ref, pr_repo=repo
+    )
+    dossier_paths = [
+        review_team.review_dossier_path(note_path, str(frontmatter.get("task_id") or "").strip())
+        for note_path, frontmatter in matches
+        if str(frontmatter.get("task_id") or "").strip()
+    ]
+    if not dossier_paths:
+        return _review_pr_unlocked(pr_number, _pr_info=pr_info, _matches=matches, **options)
+    with review_round_locks(dossier_paths) as refusal:
+        if refusal is not None:
+            return {"pr": pr_number, **refusal}
+        return _review_pr_unlocked(pr_number, _pr_info=pr_info, _matches=matches, **options)
 
 
 def build_artifact_manifest(
@@ -4878,7 +5204,7 @@ def review_artifact(
         )
     _apply_public_gate_authority_context(dossier, frontmatter)
     _sign_public_gate_authority_evidence(dossier)
-    dossier_path.write_text(yaml.safe_dump(dossier, sort_keys=False), encoding="utf-8")
+    atomic_write_yaml(dossier_path, dossier)
     LOG.info(
         "artifact dossier written: %s (verdict %s)", dossier_path, dossier["review_team_verdict"]
     )

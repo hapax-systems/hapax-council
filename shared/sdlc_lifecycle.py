@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
@@ -301,6 +303,22 @@ ACCEPTANCE_RECEIPT_SUFFIX = ".acceptance.yaml"
 
 #: Minimal receipt schema — every field must be present and non-null.
 ACCEPTANCE_RECEIPT_REQUIRED_FIELDS = ("acceptor", "verdict", "timestamp", "artifact")
+# Set to this PR's exact merge UTC before activation.
+REVIEW_DOSSIER_HASH_CUTOVER_UTC = datetime(9999, 12, 31, tzinfo=UTC)
+LEGACY_REVIEW_DOSSIER_SKEW_SECONDS = 5
+
+
+def _receipt_timestamp_utc(value: Any) -> datetime | None:
+    try:
+        parsed = (
+            value
+            if isinstance(value, datetime)
+            else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        )
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
 
 #: Verdicts that satisfy the gate. A present-but-rejected receipt still blocks.
 ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
@@ -346,6 +364,48 @@ def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]
     verdict = _frontmatter_non_null_scalar(loaded.get("verdict"))
     if verdict and verdict.lower() not in ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS:
         blockers.append(f"acceptance_receipt_verdict_not_accepted:{verdict.lower()}")
+    acceptor = _frontmatter_non_null_scalar(loaded.get("acceptor")) or ""
+    if acceptor.startswith("review-team:"):
+        recorded = _frontmatter_non_null_scalar(loaded.get("dossier_sha256"))
+        task_id = receipt_path.name.removesuffix(ACCEPTANCE_RECEIPT_SUFFIX)
+        dossier_path = receipt_path.with_name(f"{task_id}.review-dossier.yaml")
+        if recorded:
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", recorded) is None:
+                blockers.append("acceptance_receipt_dossier_sha256_malformed")
+            else:
+                try:
+                    actual = hashlib.sha256(dossier_path.read_bytes()).hexdigest()
+                except FileNotFoundError:
+                    blockers.append("acceptance_receipt_dossier_missing")
+                except OSError as exc:
+                    blockers.append(f"acceptance_receipt_dossier_unreadable:{type(exc).__name__}")
+                else:
+                    if actual != recorded.removeprefix("sha256:"):
+                        blockers.append("acceptance_receipt_dossier_sha256_mismatch")
+        else:
+            receipt_at = _receipt_timestamp_utc(loaded.get("timestamp"))
+            try:
+                receipt_stat = receipt_path.stat()
+                dossier_stat = dossier_path.stat()
+            except FileNotFoundError:
+                blockers.append("acceptance_receipt_dossier_missing")
+            except OSError as exc:
+                blockers.append(f"acceptance_receipt_dossier_unreadable:{type(exc).__name__}")
+            else:
+                if (
+                    receipt_at is None
+                    or receipt_at >= REVIEW_DOSSIER_HASH_CUTOVER_UTC
+                    or datetime.fromtimestamp(receipt_stat.st_mtime, UTC)
+                    >= REVIEW_DOSSIER_HASH_CUTOVER_UTC
+                ):
+                    blockers.append("acceptance_receipt_dossier_sha256_missing_after_cutover")
+                elif not stat.S_ISREG(dossier_stat.st_mode):
+                    blockers.append("acceptance_receipt_dossier_unreadable:not_regular")
+                elif (
+                    dossier_stat.st_mtime
+                    > receipt_stat.st_mtime + LEGACY_REVIEW_DOSSIER_SKEW_SECONDS
+                ):
+                    blockers.append("acceptance_receipt_legacy_dossier_replaced")
     # A vault-only acceptance covers exactly the bytes its manifest records; with no merged
     # head behind it, the receipt stops counting the moment those bytes change.
     from shared.review_artifact_manifest import artifact_receipt_blockers
