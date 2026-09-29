@@ -16,6 +16,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+SEAT_SESSION = "hapax-codex-seat"
+INNER_MARKER = "HAPAX_SEAT_LAUNCH_INNER"
+
 
 class SeatBindingError(ValueError):
     """A seat start must stop before any runtime action."""
@@ -105,10 +108,25 @@ def _raise_nofile() -> None:
         resource.setrlimit(resource.RLIMIT_NOFILE, (65536, hard))
 
 
+def _require_inner_session() -> None:
+    if os.environ.get(INNER_MARKER) != SEAT_SESSION or not os.environ.get("TMUX"):
+        raise SeatBindingError("inner_invocation_outside_seat_launcher")
+    observed = subprocess.run(
+        ["tmux", "display-message", "-p", "#{session_name}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if observed.returncode != 0 or observed.stdout.strip() != SEAT_SESSION:
+        raise SeatBindingError("inner_invocation_wrong_tmux_session")
+
+
 def _inner_codex(home: Path) -> None:
+    _require_inner_session()
     verify_codex_binding(home, os.environ)
     _raise_nofile()
     environment = os.environ.copy()
+    environment.pop(INNER_MARKER, None)
     environment["CODEX_HOME"] = str(home / ".codex-seat")
     environment["HAPAX_AGENT_ROLE"] = "dev1-seat-codex"
     prompt = (
@@ -159,21 +177,32 @@ def main() -> int:
         print(json.dumps(evidence, sort_keys=True))
         return 0
     if args.inner_codex:
-        _inner_codex(Path.home())
-    session = "hapax-codex-seat"
-    if subprocess.run(["tmux", "has-session", "-t", session], capture_output=True).returncode == 0:
-        print(f"hapax-seat-launch: REFUSED live session {session} already exists", file=sys.stderr)
+        try:
+            _inner_codex(Path.home())
+        except (OSError, SeatBindingError) as exc:
+            print(f"hapax-seat-launch: REFUSED {exc}", file=sys.stderr)
+            return 2
+        return 0
+    if (
+        subprocess.run(["tmux", "has-session", "-t", SEAT_SESSION], capture_output=True).returncode
+        == 0
+    ):
+        print(
+            f"hapax-seat-launch: REFUSED live session {SEAT_SESSION} already exists",
+            file=sys.stderr,
+        )
         return 2
     command = [
         "tmux",
         "new-session",
         "-d",
         "-s",
-        session,
+        SEAT_SESSION,
         "-c",
         str(Path.home() / "projects"),
         "env",
         f"CODEX_HOME={evidence['seat_home']}",
+        f"{INNER_MARKER}={SEAT_SESSION}",
         sys.executable,
         str(Path(__file__).resolve()),
         "codex",
