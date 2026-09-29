@@ -39,6 +39,7 @@ import math
 import re
 import shlex
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -1984,6 +1985,237 @@ def delta_file(run: CensusRun) -> CapabilitySurfaceDeltaFile | None:
 
 
 # --- the run --------------------------------------------------------------------------------------
+
+
+def _potential(
+    config: CensusConfig,
+    *,
+    now: datetime,
+    serving: Sequence[CensusRow],
+    scout_report: Mapping[str, Any] | None,
+    gpu_probe: Callable[[str], tuple[bool, list[str]]] | None,
+) -> dict[str, Any]:
+    metal = config.metal
+    experiment: list[dict[str, Any]] = []
+    scout_meta: dict[str, Any] = {"bound": metal.scout_report is not None}
+    if metal.scout_report is not None:
+        report = scout_report or {}
+        scout_meta.update(
+            generated_at=_safe_fact(report.get("generated_at")), read=bool(scout_report)
+        )
+        for rec in report.get("recommendations") or []:
+            if (
+                not isinstance(rec, dict)
+                or rec.get("component") not in metal.scout_report.components
+            ):
+                continue
+            if rec.get("tier") not in {"adopt", "evaluate"}:
+                continue
+            names = [_safe_fact(_get(f, "name")) for f in rec.get("findings") or []]
+            experiment.append(
+                {
+                    "component": _safe_fact(rec.get("component")),
+                    "tier": _safe_fact(rec.get("tier")),
+                    "current": _safe_fact(rec.get("current")),
+                    "confidence": _safe_fact(rec.get("confidence")),
+                    "candidates": [n for n in names if isinstance(n, str)][:6],
+                    "source": "scout",
+                }
+            )
+    stages: dict[str, list[dict[str, Any]]] = {
+        "candidate_to_experiment": experiment,
+        "candidate_to_deploy": [],
+        "deployed": [],
+        "rejected": [],
+    }
+    for trial in metal.trial_records:
+        stages[trial.stage].append(
+            {
+                "model": trial.model,
+                "evidence": trial.evidence,
+                "source": "trial record",
+                "recorded_at": _iso(trial.recorded_at),
+                "stale": trial.expires_at <= now,
+            }
+        )
+    for row in serving:
+        if row.state is EntitlementState.LIVE and row.facts.get("models"):
+            stages["deployed"].append(
+                {
+                    "endpoint": row.entitlement_id,
+                    "host_id": row.hosts[0] if row.hosts else None,
+                    "models": row.facts["models"],
+                    "source": "serving readback",
+                    "observed_at": _iso(row.observed_at),
+                }
+            )
+    probes: dict[str, tuple[bool, list[str]]] = {}
+    hardware: list[dict[str, Any]] = []
+    for fact in metal.hardware:
+        item: dict[str, Any] = {
+            "host_id": fact.host_id,
+            "device": fact.device,
+            "memory_gb": fact.memory_gb,
+            "availability": fact.availability,
+            "until": fact.until,
+            "source": fact.source,
+            "recorded_at": _iso(fact.recorded_at),
+            "stale": fact.expires_at <= now,
+        }
+        if fact.enumerate_gpu:
+            if gpu_probe is not None and fact.host_id not in probes:
+                probes[fact.host_id] = gpu_probe(fact.host_id)
+            reachable, gpus = probes.get(fact.host_id, (False, []))
+            if any(fact.enumerate_gpu in gpu for gpu in gpus):
+                item["availability"] = "enumerated"
+                item["readback"] = f"GPU enumerated at {_iso(now)}"
+            else:
+                item["readback"] = (
+                    f"not enumerated at {_iso(now)}"
+                    if reachable
+                    else "no hardware readback this run; stays as declared"
+                )
+        hardware.append(item)
+    return {
+        "dispatch_reads": False,
+        "note": "Potential capacity on owned hardware. Planning, procurement and experiment selection "
+        "read this face; dispatch never does.",
+        "stage_order": ["on_market", "candidate_to_experiment", "candidate_to_deploy", "deployed"],
+        "filters": {
+            "on_market->candidate_to_experiment": "scout hard constraints: local, hardware fit (memory, host), licence",
+            "candidate_to_experiment->candidate_to_deploy": "measured task fit (trial records, purpose floors)",
+            "candidate_to_deploy->deployed": "a serving readback on a fleet host",
+        },
+        "stages": stages,
+        "hardware": hardware,
+        "scout": scout_meta,
+    }
+
+
+def run_census(
+    config: CensusConfig,
+    *,
+    now: datetime,
+    holdings: Sequence[HostHoldings],
+    registry: Mapping[str, Any],
+    ledger: Mapping[str, Any] | None,
+    prior_view: Mapping[str, Any] | None,
+    resolve_secret: Callable[[str], str | None],
+    http_get: Callable[[str, dict[str, str], float], HttpResponse],
+    read_home_file: Callable[[str], bytes | None],
+    scout_report: Mapping[str, Any] | None = None,
+    gpu_probe: Callable[[str], tuple[bool, list[str]]] | None = None,
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    provider_calls: Mapping[str, Mapping[str, Any]] | None = None,
+) -> CensusRun:
+    """``deadline`` is a ``clock()`` instant bounding every network step (secret resolution,
+    readbacks, serving GETs, the GPU probe). Past it, the remaining probes are not made and their
+    rows read ``unobserved: run_deadline_reached``: the run narrows, it never waits longer."""
+    secrets = SecretRegister()
+    priors = _prior_rows(prior_view)
+
+    def remaining() -> float | None:
+        return None if deadline is None else deadline - clock()
+
+    def guarded_probe(host: str) -> tuple[bool, list[str]]:
+        left = remaining()
+        if gpu_probe is None or (left is not None and left <= 0):
+            return False, []
+        return gpu_probe(host)
+
+    held_names = (
+        set().union(*(h.credential_names() for h in holdings if h.reachable)) if holdings else set()
+    )
+
+    readbacks: dict[tuple[str, str | None], ReadbackResult] = {}
+    for decl in config.entitlements:
+        # A terms-restricted declaration cannot carry a readback (EntitlementDecl._probe_rules),
+        # so it is never probed here: the declaration is the boundary.
+        for ref in decl.readbacks:
+            key = (ref.readback_id, ref.secret)
+            if key in readbacks:
+                continue
+            if ref.secret not in held_names:
+                readbacks[key] = ReadbackResult(
+                    readback_id=ref.readback_id,
+                    outcome="unobserved",
+                    http_status=None,
+                    observed_at=now,
+                    reason="credential_not_held_on_a_reachable_host",
+                )
+                continue
+            left = remaining()
+            if left is not None and left <= 0:
+                readbacks[key] = _past_deadline(ref.readback_id, now)
+                continue
+            readbacks[key] = run_readback(
+                ref,
+                now=now,
+                resolve_secret=resolve_secret,
+                http_get=http_get,
+                secrets=secrets,
+                timeout=READBACK_TIMEOUT_S if left is None else min(READBACK_TIMEOUT_S, left),
+            )
+
+    caches = {
+        decl.vendor_cache: read_vendor_cache(decl.vendor_cache, read_home_file)
+        for decl in config.entitlements
+        if decl.vendor_cache
+    }
+    rows = [
+        _decl_row(
+            decl,
+            now=now,
+            config=config,
+            holdings=holdings,
+            readbacks=readbacks,
+            cache=caches.get(decl.vendor_cache) if decl.vendor_cache else None,
+            registry=registry,
+            ledger=ledger,
+            prior=priors.get(decl.entitlement_id),
+        )
+        for decl in config.entitlements
+    ]
+    serving = [
+        _serving_row(
+            ep,
+            now=now,
+            http_get=http_get,
+            registry=registry,
+            prior=priors.get(f"serving.{ep.endpoint_id}"),
+            remaining=remaining(),
+        )
+        for ep in config.serving_endpoints
+    ]
+    unidentified, unclassified = _unidentified_rows(
+        config, now=now, holdings=holdings, priors=priors
+    )
+    all_rows = [*rows, *serving, *unidentified]
+    descriptors, deltas = census_surface_deltas(config, rows, registry, now=now)
+    measurements: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        for m in row.measurements:
+            measurements.setdefault(m["capacity_id"], m)
+    return CensusRun(
+        now=now,
+        config=config,
+        rows=all_rows,
+        holdings=list(holdings),
+        unclassified=unclassified,
+        potential=_potential(
+            config,
+            now=now,
+            serving=serving,
+            scout_report=scout_report,
+            gpu_probe=guarded_probe if gpu_probe is not None else None,
+        ),
+        descriptors=descriptors,
+        deltas=deltas,
+        measurements=list(measurements.values()),
+        secrets=secrets,
+    )
+
 
 # Pydantic invokes these validators through its registry; vulture cannot see that call path.
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
