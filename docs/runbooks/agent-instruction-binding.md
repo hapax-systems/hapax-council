@@ -131,6 +131,19 @@ Binding a file does not admit a worker route. In particular, installed Grok,
 OpenCode and Muse clients are not thereby new entries in the capability registry,
 and agy remains a read-only review route. Installed does not mean admitted.
 
+The direct `hapax-local-reviewer` API wrapper verifies the selected release's
+canonical body against the neutral installed copy and installer receipt before
+constructing its request. Its system message contains that exact body once,
+followed by the existing review-seat contract. A missing, stale or wrong-home
+binding refuses before HTTP. Controlled request capture proves those child input
+bytes; live local-reviewer invocations remain unobserved until a governed
+postimage witness, and this wrapper check does not itself declare a new platform
+route or grant review admission.
+The selected source is the account's actual active source-activation target,
+checked against its activation receipt on every request. A caller-selected
+source root cannot change the body. Tests inject a temporary activation state
+through a function argument; deployed CLI calls expose no alternate-root option.
+
 `hapax-kimi` checks the selected release's canonical body, neutral installed copy,
 installer receipt and Kimi native binding before starting the child. It refuses an
 alternate `KIMI_CODE_HOME` that is not the installed home, including on resume.
