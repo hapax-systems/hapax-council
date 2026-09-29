@@ -613,7 +613,8 @@ def test_an_unbound_passive_wall_does_not_suppress_subscription_probe(
     with (tmp_path / "projects/proj/session.jsonl").open("a") as stream:
         stream.write(json.dumps(wall) + "\n")
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
-    assert payload["verdict"] == "walled" and calls == []
+    assert (rc, payload["verdict"], calls) == (4, "no_evidence", [NOW])
+    assert payload["passive"]["verdict"] == "walled"
 
 
 def test_no_probe_means_no_quantity_probe(monkeypatch, tmp_path: Path, capsys) -> None:
