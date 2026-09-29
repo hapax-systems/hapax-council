@@ -45,6 +45,17 @@ def test_host_policy_selects_exact_host_and_ram_interval(tmp_path: Path) -> None
         policy["load_host_policy"](table, "hapax-appendix", 90 * 1024**2)
 
 
+def test_appendix_profile_matches_observed_live_ceiling_handoff() -> None:
+    policy = runpy.run_path(str(SCRIPT))
+    selected = policy["load_host_policy"](
+        REPO_ROOT / "config/root-required/oom-host-profiles.tsv",
+        "hapax-appendix",
+        63310084,
+    )
+    assert (selected.uid_high, selected.uid_max) == (32 * 1024**3, 38 * 1024**3)
+    assert (selected.system_high, selected.system_max) == (16 * 1024**3, 20 * 1024**3)
+
+
 RECOVERY_SYSTEM_UNIT_SCORES = {
     "apcupsd.service": -900,
     "systemd-logind.service": -800,
