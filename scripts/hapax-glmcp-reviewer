@@ -36,6 +36,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.canonical_instruction_ingestion import (  # noqa: E402
+    InstructionIngestionError,
+    read_canonical_instructions,
+)
 from shared.failure_classification import (  # noqa: E402
     ZAI_ERROR_CLASS_BY_CODE,
     FailureCode,
@@ -132,6 +136,17 @@ checklist keys."""
 
 class ConfigError(RuntimeError):
     """Operator/configuration error before the API request is attempted."""
+
+
+def _required_system_prompt() -> str:
+    """Build the API system input from the exact installed shared binding."""
+
+    try:
+        shared = read_canonical_instructions(source_root=REPO_ROOT)
+        body = shared.body.decode("utf-8")
+    except (InstructionIngestionError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"canonical instruction admission refused: {exc}") from exc
+    return body + "\n\n" + SYSTEM_PROMPT
 
 
 class ApiError(RuntimeError):
@@ -739,7 +754,7 @@ def _call_glm_once_observed(
         {
             "model": config.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _required_system_prompt()},
                 {"role": "user", "content": prompt},
             ],
             "temperature": config.temperature,
@@ -1074,7 +1089,8 @@ def _payg_reservation_usd(prompt: str, config: ReviewConfig) -> Decimal:
     try:
         return glmcp_payg_reservation_usd(
             model=config.model,
-            prompt_utf8_bytes=len(SYSTEM_PROMPT.encode("utf-8")) + len(prompt.encode("utf-8")),
+            prompt_utf8_bytes=len(_required_system_prompt().encode("utf-8"))
+            + len(prompt.encode("utf-8")),
             max_tokens=_payg_thinking_config(config).max_tokens,
             attempts=attempts,
         )
@@ -1765,6 +1781,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config()
         if check_only:
+            _required_system_prompt()
             read_secret(config.secret_entry)
             print(
                 "hapax-glmcp-reviewer: ok "
