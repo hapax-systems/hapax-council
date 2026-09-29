@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+from shared.capability_inventory_contract import InventoryDisposition
 from shared.capability_surface_delta import DeltaKind
 from shared.entitlement_census import (
     CensusConfig,
@@ -58,20 +59,25 @@ def _case(*, route=None, dead=False):
         readbacks=results,
         cache=None,
         registry=registry,
+        inventory_dispositions={route: InventoryDisposition.ADMITTED_SUPPLY} if route else {},
         ledger=None,
         prior=None,
     )
     return config, registry, holdings, row
 
 
+def _baseline(registry):
+    return {r["route_id"]: InventoryDisposition.ADMITTED_SUPPLY for r in registry.get("routes", [])}
+
+
 def test_held_undeclared_and_declared_dead_have_typed_deltas():
     config, registry, _, row = _case()
-    _, deltas = census_surface_deltas(config, [row], registry, now=NOW)
+    _, deltas = census_surface_deltas(config, [row], registry, _baseline(registry), now=NOW)
     assert [(d.surface_id, d.delta_kind) for d in deltas] == [
         ("entitlement.sample", DeltaKind.NEW_CAPABILITY)
     ]
     config, registry, _, row = _case(route="sample.route", dead=True)
-    _, deltas = census_surface_deltas(config, [row], registry, now=NOW)
+    _, deltas = census_surface_deltas(config, [row], registry, _baseline(registry), now=NOW)
     assert [(d.surface_id, d.delta_kind) for d in deltas] == [
         ("sample.route", DeltaKind.ABSENT_DETERMINATION)
     ]
@@ -79,9 +85,11 @@ def test_held_undeclared_and_declared_dead_have_typed_deltas():
 
 def test_delta_identity_is_stable_across_runs_and_file_uses_existing_schema():
     config, registry, holdings, row = _case()
-    descriptors, deltas = census_surface_deltas(config, [row], registry, now=NOW)
+    descriptors, deltas = census_surface_deltas(
+        config, [row], registry, _baseline(registry), now=NOW
+    )
     later_descriptors, later = census_surface_deltas(
-        config, [row], registry, now=NOW.replace(hour=21)
+        config, [row], registry, _baseline(registry), now=NOW.replace(hour=21)
     )
     assert [d.delta_id for d in deltas] == [d.delta_id for d in later]
     run = CensusRun(
