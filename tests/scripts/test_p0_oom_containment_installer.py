@@ -282,7 +282,7 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     docker.chmod(0o755)
     audit_selector = tmp_path / "docker-policy-audit"
     audit_selector.write_text(
-        "#!/bin/sh\nprintf 'appendix\\t32G\\t37G\\t32G\\t38G\\t16G\\t20G\\t16384\\t10\\n'\n",
+        "#!/bin/sh\nprintf 'appendix\\t32G\\t37G\\t32G\\t38G\\t16G\\t20G\\t12G\\t16384\\t10\\n'\n",
         encoding="utf-8",
     )
     audit_selector.chmod(0o755)

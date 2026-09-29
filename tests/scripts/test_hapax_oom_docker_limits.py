@@ -21,7 +21,7 @@ def _env(
 ) -> dict[str, str]:
     audit = tmp_path / "audit"
     audit.write_text(
-        "#!/bin/sh\nprintf 'appendix\\t32G\\t37G\\t32G\\t38G\\t16G\\t20G\\t16384\\t10\\n'\n",
+        "#!/bin/sh\nprintf 'appendix\\t32G\\t37G\\t32G\\t38G\\t16G\\t20G\\t12G\\t16384\\t10\\n'\n",
         encoding="utf-8",
     )
     audit.chmod(0o755)

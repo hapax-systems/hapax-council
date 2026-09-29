@@ -62,7 +62,7 @@ def _run(args: list[str], *, timeout: int = 15) -> str:
 
 def _limits(audit: Path) -> tuple[int, int, int]:
     fields = _run([str(audit), "--print-host-policy"]).strip().split("\t")
-    if len(fields) != 9 or fields[0] not in {"appendix", "podium"}:
+    if len(fields) != 10 or fields[0] not in {"appendix", "podium"}:
         raise DockerPolicyError("invalid exact-host OOM profile output")
     expected = "20G" if fields[0] == "appendix" else "40G"
     if fields[6] != expected:
