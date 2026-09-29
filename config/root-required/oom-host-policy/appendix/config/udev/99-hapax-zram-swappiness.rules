@@ -1,0 +1,2 @@
+# Applied after cachyos-settings 30-zram.rules on zram0 change.
+ACTION=="change", KERNEL=="zram0", ATTR{initstate}=="1", SYSCTL{vm.swappiness}="10"
