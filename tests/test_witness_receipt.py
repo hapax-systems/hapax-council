@@ -16,7 +16,7 @@ from shared.public_gate_receipts import (
 from shared.signing_holder import SigningRefused
 from shared.witness_receipt import GATE, Produced, Verdict, produce
 
-SAMPLE = "synthetic signing fixture"
+SAMPLE = "fixture"
 DIGEST = hashlib.sha256(b"the artifact as the recipient decodes it").hexdigest()
 OTHER_DIGEST = hashlib.sha256(b"a different artifact").hexdigest()
 NONCE = "a" * 20
@@ -35,7 +35,7 @@ def sign(payload: Any) -> str:
 def evidence_root(tmp_path: Path) -> Path:
     root = tmp_path / "vault"
     root.mkdir()
-    (root / "note.md").write_text("audience, channel norms, reception scenarios\n")
+    (root / "note.md").write_text("evidence\n")
     return root
 
 
@@ -52,7 +52,7 @@ def record(evidence_root: Path, **overrides: Any) -> dict[str, Any]:
         "artifact_fingerprint": DIGEST,
         "nonce": NONCE,
         "policy_ref": "public-gate:cp-artifact-1",
-        "audience": "reviewers of the public pull request",
+        "audience": "public reviewers",
         "channel": "forge",
         "not_before": "2026-09-25T08:00:00Z",
         "not_after": "2026-09-25T20:00:00Z",
@@ -145,19 +145,16 @@ def test_the_resolver_refuses_the_receipt_for_another_artifact(
     assert not _resolves(tmp_path / "receipts", out_dir, OTHER_DIGEST)
 
 
-def test_the_author_cannot_witness_their_own_record(evidence_root, out_dir) -> None:
-    own = Verdict("claude/dev32", "gemini", "VALIDATED", NOW)
-    assert_refused(run(evidence_root, out_dir, [own]), out_dir)
-
-
-def test_a_witness_of_the_authors_family_is_refused(evidence_root, out_dir) -> None:
-    same_family = Verdict("claude/dev7", "claude", "VALIDATED", NOW)
-    assert_refused(run(evidence_root, out_dir, [same_family]), out_dir)
-
-
-def test_a_witness_outside_the_independent_families_is_refused(evidence_root, out_dir) -> None:
-    uncounted = Verdict("kimi/rota-3", "kimi", "VALIDATED", NOW)
-    assert_refused(run(evidence_root, out_dir, [uncounted]), out_dir)
+@pytest.mark.parametrize(
+    "verdict",
+    [
+        Verdict("claude/dev32", "gemini", "VALIDATED", NOW),
+        Verdict("claude/dev7", "claude", "VALIDATED", NOW),
+        Verdict("kimi/rota-3", "kimi", "VALIDATED", NOW),
+    ],
+)
+def test_unqualified_witnesses_are_refused(evidence_root, out_dir, verdict) -> None:
+    assert_refused(run(evidence_root, out_dir, [verdict]), out_dir)
 
 
 def test_only_qualifying_witnesses_are_listed(evidence_root, out_dir) -> None:
@@ -261,6 +258,11 @@ def test_a_record_without_evidence_is_refused(evidence_root, out_dir) -> None:
 )
 def test_a_malformed_record_is_refused(evidence_root, out_dir, overrides) -> None:
     assert_refused(run(evidence_root, out_dir, rec=record(evidence_root, **overrides)), out_dir)
+
+
+@pytest.mark.parametrize("tier", [[], {}])
+def test_unhashable_tier_is_refused(evidence_root, out_dir, tier) -> None:
+    assert_refused(run(evidence_root, out_dir, rec=record(evidence_root, tier=tier)), out_dir)
 
 
 def test_a_refused_signature_writes_nothing(evidence_root, out_dir) -> None:

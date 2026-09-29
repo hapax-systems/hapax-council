@@ -76,7 +76,8 @@ def _record_problems(record: Mapping[str, Any]) -> list[str]:
         problems.append("expected_head_sha is not a 40-character commit id")
     if not str(record.get("policy_ref", "")).startswith(PUBLIC_GATE_RECEIPT_PREFIXES):
         problems.append("policy_ref is not a public-gate receipt ref")
-    if record.get("tier") not in QUORUM:
+    tier = record.get("tier")
+    if type(tier) is not str or tier not in QUORUM:
         problems.append("tier is not A or B")
     if _window(record) is None:
         problems.append("not_before/not_after is not a valid window")
