@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import subprocess
 import sys
@@ -146,24 +145,45 @@ def test_fragment_migration_preserves_the_vulture_finding_set(tmp_path: Path) ->
     assert after == before
 
 
-def test_migrated_whitelist_entries_match_pre_migration_text() -> None:
-    """Pin the full entry set; Vulture findings can hide a dropped or broadened reference."""
+def test_seven_migrated_references_match_pre_migration_text() -> None:
+    """Pin this migration without freezing unrelated central whitelist entries."""
     gate = load_gate_module()
     central = SCRIPT_PATH.parent / "vulture_whitelist.py"
-    entries = {
-        stripped
-        for path in gate.whitelist_paths(central)
-        for line in path.read_text().splitlines()
-        if (stripped := line.strip())
-        and not stripped.startswith("#")
-        and not (stripped.startswith('"""') and stripped.endswith('"""'))
+    fragment = central.parent / "vulture_whitelist.d" / "shared_encountered_machinery_audit.py"
+    assert fragment in gate.whitelist_paths(central)
+
+    def code_lines(path: Path) -> set[str]:
+        return {
+            stripped
+            for line in path.read_text().splitlines()
+            if (stripped := line.strip())
+            and not stripped.startswith("#")
+            and not (stripped.startswith('"""') and stripped.endswith('"""'))
+        }
+
+    # Text-level entry set moved from d081137ae:scripts/vulture_whitelist.py.
+    # It is confined to this fragment, so unrelated central additions stay valid.
+    expected = {
+        "from shared.encountered_machinery_audit import Trend as _EmaTrend  # noqa: E402",
+        "from shared.encountered_machinery_audit import (  # noqa: E402",
+        "parse_catalogue as _ema_parse_catalogue,",
+        "parse_ledger as _ema_parse_ledger,",
+        "render_flag_drop as _ema_render_flag_drop,",
+        "render_pile_status as _ema_render_pile_status,",
+        "render_reduction_row as _ema_render_reduction_row,",
+        "split_frontmatter as _ema_split_frontmatter,",
+        "_ = (",
+        ")",
+        "_EmaTrend.unobserved,",
+        "_ema_parse_catalogue,",
+        "_ema_parse_ledger,",
+        "_ema_render_flag_drop,",
+        "_ema_render_pile_status,",
+        "_ema_render_reduction_row,",
+        "_ema_split_frontmatter,",
     }
-    # SHA-256 of sorted, nonblank, noncomment text lines in the pre-migration
-    # d081137ae:scripts/vulture_whitelist.py. The fragment's module docstring
-    # is ignored; all import and reference lines remain in the comparison.
-    digest = hashlib.sha256("\n".join(sorted(entries)).encode()).hexdigest()
-    expected = "0f9705c35a3481d9c0768174683dd4345ebe0de8edc2238e858364b86dbfaeb2"  # pragma: allowlist secret
-    assert digest == expected
+    entries = code_lines(fragment)
+    assert entries == expected
 
     migrated = {
         "_EmaTrend.unobserved,",
@@ -175,3 +195,4 @@ def test_migrated_whitelist_entries_match_pre_migration_text() -> None:
         "_ema_split_frontmatter,",
     }
     assert migrated <= entries
+    assert migrated.isdisjoint(code_lines(central))
