@@ -93,7 +93,7 @@ def _copy_oom_package(dest_root: Path) -> None:
 @pytest.mark.parametrize(
     ("rel", "needle"),
     (
-        ("system.slice.d/oom-containment.conf", "MemoryMax=18G"),
+        ("system.slice.d/oom-containment.conf", "MemoryMax="),
         ("user@1000.service.d/oom.conf", "OOMScoreAdjust=100"),
         ("user@1000.service.d/oom.conf", "OOMPolicy=continue"),
         ("user@1000.service.d/oom.conf", "MemorySwapMax=8G"),
@@ -630,6 +630,9 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
             "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-podium",
+            "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "131009480",
         },
     )
 

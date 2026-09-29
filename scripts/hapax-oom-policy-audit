@@ -1179,20 +1179,19 @@ def main(argv: list[str] | None = None) -> int:
             print(format_human(checks))
         return 1
     if args.print_host_policy:
-
-        def gib(value: int) -> str:
-            return f"{value // BYTES_1G}G"
-
+        ceilings = (
+            policy.app_high,
+            policy.app_max,
+            policy.uid_high,
+            policy.uid_max,
+            policy.system_high,
+            policy.system_max,
+        )
         print(
             "\t".join(
                 (
                     policy.profile,
-                    gib(policy.app_high),
-                    gib(policy.app_max),
-                    gib(policy.uid_high),
-                    gib(policy.uid_max),
-                    gib(policy.system_high),
-                    gib(policy.system_max),
+                    *(f"{n // BYTES_1G}G" for n in ceilings),
                     str(policy.zram_mib),
                     str(policy.swappiness),
                 )

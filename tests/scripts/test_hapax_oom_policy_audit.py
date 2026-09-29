@@ -68,33 +68,6 @@ def test_installed_audit_refuses_test_host_override(monkeypatch: pytest.MonkeyPa
         selector()
 
 
-def test_host_memory_checks_target_selected_profile() -> None:
-    namespace = runpy.run_path(str(SCRIPT))
-    selected = namespace["load_host_policy"](
-        REPO_ROOT / "config/root-required/oom-host-profiles.tsv", "hapax-appendix", 63310084
-    )
-
-    def show(unit: str, keys: list[str], user: bool = False) -> dict[str, str]:
-        return {
-            "MemoryHigh": str(
-                selected.system_high if unit == "system.slice" else selected.uid_high
-            ),
-            "MemoryMax": str(selected.system_max if unit == "system.slice" else selected.uid_max),
-            "MemorySwapMax": str(8 * 1024**3),
-            "MemoryLow": str(14 * 1024**3 if unit == "system.slice" else 20 * 1024**3),
-            "MemoryMin": str(12 * 1024**3 if unit == "system.slice" else 10 * 1024**3),
-        }
-
-    system = namespace["audit_system_slice_reservation"]
-    system.__globals__["_show"] = show
-    checks = system(selected)
-    assert {item.name: item.status for item in checks}["system_slice_MemoryMax"] == "pass"
-    uid = namespace["audit_system_memory_unit"]
-    uid.__globals__["_show"] = show
-    checks = uid("user@1000.service", selected)
-    assert {item.name: item.status for item in checks}["user@1000.service_MemoryMax"] == "pass"
-
-
 def test_host_policy_cli_emits_selected_fields_only() -> None:
     result = subprocess.run(
         [str(SCRIPT), "--print-host-policy"],

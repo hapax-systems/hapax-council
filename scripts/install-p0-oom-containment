@@ -589,16 +589,15 @@ oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
 package_manifest_source="config/root-required/oom-containment.files"
 host_profile_source="config/root-required/oom-host-profiles.tsv"
-host_policy_sources=(
-    config/root-required/oom-host-policy/appendix/systemd/units/app.slice.d/oom-containment.conf
-    config/root-required/oom-host-policy/appendix/systemd/system/user-1000.slice.d/oom-containment.conf
-    config/root-required/oom-host-policy/appendix/systemd/system/user@1000.service.d/oom.conf
-    config/root-required/oom-host-policy/appendix/systemd/system/system.slice.d/oom-containment.conf
-    config/root-required/oom-host-policy/podium/systemd/units/app.slice.d/oom-containment.conf
-    config/root-required/oom-host-policy/podium/systemd/system/user-1000.slice.d/oom-containment.conf
-    config/root-required/oom-host-policy/podium/systemd/system/user@1000.service.d/oom.conf
-    config/root-required/oom-host-policy/podium/systemd/system/system.slice.d/oom-containment.conf
-)
+host_policy_sources=()
+for profile in appendix podium; do
+    for rel in systemd/units/app.slice.d/oom-containment.conf \
+        systemd/system/user-1000.slice.d/oom-containment.conf \
+        systemd/system/user@1000.service.d/oom.conf \
+        systemd/system/system.slice.d/oom-containment.conf; do
+        host_policy_sources+=("config/root-required/oom-host-policy/$profile/$rel")
+    done
+done
 package_files=(
     "$package_manifest_source"
     scripts/install-p0-oom-containment
@@ -780,15 +779,18 @@ src_path() {
 }
 
 select_host_policy() {
-    local fields
-    fields="$("$(src_path "$oom_policy_audit_source")" --print-host-policy)" || {
-        echo "OOM host policy selection refused; next action: inspect the canonical hostname, MemTotal and $host_profile_source" >&2
+    local fields selector_env=()
+    if [ "$INSTALL" -eq 1 ]; then
+        selector_env=(env -u HAPAX_OOM_AUDIT_TEST_MODE -u HAPAX_OOM_AUDIT_TEST_HOSTNAME -u HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB -u HAPAX_OOM_AUDIT_TEST_UDEV_RULE -u HAPAX_OOM_AUDIT_PROC_ROOT -u HAPAX_OOM_AUDIT_CGROUP_ROOT)
+    fi
+    fields="$("${selector_env[@]}" "$(src_path "$oom_policy_audit_source")" --print-host-policy)" || {
+        echo "OOM host policy selection refused; inspect hostname, MemTotal and $host_profile_source" >&2
         return 1
     }
     IFS=$'\t' read -r HOST_PROFILE APP_HIGH APP_MAX UID_HIGH UID_MAX SYSTEM_HIGH SYSTEM_MAX ZRAM_MIB SWAPPINESS <<< "$fields"
     case "$HOST_PROFILE" in
         appendix|podium) ;;
-        *) echo "OOM host policy selected an unsupported profile; next action: repair $host_profile_source" >&2; return 1 ;;
+        *) echo "OOM host policy profile unsupported; repair $host_profile_source" >&2; return 1 ;;
     esac
 }
 
@@ -804,7 +806,7 @@ require_host_policy_value() {
     local rel="$1" key="$2" expected="$3" actual
     actual="$(source_unit_value "$rel" "$key")" || return 1
     if [ "$actual" != "$expected" ]; then
-        echo "host policy mismatch: $rel $key=$actual, table requires $expected; next action: reconcile the profile file and $host_profile_source" >&2
+        echo "host policy mismatch: $rel $key=$actual expected=$expected; repair $host_profile_source" >&2
         return 1
     fi
 }
