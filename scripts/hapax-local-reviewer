@@ -15,21 +15,19 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import pwd
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 _local_source = Path(__file__).resolve().parents[1]
-SOURCE_ROOT = Path(
-    os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
-    or os.environ.get("HAPAX_COUNCIL_DIR")
-    or (
-        _local_source
-        if (_local_source / "config/agent-instructions/AGENTS.md").is_file()
-        else Path.home() / ".cache/hapax/source-activation/worktree"
-    )
-).resolve()
+_activation_state = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache/hapax/source-activation"
+SOURCE_ROOT = (
+    _local_source
+    if (_local_source / "shared/review_seat_wrapper.py").is_file()
+    else _activation_state / "worktree"
+)
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
@@ -42,15 +40,21 @@ MAX_OUTPUT_TOKENS = 8192
 TIMEOUT_SECONDS = 900
 
 
-def _canonical_body() -> str:
-    path = SOURCE_ROOT / "shared/canonical_instruction_ingestion.py"
+def _canonical_body(*, test_activation_state: Path | None = None) -> str:
+    state = test_activation_state or _activation_state
+    path = (state / "worktree/shared/canonical_instruction_ingestion.py").resolve(strict=True)
     spec = importlib.util.spec_from_file_location("hapax_local_instruction_ingestion", path)
     if spec is None or spec.loader is None:
         raise ValueError("canonical instruction resolver is unavailable")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module.read_canonical_instructions(source_root=SOURCE_ROOT).body.decode("utf-8")
+    root = module.activated_source_root(activation_state=state)
+    if path.parent.parent != root:
+        raise ValueError("loaded instruction resolver differs from activated release")
+    return module.read_canonical_instructions(
+        source_root=root, operator_home=Path(os.environ["HOME"]).resolve()
+    ).body.decode("utf-8")
 
 
 def request_body(prompt: str, model: str, canonical_body: str) -> dict:
@@ -65,13 +69,13 @@ def request_body(prompt: str, model: str, canonical_body: str) -> dict:
     }
 
 
-def main() -> int:
+def main(*, test_activation_state: Path | None = None) -> int:
     prompt = sys.stdin.read()
     if not prompt.strip():
         return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
     try:
-        canonical_body = _canonical_body()
-    except (OSError, ValueError) as exc:
+        canonical_body = _canonical_body(test_activation_state=test_activation_state)
+    except Exception as exc:  # noqa: BLE001 - every identity failure refuses HTTP
         return refuse(WRAPPER, f"canonical instruction admission refused ({exc})")
     base_url = os.environ.get("HAPAX_LOCAL_REVIEW_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     model = os.environ.get("HAPAX_LOCAL_REVIEW_MODEL", DEFAULT_MODEL)

@@ -95,7 +95,7 @@ def _run(
     with tempfile.TemporaryDirectory(prefix="hapax-review-test-home-") as temp_home:
         merged = {**base, **env}
         argv = [sys.executable, str(SCRIPTS / wrapper)]
-        if client:
+        if client or wrapper == "hapax-local-reviewer":
             merged["HOME"] = env.get("HOME", temp_home)
             if "HAPAX_SOURCE_ACTIVATE_WORKTREE" not in env:
                 merged.pop("HAPAX_SOURCE_ACTIVATE_WORKTREE", None)
@@ -103,7 +103,7 @@ def _run(
                 merged.pop("XDG_CONFIG_HOME", None)
             if "VIBE_HOME" not in env:
                 merged.pop("VIBE_HOME", None)
-            if seed_native:
+            if client and seed_native:
                 _seed_native_binding(Path(merged["HOME"]), client)
             state = _seed_activation_state(Path(temp_home))
             argv = [
@@ -409,12 +409,30 @@ def local_binding(tmp_path: Path):
         receipt,
         {
             "HOME": str(home),
-            "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(REPO_ROOT),
         },
     )
 
 
 class TestLocalReviewer:
+    def test_caller_selected_source_refuses_before_local_request(
+        self, completions_server, local_binding
+    ) -> None:
+        _, base = completions_server
+        _Completions.reply = {"choices": [{"message": {"content": FENCE}, "finish_reason": "stop"}]}
+        _, _, binding_env = local_binding
+        result = _run(
+            "hapax-local-reviewer",
+            "REVIEW",
+            {
+                **binding_env,
+                "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(REPO_ROOT),
+                "HAPAX_LOCAL_REVIEW_BASE_URL": base,
+            },
+        )
+        _assert_route_outage(result)
+        assert "activated" in result.stderr
+        assert _Completions.seen == []
+
     def test_one_completion_with_the_seat_contract(self, completions_server, local_binding) -> None:
         _, base = completions_server
         _, _, binding_env = local_binding
