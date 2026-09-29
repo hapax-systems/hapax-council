@@ -64,20 +64,43 @@ def _marker_outside_fixtures_finding(path: str, line_no: int, text: str) -> Find
     )
 
 
-#: Provider credential environment variable shapes the estate strips from
-#: governed lanes (scripts/hapax-codex, scripts/hapax-codex-headless).
-_CREDENTIAL_NAME = (
-    r"[A-Z][A-Z0-9_]*_(?:API_KEY|API_TOKEN|AUTH_TOKEN|SECRET_KEY|ACCESS_TOKEN|SESSION_TOKEN)"
+#: Known provider and proxy credentials. Unknown names with one of the declared
+#: credential suffixes are also suspicious: a newly introduced provider must
+#: fail closed until its name is reviewed, rather than evade the scan.
+_CREDENTIAL_VARIABLE_NAMES = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ELEVENLABS_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "HF_TOKEN",
+        "LITELLM_API_KEY",
+        "MISTRAL_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "RUNWAY_API_KEY",
+        "TAVILY_API_KEY",
+    }
 )
-
-
-_CREDENTIAL_ENV_READ_RES = (
-    re.compile(rf"\bos\.environ\s*\[\s*[\"']?{_CREDENTIAL_NAME}"),
-    re.compile(rf"\bos\.environ\.(?:get|setdefault)\s*\(\s*[\"']?{_CREDENTIAL_NAME}"),
-    re.compile(rf"\bos\.getenv\s*\(\s*[\"']?{_CREDENTIAL_NAME}"),
-    re.compile(rf"\bprocess\.env(?:\.|\[\s*[\"']){_CREDENTIAL_NAME}"),
-    re.compile(rf"(?:^|[\s;])(?:export\s+)?{_CREDENTIAL_NAME}\s*=[^=]"),
-    re.compile(rf"^\s*-?\s*[\"']?{_CREDENTIAL_NAME}[\"']?\s*:"),
+_CREDENTIAL_VARIABLE_SUFFIXES = (
+    "_API_KEY",
+    "_API_TOKEN",
+    "_AUTH_TOKEN",
+    "_SECRET_KEY",
+    "_ACCESS_TOKEN",
+    "_SESSION_TOKEN",
+)
+#: These patterns only extract candidate identifiers. The decision is made on
+#: the normalised identifier against the declared names and forms below.
+_ENV_READ_CANDIDATE_RE = re.compile(
+    r"\b(?:os\.environ\s*(?:\[|\.(?:get|setdefault)\s*\()|os\.getenv\s*\(|"
+    r"process\.env(?:\.|\[))\s*[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+_ENV_BINDING_CANDIDATE_RES = (
+    re.compile(r"(?:^|[\s;])(?:export\s+)?(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*=[^=]", re.I),
+    re.compile(r"^\s*-?\s*[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)[\"']?\s*:", re.I),
 )
 
 #: Credential *argument* text (``api_key=...``, ``apiKey: ...``). Used for non-Python
@@ -86,11 +109,13 @@ _API_KEY_ARG_RES = (
     re.compile(r"\bapi_key\s*=\s*[^\s,)]"),
     re.compile(r"\bapiKey\s*[:=]\s*[^\s,)}]"),
 )
-#: Authorization-header text, in plain, subscript and f-string forms. A header is not
-#: a Call, so this stays a line rule in every file type and is never exempted.
-_BEARER_RES = (
-    re.compile(r"[\"']?Authorization[\"']?\]?\s*[:=]\s*[\"']?\s*Bearer\b"),
-    re.compile(r"[\"']?Authorization[\"']?\]?\s*[:=]\s*(?:f|rf|br|rb)[\"']\s*Bearer\b"),
+#: Header syntax is extracted first, then normalised against these declared
+#: header and scheme forms. It stays a line rule with no AST exemption.
+_AUTH_HEADER_NAMES = frozenset({"authorization", "proxy-authorization"})
+_BEARER_SCHEMES = frozenset({"bearer"})
+_HEADER_CANDIDATE_RE = re.compile(
+    r"(?P<name>[A-Za-z][A-Za-z-]*)[\"']?\]?\s*[:=]\s*(?:(?:[fFrRbB]{1,2})?[\"'`])?\s*"
+    r"(?P<scheme>[A-Za-z]+)\b"
 )
 
 _GOVERNED_PROXY_HOSTS = ("127.0.0.1", "localhost", "::1", "litellm")
@@ -114,11 +139,10 @@ _PROVIDER_API_HOSTS = (
     "api.x.ai",
     "api.runwayml.com",
 )
-_PROVIDER_HOST_RE = re.compile(
-    r"https?://(?:"
-    + "|".join(re.escape(host) for host in _PROVIDER_API_HOSTS)
-    + r")(?::[0-9]+)?(?:[/\?#\"'\s]|$)"
-)
+_PROVIDER_HOST_SET = frozenset(_PROVIDER_API_HOSTS)
+#: Extract whole URL candidates; urlsplit decides the authority. Punctuation in
+#: paths and queries cannot alter which host is compared with the declared set.
+_URL_CANDIDATE_RE = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//[^\s\"'<>`]+")
 
 #: Text fallback for provider constructors; parsed Python uses Call nodes so a
 #: governed proxy on the same constructor can be recognized structurally.
@@ -166,14 +190,38 @@ def _is_doc_path(path: str) -> bool:
 _EMPTY_BLOB_SHORT = "e69de29"
 
 
-def _host_of(target: str) -> str:
-    """Read only the URL authority; malformed hosts never receive proxy treatment."""
+def _host_of(target: str, *, strict_port: bool = False) -> str:
+    """Read only the URL authority; malformed proxy ports receive no exemption."""
     value = target.strip()
     try:
         parsed = urlsplit(value if "://" in value or value.startswith("//") else f"//{value}")
-        return (parsed.hostname or "").lower()
+        if strict_port:
+            parsed.port  # ValueError for a malformed or out-of-range proxy port.
+        return (parsed.hostname or "").lower().rstrip(".")
     except ValueError:
         return ""
+
+
+def _has_provider_url(content: str) -> bool:
+    return any(
+        _host_of(match.group()) in _PROVIDER_HOST_SET
+        for match in _URL_CANDIDATE_RE.finditer(content)
+    )
+
+
+def _has_credential_env_name(content: str) -> bool:
+    candidates = [*_ENV_READ_CANDIDATE_RE.finditer(content)]
+    for pattern in _ENV_BINDING_CANDIDATE_RES:
+        candidates.extend(pattern.finditer(content))
+    return any(_credential_name_matches(match.group("name")) for match in candidates)
+
+
+def _has_bearer_header(content: str) -> bool:
+    return any(
+        match.group("name").lower() in _AUTH_HEADER_NAMES
+        and match.group("scheme").lower() in _BEARER_SCHEMES
+        for match in _HEADER_CANDIDATE_RE.finditer(content)
+    )
 
 
 #: Argument names that make a ``Call`` an API-key route.
@@ -201,8 +249,12 @@ _LINE_TEXT_NAMES = frozenset({"content", "line", "raw", "text", "source"})
 
 def _credential_name_matches(value: str) -> bool:
     """True when a literal names a credential environment variable."""
-
-    return re.search(_CREDENTIAL_NAME, value) is not None
+    name = value.upper()
+    return name in _CREDENTIAL_VARIABLE_NAMES or (
+        name[0:1].isalpha()
+        and all(char.isalnum() or char == "_" for char in name)
+        and any(name.endswith(suffix) for suffix in _CREDENTIAL_VARIABLE_SUFFIXES)
+    )
 
 
 def _is_os_environ(node: ast.AST) -> bool:
@@ -308,7 +360,7 @@ def _call_is_proxy_bound(call: ast.Call) -> bool:
         value = kw.value
         if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
             continue
-        if _host_of(value.value) in _GOVERNED_PROXY_HOSTS:
+        if _host_of(value.value, strict_port=True) in _GOVERNED_PROXY_HOSTS:
             return True
     return False
 
@@ -441,7 +493,7 @@ def _pattern_only_classes(content: str) -> tuple[str, ...]:
     """
 
     kinds: list[str] = []
-    if _PROVIDER_HOST_RE.search(content):
+    if _has_provider_url(content):
         kinds.append("provider-api-endpoint")
     if _CAPACITY_POOL_PAYG_RE.search(content) or _PLAN_TYPE_API_RE.search(content):
         kinds.append("capacity-pool-payg")
@@ -458,11 +510,9 @@ def _text_classes(content: str) -> tuple[str, ...]:
     """
 
     kinds: list[str] = []
-    if any(pattern.search(content) for pattern in _CREDENTIAL_ENV_READ_RES):
+    if _has_credential_env_name(content):
         kinds.append("credential-env-read")
-    if any(pattern.search(content) for pattern in _API_KEY_ARG_RES) or any(
-        pattern.search(content) for pattern in _BEARER_RES
-    ):
+    if any(pattern.search(content) for pattern in _API_KEY_ARG_RES) or _has_bearer_header(content):
         kinds.append("api-key-route")
     kinds.extend(_pattern_only_classes(content))
     if _PROVIDER_SDK_CALL_RE.search(content) and "provider-api-endpoint" not in kinds:
