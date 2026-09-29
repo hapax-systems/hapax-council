@@ -383,11 +383,45 @@ def completions_server():
     server.shutdown()
 
 
+@pytest.fixture
+def local_binding(tmp_path: Path):
+    home = tmp_path / "local-home"
+    neutral = home / ".config/hapax/agent-instructions/AGENTS.md"
+    neutral.parent.mkdir(parents=True)
+    source = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
+    neutral.write_bytes(source)
+    receipt = neutral.parent / "current.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "binding": "shared",
+                        "path": str(neutral),
+                        "sha256": hashlib.sha256(source).hexdigest(),
+                    }
+                ]
+            }
+        )
+    )
+    return (
+        neutral,
+        receipt,
+        {
+            "HOME": str(home),
+            "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(REPO_ROOT),
+        },
+    )
+
+
 class TestLocalReviewer:
-    def test_one_completion_with_the_seat_contract(self, completions_server) -> None:
+    def test_one_completion_with_the_seat_contract(self, completions_server, local_binding) -> None:
         _, base = completions_server
+        _, _, binding_env = local_binding
         _Completions.reply = {"choices": [{"message": {"content": FENCE}, "finish_reason": "stop"}]}
-        result = _run("hapax-local-reviewer", "REVIEW", {"HAPAX_LOCAL_REVIEW_BASE_URL": base})
+        result = _run(
+            "hapax-local-reviewer", "REVIEW", {**binding_env, "HAPAX_LOCAL_REVIEW_BASE_URL": base}
+        )
         assert result.returncode == 0, result.stderr
         assert result.stdout == FENCE
         (request,) = _Completions.seen
@@ -397,24 +431,55 @@ class TestLocalReviewer:
         assert "tools" not in request["body"]
         assert request["body"]["messages"][1]["content"] == "REVIEW"
         assert "exactly one fenced yaml code block" in request["body"]["messages"][0]["content"]
+        canonical = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_text()
+        assert request["body"]["messages"][0]["content"].count(canonical) == 1
 
-    def test_truncated_reply_is_a_route_outage_not_a_review(self, completions_server) -> None:
+    def test_truncated_reply_is_a_route_outage_not_a_review(
+        self, completions_server, local_binding
+    ) -> None:
         _, base = completions_server
+        _, _, binding_env = local_binding
         _Completions.reply = {
             "choices": [{"message": {"content": FENCE}, "finish_reason": "length"}]
         }
         _assert_route_outage(
-            _run("hapax-local-reviewer", "REVIEW", {"HAPAX_LOCAL_REVIEW_BASE_URL": base})
+            _run(
+                "hapax-local-reviewer",
+                "REVIEW",
+                {**binding_env, "HAPAX_LOCAL_REVIEW_BASE_URL": base},
+            )
         )
 
-    def test_unreachable_endpoint_is_a_route_outage(self) -> None:
+    def test_unreachable_endpoint_is_a_route_outage(self, local_binding) -> None:
+        _, _, binding_env = local_binding
         _assert_route_outage(
             _run(
                 "hapax-local-reviewer",
                 "REVIEW",
-                {"HAPAX_LOCAL_REVIEW_BASE_URL": "http://127.0.0.1:9/v1"},
+                {**binding_env, "HAPAX_LOCAL_REVIEW_BASE_URL": "http://127.0.0.1:9/v1"},
             )
         )
+
+    @pytest.mark.parametrize("failure", ["missing", "stale", "wrong-home"])
+    def test_invalid_binding_refuses_before_local_request(
+        self, completions_server, local_binding, tmp_path: Path, failure: str
+    ) -> None:
+        _, base = completions_server
+        neutral, receipt, binding_env = local_binding
+        if failure == "missing":
+            neutral.unlink()
+        elif failure == "stale":
+            neutral.write_bytes(b"old shared instructions")
+        else:
+            data = json.loads(receipt.read_text())
+            data["files"][0]["path"] = str(tmp_path / "other-home/AGENTS.md")
+            receipt.write_text(json.dumps(data))
+        result = _run(
+            "hapax-local-reviewer", "REVIEW", {**binding_env, "HAPAX_LOCAL_REVIEW_BASE_URL": base}
+        )
+        _assert_route_outage(result)
+        assert "canonical instruction" in result.stderr
+        assert _Completions.seen == []
 
 
 @pytest.mark.parametrize(
