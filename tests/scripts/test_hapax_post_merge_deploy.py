@@ -20,6 +20,11 @@ ROOT_REQUIRED_AUDIT = REPO_ROOT / "scripts" / "hapax-root-required-deploy-audit"
 OOM_PACKAGE_MANIFEST = (REPO_ROOT / "config/root-required/oom-containment.files").read_text(
     encoding="utf-8"
 )
+P0_HOST_PROFILE_FILES = {
+    relative: (REPO_ROOT / relative).read_text(encoding="utf-8")
+    for relative in OOM_PACKAGE_MANIFEST.splitlines()
+    if relative.startswith("config/root-required/oom-host-")
+}
 APCUPSD_PACKAGE_MANIFEST = (
     REPO_ROOT / "config/root-required/apcupsd-power-alerts.files"
 ).read_text(encoding="utf-8")
@@ -72,6 +77,7 @@ P0_OOM_AUDIT_FILES = {
 }
 ROOT_AUDIT_SOURCE_FILES = {
     "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
+    **P0_HOST_PROFILE_FILES,
     "config/root-required/apcupsd-power-alerts.files": APCUPSD_PACKAGE_MANIFEST,
     "scripts/install-p0-oom-containment": "#!/usr/bin/env bash\n",
     "config/root-required/hapax-oom-score-enforce.sudoers": (
@@ -1043,6 +1049,7 @@ def test_p0_oom_deploy_uses_installer_without_restart_or_bulk_deferral_clear(
         "config/root-required/oom-containment.files": (
             OOM_PACKAGE_MANIFEST + f"{future_manifest_path}\n"
         ),
+        **P0_HOST_PROFILE_FILES,
         future_manifest_path: 'FUTURE_EARLYOOM_POLICY="enabled"\n',
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
@@ -1347,6 +1354,7 @@ def test_concurrent_same_sha_root_required_oom_deploy_stages_complete_deferral(
     installer_body = "#!/usr/bin/env bash\nsleep 0.2\nexit 77\n"
     files = {
         "config/root-required/oom-containment.files": OOM_PACKAGE_MANIFEST,
+        **P0_HOST_PROFILE_FILES,
         "scripts/install-p0-oom-containment": installer_body,
         "config/root-required/hapax-oom-score-enforce.sudoers": (
             "hapax ALL=(root) NOPASSWD: /usr/local/sbin/hapax-oom-score-enforce --apply-unit pipewire.service\n"

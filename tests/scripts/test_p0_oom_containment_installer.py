@@ -90,9 +90,104 @@ def _copy_oom_package(dest_root: Path) -> None:
         shutil.copy2(REPO_ROOT / relative, dest)
 
 
+@pytest.mark.parametrize(
+    "rel,needle",
+    (
+        ("system.slice.d/oom-containment.conf", "MemoryMax="),
+        ("system.slice.d/oom-containment.conf", "MemoryLow=12G"),
+        ("user@1000.service.d/oom.conf", "OOMScoreAdjust=100"),
+        ("user@1000.service.d/oom.conf", "OOMPolicy=continue"),
+        ("user@1000.service.d/oom.conf", "MemorySwapMax=8G"),
+    ),
+)
+def test_source_check_rejects_host_policy_file_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rel: str, needle: str
+) -> None:
+    source = tmp_path / "source"
+    _copy_oom_package(source)
+    selected = source / "config/root-required/oom-host-policy/appendix/systemd/system" / rel
+    replacement = "MemoryLow=13G" if needle == "MemoryLow=12G" else ""
+    selected.write_text(selected.read_text().replace(needle, replacement))
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_HOSTNAME", "hapax-appendix")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB", "63310084")
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--check", "--no-runtime"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert needle.split("=")[0].replace("OOMPolicy", "continue") in result.stderr
+
+
+def test_install_without_check_rejects_committed_bad_selected_file_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _copy_oom_package(source)
+    selected = (
+        source
+        / "config/root-required/oom-host-policy/appendix/systemd/system/user@1000.service.d/oom.conf"
+    )
+    selected.write_text(
+        selected.read_text(encoding="utf-8").replace("OOMPolicy=continue\n", ""),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-b", "main"], cwd=source, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "oom-test@example.test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "OOM Test"], cwd=source, check=True)
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-m", "bad selected policy"], cwd=source, check=True, capture_output=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, text=True, capture_output=True
+    ).stdout.strip()
+    system_dir = tmp_path / "systemd-system"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/bin/sh\nexit 77\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMD_SYSTEM_DIR", str(system_dir))
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMCTL", str(fake_systemctl))
+    monkeypatch.setenv("HAPAX_OOM_ENFORCER_DEST", str(tmp_path / "sbin/hapax-oom-score-enforce"))
+    monkeypatch.setenv("HAPAX_ROOT_FAILURE_INTAKE_DEST", str(tmp_path / "sbin/hapax-root-failure-intake"))
+    monkeypatch.setenv("HAPAX_OOM_EARLYOOM_DEST", str(tmp_path / "earlyoom"))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(source))
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_PACKAGE_SHA", candidate_sha)
+    monkeypatch.setenv("HAPAX_OOM_INSTALL_SUDO", "")
+    result = subprocess.run(
+        [str(INSTALLER), "--source", str(source), "--install", "--no-runtime"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "user@1000 OOM drop-in must continue" in result.stderr
+    assert not system_dir.exists()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
+    for name, relative in (
+        ("HAPAX_OOM_SYSTEMD_SYSTEM_DIR", "systemd-system-default"),
+        ("HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR", "systemd-user-control-default"),
+        ("HAPAX_OOM_EARLYOOM_DEST", "earlyoom-default"),
+        ("HAPAX_OOM_ENFORCER_DEST", "sbin/hapax-oom-score-enforce"),
+        ("HAPAX_ROOT_FAILURE_INTAKE_DEST", "sbin/hapax-root-failure-intake"),
+        ("HAPAX_OOM_PROC_ROOT", "proc-default"),
+    ):
+        monkeypatch.setenv(name, str(tmp_path / relative))
+    monkeypatch.setenv("HAPAX_OOM_INSTALL_SUDO", "")
+    fake_systemctl = tmp_path / "systemctl-default"
+    fake_systemctl.write_text("#!/bin/sh\nexit 77\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMCTL", str(fake_systemctl))
+    fake_runuser = tmp_path / "runuser-default"
+    fake_runuser.write_text("#!/bin/sh\nexit 77\n", encoding="utf-8")
+    fake_runuser.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_RUNUSER", str(fake_runuser))
     monkeypatch.setenv("HAPAX_OOM_TARGET_USER", "hapax")
     monkeypatch.setenv("HAPAX_OOM_TARGET_UID", "1000")
     monkeypatch.setenv("HAPAX_OOM_TARGET_GID", "1000")
@@ -105,6 +200,9 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setenv(
         "HAPAX_OOM_POLICY_AUDIT_DEST", str(tmp_path / "sbin" / "hapax-oom-policy-audit")
+    )
+    monkeypatch.setenv(
+        "HAPAX_OOM_HOST_PROFILE_DEST", str(tmp_path / "share" / "oom-host-profiles.tsv")
     )
     monkeypatch.setenv(
         "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
@@ -126,6 +224,32 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("HAPAX_OOM_VISUDO", str(fake_visudo))
     monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_DIR", str(tmp_path / "systemd-user-default"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(REPO_ROOT))
+
+
+def test_installer_fixture_blocks_live_destinations_on_refusal_regression(tmp_path: Path) -> None:
+    destinations = (
+        "HAPAX_OOM_SYSTEMD_SYSTEM_DIR",
+        "HAPAX_OOM_SYSTEMD_USER_DIR",
+        "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR",
+        "HAPAX_OOM_EARLYOOM_DEST",
+        "HAPAX_OOM_ENFORCER_DEST",
+        "HAPAX_OOM_TRIGGER_DEST",
+        "HAPAX_OOM_SUDOERS_DEST",
+        "HAPAX_OOM_SUDOERS_REFERENCE_DEST",
+        "HAPAX_ROOT_FAILURE_INTAKE_DEST",
+        "HAPAX_OOM_POLICY_AUDIT_DEST",
+        "HAPAX_OOM_HOST_PROFILE_DEST",
+        "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
+    )
+    for name in destinations:
+        assert name in os.environ, f"{name} would fall back to a live path"
+        assert Path(os.environ[name]).is_relative_to(tmp_path), name
+    assert os.environ["HAPAX_OOM_INSTALL_SUDO"] == ""
+    assert Path(os.environ["HAPAX_OOM_PROC_ROOT"]).is_relative_to(tmp_path)
+    fake_systemctl = Path(os.environ["HAPAX_OOM_SYSTEMCTL"])
+    assert fake_systemctl.is_relative_to(tmp_path) and os.access(fake_systemctl, os.X_OK)
+    assert subprocess.run([str(fake_systemctl), "daemon-reload"], check=False).returncode == 77
+    assert Path(os.environ["HAPAX_OOM_RUNUSER"]).is_relative_to(tmp_path)
 
 
 def _unit_cgroup(unit: str) -> str:
@@ -243,8 +367,8 @@ def _systemctl_user_unit_cases(
 def _systemctl_app_slice_cases() -> str:
     return "\n".join(
         [
-            '  *"--user show app.slice -p MemoryHigh --value"*) printf "77309411328\\n" ;;',
-            '  *"--user show app.slice -p MemoryMax --value"*) printf "94489280512\\n" ;;',
+            '  *"--user show app.slice -p MemoryHigh --value"*) printf "34359738368\\n" ;;',
+            '  *"--user show app.slice -p MemoryMax --value"*) printf "39728447488\\n" ;;',
             '  *"--user show app.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
             '  *"--user show app.slice -p MemoryLow --value"*) printf "17179869184\\n" ;;',
             '  *"--user show app.slice -p MemoryMin --value"*) printf "8589934592\\n" ;;',
@@ -292,23 +416,23 @@ def _systemctl_system_memory_cases(
         '  *"show hapax-oom-score-enforce.timer -p DropInPaths --value"*) printf "\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p Unit --value"*) printf "hapax-oom-score-enforce.service\\n" ;;',
         '  *"show hapax-oom-score-enforce.timer -p TimersMonotonic --value"*) printf "%s\\n" "OnBootUSec=30s OnUnitActiveUSec=30s" ;;',
-        '  *"show system.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
-        '  *"show system.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
+        '  *"show system.slice -p MemoryHigh --value"*) printf "17179869184\\n" ;;',
+        '  *"show system.slice -p MemoryMax --value"*) printf "21474836480\\n" ;;',
         '  *"show system.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
-        '  *"show system.slice -p MemoryLow --value"*) printf "25769803776\\n" ;;',
+        '  *"show system.slice -p MemoryLow --value"*) printf "12884901888\\n" ;;',
         '  *"show system.slice -p MemoryMin --value"*) printf "12884901888\\n" ;;',
         '  *"show user.slice -p MemoryHigh --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemoryMax --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemorySwapMax --value"*) printf "infinity\\n" ;;',
         '  *"show user.slice -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user.slice -p MemoryMin --value"*) printf "10737418240\\n" ;;',
-        '  *"show user-1000.slice -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
-        '  *"show user-1000.slice -p MemoryMax --value"*) printf "103079215104\\n" ;;',
+        '  *"show user-1000.slice -p MemoryHigh --value"*) printf "34359738368\\n" ;;',
+        '  *"show user-1000.slice -p MemoryMax --value"*) printf "40802189312\\n" ;;',
         '  *"show user-1000.slice -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
         '  *"show user-1000.slice -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user-1000.slice -p MemoryMin --value"*) printf "10737418240\\n" ;;',
-        '  *"show user@1000.service -p MemoryHigh --value"*) printf "85899345920\\n" ;;',
-        '  *"show user@1000.service -p MemoryMax --value"*) printf "103079215104\\n" ;;',
+        '  *"show user@1000.service -p MemoryHigh --value"*) printf "34359738368\\n" ;;',
+        '  *"show user@1000.service -p MemoryMax --value"*) printf "40802189312\\n" ;;',
         '  *"show user@1000.service -p MemorySwapMax --value"*) printf "8589934592\\n" ;;',
         '  *"show user@1000.service -p MemoryLow --value"*) printf "21474836480\\n" ;;',
         '  *"show user@1000.service -p MemoryMin --value"*) printf "10737418240\\n" ;;',
@@ -490,6 +614,30 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     tmp_path: Path,
 ) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _copy_oom_package(source)
+    # Fix the source selector's host and RAM for this isolated install. The
+    # selector refuses inherited test variables, so the installer must scrub
+    # them while the rest of the package follows the real install path.
+    audit_source = source / "scripts/hapax-oom-policy-audit"
+    audit_source.write_text(
+        "#!/usr/bin/python3\n"
+        "import os, sys\n"
+        "assert sys.argv[1:] == ['--print-host-policy']\n"
+        "assert not any(key.startswith('HAPAX_OOM_AUDIT_TEST_') for key in os.environ)\n"
+        "print('appendix\\t32G\\t37G\\t32G\\t38G\\t16G\\t20G\\t12G\\t16384\\t10')\n",
+        encoding="utf-8",
+    )
+    audit_source.chmod(0o755)
+    subprocess.run(["git", "init", "-b", "main"], cwd=source, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "oom-test@example.test"], cwd=source, check=True)
+    subprocess.run(["git", "config", "user.name", "OOM Test"], cwd=source, check=True)
+    subprocess.run(["git", "add", "."], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-m", "isolated OOM package"], cwd=source, check=True, capture_output=True)
+    candidate_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=source, check=True, text=True, capture_output=True
+    ).stdout.strip()
     system_dir = tmp_path / "systemd-system"
     target_home = tmp_path / "target-home"
     root_home = tmp_path / "root-home"
@@ -569,7 +717,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     fake_runuser.chmod(0o755)
 
     result = subprocess.run(
-        [str(INSTALLER), "--install", "--verify-live"],
+        [str(INSTALLER), "--source", str(source), "--install", "--verify-live"],
         text=True,
         capture_output=True,
         check=False,
@@ -590,9 +738,12 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
             "HAPAX_OOM_INSTALL_SUDO": "",
             "HAPAX_OOM_PROC_ROOT": str(proc_root),
             "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(root_defer),
-            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
-            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
+            "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": candidate_sha,
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(source),
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-podium",
+            "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "131009480",
         },
     )
 
@@ -600,7 +751,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert sibling_dir.exists()
     assert (
         tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha"
-    ).read_text().strip() == REPO_HEAD
+    ).read_text().strip() == candidate_sha
     assert (installed_source / "scripts" / "install-p0-oom-containment").is_file()
     assert not snapshot_dest.is_symlink()
     assert snapshot_dest.read_bytes() == INSTALLER.read_bytes()
@@ -609,7 +760,10 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         encoding="utf-8"
     )
     assert "OOMScoreAdjust=100" in user_manager_dropin
-    assert "MemoryMax=96G" in user_manager_dropin
+    assert "MemoryMax=38G" in user_manager_dropin
+    assert (tmp_path / "share" / "oom-host-profiles.tsv").read_bytes() == (
+        REPO_ROOT / "config/root-required/oom-host-profiles.tsv"
+    ).read_bytes()
     app_dropin = user_dir / "app.slice.d" / "oom-containment.conf"
     assert app_dropin.is_file()
     assert not app_dropin.is_symlink()
@@ -624,7 +778,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     assert "MemoryMin=10G" in (system_dir / "user.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
-    assert "MemoryLow=24G" in (system_dir / "system.slice.d" / "oom-containment.conf").read_text(
+    assert "MemoryLow=12G" in (system_dir / "system.slice.d" / "oom-containment.conf").read_text(
         encoding="utf-8"
     )
     assert "EARLYOOM_ARGS=" in earlyoom_dest.read_text(encoding="utf-8")
@@ -1578,12 +1732,12 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
             score
         )
     calls = systemctl_calls.read_text(encoding="utf-8")
-    assert "set-property --runtime system.slice MemoryHigh=infinity MemoryMax=infinity" in calls
+    assert "set-property --runtime system.slice MemoryHigh=16G MemoryMax=20G" in calls
     assert "set-property --runtime user.slice MemoryHigh=infinity MemoryMax=infinity" in calls
-    assert "set-property --runtime user-1000.slice MemoryHigh=80G MemoryMax=96G" in calls
-    assert "set-property --runtime user@1000.service MemoryHigh=80G MemoryMax=96G" in calls
+    assert "set-property --runtime user-1000.slice MemoryHigh=32G MemoryMax=38G" in calls
+    assert "set-property --runtime user@1000.service MemoryHigh=32G MemoryMax=38G" in calls
     assert (
-        "set-property --runtime app.slice MemoryHigh=72G MemoryMax=88G MemorySwapMax=8G MemoryLow=16G MemoryMin=8G"
+        "set-property --runtime app.slice MemoryHigh=32G MemoryMax=37G MemorySwapMax=8G MemoryLow=16G MemoryMin=8G"
         in calls
     )
     assert (

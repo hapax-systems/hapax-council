@@ -18,8 +18,8 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-oom-policy-audit"
 def test_host_policy_refuses_aggregate_overcommit(tmp_path: Path) -> None:
     table = tmp_path / "profiles.tsv"
     table.write_text(
-        "hapax-appendix\t59\t61\tappendix\t32G\t38G\t36G\t46G\t14G\t18G\t16384\t10\n"
-        "hapax-podium\t123\t125\tpodium\t72G\t80G\t76G\t96G\t32G\t40G\t32768\t10\n",
+        "hapax-appendix\t59\t61\tappendix\t32G\t38G\t36G\t46G\t14G\t18G\t12G\t16384\t10\n"
+        "hapax-podium\t123\t125\tpodium\t72G\t80G\t76G\t96G\t32G\t40G\t24G\t32768\t10\n",
         encoding="utf-8",
     )
     policy = runpy.run_path(str(SCRIPT))
@@ -30,8 +30,8 @@ def test_host_policy_refuses_aggregate_overcommit(tmp_path: Path) -> None:
 def test_host_policy_selects_exact_host_and_ram_interval(tmp_path: Path) -> None:
     table = tmp_path / "profiles.tsv"
     table.write_text(
-        "hapax-appendix\t59\t61\tappendix\t32G\t37G\t33G\t39G\t14G\t18G\t16384\t10\n"
-        "hapax-podium\t123\t125\tpodium\t68G\t76G\t72G\t80G\t32G\t40G\t32768\t10\n",
+        "hapax-appendix\t59\t61\tappendix\t32G\t37G\t33G\t39G\t14G\t18G\t12G\t16384\t10\n"
+        "hapax-podium\t123\t125\tpodium\t68G\t76G\t72G\t80G\t32G\t40G\t24G\t32768\t10\n",
         encoding="utf-8",
     )
     policy = runpy.run_path(str(SCRIPT))
@@ -54,6 +54,97 @@ def test_appendix_profile_matches_observed_live_ceiling_handoff() -> None:
     )
     assert (selected.uid_high, selected.uid_max) == (32 * 1024**3, 38 * 1024**3)
     assert (selected.system_high, selected.system_max) == (16 * 1024**3, 20 * 1024**3)
+
+
+def test_selected_system_low_matches_installed_host_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    table = REPO_ROOT / "config/root-required/oom-host-profiles.tsv"
+    for host, memtotal in (("hapax-appendix", 63310084), ("hapax-podium", 131009480)):
+        selected = namespace["load_host_policy"](table, host, memtotal)
+        source = (
+            REPO_ROOT
+            / "config/root-required/oom-host-policy"
+            / selected.profile
+            / "systemd/system/system.slice.d/oom-containment.conf"
+        )
+        low = next(
+            line.split("=", 1)[1]
+            for line in source.read_text(encoding="utf-8").splitlines()
+            if line.startswith("MemoryLow=")
+        )
+        observed = int(low[:-1]) * 1024**3
+        monkeypatch.setitem(
+            namespace["audit_system_slice_reservation"].__globals__,
+            "_show",
+            lambda _unit, keys: {
+                "MemoryHigh": str(selected.system_high),
+                "MemoryMax": str(selected.system_max),
+                "MemorySwapMax": "infinity",
+                "MemoryLow": str(observed),
+                "MemoryMin": str(12 * 1024**3),
+            },
+        )
+        checks = namespace["audit_system_slice_reservation"](selected)
+        assert {item.name: item.status for item in checks}["system_slice_MemoryLow"] == "pass"
+
+
+def test_installed_audit_refuses_test_host_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    selector = namespace["current_host_policy"]
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_HOSTNAME", "hapax-podium")
+    monkeypatch.setitem(selector.__globals__, "__file__", "/usr/local/sbin/hapax-oom-policy-audit")
+    with pytest.raises(
+        namespace["HostPolicyError"], match="installed audit refuses test selectors"
+    ):
+        selector()
+
+
+def test_current_host_policy_reads_meminfo_and_selects_table(tmp_path):
+    namespace = runpy.run_path(str(SCRIPT))
+    selector = namespace["current_host_policy"]
+    scope, meminfo = selector.__globals__, tmp_path / "meminfo"
+    scope["PROC_ROOT"] = tmp_path
+    scope["load_host_policy"] = lambda *args: args
+    meminfo.write_text("MemTotal: 63310084 kB\n")
+    for script, table in (
+        (SCRIPT, REPO_ROOT / "config/root-required/oom-host-profiles.tsv"),
+        (
+            Path("/usr/local/sbin/hapax-oom-policy-audit"),
+            Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv"),
+        ),
+    ):
+        scope["__file__"] = str(script)
+        assert selector() == (table, scope["socket"].gethostname(), 63310084)
+    for body in (
+        "",
+        "MemTotal: 1 kB\nMemTotal: 2 kB\n",
+        "MemTotal: x kB\n",
+        "MemTotal: 1 MB\n",
+        "MemTotal: 0 kB\n",
+    ):
+        meminfo.write_text(body)
+        with pytest.raises(namespace["HostPolicyError"]):
+            selector()
+
+
+def test_host_policy_cli_emits_selected_fields_only() -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--print-host-policy"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-appendix",
+            "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "63310084",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "appendix\t32G\t37G\t32G\t38G\t16G\t20G\t12G\t16384\t10\n"
 
 
 RECOVERY_SYSTEM_UNIT_SCORES = {
@@ -173,8 +264,8 @@ def _fake_systemctl(
 ) -> Path:
     path = tmp_path / "systemctl"
     app_values = (
-        "MemoryHigh=77309411328\n"
-        "MemoryMax=94489280512\n"
+        "MemoryHigh=73014444032\n"
+        "MemoryMax=81604378624\n"
         "MemorySwapMax=8589934592\n"
         "MemoryLow=17179869184\n"
         "MemoryMin=8589934592\n"
@@ -188,8 +279,8 @@ def _fake_systemctl(
         )
     )
     uid_memory_values = (
-        "MemoryHigh=85899345920\n"
-        "MemoryMax=103079215104\n"
+        "MemoryHigh=77309411328\n"
+        "MemoryMax=85899345920\n"
         "MemorySwapMax=8589934592\n"
         f"MemoryLow={'17179869184' if user_floor_overcommitted else '21474836480'}\n"
         f"MemoryMin={'8589934592' if user_floor_overcommitted else '10737418240'}\n"
@@ -200,8 +291,8 @@ def _fake_systemctl(
         else f"MemoryHigh=infinity\nMemoryMax=infinity\nMemorySwapMax=infinity\nSlice={tmux_slice}\n"
     )
     system_slice_values = (
-        "MemoryHigh=infinity\n"
-        f"MemoryMax={'68719476736' if system_slice_finite_max else 'infinity'}\n"
+        "MemoryHigh=34359738368\n"
+        f"MemoryMax={'68719476736' if system_slice_finite_max else '42949672960'}\n"
         "MemorySwapMax=infinity\n"
         "MemoryLow=25769803776\n"
         "MemoryMin=12884901888\n"
@@ -396,6 +487,9 @@ def _run(
         ),
         "HAPAX_OOM_AUDIT_PROC_ROOT": str(proc_root),
         "HAPAX_OOM_AUDIT_CGROUP_ROOT": str(cgroup_root),
+        "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+        "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-podium",
+        "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "131009480",
         "HAPAX_ROOT_REQUIRED_LOCK_FILE": str(tmp_path / "root-state" / ".lock"),
     }
     return subprocess.run(
@@ -412,6 +506,10 @@ def test_audit_passes_when_user_manager_is_killable_and_app_slice_bounded(tmp_pa
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     statuses = {check["name"]: check["status"] for check in payload["checks"]}
+    targets = {check["name"]: check["target"] for check in payload["checks"]}
+    assert targets["system_slice_MemoryMax"] == str(40 * 1024**3)
+    assert targets["user@1000.service_MemoryMax"] == str(80 * 1024**3)
+    assert targets["app_slice_MemoryMax"] == str(76 * 1024**3)
     assert statuses["root_required_package_lock"] == "pass"
     assert statuses["user_manager_oom_score_adjust"] == "pass"
     assert statuses["user_manager_OOMPolicy"] == "pass"
@@ -728,14 +826,14 @@ def test_audit_fails_when_app_slice_backstop_is_unbounded(tmp_path: Path) -> Non
     assert all(item["status"] == "gap" for item in app_checks)
 
 
-def test_audit_fails_when_system_slice_has_finite_hard_ceiling(tmp_path: Path) -> None:
+def test_audit_fails_when_system_slice_exceeds_host_ceiling(tmp_path: Path) -> None:
     result = _run(tmp_path, system_slice_finite_max=True)
 
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     check = next(item for item in payload["checks"] if item["name"] == "system_slice_MemoryMax")
     assert check["status"] == "gap"
-    assert check["target"] == "infinity"
+    assert check["target"] == "42949672960"
 
 
 def test_audit_fails_when_user_slice_ancestor_has_no_reservation(tmp_path: Path) -> None:

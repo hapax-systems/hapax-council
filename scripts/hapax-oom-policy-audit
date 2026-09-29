@@ -100,6 +100,7 @@ class HostPolicy:
     uid_max: int
     system_high: int
     system_max: int
+    system_low: int
     zram_mib: int
     swappiness: int
 
@@ -133,8 +134,8 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
         if not raw or raw.startswith("#"):
             continue
         fields = raw.split("\t")
-        if len(fields) != 12:
-            raise HostPolicyError(f"line {number}: expected exactly 12 tab-separated fields")
+        if len(fields) != 13:
+            raise HostPolicyError(f"line {number}: expected exactly 13 tab-separated fields")
         (
             host,
             low,
@@ -146,6 +147,7 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
             uid_max,
             sys_hi,
             sys_max,
+            sys_low,
             zram,
             swap,
         ) = fields
@@ -160,16 +162,18 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
         sizes = [
             _policy_gib(value, name, number)
             for value, name in zip(
-                (app_hi, app_max, uid_hi, uid_max, sys_hi, sys_max),
-                ("app_high", "app_max", "uid_high", "uid_max", "system_high", "system_max"),
+                (app_hi, app_max, uid_hi, uid_max, sys_hi, sys_max, sys_low),
+                ("app_high", "app_max", "uid_high", "uid_max", "system_high", "system_max", "system_low"),
                 strict=True,
             )
         ]
-        app_hi_b, app_max_b, uid_hi_b, uid_max_b, sys_hi_b, sys_max_b = sizes
+        app_hi_b, app_max_b, uid_hi_b, uid_max_b, sys_hi_b, sys_max_b, sys_low_b = sizes
         if not (app_hi_b < app_max_b <= uid_max_b and app_hi_b <= uid_hi_b < uid_max_b):
             raise HostPolicyError(f"line {number}: app and UID ceilings are unordered")
         if not (12 * BYTES_1G <= sys_hi_b < sys_max_b):
             raise HostPolicyError(f"line {number}: system ceiling is below its 12G floor")
+        if not (12 * BYTES_1G <= sys_low_b <= sys_hi_b):
+            raise HostPolicyError(f"line {number}: system low must be 12G..system high")
         if uid_max_b + sys_max_b > (floor - 2) * BYTES_1G:
             raise HostPolicyError(
                 f"line {number}: aggregate ceiling leaves less than 2G kernel margin"
@@ -191,6 +195,7 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
             uid_max_b,
             sys_hi_b,
             sys_max_b,
+            sys_low_b,
             zram_mib,
             swappiness,
         )
@@ -215,11 +220,31 @@ def load_host_policy(table: Path, hostname: str, memtotal_kib: int) -> HostPolic
 
 def current_host_policy() -> HostPolicy:
     script = Path(__file__).resolve()
+    installed = script == Path("/usr/local/sbin/hapax-oom-policy-audit")
+    test_keys = (
+        "HAPAX_OOM_AUDIT_TEST_MODE",
+        "HAPAX_OOM_AUDIT_TEST_HOSTNAME",
+        "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB",
+        "HAPAX_OOM_AUDIT_PROC_ROOT",
+    )
+    selected = [key for key in test_keys if key in os.environ]
+    if installed and selected:
+        raise HostPolicyError("installed audit refuses test selectors: " + ", ".join(selected))
+    if selected and os.environ.get("HAPAX_OOM_AUDIT_TEST_MODE") != "1":
+        raise HostPolicyError("source audit test selectors require HAPAX_OOM_AUDIT_TEST_MODE=1")
     table = (
         Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv")
-        if script == Path("/usr/local/sbin/hapax-oom-policy-audit")
+        if installed
         else script.parents[1] / "config/root-required/oom-host-profiles.tsv"
     )
+    override = os.environ.get("HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB")
+    if override is not None:
+        memtotal = _policy_integer(override, "test MemTotal", 0)
+        if memtotal == 0:
+            raise HostPolicyError("test MemTotal must be positive")
+        return load_host_policy(
+            table, os.environ.get("HAPAX_OOM_AUDIT_TEST_HOSTNAME", socket.gethostname()), memtotal
+        )
     try:
         lines = (PROC_ROOT / "meminfo").read_text(encoding="utf-8").splitlines()
     except OSError as exc:
@@ -230,7 +255,9 @@ def current_host_policy() -> HostPolicy:
     memtotal = _policy_integer(matches[0][1], "MemTotal", 0)
     if memtotal == 0:
         raise HostPolicyError("MemTotal must be positive")
-    return load_host_policy(table, socket.gethostname(), memtotal)
+    return load_host_policy(
+        table, os.environ.get("HAPAX_OOM_AUDIT_TEST_HOSTNAME", socket.gethostname()), memtotal
+    )
 
 
 class AuditLockError(RuntimeError):
@@ -540,10 +567,10 @@ def audit_sshd_policy() -> list[Check]:
     ]
 
 
-def audit_app_slice() -> list[Check]:
+def audit_app_slice(policy: HostPolicy | None = None) -> list[Check]:
     expected = {
-        "MemoryHigh": BYTES_72G,
-        "MemoryMax": BYTES_88G,
+        "MemoryHigh": policy.app_high if policy else BYTES_72G,
+        "MemoryMax": policy.app_max if policy else BYTES_88G,
         "MemorySwapMax": BYTES_8G,
         "MemoryLow": BYTES_16G,
         "MemoryMin": BYTES_8G,
@@ -689,10 +716,10 @@ def audit_user_child_floor_composition(uid: int) -> list[Check]:
     return checks
 
 
-def audit_system_memory_unit(unit: str) -> list[Check]:
+def audit_system_memory_unit(unit: str, policy: HostPolicy | None = None) -> list[Check]:
     expected = {
-        "MemoryHigh": BYTES_80G,
-        "MemoryMax": BYTES_96G,
+        "MemoryHigh": policy.uid_high if policy else BYTES_80G,
+        "MemoryMax": policy.uid_max if policy else BYTES_96G,
         "MemorySwapMax": BYTES_8G,
         "MemoryLow": BYTES_20G,
         "MemoryMin": BYTES_10G,
@@ -722,12 +749,12 @@ def audit_system_memory_unit(unit: str) -> list[Check]:
     return checks
 
 
-def audit_system_slice_reservation() -> list[Check]:
+def audit_system_slice_reservation(policy: HostPolicy | None = None) -> list[Check]:
     expected: dict[str, int | None] = {
-        "MemoryHigh": None,
-        "MemoryMax": None,
+        "MemoryHigh": policy.system_high if policy else None,
+        "MemoryMax": policy.system_max if policy else None,
         "MemorySwapMax": None,
-        "MemoryLow": BYTES_24G,
+        "MemoryLow": policy.system_low if policy else BYTES_24G,
         "MemoryMin": BYTES_12G,
     }
     values = _show("system.slice", list(expected))
@@ -1135,9 +1162,48 @@ def format_human(checks: list[Check]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    output.add_argument(
+        "--print-host-policy", action="store_true", help="emit selected profile fields"
+    )
     parser.add_argument("--uid", type=int, default=os.getuid(), help="user manager UID to audit")
     args = parser.parse_args(argv)
+
+    try:
+        policy = current_host_policy()
+    except HostPolicyError as exc:
+        checks = [Check("host_policy", "error", "admitted exact host profile", "N/A", str(exc))]
+        if args.json:
+            print(
+                json.dumps(
+                    {"checks": [asdict(check) for check in checks]}, indent=2, sort_keys=True
+                )
+            )
+        else:
+            print(format_human(checks))
+        return 1
+    if args.print_host_policy:
+        ceilings = (
+            policy.app_high,
+            policy.app_max,
+            policy.uid_high,
+            policy.uid_max,
+            policy.system_high,
+            policy.system_max,
+            policy.system_low,
+        )
+        print(
+            "\t".join(
+                (
+                    policy.profile,
+                    *(f"{n // BYTES_1G}G" for n in ceilings),
+                    str(policy.zram_mib),
+                    str(policy.swappiness),
+                )
+            )
+        )
+        return 0
 
     try:
         with shared_root_required_lock():
@@ -1153,11 +1219,11 @@ def main(argv: list[str] | None = None) -> int:
                 audit_user_manager_live_score(args.uid),
                 *audit_recovery_system_units(),
                 *audit_sshd_policy(),
-                *audit_system_slice_reservation(),
+                *audit_system_slice_reservation(policy),
                 *audit_user_slice_reservation(),
-                *audit_system_memory_unit(f"user-{args.uid}.slice"),
-                *audit_system_memory_unit(f"user@{args.uid}.service"),
-                *audit_app_slice(),
+                *audit_system_memory_unit(f"user-{args.uid}.slice", policy),
+                *audit_system_memory_unit(f"user@{args.uid}.service", policy),
+                *audit_app_slice(policy),
                 *audit_session_slice(),
                 *audit_user_child_floor_composition(args.uid),
                 *audit_protected_user_units(),
