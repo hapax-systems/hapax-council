@@ -3907,6 +3907,8 @@ class TestExitPredicate:
             "body": "",
             "headRefName": "feat/42",
             "headRefOid": "c" * 40,
+            "baseRefName": "main",
+            "baseRepoDefaultBranch": "main",
             "changedFiles": 2,
             "files": [{"path": "shared/foo.py"}, {"path": "tests/test_foo.py"}],
             "isDraft": False,
