@@ -92,6 +92,32 @@ def test_a_credential_route_on_an_added_line_is_a_finding(tmp_path: Path) -> Non
     assert "credential-env-read" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("path", "content", "kind"),
+    [
+        (
+            "app.py",
+            'url = "HTTPS://user@API.OPENAI.COM.:443/v1?model=x"\n',
+            "provider-api-endpoint",
+        ),
+        ("app.js", 'const key = process.env["openai_api_key"];\n', "credential-env-read"),
+        ("app.py", 'headers = {"authorization": f"BEARER {token}"}\n', "api-key-route"),
+        ("app.py", "client = OpenAI(timeout=30)\n", "provider-api-endpoint"),
+    ],
+    ids=["provider-url", "js-env", "bearer-header", "sdk-constructor"],
+)
+def test_normalized_detector_variants_reach_scanner_finding(
+    tmp_path: Path, path: str, content: str, kind: str
+) -> None:
+    repo, base, _head, _diff = _fixture(tmp_path)
+    _git(repo, "checkout", "-q", base)
+    (repo / path).write_text(content)
+    _commit(repo, "normalized detector case")
+    result = _run(repo, base)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert kind in result.stdout
+
+
 def test_a_change_without_a_billing_surface_is_clean(tmp_path: Path) -> None:
     repo, base, _head, _diff = _fixture(tmp_path)
     _git(repo, "checkout", "-q", base)
