@@ -556,6 +556,92 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
     }
 )
 
+# Claude cloud-credit quota admission (scripts/hapax-claude-cloud-credit-quota-admission).
+# The promotional cloud credit (ccr_promotional) is a separate pool from the subscription:
+# these receipts never attest subscription headroom and never pay-as-you-go, and the
+# subscription wall logic below must not touch the cloud route's freshness.
+CLAUDE_CLOUD_CREDIT_ROUTE_ID = "claude.review.cloud"
+CLAUDE_CLOUD_CREDIT_ADMISSION_SCHEMA = "hapax.claude_cloud_credit_quota_admission.v1"
+CLAUDE_CLOUD_CREDIT_ADMISSION_PROVIDER = "anthropic-claude-cloud-credit"
+CLAUDE_CLOUD_CREDIT_ADMISSION_CAPACITY_POOL = "promotional_credit_quota"
+CLAUDE_CLOUD_CREDIT_ADMISSION_AUTH_SURFACE = "oauth"
+CLAUDE_CLOUD_CREDIT_ADMISSION_SECRET_SOURCE = (
+    "claude:operator-session-oauth"  # pragma: allowlist secret
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_BILLING_MODE = "promotional_cloud_credit"
+CLAUDE_CLOUD_CREDIT_ADMISSION_OBSERVATIONS = frozenset(
+    {
+        "cloud_credit_quota_headroom_observed",
+        "operator_confirmed_cloud_credit_headroom",
+    }
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+CLAUDE_CLOUD_CREDIT_ADMISSION_SUFFIX = "cloud-credit-quota:observed"
+CLAUDE_CLOUD_CREDIT_ADMISSION_RECEIPT_GLOB = "*claude-cloud-credit-quota-admission*.yaml"
+CLAUDE_CLOUD_CREDIT_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
+    r"\A[a-z0-9_.+-]*claude-cloud-credit-quota-admission[a-z0-9_.+-]*\.yaml\Z"
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_ALLOWLIST_RE = re.compile(
+    r"\Aclaude-cloud-credit-(?:quota-headroom-observed|operator-confirmed-headroom)-"
+    r"\d{8}t\d{4}(?:\d{2})?z\Z"
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE = re.compile(
+    r"(?:"
+    r"(?:^|[-_.+:])(?:billing|customer|account|invoice|payment)[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])subscription[-_.+:]?id[a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[0-9][a-z0-9]*(?:$|[-_.+:])|"
+    r"(?:^|[-_.+:])(?:cus|sub|acct|in|ch)[-_.+:][a-z0-9]+(?:$|[-_.+:])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE = re.compile(
+    r"(?:"
+    r"hapax-claude-[a-z0-9-]+|session-present|lane-present|lane-exists|"
+    r"(?:^|[-_.+])"
+    r"(?:(?:tmux|sessions?|lanes?|dev)[0-9]*|"
+    r"(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|"
+    r"lambda|mu|nu|xi|omicron|pi|rho|sigma|tau|upsilon|phi|chi|psi|omega)[0-9]*|"
+    r"cx-[a-z0-9-]+|vbe-[0-9]+)"
+    r"(?:$|[-_.+])"
+    r")",
+    re.IGNORECASE,
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_RECHECK_COMMAND = (
+    "find ~/.cache/hapax/relay/receipts -maxdepth 1 "
+    f"-name '{CLAUDE_CLOUD_CREDIT_ADMISSION_RECEIPT_GLOB}' -print"
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_RECOVERY_HINT = (
+    "false-negative recovery: create a fresh short-lived admission receipt with "
+    "scripts/hapax-claude-cloud-credit-quota-admission after a genuine account-live "
+    "cloud-credit observation (never lane/session presence, never subscription headroom)"
+)
+CLAUDE_CLOUD_CREDIT_ADMISSION_FIELDS = frozenset(
+    {
+        "schema",
+        "status",
+        "provider",
+        "route_id",
+        "capacity_pool",
+        "auth_surface",
+        "observation",
+        "observed_at",
+        "stale_after_seconds",
+        "evidence_ref",
+        "secret_source",
+        "secret_value_persisted",
+        "prompt_or_output_persisted",
+        "billing_mode",
+        "account_live_quota_observed",
+        "lane_presence_used_as_quota_evidence",
+        "positive_admission",
+    }
+)
+
 CODEX_EXEC_AUTH_HOLD_REASONS = frozenset(
     {
         "codex_exec_auth_agent_identity_jwt_invalid_json",
@@ -798,6 +884,12 @@ class ClaudeAdmission:
 
 @dataclass(frozen=True)
 class ClaudeAdmissionScan:
+    admissions: list[ClaudeAdmission]
+    ignored_evidence_refs: list[str]
+
+
+@dataclass(frozen=True)
+class ClaudeCloudCreditAdmissionScan:
     admissions: list[ClaudeAdmission]
     ignored_evidence_refs: list[str]
 
@@ -1099,6 +1191,16 @@ def _receipt_label(path: Path) -> str:
             CLAUDE_ADMISSION_SECRETISH_RE.search(name_stem) is None
             and CLAUDE_ADMISSION_BILLINGISH_RE.search(name_stem) is None
             and CLAUDE_ADMISSION_LANE_PRESENCE_RE.search(name_stem) is None
+        ):
+            return name
+        digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
+        return f"unsafe-receipt-name-sha256:{digest}"
+    if CLAUDE_CLOUD_CREDIT_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name) is not None:
+        name_stem = name.removesuffix(".yaml")
+        if (
+            CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE.search(name_stem) is None
+            and CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE.search(name_stem) is None
+            and CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE.search(name_stem) is None
         ):
             return name
         digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
@@ -1832,6 +1934,184 @@ def active_claude_admission_receipts(
     return ClaudeAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
 
 
+def _warn_ignored_claude_cloud_credit_admission(
+    path: Path, reason: str, route_id: str | None = None
+) -> str:
+    # Emit the same sanitized reason code stored in evidence. Never print raw rejected field values.
+    receipt_label = _receipt_label(path)
+    reason_code = _reason_code(reason)
+    print(
+        "hapax-quota-telemetry-writer: ignoring claude cloud-credit admission receipt: "
+        f"reason={reason_code}; recheck: {CLAUDE_CLOUD_CREDIT_ADMISSION_RECHECK_COMMAND}; "
+        f"{CLAUDE_CLOUD_CREDIT_ADMISSION_RECOVERY_HINT}",
+        file=sys.stderr,
+    )
+    route_ref = f":route_id:{route_id}" if route_id == CLAUDE_CLOUD_CREDIT_ROUTE_ID else ""
+    return f"relay-receipt:{receipt_label}:ignored:{reason_code}{route_ref}"
+
+
+def active_claude_cloud_credit_admission_receipts(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> ClaudeCloudCreditAdmissionScan:
+    """Fresh positive Claude cloud-credit admission receipts for claude.review.cloud.
+
+    The promotional cloud credit is receipt-bounded like the subscription, but
+    the witness class is distinct: only hapax.claude_cloud_credit_quota_admission.v1
+    receipts naming the cloud-credit provider, pool, and billing mode count.
+    Subscription receipts never admit this route; pay-as-you-go never appears.
+    """
+
+    if not receipt_dir.is_dir():
+        return ClaudeCloudCreditAdmissionScan(admissions=[], ignored_evidence_refs=[])
+    refs: list[ClaudeAdmission] = []
+    ignored_refs: list[str] = []
+
+    def reject(path: Path, reason: str, route_id: str | None = None) -> None:
+        ignored_refs.append(_warn_ignored_claude_cloud_credit_admission(path, reason, route_id))
+
+    for path in sorted(receipt_dir.glob(CLAUDE_CLOUD_CREDIT_ADMISSION_RECEIPT_GLOB)):
+        if CLAUDE_CLOUD_CREDIT_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(path.name) is None:
+            reject(path, "unsafe receipt name")
+            continue
+        receipt_name_stem = path.name.removesuffix(".yaml")
+        if CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names secretish value")
+            continue
+        if CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names billing or account identifier")
+            continue
+        if CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE.search(receipt_name_stem) is not None:
+            reject(path, "receipt name names lane/session presence")
+            continue
+        try:
+            raw_receipt = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            reject(path, f"unreadable receipt {type(exc).__name__}")
+            continue
+        fields, parse_error = _parse_flat_yaml_strict(
+            raw_receipt,
+            allowed_fields=CLAUDE_CLOUD_CREDIT_ADMISSION_FIELDS,
+        )
+        if parse_error is not None:
+            reject(path, parse_error)
+            continue
+        expected = {
+            "schema": CLAUDE_CLOUD_CREDIT_ADMISSION_SCHEMA,
+            "status": "quota_available",
+            "provider": CLAUDE_CLOUD_CREDIT_ADMISSION_PROVIDER,
+            "capacity_pool": CLAUDE_CLOUD_CREDIT_ADMISSION_CAPACITY_POOL,
+            "auth_surface": CLAUDE_CLOUD_CREDIT_ADMISSION_AUTH_SURFACE,
+            "secret_source": CLAUDE_CLOUD_CREDIT_ADMISSION_SECRET_SOURCE,
+            "secret_value_persisted": "false",
+            "prompt_or_output_persisted": "false",
+            "billing_mode": CLAUDE_CLOUD_CREDIT_ADMISSION_BILLING_MODE,
+            "account_live_quota_observed": "true",
+            "lane_presence_used_as_quota_evidence": "false",
+            "positive_admission": "true",
+        }
+        failed = False
+        for key, value in expected.items():
+            if fields.get(key, "") != value:
+                reject(
+                    path,
+                    f"{key} missing or unsupported; expected {value}",
+                    fields.get("route_id", "").strip(),
+                )
+                failed = True
+                break
+        if failed:
+            continue
+        route_id = fields.get("route_id", "").strip()
+        if route_id != CLAUDE_CLOUD_CREDIT_ROUTE_ID:
+            reject(
+                path,
+                f"route_id missing or unsupported; expected {CLAUDE_CLOUD_CREDIT_ROUTE_ID}",
+                route_id,
+            )
+            continue
+        observation = fields.get("observation", "").strip()
+        if observation not in CLAUDE_CLOUD_CREDIT_ADMISSION_OBSERVATIONS:
+            reject(path, "observation missing or unsupported", route_id)
+            continue
+        receipt_evidence_ref = " ".join(fields.get("evidence_ref", "").strip().split())
+        if (
+            CLAUDE_CLOUD_CREDIT_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
+            or CLAUDE_CLOUD_CREDIT_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
+        ):
+            reject(
+                path,
+                "evidence_ref unsafe; expected sanitized account-live observation reference",
+                route_id,
+            )
+            continue
+        if CLAUDE_CLOUD_CREDIT_ADMISSION_BILLINGISH_RE.search(receipt_evidence_ref) is not None:
+            reject(path, "evidence_ref names billing or account identifier", route_id)
+            continue
+        if CLAUDE_CLOUD_CREDIT_ADMISSION_LANE_PRESENCE_RE.search(receipt_evidence_ref) is not None:
+            reject(
+                path,
+                "evidence_ref names lane/session presence; not account-live quota evidence",
+                route_id,
+            )
+            continue
+        if (
+            CLAUDE_CLOUD_CREDIT_ADMISSION_WITNESS_ALLOWLIST_RE.fullmatch(receipt_evidence_ref)
+            is None
+        ):
+            reject(
+                path,
+                "evidence_ref unsupported; expected claude cloud-credit witness reference",
+                route_id,
+            )
+            continue
+        observed_at = _parse_utc(fields.get("observed_at", "").strip())
+        if observed_at is None:
+            reject(path, "missing or malformed observed_at", route_id)
+            continue
+        if observed_at > now:
+            reject(path, "observed_at is in the future", route_id)
+            continue
+        observed_at = _utc_seconds(observed_at)
+        try:
+            stale_after_seconds = int(fields.get("stale_after_seconds", "").strip())
+        except ValueError:
+            reject(path, "malformed stale_after_seconds", route_id)
+            continue
+        if stale_after_seconds <= 0:
+            reject(path, "non-positive stale_after_seconds", route_id)
+            continue
+        if stale_after_seconds > CLAUDE_CLOUD_CREDIT_ADMISSION_MAX_STALE_AFTER_SECONDS:
+            reject(
+                path,
+                "stale_after_seconds exceeds maximum "
+                f"{CLAUDE_CLOUD_CREDIT_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+                route_id,
+            )
+            continue
+        fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
+        if now >= fresh_until:
+            reject(path, "receipt expired", route_id)
+            continue
+        refs.append(
+            ClaudeAdmission(
+                route_id=route_id,
+                evidence_ref=(
+                    "relay-receipt:"
+                    f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
+                    f"observation:{observation}:"
+                    f"observed_at:{_iso_z_seconds(observed_at)}:"
+                    f"fresh_until:{_iso_z_seconds(fresh_until)}:"
+                    f"{CLAUDE_CLOUD_CREDIT_ADMISSION_SUFFIX}"
+                ),
+                observed_at=observed_at,
+                fresh_until=fresh_until,
+            )
+        )
+    return ClaudeCloudCreditAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
+
+
 def active_glmcp_admission_receipts(
     receipt_dir: Path,
     *,
@@ -2516,8 +2796,13 @@ def build_live_ledger(
     codex_auth_blocker: CodexAuthBlocker | None,
     local_resource_state: str,
     local_resource_evidence: list[str],
+    claude_cloud_credit_admissions: list[ClaudeAdmission] | None = None,
+    claude_cloud_credit_ignored_receipts: list[str] | None = None,
 ) -> QuotaSpendLedger:
     """Carry governance records over from base; re-derive telemetry live."""
+
+    claude_cloud_credit_admissions = claude_cloud_credit_admissions or []
+    claude_cloud_credit_ignored_receipts = claude_cloud_credit_ignored_receipts or []
 
     spend_base = _ledger_with_glmcp_payg_spend_receipts(base, glmcp_payg_spend_receipts)
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
@@ -2718,6 +3003,60 @@ def build_live_ledger(
                 if fresh_until is not None:
                     snapshot["fresh_until"] = _iso_z_seconds(fresh_until)
                 snapshots.append(snapshot)
+            cloud_route_admissions = [
+                admission
+                for admission in claude_cloud_credit_admissions
+                if admission.route_id == CLAUDE_CLOUD_CREDIT_ROUTE_ID
+            ]
+            if cloud_route_admissions:
+                cloud_state = "fresh"
+                cloud_evidence = [
+                    *(admission.evidence_ref for admission in cloud_route_admissions),
+                    writer_ref,
+                ]
+                cloud_fresh_until = max(
+                    admission.fresh_until for admission in cloud_route_admissions
+                )
+                cloud_reason = (
+                    "fresh claude cloud-credit quota admission receipt present; "
+                    f"{CLAUDE_CLOUD_CREDIT_ROUTE_ID} promotional-credit quota is "
+                    "receipt-bounded, never subscription headroom and never pay-as-you-go"
+                )
+            else:
+                cloud_state = "unknown"
+                cloud_ignored = _claude_ignored_receipts_for_route(
+                    claude_cloud_credit_ignored_receipts,
+                    CLAUDE_CLOUD_CREDIT_ROUTE_ID,
+                )
+                cloud_evidence = (
+                    [*cloud_ignored, writer_ref]
+                    if cloud_ignored
+                    else [
+                        "relay-receipt:claude-cloud-credit:quota-admission:"
+                        f"{CLAUDE_CLOUD_CREDIT_ROUTE_ID}:absent",
+                        writer_ref,
+                    ]
+                )
+                cloud_fresh_until = None
+                cloud_reason = (
+                    "no fresh claude cloud-credit quota admission receipt; "
+                    f"{CLAUDE_CLOUD_CREDIT_ROUTE_ID} must hold rather than infer "
+                    "availability from lane/session presence"
+                )
+            cloud_snapshot = {
+                "quota_snapshot_schema": 1,
+                "snapshot_id": f"quota-claude-review-cloud-live-{snapshot_stamp}",
+                "captured_at": now.isoformat().replace("+00:00", "Z"),
+                "route_id": CLAUDE_CLOUD_CREDIT_ROUTE_ID,
+                "provider": CLAUDE_CLOUD_CREDIT_ADMISSION_PROVIDER,
+                "capacity_pool": CLAUDE_CLOUD_CREDIT_ADMISSION_CAPACITY_POOL,
+                "subscription_quota_state": cloud_state,
+                "evidence_refs": cloud_evidence,
+                "operator_visible_reason": cloud_reason,
+            }
+            if cloud_fresh_until is not None:
+                cloud_snapshot["fresh_until"] = _iso_z_seconds(cloud_fresh_until)
+            snapshots.append(cloud_snapshot)
             continue
         elif platform_walls and glmcp_eligible_payg_budget_decisions:
             state = "fresh"
@@ -4145,6 +4484,7 @@ def main(argv: list[str] | None = None) -> int:
         GlmcpPaygSpendScan,
         str,
         CodexAuthBlocker | None,
+        ClaudeCloudCreditAdmissionScan,
     ]:
         """One full scan→build→atomic-write pass under the live-ledger lock."""
         with quota_spend_live_lock(out_path):
@@ -4152,6 +4492,9 @@ def main(argv: list[str] | None = None) -> int:
             agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=current_now)
             kimi_scan = active_kimi_admission_receipts(args.relay_receipt_dir, now=current_now)
             claude_scan = active_claude_admission_receipts(args.relay_receipt_dir, now=current_now)
+            claude_cloud_credit_scan = active_claude_cloud_credit_admission_receipts(
+                args.relay_receipt_dir, now=current_now
+            )
             glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=current_now)
             glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
                 args.relay_receipt_dir,
@@ -4182,6 +4525,10 @@ def main(argv: list[str] | None = None) -> int:
                 codex_auth_blocker=codex_blocker,
                 local_resource_state=resource_state,
                 local_resource_evidence=resource_evidence,
+                claude_cloud_credit_admissions=claude_cloud_credit_scan.admissions,
+                claude_cloud_credit_ignored_receipts=(
+                    claude_cloud_credit_scan.ignored_evidence_refs
+                ),
             )
             if out_path.exists():
                 try:
@@ -4210,6 +4557,7 @@ def main(argv: list[str] | None = None) -> int:
             glmcp_payg_spend_scan,
             resource_state,
             codex_blocker,
+            claude_cloud_credit_scan,
         )
 
     try:
@@ -4223,6 +4571,7 @@ def main(argv: list[str] | None = None) -> int:
             glmcp_payg_spend_scan,
             resource_state,
             codex_blocker,
+            claude_cloud_credit_scan,
         ) = _scan_build_write(now)
     except LiveLedgerLockTimeout as exc:
         print(
@@ -4380,6 +4729,7 @@ def main(argv: list[str] | None = None) -> int:
                     glmcp_payg_spend_scan,
                     resource_state,
                     codex_blocker,
+                    claude_cloud_credit_scan,
                 ) = _scan_build_write(pass2_now)
                 ledger_rebuilt_after_refresh = True
                 # The rebuild REPLACED the published ledger: the publication
@@ -4641,6 +4991,10 @@ def main(argv: list[str] | None = None) -> int:
         "kimi_ignored_admissions": len(kimi_scan.ignored_evidence_refs),
         "claude_admissions": len(claude_scan.admissions),
         "claude_ignored_admissions": len(claude_scan.ignored_evidence_refs),
+        "claude_cloud_credit_admissions": len(claude_cloud_credit_scan.admissions),
+        "claude_cloud_credit_ignored_admissions": len(
+            claude_cloud_credit_scan.ignored_evidence_refs
+        ),
         "glmcp_admissions": len(glmcp_scan.admissions),
         "glmcp_ignored_admissions": len(glmcp_scan.ignored_evidence_refs),
         "glmcp_payg_spend_receipts": len(glmcp_payg_spend_scan.receipts),
