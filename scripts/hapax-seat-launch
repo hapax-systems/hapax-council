@@ -11,13 +11,19 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import resource
+import secrets
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 SEAT_SESSION = "hapax-codex-seat"
 INNER_MARKER = "HAPAX_SEAT_LAUNCH_INNER"
+LAUNCH_ID_VAR = "HAPAX_SEAT_LAUNCH_ID"
+SEAT_MODEL = "gpt-6-sol"
+SEAT_EFFORT = "high"
 
 
 class SeatBindingError(ValueError):
@@ -111,6 +117,9 @@ def _raise_nofile() -> None:
 def _require_inner_session() -> None:
     if os.environ.get(INNER_MARKER) != SEAT_SESSION or not os.environ.get("TMUX"):
         raise SeatBindingError("inner_invocation_outside_seat_launcher")
+    launch_id = os.environ.get(LAUNCH_ID_VAR, "")
+    if re.fullmatch(r"[0-9a-f]{32}", launch_id) is None:
+        raise SeatBindingError("missing_seat_launch_id")
     observed = subprocess.run(
         ["tmux", "display-message", "-p", "#{session_name}"],
         capture_output=True,
@@ -127,13 +136,15 @@ def _inner_codex(home: Path) -> None:
     _raise_nofile()
     environment = os.environ.copy()
     environment.pop(INNER_MARKER, None)
+    launch_id = environment.pop(LAUNCH_ID_VAR)
     environment["CODEX_HOME"] = str(home / ".codex-seat")
     environment["HAPAX_AGENT_ROLE"] = "dev1-seat-codex"
     prompt = (
         "Take the coordinator seat. Read "
         "30-areas/hapax/frame/coordinator-succession-20260924/"
         "HANDOFF-seat-claude-to-codex-20260929.md in the canonical vault, "
-        "then COORDINATOR-SEAT.md sections 0 through 3. Follow the handoff starting at section 0."
+        "then COORDINATOR-SEAT.md sections 0 through 3. Follow the handoff starting at section 0. "
+        f"Seat startup receipt: {launch_id}."
     )
     command = [
         "systemd-run",
@@ -150,13 +161,102 @@ def _inner_codex(home: Path) -> None:
         "-a",
         "never",
         "-m",
-        "gpt-6-sol",
+        SEAT_MODEL,
         "-c",
-        "model_reasoning_effort=high",
+        f"model_reasoning_effort={SEAT_EFFORT}",
         prompt,
     ]
     os.chdir(home / "projects")
     os.execvpe(command[0], command, environment)
+
+
+def _first_turn_state(path: Path, launch_id: str) -> str:
+    """Observe the first submitted turn in one new Codex rollout, without logging its content."""
+    first_turn = None
+    prompt_seen = False
+    route_seen = False
+    wrong_route = False
+    completion = False
+    aborted = False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return "pending"
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue  # An in-progress final JSONL line is not yet evidence.
+        if not isinstance(record, dict):
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        kind = payload.get("type")
+        if record.get("type") == "event_msg" and kind == "task_started" and first_turn is None:
+            first_turn = payload.get("turn_id")
+        elif record.get("type") == "turn_context" and first_turn and not route_seen:
+            route_seen = True
+            wrong_route = payload.get("model") != SEAT_MODEL or payload.get("effort") != SEAT_EFFORT
+        elif record.get("type") == "response_item" and kind == "message":
+            if payload.get("role") == "user":
+                prompt_seen |= any(
+                    part.get("type") == "input_text"
+                    and f"Seat startup receipt: {launch_id}." in part.get("text", "")
+                    for part in payload.get("content", [])
+                    if isinstance(part, dict)
+                )
+        elif record.get("type") == "event_msg" and payload.get("turn_id") == first_turn:
+            message = payload.get("last_agent_message")
+            if (
+                kind == "task_complete"
+                and prompt_seen
+                and isinstance(message, str)
+                and message.strip()
+            ):
+                completion = True
+            if kind == "turn_aborted":
+                aborted = True
+    if not prompt_seen or not first_turn:
+        return "pending"
+    if wrong_route:
+        return "wrong_route"
+    if aborted:
+        return "aborted"
+    return "ready" if completion and route_seen else "pending"
+
+
+def _startup_timeout(environment: dict[str, str]) -> float:
+    raw = environment.get("HAPAX_SEAT_STARTUP_TIMEOUT_SECONDS", "300")
+    try:
+        timeout = float(raw)
+    except ValueError as exc:
+        raise SeatBindingError("invalid_startup_timeout") from exc
+    if not 0 < timeout <= 600:
+        raise SeatBindingError("invalid_startup_timeout")
+    return timeout
+
+
+def _wait_first_turn(seat_home: Path, launch_id: str, prior: set[Path], timeout: float) -> Path:
+    deadline = time.monotonic() + timeout
+    sessions = seat_home / "sessions"
+    while True:
+        live = subprocess.run(["tmux", "has-session", "-t", SEAT_SESSION], capture_output=True)
+        if live.returncode != 0:
+            raise SeatBindingError("seat_exited_before_first_turn")
+        for path in sessions.rglob("rollout-*.jsonl"):
+            if path in prior:
+                continue
+            state = _first_turn_state(path, launch_id)
+            if state == "aborted":
+                raise SeatBindingError("seat_first_turn_aborted")
+            if state == "wrong_route":
+                raise SeatBindingError("seat_first_turn_wrong_route")
+            if state == "ready":
+                return path
+        if time.monotonic() >= deadline:
+            raise SeatBindingError("seat_first_turn_timeout")
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
 
 def main() -> int:
@@ -192,6 +292,13 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    try:
+        timeout = _startup_timeout(os.environ)
+        prior = set((Path(evidence["seat_home"]) / "sessions").rglob("rollout-*.jsonl"))
+    except (OSError, SeatBindingError) as exc:
+        print(f"hapax-seat-launch: REFUSED {exc}", file=sys.stderr)
+        return 2
+    launch_id = secrets.token_hex(16)
     command = [
         "tmux",
         "new-session",
@@ -203,12 +310,22 @@ def main() -> int:
         "env",
         f"CODEX_HOME={evidence['seat_home']}",
         f"{INNER_MARKER}={SEAT_SESSION}",
+        f"{LAUNCH_ID_VAR}={launch_id}",
         sys.executable,
         str(Path(__file__).resolve()),
         "codex",
         "--inner-codex",
     ]
-    return subprocess.run(command, check=False).returncode
+    created = subprocess.run(command, check=False)
+    if created.returncode != 0:
+        return created.returncode
+    try:
+        rollout = _wait_first_turn(Path(evidence["seat_home"]), launch_id, prior, timeout)
+    except (OSError, SeatBindingError) as exc:
+        print(f"hapax-seat-launch: REFUSED {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({"readiness": "first_turn_complete", "rollout": str(rollout)}))
+    return 0
 
 
 if __name__ == "__main__":
