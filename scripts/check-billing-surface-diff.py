@@ -51,12 +51,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.billing_surface_detector import (  # noqa: E402
-    _BEARER_RES,
     _KEY_BEARING_PROBE,
     _PY_SUFFIXES,
     ALLOW_MARKER,
     Finding,
     ScanResult,
+    _has_bearer_header,
     _is_doc_path,
     _marker_is_allowed_on,
     _marker_outside_fixtures_finding,
@@ -172,7 +172,7 @@ def _scan_validated_files(
                 )
             for line_no, text in sorted(added.items()):
                 line_kinds: tuple[str, ...] = _pattern_only_classes(text)
-                if any(pattern.search(text) for pattern in _BEARER_RES):
+                if _has_bearer_header(text):
                     line_kinds += ("api-key-route",)
                 emit(path, line_no, line_kinds, text)
             continue
