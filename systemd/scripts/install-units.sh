@@ -178,6 +178,16 @@ parked_unit() {
     grep -Eiq '^[#;][[:space:]]*Hapax-Parked:[[:space:]]*(true|yes|1)[[:space:]]*$' "$1"
 }
 
+idle_watchdog_timer_held_here() {
+    # Registry-bound host identities; this sweep does not cover other hosts.
+    # config/estate-store-registry.yaml declares both machine IDs.
+    [ "$1" = "hapax-lane-idle-watchdog.timer" ] || return 1
+    case "$(cat /etc/machine-id 2>/dev/null)" in
+        ffc36d1a0ca64320a3f1c9f1060292af|15c4e584aac74d048bcbe90fc35e6da3) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 dedicated_p0_oom_unit() {
     case "$1" in
         hapax-oom-policy-audit.service|\
@@ -280,6 +290,9 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
     for timer_file in "$REPO_DIR"/*.timer; do
         [ -f "$timer_file" ] || continue
         timer_name="$(basename "$timer_file")"
+        if idle_watchdog_timer_held_here "$timer_name"; then
+            continue
+        fi
         if [ "$timer_name" = "hapax-novelty-shift-emitter.timer" ] && parked_unit "$timer_file"; then
             continue
         fi
@@ -305,6 +318,9 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
     # immediately. Existing dormant timers handled by the sweep above
     # do NOT get --now; they fire on their next natural schedule.
     for timer in "${new_timers[@]}"; do
+        if idle_watchdog_timer_held_here "$timer"; then
+            continue
+        fi
         if [ "$timer" = "hapax-novelty-shift-emitter.timer" ] && parked_unit "$REPO_DIR/$timer"; then
             continue
         fi
