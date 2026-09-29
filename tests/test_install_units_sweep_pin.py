@@ -223,6 +223,58 @@ class TestParkedUnits:
         assert state.read_text(encoding="utf-8").strip() == "disabled inactive success"
         assert "parked: hapax-live-cuepoints.service" in result.stdout
 
+    def test_retired_novelty_timer_stays_parked_on_existing_and_first_install(
+        self, tmp_path: Path
+    ) -> None:
+        timer = "hapax-novelty-shift-emitter.timer"
+        timer_source = REPO_ROOT / "systemd" / "units" / timer
+        assert "# Hapax-Parked: true" in timer_source.read_text(encoding="utf-8")
+
+        for already_linked in (True, False):
+            root = tmp_path / ("existing" if already_linked else "first-install")
+            bin_dir = root / "bin"
+            bin_dir.mkdir(parents=True)
+            calls = root / "systemctl-calls.txt"
+            systemctl = bin_dir / "systemctl"
+            systemctl.write_text(
+                f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> '{calls}'\nexit 0\n",
+                encoding="utf-8",
+            )
+            systemctl.chmod(0o755)
+            uv = bin_dir / "uv"
+            uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            uv.chmod(0o755)
+
+            home = root / "home"
+            dest = home / ".config" / "systemd" / "user"
+            dest.mkdir(parents=True)
+            if already_linked:
+                (dest / timer).symlink_to(timer_source)
+
+            env = os.environ.copy()
+            env["ALLOW_NONSTANDARD_REPO"] = "1"
+            env["HOME"] = str(home)
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env.pop("SKIP_TIMER_ENABLE", None)
+            result = subprocess.run(
+                ["bash", str(INSTALL_SCRIPT)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            assert result.returncode == 0, result.stderr
+            issued = calls.read_text(encoding="utf-8").splitlines()
+            assert f"--user disable --now {timer}" in issued
+            assert not any(
+                call.startswith("--user enable ") and call.endswith(f" {timer}") for call in issued
+            )
+            assert any(
+                call.startswith("--user enable ") and call.endswith(" hapax-s4-arm.timer")
+                for call in issued
+            )
+
 
 class TestServiceDropInInstall:
     """LRR Phase 3 regression pins for the ``*.service.d/`` drop-in

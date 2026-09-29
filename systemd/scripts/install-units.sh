@@ -280,6 +280,9 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
     for timer_file in "$REPO_DIR"/*.timer; do
         [ -f "$timer_file" ] || continue
         timer_name="$(basename "$timer_file")"
+        if [ "$timer_name" = "hapax-novelty-shift-emitter.timer" ] && parked_unit "$timer_file"; then
+            continue
+        fi
         # Skip if not linked yet — the symlink block above handles those.
         [ -L "$DEST_DIR/$timer_name" ] || continue
         # Check whether the timer already has a .wants symlink (already enabled).
@@ -302,6 +305,9 @@ if [ "${SKIP_TIMER_ENABLE:-0}" != "1" ]; then
     # immediately. Existing dormant timers handled by the sweep above
     # do NOT get --now; they fire on their next natural schedule.
     for timer in "${new_timers[@]}"; do
+        if [ "$timer" = "hapax-novelty-shift-emitter.timer" ] && parked_unit "$REPO_DIR/$timer"; then
+            continue
+        fi
         if timer_enable_only "$REPO_DIR/$timer"; then
             if systemctl --user enable "$timer" 2>/dev/null; then
                 echo "enabled: $timer (Hapax-Timer-Enable-Only; not started)"
