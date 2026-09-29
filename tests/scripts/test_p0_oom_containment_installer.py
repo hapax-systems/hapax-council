@@ -170,6 +170,24 @@ def test_install_without_check_rejects_committed_bad_selected_file_before_mutati
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
+    for name, relative in (
+        ("HAPAX_OOM_SYSTEMD_SYSTEM_DIR", "systemd-system-default"),
+        ("HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR", "systemd-user-control-default"),
+        ("HAPAX_OOM_EARLYOOM_DEST", "earlyoom-default"),
+        ("HAPAX_OOM_ENFORCER_DEST", "sbin/hapax-oom-score-enforce"),
+        ("HAPAX_ROOT_FAILURE_INTAKE_DEST", "sbin/hapax-root-failure-intake"),
+        ("HAPAX_OOM_PROC_ROOT", "proc-default"),
+    ):
+        monkeypatch.setenv(name, str(tmp_path / relative))
+    monkeypatch.setenv("HAPAX_OOM_INSTALL_SUDO", "")
+    fake_systemctl = tmp_path / "systemctl-default"
+    fake_systemctl.write_text("#!/bin/sh\nexit 77\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_SYSTEMCTL", str(fake_systemctl))
+    fake_runuser = tmp_path / "runuser-default"
+    fake_runuser.write_text("#!/bin/sh\nexit 77\n", encoding="utf-8")
+    fake_runuser.chmod(0o755)
+    monkeypatch.setenv("HAPAX_OOM_RUNUSER", str(fake_runuser))
     monkeypatch.setenv("HAPAX_OOM_TARGET_USER", "hapax")
     monkeypatch.setenv("HAPAX_OOM_TARGET_UID", "1000")
     monkeypatch.setenv("HAPAX_OOM_TARGET_GID", "1000")
@@ -206,6 +224,32 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("HAPAX_OOM_VISUDO", str(fake_visudo))
     monkeypatch.setenv("HAPAX_OOM_SYSTEMD_USER_DIR", str(tmp_path / "systemd-user-default"))
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_GIT_REPO", str(REPO_ROOT))
+
+
+def test_installer_fixture_blocks_live_destinations_on_refusal_regression(tmp_path: Path) -> None:
+    destinations = (
+        "HAPAX_OOM_SYSTEMD_SYSTEM_DIR",
+        "HAPAX_OOM_SYSTEMD_USER_DIR",
+        "HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR",
+        "HAPAX_OOM_EARLYOOM_DEST",
+        "HAPAX_OOM_ENFORCER_DEST",
+        "HAPAX_OOM_TRIGGER_DEST",
+        "HAPAX_OOM_SUDOERS_DEST",
+        "HAPAX_OOM_SUDOERS_REFERENCE_DEST",
+        "HAPAX_ROOT_FAILURE_INTAKE_DEST",
+        "HAPAX_OOM_POLICY_AUDIT_DEST",
+        "HAPAX_OOM_HOST_PROFILE_DEST",
+        "HAPAX_ROOT_REQUIRED_AUDIT_DEST",
+    )
+    for name in destinations:
+        assert name in os.environ, f"{name} would fall back to a live path"
+        assert Path(os.environ[name]).is_relative_to(tmp_path), name
+    assert os.environ["HAPAX_OOM_INSTALL_SUDO"] == ""
+    assert Path(os.environ["HAPAX_OOM_PROC_ROOT"]).is_relative_to(tmp_path)
+    fake_systemctl = Path(os.environ["HAPAX_OOM_SYSTEMCTL"])
+    assert fake_systemctl.is_relative_to(tmp_path) and os.access(fake_systemctl, os.X_OK)
+    assert subprocess.run([str(fake_systemctl), "daemon-reload"], check=False).returncode == 77
+    assert Path(os.environ["HAPAX_OOM_RUNUSER"]).is_relative_to(tmp_path)
 
 
 def _unit_cgroup(unit: str) -> str:
