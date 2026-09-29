@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import subprocess
 import sys
@@ -143,3 +144,34 @@ def test_fragment_migration_preserves_the_vulture_finding_set(tmp_path: Path) ->
     )
     after = gate.run_vulture([str(source)], gate.whitelist_paths(central), 60)
     assert after == before
+
+
+def test_migrated_whitelist_entries_match_pre_migration_text() -> None:
+    """Pin the full entry set; Vulture findings can hide a dropped or broadened reference."""
+    gate = load_gate_module()
+    central = SCRIPT_PATH.parent / "vulture_whitelist.py"
+    entries = {
+        stripped
+        for path in gate.whitelist_paths(central)
+        for line in path.read_text().splitlines()
+        if (stripped := line.strip())
+        and not stripped.startswith("#")
+        and not (stripped.startswith('"""') and stripped.endswith('"""'))
+    }
+    # SHA-256 of sorted, nonblank, noncomment text lines in the pre-migration
+    # d081137ae:scripts/vulture_whitelist.py. The fragment's module docstring
+    # is ignored; all import and reference lines remain in the comparison.
+    digest = hashlib.sha256("\n".join(sorted(entries)).encode()).hexdigest()
+    expected = "0f9705c35a3481d9c0768174683dd4345ebe0de8edc2238e858364b86dbfaeb2"  # pragma: allowlist secret
+    assert digest == expected
+
+    migrated = {
+        "_EmaTrend.unobserved,",
+        "_ema_parse_catalogue,",
+        "_ema_parse_ledger,",
+        "_ema_render_flag_drop,",
+        "_ema_render_pile_status,",
+        "_ema_render_reduction_row,",
+        "_ema_split_frontmatter,",
+    }
+    assert migrated <= entries
