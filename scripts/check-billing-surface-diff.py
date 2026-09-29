@@ -1,52 +1,24 @@
 #!/usr/bin/env python3
-"""Fail a PR diff that opens a provider-billing surface — git-validated input.
+"""Git-validated provider-billing surface scan.
 
-The provider_billing_sensitive class's deterministic arm (RELEASE_MITIGATION_CHECKS): the ci.yml
-job ``billing-surface-scan`` runs this scan on every PR head and the autoqueue counts its SUCCESS.
-**None of that wiring is in this file's PR** — the entry, the job and the autoqueue read land in
-**#4805**; this half is the scanner they invoke.
+Strict mode exits 0 clean, 1 on findings, 2 on unusable input. The PR CI lint
+step uses ``--report-only`` to record redacted finding locations and kinds without
+blocking. A later row may enable a blocking gate after a clean week of reports.
 
-**GIT VALIDATES THE INPUT; THIS SCANNER NEVER PARSES RAW DIFF TEXT ON ITS OWN AUTHORITY.** Six
-rounds across #4795 and #4808 each found a new malformed shape that a hand-rolled diff parser read
-clean: truncation at any prefix, header-less hunks, ``+++`` without ``diff --git``, a marker
-leaking across lines, a ``Binary files … differ`` note after a hunk. The fix is structural:
-
-1. the input is applied BY GIT to the base (``git apply --check``, then ``git apply --cached`` into
-   a temporary index seeded from the base). Anything git will not apply is
-   ``billing-scan-unusable-input`` and exits 2 with a next action — there is no permissive parse to
-   leak;
-2. the added lines come from **git's own output**: a diff git regenerates from that index
-   (``git diff --cached --unified=0``), read by a CLOSED grammar whose default is REJECT, so an
-   unrecognised line refuses rather than scans;
-3. the post-image the AST layer parses comes from **git's own object store** (``git show :<path>``
-   against the same index), so no region is reconstructed from diff text at all.
-
-**What success proves:** no ADDED line matched the line patterns, and for Python every parsed
-``Call`` with a credential argument also binds its own route to a governed proxy. It is **not
-proof** that the change cannot spend: the semantic layer is the review quorum's, which is why the
-class needs both arms. Findings are a lower bound too: text that cannot be matched, or a blob that
-cannot be parsed, is a limitation and — where credential-bearing — a finding, never a pass.
-
-Flagged on ADDED lines of non-doc files: ``credential-env-read`` (a credential env read or
-injection), ``api-key-route`` (an API-key client route or Bearer header), ``provider-api-endpoint``
-(a provider endpoint literal or a bare provider SDK constructor — the implicit-credential path),
-``capacity-pool-payg`` (a capacity_pool/plan_type rebinding to api_paid_spend).
-
-**Python** is decided per ``ast`` node **on the post-image git materialised**: a ``Call`` carrying
-``api_key``/``key``/``token`` is a route unless that **same** Call binds its own route to a governed
-proxy host (``127.0.0.1``, ``localhost``, ``::1``, ``litellm``) through a *literal*
-``base_url``/``api_base``/``endpoint``. A dynamic value is not a binding, nor is a
-neighbouring/earlier/chained call's target. A node counts only when an ADDED line falls inside it.
-**Non-Python** gets **no structural exemption**; the marker on an allowlisted path is the one
-exemption any file kind can carry. **Every exemption granted is printed** as ``allowed``.
-
-Exit codes: 0 clean, 1 findings, 2 fail-closed (no usable diff input).
+Git first applies the diff to a temporary index seeded from the named base.
+The scanner reads only Git's regenerated added lines and post-image; unknown
+diff structure rejects. A proxy exemption needs a literal governed base URL
+on the same Python call. A fixture marker exempts only its own added lines.
+Findings are a lower bound, never proof that a change cannot spend.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
+import re
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -212,7 +184,7 @@ def _scan_validated_files(
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def _strict_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0] or None)
     parser.add_argument("--base", required=False, help="base revision the input diff applies to")
     parser.add_argument("--head", help="head revision (used only to generate the input diff)")
@@ -306,6 +278,30 @@ def main(argv: list[str] | None = None) -> int:
             + ", ".join(sorted({f"{f.path}:{f.line}" for f in result.allowed}))
             + ")"
         )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--report-only" not in args:
+        return _strict_main(args)
+    args.remove("--report-only")
+    output = io.StringIO()
+    error_type = ""
+    with redirect_stdout(output), redirect_stderr(output):
+        try:
+            status = _strict_main(args)
+        except SystemExit:
+            status = 2
+        except Exception as exc:
+            status = 3
+            error_type = type(exc).__name__
+    for line in output.getvalue().splitlines():
+        match = re.match(r"^(allowed )?(.+?:\d+: [a-z][a-z0-9-]*):", line)
+        if match:
+            print(f"{match.group(1) or ''}{match.group(2)}")
+    label = {0: "clean", 1: "findings", 2: "unusable-input", 3: "process-error"}[status]
+    print(f"billing-surface-scan: REPORT-ONLY: {label}{f' ({error_type})' if error_type else ''}")
     return 0
 
 

@@ -243,7 +243,34 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only == 'true'
         run: echo "Docs-only change set; lint reports success without running heavy gates."
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
+        if: github.event_name == 'pull_request' || (needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true')
+        with:
+          fetch-depth: 0
+      # Observation only. The blocking mode follows a clean week of reports.
+      - name: Report billing surface scan
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          report="$(mktemp)"
+          scan_exit=0
+          python3 scripts/check-billing-surface-diff.py --report-only --base "$PR_BASE_SHA" --head "$PR_HEAD_SHA" > "$report" 2>&1 || scan_exit=$?
+          cat "$report"
+          python3 - "$report" "$scan_exit" <<'PY'
+          import html
+          import os
+          import sys
+          from pathlib import Path
+
+          output = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write("### Billing surface scan (report only)\n\n")
+              summary.write(f"Scanner process exit: {sys.argv[2]}\n\n")
+              summary.write("<pre>" + html.escape(output) + "</pre>\n")
+          PY
+          exit 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true'
         with:
