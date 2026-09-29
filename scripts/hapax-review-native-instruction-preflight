@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Require the installed native global before a substitute reviewer child starts."""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import pwd
+import sys
+from pathlib import Path
+
+NATIVE = {
+    "muse": ("muse", ".config/muse/AGENTS.md", "XDG_CONFIG_HOME", ".config"),
+    "vibe": ("vibe", ".vibe/AGENTS.md", "VIBE_HOME", ".vibe"),
+}
+
+
+def verify(client: str, *, activation_state: Path | None = None) -> Path:
+    """Check one native binding against the account's activated release."""
+    if client not in NATIVE:
+        raise ValueError("unknown native reviewer")
+    binding, relative, home_var, default_home = NATIVE[client]
+    state = (
+        activation_state
+        or Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache/hapax/source-activation"
+    )
+    home = Path(os.environ["HOME"]).resolve()
+    configured = os.environ.get(home_var)
+    if configured and Path(configured).expanduser().resolve() != (home / default_home).resolve():
+        raise ValueError(f"{client}: {home_var} selects an undeclared instruction home")
+    path = (state / "worktree/shared/canonical_instruction_ingestion.py").resolve(strict=True)
+    spec = importlib.util.spec_from_file_location("hapax_review_native_ingestion", path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"{client}: canonical instruction resolver unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    root = module.activated_source_root(activation_state=state)
+    if path.parent.parent != root:
+        raise ValueError("loaded instruction resolver differs from activated release")
+    module.read_canonical_instructions(
+        source_root=root, operator_home=home, native_binding=(binding, relative)
+    )
+    return root
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or sys.argv[1] not in NATIVE:
+        print("usage: hapax-review-native-instruction-preflight muse|vibe", file=sys.stderr)
+        return 2
+    try:
+        verify(sys.argv[1])
+    except (OSError, ValueError) as exc:
+        print(f"{sys.argv[1]}: canonical instruction admission refused: {exc}", file=sys.stderr)
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

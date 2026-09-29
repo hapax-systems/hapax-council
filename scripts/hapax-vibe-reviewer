@@ -16,17 +16,27 @@ disabled and one turn. Two refusals, each reported as a route outage:
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
 import tempfile
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+_local_source = Path(__file__).resolve().parents[1]
+_activation_state = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".cache/hapax/source-activation"
+SOURCE_ROOT = (
+    _local_source
+    if (_local_source / "shared/review_seat_wrapper.py").is_file()
+    else _activation_state / "worktree"
+)
+
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
 
@@ -108,7 +118,24 @@ def command(binary: str, prompt: str, workdir: Path) -> list[str]:
     ]
 
 
-def main() -> int:
+def _check_native(*, test_activation_state: Path | None = None) -> None:
+    state = test_activation_state or _activation_state
+    path = (state / "worktree/scripts/hapax-review-native-instruction-preflight").resolve(
+        strict=True
+    )
+    name = "hapax_vibe_native_preflight"
+    spec = importlib.util.spec_from_loader(name, SourceFileLoader(name, str(path)))
+    if spec is None or spec.loader is None:
+        raise ValueError("native instruction preflight unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    root = module.verify("vibe", activation_state=state)
+    if path.parent.parent != root:
+        raise ValueError("loaded native preflight differs from activated release")
+
+
+def main(*, test_activation_state: Path | None = None) -> int:
     prompt = sys.stdin.read()
     if not prompt.strip():
         return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
@@ -128,6 +155,10 @@ def main() -> int:
             f"(plan_type={TEAM_PLAN_TYPE}); refusing to spend on the API meter. "
             "Next action (coordinator): rebind Vibe to the Team account",
         )
+    try:
+        _check_native(test_activation_state=test_activation_state)
+    except Exception as exc:  # noqa: BLE001 - every preflight failure refuses child launch
+        return refuse(WRAPPER, f"canonical instruction admission refused ({exc})")
     binary = vibe_bin()
     if not binary:
         return refuse(WRAPPER, "vibe binary not found; install vibe or set HAPAX_VIBE_BIN")

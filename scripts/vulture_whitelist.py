@@ -5461,11 +5461,15 @@ from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch 
 
 _EnvelopeOpenWatch.overflowed
 
-# Installed extensionless review wrappers load the selected release's resolver
+# Installed extensionless review wrappers load the activated release's resolver
 # by exact file path so an ambient ``shared`` package cannot shadow it. Vulture
-# does not see their dynamic ``module.read_canonical_instructions`` calls.
+# does not see their dynamic ``module.activated_source_root`` and
+# ``module.read_canonical_instructions`` calls.
 from shared.canonical_instruction_ingestion import (  # noqa: E402
+    activated_source_root as _activated_source_root,
+)
+from shared.canonical_instruction_ingestion import (
     read_canonical_instructions as _read_canonical_instructions,
 )
 
-_ = _read_canonical_instructions
+_ = (_activated_source_root, _read_canonical_instructions)
