@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Start a coordinator seat only after its Codex instruction binding is current.
+
+The live seat is never replaced.  ``--check`` is a read-only admission probe;
+normal invocation refuses an existing tmux session before starting anything.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import resource
+import subprocess
+import sys
+from pathlib import Path
+
+
+class SeatBindingError(ValueError):
+    """A seat start must stop before any runtime action."""
+
+
+def _digest(body: bytes) -> str:
+    return hashlib.sha256(body).hexdigest()
+
+
+def verify_codex_binding(home: Path, environment: dict[str, str]) -> dict[str, str]:
+    """Check the deployed, receipted body at the *dedicated* Codex home."""
+    home = home.resolve()
+    seat_home = home / ".codex-seat"
+    declared = environment.get("CODEX_HOME")
+    if declared and Path(declared).expanduser().resolve() != seat_home:
+        raise SeatBindingError(f"wrong_home: CODEX_HOME={declared}; expected {seat_home}")
+
+    shared = home / ".config/hapax/agent-instructions/AGENTS.md"
+    generated = home / ".codex/AGENTS.md"
+    seat_binding = seat_home / "AGENTS.md"
+    receipt_path = shared.parent / "current.json"
+    if (shared.parent / "pending.json").exists():
+        raise SeatBindingError("instruction_install_pending: recover the installation first")
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        raise SeatBindingError("missing_instruction_receipt")
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, ValueError) as exc:
+        raise SeatBindingError("invalid_instruction_receipt") from exc
+    if not isinstance(receipt, dict) or receipt.get("observation") != "filesystem_readback":
+        raise SeatBindingError("unverified_instruction_receipt")
+    files = receipt.get("files")
+    if not isinstance(files, list):
+        raise SeatBindingError("invalid_instruction_receipt_files")
+    for binding, path in (("shared", shared), ("codex", generated)):
+        entries = [
+            item for item in files if isinstance(item, dict) and item.get("binding") == binding
+        ]
+        if len(entries) != 1 or entries[0].get("path") != str(path):
+            raise SeatBindingError(f"wrong_{binding}_receipt_path")
+        if not path.is_file() or path.is_symlink():
+            raise SeatBindingError(f"missing_{binding}_binding")
+        body = path.read_bytes()
+        if (
+            not body
+            or _digest(body) != entries[0].get("sha256")
+            or len(body) != entries[0].get("bytes")
+        ):
+            raise SeatBindingError(f"stale_{binding}_body")
+
+    common_body = shared.read_bytes()
+    active_source = (
+        home / ".cache/hapax/source-activation/worktree/config/agent-instructions/AGENTS.md"
+    )
+    if not active_source.is_file() or active_source.read_bytes() != common_body:
+        raise SeatBindingError("stale_shared_vs_active_source")
+    generated_body = generated.read_bytes()
+    prefix = b"<!-- Generated from Council config/agent-instructions; edit the source. -->\n\n"
+    if generated_body != prefix + common_body:
+        raise SeatBindingError("generated_body_not_exact_shared_binding")
+    shadow = seat_home / "AGENTS.override.md"
+    if shadow.exists() and shadow.read_bytes().strip():
+        raise SeatBindingError("seat_global_override_shadows_binding")
+    if not seat_binding.is_symlink():
+        raise SeatBindingError("missing_seat_agents_symlink")
+    if seat_binding.resolve() != generated:
+        raise SeatBindingError("wrong_home_seat_agents_target")
+    if seat_binding.read_bytes() != generated_body:
+        raise SeatBindingError("stale_seat_agents_body")
+    for name in ("auth.json", "config.toml"):
+        candidate = seat_home / name
+        if not candidate.is_symlink() or candidate.resolve() != home / ".codex" / name:
+            raise SeatBindingError(f"wrong_home_{name}_target")
+    return {
+        "seat_home": str(seat_home),
+        "source_revision": str(receipt.get("source_revision", "")),
+        "shared_sha256": _digest(common_body),
+        "codex_sha256": _digest(generated_body),
+    }
+
+
+def _raise_nofile() -> None:
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and hard < 65536:
+        raise SeatBindingError("nofile_hard_limit_below_65536")
+    if soft < 65536:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (65536, hard))
+
+
+def _inner_codex(home: Path) -> None:
+    verify_codex_binding(home, os.environ)
+    _raise_nofile()
+    environment = os.environ.copy()
+    environment["CODEX_HOME"] = str(home / ".codex-seat")
+    environment["HAPAX_AGENT_ROLE"] = "dev1-seat-codex"
+    prompt = (
+        "Take the coordinator seat. Read "
+        "30-areas/hapax/frame/coordinator-succession-20260924/"
+        "HANDOFF-seat-claude-to-codex-20260929.md in the canonical vault, "
+        "then COORDINATOR-SEAT.md sections 0 through 3. Follow the handoff starting at section 0."
+    )
+    command = [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--collect",
+        "-p",
+        "MemoryHigh=5G",
+        "-p",
+        "MemoryMax=7G",
+        "codex",
+        "-s",
+        "danger-full-access",
+        "-a",
+        "never",
+        "-m",
+        "gpt-6-sol",
+        "-c",
+        "model_reasoning_effort=high",
+        prompt,
+    ]
+    os.chdir(home / "projects")
+    os.execvpe(command[0], command, environment)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("harness", nargs="?", choices=("codex", "opencode"), default="codex")
+    parser.add_argument("--check", action="store_true", help="read-only binding admission check")
+    parser.add_argument("--inner-codex", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.harness != "codex":
+        print("hapax-seat-launch: OpenCode launcher is not yet admitted", file=sys.stderr)
+        return 2
+    try:
+        evidence = verify_codex_binding(Path.home(), os.environ)
+    except (OSError, SeatBindingError) as exc:
+        print(f"hapax-seat-launch: REFUSED {exc}", file=sys.stderr)
+        return 2
+    if args.check:
+        print(json.dumps(evidence, sort_keys=True))
+        return 0
+    if args.inner_codex:
+        _inner_codex(Path.home())
+    session = "hapax-codex-seat"
+    if subprocess.run(["tmux", "has-session", "-t", session], capture_output=True).returncode == 0:
+        print(f"hapax-seat-launch: REFUSED live session {session} already exists", file=sys.stderr)
+        return 2
+    command = [
+        "tmux",
+        "new-session",
+        "-d",
+        "-s",
+        session,
+        "-c",
+        str(Path.home() / "projects"),
+        "env",
+        f"CODEX_HOME={evidence['seat_home']}",
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "codex",
+        "--inner-codex",
+    ]
+    return subprocess.run(command, check=False).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
