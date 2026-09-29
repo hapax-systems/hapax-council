@@ -2039,6 +2039,46 @@ def test_claude_review_receipt_bounded_route_accepts_claude_admission_evidence()
     assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
 
 
+@pytest.mark.parametrize(
+    ("capacity_pool", "expected"),
+    [
+        ("subscription_quota", SubscriptionQuotaState.UNKNOWN),
+        ("promotional_credit_quota", SubscriptionQuotaState.FRESH),
+    ],
+)
+def test_cloud_credit_route_requires_its_promotional_pool(
+    capacity_pool: str, expected: SubscriptionQuotaState
+) -> None:
+    ref = (
+        "relay-receipt:claude-cloud-credit-quota-admission-claude-review-cloud-"
+        "20260925t2319z.yaml:witness:claude-cloud-credit-quota-headroom-observed-"
+        "20260925t2319z:observation:cloud_credit_quota_headroom_observed:"
+        "observed_at:2026-09-25T23:19:00Z:fresh_until:2026-09-25T23:34:00Z:"
+        "cloud-credit-quota:observed"
+    )
+    payload = _active_budget_payload()
+    snapshot = _claude_snapshot(
+        ref,
+        snapshot_id=f"quota-cloud-credit-{capacity_pool}",
+        route_id="claude.review.cloud",
+        provider="anthropic-claude-cloud-credit",
+    )
+    snapshot.update(
+        capacity_pool=capacity_pool,
+        captured_at="2026-09-25T23:19:00Z",
+        fresh_until="2026-09-25T23:34:00Z",
+    )
+    payload["generated_from"].append("scripts/hapax-quota-telemetry-writer")
+    payload["quota_snapshots"] = [snapshot]
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    state, _refs = subscription_quota_state_for_route(
+        ledger, "claude.review.cloud", now=datetime(2026, 9, 25, 23, 20, tzinfo=UTC)
+    )
+
+    assert state is expected
+
+
 def test_receipt_bounded_route_rejects_secretish_claude_witness() -> None:
     ledger = _claude_ledger(
         CLAUDE_SECRETISH_WITNESS_EVIDENCE_REF,
