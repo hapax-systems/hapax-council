@@ -91,7 +91,7 @@ def _copy_oom_package(dest_root: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("rel", "needle"),
+    "rel,needle",
     (
         ("system.slice.d/oom-containment.conf", "MemoryMax="),
         ("user@1000.service.d/oom.conf", "OOMScoreAdjust=100"),
@@ -100,28 +100,23 @@ def _copy_oom_package(dest_root: Path) -> None:
     ),
 )
 def test_source_check_rejects_host_policy_file_mismatch(
-    tmp_path: Path, rel: str, needle: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rel: str, needle: str
 ) -> None:
     source = tmp_path / "source"
     _copy_oom_package(source)
     selected = source / "config/root-required/oom-host-policy/appendix/systemd/system" / rel
     selected.write_text(selected.read_text().replace(needle, ""))
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MODE", "1")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_HOSTNAME", "hapax-appendix")
+    monkeypatch.setenv("HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB", "63310084")
     result = subprocess.run(
         [str(INSTALLER), "--source", str(source), "--check", "--no-runtime"],
         text=True,
         capture_output=True,
         check=False,
-        env={
-            **os.environ,
-            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
-            "HAPAX_OOM_AUDIT_TEST_HOSTNAME": "hapax-appendix",
-            "HAPAX_OOM_AUDIT_TEST_MEMTOTAL_KIB": "63310084",
-        },
     )
-    assert (
-        result.returncode != 0
-        and needle.split("=")[0].replace("OOMPolicy", "continue") in result.stderr
-    )
+    assert result.returncode != 0
+    assert needle.split("=")[0].replace("OOMPolicy", "continue") in result.stderr
 
 
 @pytest.fixture(autouse=True)

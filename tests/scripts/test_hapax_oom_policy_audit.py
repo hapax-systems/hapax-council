@@ -68,6 +68,34 @@ def test_installed_audit_refuses_test_host_override(monkeypatch: pytest.MonkeyPa
         selector()
 
 
+def test_current_host_policy_reads_meminfo_and_selects_table(tmp_path):
+    namespace = runpy.run_path(str(SCRIPT))
+    selector = namespace["current_host_policy"]
+    scope, meminfo = selector.__globals__, tmp_path / "meminfo"
+    scope["PROC_ROOT"] = tmp_path
+    scope["load_host_policy"] = lambda *args: args
+    meminfo.write_text("MemTotal: 63310084 kB\n")
+    for script, table in (
+        (SCRIPT, REPO_ROOT / "config/root-required/oom-host-profiles.tsv"),
+        (
+            Path("/usr/local/sbin/hapax-oom-policy-audit"),
+            Path("/usr/local/share/hapax/root-required/oom-host-profiles.tsv"),
+        ),
+    ):
+        scope["__file__"] = str(script)
+        assert selector() == (table, scope["socket"].gethostname(), 63310084)
+    for body in (
+        "",
+        "MemTotal: 1 kB\nMemTotal: 2 kB\n",
+        "MemTotal: x kB\n",
+        "MemTotal: 1 MB\n",
+        "MemTotal: 0 kB\n",
+    ):
+        meminfo.write_text(body)
+        with pytest.raises(namespace["HostPolicyError"]):
+            selector()
+
+
 def test_host_policy_cli_emits_selected_fields_only() -> None:
     result = subprocess.run(
         [str(SCRIPT), "--print-host-policy"],
