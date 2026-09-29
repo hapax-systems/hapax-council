@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import runpy
 import shutil
 import subprocess
 import time
@@ -195,6 +197,45 @@ def test_source_check_rejects_zram_rule_that_restores_vendor_swappiness(tmp_path
     assert "zram swappiness rule mismatch" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("host", "memtotal"),
+    (("hapax-appendix", 63310084), ("hapax-podium", 131009480)),
+)
+def test_zram0_change_event_applies_selected_swappiness(host: str, memtotal: int) -> None:
+    audit = runpy.run_path(str(REPO_ROOT / "scripts/hapax-oom-policy-audit"))
+    policy = audit["load_host_policy"](
+        REPO_ROOT / "config/root-required/oom-host-profiles.tsv", host, memtotal
+    )
+    rule = (
+        REPO_ROOT
+        / "config/root-required/oom-host-policy"
+        / policy.profile
+        / "config/udev/99-hapax-zram-swappiness.rules"
+    )
+    if shutil.which("udevadm"):
+        subprocess.run(["udevadm", "verify", "--no-style", "--no-summary", str(rule)], check=True)
+    line = next(line for line in rule.read_text().splitlines() if line.startswith("ACTION"))
+    clauses = re.findall(r'([A-Z]+(?:\{[^}]+\})?)(==|=)"([^"]*)"', line)
+    assert len(clauses) == 4
+
+    def swappiness_after(action: str, kernel: str, initstate: str) -> int:
+        event = {"ACTION": action, "KERNEL": kernel, "ATTR{initstate}": initstate}
+        if all(event[key] == value for key, op, value in clauses if op == "=="):
+            return int(
+                next(
+                    value
+                    for key, op, value in clauses
+                    if key == "SYSCTL{vm.swappiness}" and op == "="
+                )
+            )
+        return 150
+
+    assert swappiness_after("change", "zram0", "1") == policy.swappiness
+    assert swappiness_after("add", "zram0", "1") == 150
+    assert swappiness_after("change", "zram1", "1") == 150
+    assert swappiness_after("change", "zram0", "0") == 150
+
+
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_OOM_ENFORCE_TEST_MODE", "1")
@@ -236,9 +277,14 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "HAPAX_OOM_UDEV_DEST", str(tmp_path / "udev" / "99-hapax-zram-swappiness.rules")
     )
     fake_udevadm = tmp_path / "udevadm"
-    fake_udevadm.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_udevadm.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HAPAX_OOM_UDEVADM_CALLS"\n'
+        'exit "${HAPAX_OOM_UDEVADM_EXIT:-0}"\n',
+        encoding="utf-8",
+    )
     fake_udevadm.chmod(0o755)
     monkeypatch.setenv("HAPAX_OOM_UDEVADM", str(fake_udevadm))
+    monkeypatch.setenv("HAPAX_OOM_UDEVADM_CALLS", str(tmp_path / "udevadm-calls"))
     fake_sysctl = tmp_path / "sysctl"
     monkeypatch.setenv("HAPAX_OOM_SYSCTL_CALLS", str(tmp_path / "sysctl-calls"))
     fake_sysctl.write_text(
@@ -655,8 +701,11 @@ def test_installer_rejects_forged_inherited_lock_descriptor_before_mutation(
     assert not live.exists()
 
 
+@pytest.mark.parametrize("reload_fails", [False, True], ids=["reload-ok", "reload-fails"])
 def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reload_fails: bool,
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -760,6 +809,8 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     )
     fake_runuser.chmod(0o755)
 
+    if reload_fails:
+        monkeypatch.setenv("HAPAX_OOM_UDEVADM_EXIT", "47")
     result = subprocess.run(
         [str(INSTALLER), "--source", str(source), "--install", "--verify-live"],
         text=True,
@@ -791,6 +842,11 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         },
     )
 
+    assert (tmp_path / "udevadm-calls").read_text() == "control --reload-rules\n"
+    if reload_fails:
+        assert result.returncode != 0
+        assert not (tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha").exists()
+        return
     assert result.returncode == 0, result.stderr
     assert sibling_dir.exists()
     assert (
