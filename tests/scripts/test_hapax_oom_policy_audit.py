@@ -501,7 +501,7 @@ def _run(
     docker.chmod(0o755)
     docker_policy = tmp_path / "docker-policy"
     docker_policy.write_text(
-        "#!/bin/sh\nprintf 'podium\\t68G\\t76G\\t72G\\t80G\\t32G\\t40G\\t32768\\t10\\n'\n",
+        "#!/bin/sh\nprintf 'podium\\t68G\\t76G\\t72G\\t80G\\t32G\\t40G\\t24G\\t32768\\t10\\n'\n",
         encoding="utf-8",
     )
     docker_policy.chmod(0o755)
