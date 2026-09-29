@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Refuse a Kimi launch without the selected canonical native binding.
+
+This is a prelaunch filesystem check. A native load witness is still required
+before the Kimi route can be called instruction-verified.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    root = Path(__file__).resolve().parents[1]
+    home = Path(os.environ["HOME"]).resolve()
+    native_home = (home / ".kimi-code").resolve()
+    configured = os.environ.get("KIMI_CODE_HOME")
+    if configured and Path(configured).expanduser().resolve() != native_home:
+        print("hapax-kimi: KIMI_CODE_HOME selects an undeclared instruction home", file=sys.stderr)
+        return 3
+
+    module_path = root / "shared/canonical_instruction_ingestion.py"
+    spec = importlib.util.spec_from_file_location("canonical_instruction_ingestion", module_path)
+    if spec is None or spec.loader is None:
+        print("hapax-kimi: canonical instruction verifier unavailable", file=sys.stderr)
+        return 3
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        module.read_canonical_instructions(
+            source_root=root,
+            operator_home=home,
+            native_binding=("kimi", ".kimi-code/AGENTS.md"),
+        )
+    except (OSError, ValueError) as exc:
+        print(f"hapax-kimi: canonical instruction admission refused: {exc}", file=sys.stderr)
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

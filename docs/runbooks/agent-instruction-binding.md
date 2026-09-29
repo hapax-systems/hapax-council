@@ -131,6 +131,13 @@ Binding a file does not admit a worker route. In particular, installed Grok,
 OpenCode and Muse clients are not thereby new entries in the capability registry,
 and agy remains a read-only review route. Installed does not mean admitted.
 
+`hapax-kimi` checks the selected release's canonical body, neutral installed copy,
+installer receipt and Kimi native binding before starting the child. It refuses an
+alternate `KIMI_CODE_HOME` that is not the installed home, including on resume.
+The tmux runner repeats the check immediately before executing Kimi. This is a
+prelaunch admission check; actual Kimi native loading remains unobserved until a
+per-session loader witness names the file and its exact bytes.
+
 The repository core is below Grok's cap. Full domain instructions were moved
 verbatim to `council-domain-context.md`; the core requires reading the applicable
 sections before domain work. Codex's global plus repository body fits its default
