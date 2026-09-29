@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import tomllib
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from shared import sdlc_lifecycle as lifecycle
 from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
     PR_ACTIONS,
@@ -943,6 +945,67 @@ class TestAcceptanceReceiptEnforcement:
         dossier.write_bytes(b"review_team_verdict: blocked\n")
         assert acceptance_receipt_blockers(frontmatter, note) == (
             "acceptance_receipt_dossier_sha256_mismatch",
+        )
+
+    @pytest.mark.parametrize(
+        ("stamp", "receipt_at", "dossier_at", "reason"),
+        [
+            (
+                "2026-09-28T20:52:52Z",
+                "2026-09-28T20:56:02.914+00:00",
+                "2026-09-28T20:56:30.994+00:00",
+                "acceptance_receipt_legacy_dossier_replaced",
+            ),
+            (
+                "2026-09-30T00:00:00Z",
+                "2026-09-30T00:00:00+00:00",
+                "2026-09-30T00:00:00+00:00",
+                "acceptance_receipt_dossier_sha256_missing_after_cutover",
+            ),
+            (
+                "2026-09-28T20:52:52Z",
+                "2026-09-28T20:56:02+00:00",
+                "2026-09-28T20:56:01+00:00",
+                None,
+            ),
+            (
+                "2026-09-28T20:52:52Z",
+                "2026-09-30T00:00:00+00:00",
+                "2026-09-30T00:00:00+00:00",
+                "acceptance_receipt_dossier_sha256_missing_after_cutover",
+            ),
+        ],
+    )
+    def test_hashless_review_receipt_boundaries(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        stamp: str,
+        receipt_at: str,
+        dossier_at: str,
+        reason: str | None,
+    ) -> None:
+        monkeypatch.setattr(
+            lifecycle,
+            "REVIEW_DOSSIER_HASH_CUTOVER_UTC",
+            datetime(2026, 9, 29, tzinfo=UTC),
+        )
+        note = self._note(tmp_path, "task-r", {"quality_floor": "frontier_review_required"})
+        receipt = self._receipt(
+            tmp_path,
+            "task-r",
+            self.VALID_RECEIPT.replace(
+                "acceptor: operator", "acceptor: review-team:codex,gemini"
+            ).replace("2026-06-10T17:00:00Z", stamp),
+        )
+        dossier = tmp_path / "task-r.review-dossier.yaml"
+        dossier.write_text("review_team_verdict: quorum-accept\n")
+        for path, at in ((receipt, receipt_at), (dossier, dossier_at)):
+            timestamp = datetime.fromisoformat(at).timestamp()
+            os.utime(path, (timestamp, timestamp))
+        frontmatter = frontmatter_from_text(note.read_text())
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            () if reason is None else (reason,)
         )
 
     def test_receipt_missing_fields_block(self, tmp_path: Path) -> None:

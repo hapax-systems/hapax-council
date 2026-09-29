@@ -3659,11 +3659,7 @@ def _release_review_round_file(path: Path, fd: int) -> None:
 
 @contextmanager
 def review_round_lock(dossier_path: Path) -> Any:
-    """Claim a task's review round, or yield a named effect-free refusal.
-
-    An O_EXCL transition sidecar serializes stale retirement with fresh creation. If that
-    short transition itself is interrupted, its residue holds review for manual repair.
-    """
+    """Claim one round; interrupted O_EXCL transitions hold for manual repair."""
 
     path = dossier_path.with_name(f"{dossier_path.name}.lock")
     transition = path.with_name(f"{path.name}.transition")
@@ -3729,8 +3725,7 @@ def review_round_lock(dossier_path: Path) -> Any:
                 }
                 lock_fd = _exclusive_review_round_file(path, _review_round_holder(predecessor))
             except OSError as exc:
-                # Once the predecessor moved, preserve this transition gate so no fresh
-                # reviewer can mistake an incomplete takeover for a clean first round.
+                # Keep the gate if takeover stopped after predecessor removal.
                 keep_transition = not path.exists()
                 yield {
                     "status": "round_lock_unavailable",
@@ -3775,11 +3770,7 @@ def archive_stale_review_team_receipt(
     current_head: str,
     current_dossier_sha256: str | None = None,
 ) -> Path | None:
-    """Move a review-team receipt for another head or dossier aside.
-
-    Receipts from any other acceptor (e.g. operator-signed), unreadable receipts, and receipts
-    already bound to the current dossier are left in place (returns None).
-    """
+    """Archive a superseded review-team receipt; preserve all other receipts."""
 
     try:
         existing = yaml.safe_load(receipt_path.read_text(encoding="utf-8")) or {}
