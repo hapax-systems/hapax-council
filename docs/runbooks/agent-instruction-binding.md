@@ -247,6 +247,13 @@ authorship boundary.
 native routes declare instruction inputs, optional configuration paths, native
 home selection, memory scope and loading flags. `null` extension sets mean
 unobserved, not empty. API/tool routes are not forced into a native-file model.
+For `glmcp.review.direct`, the direct API wrapper verifies the selected release
+body against the neutral installed copy and installer receipt before building
+each Coding Plan or PAYG request. It places the exact body in the system message
+and includes those bytes in the PAYG reservation estimate. Missing, stale or
+wrong-home installation refuses before an API request. A controlled HTTP stub
+can witness request bytes; provider uptake remains unobserved until a governed
+live invocation. This route has no native instruction file declaration.
 Digests pin authored expectations, rather than adopting whatever bytes happen
 to be installed. After policy changes, update the corresponding declaration
 digests; `test_registry_instruction_hashes_match_authored_payloads` recomputes

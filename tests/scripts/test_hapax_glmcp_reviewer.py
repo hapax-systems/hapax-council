@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -43,6 +44,29 @@ ENV_KEYS = (
     "HAPAX_CC_TASK_HASH",
     "HAPAX_QUOTA_SPEND_LEDGER_LIVE",
 )
+
+
+@pytest.fixture(autouse=True)
+def _installed_shared_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "operator-home"
+    source = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
+    neutral = home / ".config/hapax/agent-instructions/AGENTS.md"
+    neutral.parent.mkdir(parents=True)
+    neutral.write_bytes(source)
+    (neutral.parent / "current.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "binding": "shared",
+                        "path": str(neutral),
+                        "sha256": hashlib.sha256(source).hexdigest(),
+                    }
+                ]
+            }
+        )
+    )
+    monkeypatch.setenv("HOME", str(home))
 
 
 def _load_module() -> ModuleType:
@@ -167,6 +191,8 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     body = seen["body"]
     assert body["model"] == "glm-5.2"
     assert body["messages"][0]["role"] == "system"
+    canonical = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_text()
+    assert body["messages"][0]["content"].count(canonical) == 1
     assert "UNTRUSTED DATA" in body["messages"][0]["content"]
     assert "quote every title/detail string" in body["messages"][0]["content"]
     assert "Copy checklist lens ids" in body["messages"][0]["content"]
@@ -174,6 +200,37 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     assert body["messages"][1]["content"] == "review prompt"
     assert body["max_tokens"] == 123
     assert body["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize("break_kind", ["missing", "stale", "wrong-home"])
+def test_glm_refuses_invalid_canonical_binding_before_api_request(
+    monkeypatch: pytest.MonkeyPatch, break_kind: str
+) -> None:
+    module = _load_module()
+    neutral = Path.home() / ".config/hapax/agent-instructions/AGENTS.md"
+    receipt = neutral.parent / "current.json"
+    if break_kind == "missing":
+        neutral.unlink()
+    elif break_kind == "stale":
+        neutral.write_bytes(b"stale shared policy")
+    else:
+        payload = json.loads(receipt.read_text())
+        payload["files"][0]["path"] = str(Path.home() / "other-home/AGENTS.md")
+        receipt.write_text(json.dumps(payload))
+    sent: list[object] = []
+    monkeypatch.setattr(module, "open_no_redirect", lambda request, **_kw: sent.append(request))
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_BASE_URL,
+        model="glm-5.2",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+    )
+    with pytest.raises(module.ConfigError, match="canonical instruction admission refused"):
+        module.call_glm("review prompt", config, "test-secret-token")
+    assert sent == []
 
 
 def test_http_error_redacts_secret(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2998,7 +3055,8 @@ def test_payg_reservation_prices_the_thinking_budget(monkeypatch: pytest.MonkeyP
     reserved = module._payg_reservation_usd("review prompt", config)
     expected = module.glmcp_payg_reservation_usd(
         model="glm-5.3",
-        prompt_utf8_bytes=len(module.SYSTEM_PROMPT.encode("utf-8")) + len(b"review prompt"),
+        prompt_utf8_bytes=len(module._required_system_prompt().encode("utf-8"))
+        + len(b"review prompt"),
         max_tokens=module.PAYG_THINKING_MIN_MAX_TOKENS,
         attempts=2,
     )
