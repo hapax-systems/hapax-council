@@ -1,0 +1,15 @@
+#!/usr/bin/python3 -I
+"""Add released deny entries to the Claude Code managed settings (runs as root, from a timer).
+
+Installed to /usr/local/sbin by scripts/install-claude-code-managed-settings. Isolated mode (-I)
+ignores PYTHON* variables, the user site and the script's directory, so only the root-owned
+library copy below is imported.
+"""
+
+import sys
+
+sys.path.insert(0, "/usr/local/lib/hapax/claude-code-managed-settings")
+
+from shared.managed_settings_sync import main  # noqa: E402
+
+sys.exit(main())

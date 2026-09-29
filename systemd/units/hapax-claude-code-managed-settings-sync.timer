@@ -1,0 +1,12 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Add released deny entries to the Claude Code managed settings
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/shared/managed_settings_sync.py
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+Unit=hapax-claude-code-managed-settings-sync.service
+
+[Install]
+WantedBy=timers.target
