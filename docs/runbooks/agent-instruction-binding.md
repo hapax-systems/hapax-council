@@ -257,20 +257,20 @@ Run that specific re-render comparison in the same policy-change PR:
 uv run pytest tests/shared/test_capability_load_set.py::test_registry_instruction_hashes_match_authored_payloads -q
 ```
 
-The blind `claude.review.opus` route deliberately declares no ambient instruction
-files. Its existing wrapper requests safe mode, `--disable-slash-commands`, no
-session persistence and strict empty MCP configuration, then supplies the review packet
-and appended review prompt. It must not inherit the worker routes' required
-global `CLAUDE.md` and project `AGENTS.md` declaration. The optional native
-settings-file observation remains: safe mode does not remove authentication,
-model selection or permissions. Plugins, skills and MCP are declared empty,
-while hooks remain unknown. The [CLI reference](https://code.claude.com/docs/en/cli-reference)
-defines `--safe-mode` to disable custom plugins, skills and auto memory, including
-managed plugins and skills, while retaining policy-configured hooks.
-These empty lists declare intended extension inputs; they are not observations
-that the native process loaded none.
-`source_refs` names the wrapper containing the appended prompt; this is not a
-complete digest of the provider's effective context. Built-in tools also retain
+The blind `claude.review.opus` route requires the installed canonical shared
+body. Its wrapper verifies the selected release source, neutral installed copy,
+installer receipt and rendered `~/.claude/CLAUDE.md` before child launch. It
+places the exact shared body in the existing `--append-system-prompt` argument,
+ahead of the fixed review contract. The review target remains the supplied
+packet. A missing, changed or wrong-home binding refuses before launch. The
+optional settings-file observation remains: safe mode does not remove
+authentication, model selection or permissions. Plugins, skills and MCP are
+declared empty, while hooks remain unknown. The [CLI reference](https://code.claude.com/docs/en/cli-reference)
+defines `--safe-mode` to disable custom plugins, skills and auto memory,
+including managed plugins and skills, while retaining policy-configured hooks.
+These empty lists are declarations, not observations of the native process.
+The wrapper's argv test witnesses the body in the child input; it does not prove
+provider uptake or native loading of the global file. Built-in tools retain
 their native behavior; the wrapper separately requests empty tool lists.
 
 The real wrapper argv is checked against this declaration in
@@ -345,13 +345,15 @@ process-group cancellation without provider calls:
 uv run --no-sync pytest tests/scripts/test_hapax_claude_reviewer.py -q
 ```
 
-The `agy.review.direct` wrapper also supplies blind-review context rather than
-worker instructions. It creates a temporary workspace and per-invocation
-HOME/XDG roots, writes `review-dossier.md` containing its fixed review prompt
-and the supplied packet, and asks the native client to read that file. Its load
-declaration therefore does not require the operator's global `GEMINI.md` or a
-worker checkout's `AGENTS.md`. `source_refs` points to the wrapper that constructs
-the prompt. The optional configuration path is
+The `agy.review.direct` wrapper keeps target evidence in the supplied review
+packet. It creates a temporary workspace and per-invocation HOME/XDG roots,
+writes `review-dossier.md` containing its fixed review prompt and packet, and
+asks the native client to read that file. Before launch it verifies the release
+source, neutral installed copy, receipt and operator-home `~/.gemini/GEMINI.md`,
+then stages that exact native binding into the isolated review HOME and reads
+it back. A missing, changed or wrong-home binding refuses before launch.
+The file and wrapper test witness the child's native-home input; actual agy
+instruction loading requires a separate native invocation witness. The optional configuration path is
 `.gemini/antigravity-cli/settings.json` relative to the invocation HOME; the wrapper
 does not copy host settings into that location. Its existing OAuth seed remains a
 separate credential binding; this declaration never contains credential bytes.

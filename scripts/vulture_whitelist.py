@@ -5460,3 +5460,12 @@ _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
 from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
 
 _EnvelopeOpenWatch.overflowed
+
+# Installed extensionless review wrappers load the selected release's resolver
+# by exact file path so an ambient ``shared`` package cannot shadow it. Vulture
+# does not see their dynamic ``module.read_canonical_instructions`` calls.
+from shared.canonical_instruction_ingestion import (  # noqa: E402
+    read_canonical_instructions as _read_canonical_instructions,
+)
+
+_ = _read_canonical_instructions

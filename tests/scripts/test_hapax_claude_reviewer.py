@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import io
@@ -18,8 +19,40 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = REPO_ROOT / "scripts" / "hapax-claude-reviewer"
 
 
+def _seed_shared_binding(home: Path) -> None:
+    source = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
+    neutral = home / ".config/hapax/agent-instructions/AGENTS.md"
+    neutral.parent.mkdir(parents=True, exist_ok=True)
+    neutral.write_bytes(source)
+    native = home / ".claude/CLAUDE.md"
+    native.parent.mkdir(parents=True, exist_ok=True)
+    native.write_bytes(b"generated header\n" + source)
+    (neutral.parent / "current.json").write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "binding": "shared",
+                        "path": str(neutral),
+                        "sha256": hashlib.sha256(source).hexdigest(),
+                    },
+                    {
+                        "binding": "claude",
+                        "path": str(native),
+                        "sha256": hashlib.sha256(native.read_bytes()).hexdigest(),
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture(autouse=True)
-def _select_test_release(monkeypatch):
+def _select_test_release(monkeypatch, tmp_path):
+    home = tmp_path / "test-home"
+    _seed_shared_binding(home)
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
 
 
@@ -116,18 +149,20 @@ def test_claude_reviewer_binds_declared_identity_and_disables_tools(
     assert argv[argv.index("--mcp-config") + 1] == '{"mcpServers":{}}'
     assert "--strict-mcp-config" in argv
     system_prompt = argv[argv.index("--append-system-prompt") + 1]
+    canonical = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_text()
+    assert system_prompt.count(canonical) == 1
     assert "exactly one fenced yaml" in system_prompt
     assert "invalid-output" in system_prompt
     assert "Do all reasoning silently" in system_prompt
 
-    # Join the actual subprocess arguments to the declared route. Blind review
-    # deliberately excludes the ambient instructions used by worker sessions.
+    # Join the actual subprocess arguments to the declared route. The review
+    # target remains blind while the canonical governing body is required.
     from shared.platform_capability_registry import NativeLoadSet
 
     registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
     route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
     declared = NativeLoadSet.model_validate(route["native_load_set"])
-    assert len(declared.files) == 1
+    assert len(declared.files) == 2
     configured = declared.files[0]
     assert (configured.root, configured.path, configured.kind) == (
         "native_home",
@@ -135,6 +170,14 @@ def test_claude_reviewer_binds_declared_identity_and_disables_tools(
         "configuration",
     )
     assert configured.sha256 is None and configured.required is False
+    required = declared.files[1]
+    assert (required.root, required.path, required.kind, required.required) == (
+        "native_home",
+        "CLAUDE.md",
+        "instructions",
+        True,
+    )
+    assert required.sha256 is not None and len(required.sha256) == 64
     assert declared.plugins == declared.skills == declared.mcp == []
     # Safe mode retains managed-policy hooks; an empty hook claim would exceed
     # the wrapper's evidence. No native load observation is made by this stub.
@@ -171,6 +214,39 @@ def test_claude_reviewer_binds_declared_identity_and_disables_tools(
         system_prompt,
     ]
     assert "scripts/hapax-claude-reviewer" in declared.source_refs
+
+
+@pytest.mark.parametrize("break_kind", ["missing", "stale", "wrong-home"])
+def test_claude_review_refuses_invalid_canonical_binding_before_child(
+    tmp_path: Path, break_kind: str
+) -> None:
+    home = tmp_path / "home"
+    _seed_shared_binding(home)
+    neutral = home / ".config/hapax/agent-instructions/AGENTS.md"
+    receipt = neutral.parent / "current.json"
+    if break_kind == "missing":
+        neutral.unlink()
+    elif break_kind == "stale":
+        neutral.write_bytes(b"stale")
+    else:
+        payload = json.loads(receipt.read_text())
+        payload["files"][0]["path"] = str(tmp_path / "other-home/AGENTS.md")
+        receipt.write_text(json.dumps(payload))
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    argv_path = tmp_path / "argv.json"
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HOME": str(home), "HAPAX_FAKE_CLAUDE_ARGV": str(argv_path)},
+        cwd=REPO_ROOT,
+        timeout=20,
+    )
+    assert result.returncode == 9
+    assert "instruction admission refused" in result.stderr
+    assert not argv_path.exists()
 
 
 def test_claude_reviewer_prefers_hapax_claude_bin_over_legacy_env(tmp_path: Path) -> None:
@@ -309,6 +385,7 @@ def test_review_refuses_invalid_or_unmapped_descriptor_before_native_spawn(tmp_p
 )
 def test_copied_installed_reviewer_uses_declared_source(tmp_path, binding):
     home = tmp_path / "home"
+    _seed_shared_binding(home)
     installed = home / ".local/bin/hapax-claude-reviewer"
     installed.parent.mkdir(parents=True)
     shutil.copy2(WRAPPER, installed)

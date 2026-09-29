@@ -7,6 +7,7 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -3014,7 +3015,33 @@ class TestFamilyOutageDegradation:
     ) -> None:
         rt = _load_review_team_module()
         wrapper = REPO_ROOT / "scripts" / "hapax-agy-reviewer"
-        env = {**os.environ, "HAPAX_AGY_BIN": str(tmp_path / "agy")}
+        home = tmp_path / "home"
+        source = (REPO_ROOT / "config/agent-instructions/AGENTS.md").read_bytes()
+        neutral = home / ".config/hapax/agent-instructions/AGENTS.md"
+        native = home / ".gemini/GEMINI.md"
+        neutral.parent.mkdir(parents=True)
+        native.parent.mkdir(parents=True)
+        neutral.write_bytes(source)
+        native.write_bytes(b"generated header\n" + source)
+        (neutral.parent / "current.json").write_text(
+            json.dumps(
+                {
+                    "files": [
+                        {
+                            "binding": "shared",
+                            "path": str(neutral),
+                            "sha256": hashlib.sha256(source).hexdigest(),
+                        },
+                        {
+                            "binding": "agy",
+                            "path": str(native),
+                            "sha256": hashlib.sha256(native.read_bytes()).hexdigest(),
+                        },
+                    ]
+                }
+            )
+        )
+        env = {**os.environ, "HOME": str(home), "HAPAX_AGY_BIN": str(tmp_path / "agy")}
 
         result = subprocess.run(
             [str(wrapper)],
