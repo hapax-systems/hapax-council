@@ -1,4 +1,4 @@
-"""Sign for system witness-rota peers via SO_PEERPIDFD and an encrypted credential."""
+"""Sign for admitted witness-rota peers."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ def admit(sock: socket.socket, *, read_cgroup: Callable[[int], str] | None = Non
 
 
 def _read_request(conn: socket.socket) -> bytes | None:
-    """Read to EOF up to the hard cap, discarding overflow so refusals can reach callers."""
+    """Read through EOF before refusing overflow."""
     chunks: list[bytes] = []
     size = 0
     while size <= 16 * MAX_REQUEST_BYTES and (chunk := conn.recv(65536)):

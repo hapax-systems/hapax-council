@@ -279,6 +279,17 @@ def test_a_second_receipt_for_the_same_record_is_refused(evidence_root, out_dir)
     assert first.path.read_bytes() == before
 
 
+def test_prefixes_do_not_alias(evidence_root, out_dir) -> None:
+    first = run(evidence_root, out_dir).path
+    assert first is not None
+    for field in ("artifact_fingerprint", "nonce"):
+        rec = record(evidence_root)
+        value = rec[field]
+        rec[field] = value[:16] + ("0" if value[16] != "0" else "1") + value[17:]
+        second = run(evidence_root, out_dir, rec=rec).path
+        assert second is not None and second != first
+
+
 def test_the_default_signer_is_the_holder(evidence_root, out_dir, monkeypatch) -> None:
     calls: list[Any] = []
 

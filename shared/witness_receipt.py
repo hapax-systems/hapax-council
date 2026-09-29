@@ -1,7 +1,4 @@
-"""Produce a create-once review dossier bound to one artifact and nonce.
-
-Only independent, non-author VALIDATED witnesses in the recorded window count.
-The protected holder signs; the existing public-gate resolver verifies."""
+"""Issue review dossiers."""
 
 from __future__ import annotations
 
@@ -149,7 +146,7 @@ def produce(
             ],
         )
     fingerprint, nonce = record["artifact_fingerprint"], record["nonce"]
-    task_id = f"witness-{fingerprint[:16]}-{nonce[:16]}"
+    task_id = f"witness-{fingerprint}-{nonce}"
     dossier: dict[str, Any] = {
         "dossier_schema": 1,
         "task_id": task_id,
