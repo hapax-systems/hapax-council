@@ -1,0 +1,614 @@
+#!/usr/bin/env python3
+"""Isolated prepaid OpenCode smoke; existing governance must admit its route."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import http.client
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+MODEL = "zai-org/GLM-5.3"
+CLIENT_MODEL = "featherless/glm-5.3"
+MAX_OUTPUT_TOKENS = 2048
+MAX_REQUEST_BYTES = 32768
+MAX_ENTITLEMENT_AGE = timedelta(minutes=5)
+ROUTE = "opencode.headless.smoke"
+PROMPT = "Read the supplied instructions. Reply with exactly HAPAX_OPENCODE_SMOKE_OK."
+NATIVE_SHA256 = (
+    "922a908ddc62c835e3974fc17f9ca73e94383944e5a0aed615e438aaecee55b5"  # pragma: allowlist secret
+)
+
+
+def _imports() -> None:
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+
+class Refusal(ValueError):
+    pass
+
+
+def isolated_config(base_url: str) -> dict:
+    return {
+        "model": CLIENT_MODEL,
+        "small_model": CLIENT_MODEL,
+        "enabled_providers": ["featherless"],
+        "provider": {
+            "featherless": {
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {"baseURL": base_url, "apiKey": "{env:HAPAX_FEATHERLESS_API_KEY}"},
+                "models": {
+                    "glm-5.3": {
+                        "id": MODEL,
+                        "limit": {"context": MAX_REQUEST_BYTES, "output": MAX_OUTPUT_TOKENS},
+                    }
+                },
+            }
+        },
+        "permission": "deny",
+        "tools": {"*": False},
+        "agent": {name: {"disable": True} for name in ("title", "summary", "compaction")},
+        "mcp": {},
+        "plugin": [],
+        "autoupdate": False,
+        "share": "disabled",
+        "snapshot": False,
+        "compaction": {"auto": False, "prune": False},
+    }
+
+
+def verify_resolved(resolved: dict, endpoint: str, bridge_key: str) -> None:
+    expected = isolated_config(endpoint)
+    expected["provider"]["featherless"]["options"]["apiKey"] = bridge_key
+    expected["permission"] = {"*": "deny"}
+    for agent in expected["agent"].values():
+        agent.update(options={}, permission={})
+    expected.update(
+        {
+            "$schema": "https://opencode.ai/config.json",
+            "mode": {},
+            "command": {},
+            "username": "unknown",
+        }
+    )
+    if json.dumps(resolved, sort_keys=True) != json.dumps(expected, sort_keys=True):
+        raise Refusal("unsafe_resolved_configuration")
+
+
+def isolated_environment(root: Path) -> dict[str, str]:
+    root = root.absolute()
+    if not root.is_dir() or root.is_symlink() or root.resolve() != root:
+        raise Refusal("unsafe_smoke_root")
+    return {
+        "PATH": os.defpath,
+        "HOME": str(root / "home"),
+        "XDG_CONFIG_HOME": str(root / "config"),
+        "XDG_DATA_HOME": str(root / "data"),
+        "XDG_CACHE_HOME": str(root / "cache"),
+        "XDG_STATE_HOME": str(root / "state"),
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "true",
+        "OPENCODE_DISABLE_CLAUDE_CODE": "true",
+        "OPENCODE_DISABLE_AUTOUPDATE": "true",
+        "OPENCODE_DISABLE_MODELS_FETCH": "true",
+        "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true",
+    }
+
+
+def verify_environment(root: Path, environment: dict[str, str]) -> None:
+    if environment != isolated_environment(root):
+        raise Refusal("unexpected_child_environment")
+    for name in ("home", "config", "data", "cache", "state"):
+        child = root / name
+        if child.is_symlink() or (child.exists() and child.resolve().parent != root.resolve()):
+            raise Refusal("shared_session_state")
+
+
+def verify_entitlement(measurement: dict, now: datetime) -> int:
+    _imports()
+    from shared.quota_spend_ledger import QuotaMeasurement
+
+    try:
+        observed = QuotaMeasurement.model_validate(measurement)
+    except ValueError as exc:
+        raise Refusal("invalid_entitlement_measurement") from exc
+    if (
+        observed.label != "observed"
+        or observed.capacity_id != "featherless.prepaid.available"
+        or observed.source != "https://api.featherless.ai/credits/balance"
+        or observed.unit != "nano_usd"
+    ):
+        raise Refusal("unobserved_balance")
+    if (
+        now.tzinfo is None
+        or not observed.measurement_is_fresh(now)
+        or now - observed.observed_at > MAX_ENTITLEMENT_AGE
+        or observed.measurement_fresh_until - observed.observed_at > MAX_ENTITLEMENT_AGE
+    ):
+        raise Refusal("entitlement_not_current")
+    if (
+        observed.details.get("auto_topup") != "off"
+        or observed.details.get("billing_mode") != "prepaid"
+    ):
+        raise Refusal("prepaid_no_topup")
+    value = observed.quantity
+    if value is None or not value.is_integer() or not 0 < value <= 2**53:
+        raise Refusal("invalid_available_balance")
+    return int(value)
+
+
+def _object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Refusal("ambiguous_request_json")
+        result[key] = value
+    return result
+
+
+class RequestGuard:
+    def __init__(self, shared_body: bytes, output_tokens: int, request_bytes: int):
+        if (
+            not shared_body
+            or type(output_tokens) is not int
+            or not 1 <= output_tokens <= MAX_OUTPUT_TOKENS
+            or type(request_bytes) is not int
+            or not 1 <= request_bytes <= MAX_REQUEST_BYTES
+        ):
+            raise Refusal("invalid_request_ceiling")
+        try:
+            self.shared = shared_body.decode("utf-8", errors="strict")
+        except UnicodeError as exc:
+            raise Refusal("invalid_shared_body") from exc
+        self.output_tokens = output_tokens
+        self.request_bytes = request_bytes
+        self.spent = False
+        self.lock = threading.Lock()
+
+    def take(self, raw: bytes) -> bytes:
+        with self.lock:
+            if self.spent:
+                raise Refusal("request_ceiling_exhausted")
+            self.spent = True
+        if not isinstance(raw, bytes) or not 0 < len(raw) <= self.request_bytes:
+            raise Refusal("request_byte_ceiling")
+        try:
+            request = json.loads(raw, object_pairs_hook=_object)
+        except (ValueError, UnicodeError) as exc:
+            raise Refusal("invalid_request_json") from exc
+        if not isinstance(request, dict) or set(request) != {
+            "model",
+            "messages",
+            "max_tokens",
+            "stream",
+            "stream_options",
+        }:
+            raise Refusal("unexpected_request_fields")
+        if (
+            request["model"] != MODEL
+            or request["stream"] is not True
+            or request.get("stream_options") != {"include_usage": True}
+        ):
+            raise Refusal("wrong_request_route")
+        tokens = request["max_tokens"]
+        if type(tokens) is not int or not 1 <= tokens <= self.output_tokens:
+            raise Refusal("output_token_ceiling")
+        messages = request["messages"]
+        if (
+            not isinstance(messages, list)
+            or len(messages) != 2
+            or any(
+                not isinstance(message, dict) or set(message) != {"role", "content"}
+                for message in messages
+            )
+            or messages[0].get("role") != "system"
+            or not isinstance(messages[0].get("content"), str)
+            or messages[0]["content"].count(self.shared) != 1
+        ):
+            raise Refusal("exact_shared_body_missing")
+        if messages[1] != {"role": "user", "content": PROMPT}:
+            raise Refusal("invalid_smoke_prompt")
+        return raw
+
+
+def verify_shared(home: Path) -> bytes:
+    path = home / ".config/hapax/agent-instructions/AGENTS.md"
+    active = home / ".cache/hapax/source-activation/worktree/config/agent-instructions/AGENTS.md"
+    if path.is_symlink() or (path.parent / "pending.json").exists():
+        raise Refusal("instruction_binding_pending_or_aliased")
+    raw = path.read_bytes()
+    receipt = json.loads((path.parent / "current.json").read_bytes())
+    entries = [entry for entry in receipt.get("files", []) if entry.get("binding") == "shared"]
+    if (
+        not raw
+        or active.read_bytes() != raw
+        or receipt.get("observation") != "filesystem_readback"
+        or len(entries) != 1
+        or entries[0].get("path") != str(path)
+        or entries[0].get("bytes") != len(raw)
+        or entries[0].get("sha256") != hashlib.sha256(raw).hexdigest()
+    ):
+        raise Refusal("shared_binding_not_current")
+    return raw
+
+
+def verify_response(raw: bytes, output_tokens: int) -> dict:
+    if len(raw) > 1024 * 1024:
+        raise Refusal("response_byte_ceiling")
+    try:
+        events = [line[6:] for line in raw.decode().splitlines() if line.startswith("data: ")]
+        if not events or events[-1] != "[DONE]" or "[DONE]" in events[:-1]:
+            raise Refusal("incomplete_response")
+        chunks = [json.loads(event, object_pairs_hook=_object) for event in events[:-1]]
+        if not chunks or any(chunk.get("model") != MODEL for chunk in chunks):
+            raise Refusal("wrong_served_model")
+        identities = {chunk.get("id") for chunk in chunks}
+        if len(identities) != 1 or not all(isinstance(i, str) and i for i in identities):
+            raise Refusal("missing_response_identity")
+        usages = [chunk["usage"] for chunk in chunks if chunk.get("usage") is not None]
+        if len(usages) != 1:
+            raise Refusal("missing_response_usage")
+        usage = usages[0]
+        prompt, completion, total = (
+            usage.get(key) for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        )
+        if (
+            any(type(v) is not int or v < 0 for v in (prompt, completion, total))
+            or prompt > MAX_REQUEST_BYTES
+            or not 0 < completion <= output_tokens
+            or total != prompt + completion
+        ):
+            raise Refusal("invalid_response_usage")
+        choices = [choice for chunk in chunks for choice in chunk.get("choices", [])]
+        if (
+            not choices
+            or any(
+                c.get("index") != 0
+                or c.get("delta", {}).get("tool_calls")
+                or c.get("delta", {}).get("function_call")
+                for c in choices
+            )
+            or [c["finish_reason"] for c in choices if c.get("finish_reason")] != ["stop"]
+        ):
+            raise Refusal("invalid_completion_boundary")
+        answer = "".join(c.get("delta", {}).get("content") or "" for c in choices)
+        if answer.strip() != "HAPAX_OPENCODE_SMOKE_OK":
+            raise Refusal("smoke_answer_not_observed")
+        return {"model": MODEL, "response_id": next(iter(identities)), "usage": usage}
+    except (ValueError, TypeError, KeyError, AttributeError, UnicodeError) as exc:
+        if isinstance(exc, Refusal):
+            raise
+        raise Refusal("malformed_provider_response") from exc
+
+
+def runtime_plan(home: Path, environment: dict[str, str]) -> dict:
+    _imports()
+    from shared.frontmatter import parse_frontmatter
+
+    lane = environment.get("HAPAX_AGENT_ROLE", "")
+    if re.fullmatch(r"[a-z0-9][a-z0-9-]+", lane) is None:
+        raise Refusal("missing lane identity")
+    marker = home / ".cache/hapax" / f"cc-active-task-{lane}"
+    task_id = marker.read_text().strip()
+    if re.fullmatch(r"[a-z0-9][a-z0-9-]+", task_id) is None:
+        raise Refusal("invalid active task")
+    note = home / "Documents/Personal/20-projects/hapax-cc-tasks/active" / f"{task_id}.md"
+    task, _ = parse_frontmatter(note)
+    output_base = home / ".cache/hapax/opencode-seat-smoke"
+    scopes = [
+        Path(p.replace("~/", str(home) + "/", 1)).resolve()
+        for p in task.get("mutation_scope_refs", [])
+        if isinstance(p, str)
+    ]
+    if (
+        task.get("assigned_to") != lane
+        or task.get("task_id") != task_id
+        or task.get("status") not in {"claimed", "in_progress", "pr_open"}
+        or task.get("runtime_mutation_authorized") is not True
+        or task.get("release_authorized") is not True
+        or task.get("authority_case") != "CASE-SDLC-REFORM-001"
+        or not task.get("parent_spec")
+        or not any(output_base.resolve().is_relative_to(scope) for scope in scopes)
+    ):
+        raise Refusal("runtime_authority_missing")
+
+    from shared.dispatcher_policy import (
+        build_dispatch_request,
+        evaluate_dispatch_policy,
+        load_dispatch_policy_sources,
+    )
+    from shared.platform_capability_receipts import load_platform_capability_receipts
+    from shared.quota_spend_ledger import CapacityPool
+
+    now = datetime.now(UTC)
+    sources = load_dispatch_policy_sources(now=now)
+    request = build_dispatch_request(
+        task_id=task_id,
+        lane=lane,
+        platform="opencode",
+        mode="headless",
+        profile="smoke",
+        task_fields=task,
+        registry=sources.registry,
+        registry_error=sources.registry_error,
+        quota_ledger=sources.quota_ledger,
+        quota_error=sources.quota_error,
+        route_authority_receipts=sources.route_authority_receipts,
+        now=now,
+    )
+    decision = evaluate_dispatch_policy(request, now=now)
+    if not decision.launch_allowed or sources.quota_ledger_source != "live":
+        raise Refusal("route_or_live_quota_missing")
+    # The dispatcher already evaluates task-scoped paid eligibility at $1.00.
+    route = sources.registry.route_map()[ROUTE]
+    if (
+        route.paid_provider != "featherless"
+        or route.model_or_engine != MODEL
+        or route.capacity_pool is not CapacityPool.API_PAID_SPEND
+    ):
+        raise Refusal("route_binding_mismatch")
+    measurements = [
+        m.model_dump(mode="json")
+        for s in sources.quota_ledger.quota_snapshots
+        if s.provider == "featherless" and s.route_id == ROUTE
+        for m in s.measurements
+        if m.capacity_id == "featherless.prepaid.available"
+    ]
+    if len(measurements) != 1:
+        raise Refusal("prepaid_observer_missing")
+    verify_entitlement(measurements[0], now)
+    receipts = load_platform_capability_receipts(
+        home / ".cache/hapax/platform-capability-receipts",
+        now=now,
+    )
+    receipt = receipts.get("opencode")
+    if receipt is None or receipt.routes != [ROUTE] or receipt.cli.version != "1.17.4":
+        raise Refusal("cli_observation_missing")
+    binary = Path(receipt.cli.binary)
+    if (
+        not binary.is_absolute()
+        or not binary.is_file()
+        or hashlib.sha256(binary.read_bytes()).hexdigest() != NATIVE_SHA256
+        or not os.access(binary, os.X_OK)
+    ):
+        raise Refusal("native_binary_drift")
+    return {
+        "task_id": task_id,
+        "binary": binary,
+        "output_base": output_base,
+        "measurement": measurements[0],
+        "shared": verify_shared(home),
+    }
+
+
+def _provider(method: str, path: str, key: str, raw: bytes | None = None) -> bytes:
+    connection = http.client.HTTPSConnection("api.featherless.ai", timeout=30)
+    try:
+        connection.request(
+            method,
+            path,
+            body=raw,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "User-Agent": "hapax-review",
+                "Content-Type": "application/json",
+            },
+        )
+        response = connection.getresponse()
+        data = response.read(1024 * 1024 + 1)
+        if response.status != 200 or len(data) > 1024 * 1024:
+            raise Refusal("provider_response_refused")
+        return data
+    finally:
+        connection.close()
+
+
+def _create_once(path: Path, body: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(body)
+
+
+def run_smoke(plan: dict, home: Path, environment: dict[str, str]) -> dict:
+    if not shutil.which("bwrap"):
+        raise Refusal("isolation_unavailable")
+    secret = subprocess.run(
+        ["hapax-secret", "featherless-api-key"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if secret.returncode != 0 or not secret.stdout.strip() or "\n" in secret.stdout.strip():
+        raise Refusal("prepaid_credential_unavailable")
+    key = secret.stdout.strip()
+    parent = plan["output_base"]
+    if parent.is_symlink() or parent.absolute() != parent.resolve():
+        raise Refusal("unsafe_output_root")
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root = Path(tempfile.mkdtemp(prefix="probe-", dir=parent))
+    for name in ("home", "config/opencode", "data", "cache", "state", "work"):
+        (root / name).mkdir(parents=True, mode=0o700, exist_ok=True)
+    guard = RequestGuard(plan["shared"], MAX_OUTPUT_TOKENS, MAX_REQUEST_BYTES)
+    bridge_key = secrets.token_hex(32)
+    observations = {}
+    armed = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            try:
+                self.connection.settimeout(35)
+                if (
+                    not armed.is_set()
+                    or self.path != "/v1/chat/completions"
+                    or self.headers.get("Authorization") != f"Bearer {bridge_key}"
+                    or self.headers.get("Transfer-Encoding") is not None
+                ):
+                    raise Refusal("unrecognized_egress")
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= MAX_REQUEST_BYTES:
+                    raise Refusal("request_byte_ceiling")
+                raw = guard.take(self.rfile.read(length))
+                current = runtime_plan(home, environment)
+                if current["task_id"] != plan["task_id"] or current["shared"] != plan["shared"]:
+                    raise Refusal("runtime_binding_changed")
+                wallet = json.loads(_provider("GET", "/credits/balance", key))
+                available = wallet.get("available_nano_usd", "")
+                if (
+                    wallet.get("currency") != "usd"
+                    or not isinstance(available, str)
+                    or not available.isdigit()
+                    or int(available) < 1_000_000_000
+                ):
+                    raise Refusal("insufficient_prepaid_balance")
+                _create_once(root / "request.json", raw)
+                verify_entitlement(current["measurement"], datetime.now(UTC))
+                response = _provider("POST", "/v1/chat/completions", key, raw)
+                _create_once(root / "response.sse", response)
+                observed = verify_response(response, MAX_OUTPUT_TOKENS)
+                observations.update(observed)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+            except Exception as exc:
+                observations["failure"] = type(exc).__name__
+                self.send_error(400, "smoke boundary refused; no retry is admitted")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.timeout = 1
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    config = isolated_config(f"http://127.0.0.1:{server.server_port}/v1")
+    _create_once(root / "config/opencode/opencode.json", json.dumps(config).encode())
+    _create_once(root / "config/opencode/AGENTS.md", plan["shared"])
+    child_env = isolated_environment(root)
+    verify_environment(root, child_env)
+    child_env["HAPAX_FEATHERLESS_API_KEY"] = bridge_key
+    command = [
+        "bwrap",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-uts",
+        "--unshare-ipc",
+        "--cap-drop",
+        "ALL",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib",
+        "/lib64",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+    ]
+    command += [
+        "--bind",
+        str(root),
+        str(root),
+        "--ro-bind",
+        str(plan["binary"]),
+        "/opencode",
+        "--chdir",
+        str(root / "work"),
+        "--clearenv",
+    ]
+    for name in ("opencode.json", "AGENTS.md"):
+        policy_file = str(root / "config/opencode" / name)
+        command += ["--ro-bind", policy_file, policy_file]
+    for name, value in child_env.items():
+        command.extend(["--setenv", name, value])
+    try:
+        inventory = subprocess.run(
+            command + ["/opencode", "--pure", "debug", "config"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+        if inventory.returncode != 0 or observations:
+            raise Refusal("resolved_configuration_unobserved")
+        verify_resolved(
+            json.loads(inventory.stdout),
+            config["provider"]["featherless"]["options"]["baseURL"],
+            bridge_key,
+        )
+        armed.set()
+        result = subprocess.run(
+            command + ["/opencode", "--pure", "run", "--format", "json", "-m", CLIENT_MODEL],
+            input=PROMPT.encode(),
+            capture_output=True,
+            timeout=90,
+            check=False,
+        )
+        _create_once(root / "stdout.jsonl", result.stdout)
+        if result.returncode != 0 or "failure" in observations or not observations:
+            raise Refusal("smoke_failed")
+        events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        text = "".join(e.get("part", {}).get("text", "") for e in events if e.get("type") == "text")
+        if text.strip() != "HAPAX_OPENCODE_SMOKE_OK":
+            raise Refusal("opencode_delivery_unobserved")
+        return {
+            "observation": "isolated_smoke_only",
+            "directory": str(root),
+            "route_admitted_by_smoke": False,
+            **observations,
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=40)
+        _create_once(
+            root / "boundary.json", json.dumps({"spent": guard.spent, **observations}).encode()
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="report the held runtime boundary")
+    args = parser.parse_args(argv)
+    try:
+        plan = runtime_plan(Path.home(), os.environ)
+        if args.check:
+            raise Refusal("request_response_delivery_unobserved")
+        print(json.dumps(run_smoke(plan, Path.home(), os.environ), sort_keys=True))
+        return 0
+    except (OSError, ValueError, ImportError, subprocess.SubprocessError) as exc:
+        reason = str(exc) if isinstance(exc, Refusal) else type(exc).__name__
+        print(
+            f"hapax-opencode-seat-smoke: REFUSED runtime_admission_pending: {reason}; "
+            "next action: reconcile current runtime authority and independent route evidence",
+            file=sys.stderr,
+        )
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -23,6 +23,15 @@ VERIFY_BINARY = seat._verified_codex_binary
 PREFIX = b"<!-- Generated from Council config/agent-instructions; edit the source. -->\n\n"
 
 
+def test_opencode_refusal_names_runtime_evidence_before_any_process(monkeypatch, capsys):
+    monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "opencode", "--check"])
+    monkeypatch.setattr(
+        seat.subprocess, "run", lambda *_a, **_k: pytest.fail("runtime process started")
+    )
+    assert seat.main() == 2
+    assert "runtime_admission_pending" in capsys.readouterr().err
+
+
 @pytest.fixture
 def binding(tmp_path: Path, monkeypatch) -> tuple[Path, dict[str, str]]:
     monkeypatch.setattr(seat, "_verified_codex_binary", lambda: "codex")
