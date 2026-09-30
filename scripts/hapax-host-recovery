@@ -22,10 +22,17 @@ UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
 ROLE = re.compile(r"^(?:codex-[a-z0-9-]+|dev[0-9]*|dev1-seat)$")
 UNIT = re.compile(r"^[a-z0-9][a-z0-9@_.-]*\.(?:service|timer|socket)$")
 MEMORY = {"high": "5G", "max": "7G", "swap": "1G"}
+APPENDIX_HOST = "hapax-appendix"
+IDLE_WATCHDOG = {
+    "scope": "user",
+    "name": "hapax-lane-idle-watchdog.timer",
+    "enabled": "disabled",
+}
 SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
 APPROVAL_MODES = {"on-request", "never"}
 ROOT = Path.home() / "Documents/Personal/30-areas/hapax/lanebus"
 STATE = Path.home() / ".local/state/hapax/host-recovery"
+CODEX_NODE_WRAPPER = Path.home() / ".npm-global/bin/codex"
 
 
 class ReportError(RuntimeError):
@@ -100,6 +107,19 @@ def validate_unit(unit: dict) -> None:
         raise ValueError("invalid recovery unit enablement")
 
 
+def recovery_units(host: str, declared: list[dict]) -> list[dict]:
+    """Carry the appendix watchdog's desired-disabled state even while inactive."""
+    by_name = {(unit["scope"], unit["name"]): unit for unit in declared}
+    if len(by_name) != len(declared):
+        raise ValueError("duplicate recovery unit")
+    if host == APPENDIX_HOST:
+        key = (IDLE_WATCHDOG["scope"], IDLE_WATCHDOG["name"])
+        if key in by_name and by_name[key] != IDLE_WATCHDOG:
+            raise ValueError("appendix idle watchdog manifest must say disabled")
+        by_name[key] = IDLE_WATCHDOG.copy()
+    return sorted(by_name.values(), key=lambda unit: (unit["scope"], unit["name"]))
+
+
 def unit_cmd(scope: str, *args: str) -> list[str]:
     return (["systemctl", "--user"] if scope == "user" else ["sudo", "-n", "systemctl"]) + list(
         args
@@ -114,7 +134,12 @@ def unit_readback(unit: dict) -> bool:
     validate_unit(unit)
     if unit_property(unit, "UnitFileState") != unit["enabled"]:
         raise ValueError(f"unit enablement differs: {unit['name']}")
-    return unit_property(unit, "ActiveState") == "active"
+    active = unit_property(unit, "ActiveState")
+    if unit == IDLE_WATCHDOG:
+        if active != "inactive":
+            raise ValueError(f"disabled recovery unit is not inactive: {unit['name']}")
+        return True
+    return active == "active"
 
 
 def declare_unit(spec: str) -> dict:
@@ -181,6 +206,8 @@ def agent_process(pane_pid: str, provider: str) -> tuple[str, list[str], dict[st
     pending = [pane_pid]
     seen: set[str] = set()
     matches: list[tuple[str, list[str], dict[str, str]]] = []
+    pane_argv: list[str] = []
+    pane_children: list[str] = []
     while pending:
         pid = pending.pop(0)
         if pid in seen:
@@ -193,11 +220,25 @@ def agent_process(pane_pid: str, provider: str) -> tuple[str, list[str], dict[st
             children = (Path("/proc") / pid / "task" / pid / "children").read_text().split()
         except FileNotFoundError:
             continue  # A racing exit is retried by the restore readback deadline.
+        if pid == pane_pid:
+            pane_argv, pane_children = argv, children
         if argv and Path(argv[0]).name == provider:
             matches.append((pid, argv, env))
         pending.extend(children)
     if len(matches) != 1:
         raise ValueError(f"expected one {provider} agent beneath tmux pane, found {len(matches)}")
+    pane_name = Path(pane_argv[0]).name if pane_argv else ""
+    if pane_name == "node":
+        if (
+            provider != "codex"
+            or len(pane_argv) < 3
+            or pane_argv[1] != str(CODEX_NODE_WRAPPER)
+            or matches[0][0] not in pane_children
+            or pane_argv[2:] != matches[0][1][1:]
+        ):
+            raise ValueError("Codex pane wrapper or native child differs")
+    elif pane_name not in {provider, "sh", "bash", "fish"}:
+        raise ValueError("pane process is not a declared agent or shell")
     return matches[0]
 
 
@@ -348,7 +389,11 @@ def capture(path: Path, requested_units: tuple[str, ...] = ()) -> dict:
     for spec in requested_units:
         declared = declare_unit(spec)
         units[(declared["scope"], declared["name"])] = declared
-    if not lanes and not units:
+    host = socket.gethostname().split(".")[0]
+    declared_units = recovery_units(host, list(units.values()))
+    if host == APPENDIX_HOST:
+        unit_readback(IDLE_WATCHDOG)
+    if not lanes and not declared_units:
         raise ValueError("no live lanes or declared units; refusing empty desired state")
     if old:
         # A crashed pane must not disappear from the manifest during a timer tick.
@@ -357,11 +402,11 @@ def capture(path: Path, requested_units: tuple[str, ...] = ()) -> dict:
         lanes = sorted(by_name.values(), key=lambda e: e["tmux"])
     data = {
         "schema": 1,
-        "host": socket.gethostname().split(".")[0],
+        "host": host,
         "boot_id": current,
         "captured_at": now(),
         "lanes": lanes,
-        "units": sorted(units.values(), key=lambda u: (u["scope"], u["name"])),
+        "units": declared_units,
     }
     atomic_json(path, data)
     return data
@@ -475,6 +520,7 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
     data = read_manifest(path)
     if data is None:
         raise ValueError("host recovery manifest missing; capture before host-affecting work")
+    units = recovery_units(data["host"], data.get("units", []))
     current = boot_id()
     result: dict = {
         "host": data["host"],
@@ -485,7 +531,7 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
         "failed": {},
     }
     all_units_live = True
-    for unit in data.get("units", []):
+    for unit in units:
         try:
             all_units_live = unit_readback(unit) and all_units_live
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -509,7 +555,7 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
         else:
             result["already_live"] = [entry["tmux"] for entry in data["lanes"]]
             return result
-    for unit in data.get("units", []):
+    for unit in units:
         label = f"{unit['scope']}:{unit['name']}"
         try:
             if not unit_readback(unit):
@@ -574,6 +620,7 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
         if not result["failed"]:
             data["boot_id"] = current
             data["restored_at"] = now()
+            data["units"] = units
             atomic_json(path, data)
     return result
 
