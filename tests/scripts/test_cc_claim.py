@@ -1027,6 +1027,139 @@ def test_blocked_task_refusal_includes_reason_and_witness(tmp_path: Path) -> Non
     assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
 
 
+def test_blocked_recovery_refuses_typed_witness_without_reason_binding(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    witness = tmp_path / "route-fresh.yaml"
+    witness.write_text("ok\n", encoding="utf-8")
+    note = _write_task(
+        home,
+        "active",
+        "blocked-target",
+        status="blocked",
+        assigned_to="cx-test",
+        blocked_reason="codex_platform_capability_receipt_invalid",
+        blocked_witness=(
+            f"{{kind: path_exists, ref: {witness}, recovery: claimant_scoped_cc_claim}}"
+        ),
+    )
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "claimed_at: null", "claimed_at: 2026-09-29T21:38:00Z"
+        ),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, "blocked-target")
+
+    assert result.returncode == 4
+    assert "blocked_recovery_reason_mismatch" in result.stderr
+    assert note.read_text(encoding="utf-8").count("status: blocked") == 1
+    assert not (home / ".cache" / "hapax" / "cc-active-task-cx-test").exists()
+
+
+def test_owner_recovers_blocked_row_with_bound_satisfied_witness(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    witness = tmp_path / "route-fresh.yaml"
+    witness.write_text("ok\n", encoding="utf-8")
+    note = _write_task(
+        home,
+        "active",
+        "blocked-target",
+        status="blocked",
+        assigned_to="cx-test",
+        blocked_reason="codex_platform_capability_receipt_invalid",
+        blocked_witness=(
+            "{kind: path_exists, ref: "
+            f"{witness}, recovery: claimant_scoped_cc_claim, "
+            "resolves_blocked_reason: codex_platform_capability_receipt_invalid"
+            "}"
+        ),
+    )
+    note.write_text(
+        note.read_text(encoding="utf-8").replace(
+            "claimed_at: null", "claimed_at: 2026-09-29T21:38:00Z"
+        ),
+        encoding="utf-8",
+    )
+
+    result = _claim(home, "blocked-target")
+
+    assert result.returncode == 0, result.stderr
+    text = note.read_text(encoding="utf-8")
+    assert "status: claimed" in text
+    assert "blocked_reason: codex_platform_capability_receipt_invalid" in text
+    assert "recovered blocked claim (cc-claim" in text
+    assert (home / ".cache" / "hapax" / "cc-active-task-cx-test").read_text(
+        encoding="utf-8"
+    ).strip() == "blocked-target"
+
+    again = _claim(home, "blocked-target")
+
+    assert again.returncode == 0, again.stderr
+    assert "applied publication already owns task 'blocked-target'" in again.stdout
+    assert note.read_text(encoding="utf-8").count("recovered blocked claim (cc-claim") == 1
+
+
+def test_blocked_recovery_refuses_stale_receipt_witness(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    receipt = tmp_path / "stale-receipt.yaml"
+    receipt.write_text(
+        "observed_at: 2000-01-01T00:00:00Z\nstale_after_seconds: 1\n",
+        encoding="utf-8",
+    )
+    note = _write_task(
+        home,
+        "active",
+        "blocked-target",
+        status="blocked",
+        assigned_to="cx-test",
+        blocked_reason="codex_platform_capability_receipt_invalid",
+        blocked_witness=(
+            "{kind: receipt_fresh, ref: "
+            f"{receipt}, recovery: claimant_scoped_cc_claim, "
+            "resolves_blocked_reason: codex_platform_capability_receipt_invalid"
+            "}"
+        ),
+    )
+
+    result = _claim(home, "blocked-target")
+
+    assert result.returncode == 4
+    assert "blocked_recovery_witness_unsatisfied" in result.stderr
+    assert "status: blocked" in note.read_text(encoding="utf-8")
+
+
+def test_blocked_recovery_refuses_foreign_claim_marker(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    witness = tmp_path / "route-fresh.yaml"
+    witness.write_text("ok\n", encoding="utf-8")
+    note = _write_task(
+        home,
+        "active",
+        "blocked-target",
+        status="blocked",
+        assigned_to="cx-test",
+        blocked_reason="codex_platform_capability_receipt_invalid",
+        blocked_witness=(
+            "{kind: path_exists, ref: "
+            f"{witness}, recovery: claimant_scoped_cc_claim, "
+            "resolves_blocked_reason: codex_platform_capability_receipt_invalid"
+            "}"
+        ),
+    )
+    foreign = home / ".cache" / "hapax" / "cc-active-task-cx-other"
+    foreign.parent.mkdir(parents=True, exist_ok=True)
+    foreign.write_text("blocked-target\n", encoding="utf-8")
+
+    result = _claim(home, "blocked-target")
+
+    assert result.returncode == 4
+    assert str(foreign) in result.stderr
+    assert "status: blocked" in note.read_text(encoding="utf-8")
+
+
 def test_blocked_dependency_reports_precise_reason_and_witness(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _write_task(
@@ -3188,7 +3321,7 @@ def _tree_bytes(root: Path) -> dict[Path, bytes]:
             "cx-test",
             'cc-close target-row --pr 77 --witness "<observation>"',
         ),
-        ("blocked", "cx-test", "current status is 'blocked'"),
+        ("blocked", "cx-test", "blocked_recovery_witness_untyped"),
         ("offered", "another-lane", "already assigned to 'another-lane'"),
     ],
     ids=["awaiting", "blocked", "assigned_elsewhere"],

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 
+from shared.blocked_witness import evaluate_claimant_blocked_recovery
 from shared.cc_task_pr_link import is_nullish
 from shared.coord_projection import (
     CapturedFile,
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
 _OWN_RESUMABLE_STATUSES = TASK_RESUMABLE_STATUSES | (
     TASK_DISPATCHABLE_STATUSES - TASK_CLAIMABLE_STATUSES
 )
+_CLAIM_PUBLICATION_CLAIM_MODES = frozenset({"claim", "resume", "blocked_recovery"})
 
 CLAIM_PUBLICATION_SCHEMA = "hapax.claim-publication-transaction.v1"
 CLAIM_PUBLICATION_RECEIPT_SCHEMA = "hapax.claim-publication-receipt.v2"
@@ -325,6 +327,30 @@ def _validate_note_after(
         )
 
 
+def _frontmatter_depends_on_empty(frontmatter: Mapping[str, object]) -> bool:
+    raw = frontmatter.get("depends_on")
+    if raw is None:
+        return True
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        return len(raw) == 0
+    scalar = str(raw).strip().strip('"').strip("'").lower()
+    return scalar in {"", "null", "none", "~", "[]"}
+
+
+def _claim_mode_transition_valid(
+    claim_mode: object, from_status: object, to_status: object
+) -> bool:
+    if not isinstance(claim_mode, str):
+        return False
+    if claim_mode == "claim":
+        return from_status in TASK_CLAIMABLE_STATUSES and to_status == "claimed"
+    if claim_mode == "resume":
+        return from_status in _OWN_RESUMABLE_STATUSES and to_status == from_status
+    if claim_mode == "blocked_recovery":
+        return from_status == "blocked" and to_status == "claimed"
+    return False
+
+
 @dataclass(frozen=True)
 class ClaimPublicationIntent:
     """Exact task-note and dispatch identity to publish as one claim."""
@@ -386,6 +412,20 @@ class ClaimPublicationIntent:
         elif from_status in _OWN_RESUMABLE_STATUSES and assigned_to == binding.lane:
             claim_mode = "resume"
             to_status = from_status
+        elif (
+            from_status == "blocked"
+            and assigned_to == binding.lane
+            and _frontmatter_depends_on_empty(task.frontmatter)
+        ):
+            recovery = evaluate_claimant_blocked_recovery(task.frontmatter)
+            if recovery.verdict != "satisfied":
+                raise ClaimPublicationError(
+                    recovery.reason_code,
+                    "refresh the original blocked predicate witness and bind it to blocked_reason before recovery",
+                    recovery.detail,
+                )
+            claim_mode = "blocked_recovery"
+            to_status = "claimed"
         else:
             raise ClaimPublicationError(
                 "claim_publication_task_not_claimable",
@@ -398,7 +438,7 @@ class ClaimPublicationIntent:
             role=binding.lane,
             authority_case=binding.authority_case,
             expected_status=to_status,
-            require_claimed_at=claim_mode == "claim",
+            require_claimed_at=claim_mode in {"claim", "blocked_recovery"},
         )
         if note_after == task.content:
             raise ClaimPublicationError(
@@ -2067,18 +2107,8 @@ def _validate_intent(intent: ClaimPublicationIntent) -> None:
         or not 0 <= intent.note_mode <= 0o777
         or not intent.note_before
         or not intent.note_after
-        or (
-            intent.claim_mode == "claim"
-            and (intent.from_status not in TASK_CLAIMABLE_STATUSES or intent.to_status != "claimed")
-        )
-        or (
-            intent.claim_mode == "resume"
-            and (
-                intent.from_status not in _OWN_RESUMABLE_STATUSES
-                or intent.to_status != intent.from_status
-            )
-        )
-        or intent.claim_mode not in {"claim", "resume"}
+        or intent.claim_mode not in _CLAIM_PUBLICATION_CLAIM_MODES
+        or not _claim_mode_transition_valid(intent.claim_mode, intent.from_status, intent.to_status)
     ):
         raise ClaimPublicationError(
             "claim_publication_intent_identity_mismatch",
@@ -2091,7 +2121,7 @@ def _validate_intent(intent: ClaimPublicationIntent) -> None:
         role=intent.role,
         authority_case=intent.binding.authority_case,
         expected_status=intent.to_status,
-        require_claimed_at=intent.claim_mode == "claim",
+        require_claimed_at=intent.claim_mode in {"claim", "blocked_recovery"},
     )
 
 
@@ -3285,11 +3315,9 @@ def load_claim_publication_receipt(
         or not isinstance(publication_id, str)
         or not publication_id.startswith("claim-pub-")
         or not is_hash(publication_digest)
-        or record.get("claim_mode") not in {"claim", "resume"}
-        or (record.get("claim_mode") == "claim" and record.get("to_status") != "claimed")
-        or (
-            record.get("claim_mode") == "resume"
-            and record.get("to_status") != record.get("from_status")
+        or record.get("claim_mode") not in _CLAIM_PUBLICATION_CLAIM_MODES
+        or not _claim_mode_transition_valid(
+            record.get("claim_mode"), record.get("from_status"), record.get("to_status")
         )
         or not Path(str(record.get("claim_note_path"))).is_absolute()
         or str(_normalized(Path(str(record.get("claim_note_path")))))
@@ -3477,11 +3505,9 @@ def load_admitted_claim_publication_receipt(
         or not isinstance(publication_id, str)
         or not publication_id.startswith("claim-pub-")
         or not is_hash(publication_digest)
-        or record.get("claim_mode") not in {"claim", "resume"}
-        or (record.get("claim_mode") == "claim" and record.get("to_status") != "claimed")
-        or (
-            record.get("claim_mode") == "resume"
-            and record.get("to_status") != record.get("from_status")
+        or record.get("claim_mode") not in _CLAIM_PUBLICATION_CLAIM_MODES
+        or not _claim_mode_transition_valid(
+            record.get("claim_mode"), record.get("from_status"), record.get("to_status")
         )
         or not Path(str(record.get("claim_note_path"))).is_absolute()
         or str(_normalized(Path(str(record.get("claim_note_path")))))

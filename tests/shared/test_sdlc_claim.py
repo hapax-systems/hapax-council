@@ -2192,6 +2192,104 @@ def test_claim_and_resume_intents_bind_exact_preimages(tmp_path: Path) -> None:
     )
 
 
+def _blocked_recovery_fixture(tmp_path: Path) -> ClaimFixture:
+    vault = tmp_path / "vault"
+    active = vault / "active"
+    cache = tmp_path / "cache"
+    active.mkdir(parents=True, exist_ok=True)
+    (vault / "closed").mkdir(exist_ok=True)
+    cache.mkdir(exist_ok=True)
+    witness = tmp_path / "route-fresh.yaml"
+    witness.write_text("ok\n", encoding="utf-8")
+    before = f"""---
+task_id: task-alpha
+status: blocked
+assigned_to: cx-red
+claimed_at: 2026-09-29T21:38:00Z
+updated_at: 2026-09-29T21:40:00Z
+authority_case: CASE-CLAIM-001
+parent_spec: spec://claim
+claimable: true
+blocked_reason: codex_platform_capability_receipt_invalid
+blocked_witness:
+  kind: path_exists
+  ref: {witness}
+  recovery: claimant_scoped_cc_claim
+  resolves_blocked_reason: codex_platform_capability_receipt_invalid
+depends_on: []
+---
+# Claim task
+
+Body remains exact.
+""".encode()
+    note_path = active / "task-alpha.md"
+    note_path.write_bytes(before)
+    task = resolve_task_note(vault, "task-alpha", require_no_other_state=True)
+    binding = ClaimDispatchBinding.create(
+        task_id="task-alpha",
+        lane="cx-red",
+        session_id="session-abc",
+        claim_epoch=1_720_700_000,
+        dispatch_message_id="dispatch-msg-001",
+        platform="codex",
+        mode="headless",
+        profile="ultra",
+        authority_case="CASE-CLAIM-001",
+        binding_hash="a" * 64,
+        coord_dispatch_idempotency_key="coord-dispatch-001",
+    )
+    after = before.replace(b"status: blocked", b"status: claimed") + (
+        b"\n- 2026-09-29T21:45:00Z cx-red recovered blocked claim.\n"
+    )
+    intent = ClaimPublicationIntent.create(
+        task=task,
+        cache_dir=cache,
+        note_after=after,
+        binding=binding,
+    )
+    return ClaimFixture(
+        intent=intent,
+        vault=vault,
+        cache=cache,
+        transactions=tmp_path / "transactions",
+        locks=tmp_path / "locks",
+    )
+
+
+def test_blocked_recovery_intent_binds_blocked_preimage_to_claimed_postimage(
+    tmp_path: Path,
+) -> None:
+    fixture = _blocked_recovery_fixture(tmp_path)
+
+    assert fixture.intent.claim_mode == "blocked_recovery"
+    assert fixture.intent.from_status == "blocked"
+    assert fixture.intent.to_status == "claimed"
+    basis = prospective_claim_publication_basis(fixture.intent)
+    assert basis.claim_mode == "blocked_recovery"
+    assert basis.from_status == "blocked"
+    assert basis.to_status == "claimed"
+
+
+def test_blocked_recovery_preflight_refuses_source_change_race(tmp_path: Path) -> None:
+    fixture = _blocked_recovery_fixture(tmp_path)
+    changed = fixture.intent.note_before.replace(
+        b"codex_platform_capability_receipt_invalid",
+        b"another_blocker",
+        1,
+    )
+
+    with pytest.raises(TaskStoreError) as raised:
+        sdlc_claim.prepare_claim_publication_intent(
+            note_path=fixture.intent.note_path,
+            note_before=changed,
+            note_after=fixture.intent.note_after,
+            cache_dir=fixture.cache,
+            binding=fixture.intent.binding,
+        )
+
+    assert raised.value.reason_code == "claim_publication_task_changed_during_preflight"
+
+
 def test_publish_claim_is_gate0a_hold_without_mutation(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     before = _tree_snapshot(tmp_path)
@@ -5005,7 +5103,7 @@ def test_a_publication_emits_one_non_authoritative_observation_per_state(
         "postimage_complete",
         "applied",
     ]
-    stamps = [e["timestamp"] for e in observed]
+    stamps = [str(e["timestamp"]) for e in observed]
     assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
     for event in observed:
         assert event["payload"]["authority"] == "non_authoritative_observation"

@@ -109,6 +109,54 @@ If default mode holds on install corruption or stale claim state, repair that
 condition and rerun `cc-claim`. Do not switch to the fallback for routine
 stale-claim cleanup.
 
+## Claimant-Scoped Blocked Recovery
+
+`cc-claim` has one narrow recovery edge for an owned, non-dependency blocked
+row. It is not a generic `blocked -> claimed` edit and `blocked` is still not a
+dispatchable status. The row must already name the current lane in
+`assigned_to`, must have `depends_on: []`, and must carry a typed
+`blocked_witness` whose live evaluation satisfies at use time.
+
+The witness must bind the exact blocker it resolves:
+
+```yaml
+blocked_reason: codex_platform_capability_receipt_invalid
+blocked_witness:
+  kind: receipt_fresh
+  ref: ~/.cache/hapax/<producer>/<receipt>.yaml
+  recovery: claimant_scoped_cc_claim
+  resolves_blocked_reason: codex_platform_capability_receipt_invalid
+```
+
+Supported witness kinds are the existing `path_exists`, `ancestor_of_main`, and
+`receipt_fresh` kinds from `shared/blocked_witness.py`. Unknown, untyped,
+stale, future-dated, missing, or reason-mismatched witnesses refuse before any
+claim publication. Another live claim marker for the row also refuses. A
+successful recovery publishes an admitted Gate-0B claim-publication receipt
+whose preimage is `status: blocked` and postimage is `status: claimed`; it keeps
+the prior `blocked_reason` and `blocked_witness` in the note as historical block
+evidence and adds a session-log recovery line.
+
+For a legacy row that only has free-text `blocked_reason` and no typed witness,
+do not fabricate a historical witness. The safe one-time path is:
+
+1. Preserve the existing `blocked_reason` text.
+2. Add a typed `blocked_witness` that points to a current producer receipt for
+   the original failed predicate.
+3. Set `recovery: claimant_scoped_cc_claim` and
+   `resolves_blocked_reason` to the exact current `blocked_reason`.
+4. Obtain the required independent source acceptance for that one-time evidence
+   binding before using it.
+5. Rerun `cc-claim` from the original claimant lane and verify the admitted
+   receipt and postimage.
+
+If the evidence cannot satisfy this contract, keep the row blocked. For the GLM
+refresh timer row described by the 2026-09-29 recovery brief, this means the
+row stays held until its own route/admission producer emits a fresh typed
+receipt and the later bounded timer act is challenged separately. This recovery
+does not authorize a service act, provider switch, timer restart, merge, or
+manual row shortcut.
+
 ## Emergency Fallback
 
 ```bash

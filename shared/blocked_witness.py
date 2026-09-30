@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -13,7 +14,16 @@ from typing import Any, Literal
 import yaml
 
 BLOCKED_WITNESS_KINDS = frozenset({"path_exists", "ancestor_of_main", "receipt_fresh"})
+CLAIMANT_SCOPED_BLOCKED_RECOVERY = "claimant_scoped_cc_claim"
+BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
 BlockedWitnessVerdict = Literal["satisfied", "unsatisfied", "refuse"]
+
+
+@dataclass(frozen=True)
+class BlockedRecoveryEvaluation:
+    verdict: BlockedWitnessVerdict
+    reason_code: str
+    detail: str
 
 
 def evaluate_blocked_witness(
@@ -45,6 +55,65 @@ def evaluate_blocked_witness(
     if kind == "receipt_fresh":
         return _receipt_is_fresh(ref, now=now)
     return "refuse"
+
+
+def evaluate_claimant_blocked_recovery(
+    frontmatter: Mapping[str, Any],
+    *,
+    now: datetime | None = None,
+    git_repo: Path | None = None,
+) -> BlockedRecoveryEvaluation:
+    """Evaluate the narrow same-claim blocked-row recovery witness.
+
+    A recovery witness must be typed, name the blocked reason it resolves, and
+    satisfy its underlying witness at use time. This function only evaluates.
+    """
+
+    reason = _frontmatter_non_null_scalar(frontmatter.get("blocked_reason"))
+    if not reason:
+        return BlockedRecoveryEvaluation(
+            "refuse", "blocked_recovery_reason_missing", "blocked_reason is missing"
+        )
+    if reason.startswith(BLOCKED_DEPENDENCY_REASON_PREFIX):
+        return BlockedRecoveryEvaluation(
+            "refuse",
+            "blocked_recovery_dependency_block",
+            "dependency-managed blocked rows use cc-cascade-unblock",
+        )
+    raw = frontmatter.get("blocked_witness")
+    if not isinstance(raw, Mapping):
+        return BlockedRecoveryEvaluation(
+            "refuse", "blocked_recovery_witness_untyped", "blocked_witness is not typed"
+        )
+    recovery = _frontmatter_non_null_scalar(raw.get("recovery"))
+    if recovery != CLAIMANT_SCOPED_BLOCKED_RECOVERY:
+        return BlockedRecoveryEvaluation(
+            "refuse",
+            "blocked_recovery_not_declared",
+            f"blocked_witness.recovery={recovery or 'missing'}",
+        )
+    expected_reason = _frontmatter_non_null_scalar(raw.get("resolves_blocked_reason"))
+    if expected_reason != reason:
+        return BlockedRecoveryEvaluation(
+            "refuse",
+            "blocked_recovery_reason_mismatch",
+            f"resolves_blocked_reason={expected_reason or 'missing'} blocked_reason={reason}",
+        )
+    verdict = evaluate_blocked_witness(frontmatter, now=now, git_repo=git_repo)
+    if verdict != "satisfied":
+        return BlockedRecoveryEvaluation(
+            verdict,
+            f"blocked_recovery_witness_{verdict}",
+            "blocked_witness did not satisfy at use time",
+        )
+    return BlockedRecoveryEvaluation("satisfied", "blocked_recovery_satisfied", reason)
+
+
+def _frontmatter_non_null_scalar(value: object) -> str | None:
+    scalar = "" if value is None else str(value).strip().strip('"').strip("'")
+    if scalar.lower() in {"", "null", "none", "~", "[]"}:
+        return None
+    return scalar
 
 
 def _sha_is_ancestor_of_main(sha: str, *, git_repo: Path | None) -> BlockedWitnessVerdict:
