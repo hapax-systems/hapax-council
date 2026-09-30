@@ -25,9 +25,11 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tarfile
+import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +41,15 @@ if str(REPO_ROOT) not in sys.path:
 from scripts import transcript_custody as tc  # noqa: E402
 
 DEFAULT_REPOSITORY = "/mnt/nas/backups/restic"
+
+
+def _remedy() -> str:
+    service = os.environ.get("HAPAX_TRANSCRIPT_SERVICE", "hapax-backup-transcripts.service")
+    return tc.REMEDY.replace("hapax-backup-transcripts.service", service)
+
+
+def _local_host() -> str:
+    return os.environ.get("HAPAX_TRANSCRIPT_HOST") or socket.gethostname()
 
 
 def _mount_point(path: str) -> str:
@@ -60,18 +71,18 @@ def _require_repository(repo: str) -> None:
         return
     if not os.path.isfile(os.path.join(repo, "config")):
         raise SystemExit(
-            f"hapax-transcript-custody: no restic repository at {repo} (is the NAS mounted?); {tc.REMEDY}"
+            f"hapax-transcript-custody: no restic repository at {repo} (is the NAS mounted?); {_remedy()}"
         )
     mount = _mount_point(repo)
     if mount == "/":
         raise SystemExit(
-            f"hapax-transcript-custody: {repo} is on the root filesystem, not a mount; refusing; {tc.REMEDY}"
+            f"hapax-transcript-custody: {repo} is on the root filesystem, not a mount; refusing; {_remedy()}"
         )
     required = os.environ.get("HAPAX_TRANSCRIPT_REPOSITORY_MOUNT")
     if required and mount != os.path.abspath(required):
         raise SystemExit(
             f"hapax-transcript-custody: {repo} is on {mount}, not on the required mount {required} (is the NAS "
-            f"mounted? check `findmnt {required}`); refusing; {tc.REMEDY}"
+            f"mounted? check `findmnt {required}`); refusing; {_remedy()}"
         )
 
 
@@ -81,7 +92,7 @@ def _restic_env() -> dict[str, str]:
     if shutil.which("restic") is None:
         raise SystemExit(
             "hapax-transcript-custody: restic is not installed on this host; install the packaged binary "
-            "(pacman -S restic), then rerun"
+            "(Ubuntu: sudo apt-get install restic; other hosts: use their supported package method), then rerun"
         )
     env = dict(os.environ)
     env.setdefault("RESTIC_REPOSITORY", DEFAULT_REPOSITORY)
@@ -273,6 +284,51 @@ def _backup_windows(dry_run: bool) -> int:
 
 def cmd_backup(args: argparse.Namespace) -> int:
     res = tc.resolve_paths(Path.home())
+    if res.problems and args.capture:
+        for problem in res.problems:
+            print(f"hapax-transcript-custody: {problem}; {_remedy()}", file=sys.stderr)
+        return 1
+    if args.capture:
+        if args.dry_run:
+            print(
+                json.dumps(
+                    {"host": _local_host(), "consistent_capture": [p.real for p in res.paths]}
+                )
+            )
+            return 0
+        with tempfile.TemporaryDirectory(prefix="hapax-transcript-capture-") as directory:
+            archive = Path(directory) / tc.CAPTURE_FILENAME
+            try:
+                tc.capture_tar(res.paths, archive)
+            except (OSError, ValueError, sqlite3.Error, tarfile.TarError) as exc:
+                print(
+                    f"hapax-transcript-custody: capture failed: {exc}; {_remedy()}", file=sys.stderr
+                )
+                return 1
+            with archive.open("rb") as source:
+                proc = subprocess.run(
+                    [
+                        "restic",
+                        "backup",
+                        "--stdin",
+                        "--stdin-filename",
+                        tc.CAPTURE_FILENAME,
+                        "--host",
+                        _local_host(),
+                        "--tag",
+                        tc.SNAPSHOT_TAG,
+                    ],
+                    stdin=source,
+                    env=_restic_env(),
+                    check=False,
+                )
+        if proc.returncode != 0:
+            print(
+                f"hapax-transcript-custody: restic capture backup exited {proc.returncode}; {_remedy()}",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
     restic_args = tc.backup_args(res.paths)
     if args.dry_run:
         print(json.dumps(["restic", *restic_args]))
@@ -280,10 +336,10 @@ def cmd_backup(args: argparse.Namespace) -> int:
     proc = subprocess.run(["restic", *restic_args], env=_restic_env(), check=False)
     # restic exits 3 when some files could not be read: the snapshot is incomplete, and that is a failure.
     for problem in res.problems:
-        print(f"hapax-transcript-custody: {problem}; {tc.REMEDY}", file=sys.stderr)
+        print(f"hapax-transcript-custody: {problem}; {_remedy()}", file=sys.stderr)
     if proc.returncode != 0:
         print(
-            f"hapax-transcript-custody: restic backup exited {proc.returncode}; {tc.REMEDY}",
+            f"hapax-transcript-custody: restic backup exited {proc.returncode}; {_remedy()}",
             file=sys.stderr,
         )
     windows_failed = _backup_windows(dry_run=False)
@@ -305,7 +361,7 @@ def _nodes(env: dict[str, str], snapshot_id: str) -> Iterator[dict]:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    host = socket.gethostname()
+    host = _local_host()
     env = _restic_env()
     res = tc.resolve_paths(Path.home())
     snapshots = sorted(
@@ -314,19 +370,25 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     if not snapshots:
         print(
-            f"hapax-transcript-custody: no {tc.SNAPSHOT_TAG} snapshot for {host}; {tc.REMEDY}",
+            f"hapax-transcript-custody: no {tc.SNAPSHOT_TAG} snapshot for {host}; {_remedy()}",
             file=sys.stderr,
         )
         return 1
     cur, prev = snapshots[-1], (snapshots[-2] if len(snapshots) > 1 else None)
-    targets = list(cur.get("paths") or [])
-    prev_targets = list((prev or {}).get("paths") or [])
-    paths = sorted(set(targets) | set(prev_targets) | {p.real for p in res.paths})
-    nodes = list(_nodes(env, cur["id"]))
+    try:
+        targets, nodes = _local_listing(env, cur)
+        prev_targets, prev_nodes = _local_listing(env, prev) if prev else ([], [])
+    except (subprocess.CalledProcessError, OSError, ValueError, tarfile.TarError) as exc:
+        print(
+            f"hapax-transcript-custody: snapshot read failed: {exc}; {_remedy()}", file=sys.stderr
+        )
+        return 1
+    expected = tc.capture_paths(res.paths) if _is_capture(cur) else res.paths
+    paths = sorted(set(targets) | set(prev_targets) | {p.real for p in expected})
     current = tc.count_snapshot(nodes, paths)
-    previous = tc.count_snapshot(_nodes(env, prev["id"]), paths) if prev else None
+    previous = tc.count_snapshot(prev_nodes, paths) if prev else None
     failures = tc.verify(
-        res.paths,
+        expected,
         current,
         snapshot_targets=targets,
         previous=previous,
@@ -366,7 +428,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         for failure in failures:
             print(f"FAIL {failure}", file=sys.stderr)
         print(
-            f"hapax-transcript-custody: {len(failures)} failure(s) in snapshot {cur.get('short_id')}; {tc.REMEDY}",
+            f"hapax-transcript-custody: {len(failures)} failure(s) in snapshot {cur.get('short_id')}; {_remedy()}",
             file=sys.stderr,
         )
         return 1
@@ -375,6 +437,32 @@ def cmd_verify(args: argparse.Namespace) -> int:
         "dropped, no credential"
     )
     return 1 if windows_failed else 0
+
+
+def _is_capture(snapshot: dict) -> bool:
+    return snapshot.get("paths") == ["/" + tc.CAPTURE_FILENAME]
+
+
+def _local_listing(env: dict[str, str], snapshot: dict) -> tuple[list[str], list[dict]]:
+    if not _is_capture(snapshot):
+        return list(snapshot.get("paths") or []), list(_nodes(env, snapshot["id"]))
+    proc = subprocess.Popen(
+        ["restic", "dump", "--no-lock", snapshot["id"], "/" + tc.CAPTURE_FILENAME],
+        env=env,
+        stdout=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    try:
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as archive:
+            paths, nodes = tc.read_capture(archive)
+        while proc.stdout.read(1 << 16):
+            pass
+    finally:
+        proc.stdout.close()
+        proc.wait()
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, ["restic", "dump", snapshot["id"]])
+    return [p.real for p in paths], nodes
 
 
 def _tar_listing(env: dict[str, str], snapshot: dict) -> list[dict]:
@@ -505,6 +593,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     bak = sub.add_parser("backup")
     bak.add_argument("--dry-run", action="store_true")
+    bak.add_argument(
+        "--capture",
+        action="store_true",
+        help="capture SQLite consistently and verify every file hash before and after backup",
+    )
     ver = sub.add_parser("verify")
     ver.add_argument(
         "--max-age-hours",

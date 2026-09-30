@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up WSL transcripts while its user manager runs
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=6h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
