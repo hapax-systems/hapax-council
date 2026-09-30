@@ -1337,3 +1337,30 @@ def test_selected_sqlite_sidecars_are_superseded_by_committed_database(tmp_path:
     with sqlite3.connect(restored) as db:
         assert db.execute("SELECT text FROM messages").fetchall() == [("committed journal row",)]
         assert db.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+@pytest.mark.skipif(shutil.which("restic") is None, reason="restic binary required")
+def test_capture_backup_reports_real_restic_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A real missing-repository failure identifies the transfer phase and WSL remedy."""
+    from types import SimpleNamespace
+
+    cli = _cli_module()
+    resolution = tc.resolve_paths(_home(tmp_path))
+    monkeypatch.setattr(cli.tc, "resolve_paths", lambda _home: resolution)
+    monkeypatch.setattr(
+        cli,
+        "_restic_env",
+        lambda: {
+            "PATH": os.environ["PATH"],
+            "RESTIC_REPOSITORY": str(tmp_path / "missing-repository"),
+            "RESTIC_PASSWORD": "synthetic fixture password",  # pragma: allowlist secret (synthetic test fixture)
+        },
+    )
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_SERVICE", "hapax-backup-transcripts-wsl.service")
+    assert cli.cmd_backup(SimpleNamespace(capture=True, dry_run=False)) == 1
+    error = capsys.readouterr().err
+    assert "restic capture backup exited" in error
+    assert "hapax-backup-transcripts-wsl.service" in error
+    assert "capture failed:" not in error

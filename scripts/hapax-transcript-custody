@@ -92,7 +92,7 @@ def _restic_env() -> dict[str, str]:
     if shutil.which("restic") is None:
         raise SystemExit(
             "hapax-transcript-custody: restic is not installed on this host; install the packaged binary "
-            "(pacman -S restic), then rerun"
+            "(Ubuntu: sudo apt-get install restic; other hosts: use their supported package method), then rerun"
         )
     env = dict(os.environ)
     env.setdefault("RESTIC_REPOSITORY", DEFAULT_REPOSITORY)
@@ -322,7 +322,13 @@ def cmd_backup(args: argparse.Namespace) -> int:
                     env=_restic_env(),
                     check=False,
                 )
-        return 0 if proc.returncode == 0 else 1
+        if proc.returncode != 0:
+            print(
+                f"hapax-transcript-custody: restic capture backup exited {proc.returncode}; {_remedy()}",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
     restic_args = tc.backup_args(res.paths)
     if args.dry_run:
         print(json.dumps(["restic", *restic_args]))
