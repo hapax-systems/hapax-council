@@ -573,6 +573,7 @@ if str(repo_root) not in sys.path:
 
 from shared.charter_claim import child_may_mint, sidecar_belongs_to  # noqa: E402
 from shared.blocked_witness import evaluate_claimant_blocked_recovery  # noqa: E402
+from shared.sdlc_claim import blocked_recovery_fields, ClaimPublicationError  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
@@ -708,6 +709,16 @@ def _claim_mode_or_refuse() -> str:
             file=sys.stderr,
         )
         sys.exit(6)
+    # A quoted status must not disappear into the regex's default "offered".
+    # Validate the original blocked note before binding or rewriting anything.
+    if (status == "blocked" and assigned_to == role) or (
+        frontmatter_from_text(text).get("status") == "blocked" and status != "blocked"
+    ):
+        try:
+            blocked_recovery_fields(note_before)
+        except ClaimPublicationError as exc:
+            print(f"cc-claim: FATAL — {exc}. No claim caches were written.", file=sys.stderr)
+            sys.exit(6)
     if status in TASK_CLAIMABLE_STATUSES:
         if assigned_match and not _is_claimable_assignee(assigned_raw):
             if assigned_to != role:
@@ -1478,20 +1489,9 @@ elif claim_mode == "blocked_recovery":
         )
         sys.exit(6)
     _front, _rest = text[:_fm_end], text[_fm_end:]
+    # The shared strict reader checked duplicate keys and historical claim time
+    # before this rewrite, including on the explicit legacy writer path.
     _front = re.sub(r"^status:.*$", "status: claimed", _front, count=1, flags=re.MULTILINE)
-    _dupes = [
-        _key
-        for _key in ("status", "assigned_to", "claimed_at")
-        if len(re.findall(rf"^{_key}:", _front, flags=re.MULTILINE)) > 1
-    ]
-    if _dupes:
-        print(
-            f"cc-claim: FATAL — duplicate frontmatter keys {_dupes} in {path}; "
-            "next action: remove the duplicate lines (one occurrence per key), "
-            "then re-run cc-claim. No claim caches were written.",
-            file=sys.stderr,
-        )
-        sys.exit(6)
     if not re.search(r"^status:\s*claimed\s*$", _front, flags=re.MULTILINE):
         print(
             f"cc-claim: FATAL — blocked recovery status stamp did not land in {path}; "
@@ -1503,13 +1503,6 @@ elif claim_mode == "blocked_recovery":
         print(
             f"cc-claim: FATAL — blocked recovery lost its claimant in {path}; "
             "refusing to write claim caches.",
-            file=sys.stderr,
-        )
-        sys.exit(6)
-    if not re.search(r"^claimed_at:\s*(?!null|none|~|\[\]\s*$).+", _front, flags=re.MULTILINE):
-        print(
-            f"cc-claim: FATAL — blocked recovery requires the original claimed_at in {path}; "
-            "refusing to fabricate a historical claim.",
             file=sys.stderr,
         )
         sys.exit(6)

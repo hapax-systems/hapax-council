@@ -2192,15 +2192,50 @@ def test_claim_and_resume_intents_bind_exact_preimages(tmp_path: Path) -> None:
     )
 
 
-def _blocked_recovery_fixture(tmp_path: Path) -> ClaimFixture:
+def _write_recovery_receipt(root: Path) -> Path:
+    """A producer-directory receipt using the existing platform receipt contract."""
+    root.mkdir(parents=True, exist_ok=True)
+    observed = datetime.now(UTC).isoformat()
+    surface = {
+        "status": "observed",
+        "source": "scripts/hapax-platform-capability-receipts",
+        "observed_at": observed,
+        "stale_after": "1h",
+        "evidence_refs": ["fixture:codex-saved-login-observed"],
+        "reason_codes": [],
+    }
+    receipt = {
+        "receipt_schema": 1,
+        "receipt_id": "codex-recovery-fixture",
+        "platform": "codex",
+        "routes": ["codex.headless.full"],
+        "observed_at": observed,
+        "stale_after": "1h",
+        "cli": {"binary": "codex", "available": True, "version": "fixture"},
+        "wrapper": {"path": "/fixture/hapax-codex", "exists": True, "executable": True},
+        "capability": surface,
+        "resource": surface,
+        "quota": surface,
+        "provider_docs": {
+            "refs": ["fixture:provider-docs"],
+            "fetched_at": observed,
+            "stale_after": "1h",
+        },
+    }
+    path = root / "codex.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    return path
+
+
+def _blocked_recovery_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ClaimFixture:
     vault = tmp_path / "vault"
     active = vault / "active"
     cache = tmp_path / "cache"
     active.mkdir(parents=True, exist_ok=True)
     (vault / "closed").mkdir(exist_ok=True)
     cache.mkdir(exist_ok=True)
-    witness = tmp_path / "route-fresh.yaml"
-    witness.write_text("ok\n", encoding="utf-8")
+    witness = _write_recovery_receipt(tmp_path / "platform-capability-receipts")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(witness.parent))
     before = f"""---
 task_id: task-alpha
 status: blocked
@@ -2212,7 +2247,7 @@ parent_spec: spec://claim
 claimable: true
 blocked_reason: codex_platform_capability_receipt_invalid
 blocked_witness:
-  kind: path_exists
+  kind: receipt_fresh
   ref: {witness}
   recovery: claimant_scoped_cc_claim
   resolves_blocked_reason: codex_platform_capability_receipt_invalid
@@ -2258,8 +2293,9 @@ Body remains exact.
 
 def test_blocked_recovery_intent_binds_blocked_preimage_to_claimed_postimage(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = _blocked_recovery_fixture(tmp_path)
+    fixture = _blocked_recovery_fixture(tmp_path, monkeypatch)
 
     assert fixture.intent.claim_mode == "blocked_recovery"
     assert fixture.intent.from_status == "blocked"
@@ -2270,8 +2306,10 @@ def test_blocked_recovery_intent_binds_blocked_preimage_to_claimed_postimage(
     assert basis.to_status == "claimed"
 
 
-def test_blocked_recovery_preflight_refuses_source_change_race(tmp_path: Path) -> None:
-    fixture = _blocked_recovery_fixture(tmp_path)
+def test_blocked_recovery_preflight_refuses_source_change_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _blocked_recovery_fixture(tmp_path, monkeypatch)
     changed = fixture.intent.note_before.replace(
         b"codex_platform_capability_receipt_invalid",
         b"another_blocker",
@@ -2309,6 +2347,118 @@ def test_publish_claim_is_gate0a_hold_without_mutation(tmp_path: Path) -> None:
 
     assert raised.value.reason_code == "unadmitted_claim_publication_forbidden"
     assert not called
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "path_exists",
+        "unrelated_fresh_yaml",
+        "outside_producer_root",
+        "invalid_sibling",
+        "wrong_platform",
+        "wrong_route",
+        "stale_receipt",
+        "future_receipt",
+        "stale_surface",
+        "blocked_surface",
+        "superseded_receipt",
+        "unknown_reason",
+        "reason_mismatch",
+    ],
+)
+def test_blocked_recovery_checks_original_receipt_predicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    from shared.blocked_witness import evaluate_claimant_blocked_recovery
+
+    fixture = _blocked_recovery_fixture(tmp_path, monkeypatch)
+    fields = sdlc_claim.blocked_recovery_fields(fixture.intent.note_before)
+    receipt = tmp_path / "platform-capability-receipts/codex.json"
+    payload = json.loads(receipt.read_text())
+    witness = fields["blocked_witness"]
+    assert isinstance(witness, dict)
+    if damage == "path_exists":
+        witness["kind"] = "path_exists"
+    elif damage == "unrelated_fresh_yaml":
+        payload = {"observed_at": datetime.now(UTC).isoformat(), "stale_after_seconds": 3600}
+    elif damage == "outside_producer_root":
+        outside = tmp_path / "unrelated.json"
+        outside.write_text(json.dumps(payload))
+        witness["ref"] = str(outside)
+    elif damage == "invalid_sibling":
+        (receipt.parent / "invalid.json").write_text("{}")
+    elif damage == "wrong_platform":
+        payload["platform"] = "claude"
+    elif damage == "wrong_route":
+        payload["routes"] = ["codex.headless.spark"]
+    elif damage == "stale_receipt":
+        payload["observed_at"] = "2000-01-01T00:00:00Z"
+    elif damage == "future_receipt":
+        payload["observed_at"] = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
+    elif damage == "stale_surface":
+        payload["capability"]["observed_at"] = "2000-01-01T00:00:00Z"
+    elif damage == "blocked_surface":
+        payload["capability"].update(status="blocked", reason_codes=["codex_exec_auth_failed"])
+    elif damage == "superseded_receipt":
+        newer = dict(payload, receipt_id="newer", observed_at=datetime.now(UTC).isoformat())
+        (receipt.parent / "newer.json").write_text(json.dumps(newer))
+    elif damage == "unknown_reason":
+        fields["blocked_reason"] = witness["resolves_blocked_reason"] = "unrecognized_predicate"
+    elif damage == "reason_mismatch":
+        witness["resolves_blocked_reason"] = "different_predicate"
+    receipt.write_text(json.dumps(payload))
+
+    before = _tree_snapshot(tmp_path)
+    result = evaluate_claimant_blocked_recovery(fields)
+
+    assert result.verdict != "satisfied"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_blocked_recovery_rechecks_receipt_under_publication_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    fixture = _blocked_recovery_fixture(tmp_path, monkeypatch)
+    projections = sdlc_claim._projections(fixture.intent)
+    (tmp_path / "platform-capability-receipts/codex.json").write_text("{}")
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ClaimPublicationError, match="blocked_recovery_witness_refuse"):
+        sdlc_claim._locked_preflight(fixture.intent, projections, deadline_at=time.monotonic() + 10)
+
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("field", ["claimed_at", "blocked_reason", "blocked_witness"])
+def test_blocked_recovery_postimage_preserves_original_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    fixture = _blocked_recovery_fixture(tmp_path, monkeypatch)
+    after = fixture.intent.note_after
+    if field == "claimed_at":
+        after = after.replace(
+            b"claimed_at: 2026-09-29T21:38:00Z", b"claimed_at: 2026-09-30T00:00:00Z"
+        )
+    elif field == "blocked_reason":
+        after = after.replace(
+            b"blocked_reason: codex_platform_capability_receipt_invalid", b"blocked_reason: null", 1
+        )
+    else:
+        after = after.replace(b"  recovery: claimant_scoped_cc_claim", b"  recovery: changed")
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(ClaimPublicationError, match="blocked_recovery_evidence_changed"):
+        ClaimPublicationIntent.create(
+            task=resolve_task_note(fixture.vault, fixture.intent.task_id),
+            cache_dir=fixture.cache,
+            note_after=after,
+            binding=fixture.intent.binding,
+        )
+
     assert _tree_snapshot(tmp_path) == before
 
 

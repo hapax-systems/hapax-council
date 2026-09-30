@@ -337,6 +337,44 @@ def _frontmatter_depends_on_empty(frontmatter: Mapping[str, object]) -> bool:
     return scalar in {"", "null", "none", "~", "[]"}
 
 
+def blocked_recovery_fields(content: bytes) -> dict[str, object]:
+    """Read recovery evidence before rewriting; ambiguous provenance cannot recover."""
+    try:
+        text = content.decode("utf-8")
+    except UnicodeError as exc:
+        raise ClaimPublicationError(
+            "blocked_recovery_note_malformed", "restore one UTF-8 task note", "decode"
+        ) from exc
+    fields = _release_fields(text)
+    span = _frontmatter_block_span(text)
+    if (
+        fields is None
+        or span is None
+        or not text.startswith("---\n")
+        or re.match(r"\n---[ \t]*(?:\n|\Z)", text[span[1] :]) is None
+        or not re.search(r"^status:[ \t]*(?:blocked|claimed)[ \t]*$", text, re.MULTILINE)
+    ):
+        raise ClaimPublicationError(
+            "blocked_recovery_note_malformed",
+            "restore closed frontmatter without duplicate keys and one plain status line",
+            "recovery preimage/postimage",
+        )
+    claimed_at = fields.get("claimed_at")
+    try:
+        if not isinstance(claimed_at, (str, datetime)):
+            raise ValueError("missing original claim time")
+        parsed_time = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
+        if parsed_time.tzinfo is None:
+            raise ValueError("claim time has no timezone")
+    except ValueError as exc:
+        raise ClaimPublicationError(
+            "blocked_recovery_claimed_at_missing",
+            "preserve the original claimed_at timestamp; do not fabricate a historical claim",
+            "claimed_at",
+        ) from exc
+    return fields
+
+
 def _claim_mode_transition_valid(
     claim_mode: object, from_status: object, to_status: object
 ) -> bool:
@@ -417,7 +455,8 @@ class ClaimPublicationIntent:
             and assigned_to == binding.lane
             and _frontmatter_depends_on_empty(task.frontmatter)
         ):
-            recovery = evaluate_claimant_blocked_recovery(task.frontmatter)
+            recovery_fields = blocked_recovery_fields(task.content)
+            recovery = evaluate_claimant_blocked_recovery(recovery_fields)
             if recovery.verdict != "satisfied":
                 raise ClaimPublicationError(
                     recovery.reason_code,
@@ -426,6 +465,16 @@ class ClaimPublicationIntent:
                 )
             claim_mode = "blocked_recovery"
             to_status = "claimed"
+            after_fields = blocked_recovery_fields(note_after)
+            if any(
+                after_fields.get(key) != recovery_fields.get(key)
+                for key in ("claimed_at", "blocked_reason", "blocked_witness")
+            ):
+                raise ClaimPublicationError(
+                    "blocked_recovery_evidence_changed",
+                    "retain the original claim time, blocked reason and witness in the postimage",
+                    task.task_id,
+                )
         else:
             raise ClaimPublicationError(
                 "claim_publication_task_not_claimable",
@@ -3723,6 +3772,21 @@ def _locked_preflight(
             "resolve the current active task note and construct a fresh claim intent",
             intent.task_id,
         )
+    if intent.claim_mode == "blocked_recovery":
+        # The witness can expire or its producer can change after intent preparation.
+        # Rebuild under the publication lock before any projection is written.
+        checked = ClaimPublicationIntent.create(
+            task=task,
+            cache_dir=intent.cache_dir,
+            note_after=intent.note_after,
+            binding=intent.binding,
+        )
+        if checked != intent:
+            raise ClaimPublicationError(
+                "blocked_recovery_intent_changed",
+                "rebuild the recovery intent from current evidence",
+                intent.task_id,
+            )
     try:
         _assert_preimages(projections)
     except LifecycleTransitionError as exc:
