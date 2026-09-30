@@ -144,7 +144,7 @@ with tempfile.TemporaryDirectory() as stage:
     print(json.dumps({"snapshot": os.environ["NEW_SNAPSHOT"], "manifest_verified": True,
                       "archive_bytes": archive.stat().st_size, "archive_sha256": digest.hexdigest(),
                       "restored_sqlite_member": member.name, "sqlite_quick_check": check,
-                      "paths": len(paths), "files": len(nodes)}, indent=2))
+                      "paths": len(paths), "files": sum(node["type"] == "file" for node in nodes)}, indent=2))
 PYRESTORE
 ```
 
