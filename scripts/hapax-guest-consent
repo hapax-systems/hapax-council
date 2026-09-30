@@ -33,11 +33,22 @@ from datetime import date
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-# Use the lightweight agentgov registry directly (avoids pulling the council's
-# health-signal / ntfy stack into a tiny CLI).
+# Use the portable registry with an explicit required estate provider.
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "packages" / "agentgov" / "src"))
 
-from agentgov.consent import ConsentRegistry  # noqa: E402
+from agentgov.consent import (  # noqa: E402
+    ConsentRegistry,
+    resolve_contract_id,
+    resolve_principal_id,
+)
+
+from shared.governance.consent import (  # noqa: E402
+    bind_estate_identity,
+    estate_identity_operation,
+)
+
+bind_estate_identity()
 
 SCOPE = frozenset({"world_render"})
 
@@ -55,7 +66,9 @@ def _registry(directory: Path) -> ConsentRegistry:
     return reg
 
 
+@estate_identity_operation()
 def cmd_grant(person: str) -> int:
+    person = resolve_principal_id(person) or person
     directory = contracts_dir()
     reg = _registry(directory)
     cid = f"guest-render-{person}-{date.today().isoformat()}"
@@ -66,21 +79,26 @@ def cmd_grant(person: str) -> int:
         visibility_mechanism="threshold_ceremony",
         contracts_dir=directory,
     )
-    print(f"granted world_render to '{person}' — contract {contract.id}")
+    print(f"granted world_render to '{person}' — contract {resolve_contract_id(contract.id)}")
     print(f"  parties: operator <-> {person}   scope: world_render")
     print(f"  dir: {directory}")
     print("  the guest renders in Screwm while this contract is active; revoke to return to void.")
     return 0
 
 
+@estate_identity_operation()
 def cmd_revoke(person: str) -> int:
+    person = resolve_principal_id(person) or person
     directory = contracts_dir()
     reg = _registry(directory)
     revoked = []
     for contract in list(reg.active_contracts):
-        if person in contract.parties and "world_render" in contract.scope:
+        if (
+            person in {resolve_principal_id(party) or party for party in contract.parties}
+            and "world_render" in contract.scope
+        ):
             reg.revoke_contract(contract.id, contracts_dir=directory)
-            revoked.append(contract.id)
+            revoked.append(resolve_contract_id(contract.id))
     if revoked:
         print(
             f"revoked {len(revoked)} world_render contract(s) for '{person}': {', '.join(revoked)}"
@@ -93,6 +111,7 @@ def cmd_revoke(person: str) -> int:
     return 0
 
 
+@estate_identity_operation()
 def cmd_list() -> int:
     directory = contracts_dir()
     reg = _registry(directory)
@@ -102,9 +121,13 @@ def cmd_list() -> int:
         return 0
     print(f"{'contract':42} {'guest':16} created_at")
     for contract in rows:
-        guests = [p for p in contract.parties if p != "operator"]
+        guests = [
+            resolve_principal_id(p)
+            for p in contract.parties
+            if resolve_principal_id(p) != "operator"
+        ]
         guest = guests[0] if guests else "?"
-        print(f"{contract.id:42} {guest:16} {contract.created_at}")
+        print(f"{resolve_contract_id(contract.id):42} {guest:16} {contract.created_at}")
     return 0
 
 
