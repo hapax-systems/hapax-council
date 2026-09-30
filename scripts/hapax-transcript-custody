@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tarfile
@@ -292,7 +293,13 @@ def cmd_backup(args: argparse.Namespace) -> int:
             return 0
         with tempfile.TemporaryDirectory(prefix="hapax-transcript-capture-") as directory:
             archive = Path(directory) / tc.CAPTURE_FILENAME
-            tc.capture_tar(res.paths, archive)
+            try:
+                tc.capture_tar(res.paths, archive)
+            except (OSError, ValueError, sqlite3.Error, tarfile.TarError) as exc:
+                print(
+                    f"hapax-transcript-custody: capture failed: {exc}; {tc.REMEDY}", file=sys.stderr
+                )
+                return 1
             with archive.open("rb") as source:
                 proc = subprocess.run(
                     [

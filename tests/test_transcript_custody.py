@@ -107,7 +107,7 @@ def test_cli_consistent_capture_is_backed_up_and_restored_by_restic(
         **os.environ,
         "RESTIC_REPOSITORY": str(repository),
         "RESTIC_PASSWORD": "synthetic-test-password",  # pragma: allowlist secret
-    }
+    }  # pragma: allowlist secret
     subprocess.run(["restic", "init"], env=env, check=True, capture_output=True)
     monkeypatch.setenv("RESTIC_REPOSITORY", str(repository))
     monkeypatch.setenv("RESTIC_PASSWORD", "synthetic-test-password")  # pragma: allowlist secret
@@ -123,6 +123,40 @@ def test_cli_consistent_capture_is_backed_up_and_restored_by_restic(
     shutil.rmtree(home / ".grok/sessions")
     assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=False)) == 0
     assert cli.cmd_verify(argparse.Namespace(max_age_hours=26.0)) == 1
+
+
+def test_invalid_sqlite_capture_fails_before_restic(tmp_path: Path, monkeypatch, capsys) -> None:
+    import argparse
+
+    cli = _cli_module()
+    home = _home(tmp_path)
+    (home / ".codex/thread_history_1.sqlite").write_bytes(b"invalid SQLite database")
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+
+    def unexpected_backup(*_args, **_kwargs):
+        raise AssertionError("restic must not receive a failed capture")
+
+    monkeypatch.setattr(cli.subprocess, "run", unexpected_backup)
+    assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=False)) == 1
+    assert "capture failed" in capsys.readouterr().err
+
+
+def test_capture_dry_run_reports_resolved_paths_without_writing(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import argparse
+
+    cli = _cli_module()
+    home = _home(tmp_path)
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_HOST", "synthetic-wsl-seat")
+    assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "host": "synthetic-wsl-seat",
+        "consistent_capture": [p.real for p in tc.resolve_paths(home).paths],
+    }
+    assert not list(tmp_path.rglob(tc.CAPTURE_FILENAME))
 
 
 def _home(tmp_path: Path) -> Path:

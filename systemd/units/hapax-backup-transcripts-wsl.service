@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 %h/.local/share/hapax/transcript-custody/current/scripts/hapax-transcript-custody backup --capture
-ExecStart=/usr/bin/python3 %h/.local/share/hapax/transcript-custody/current/scripts/hapax-transcript-custody verify
+ExecStart=/usr/bin/python3 %h/.cache/hapax/source-activation/worktree/scripts/hapax-transcript-custody backup --capture
+ExecStart=/usr/bin/python3 %h/.cache/hapax/source-activation/worktree/scripts/hapax-transcript-custody verify
 Environment=PATH=%h/.local/bin:/usr/bin:/bin
 Environment=RESTIC_REPOSITORY=sftp:hapax-appendix:/mnt/nas/backups/restic
 Environment=HAPAX_TRANSCRIPT_HOST=hapax-dextra-wsl-ubuntu24.04

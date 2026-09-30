@@ -266,11 +266,13 @@ def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
                     else:
                         shutil.copyfile(item, output)
                     output.chmod(0o600)
-                    data = output.read_bytes()
-                    manifest["files"][name] = {
-                        "bytes": len(data),
-                        "sha256": hashlib.sha256(data).hexdigest(),
-                    }
+                    digest = hashlib.sha256()
+                    size = 0
+                    with output.open("rb") as captured:
+                        for block in iter(lambda: captured.read(1024 * 1024), b""):
+                            digest.update(block)
+                            size += len(block)
+                    manifest["files"][name] = {"bytes": size, "sha256": digest.hexdigest()}
                     tar.add(output, arcname=name, recursive=False)
                     count += 1
                 if count < target.min_files and not target.real.endswith(("-wal", "-shm")):
