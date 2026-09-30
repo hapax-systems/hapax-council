@@ -27,9 +27,9 @@ Read-only audit. Governance firewall blocks writes under `axioms/` per constitut
 axioms
 axioms/constitutive-rules.yaml
 axioms/contracts
-axioms/contracts/contract-agatha.yaml
+axioms/contracts/contract-principal-c1.yaml
 axioms/contracts/contract-guest-2026-03-30.yaml
-axioms/contracts/contract-simon.yaml
+axioms/contracts/contract-principal-c2.yaml
 axioms/contracts/.gitkeep
 axioms/enforcement-exceptions.yaml
 axioms/enforcement-patterns.yaml
