@@ -503,3 +503,63 @@ class TestHookIntegrity:
         for legitimate cases (e.g., per-session caches)."""
         body = HOOK.read_text(encoding="utf-8")
         assert ".gitignore" in body
+
+
+def test_bash_and_notebook_writes_use_the_shared_check_set(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    first = "R" + "yan"
+    last = "Klee" + "berger"
+    bash = _run(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"printf '{first} {last}' > {repo}/out.txt"},
+        },
+        cwd=repo,
+    )
+    assert bash.returncode == 2
+    notebook = _run(
+        {
+            "tool_name": "NotebookEdit",
+            "tool_input": {
+                "notebook_path": str(repo / "notes.ipynb"),
+                "new_source": f"subject = '{first} {last}'",
+            },
+        },
+        cwd=repo,
+    )
+    assert notebook.returncode == 2
+
+
+def test_bash_and_notebook_clean_writes_remain_allowed(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    bash = _run(
+        {"tool_name": "Bash", "tool_input": {"command": "printf 'clean' > out.txt"}},
+        cwd=repo,
+    )
+    notebook = _run(
+        {
+            "tool_name": "NotebookEdit",
+            "tool_input": {"notebook_path": str(repo / "notes.ipynb"), "new_source": "clean"},
+        },
+        cwd=repo,
+    )
+    assert bash.returncode == 0
+    assert notebook.returncode == 0
+
+
+def test_multiedit_payload_is_scanned_by_the_shared_check_set(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    result = _run(
+        {
+            "tool_name": "MultiEdit",
+            "tool_input": {
+                "file_path": str(repo / "out.txt"),
+                "edits": [{"new_string": "Klee" + "berger"}],
+            },
+        },
+        cwd=repo,
+    )
+    assert result.returncode == 2
