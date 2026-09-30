@@ -113,6 +113,12 @@ class _CorrespondenceSnapshot:
     def resolve_contract_id(self, candidate: str) -> str:
         return self.contracts.get(candidate, candidate)
 
+    def contains_predecessor(self, text: str) -> bool:
+        """Classify diagnostics without exporting private correspondence."""
+        return any(
+            label in text for section in (self.principals, self.contracts) for label in section
+        )
+
 
 def load_identity_snapshot() -> _CorrespondenceSnapshot:
     raw = _read_compatibility_document()
