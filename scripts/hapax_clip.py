@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -182,7 +183,20 @@ def receipt(path: Path, record: dict) -> None:
             or info.st_nlink != 1
         ):
             raise ClipError("Receipt file ownership or permissions are unsafe.")
-        os.write(fd, encode_json(record) + b"\n")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        start = os.fstat(fd).st_size
+        remaining = memoryview(encode_json(record) + b"\n")
+        try:
+            while remaining:
+                count = os.write(fd, remaining)
+                if count <= 0:
+                    raise ClipError("Receipt storage stopped before the record completed.")
+                remaining = remaining[count:]
+        except (ClipError, OSError):
+            # The private append lock prevents participating writers from
+            # interleaving a short write. Preserve the complete preimage on error.
+            os.ftruncate(fd, start)
+            raise
     finally:
         os.close(fd)
 
@@ -445,7 +459,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise ClipError("Receiver arguments are invalid.")
             raw = read_input_frame(sys.stdin.buffer)
             decode_json(raw)
-            sys.stdout.buffer.write(local_receive(raw) + b"\n")
+            reply = local_receive(raw)
+            decode_json(reply, MAX_REPLY)
+            sys.stdout.buffer.write(reply + b"\n")
             return 0
         if not args.target:
             raise ClipError("Name an explicitly enrolled desktop target.")
@@ -482,10 +498,19 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         print(encode_json(record).decode())
         return 0
-    except (ClipError, OSError, TimeoutError, ValueError, TypeError):
+    except (ClipError, OSError, TimeoutError, ValueError, TypeError) as error:
+        # Core ClipError reasons are authored constant strings, never peer
+        # output, payload or path interpolation. OS exception details stay private.
+        reason = (
+            str(error)
+            if isinstance(error, ClipError)
+            else "Transport or local storage refused the operation."
+        )
         print(
-            "Clipboard delivery failed. Next action: check enrollment, active unlocked "
-            "desktop endpoint and bounded UTF-8 input; retry explicitly.",
+            "Clipboard delivery was not acknowledged. "
+            + reason
+            + " Next action: check enrollment, unlocked desktop and bounded UTF-8 input; "
+            "inspect the destination before explicitly retrying an ambiguous write.",
             file=sys.stderr,
         )
         return 1

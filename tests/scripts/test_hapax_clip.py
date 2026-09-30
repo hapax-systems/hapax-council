@@ -452,7 +452,9 @@ raise SystemExit(clip.main(["--receive"]))
     )
 
 
-@pytest.mark.parametrize("reply_kind", ["exact", "truncated", "oversized", "closed"])
+@pytest.mark.parametrize(
+    "reply_kind", ["exact", "truncated", "oversized", "closed", "non-json", "non-object"]
+)
 def test_receive_cli_real_private_unix_socket(tmp_path, reply_kind):
     import concurrent.futures
 
@@ -478,6 +480,8 @@ def test_receive_cli_real_private_unix_socket(tmp_path, reply_kind):
                     connection.sendall(struct.pack("!I", len(response)) + response[:3])
                 elif reply_kind == "oversized":
                     connection.sendall(struct.pack("!I", clip.MAX_REPLY + 1))
+                elif reply_kind in ("non-json", "non-object"):
+                    clip.send_frame(connection, b"not-json" if reply_kind == "non-json" else b"[]")
                 return observed
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -650,7 +654,10 @@ sys.stdout.buffer.write(clip.encode_json(reply))
         assert clip.digest(PAYLOAD).encode() not in surface and b"sha256" not in surface
 
 
-@pytest.mark.parametrize("protection", ["socket-owner", "enrollment", "ack-principal"])
+@pytest.mark.parametrize(
+    "protection",
+    ["socket-owner", "enrollment", "ack-principal", "receipt-completion", "receipt-lock"],
+)
 def test_mutations_detect_removed_delivery_protections(tmp_path, monkeypatch, protection):
     import importlib.util
 
@@ -661,6 +668,11 @@ def test_mutations_detect_removed_delivery_protections(tmp_path, monkeypatch, pr
             "info.st_mode & 0o077",
         ),
         "enrollment": ("endpoints = load_endpoints(args.config)", "endpoints = {}"),
+        "receipt-lock": ("fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)", "pass"),
+        "receipt-completion": (
+            "remaining = remaining[count:]",
+            "remaining = remaining[len(remaining):]",
+        ),
         "ack-principal": (
             'reply["principal"] != endpoint["principal"] or not valid_uuid(reply["epoch"])',
             'not valid_uuid(reply["epoch"])',
@@ -691,7 +703,67 @@ def test_mutations_detect_removed_delivery_protections(tmp_path, monkeypatch, pr
                 test_sender_cli_valid_enrollment_real_child_transport_and_receipt(
                     tmp_path, "private"
                 )
+        elif protection == "receipt-lock":
+            with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+                test_receipt_busy_lock_preserves_preimage(tmp_path)
+        elif protection == "receipt-completion":
+            with pytest.raises(AssertionError):
+                test_receipt_short_writes_complete_or_preserve_preimage(tmp_path, context, None)
         else:
             with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
                 test_ack_bound_to_enrollment_session_nonce_and_actual_bytes(dict(principal="other"))
     assert (Path(__file__).resolve().parents[2] / "scripts/hapax_clip.py").read_text() == original
+
+
+def test_receipt_busy_lock_preserves_preimage(tmp_path):
+    path = tmp_path / "private" / "receipt"
+    path.parent.mkdir(mode=0o700)
+    before = b'{"previous":true}\n'
+    path.write_bytes(before)
+    path.chmod(0o600)
+    with path.open("rb") as held:
+        clip.fcntl.flock(held, clip.fcntl.LOCK_EX | clip.fcntl.LOCK_NB)
+        with pytest.raises(BlockingIOError):
+            clip.receipt(path, {"synthetic": True})
+        assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("failure", [None, "zero", "error"])
+def test_receipt_short_writes_complete_or_preserve_preimage(tmp_path, monkeypatch, failure):
+    path = tmp_path / "private" / "receipt"
+    path.parent.mkdir(mode=0o700)
+    before = b'{"previous":true}\n'
+    path.write_bytes(before)
+    path.chmod(0o600)
+    original = os.write
+    calls = []
+
+    def short_write(fd, data):
+        calls.append(len(data))
+        if len(calls) == 1:
+            return original(fd, data[:3])
+        if failure == "zero":
+            return 0
+        if failure == "error":
+            raise OSError("synthetic full storage")
+        return original(fd, data)
+
+    monkeypatch.setattr(os, "write", short_write)
+    record = {"synthetic": True}
+    if failure is None:
+        clip.receipt(path, record)
+        assert path.read_bytes() == before + clip.encode_json(record) + b"\n"
+        assert len(calls) == 2
+    else:
+        with pytest.raises((clip.ClipError, OSError)):
+            clip.receipt(path, record)
+        assert path.read_bytes() == before
+
+
+def test_validation_reason_and_ambiguous_retry_guidance_safe(tmp_path, capsys):
+    path = tmp_path / "synthetic-input"
+    path.write_bytes(b"\xff")
+    assert clip.main(["client", str(path)]) == 1
+    error = capsys.readouterr().err
+    assert "Text must be valid UTF-8" in error and "Next action:" in error
+    assert "inspect the destination before" in error and str(path) not in error

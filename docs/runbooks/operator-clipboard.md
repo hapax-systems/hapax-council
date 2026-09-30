@@ -105,7 +105,7 @@ launcher resolution. Historical tests load the actual PR4796 source from Git
 (`2c94fef2741ef9e0f0fca7b45f08eb3f4b20986a`) and demonstrate failures of the
 former executable default, newline conversion, transcript fingerprint/preview
 and symlink-following receipt behavior. They skip explicitly if that Git object
-is absent in a shallow checkout; fetch its history to reproduce them. The
+is absent in a shallow checkout; run `git fetch origin 2c94fef2741ef9e0f0fca7b45f08eb3f4b20986a` to fetch its history before retrying the command. The
 primary recheck above requires the Git object before running pytest, so that
 acceptance command cannot silently omit the predecessor witnesses. No native
 clipboard or network effect is produced by these predecessor tests.
@@ -126,3 +126,11 @@ then verify the checkout remains byte-identical. No installed endpoint, network
 route or native clipboard is changed. The real CLI transport tests include a
 successful native ACK followed by refused receipt creation, proving the distinct
 acknowledged-delivery/receipt-failure result and absence of a second write.
+
+Receipt appends use a nonblocking private file lock and complete short writes;
+write failure rolls back the incomplete record while retaining acknowledged
+delivery metadata on stdout. A busy receipt path returns status 2 rather than
+blocking or initiating another clipboard write. Specific constant validation
+reasons accompany the public next action; arbitrary subprocess/OS details and
+input paths remain private. Unacknowledged delivery may already have changed the
+clipboard, so inspect the destination before an explicit retry.
