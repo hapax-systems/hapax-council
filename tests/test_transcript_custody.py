@@ -1404,3 +1404,37 @@ def test_capture_with_both_tar_end_blocks_is_complete(tmp_path: Path, mode: str)
         tc.count_snapshot(nodes, [p.real for p in paths]),
         snapshot_targets=[p.real for p in paths],
     )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+def test_capture_refuses_unreadable_nested_directory(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    resolution = tc.resolve_paths(home)
+    unreadable = home / ".claude/projects/unreadable"
+    unreadable.mkdir()
+    (unreadable / "session.jsonl").write_text("synthetic transcript fixture")
+    unreadable.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            tc.capture_tar(resolution.paths, tmp_path / "capture.tar")
+    finally:
+        unreadable.chmod(0o700)
+
+
+def test_capture_refuses_disappearing_nested_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    resolution = tc.resolve_paths(home)
+    disappearing = home / ".claude/projects/vanishing.jsonl"
+    disappearing.write_text("synthetic transcript fixture")
+    original = Path.stat
+
+    def stat_or_disappear(path: Path, *args, **kwargs):
+        if path == disappearing:
+            raise FileNotFoundError("vanishing transcript fixture")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_or_disappear)
+    with pytest.raises(FileNotFoundError, match="vanishing transcript fixture"):
+        tc.capture_tar(resolution.paths, tmp_path / "capture.tar")

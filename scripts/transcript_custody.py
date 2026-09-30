@@ -243,6 +243,20 @@ def capture_paths(paths: Sequence[ResolvedPath]) -> list[ResolvedPath]:
     return [target for target in paths if not _captured_sqlite_sidecar(Path(target.real), paths)]
 
 
+def _capture_items(source: Path, kind: str) -> Iterable[Path]:
+    """Enumerate without suppressing directory or entry metadata errors."""
+    if kind != "dir":
+        yield source
+        return
+    with os.scandir(source) as entries:
+        children = sorted(entries, key=lambda entry: entry.name)
+    for entry in children:
+        item = Path(entry.path)
+        yield item
+        if entry.is_dir(follow_symlinks=False):
+            yield from _capture_items(item, "dir")
+
+
 def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
     """Capture the same table into one verified tar; SQLite uses its online backup API.
 
@@ -254,6 +268,7 @@ def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
     import json
     import shutil
     import sqlite3
+    import stat
     import tarfile
     import tempfile
     from contextlib import closing
@@ -268,12 +283,12 @@ def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
         with tarfile.open(archive, "x") as tar:
             for target in paths:
                 source = Path(target.real)
-                files = sorted(source.rglob("*")) if target.kind == "dir" else [source]
                 count = 0
-                for item in files:
-                    if item.is_symlink():
+                for item in _capture_items(source, target.kind):
+                    metadata = item.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(metadata.st_mode):
                         raise ValueError(f"nested symlink: {item}")
-                    if not item.is_file() or is_credential(item.name):
+                    if not stat.S_ISREG(metadata.st_mode) or is_credential(item.name):
                         continue
                     # Online capture includes committed WAL for an included database.
                     # Orphan journals and ordinary suffix-named files remain transcripts.
