@@ -76,7 +76,7 @@ Requirements: an actual local unlocked KDE Wayland session, stock Python,
 `loginctl`, `findmnt`, `wl-paste`, and `wl-copy` with measured `--sensitive`
 support. Install accepted
 `hapax_clip.py` and `hapax_clip_wayland.py` in
-`~/.local/share/hapax/clipboard/`, and the accepted unit in
+`~/.local/share/hapax/clipboard/scripts/` (preserve the source `scripts/` directory), and the accepted unit in
 `~/.config/systemd/user/hapax-clipboard-wayland.service`. Preserve preimages.
 
 Create owner-only `~/.config/hapax/clipboard-endpoint.json`:
