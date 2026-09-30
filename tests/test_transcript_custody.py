@@ -1175,3 +1175,27 @@ def test_cli_verify_reports_failed_capture_dump(
     assert "snapshot read failed" in error and tc.REMEDY in error
     assert "Traceback" not in error
     assert process.stdout.closed
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_local_resolution_failure_keeps_legacy_windows_puller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capture: bool
+) -> None:
+    """A local failure still services independent Windows stores in legacy mode; capture fails before backup."""
+    from types import SimpleNamespace
+
+    cli = _cli_module()
+    resolution = tc.resolve_paths(_home(tmp_path))
+    resolution = tc.Resolution(resolution.paths, ("dangling local transcript path",))
+    local_runs = []
+    windows_runs = []
+    monkeypatch.setattr(cli.tc, "resolve_paths", lambda _home: resolution)
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args, **kwargs: local_runs.append(args) or SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(cli, "_backup_windows", lambda **kwargs: windows_runs.append(kwargs) or 0)
+    assert cli.cmd_backup(SimpleNamespace(capture=capture, dry_run=False)) == 1
+    assert len(local_runs) == len(windows_runs) == (0 if capture else 1)

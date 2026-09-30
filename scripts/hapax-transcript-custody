@@ -279,7 +279,7 @@ def _backup_windows(dry_run: bool) -> int:
 
 def cmd_backup(args: argparse.Namespace) -> int:
     res = tc.resolve_paths(Path.home())
-    if res.problems:
+    if res.problems and args.capture:
         for problem in res.problems:
             print(f"hapax-transcript-custody: {problem}; {tc.REMEDY}", file=sys.stderr)
         return 1
