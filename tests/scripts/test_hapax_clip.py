@@ -550,7 +550,8 @@ def test_receive_refuses_unsafe_or_unavailable_socket(tmp_path, monkeypatch, kin
         assert path.read_bytes() == b"untouched"
 
 
-def test_sender_cli_valid_enrollment_real_child_transport_and_receipt(tmp_path):
+@pytest.mark.parametrize("receipt_kind", ["private", "symlink"])
+def test_sender_cli_valid_enrollment_real_child_transport_and_receipt(tmp_path, receipt_kind):
     import subprocess
 
     config = tmp_path / "enrollment.json"
@@ -595,6 +596,12 @@ sys.stdout.buffer.write(clip.encode_json(reply))
     source = tmp_path / "synthetic-input"
     source.write_bytes(PAYLOAD)
     receipt = tmp_path / "private" / "receipt.jsonl"
+    if receipt_kind == "symlink":
+        receipt.parent.mkdir(mode=0o700)
+        untouched = tmp_path / "owned-fixture"
+        untouched.write_bytes(b"untouched")
+        untouched.chmod(0o600)
+        receipt.symlink_to(untouched)
     result = subprocess.run(
         [
             sys.executable,
@@ -619,17 +626,72 @@ sys.stdout.buffer.write(clip.encode_json(reply))
             TEST_OBSERVED=str(observed),
         ),
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == (0 if receipt_kind == "private" else 2), result.stderr
     public = json.loads(result.stdout)
+    assert public["delivery"] == "acknowledged"
     assert public["target"] == "client" and public["mode"] == "raw"
     assert public["bytes"] == len(PAYLOAD) and public["history_excluded"] is True
-    assert json.loads(receipt.read_bytes()) == public
-    assert receipt.stat().st_mode & 0o777 == 0o600
+    if receipt_kind == "private":
+        assert json.loads(receipt.read_bytes()) == public
+        assert receipt.stat().st_mode & 0o777 == 0o600
+        assert not result.stderr
+    else:
+        assert untouched.read_bytes() == b"untouched"
+        assert b"delivery was acknowledged" in result.stderr
+        assert b"Next action:" in result.stderr
+        assert b"without repeating the clipboard write" in result.stderr
+        assert PAYLOAD not in result.stderr and base64.b64encode(PAYLOAD) not in result.stderr
     assert receipt.parent.stat().st_mode & 0o777 == 0o700
     calls = [json.loads(row) for row in observed.read_text().splitlines()]
     assert [row["op"] for row in calls] == ["describe", "set"]
     assert calls[0]["id"] != calls[1]["id"]
-    assert not result.stderr
     for surface in (result.stdout, receipt.read_bytes()):
         assert PAYLOAD not in surface and base64.b64encode(PAYLOAD) not in surface
         assert clip.digest(PAYLOAD).encode() not in surface and b"sha256" not in surface
+
+
+@pytest.mark.parametrize("protection", ["socket-owner", "enrollment", "ack-principal"])
+def test_mutations_detect_removed_delivery_protections(tmp_path, monkeypatch, protection):
+    import importlib.util
+
+    original = (SCRIPTS / "hapax_clip.py").read_text()
+    replacements = {
+        "socket-owner": (
+            "info.st_uid != os.getuid() or info.st_mode & 0o077",
+            "info.st_mode & 0o077",
+        ),
+        "enrollment": ("endpoints = load_endpoints(args.config)", "endpoints = {}"),
+        "ack-principal": (
+            'reply["principal"] != endpoint["principal"] or not valid_uuid(reply["epoch"])',
+            'not valid_uuid(reply["epoch"])',
+        ),
+    }
+    old, broken = replacements[protection]
+    assert old in original
+    scripts = tmp_path / "mutated-source"
+    scripts.mkdir(mode=0o700)
+    mutant = scripts / "hapax_clip.py"
+    mutated = original.replace(old, broken)
+    if protection == "ack-principal":
+        mutated = mutated.replace('("session", "epoch", "principal")', '("session", "epoch")')
+    mutant.write_text(mutated)
+    spec = importlib.util.spec_from_file_location("clipboard_test_mutant", mutant)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # Scoped monkeypatch and private source copies leave checkout and installed
+    # endpoints untouched. These invoke the same safety witnesses as green.
+    with monkeypatch.context() as context:
+        context.setattr(sys.modules[__name__], "clip", module)
+        context.setattr(sys.modules[__name__], "SCRIPTS", scripts)
+        if protection == "socket-owner":
+            with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+                test_receive_refuses_unsafe_or_unavailable_socket(tmp_path, context, "foreign-uid")
+        elif protection == "enrollment":
+            with pytest.raises(AssertionError):
+                test_sender_cli_valid_enrollment_real_child_transport_and_receipt(
+                    tmp_path, "private"
+                )
+        else:
+            with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
+                test_ack_bound_to_enrollment_session_nonce_and_actual_bytes(dict(principal="other"))
+    assert (Path(__file__).resolve().parents[2] / "scripts/hapax_clip.py").read_text() == original

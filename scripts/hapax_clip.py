@@ -463,12 +463,23 @@ def main(argv: list[str] | None = None) -> int:
             "time": datetime.now(UTC).isoformat(),
             "target": args.target,
             "mode": args.mode,
+            "delivery": "acknowledged",
             # Payload digests are checked in memory, not kept in transcripts or
             # receipts where a low-entropy secret could be guessed offline.
             **{key: value for key, value in reply.items() if key != "sha256"},
         }
         if args.receipt:
-            receipt(args.receipt, record)
+            try:
+                receipt(args.receipt, record)
+            except (ClipError, OSError):
+                print(encode_json(record).decode())
+                print(
+                    "Clipboard delivery was acknowledged, but its metadata receipt "
+                    "could not be saved. Next action: repair the private receipt path; "
+                    "retain this acknowledgement without repeating the clipboard write.",
+                    file=sys.stderr,
+                )
+                return 2
         print(encode_json(record).decode())
         return 0
     except (ClipError, OSError, TimeoutError, ValueError, TypeError):

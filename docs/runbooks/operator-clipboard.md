@@ -45,7 +45,10 @@ for both transport legs), strict public host-key pinning, no ambient SSH
 configuration or forwarding, and bounded reply sizes. Unknown, offline, malformed,
 locked, changed-session or unacknowledged destinations fail with a public next
 action. A timeout can occur after a write but before ACK; inspect the destination
-before explicitly retrying. The sender does not retry automatically.
+before explicitly retrying. The sender does not retry automatically. An optional
+receipt failure after a validated native ACK returns exit status 2, preserves the
+metadata acknowledgement on stdout and asks for receipt-path repair without a
+second clipboard write; it does not report the acknowledged delivery as failed.
 
 Native history hints are not containment against same-user applications or root.
 Encrypted paging, hibernation and OS crash images belong to device encryption
@@ -91,7 +94,7 @@ does not establish desktop delivery, installed receiver health or device accepta
 From this source checkout, run:
 
 ```sh
-git cat-file -e 2c94fef2741ef9e0f0fca7b45f08eb3f4b20986a:scripts/hapax_clip.py
+git cat-file -e 2c94fef2741ef9e0f0fca7b45f08eb3f4b20986a:scripts/hapax_clip.py &&
 uv run --no-sync pytest tests/scripts/test_hapax_clip.py -q
 ```
 
@@ -115,3 +118,11 @@ prior clipboard only in the desktop helper's memory, compare before restoration,
 preserve a concurrent user copy, and retain metadata without clipboard contents.
 The full candidate's earlier private witnesses remain historical evidence; they
 cannot substitute for reproducible accepted-source activation checks.
+
+The same command includes durable mutation witnesses. They copy this source into
+private temporary directories, remove socket-owner/enrollment/ACK-principal
+protections one at a time, observe the corresponding normal safety test fail,
+then verify the checkout remains byte-identical. No installed endpoint, network
+route or native clipboard is changed. The real CLI transport tests include a
+successful native ACK followed by refused receipt creation, proving the distinct
+acknowledged-delivery/receipt-failure result and absence of a second write.
