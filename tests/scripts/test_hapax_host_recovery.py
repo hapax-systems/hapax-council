@@ -404,6 +404,34 @@ def test_restore_same_boot_and_all_live_has_no_side_effects(
     assert not result["restored"]
 
 
+def test_dry_run_simulates_missing_live_lane_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "boot_id", lambda: BOOT)
+    entry = lane(tmp_path)
+    path = tmp_path / "manifest.json"
+    module.atomic_json(path, {"schema": 1, "host": "test-host", "boot_id": BOOT, "lanes": [entry]})
+    before = path.read_bytes()
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        assert args[:2] == ["tmux", "has-session"]
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "readback", lambda entry: None)
+    monkeypatch.setattr(module, "report", lambda result: pytest.fail("unexpected report"))
+    result = module.restore(path, dry_run=True, simulate_missing=(entry["tmux"],))
+    assert result["restored"] == [entry["tmux"]]
+    assert result["already_live"] == []
+    assert result["dry_run"] is True
+    assert result["simulated_missing"] == [entry["tmux"]]
+    assert path.read_bytes() == before
+    assert all(call[:2] == ["tmux", "has-session"] for call in calls)
+
+
 def test_unit_recovery_starts_missing_declared_unit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

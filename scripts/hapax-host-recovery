@@ -516,10 +516,15 @@ def report(result: dict, mail_root: Path = ROOT / "dev1") -> None:
         raise ReportError("; ".join(errors))
 
 
-def restore(path: Path, *, dry_run: bool = False) -> dict:
+def restore(path: Path, *, dry_run: bool = False, simulate_missing: tuple[str, ...] = ()) -> dict:
     data = read_manifest(path)
     if data is None:
         raise ValueError("host recovery manifest missing; capture before host-affecting work")
+    if simulate_missing and not dry_run:
+        raise ValueError("simulated missing lanes require dry-run")
+    lane_names = {entry["tmux"] for entry in data["lanes"]}
+    if set(simulate_missing) - lane_names:
+        raise ValueError("simulated missing lane is not in the manifest")
     units = recovery_units(data["host"], data.get("units", []))
     current = boot_id()
     result: dict = {
@@ -530,6 +535,9 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
         "units_started": [],
         "failed": {},
     }
+    if dry_run:
+        result["dry_run"] = True
+        result["simulated_missing"] = list(simulate_missing)
     all_units_live = True
     for unit in units:
         try:
@@ -537,7 +545,8 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
         except (OSError, ValueError, subprocess.SubprocessError):
             all_units_live = False
     if (
-        data["boot_id"] == current
+        not simulate_missing
+        and data["boot_id"] == current
         and all_units_live
         and all(
             subprocess.run(
@@ -570,7 +579,7 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
             result["failed"][label] = str(exc)
     for entry in data["lanes"]:
         name = entry["tmux"]
-        if (
+        if name not in simulate_missing and (
             subprocess.run(
                 ["tmux", "has-session", "-t", f"={name}"], capture_output=True, check=False
             ).returncode
@@ -631,10 +640,18 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=manifest_path())
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--simulate-missing-lane",
+        action="append",
+        default=[],
+        help="in restore dry-run, plan a recorded lane as though its session were missing",
+    )
+    parser.add_argument(
         "--unit", action="append", default=[], help="declare an active user: or system: unit"
     )
     args = parser.parse_args()
     try:
+        if args.simulate_missing_lane and (args.action != "restore" or not args.dry_run):
+            raise ValueError("--simulate-missing-lane requires restore --dry-run")
         if args.action == "capture":
             if args.dry_run:
                 result = {
@@ -645,7 +662,11 @@ def main() -> int:
             else:
                 result = capture(args.manifest, tuple(args.unit))
         else:
-            result = restore(args.manifest, dry_run=args.dry_run)
+            result = restore(
+                args.manifest,
+                dry_run=args.dry_run,
+                simulate_missing=tuple(args.simulate_missing_lane),
+            )
         print(json.dumps(result, sort_keys=True))
         return 1 if result.get("failed") else 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
