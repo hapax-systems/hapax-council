@@ -572,8 +572,6 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from shared.charter_claim import child_may_mint, sidecar_belongs_to  # noqa: E402
-from shared.blocked_witness import evaluate_claimant_blocked_recovery  # noqa: E402
-from shared.sdlc_claim import blocked_recovery_fields, ClaimPublicationError  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
@@ -665,36 +663,6 @@ assigned_raw = assigned_match.group(1) if assigned_match else "unassigned"
 assigned_to = _strip_scalar(assigned_raw)
 
 
-def _frontmatter_depends_on_empty(frontmatter):
-    raw = frontmatter.get("depends_on")
-    if raw is None:
-        return True
-    if isinstance(raw, list):
-        return len(raw) == 0
-    scalar = str(raw).strip().strip('"').strip("'").lower()
-    return scalar in {"", "null", "none", "~", "[]"}
-
-
-def _blocked_detail(frontmatter: dict[str, object]) -> str:
-    detail_parts: list[str] = []
-    reason = blocked_reason_from_frontmatter(frontmatter)
-    witness = blocked_witness_from_frontmatter(frontmatter)
-    detail_parts.append(f"blocked_reason: {reason or 'missing'}")
-    if witness:
-        detail_parts.append(f"blocked_witness: {witness}")
-    return " (" + "; ".join(detail_parts) + ")"
-
-
-def _refuse_blocked_status(frontmatter: dict[str, object], next_action: str) -> None:
-    print(
-        f"cc-claim: refusing to claim '{task_id}' — current status is 'blocked'"
-        f"{_blocked_detail(frontmatter)}, not 'offered' or an assigned ready state. "
-        f"Next action: {next_action}",
-        file=sys.stderr,
-    )
-    sys.exit(4)
-
-
 def _claim_mode_or_refuse() -> str:
     """``claim`` or ``resume`` for this note, or a refusal (exit 6 or 4) that changes nothing.
 
@@ -709,16 +677,6 @@ def _claim_mode_or_refuse() -> str:
             file=sys.stderr,
         )
         sys.exit(6)
-    # A quoted status must not disappear into the regex's default "offered".
-    # Validate the original blocked note before binding or rewriting anything.
-    if (status == "blocked" and assigned_to == role) or (
-        frontmatter_from_text(text).get("status") == "blocked" and status != "blocked"
-    ):
-        try:
-            blocked_recovery_fields(note_before)
-        except ClaimPublicationError as exc:
-            print(f"cc-claim: FATAL — {exc}. No claim caches were written.", file=sys.stderr)
-            sys.exit(6)
     if status in TASK_CLAIMABLE_STATUSES:
         if assigned_match and not _is_claimable_assignee(assigned_raw):
             if assigned_to != role:
@@ -749,33 +707,17 @@ def _claim_mode_or_refuse() -> str:
             )
             sys.exit(4)
         mode = "resume"
-    elif status == "blocked":
-        frontmatter = frontmatter_from_text(text)
-        if _is_claimable_assignee(assigned_raw) or assigned_to != role:
-            _refuse_blocked_status(
-                frontmatter,
-                "move the task through the governed lifecycle to an offered or assigned ready "
-                "state, then rerun cc-claim.",
-            )
-        if not _frontmatter_depends_on_empty(frontmatter):
-            _refuse_blocked_status(
-                frontmatter,
-                "dependency-blocked rows are recovered by cc-cascade-unblock after their "
-                "dependencies satisfy closure validity.",
-            )
-        recovery = evaluate_claimant_blocked_recovery(frontmatter)
-        if recovery.verdict != "satisfied":
-            print(
-                f"cc-claim: refusing to recover blocked task '{task_id}' — "
-                f"{recovery.reason_code}: {recovery.detail}. Next action: refresh the "
-                "typed blocked_witness, set recovery: claimant_scoped_cc_claim and "
-                "resolves_blocked_reason to the exact blocked_reason, then rerun cc-claim.",
-                file=sys.stderr,
-            )
-            sys.exit(4)
-        mode = "blocked_recovery"
     else:
         detail = ""
+        if status == "blocked":
+            frontmatter = frontmatter_from_text(text)
+            detail_parts: list[str] = []
+            reason = blocked_reason_from_frontmatter(frontmatter)
+            witness = blocked_witness_from_frontmatter(frontmatter)
+            detail_parts.append(f"blocked_reason: {reason or 'missing'}")
+            if witness:
+                detail_parts.append(f"blocked_witness: {witness}")
+            detail = " (" + "; ".join(detail_parts) + ")"
         if status == TASK_MERGED_AWAITING_WITNESS_STATUS:
             # Its one exit is the witnessed close, which needs no claim (M182).
             pr = _frontmatter_scalar(text, "pr") or "<N>"
@@ -1478,43 +1420,6 @@ if claim_mode == "claim":
     session_suffix = f", session={session_id}" if session_id else ""
     log_line = f"- {now} {role} claimed (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"
-elif claim_mode == "blocked_recovery":
-    _fm_end = text.find("\n---", 4)
-    if _fm_end < 0:
-        print(
-            f"cc-claim: FATAL — task note {path} has no closing frontmatter "
-            "delimiter; next action: repair the note (restore the closing "
-            "'---' line), then re-run cc-claim. No claim caches were written.",
-            file=sys.stderr,
-        )
-        sys.exit(6)
-    _front, _rest = text[:_fm_end], text[_fm_end:]
-    # The shared strict reader checked duplicate keys and historical claim time
-    # before this rewrite, including on the explicit legacy writer path.
-    _front = re.sub(r"^status:.*$", "status: claimed", _front, count=1, flags=re.MULTILINE)
-    if not re.search(r"^status:\s*claimed\s*$", _front, flags=re.MULTILINE):
-        print(
-            f"cc-claim: FATAL — blocked recovery status stamp did not land in {path}; "
-            "refusing to write claim caches over a still-blocked note.",
-            file=sys.stderr,
-        )
-        sys.exit(6)
-    if not re.search(rf"^assigned_to:\s*{re.escape(role)}\s*$", _front, flags=re.MULTILINE):
-        print(
-            f"cc-claim: FATAL — blocked recovery lost its claimant in {path}; "
-            "refusing to write claim caches.",
-            file=sys.stderr,
-        )
-        sys.exit(6)
-    text = _front + _rest
-    session_suffix = f", session={session_id}" if session_id else ""
-    reason = blocked_reason_from_frontmatter(frontmatter_from_text(note_before.decode("utf-8")))
-    reason_suffix = f"; blocked_reason={reason}" if reason else ""
-    log_line = (
-        f"- {now} {role} recovered blocked claim "
-        f"(cc-claim{session_suffix}{reason_suffix})\n"
-    )
-    result_message = f"cc-claim: recovered blocked task '{task_id}' for role '{role}'"
 else:
     session_suffix = f", session={session_id}" if session_id else ""
     resumed = (
