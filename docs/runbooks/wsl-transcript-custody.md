@@ -108,7 +108,9 @@ restic -r sftp:hapax-appendix:/mnt/nas/backups/restic \
 
 Record the exact snapshot ID from that successful run. On appendix, use the following independent
 restore check with `NEW_SNAPSHOT` and `CUSTODY_SOURCE` set as above. Retain its JSON output beside the
-installed commit and unit hashes. The temporary restore directory is private and is removed afterward.
+installed commit and unit hashes. The temporary restore directory is private and is removed afterward. Every captured SQLite member is
+restored and checked, regardless of database version/name. An archive without SQLite members explicitly
+reports that only its file hashes were verified; do not infer a database restore from that result.
 
 ```bash
 python3 - <<'PYRESTORE'
@@ -128,22 +130,26 @@ with tempfile.TemporaryDirectory() as stage:
     failures = tc.verify(paths, counts, snapshot_targets=[path.real for path in paths],
                          snapshot_credentials=tc.credential_nodes(nodes))
     assert not failures, failures
+    sqlite_checks = []
     with tarfile.open(archive) as tar:
-        member = next(member for member in tar
-                      if member.name.endswith("/.codex/thread_history_1.sqlite"))
-        database = pathlib.Path(stage) / "thread_history_1.sqlite"
-        database.write_bytes(tar.extractfile(member).read())
-        database.chmod(0o600)
-    with contextlib.closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
-        check = db.execute("PRAGMA quick_check").fetchone()[0]
-    assert check == "ok", check
+        databases = [member for member in tar
+                     if pathlib.PurePosixPath(member.name).suffix.lower() in (".sqlite", ".db")]
+        for index, member in enumerate(databases):
+            database = pathlib.Path(stage) / (str(index) + ".sqlite")
+            database.write_bytes(tar.extractfile(member).read())
+            database.chmod(0o600)
+            with contextlib.closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+                check = db.execute("PRAGMA quick_check").fetchone()[0]
+            assert check == "ok", (member.name, check)
+            sqlite_checks.append({"member": member.name, "quick_check": check})
     digest = hashlib.sha256()
     with archive.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
     print(json.dumps({"snapshot": os.environ["NEW_SNAPSHOT"], "manifest_verified": True,
                       "archive_bytes": archive.stat().st_size, "archive_sha256": digest.hexdigest(),
-                      "restored_sqlite_member": member.name, "sqlite_quick_check": check,
+                      "sqlite_checks": sqlite_checks,
+                      "sqlite_validation": "passed" if sqlite_checks else "no captured SQLite members",
                       "paths": len(paths), "files": sum(node["type"] == "file" for node in nodes)}, indent=2))
 PYRESTORE
 ```
@@ -163,3 +169,33 @@ recurring producer. A system recovery export needs an explicitly idle or stopped
 an existing export offline and import it under a different name with systemd, boot commands, interop and
 automatic host mounts disabled before the first test boot. Preserve failed receipts; a process exit code
 without the resulting VHDX and restored-file observations is not an import test.
+
+
+## Reproduce the sidecar regression
+
+From a repository checkout with its test environment installed, this reads the actual pre-fix implementation
+from Git into memory and runs the five preservation cases against it, then against the current implementation.
+It does not replace repository files. Expected results are five failures for the historical implementation
+and five passes for the current implementation; retain both outputs and the tested head.
+
+```bash
+uv run --no-sync python - <<'PYREGRESSION'
+import subprocess, sys
+baseline = "6a7404ec13a49bc6f18172733a736f89d70e7154"  # pragma: allowlist secret (public Git object ID)
+selection = "suffix_named_transcripts or sidecar_of_database_outside"
+red = """
+import subprocess, sys, types, pytest
+from scripts import transcript_custody as tc
+old = types.ModuleType("historical_transcript_custody")
+sys.modules[old.__name__] = old
+source = subprocess.check_output(["git", "show", "BASELINE:scripts/transcript_custody.py"])
+exec(compile(source, "historical_transcript_custody", "exec"), old.__dict__)
+tc.capture_tar = old.capture_tar
+raise SystemExit(pytest.main(["-q", "tests/test_transcript_custody.py", "-k", "SELECTION"]))
+""".replace("BASELINE", baseline).replace("SELECTION", selection)
+assert subprocess.run([sys.executable, "-c", red]).returncode == 1
+assert subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/test_transcript_custody.py",
+                       "-k", selection]).returncode == 0
+print("Historical capture failed and current capture passed the five preservation cases")
+PYREGRESSION
+```
