@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from hypothesis import given
 
@@ -134,6 +135,38 @@ class TestConsentLabelLattice(unittest.TestCase):
     def test_bottom_flows_to_all(self, a: ConsentLabel):
         """⊥ ⊑ a"""
         assert ConsentLabel.bottom().can_flow_to(a)
+
+
+class TestConsentLabelResolverNoneBoundary(unittest.TestCase):
+    """A resolver returning None must never collapse distinct principals.
+
+    The correspondence snapshot resolves unmapped ids to themselves today, but
+    can_flow_to must stay locally total: if a future resolver returns None for
+    unknown principals, the raw id is used so distinct principals never compare
+    equal through (None, ...) policy keys.
+    """
+
+    def test_none_resolver_keeps_distinct_principals_distinct(self):
+        """Shared (agentgov) copy: alice and bob must not flow into each other."""
+        a = ConsentLabel(frozenset({("alice", frozenset({"alice"}))}))
+        b = ConsentLabel(frozenset({("bob", frozenset({"bob"}))}))
+        with mock.patch("agentgov.consent_label.resolve_principal_id", return_value=None):
+            assert not a.can_flow_to(b)
+            assert not b.can_flow_to(a)
+            assert a.can_flow_to(a)
+            assert b.can_flow_to(b)
+
+    def test_none_resolver_keeps_distinct_principals_distinct_agents_copy(self):
+        """agents/_governance copy: same invariant under the estate snapshot."""
+        from agents._governance.consent_label import ConsentLabel as AgentsConsentLabel
+
+        a = AgentsConsentLabel(frozenset({("alice", frozenset({"alice"}))}))
+        b = AgentsConsentLabel(frozenset({("bob", frozenset({"bob"}))}))
+        with mock.patch("agents._governance.consent_label.resolve_principal_id", return_value=None):
+            assert not a.can_flow_to(b)
+            assert not b.can_flow_to(a)
+            assert a.can_flow_to(a)
+            assert b.can_flow_to(b)
 
 
 if __name__ == "__main__":
