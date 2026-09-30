@@ -430,3 +430,206 @@ raise SystemExit(1)
         if child.poll() is None:
             child.kill()
             child.wait(timeout=1)
+
+
+def receiver_process(path, raw):
+    import subprocess
+
+    # Replace only the test's socket coordinate. Actual framing, socket checks,
+    # connection, reply handling and public --receive CLI execute in a child.
+    program = """import sys
+from pathlib import Path
+import hapax_clip as clip
+clip.socket_path = lambda: Path(sys.argv[1])
+raise SystemExit(clip.main(["--receive"]))
+"""
+    return subprocess.run(
+        [sys.executable, "-c", program, str(path)],
+        input=clip.encode_frame(raw),
+        capture_output=True,
+        timeout=3,
+        env=dict(os.environ, PYTHONPATH=str(SCRIPTS)),
+    )
+
+
+@pytest.mark.parametrize("reply_kind", ["exact", "truncated", "oversized", "closed"])
+def test_receive_cli_real_private_unix_socket(tmp_path, reply_kind):
+    import concurrent.futures
+
+    directory = tmp_path / "ipc"
+    directory.mkdir(mode=0o700)
+    path = directory / "endpoint.sock"
+    raw = clip.encode_json(request())
+    response = clip.encode_json(ack(request()))
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(path))
+        path.chmod(0o600)
+        listener.listen(1)
+        listener.settimeout(2)
+
+        def serve():
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(2)
+                observed = clip.read_frame(connection, clip.MAX_REQUEST)
+                if reply_kind == "exact":
+                    clip.send_frame(connection, response)
+                elif reply_kind == "truncated":
+                    connection.sendall(struct.pack("!I", len(response)) + response[:3])
+                elif reply_kind == "oversized":
+                    connection.sendall(struct.pack("!I", clip.MAX_REPLY + 1))
+                return observed
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(serve)
+            result = receiver_process(path, raw)
+            assert future.result(timeout=2) == raw
+    if reply_kind == "exact":
+        assert result.returncode == 0 and result.stdout == response + b"\n"
+        assert not result.stderr
+    else:
+        assert result.returncode == 1 and not result.stdout
+        assert b"Next action:" in result.stderr
+        assert base64.b64encode(PAYLOAD) not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "kind", ["file", "public-socket", "public-directory", "absent", "no-listener", "foreign-uid"]
+)
+def test_receive_refuses_unsafe_or_unavailable_socket(tmp_path, monkeypatch, kind):
+    from types import SimpleNamespace
+
+    directory = tmp_path / "ipc"
+    directory.mkdir(mode=0o700)
+    path = directory / "endpoint.sock"
+    monkeypatch.setattr(clip, "socket_path", lambda: path)
+    with socket.socket(socket.AF_UNIX) as listener:
+        if kind == "file":
+            path.write_bytes(b"untouched")
+            path.chmod(0o600)
+        elif kind != "absent":
+            listener.bind(str(path))
+            path.chmod(0o600)
+            if kind == "public-socket":
+                path.chmod(0o666)
+            elif kind == "public-directory":
+                directory.chmod(0o755)
+            elif kind == "foreign-uid":
+                import threading
+
+                listener.listen(1)
+                listener.settimeout(0.3)
+
+                def respond_if_guard_is_broken():
+                    try:
+                        connection, _ = listener.accept()
+                    except TimeoutError:
+                        return
+                    with connection:
+                        connection.settimeout(0.3)
+                        clip.read_frame(connection, clip.MAX_REQUEST)
+                        clip.send_frame(connection, b"{}")
+
+                worker = threading.Thread(target=respond_if_guard_is_broken, daemon=True)
+                worker.start()
+                actual = Path.lstat
+
+                def foreign(item):
+                    info = actual(item)
+                    if item == path:
+                        return SimpleNamespace(st_mode=info.st_mode, st_uid=os.getuid() + 1)
+                    return info
+
+                monkeypatch.setattr(Path, "lstat", foreign)
+        with pytest.raises((clip.ClipError, OSError)):
+            clip.local_receive(clip.encode_json(request()))
+        if kind == "foreign-uid":
+            worker.join(timeout=1)
+            assert not worker.is_alive()
+    if kind == "file":
+        assert path.read_bytes() == b"untouched"
+
+
+def test_sender_cli_valid_enrollment_real_child_transport_and_receipt(tmp_path):
+    import subprocess
+
+    config = tmp_path / "enrollment.json"
+    config.write_text(json.dumps(dict(v=1, endpoints={"client": endpoint()})))
+    config.chmod(0o600)
+    binaries = tmp_path / "bin"
+    binaries.mkdir(mode=0o700)
+    observed = tmp_path / "transport-metadata.jsonl"
+    # This process double replaces SSH only. The real sender CLI loads and
+    # validates enrollment, constructs pinned argv, spawns/framing-bounds both
+    # transports, validates ACKs and writes the private receipt. No network or
+    # native desktop mutation takes place; only synthetic input is used.
+    fake = binaries / "ssh"
+    fake.write_text(
+        "#!"
+        + sys.executable
+        + "\n"
+        + r"""import json, os, pathlib, sys
+import hapax_clip as clip
+args = sys.argv[1:]
+assert args[:2] == ["-F", "/dev/null"]
+assert "StrictHostKeyChecking=yes" in args
+assert "ForwardAgent=no" in args
+assert args[-1] == "~/.local/bin/hapax-clip --receive"
+pin = next(v.split("=", 1)[1] for v in args if v.startswith("UserKnownHostsFile="))
+assert pathlib.Path(pin).stat().st_mode & 0o777 == 0o600
+q = clip.decode_json(clip.read_input_frame(sys.stdin.buffer))
+assert pathlib.Path(pin).read_text() == "hapax-clip-" + q["endpoint"] + " " + os.environ["TEST_HOST_KEY"] + "\n"
+data = clip.validate_request(q, os.environ["TEST_ENDPOINT"])
+if data is not None:
+    assert data == pathlib.Path(os.environ["TEST_INPUT"]).read_bytes()
+reply = dict(v=1, id=q["id"], endpoint=q["endpoint"], session="4", epoch=os.environ["TEST_EPOCH"], principal=str(os.getuid()))
+if q["op"] == "set":
+    assert q["session"] == reply["session"] and q["epoch"] == reply["epoch"]
+    reply.update(bytes=len(data), sha256=clip.digest(data), history_excluded=True)
+with open(os.environ["TEST_OBSERVED"], "a") as out:
+    out.write(json.dumps(dict(op=q["op"], id=q["id"])) + "\n")
+sys.stdout.buffer.write(clip.encode_json(reply))
+"""
+    )
+    fake.chmod(0o700)
+    source = tmp_path / "synthetic-input"
+    source.write_bytes(PAYLOAD)
+    receipt = tmp_path / "private" / "receipt.jsonl"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "hapax_clip.py"),
+            "client",
+            str(source),
+            "--config",
+            str(config),
+            "--receipt",
+            str(receipt),
+        ],
+        capture_output=True,
+        timeout=5,
+        env=dict(
+            os.environ,
+            PATH=str(binaries) + os.pathsep + os.environ["PATH"],
+            PYTHONPATH=str(SCRIPTS),
+            TEST_HOST_KEY=HOST_KEY,
+            TEST_ENDPOINT=ENDPOINT,
+            TEST_EPOCH=EPOCH,
+            TEST_INPUT=str(source),
+            TEST_OBSERVED=str(observed),
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    public = json.loads(result.stdout)
+    assert public["target"] == "client" and public["mode"] == "raw"
+    assert public["bytes"] == len(PAYLOAD) and public["history_excluded"] is True
+    assert json.loads(receipt.read_bytes()) == public
+    assert receipt.stat().st_mode & 0o777 == 0o600
+    assert receipt.parent.stat().st_mode & 0o777 == 0o700
+    calls = [json.loads(row) for row in observed.read_text().splitlines()]
+    assert [row["op"] for row in calls] == ["describe", "set"]
+    assert calls[0]["id"] != calls[1]["id"]
+    assert not result.stderr
+    for surface in (result.stdout, receipt.read_bytes()):
+        assert PAYLOAD not in surface and base64.b64encode(PAYLOAD) not in surface
+        assert clip.digest(PAYLOAD).encode() not in surface and b"sha256" not in surface

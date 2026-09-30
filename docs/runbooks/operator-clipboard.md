@@ -40,7 +40,8 @@ public modes, symlinks and hardlinks. Input travels on stdin and local framed IP
 never payload argv or subprocess output. Sensitive strings must use a tool's stdin
 facility or an existing private file, not shell interpolation.
 
-Transport has a total deadline, strict public host-key pinning, no ambient SSH
+Each describe/set transport has its own 12-second deadline (up to 24 seconds
+for both transport legs), strict public host-key pinning, no ambient SSH
 configuration or forwarding, and bounded reply sizes. Unknown, offline, malformed,
 locked, changed-session or unacknowledged destinations fail with a public next
 action. A timeout can occur after a write but before ACK; inspect the destination
@@ -66,6 +67,11 @@ before production installation. Personal handhelds must not inherit Appendix's
 unrelated services or credential authority. On Windows the native build and task
 must bind to a commit-addressed accepted release, with selected-root and compiled
 artifact hashes; a mutable executable beside arbitrary copied source is inadequate.
+The fixed Windows command names `Clipboard/current/hapax-clip-windows.exe`.
+That selected-root alias is a future backend prerequisite, not an installed or
+verified release in this slice: its governed writer must select a commit-addressed
+accepted build, attest the selected target/build/task hashes and fail closed on
+drift before desktop activation. The alias name alone establishes none of this.
 
 Recheck the source prerequisite after governed promotion:
 
@@ -85,6 +91,7 @@ does not establish desktop delivery, installed receiver health or device accepta
 From this source checkout, run:
 
 ```sh
+git cat-file -e 2c94fef2741ef9e0f0fca7b45f08eb3f4b20986a:scripts/hapax_clip.py
 uv run --no-sync pytest tests/scripts/test_hapax_clip.py -q
 ```
 
@@ -95,7 +102,9 @@ launcher resolution. Historical tests load the actual PR4796 source from Git
 (`2c94fef2741ef9e0f0fca7b45f08eb3f4b20986a`) and demonstrate failures of the
 former executable default, newline conversion, transcript fingerprint/preview
 and symlink-following receipt behavior. They skip explicitly if that Git object
-is absent in a shallow checkout; fetch its history to reproduce them. No native
+is absent in a shallow checkout; fetch its history to reproduce them. The
+primary recheck above requires the Git object before running pytest, so that
+acceptance command cannot silently omit the predecessor witnesses. No native
 clipboard or network effect is produced by these predecessor tests.
 
 Before closing the parent, accepted native backend witnesses must run from their
