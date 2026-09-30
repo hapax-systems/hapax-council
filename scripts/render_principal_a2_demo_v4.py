@@ -1,10 +1,10 @@
-"""Render narration audio for Alexis demo v4.
+"""Render narration audio for principal-a2 demo v4.
 
 Third person. No rhetoric. Consent gentle, cameras later.
 Factually accurate (not local-only — uses external APIs).
 Voice: Lily (soft, velvety).
 
-Usage: uv run python scripts/render_alexis_demo_v4.py
+Usage: uv run python scripts/render_principal_a2_demo_v4.py
 """
 
 from __future__ import annotations
@@ -452,7 +452,7 @@ SCENES: list[tuple[str, str]] = [
 ]
 # fmt: on
 
-DEMO_NAME = "alexis-v4-demo"
+DEMO_NAME = "principal-a2-v4-demo"
 
 
 def _slugify(text: str) -> str:
@@ -471,7 +471,7 @@ async def main() -> None:
     audio_dir.mkdir(parents=True, exist_ok=True)
 
     total_words = sum(len(text.split()) for _, text in SCENES)
-    print(f"Alexis demo v4: {len(SCENES)} scenes, ~{total_words} words")
+    print(f"principal-a2 demo v4: {len(SCENES)} scenes, ~{total_words} words")
 
     # Validate
     forbidden = [
