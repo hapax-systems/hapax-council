@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from scripts.llm_import_graph import ImportInfo, build_graph, extract_imports  # noqa: F401
 
 
@@ -44,3 +47,27 @@ def test_transitive_cost_exceeds_self_cost():
                 found = True
                 break
     assert found, "Expected at least one agent with transitive deps exceeding self cost"
+
+
+def test_demo_renderer_baseline_keys_match_current_paths():
+    # The baseline is a historical cost snapshot; only these identities and paths are current.
+    baseline_path = Path(__file__).resolve().parents[1] / "profiles/token-baseline.json"
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    graph = build_graph(["scripts"])
+
+    principal_keys = {
+        "scripts.render_principal_c1_demo",
+        "scripts.render_principal_a2_demo",
+        "scripts.render_principal_a2_demo_v2",
+        "scripts.render_principal_a2_demo_v3",
+        "scripts.render_principal_a2_demo_v4",
+    }
+    demo_keys = {key for key in baseline if key.startswith("scripts.render_") and "_demo" in key}
+    assert demo_keys == principal_keys | {
+        "scripts.render_brother_demo",
+        "scripts.render_kids_demo",
+    }
+
+    for key in principal_keys:
+        assert key in graph, f"Missing source module: {key}"
+        assert baseline[key]["path"] == graph[key].path

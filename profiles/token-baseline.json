@@ -10032,8 +10032,8 @@
     ],
     "transitive_token_cost": 1760
   },
-  "scripts.render_aggie_demo": {
-    "path": "scripts/render_aggie_demo.py",
+  "scripts.render_principal_c1_demo": {
+    "path": "scripts/render_principal_c1_demo.py",
     "loc": 370,
     "token_cost": 3700,
     "transitive_deps": [
@@ -10041,8 +10041,8 @@
     ],
     "transitive_token_cost": 6250
   },
-  "scripts.render_alexis_demo": {
-    "path": "scripts/render_alexis_demo.py",
+  "scripts.render_principal_a2_demo": {
+    "path": "scripts/render_principal_a2_demo.py",
     "loc": 449,
     "token_cost": 4490,
     "transitive_deps": [
@@ -10050,8 +10050,8 @@
     ],
     "transitive_token_cost": 7040
   },
-  "scripts.render_alexis_demo_v2": {
-    "path": "scripts/render_alexis_demo_v2.py",
+  "scripts.render_principal_a2_demo_v2": {
+    "path": "scripts/render_principal_a2_demo_v2.py",
     "loc": 701,
     "token_cost": 7010,
     "transitive_deps": [
@@ -10065,8 +10065,8 @@
     ],
     "transitive_token_cost": 21900
   },
-  "scripts.render_alexis_demo_v3": {
-    "path": "scripts/render_alexis_demo_v3.py",
+  "scripts.render_principal_a2_demo_v3": {
+    "path": "scripts/render_principal_a2_demo_v3.py",
     "loc": 547,
     "token_cost": 5470,
     "transitive_deps": [
@@ -10080,8 +10080,8 @@
     ],
     "transitive_token_cost": 20360
   },
-  "scripts.render_alexis_demo_v4": {
-    "path": "scripts/render_alexis_demo_v4.py",
+  "scripts.render_principal_a2_demo_v4": {
+    "path": "scripts/render_principal_a2_demo_v4.py",
     "loc": 534,
     "token_cost": 5340,
     "transitive_deps": [
