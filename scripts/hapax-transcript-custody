@@ -377,12 +377,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             f"hapax-transcript-custody: snapshot read failed: {exc}; {_remedy()}", file=sys.stderr
         )
         return 1
-    expected = (
-        [p for p in res.paths if not p.real.endswith(("-wal", "-shm"))]
-        if _is_capture(cur)
-        else res.paths
-    )
-    paths = sorted(set(targets) | set(prev_targets) | {p.real for p in res.paths})
+    expected = tc.capture_paths(res.paths) if _is_capture(cur) else res.paths
+    paths = sorted(set(targets) | set(prev_targets) | {p.real for p in expected})
     current = tc.count_snapshot(nodes, paths)
     previous = tc.count_snapshot(prev_nodes, paths) if prev else None
     failures = tc.verify(

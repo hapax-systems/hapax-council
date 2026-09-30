@@ -106,14 +106,52 @@ restic -r sftp:hapax-appendix:/mnt/nas/backups/restic \
   --host hapax-dextra-wsl-ubuntu24.04 --tag tier1-transcripts
 ```
 
-Record the exact snapshot ID from that successful run. Independently run `restic dump SNAPSHOT
-/transcripts-consistent.tar` from appendix's NAS repository, verify its manifest with
-`transcript_custody.read_capture`, restore the Codex SQLite member into a new private directory and
-run `PRAGMA quick_check`. A transport failure, truncated archive, hash/count drop or failed database
-check leaves custody unaccepted; inspect the private failure receipt and repeat a new capture after
-repairing the named source or link. Record the actual restored-file observations beside the installed
-commit and unit hashes. Runtime acceptance is separate from this PR's source acceptance; the parent
-hearth commission also includes device recovery and hardware acceptance and remains open.
+Record the exact snapshot ID from that successful run. On appendix, use the following independent
+restore check with `NEW_SNAPSHOT` and `CUSTODY_SOURCE` set as above. Retain its JSON output beside the
+installed commit and unit hashes. The temporary restore directory is private and is removed afterward.
+
+```bash
+python3 - <<'PYRESTORE'
+import contextlib, hashlib, json, os, pathlib, sqlite3, subprocess, sys, tarfile, tempfile
+sys.path.insert(0, os.environ["CUSTODY_SOURCE"])
+from scripts import transcript_custody as tc
+with tempfile.TemporaryDirectory() as stage:
+    archive = pathlib.Path(stage) / "transcripts-consistent.tar"
+    with archive.open("xb") as out:
+        subprocess.run(["restic", "-r", "/mnt/nas/backups/restic", "--password-command",
+                        "hapax-secret backups/restic-password", "dump", "--no-lock",
+                        os.environ["NEW_SNAPSHOT"], "/transcripts-consistent.tar"],
+                       stdout=out, check=True)
+    with tarfile.open(archive) as tar:
+        paths, nodes = tc.read_capture(tar)
+    counts = tc.count_snapshot(nodes, [path.real for path in paths])
+    failures = tc.verify(paths, counts, snapshot_targets=[path.real for path in paths],
+                         snapshot_credentials=tc.credential_nodes(nodes))
+    assert not failures, failures
+    with tarfile.open(archive) as tar:
+        member = next(member for member in tar
+                      if member.name.endswith("/.codex/thread_history_1.sqlite"))
+        database = pathlib.Path(stage) / "thread_history_1.sqlite"
+        database.write_bytes(tar.extractfile(member).read())
+        database.chmod(0o600)
+    with contextlib.closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
+        check = db.execute("PRAGMA quick_check").fetchone()[0]
+    assert check == "ok", check
+    digest = hashlib.sha256()
+    with archive.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    print(json.dumps({"snapshot": os.environ["NEW_SNAPSHOT"], "manifest_verified": True,
+                      "archive_bytes": archive.stat().st_size, "archive_sha256": digest.hexdigest(),
+                      "restored_sqlite_member": member.name, "sqlite_quick_check": check,
+                      "paths": len(paths), "files": len(nodes)}, indent=2))
+PYRESTORE
+```
+
+A transport failure, truncated archive, hash/count drop or failed database check leaves custody
+unaccepted; retain the failure and repeat a new capture after repairing the named source or link.
+Runtime acceptance is separate from this PR's source acceptance; the parent hearth commission also
+includes device recovery and hardware acceptance and remains open.
 
 The timer runs while WSL's user manager runs. It does not wake Windows or start an otherwise stopped
 distribution. Surface a stopped or sleeping seat as unobserved; the Windows puller's separate 72-hour

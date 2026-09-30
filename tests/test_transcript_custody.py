@@ -1269,3 +1269,71 @@ def test_wsl_verify_failure_names_the_bound_service(
     error = capsys.readouterr().err
     assert "start hapax-backup-transcripts-wsl.service" in error
     assert "start hapax-backup-transcripts.service" not in error
+
+
+@pytest.mark.parametrize("name", ["plain-wal", "plain-shm", "missing.sqlite-wal", "missing.db-shm"])
+def test_suffix_named_transcripts_and_orphan_journals_are_retained(
+    tmp_path: Path, name: str
+) -> None:
+    import tarfile
+
+    home = _home(tmp_path)
+    transcript = home / ".claude/projects" / name
+    transcript.write_text("retained transcript fixture")
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(home).paths, archive)
+    with tarfile.open(archive) as tar:
+        _, nodes = tc.read_capture(tar)
+        assert tar.extractfile(str(transcript).lstrip("/")).read() == b"retained transcript fixture"
+    assert any(node["path"] == str(transcript) for node in nodes)
+
+
+def test_sidecar_of_database_outside_capture_is_retained(tmp_path: Path) -> None:
+    import sqlite3
+    import tarfile
+
+    database = tmp_path / "outside.db"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE messages (text TEXT)")
+    transcript = tmp_path / "outside.db-wal"
+    transcript.write_text("standalone selected transcript")
+    target = tc.ResolvedPath("codex", "~/outside.db-wal", str(transcript), "file", False, 1)
+    assert tc.capture_paths([target]) == [target]
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar([target], archive)
+    with tarfile.open(archive) as tar:
+        paths, nodes = tc.read_capture(tar)
+        assert paths == [target]
+        assert (
+            tar.extractfile(str(transcript).lstrip("/")).read() == b"standalone selected transcript"
+        )
+    assert tc.count_snapshot(nodes, [target.real])[target.real].files == 1
+
+
+def test_selected_sqlite_sidecars_are_superseded_by_committed_database(tmp_path: Path) -> None:
+    import sqlite3
+    import tarfile
+
+    database = tmp_path / "opencode.db"
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("CREATE TABLE messages (text TEXT)")
+        db.execute("INSERT INTO messages VALUES ('committed journal row')")
+        db.commit()
+        targets = [
+            tc.ResolvedPath("opencode", "~/" + path.name, str(path), "file", False, 1)
+            for path in sorted(tmp_path.glob("opencode.db*"))
+        ]
+        assert len(targets) == 3
+        archive = tmp_path / "capture.tar"
+        tc.capture_tar(targets, archive)
+    with tarfile.open(archive) as tar:
+        paths, nodes = tc.read_capture(tar)
+        assert [path.real for path in paths] == [str(database)]
+        assert [node["path"] for node in nodes] == [str(database)]
+        restored = tmp_path / "restored.db"
+        restored.write_bytes(tar.extractfile(str(database).lstrip("/")).read())
+    with sqlite3.connect(restored) as db:
+        assert db.execute("SELECT text FROM messages").fetchall() == [("committed journal row",)]
+        assert db.execute("PRAGMA quick_check").fetchone() == ("ok",)

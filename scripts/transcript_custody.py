@@ -219,6 +219,30 @@ CAPTURE_FILENAME = "transcripts-consistent.tar"
 CAPTURE_MANIFEST = "custody-manifest.json"
 
 
+def _captured_sqlite_sidecar(item: Path, paths: Sequence[ResolvedPath]) -> bool:
+    """Only omit journals whose main SQLite database is in this capture."""
+    if not item.name.endswith(("-wal", "-shm")):
+        return False
+    database = item.with_name(item.name[:-4]).absolute()
+    if (
+        database.suffix.lower() not in (".db", ".sqlite")
+        or database.is_symlink()
+        or not database.is_file()
+        or is_credential(database.name)
+    ):
+        return False
+    return any(
+        database == Path(target.real).absolute()
+        or (target.kind == "dir" and database.is_relative_to(Path(target.real).absolute()))
+        for target in paths
+    )
+
+
+def capture_paths(paths: Sequence[ResolvedPath]) -> list[ResolvedPath]:
+    """Keep every target except journals superseded by an included online SQLite copy."""
+    return [target for target in paths if not _captured_sqlite_sidecar(Path(target.real), paths)]
+
+
 def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
     """Capture the same table into one verified tar; SQLite uses its online backup API.
 
@@ -235,6 +259,7 @@ def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
     from contextlib import closing
     from dataclasses import asdict
 
+    paths = capture_paths(paths)
     if not paths:
         raise ValueError("no transcript paths to capture")
     manifest = {"paths": [asdict(p) for p in paths], "files": {}}
@@ -250,10 +275,9 @@ def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
                         raise ValueError(f"nested symlink: {item}")
                     if not item.is_file() or is_credential(item.name):
                         continue
-                    # An opencode glob may include SQLite journals: the main database's
-                    # online capture already includes its committed WAL. Never copy a
-                    # sidecar independently into a supposedly consistent capture.
-                    if item.name.endswith(("-wal", "-shm")):
+                    # Online capture includes committed WAL for an included database.
+                    # Orphan journals and ordinary suffix-named files remain transcripts.
+                    if _captured_sqlite_sidecar(item, paths):
                         continue
                     name = str(item).lstrip("/")
                     output = stage / name
@@ -277,12 +301,8 @@ def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
                     manifest["files"][name] = {"bytes": size, "sha256": digest.hexdigest()}
                     tar.add(output, arcname=name, recursive=False)
                     count += 1
-                if count < target.min_files and not target.real.endswith(("-wal", "-shm")):
+                if count < target.min_files:
                     raise ValueError(f"empty transcript capture: {target.real}")
-            # Sidecars are not standalone targets; their main SQLite capture is the witness.
-            manifest["paths"] = [
-                p for p in manifest["paths"] if not p["real"].endswith(("-wal", "-shm"))
-            ]
             info = tarfile.TarInfo(CAPTURE_MANIFEST)
             data = json.dumps(manifest).encode()
             info.size = len(data)
