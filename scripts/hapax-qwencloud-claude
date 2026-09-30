@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""Historical entry-point name; runs the listed OpenCode client on Token Plan.
+
+This is a per-task, prompt-only client launcher, not a backend API client.
+Secrets reach the unmodified client only through its private environment.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1"
+PROVIDER = "bailian-token-plan-personal"
+KEY_ENV = "HAPAX_QWENCLOUD_PLAN_KEY"
+SECRETS = {"alibaba": "alibaba-cloud/plan-api-key", "legacy": "qwencloud/apikey"}
+# Alibaba Token Plan Personal Edition catalogue, read 2026-09-30. Explicit
+# identities only: the vendor's automatic selection is deliberately not a pin.
+MODELS = (
+    "qwen3.8-max",
+    "qwen3.8-flash",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-flash",
+    "deepseek-v4.1-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4-pro-0813",
+    "deepseek-v4-flash-0731",
+    "glm-5.3",
+    "glm-5.2",
+)
+SMOKE = "Do not use tools. Reply with exactly QWENCLOUD_OK and nothing else."
+EXPECTED = "QWENCLOUD_OK"
+
+
+class Refusal(Exception):
+    """A fixed, secret-free failure reason suitable for the receipt."""
+
+
+def run_group(argv: list[str], env: dict[str, str], cwd: Path, timeout: float):
+    """Own and reap the entire child group, including descendants holding pipes."""
+    process = subprocess.Popen(
+        argv,
+        env=env,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return process.returncode, stdout, stderr
+    except subprocess.TimeoutExpired:
+        raise Refusal("client_timeout: inspect client readiness before another task") from None
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.communicate()
+
+
+def client_config(model: str) -> dict:
+    selected = f"{PROVIDER}/{model}"
+    return {
+        "$schema": "https://opencode.ai/config.json",
+        "model": selected,
+        "small_model": selected,
+        "enabled_providers": [PROVIDER],
+        "share": "disabled",
+        "autoupdate": False,
+        "snapshot": False,
+        "permission": {"*": "deny"},
+        "mcp": {},
+        "plugin": [],
+        "instructions": [],
+        "agent": {
+            "plan-probe": {
+                "mode": "primary",
+                "model": selected,
+                "steps": 1,
+                "prompt": "Answer the user's prompt directly. Do not use tools.",
+                "permission": {"*": "deny"},
+            }
+        },
+        "provider": {
+            PROVIDER: {
+                "npm": "@ai-sdk/anthropic",
+                "name": "Alibaba Cloud Token Plan Personal",
+                "options": {
+                    "baseURL": BASE_URL,
+                    "apiKey": "{env:" + KEY_ENV + "}",
+                    "timeout": 30000,
+                },
+                "models": {
+                    model: {
+                        "name": model,
+                        "limit": {"context": 32768, "output": 256},
+                        "options": {"maxRetries": 0},
+                    }
+                },
+            }
+        },
+    }
+
+
+def client_environment(root: Path, model: str, key: str) -> dict[str, str]:
+    # Do not merge the caller's environment: no ambient auth, proxy, startup
+    # injection, config, telemetry, plugins or alternate billing provider.
+    env = {
+        "HOME": str(root),
+        "PATH": os.defpath,
+        "LANG": "C.UTF-8",
+        "TERM": "dumb",
+        "XDG_CONFIG_HOME": str(root / "config"),
+        "XDG_DATA_HOME": str(root / "data"),
+        "XDG_CACHE_HOME": str(root / "cache"),
+        "XDG_STATE_HOME": str(root / "state"),
+        "TMPDIR": str(root),
+        "OPENCODE_CONFIG_CONTENT": json.dumps(client_config(model)),
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+        "OPENCODE_DISABLE_AUTOUPDATE": "1",
+        "OPENCODE_DISABLE_MODELS_FETCH": "1",
+        "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+        "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
+        "OPENCODE_DISABLE_SHARE": "1",
+        "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER": "1",
+        "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "256",
+        "OPENCODE_LOG_LEVEL": "ERROR",
+        "OPENCODE_PURE": "1",
+    }
+    if key:
+        env[KEY_ENV] = key
+    return env
+
+
+def check_overrides() -> None:
+    # Older escape knobs must refuse even when their caller claims review.
+    for name in (
+        "HAPAX_QWENCLOUD_ANTHROPIC_BASE_URL",
+        "HAPAX_QWENCLOUD_ALLOW_BASE_URL_OVERRIDE",
+        "HAPAX_QWENCLOUD_ALLOW_NON_PLAN_MODEL",
+    ):
+        if os.environ.get(name):
+            raise Refusal("legacy_override_refused: use the pinned Token Plan configuration")
+    if any(Path("/etc/opencode", name).exists() for name in ("opencode.json", "opencode.jsonc")):
+        raise Refusal("managed_config_present: review managed client settings before use")
+
+
+def require_tmpfs() -> None:
+    mounts = [line.split() for line in Path("/proc/mounts").read_text().splitlines()]
+    if not any(len(row) > 2 and row[1:3] == ["/dev/shm", "tmpfs"] for row in mounts):
+        raise Refusal("tmpfs_missing: provision /dev/shm as tmpfs before using the credential")
+
+
+def secret_value(helper: str, name: str) -> str:
+    # The established helper owns FileStore access. Never persist or echo its
+    # output, including failure output; nonzero exit cannot provide a key.
+    result = subprocess.run([helper, name], capture_output=True, timeout=20, check=False)
+    if result.returncode != 0:
+        raise Refusal("secret_read_failed: repair the named FileStore credential")
+    key = result.stdout.decode("ascii", errors="strict").strip()
+    # The suffix is vendor-owned opaque material, not an identifier alphabet.
+    # Require the plan prefix and exclude whitespace/control header injection.
+    if not key.startswith("sk-sp-") or len(key) <= 6 or not all(33 <= ord(c) <= 126 for c in key):
+        raise Refusal("plan_key_shape_invalid: verify the named Token Plan credential")
+    return key
+
+
+def summarize(stdout: bytes, returncode: int) -> dict:
+    """Persist only typed measurements; raw client output may contain secrets."""
+    answered = False
+    finished = False
+    tokens = {}
+    errors = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "error" and isinstance(event.get("error"), dict):
+            error = event["error"]
+            safe = {}
+            if error.get("name") in {"APIError", "ProviderAuthError", "UnknownError"}:
+                safe["class"] = error["name"]
+            data = error.get("data", {})
+            if isinstance(data, dict):
+                status = data.get("statusCode")
+                if type(status) is int and 100 <= status <= 599:
+                    safe["http_status"] = status
+                if type(data.get("isRetryable")) is bool:
+                    safe["retryable"] = data["isRetryable"]
+            if safe and len(errors) < 16:
+                errors.append(safe)
+        if not isinstance(event.get("part"), dict):
+            continue
+        part = event["part"]
+        if event.get("type") == "text" and part.get("text", "").strip() == EXPECTED:
+            answered = True
+        if event.get("type") == "step_finish":
+            finished = part.get("reason") == "stop"
+            values = part.get("tokens", {})
+            if isinstance(values, dict):
+                tokens = {
+                    k: v
+                    for k, v in values.items()
+                    if k in {"input", "output", "reasoning", "total"}
+                    and type(v) is int
+                    and 0 <= v <= 100_000_000
+                }
+    return {
+        "answered": answered,
+        "finished": finished,
+        "ok": returncode == 0 and answered and finished,
+        "client_exit_code": returncode,
+        "client_tokens": tokens,
+        "client_errors": errors,
+        # OpenCode's selected model is not a provider-served identity witness.
+        "served_model": None,
+        "served_model_observation": "not exposed by the captured client events",
+        "plan_quota_delta": None,
+        "plan_quota_observation": "not exposed by the captured client events",
+    }
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--check", action="store_true", help="keyless client/config check")
+    action.add_argument("--smoke", action="store_true", help="one synthetic listed-client turn")
+    parser.add_argument(
+        "--task", required=True, help="authorized task identity, recorded as provenance"
+    )
+    parser.add_argument("--credential", choices=SECRETS, default="alibaba")
+    parser.add_argument("--model", choices=MODELS, default="qwen3.8-flash")
+    parser.add_argument("--timeout", type=float, default=60)
+    args = parser.parse_args(argv)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,160}", args.task):
+        parser.error("task must be a task id, not a prompt or credential")
+    if not 1 <= args.timeout <= 120:
+        parser.error("timeout must be between 1 and 120 seconds")
+    receipt = {
+        "schema": "hapax.qwencloud-client-smoke.v1",
+        "task_id": args.task,
+        "started_at": datetime.now(UTC).isoformat(),
+        "client": "opencode",
+        "endpoint": BASE_URL,
+        "model_requested": args.model,
+        "billing_surface": "token-plan-personal",
+        "mode": "keyless_check" if args.check else "synthetic_smoke",
+        "ok": False,
+    }
+    started = time.monotonic()
+    try:
+        check_overrides()
+        client = shutil.which("opencode")
+        helper = shutil.which("hapax-secret")
+        if not client or not helper:
+            raise Refusal("dependency_missing: install the listed OpenCode client and hapax-secret")
+        # tmpfs keeps all client state ephemeral. No disk-backed fallback.
+        require_tmpfs()
+        with tempfile.TemporaryDirectory(prefix="hapax-qwencloud-", dir="/dev/shm") as temp:
+            root = Path(temp)
+            env = client_environment(root, args.model, "")
+            code, out, _ = run_group([client, "--version"], env, root, 10)
+            version = out.decode("ascii", errors="replace").strip()
+            if code or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+                raise Refusal("client_version_failed: repair the installed listed client")
+            receipt["client_version"] = version
+            if args.check:
+                receipt["ok"] = True
+                receipt["credential_read"] = False
+            else:
+                key = secret_value(helper, SECRETS[args.credential])
+                env = client_environment(root, args.model, key)
+                code, out, _ = run_group(
+                    [
+                        client,
+                        "run",
+                        "--pure",
+                        "--log-level",
+                        "ERROR",
+                        "--format",
+                        "json",
+                        "--agent",
+                        "plan-probe",
+                        "--model",
+                        f"{PROVIDER}/{args.model}",
+                        "--title",
+                        "Token Plan synthetic smoke",
+                        SMOKE,
+                    ],
+                    env,
+                    root,
+                    args.timeout,
+                )
+                receipt.update(summarize(out, code))
+                if not receipt["ok"]:
+                    receipt["reason"] = (
+                        "client_smoke_failed: review isolated client readiness; no fallback"
+                    )
+    except Refusal as exc:
+        receipt["reason"] = str(exc)
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        receipt["ok"] = False
+        receipt["reason"] = "local_execution_failed: inspect client, FileStore and tmpfs readiness"
+    receipt["wall_s"] = round(time.monotonic() - started, 3)
+    print(json.dumps(receipt, sort_keys=True))
+    return 0 if receipt["ok"] else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
