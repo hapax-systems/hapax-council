@@ -1364,3 +1364,43 @@ def test_capture_backup_reports_real_restic_failure(
     assert "restic capture backup exited" in error
     assert "hapax-backup-transcripts-wsl.service" in error
     assert "capture failed:" not in error
+
+
+@pytest.mark.parametrize("mode", ["r", "r|"])
+@pytest.mark.parametrize("trailer_bytes", [0, 512])
+def test_capture_truncated_after_complete_manifest_is_rejected(
+    tmp_path: Path, mode: str, trailer_bytes: int
+) -> None:
+    """Payload hashes alone do not prove a structurally complete archive."""
+    import io
+    import tarfile
+
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(_home(tmp_path)).paths, archive)
+    with tarfile.open(archive) as tar:
+        manifest = tar.getmember(tc.CAPTURE_MANIFEST)
+        end = manifest.offset_data + ((manifest.size + 511) // 512) * 512
+    truncated = archive.read_bytes()[: end + trailer_bytes]
+    with tarfile.open(fileobj=io.BytesIO(truncated), mode=mode) as tar:
+        with pytest.raises(ValueError, match="tar end blocks"):
+            tc.read_capture(tar)
+
+
+@pytest.mark.parametrize("mode", ["r", "r|"])
+def test_capture_with_both_tar_end_blocks_is_complete(tmp_path: Path, mode: str) -> None:
+    import io
+    import tarfile
+
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(_home(tmp_path)).paths, archive)
+    with tarfile.open(archive) as tar:
+        manifest = tar.getmember(tc.CAPTURE_MANIFEST)
+        end = manifest.offset_data + ((manifest.size + 511) // 512) * 512
+    complete = archive.read_bytes()[: end + 1024]
+    with tarfile.open(fileobj=io.BytesIO(complete), mode=mode) as tar:
+        paths, nodes = tc.read_capture(tar)
+    assert not tc.verify(
+        paths,
+        tc.count_snapshot(nodes, [p.real for p in paths]),
+        snapshot_targets=[p.real for p in paths],
+    )

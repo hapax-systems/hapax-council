@@ -351,6 +351,15 @@ def read_capture(members) -> tuple[list[ResolvedPath], list[dict]]:
         nodes.append({"struct_type": "node", "path": "/" + member.name, "type": "file"})
     if manifest is None or not observed or observed != manifest.get("files"):
         raise ValueError("capture missing, truncated or differs from its file manifest")
+    # tarfile accepts EOF after complete members, even when the two zero end blocks
+    # are missing. Iteration consumed the first end block; require it and the second.
+    import tarfile
+
+    if (
+        members.fileobj.tell() != members.offset + tarfile.BLOCKSIZE
+        or members.fileobj.read(tarfile.BLOCKSIZE) != b"\0" * tarfile.BLOCKSIZE
+    ):
+        raise ValueError("capture missing complete tar end blocks")
     paths = [ResolvedPath(**p) for p in manifest["paths"]]
     for path in paths:
         if path.kind == "dir":
