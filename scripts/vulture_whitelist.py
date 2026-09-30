@@ -5460,3 +5460,8 @@ _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
 from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
 
 _EnvelopeOpenWatch.overflowed
+
+# The extensionless transcript CLI calls the consistent capture path; vulture only scans .py.
+from scripts.transcript_custody import capture_tar as _tc_capture_tar  # noqa: E402
+
+_ = _tc_capture_tar

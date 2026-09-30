@@ -19,6 +19,112 @@ import pytest
 from scripts import transcript_custody as tc
 
 
+def test_glmcp_stores_are_in_the_shared_table(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".glmcp-claude/projects").mkdir(parents=True)
+    (home / ".glmcp-claude/projects/session.jsonl").write_text("{}\n")
+    (home / ".glmcp-claude/history.jsonl").write_text("{}\n")
+    assert {p.declared for p in tc.resolve_paths(home).paths} == {
+        "~/.glmcp-claude/projects",
+        "~/.glmcp-claude/history.jsonl",
+    }
+
+
+def test_capture_preserves_committed_sqlite_wal_and_excludes_credentials(tmp_path: Path) -> None:
+    import sqlite3
+    import tarfile
+
+    home = _home(tmp_path)
+    database = home / ".codex/thread_history_1.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("CREATE TABLE messages (text TEXT)")
+        db.execute("INSERT INTO messages VALUES ('committed transcript')")
+        db.commit()
+        assert Path(str(database) + "-wal").stat().st_size > 0
+        archive = tmp_path / "capture.tar"
+        tc.capture_tar(tc.resolve_paths(home).paths, archive)
+    with tarfile.open(archive) as tar:
+        paths, nodes = tc.read_capture(tar)
+        assert tc.credential_nodes(nodes) == []
+        payload = tar.extractfile(str(database.resolve()).lstrip("/")).read()
+    restored = tmp_path / "restored.sqlite"
+    restored.write_bytes(payload)
+    with sqlite3.connect(restored) as db:
+        assert db.execute("SELECT text FROM messages").fetchall() == [("committed transcript",)]
+        assert db.execute("PRAGMA quick_check").fetchone() == ("ok",)
+    assert any(p.real == str(database.resolve()) for p in paths)
+
+
+def test_capture_fails_empty_and_nested_symlink_sources(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    folder = home / ".claude/projects"
+    folder.mkdir(parents=True)
+    with pytest.raises(ValueError, match="empty"):
+        tc.capture_tar(tc.resolve_paths(home).paths, tmp_path / "empty.tar")
+    (folder / "link").symlink_to(tmp_path / "absent")
+    with pytest.raises(ValueError, match="nested symlink"):
+        tc.capture_tar(tc.resolve_paths(home).paths, tmp_path / "link.tar")
+
+
+def test_capture_rejects_tampered_and_truncated_payloads(tmp_path: Path) -> None:
+    import io
+    import tarfile
+
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(_home(tmp_path)).paths, archive)
+    broken = tmp_path / "tampered.tar"
+    with tarfile.open(archive) as source, tarfile.open(broken, "w") as target:
+        for member in source:
+            data = source.extractfile(member).read()
+            if member.name != tc.CAPTURE_MANIFEST:
+                data = b"x" * len(data)
+            target.addfile(member, io.BytesIO(data))
+    with tarfile.open(broken) as tar, pytest.raises(ValueError, match="differs"):
+        tc.read_capture(tar)
+    with pytest.raises((ValueError, tarfile.TarError)):
+        with tarfile.open(fileobj=io.BytesIO(archive.read_bytes()[:100]), mode="r|") as tar:
+            tc.read_capture(tar)
+
+
+def test_cli_consistent_capture_is_backed_up_and_restored_by_restic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import argparse
+    import importlib.machinery
+    import importlib.util
+
+    if shutil.which("restic") is None:
+        pytest.skip("restic required for the real restore boundary")
+    source = Path(__file__).resolve().parents[1] / "scripts/hapax-transcript-custody"
+    loader = importlib.machinery.SourceFileLoader("custody_capture_cli", str(source))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    cli = importlib.util.module_from_spec(spec)
+    loader.exec_module(cli)
+    repository = tmp_path / "repository"
+    env = {
+        **os.environ,
+        "RESTIC_REPOSITORY": str(repository),
+        "RESTIC_PASSWORD": "synthetic-test-password",  # pragma: allowlist secret
+    }
+    subprocess.run(["restic", "init"], env=env, check=True, capture_output=True)
+    monkeypatch.setenv("RESTIC_REPOSITORY", str(repository))
+    monkeypatch.setenv("RESTIC_PASSWORD", "synthetic-test-password")  # pragma: allowlist secret
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_HOST", "synthetic-wsl-seat")
+    monkeypatch.delenv("HAPAX_TRANSCRIPT_REPOSITORY_MOUNT", raising=False)
+    monkeypatch.delenv("HAPAX_TRANSCRIPT_WINDOWS_HOSTS", raising=False)
+    monkeypatch.setattr(cli, "_mount_point", lambda _: str(tmp_path))
+    home = _home(tmp_path)
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+    assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=False)) == 0
+    assert cli.cmd_verify(argparse.Namespace(max_age_hours=26.0)) == 0
+    # A later loss of a harness store fails against the previous captured paths.
+    shutil.rmtree(home / ".grok/sessions")
+    assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=False)) == 0
+    assert cli.cmd_verify(argparse.Namespace(max_age_hours=26.0)) == 1
+
+
 def _home(tmp_path: Path) -> Path:
     """A fake home: Claude and Grok stores in place, Codex's store behind a symlink (podium's layout)."""
 

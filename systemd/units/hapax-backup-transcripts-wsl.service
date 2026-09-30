@@ -1,0 +1,19 @@
+[Unit]
+Description=WSL transcript custody through the existing encrypted NAS repository
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/share/hapax/transcript-custody/current/scripts/hapax-transcript-custody backup --capture
+ExecStart=/usr/bin/python3 %h/.local/share/hapax/transcript-custody/current/scripts/hapax-transcript-custody verify
+Environment=PATH=%h/.local/bin:/usr/bin:/bin
+Environment=RESTIC_REPOSITORY=sftp:hapax-appendix:/mnt/nas/backups/restic
+Environment=HAPAX_TRANSCRIPT_HOST=hapax-dextra-wsl-ubuntu24.04
+Nice=10
+IOSchedulingClass=idle
+MemoryHigh=512M
+MemoryMax=1G
+CPUQuota=50%
+TimeoutStartSec=30min
+UMask=0077

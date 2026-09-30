@@ -28,6 +28,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,10 @@ if str(REPO_ROOT) not in sys.path:
 from scripts import transcript_custody as tc  # noqa: E402
 
 DEFAULT_REPOSITORY = "/mnt/nas/backups/restic"
+
+
+def _local_host() -> str:
+    return os.environ.get("HAPAX_TRANSCRIPT_HOST") or socket.gethostname()
 
 
 def _mount_point(path: str) -> str:
@@ -273,6 +278,39 @@ def _backup_windows(dry_run: bool) -> int:
 
 def cmd_backup(args: argparse.Namespace) -> int:
     res = tc.resolve_paths(Path.home())
+    if res.problems:
+        for problem in res.problems:
+            print(f"hapax-transcript-custody: {problem}; {tc.REMEDY}", file=sys.stderr)
+        return 1
+    if args.capture:
+        if args.dry_run:
+            print(
+                json.dumps(
+                    {"host": _local_host(), "consistent_capture": [p.real for p in res.paths]}
+                )
+            )
+            return 0
+        with tempfile.TemporaryDirectory(prefix="hapax-transcript-capture-") as directory:
+            archive = Path(directory) / tc.CAPTURE_FILENAME
+            tc.capture_tar(res.paths, archive)
+            with archive.open("rb") as source:
+                proc = subprocess.run(
+                    [
+                        "restic",
+                        "backup",
+                        "--stdin",
+                        "--stdin-filename",
+                        tc.CAPTURE_FILENAME,
+                        "--host",
+                        _local_host(),
+                        "--tag",
+                        tc.SNAPSHOT_TAG,
+                    ],
+                    stdin=source,
+                    env=_restic_env(),
+                    check=False,
+                )
+        return 0 if proc.returncode == 0 else 1
     restic_args = tc.backup_args(res.paths)
     if args.dry_run:
         print(json.dumps(["restic", *restic_args]))
@@ -305,7 +343,7 @@ def _nodes(env: dict[str, str], snapshot_id: str) -> Iterator[dict]:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    host = socket.gethostname()
+    host = _local_host()
     env = _restic_env()
     res = tc.resolve_paths(Path.home())
     snapshots = sorted(
@@ -319,14 +357,18 @@ def cmd_verify(args: argparse.Namespace) -> int:
         )
         return 1
     cur, prev = snapshots[-1], (snapshots[-2] if len(snapshots) > 1 else None)
-    targets = list(cur.get("paths") or [])
-    prev_targets = list((prev or {}).get("paths") or [])
+    targets, nodes = _local_listing(env, cur)
+    prev_targets, prev_nodes = _local_listing(env, prev) if prev else ([], [])
+    expected = (
+        [p for p in res.paths if not p.real.endswith(("-wal", "-shm"))]
+        if _is_capture(cur)
+        else res.paths
+    )
     paths = sorted(set(targets) | set(prev_targets) | {p.real for p in res.paths})
-    nodes = list(_nodes(env, cur["id"]))
     current = tc.count_snapshot(nodes, paths)
-    previous = tc.count_snapshot(_nodes(env, prev["id"]), paths) if prev else None
+    previous = tc.count_snapshot(prev_nodes, paths) if prev else None
     failures = tc.verify(
-        res.paths,
+        expected,
         current,
         snapshot_targets=targets,
         previous=previous,
@@ -375,6 +417,31 @@ def cmd_verify(args: argparse.Namespace) -> int:
         "dropped, no credential"
     )
     return 1 if windows_failed else 0
+
+
+def _is_capture(snapshot: dict) -> bool:
+    return snapshot.get("paths") == ["/" + tc.CAPTURE_FILENAME]
+
+
+def _local_listing(env: dict[str, str], snapshot: dict) -> tuple[list[str], list[dict]]:
+    if not _is_capture(snapshot):
+        return list(snapshot.get("paths") or []), list(_nodes(env, snapshot["id"]))
+    proc = subprocess.Popen(
+        ["restic", "dump", "--no-lock", snapshot["id"], "/" + tc.CAPTURE_FILENAME],
+        env=env,
+        stdout=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    try:
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as archive:
+            paths, nodes = tc.read_capture(archive)
+        while proc.stdout.read(1 << 16):
+            pass
+    finally:
+        proc.stdout.close()
+    if proc.wait() != 0:
+        raise subprocess.CalledProcessError(proc.returncode, ["restic", "dump", snapshot["id"]])
+    return [p.real for p in paths], nodes
 
 
 def _tar_listing(env: dict[str, str], snapshot: dict) -> list[dict]:
@@ -505,6 +572,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     bak = sub.add_parser("backup")
     bak.add_argument("--dry-run", action="store_true")
+    bak.add_argument(
+        "--capture",
+        action="store_true",
+        help="capture SQLite consistently and verify every file hash before and after backup",
+    )
     ver = sub.add_parser("verify")
     ver.add_argument(
         "--max-age-hours",

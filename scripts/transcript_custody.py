@@ -76,6 +76,8 @@ class TranscriptPath:
 TRANSCRIPT_PATHS: tuple[TranscriptPath, ...] = (
     TranscriptPath("claude", ".claude/projects"),
     TranscriptPath("claude", ".claude/history.jsonl"),
+    TranscriptPath("claude-glmcp", ".glmcp-claude/projects"),
+    TranscriptPath("claude-glmcp", ".glmcp-claude/history.jsonl"),
     TranscriptPath("codex", ".codex/sessions"),
     TranscriptPath("codex", ".codex/archived_sessions"),
     TranscriptPath("codex", ".codex/history.jsonl"),
@@ -101,6 +103,8 @@ TRANSCRIPT_PATHS: tuple[TranscriptPath, ...] = (
 CREDENTIAL_PATTERNS: tuple[str, ...] = (
     "auth.json",
     ".credentials.json",
+    "auth.json*",
+    ".credentials.json*",
     "credentials.json",
     "credentials",
     "oauth_creds.json",
@@ -207,6 +211,134 @@ def backup_args(paths: Sequence[ResolvedPath], tag: str = SNAPSHOT_TAG) -> list[
         args += ["--exclude", pattern]
     args += [p.real for p in paths]
     return args
+
+
+CAPTURE_FILENAME = "transcripts-consistent.tar"
+CAPTURE_MANIFEST = "custody-manifest.json"
+
+
+def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
+    """Capture the same table into one verified tar; SQLite uses its online backup API.
+
+    The caller creates a private temporary directory and supplies a new archive path.
+    No symlink or credential enters it. An unreadable, empty or dangling source fails.
+    Only a completely written capture is passed to restic by the CLI.
+    """
+    import hashlib
+    import json
+    import shutil
+    import sqlite3
+    import tarfile
+    import tempfile
+    from contextlib import closing
+    from dataclasses import asdict
+
+    if not paths:
+        raise ValueError("no transcript paths to capture")
+    manifest = {"paths": [asdict(p) for p in paths], "files": {}}
+    with tempfile.TemporaryDirectory(dir=archive.parent) as staging:
+        stage = Path(staging)
+        with tarfile.open(archive, "x") as tar:
+            for target in paths:
+                source = Path(target.real)
+                files = sorted(source.rglob("*")) if target.kind == "dir" else [source]
+                count = 0
+                for item in files:
+                    if item.is_symlink():
+                        raise ValueError(f"nested symlink: {item}")
+                    if not item.is_file() or is_credential(item.name):
+                        continue
+                    # An opencode glob may include SQLite journals: the main database's
+                    # online capture already includes its committed WAL. Never copy a
+                    # sidecar independently into a supposedly consistent capture.
+                    if item.name.endswith(("-wal", "-shm")):
+                        continue
+                    name = str(item).lstrip("/")
+                    output = stage / name
+                    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    if item.suffix in (".sqlite", ".db"):
+                        with closing(sqlite3.connect(item.as_uri() + "?mode=ro", uri=True)) as db:
+                            with closing(sqlite3.connect(output)) as copy:
+                                db.backup(copy)
+                                if copy.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                                    raise ValueError(f"invalid SQLite capture: {item}")
+                                copy.execute("PRAGMA journal_mode=DELETE")
+                    else:
+                        shutil.copyfile(item, output)
+                    output.chmod(0o600)
+                    data = output.read_bytes()
+                    manifest["files"][name] = {
+                        "bytes": len(data),
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                    }
+                    tar.add(output, arcname=name, recursive=False)
+                    count += 1
+                if count < target.min_files and not target.real.endswith(("-wal", "-shm")):
+                    raise ValueError(f"empty transcript capture: {target.real}")
+            # Sidecars are not standalone targets; their main SQLite capture is the witness.
+            manifest["paths"] = [
+                p for p in manifest["paths"] if not p["real"].endswith(("-wal", "-shm"))
+            ]
+            info = tarfile.TarInfo(CAPTURE_MANIFEST)
+            data = json.dumps(manifest).encode()
+            info.size = len(data)
+            info.mode = 0o600
+            import io
+
+            tar.addfile(info, io.BytesIO(data))
+        with tarfile.open(archive) as tar:
+            read_capture(tar)
+
+
+def read_capture(members) -> tuple[list[ResolvedPath], list[dict]]:
+    """Read every captured byte, verify its manifest hash, and return existing verifier inputs."""
+    import hashlib
+    import json
+    from pathlib import PurePosixPath
+
+    manifest = None
+    observed = {}
+    nodes = []
+    for member in members:
+        path = PurePosixPath(member.name)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or not member.isfile()
+            or is_credential(path.name)
+        ):
+            raise ValueError(f"unsafe capture member: {member.name}")
+        if member.name in observed:
+            raise ValueError(f"duplicate capture member: {member.name}")
+        handle = members.extractfile(member)
+        if handle is None:
+            raise ValueError(f"unreadable capture member: {member.name}")
+        if member.name == CAPTURE_MANIFEST:
+            if manifest is not None:
+                raise ValueError("duplicate capture manifest")
+            manifest = json.load(handle)
+            continue
+        digest = hashlib.sha256()
+        size = 0
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+            size += len(block)
+        observed[member.name] = {"bytes": size, "sha256": digest.hexdigest()}
+        nodes.append({"struct_type": "node", "path": "/" + member.name, "type": "file"})
+    if manifest is None or not observed or observed != manifest.get("files"):
+        raise ValueError("capture missing, truncated or differs from its file manifest")
+    paths = [ResolvedPath(**p) for p in manifest["paths"]]
+    for path in paths:
+        if path.kind == "dir":
+            nodes.append({"struct_type": "node", "path": path.real, "type": "dir"})
+    failures = verify(
+        paths,
+        count_snapshot(nodes, [p.real for p in paths]),
+        snapshot_targets=[p.real for p in paths],
+    )
+    if failures:
+        raise ValueError("; ".join(failures))
+    return paths, nodes
 
 
 @dataclass
