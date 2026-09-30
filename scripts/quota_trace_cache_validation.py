@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Mutation-check the quota accelerator in the existing disposable source overlay.
 
-Use TMPDIR=/store-fast/tmp uv run --no-sync python scripts/check-quota-trace-cache-mutations.py.
+Use TMPDIR=/store-fast/tmp uv run --no-sync python scripts/check-quota-headroom-mutations.py --trace-cache.
 Each break must fail an assertion, restore exact source bytes, then pass its test.
 """
 

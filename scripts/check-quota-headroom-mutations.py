@@ -1136,8 +1136,24 @@ def run_mutant(work: Path, logs: Path, mutant: tuple[str, str, str, str, str]) -
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--jobs", type=int, default=4, help="parallel overlays")
+    trace = parser.add_mutually_exclusive_group()
+    trace.add_argument("--trace-cache", action="store_true", help="verify trace cache mutations")
+    trace.add_argument(
+        "--trace-cache-measure", action="store_true", help="bounded read-only real-trace replay"
+    )
     parser.add_argument("names", nargs="*", help="run only these mutants (default: all)")
     args = parser.parse_args(argv)
+    if args.trace_cache or args.trace_cache_measure:
+        if args.names:
+            parser.error("trace-cache modes do not take headroom mutant names")
+        sys.path.insert(0, str(ROOT))
+        if args.trace_cache:
+            from scripts.quota_trace_cache_validation import main as verify_trace_cache
+
+            return verify_trace_cache()
+        from scripts.quota_trace_cache_measurement import main as measure_trace_cache
+
+        return measure_trace_cache([])
     selected = [m for m in MUTANTS if not args.names or m[0] in args.names]
     unknown = set(args.names) - {m[0] for m in MUTANTS}
     if unknown or len({m[0] for m in MUTANTS}) != len(MUTANTS):

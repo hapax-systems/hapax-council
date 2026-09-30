@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bounded read-only replay of real Codex traces; never an installed-effect claim.
 
-Example: TMPDIR=/store-fast/tmp uv run --no-sync python scripts/measure-quota-trace-cache.py
+Use the --trace-cache-measure mode of scripts/check-quota-headroom-mutations.py.
 Uses stable files, at most 64 MiB / 32 files; stores private hashes/results on /store-fast.
 Does not invoke the live writer, probe providers, mint receipts or change original traces.
 """
@@ -100,13 +100,13 @@ def measure(reader, sessions, *, now, **kwargs):
     }
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sessions", type=Path, default=Path.home() / ".codex/sessions")
     parser.add_argument("--max-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--max-files", type=int, default=32)
     parser.add_argument("--baseline-ref", default="HEAD")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not 0 < args.max_bytes <= 64 * 1024 * 1024 or not 0 < args.max_files <= 32:
         parser.error("replay is bounded to 64 MiB and 32 files")
     # Admission for this optional experiment: avoid adding reads during the incident.
