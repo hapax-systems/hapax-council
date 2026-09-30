@@ -2,5 +2,7 @@
   "shared.some_library_module",
   "scripts/check-new-module-consumers.py",
   "shared.sdlc_close",
-  "shared.methodology_dispatch_carrier"
+  "shared.methodology_dispatch_carrier",
+  "scripts/render_principal_a2_demo_v2.py",
+  "scripts/render_principal_c1_demo.py"
 ]
