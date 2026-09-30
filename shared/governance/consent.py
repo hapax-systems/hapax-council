@@ -13,6 +13,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -112,6 +113,23 @@ class _CorrespondenceSnapshot:
 
     def resolve_contract_id(self, candidate: str) -> str:
         return self.contracts.get(candidate, candidate)
+
+    def predecessor_labels(self, principal_id: str) -> frozenset[str]:
+        """Private matching terms for one principal; never export or audit them."""
+        canonical = self.resolve_principal_id(principal_id)
+        return frozenset(
+            label for label, successor in self.principals.items() if successor == canonical
+        )
+
+    def mentioned_principal_ids(self, content: str) -> frozenset[str]:
+        """Recognize both identity spellings independently of active consent."""
+        matching_content = content.lower()
+        return frozenset(
+            canonical
+            for label, canonical in self.principals.items()
+            for spelling in (label, canonical)
+            if re.search(r"\b" + re.escape(spelling) + r"\b", matching_content, re.IGNORECASE)
+        )
 
     def contains_predecessor(self, text: str) -> bool:
         """Classify diagnostics without exporting private correspondence."""
