@@ -1,0 +1,22 @@
+[Unit]
+Description=Private operator desktop clipboard endpoint
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/share/hapax/clipboard/hapax_clip_wayland.py
+UMask=0077
+RuntimeDirectory=hapax-clipboard
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+LimitCORE=0
+MemoryMax=256M
+MemorySwapMax=0
+TasksMax=32
+CPUQuota=25%
+Restart=no
+TimeoutStopSec=5
+
+[Install]
+WantedBy=graphical-session.target
