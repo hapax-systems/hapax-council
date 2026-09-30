@@ -1137,3 +1137,41 @@ def test_the_unit_names_the_windows_puller_and_hosts() -> None:
     unit = (_REPO / "systemd/units/hapax-backup-transcripts.service").read_text(encoding="utf-8")
     assert 'Environment="HAPAX_TRANSCRIPT_WINDOWS_HOSTS=hapax-dextra hapax-talus"\n' in unit
     assert "Environment=HAPAX_TRANSCRIPT_WINDOWS_PULLER=hapax-appendix\n" in unit
+
+
+@pytest.mark.parametrize("valid_tar", [True, False])
+def test_cli_verify_reports_failed_capture_dump(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    valid_tar: bool,
+) -> None:
+    """A failed transport or unreadable archive must fail verify with a remedy, even after valid tar bytes."""
+    import io
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    cli = _cli_module()
+    home = _home(tmp_path)
+    resolution = tc.resolve_paths(home)
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(resolution.paths, archive)
+    snapshot = {
+        "id": "failed-dump",
+        "paths": ["/" + tc.CAPTURE_FILENAME],
+        "time": datetime.now(UTC).isoformat(),
+    }
+    process = SimpleNamespace(
+        stdout=io.BytesIO(archive.read_bytes() if valid_tar else b"unreadable archive"),
+        returncode=7,
+        wait=lambda: 7,
+    )
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(cli, "_restic_json", lambda *_args: json.dumps([snapshot]))
+    monkeypatch.setattr(cli.tc, "resolve_paths", lambda _home: resolution)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    assert cli.cmd_verify(SimpleNamespace(max_age_hours=26)) == 1
+    error = capsys.readouterr().err
+    assert "snapshot read failed" in error and tc.REMEDY in error
+    assert "Traceback" not in error
+    assert process.stdout.closed

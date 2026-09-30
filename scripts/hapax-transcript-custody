@@ -364,8 +364,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
         )
         return 1
     cur, prev = snapshots[-1], (snapshots[-2] if len(snapshots) > 1 else None)
-    targets, nodes = _local_listing(env, cur)
-    prev_targets, prev_nodes = _local_listing(env, prev) if prev else ([], [])
+    try:
+        targets, nodes = _local_listing(env, cur)
+        prev_targets, prev_nodes = _local_listing(env, prev) if prev else ([], [])
+    except (subprocess.CalledProcessError, OSError, ValueError, tarfile.TarError) as exc:
+        print(
+            f"hapax-transcript-custody: snapshot read failed: {exc}; {tc.REMEDY}", file=sys.stderr
+        )
+        return 1
     expected = (
         [p for p in res.paths if not p.real.endswith(("-wal", "-shm"))]
         if _is_capture(cur)
@@ -446,7 +452,8 @@ def _local_listing(env: dict[str, str], snapshot: dict) -> tuple[list[str], list
             pass
     finally:
         proc.stdout.close()
-    if proc.wait() != 0:
+        proc.wait()
+    if proc.returncode != 0:
         raise subprocess.CalledProcessError(proc.returncode, ["restic", "dump", snapshot["id"]])
     return [p.real for p in paths], nodes
 

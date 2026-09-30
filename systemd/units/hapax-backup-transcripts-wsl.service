@@ -1,7 +1,5 @@
 [Unit]
 Description=WSL transcript custody through the existing encrypted NAS repository
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=oneshot
