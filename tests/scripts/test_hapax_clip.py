@@ -1,213 +1,432 @@
-"""Red-first pins for hapax-clip formatting, receipts, and route refusal."""
-
-from __future__ import annotations
+"""Clipboard authority, literal-text, privacy and bounded transport regressions."""
 
 import base64
-import importlib.util
 import json
-import subprocess
+import os
+import socket
+import struct
 import sys
+import time
+import uuid
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-MODULE = REPO / "scripts" / "hapax_clip.py"
+import pytest
 
+SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+import hapax_clip as clip
 
-def load():
-    spec = importlib.util.spec_from_file_location("hapax_clip", MODULE)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-PAYLOAD = b"cat <<'EOF'\necho \"quoted 'mix'\"\nEOF\n"
-
-
-def test_shell_round_trip_is_byte_exact() -> None:
-    clip = load()
-    pasted = clip.format_shell(PAYLOAD)
-    assert pasted.count("\n") >= 1
-    command = [line for line in pasted.splitlines() if line.startswith("echo ")][0]
-    encoded = command.split()[1]
-    assert base64.b64decode(encoded) == PAYLOAD
-    assert "sha256=" in pasted.splitlines()[0]
-
-
-def test_crlf_normalises_to_lf_and_back() -> None:
-    clip = load()
-    mixed = b"one\r\ntwo\nthree\r"
-    assert clip.normalise_newlines(mixed, b"\n") == b"one\ntwo\nthree\n"
-    assert clip.normalise_newlines(mixed, b"\r\n") == b"one\r\ntwo\r\nthree\r\n"
-
-
-def test_pwsh_encoded_command_round_trips() -> None:
-    clip = load()
-    pasted = clip.format_pwsh(PAYLOAD)
-    command = [line for line in pasted.splitlines() if "EncodedCommand" in line][0]
-    encoded = command.split()[-1]
-    assert base64.b64decode(encoded).decode("utf-16le").encode("utf-8") == PAYLOAD
-    assert command.startswith("powershell -NoProfile -EncodedCommand ")
-
-
-def test_resolver_refuses_with_a_next_action() -> None:
-    clip = load()
-    try:
-        clip.resolve_route("missing-host", probes=[lambda _target: None])
-    except clip.RouteUnavailable as exc:
-        assert "Next action:" in str(exc)
-    else:
-        raise AssertionError("resolver returned a route")
-
-
-def _record(tmp_path: Path, secret: bytes) -> dict:
-    clip = load()
-    path = tmp_path / "receipts.jsonl"
-    clip.append_receipt(
-        path,
-        when="2026-09-26T00:00:00Z",
-        target="steamdeck",
-        route="kdeconnect",
-        mode="shell",
-        digest=clip.sha256_hex(secret),
-        nbytes=len(secret),
-        content=secret,
-    )
-    record = json.loads(path.read_text())
-    assert set(record) == {"time", "target", "route", "mode", "sha256", "bytes"}
-    assert all(value != secret.decode("utf-8", "replace") for value in record.values())
-    return record
-
-
-def test_receipt_records_the_digest_and_not_the_content(tmp_path: Path) -> None:
-    clip = load()
-    record = _record(tmp_path, b"super-secret-payload")
-    assert record["sha256"] == clip.sha256_hex(b"super-secret-payload")
-    assert record["bytes"] == len(b"super-secret-payload")
-    assert record["target"] == "steamdeck"
-
-
-def test_receipt_accepts_a_short_payload(tmp_path: Path) -> None:
-    for secret in (b"e", b"true", b"ab"):
-        _record(tmp_path / secret.decode(), secret)
-
-
-LISTING = (
-    "- steamdeck: abcdef0123456789 on 192.168.68.94 via LAN (paired and reachable)\n"
-    "- bazzite: bbbbbbbbbbbbbbbb on  via  (paired)\n"
+ENDPOINT = str(uuid.uuid4())
+EPOCH = str(uuid.uuid4())
+PAYLOAD = "λ 🔒\r\n' \" ` $(touch /tmp/never) ;\n".encode()
+HOST_KEY = (
+    "ssh-ed25519 "
+    + base64.b64encode(b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00 " + bytes(32)).decode()
 )
 
 
-def _completed(
-    argv: list[str], text: str | None = None, code: int = 0, stdout: str = ""
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(argv, code, stdout, "share failed")
+def endpoint():
+    return dict(
+        platform="wayland",
+        host="100.64.0.1",  # pragma: allowlist secret -- synthetic routing fixture
+        user="operator",
+        host_key=HOST_KEY,
+        endpoint=ENDPOINT,
+        principal=str(os.getuid()),
+    )
 
 
-def test_kde_probe_uses_a_paired_reachable_device() -> None:
-    clip = load()
+def request(data=PAYLOAD):
+    return dict(
+        v=1,
+        id=str(uuid.uuid4()),
+        op="set",
+        endpoint=ENDPOINT,
+        session="4",
+        epoch=EPOCH,
+        bytes=len(data),
+        sha256=clip.digest(data),
+        data=base64.b64encode(data).decode(),
+    )
 
-    def run(argv: list[str], text: str | None = None) -> subprocess.CompletedProcess[str]:
-        return _completed(argv, text, stdout=LISTING)
 
-    route = clip.kde_probe("steamdeck", hosts=("podium",), run=run)
-    assert route is not None
-    assert route.kind == "kdeconnect"
-    assert route.via == "podium"
-    assert clip.kde_probe("bazzite", hosts=("podium",), run=run) is None
+def ack(q):
+    return {k: q[k] for k in ("v", "id", "endpoint", "session", "epoch", "bytes", "sha256")} | {
+        "principal": str(os.getuid()),
+        "history_excluded": True,
+    }
 
 
-def test_push_kde_failure_names_the_next_action() -> None:
-    clip = load()
-    route = clip.Route("kdeconnect", "podium", "steamdeck abcdef0123456789")
+@pytest.mark.parametrize("data", [PAYLOAD, b"", b"a\r\nb\nc\r", b"a" * clip.MAX_TEXT])
+def test_literal_default_and_protocol_exact(data):
+    assert clip.render(data) == data
+    assert (
+        clip.validate_request(clip.decode_json(clip.encode_json(request(data))), ENDPOINT) == data
+    )
 
-    def run(argv: list[str], text: str | None = None) -> subprocess.CompletedProcess[str]:
-        return _completed(argv, text, code=1)
 
-    try:
-        clip.push_kde(route, "payload", run=run)
-    except clip.RouteUnavailable as exc:
-        assert "Next action:" in str(exc)
+@pytest.mark.parametrize("data", [b"\xff", b"a\x00b", b"a" * (clip.MAX_TEXT + 1), b"\xed\xa0\x80"])
+def test_unrepresentable_or_oversized_text_refused(data):
+    with pytest.raises(clip.ClipError):
+        clip.render(data)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        dict(v=True),
+        dict(v=2),
+        dict(id="bad"),
+        dict(epoch="bad"),
+        dict(op="exec"),
+        dict(endpoint=str(uuid.uuid4())),
+        dict(session="-oProxyCommand=x"),
+        dict(bytes=True),
+        dict(bytes=-1),
+        dict(bytes=999),
+        dict(sha256="bad"),
+        dict(data="%%%"),
+        dict(data="YWJj\n"),
+        dict(extra="ignored"),
+    ],
+)
+def test_protocol_refuses_malformed_identity_or_integrity(change):
+    with pytest.raises(clip.ClipError):
+        clip.validate_request(request() | change, ENDPOINT)
+
+
+@pytest.mark.parametrize("raw", [b'{"v":1,"v":1}', b"[]", b"null", b"\xff", b"{", b"a" * 1500001])
+def test_json_refuses_duplicates_nonobjects_or_oversize(raw):
+    with pytest.raises(clip.ClipError):
+        clip.decode_json(raw)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        dict(id=str(uuid.uuid4())),
+        dict(endpoint=str(uuid.uuid4())),
+        dict(principal="other"),
+        dict(session="5"),
+        dict(epoch=str(uuid.uuid4())),
+        dict(bytes=0),
+        dict(sha256="bad"),
+        dict(history_excluded=False),
+        dict(extra="unsafe"),
+    ],
+)
+def test_ack_bound_to_enrollment_session_nonce_and_actual_bytes(change):
+    q = request()
+    good = ack(q)
+    clip.validate_ack(good, q, endpoint(), good)
+    with pytest.raises(clip.ClipError):
+        clip.validate_ack(good | change, q, endpoint(), good)
+
+
+def test_describe_is_not_a_write():
+    q = dict(v=1, id=str(uuid.uuid4()), op="describe", endpoint=ENDPOINT)
+    assert clip.validate_request(q, ENDPOINT) is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        dict(host="-oProxyCommand=x"),
+        dict(host="a;touch /tmp/x"),
+        dict(host="a b"),
+        dict(user="-root"),
+        dict(user="x;bad"),
+        dict(principal="no"),
+        dict(endpoint="not-enrolled"),
+        dict(platform="kdeconnect"),
+        dict(host_key="ssh-rsa AAAA"),
+        dict(identity_file="relative"),
+        dict(extra=True),
+    ],
+)
+def test_enrollment_rejects_option_shell_injection_or_unsupported_binding(tmp_path, change):
+    path = tmp_path / "enrollment.json"
+    path.write_text(json.dumps(dict(v=1, endpoints={"client": endpoint() | change})))
+    path.chmod(384)
+    with pytest.raises((clip.ClipError, OSError)):
+        clip.load_endpoints(path)
+
+
+def test_route_uses_pinned_key_and_fixed_commands_no_payload_argv(tmp_path):
+    for platform in ("wayland", "windows"):
+        argv = clip.ssh_argv(endpoint() | {"platform": platform}, tmp_path / "pin")
+        joined = " ".join(argv)
+        assert "StrictHostKeyChecking=yes" in joined
+        assert "GlobalKnownHostsFile=/dev/null" in joined
+        assert "HostKeyAlias=hapax-clip-" + ENDPOINT in joined
+        assert PAYLOAD.decode() not in joined
+        assert base64.b64encode(PAYLOAD).decode() not in joined
+        assert "ForwardAgent=no" in joined
+
+
+def test_delivery_checks_two_independent_request_ids_and_transports_only_stdin(monkeypatch):
+    seen = []
+
+    def run(argv, raw):
+        q = clip.decode_json(raw[4:])
+        seen.append((argv, q))
+        reply = dict(
+            v=1, id=q["id"], endpoint=ENDPOINT, session="4", epoch=EPOCH, principal=str(os.getuid())
+        )
+        if q["op"] == "set":
+            assert clip.validate_request(q, ENDPOINT) == PAYLOAD
+            reply.update(bytes=len(PAYLOAD), sha256=clip.digest(PAYLOAD), history_excluded=True)
+        return clip.encode_json(reply)
+
+    monkeypatch.setattr(clip, "bounded_run", run)
+    assert clip.deliver(endpoint(), PAYLOAD)["sha256"] == clip.digest(PAYLOAD)
+    assert [q["op"] for _, q in seen] == ["describe", "set"]
+    assert seen[0][1]["id"] != seen[1][1]["id"]
+    assert all((PAYLOAD.decode() not in " ".join(argv) for argv, _ in seen))
+
+
+def test_receipt_private_and_contains_no_payload(tmp_path):
+    path = tmp_path / "private" / "receipt.jsonl"
+    record = {k: v for k, v in ack(request()).items() if k != "data"}
+    clip.receipt(path, record)
+    assert json.loads(path.read_text()) == record
+    assert PAYLOAD not in path.read_bytes()
+    assert path.stat().st_mode & 511 == 384
+    assert path.parent.stat().st_mode & 511 == 448
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "public"])
+def test_unsafe_receipt_file_refused(tmp_path, kind):
+    directory = tmp_path / "private"
+    directory.mkdir(mode=448)
+    target = directory / "other"
+    target.write_bytes(b"untouched")
+    target.chmod(384)
+    path = directory / "receipt"
+    if kind == "symlink":
+        path.symlink_to(target)
+    elif kind == "hardlink":
+        os.link(target, path)
     else:
-        raise AssertionError("share failure returned")
+        path.write_bytes(b"untouched")
+        path.chmod(420)
+    with pytest.raises((clip.ClipError, OSError)):
+        clip.receipt(path, {"v": 1})
+    assert target.read_bytes() == b"untouched"
 
 
-HAZARD = "cat <<'EOF'\necho \"quoted 'mix'\" | tee /tmp/x\nEOF\n"
+def test_private_enrollment_symlink_refused(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("{}")
+    target.chmod(384)
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    with pytest.raises(OSError):
+        clip.read_private(link)
 
 
-def test_kde_via_ssh_round_trips_a_hostile_payload_on_stdin() -> None:
-    clip = load()
-    raw = HAZARD.encode()
-    pasted = clip.format_shell(raw)
-    assert " " in HAZARD and "'" in HAZARD and '"' in HAZARD
-    assert "|" in HAZARD and "\n" in HAZARD and "<<" in HAZARD
-    seen: dict[str, object] = {}
-
-    def run(argv: list[str], text: str | None = None) -> subprocess.CompletedProcess[str]:
-        seen["argv"] = argv
-        seen["text"] = text
-        return _completed(argv, text, code=0)
-
-    route = clip.Route("kdeconnect", "hapax-podium.local", "steamdeck abcdef0123456789")
-    clip.push_kde(route, pasted, run=run)
-    argv = seen["argv"]
-    assert isinstance(argv, list)
-    joined = " ".join(argv)
-    assert pasted not in joined
-    assert seen["text"] == pasted
-    encoded = [line for line in pasted.splitlines() if line.startswith("echo ")][0].split()[1]
-    assert base64.b64decode(encoded) == raw
+def test_bounded_transport_roundtrip_and_no_stderr_leak():
+    program = 'import sys; d=sys.stdin.buffer.read(); sys.stderr.write("secret"); sys.stdout.buffer.write(d)'
+    assert clip.bounded_run([sys.executable, "-c", program], PAYLOAD, maximum=1000) == PAYLOAD
 
 
-def test_unreadable_file_names_the_next_action(tmp_path: Path, capsys) -> None:
-    clip = load()
-    missing = tmp_path / "missing.txt"
-    directory = tmp_path / "adir"
-    directory.mkdir()
-    for target in (str(missing), str(directory)):
-        assert clip.main(["nowhere", target]) == 1
-        assert "Next action:" in capsys.readouterr().err
+@pytest.mark.parametrize(
+    "program,data,maximum",
+    [
+        ("import time; time.sleep(3)", b"a" * clip.MAX_REQUEST, 100),
+        ('import sys; sys.stdout.buffer.write(b"a"*1000000)', b"", 100),
+        ('import sys; sys.stderr.write("secret"); sys.exit(1)', b"", 100),
+    ],
+    ids=["blocked-stdin", "overflow", "error"],
+)
+def test_transport_timeout_overflow_failure_bounded_without_payload_error(program, data, maximum):
+    before = time.monotonic()
+    with pytest.raises(clip.ClipError) as error:
+        clip.bounded_run([sys.executable, "-c", program], data, maximum=maximum, timeout=0.15)
+    assert time.monotonic() - before < 1.5
+    assert "secret" not in str(error.value)
 
 
-def test_raw_windows_kde_device_uses_crlf() -> None:
-    clip = load()
-    windows = clip.Route("kdeconnect", "podium", "WIN-C2ANEVBHN6Q abc")
-    linux = clip.Route("kdeconnect", "podium", "steamdeck abc")
-    assert clip.newline_for("raw", windows) == b"\r\n"
-    assert clip.normalise_newlines(b"a\nb\n", b"\r\n") == b"a\r\nb\r\n"
-    assert clip.newline_for("raw", linux) == b"\n"
-    assert clip.newline_for("shell", windows) == b"\n"
+def test_framed_ipc_truncation_and_oversize_refused():
+    for raw in (struct.pack("!I", 10000000), struct.pack("!I", 9) + b"a"):
+        a, b = socket.socketpair()
+        with a, b:
+            a.settimeout(0.1)
+            b.sendall(raw)
+            b.shutdown(socket.SHUT_WR)
+            with pytest.raises(clip.ClipError):
+                clip.read_frame(a, 100)
 
 
-def test_help_labels_route_b_not_live_proven(capsys) -> None:
-    clip = load()
+def test_framed_ipc_roundtrip():
+    a, b = socket.socketpair()
+    with a, b:
+        clip.send_frame(a, PAYLOAD)
+        assert clip.read_frame(b, 1000) == PAYLOAD
+
+
+def test_cli_failures_do_not_print_payload_or_encoding(tmp_path, capsys):
+    path = tmp_path / "input"
+    path.write_bytes(PAYLOAD)
+    assert clip.main(["unknown", str(path), "--config", str(tmp_path / "missing")]) == 1
+    result = capsys.readouterr()
+    assert "Next action:" in result.err and (not result.out)
+    assert (
+        PAYLOAD.decode() not in result.err and base64.b64encode(PAYLOAD).decode() not in result.err
+    )
+
+
+def test_explicit_wrapping_never_adds_preview():
+    shell = clip.render(PAYLOAD, "shell")
+    pwsh = clip.render(PAYLOAD, "pwsh")
+    assert PAYLOAD not in shell and PAYLOAD not in pwsh
+    assert base64.b64decode(shell.decode().split("'")[3]) == PAYLOAD
+    assert base64.b64decode(pwsh.split()[-1]).decode("utf-16le").encode() == PAYLOAD
+
+
+def test_framed_stdin_finishes_without_waiting_for_eof():
+    import io
+
+    raw = clip.encode_json({"op": "describe"})
+    handle = io.BytesIO(clip.encode_frame(raw) + b"untouched-after-frame")
+    assert clip.read_input_frame(handle) == raw
+    assert handle.read() == b"untouched-after-frame"
+    for broken in (b"\x00", struct.pack("!I", clip.MAX_REQUEST + 1), struct.pack("!I", 10) + b"{}"):
+        with pytest.raises(clip.ClipError):
+            clip.read_input_frame(io.BytesIO(broken))
+
+
+@pytest.mark.parametrize("change", [{"v": True}, {"bytes": True}, {"bytes": 1.0}])
+def test_ack_rejects_boolean_or_float_protocol_integers(change):
+    q = request(b"x")
+    with pytest.raises(clip.ClipError):
+        clip.validate_ack(ack(q) | change, q, endpoint())
+
+
+def test_successful_cli_receipt_omits_payload_and_content_fingerprint(
+    tmp_path, monkeypatch, capsys
+):
+    source = tmp_path / "input"
+    source.write_bytes(PAYLOAD)
+    output = tmp_path / "private" / "receipt.jsonl"
+    monkeypatch.setattr(clip, "load_endpoints", lambda path: {"client": endpoint()})
+
+    def deliver(item, data):
+        return ack(request(data))
+
+    monkeypatch.setattr(clip, "deliver", deliver)
+    assert clip.main(["client", str(source), "--receipt", str(output)]) == 0
+    public = capsys.readouterr().out
+    assert "sha256" not in public and clip.digest(PAYLOAD) not in public
+    assert PAYLOAD.decode() not in public and base64.b64encode(PAYLOAD).decode() not in public
+    assert "sha256" not in output.read_text()
+
+
+def test_launcher_symlink_resolves_accepted_source_not_local_copy(tmp_path):
+    import subprocess
+
+    launcher = tmp_path / "hapax-clip"
+    launcher.symlink_to(SCRIPTS / "hapax-clip")
+    result = subprocess.run([str(launcher), "--help"], capture_output=True, timeout=5)
+    assert result.returncode == 0 and b"Exact enrolled name" in result.stdout
+    assert not (tmp_path / "hapax_clip.py").exists()
+
+
+@pytest.fixture
+def actual_clipboard_predecessor():
+    import subprocess
+    import types
+
+    commit = "2c94fef2741ef9e0f0fca7b45f08eb3f4b20986a"  # pragma: allowlist secret -- public predecessor Git commit
+    result = subprocess.run(
+        ["git", "show", commit + ":scripts/hapax_clip.py"],
+        cwd=SCRIPTS.parent,
+        capture_output=True,
+        timeout=5,
+    )
+    if result.returncode:
+        pytest.skip("Actual PR4796 Git object absent; fetch predecessor history to reproduce")
+    module = types.ModuleType("actual_clipboard_predecessor")
+    sys.modules[module.__name__] = module
     try:
-        clip.main(["--help"])
-    except SystemExit as exc:
-        assert exc.code == 0
-    else:
-        raise AssertionError("help did not exit")
-    output = capsys.readouterr().out
-    assert "not live-proven" in output
-    assert "Route (b)" in output
+        exec(compile(result.stdout, "git:" + commit, "exec"), module.__dict__)
+        yield module
+    finally:
+        sys.modules.pop(module.__name__, None)
 
 
-def test_linux_probe_and_push_failure() -> None:
-    clip = load()
+def test_actual_predecessor_changed_mixed_newlines(actual_clipboard_predecessor):
+    old = actual_clipboard_predecessor
+    assert old.render(PAYLOAD, "raw", b"\n").encode() != PAYLOAD
+    assert clip.render(PAYLOAD) == PAYLOAD
 
-    def present(argv: list[str], text: str | None = None) -> subprocess.CompletedProcess[str]:
-        return _completed(argv, text, code=0)
 
-    def missing(argv: list[str], text: str | None = None) -> subprocess.CompletedProcess[str]:
-        return _completed(argv, text, code=1)
+def test_actual_predecessor_default_wrapped_and_disclosed_input(
+    actual_clipboard_predecessor, tmp_path, monkeypatch, capsys
+):
+    old = actual_clipboard_predecessor
+    source = tmp_path / "nonsecret-fixture"
+    source.write_bytes(PAYLOAD)
+    captured = []
+    monkeypatch.setattr(
+        old, "resolve_route", lambda *args: old.Route("kdeconnect", "local", "fixture")
+    )
+    monkeypatch.setattr(old, "deliver", lambda route, text: captured.append(text.encode()))
+    assert old.main(["fixture", str(source), "--receipt", str(tmp_path / "old.jsonl")]) == 0
+    public = capsys.readouterr().out
+    assert captured != [PAYLOAD]
+    assert clip.digest(PAYLOAD) in public
+    assert base64.b64encode(PAYLOAD).decode() in public
+    assert clip.render(PAYLOAD) == PAYLOAD
 
-    route = clip.linux_probe("hapax-podium.local", run=present)
-    assert route is not None and route.kind == "linux-clipboard"
-    assert clip.linux_probe("hapax-podium.local", run=missing) is None
+
+def test_actual_predecessor_receipt_followed_symlink(actual_clipboard_predecessor, tmp_path):
+    old = actual_clipboard_predecessor
+    target = tmp_path / "owned-fixture"
+    target.write_bytes(b"unchanged")
+    target.chmod(0o600)
+    link = tmp_path / "receipt"
+    link.symlink_to(target)
+    old.append_receipt(
+        link,
+        when="fixture",
+        target="fixture",
+        route="fixture",
+        mode="raw",
+        digest=clip.digest(PAYLOAD),
+        nbytes=len(PAYLOAD),
+        content=PAYLOAD,
+    )
+    assert target.read_bytes() != b"unchanged"
+    target.write_bytes(b"unchanged")
+    with pytest.raises((clip.ClipError, OSError)):
+        clip.receipt(link, {"v": 1})
+    assert target.read_bytes() == b"unchanged"
+
+
+def test_named_pipe_receipt_refused_without_blocking(tmp_path):
+    import subprocess
+
+    path = tmp_path / "receipt-fifo"
+    os.mkfifo(path, 0o600)
+    program = """import sys
+from pathlib import Path
+import hapax_clip as clip
+try:
+    clip.receipt(Path(sys.argv[1]), {"v": 1})
+except (clip.ClipError, OSError):
+    raise SystemExit(0)
+raise SystemExit(1)
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", program, str(path)],
+        env=dict(os.environ, PYTHONPATH=str(SCRIPTS)),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     try:
-        clip.push_linux(route, "payload", run=missing)
-    except clip.RouteUnavailable as exc:
-        assert "Next action:" in str(exc)
-    else:
-        raise AssertionError("clipboard failure returned")
+        assert child.wait(timeout=1) == 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=1)
