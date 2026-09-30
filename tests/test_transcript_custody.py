@@ -1199,3 +1199,73 @@ def test_local_resolution_failure_keeps_legacy_windows_puller(
     monkeypatch.setattr(cli, "_backup_windows", lambda **kwargs: windows_runs.append(kwargs) or 0)
     assert cli.cmd_backup(SimpleNamespace(capture=capture, dry_run=False)) == 1
     assert len(local_runs) == len(windows_runs) == (0 if capture else 1)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "credentials.json.bak",
+        "credentials~",
+        "oauth_creds.json.old",
+        "google_accounts.json.backup",
+        "antigravity-oauth-token.save",
+        ".env.backup",
+        "private.key.old",
+        "private.pem.bak",
+        "session.token.save",
+    ],
+)
+def test_all_credential_basename_variants_are_excluded(tmp_path: Path, name: str) -> None:
+    import tarfile
+
+    home = _home(tmp_path)
+    (home / ".claude/projects" / name).write_text("synthetic excluded fixture")
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(home).paths, archive)
+    with tarfile.open(archive) as tar:
+        _, nodes = tc.read_capture(tar)
+    assert tc.is_credential(name)
+    assert not any(Path(node["path"]).name == name for node in nodes)
+    assert tc.credential_nodes(nodes) == []
+
+
+@pytest.mark.parametrize("suffix", [".Db", ".SQLITE"])
+def test_sqlite_capture_handles_case_and_uri_characters(tmp_path: Path, suffix: str) -> None:
+    import sqlite3
+    import tarfile
+
+    home = _home(tmp_path)
+    database = home / (".claude/projects/uri?#" + suffix)
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("CREATE TABLE messages (text TEXT)")
+        db.execute("INSERT INTO messages VALUES ('committed WAL transcript')")
+        db.commit()
+        archive = tmp_path / "capture.tar"
+        tc.capture_tar(tc.resolve_paths(home).paths, archive)
+    with tarfile.open(archive) as tar:
+        tc.read_capture(tar)
+        payload = tar.extractfile(str(database.resolve()).lstrip("/")).read()
+    restored = tmp_path / "restored.db"
+    restored.write_bytes(payload)
+    with sqlite3.connect(restored) as db:
+        assert db.execute("SELECT text FROM messages").fetchall() == [("committed WAL transcript",)]
+        assert db.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+def test_wsl_verify_failure_names_the_bound_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from types import SimpleNamespace
+
+    cli = _cli_module()
+    resolution = tc.resolve_paths(_home(tmp_path))
+    monkeypatch.setattr(cli.tc, "resolve_paths", lambda _home: resolution)
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(cli, "_restic_json", lambda *_args: "[]")
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_SERVICE", "hapax-backup-transcripts-wsl.service")
+    assert cli.cmd_verify(SimpleNamespace(max_age_hours=26)) == 1
+    error = capsys.readouterr().err
+    assert "start hapax-backup-transcripts-wsl.service" in error
+    assert "start hapax-backup-transcripts.service" not in error

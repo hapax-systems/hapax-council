@@ -100,20 +100,22 @@ TRANSCRIPT_PATHS: tuple[TranscriptPath, ...] = (
 )
 
 #: Credential file names (basename globs). They are excluded from the backup, and a snapshot that holds one fails.
-CREDENTIAL_PATTERNS: tuple[str, ...] = (
-    "auth.json",
-    ".credentials.json",
-    "auth.json*",
-    ".credentials.json*",
-    "credentials.json",
-    "credentials",
-    "oauth_creds.json",
-    "google_accounts.json",
-    "antigravity-oauth-token",
-    "*.pem",
-    "*.key",
-    ".env",
-    "*.token",
+CREDENTIAL_PATTERNS: tuple[str, ...] = tuple(
+    pattern
+    for basename in (
+        "auth.json",
+        ".credentials.json",
+        "credentials.json",
+        "credentials",
+        "oauth_creds.json",
+        "google_accounts.json",
+        "antigravity-oauth-token",
+        "*.pem",
+        "*.key",
+        ".env",
+        "*.token",
+    )
+    for pattern in (basename, basename + "*")
 )
 
 
@@ -256,7 +258,7 @@ def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
                     name = str(item).lstrip("/")
                     output = stage / name
                     output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    if item.suffix in (".sqlite", ".db"):
+                    if item.suffix.lower() in (".sqlite", ".db"):
                         with closing(sqlite3.connect(item.as_uri() + "?mode=ro", uri=True)) as db:
                             with closing(sqlite3.connect(output)) as copy:
                                 db.backup(copy)

@@ -43,6 +43,11 @@ from scripts import transcript_custody as tc  # noqa: E402
 DEFAULT_REPOSITORY = "/mnt/nas/backups/restic"
 
 
+def _remedy() -> str:
+    service = os.environ.get("HAPAX_TRANSCRIPT_SERVICE", "hapax-backup-transcripts.service")
+    return tc.REMEDY.replace("hapax-backup-transcripts.service", service)
+
+
 def _local_host() -> str:
     return os.environ.get("HAPAX_TRANSCRIPT_HOST") or socket.gethostname()
 
@@ -66,18 +71,18 @@ def _require_repository(repo: str) -> None:
         return
     if not os.path.isfile(os.path.join(repo, "config")):
         raise SystemExit(
-            f"hapax-transcript-custody: no restic repository at {repo} (is the NAS mounted?); {tc.REMEDY}"
+            f"hapax-transcript-custody: no restic repository at {repo} (is the NAS mounted?); {_remedy()}"
         )
     mount = _mount_point(repo)
     if mount == "/":
         raise SystemExit(
-            f"hapax-transcript-custody: {repo} is on the root filesystem, not a mount; refusing; {tc.REMEDY}"
+            f"hapax-transcript-custody: {repo} is on the root filesystem, not a mount; refusing; {_remedy()}"
         )
     required = os.environ.get("HAPAX_TRANSCRIPT_REPOSITORY_MOUNT")
     if required and mount != os.path.abspath(required):
         raise SystemExit(
             f"hapax-transcript-custody: {repo} is on {mount}, not on the required mount {required} (is the NAS "
-            f"mounted? check `findmnt {required}`); refusing; {tc.REMEDY}"
+            f"mounted? check `findmnt {required}`); refusing; {_remedy()}"
         )
 
 
@@ -281,7 +286,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
     res = tc.resolve_paths(Path.home())
     if res.problems and args.capture:
         for problem in res.problems:
-            print(f"hapax-transcript-custody: {problem}; {tc.REMEDY}", file=sys.stderr)
+            print(f"hapax-transcript-custody: {problem}; {_remedy()}", file=sys.stderr)
         return 1
     if args.capture:
         if args.dry_run:
@@ -297,7 +302,7 @@ def cmd_backup(args: argparse.Namespace) -> int:
                 tc.capture_tar(res.paths, archive)
             except (OSError, ValueError, sqlite3.Error, tarfile.TarError) as exc:
                 print(
-                    f"hapax-transcript-custody: capture failed: {exc}; {tc.REMEDY}", file=sys.stderr
+                    f"hapax-transcript-custody: capture failed: {exc}; {_remedy()}", file=sys.stderr
                 )
                 return 1
             with archive.open("rb") as source:
@@ -325,10 +330,10 @@ def cmd_backup(args: argparse.Namespace) -> int:
     proc = subprocess.run(["restic", *restic_args], env=_restic_env(), check=False)
     # restic exits 3 when some files could not be read: the snapshot is incomplete, and that is a failure.
     for problem in res.problems:
-        print(f"hapax-transcript-custody: {problem}; {tc.REMEDY}", file=sys.stderr)
+        print(f"hapax-transcript-custody: {problem}; {_remedy()}", file=sys.stderr)
     if proc.returncode != 0:
         print(
-            f"hapax-transcript-custody: restic backup exited {proc.returncode}; {tc.REMEDY}",
+            f"hapax-transcript-custody: restic backup exited {proc.returncode}; {_remedy()}",
             file=sys.stderr,
         )
     windows_failed = _backup_windows(dry_run=False)
@@ -359,7 +364,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     if not snapshots:
         print(
-            f"hapax-transcript-custody: no {tc.SNAPSHOT_TAG} snapshot for {host}; {tc.REMEDY}",
+            f"hapax-transcript-custody: no {tc.SNAPSHOT_TAG} snapshot for {host}; {_remedy()}",
             file=sys.stderr,
         )
         return 1
@@ -369,7 +374,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         prev_targets, prev_nodes = _local_listing(env, prev) if prev else ([], [])
     except (subprocess.CalledProcessError, OSError, ValueError, tarfile.TarError) as exc:
         print(
-            f"hapax-transcript-custody: snapshot read failed: {exc}; {tc.REMEDY}", file=sys.stderr
+            f"hapax-transcript-custody: snapshot read failed: {exc}; {_remedy()}", file=sys.stderr
         )
         return 1
     expected = (
@@ -421,7 +426,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         for failure in failures:
             print(f"FAIL {failure}", file=sys.stderr)
         print(
-            f"hapax-transcript-custody: {len(failures)} failure(s) in snapshot {cur.get('short_id')}; {tc.REMEDY}",
+            f"hapax-transcript-custody: {len(failures)} failure(s) in snapshot {cur.get('short_id')}; {_remedy()}",
             file=sys.stderr,
         )
         return 1

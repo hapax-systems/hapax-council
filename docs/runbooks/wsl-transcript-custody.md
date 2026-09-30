@@ -98,6 +98,8 @@ systemctl --user show hapax-backup-transcripts-wsl.service -p Result -p ExecMain
 systemctl --user list-timers hapax-backup-transcripts-wsl.timer
 journalctl --user -u hapax-backup-transcripts-wsl.service --since today --no-pager
 RESTIC_REPOSITORY=sftp:hapax-appendix:/mnt/nas/backups/restic \
+  HAPAX_TRANSCRIPT_HOST=hapax-dextra-wsl-ubuntu24.04 \
+  HAPAX_TRANSCRIPT_SERVICE=hapax-backup-transcripts-wsl.service \
   python3 ~/.cache/hapax/source-activation/worktree/scripts/hapax-transcript-custody verify
 restic -r sftp:hapax-appendix:/mnt/nas/backups/restic \
   --password-command 'hapax-secret backups/restic-password' snapshots \
