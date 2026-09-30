@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal
 
 import yaml
 
+from shared.blocked_witness import evaluate_claimant_blocked_recovery
 from shared.cc_task_pr_link import is_nullish
 from shared.coord_projection import (
     CapturedFile,
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
 _OWN_RESUMABLE_STATUSES = TASK_RESUMABLE_STATUSES | (
     TASK_DISPATCHABLE_STATUSES - TASK_CLAIMABLE_STATUSES
 )
+_CLAIM_PUBLICATION_CLAIM_MODES = frozenset({"claim", "resume", "blocked_recovery"})
 
 CLAIM_PUBLICATION_SCHEMA = "hapax.claim-publication-transaction.v1"
 CLAIM_PUBLICATION_RECEIPT_SCHEMA = "hapax.claim-publication-receipt.v2"
@@ -325,6 +327,68 @@ def _validate_note_after(
         )
 
 
+def _frontmatter_depends_on_empty(frontmatter: Mapping[str, object]) -> bool:
+    raw = frontmatter.get("depends_on")
+    if raw is None:
+        return True
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes, bytearray)):
+        return len(raw) == 0
+    scalar = str(raw).strip().strip('"').strip("'").lower()
+    return scalar in {"", "null", "none", "~", "[]"}
+
+
+def blocked_recovery_fields(content: bytes) -> dict[str, object]:
+    """Read recovery evidence before rewriting; ambiguous provenance cannot recover."""
+    try:
+        text = content.decode("utf-8")
+    except UnicodeError as exc:
+        raise ClaimPublicationError(
+            "blocked_recovery_note_malformed", "restore one UTF-8 task note", "decode"
+        ) from exc
+    fields = _release_fields(text)
+    span = _frontmatter_block_span(text)
+    if (
+        fields is None
+        or span is None
+        or not text.startswith("---\n")
+        or re.match(r"\n---[ \t]*(?:\n|\Z)", text[span[1] :]) is None
+        or not re.search(r"^status:[ \t]*(?:blocked|claimed)[ \t]*$", text, re.MULTILINE)
+    ):
+        raise ClaimPublicationError(
+            "blocked_recovery_note_malformed",
+            "restore closed frontmatter without duplicate keys and one plain status line",
+            "recovery preimage/postimage",
+        )
+    claimed_at = fields.get("claimed_at")
+    try:
+        if not isinstance(claimed_at, (str, datetime)):
+            raise ValueError("missing original claim time")
+        parsed_time = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
+        if parsed_time.tzinfo is None:
+            raise ValueError("claim time has no timezone")
+    except ValueError as exc:
+        raise ClaimPublicationError(
+            "blocked_recovery_claimed_at_missing",
+            "preserve the original claimed_at timestamp; do not fabricate a historical claim",
+            "claimed_at",
+        ) from exc
+    return fields
+
+
+def _claim_mode_transition_valid(
+    claim_mode: object, from_status: object, to_status: object
+) -> bool:
+    if not isinstance(claim_mode, str):
+        return False
+    if claim_mode == "claim":
+        return from_status in TASK_CLAIMABLE_STATUSES and to_status == "claimed"
+    if claim_mode == "resume":
+        return from_status in _OWN_RESUMABLE_STATUSES and to_status == from_status
+    if claim_mode == "blocked_recovery":
+        return from_status == "blocked" and to_status == "claimed"
+    return False
+
+
 @dataclass(frozen=True)
 class ClaimPublicationIntent:
     """Exact task-note and dispatch identity to publish as one claim."""
@@ -386,6 +450,31 @@ class ClaimPublicationIntent:
         elif from_status in _OWN_RESUMABLE_STATUSES and assigned_to == binding.lane:
             claim_mode = "resume"
             to_status = from_status
+        elif (
+            from_status == "blocked"
+            and assigned_to == binding.lane
+            and _frontmatter_depends_on_empty(task.frontmatter)
+        ):
+            recovery_fields = blocked_recovery_fields(task.content)
+            recovery = evaluate_claimant_blocked_recovery(recovery_fields)
+            if recovery.verdict != "satisfied":
+                raise ClaimPublicationError(
+                    recovery.reason_code,
+                    "refresh the original blocked predicate witness and bind it to blocked_reason before recovery",
+                    recovery.detail,
+                )
+            claim_mode = "blocked_recovery"
+            to_status = "claimed"
+            after_fields = blocked_recovery_fields(note_after)
+            if any(
+                after_fields.get(key) != recovery_fields.get(key)
+                for key in ("claimed_at", "blocked_reason", "blocked_witness")
+            ):
+                raise ClaimPublicationError(
+                    "blocked_recovery_evidence_changed",
+                    "retain the original claim time, blocked reason and witness in the postimage",
+                    task.task_id,
+                )
         else:
             raise ClaimPublicationError(
                 "claim_publication_task_not_claimable",
@@ -398,7 +487,7 @@ class ClaimPublicationIntent:
             role=binding.lane,
             authority_case=binding.authority_case,
             expected_status=to_status,
-            require_claimed_at=claim_mode == "claim",
+            require_claimed_at=claim_mode in {"claim", "blocked_recovery"},
         )
         if note_after == task.content:
             raise ClaimPublicationError(
@@ -2067,18 +2156,8 @@ def _validate_intent(intent: ClaimPublicationIntent) -> None:
         or not 0 <= intent.note_mode <= 0o777
         or not intent.note_before
         or not intent.note_after
-        or (
-            intent.claim_mode == "claim"
-            and (intent.from_status not in TASK_CLAIMABLE_STATUSES or intent.to_status != "claimed")
-        )
-        or (
-            intent.claim_mode == "resume"
-            and (
-                intent.from_status not in _OWN_RESUMABLE_STATUSES
-                or intent.to_status != intent.from_status
-            )
-        )
-        or intent.claim_mode not in {"claim", "resume"}
+        or intent.claim_mode not in _CLAIM_PUBLICATION_CLAIM_MODES
+        or not _claim_mode_transition_valid(intent.claim_mode, intent.from_status, intent.to_status)
     ):
         raise ClaimPublicationError(
             "claim_publication_intent_identity_mismatch",
@@ -2091,7 +2170,7 @@ def _validate_intent(intent: ClaimPublicationIntent) -> None:
         role=intent.role,
         authority_case=intent.binding.authority_case,
         expected_status=intent.to_status,
-        require_claimed_at=intent.claim_mode == "claim",
+        require_claimed_at=intent.claim_mode in {"claim", "blocked_recovery"},
     )
 
 
@@ -3285,11 +3364,9 @@ def load_claim_publication_receipt(
         or not isinstance(publication_id, str)
         or not publication_id.startswith("claim-pub-")
         or not is_hash(publication_digest)
-        or record.get("claim_mode") not in {"claim", "resume"}
-        or (record.get("claim_mode") == "claim" and record.get("to_status") != "claimed")
-        or (
-            record.get("claim_mode") == "resume"
-            and record.get("to_status") != record.get("from_status")
+        or record.get("claim_mode") not in _CLAIM_PUBLICATION_CLAIM_MODES
+        or not _claim_mode_transition_valid(
+            record.get("claim_mode"), record.get("from_status"), record.get("to_status")
         )
         or not Path(str(record.get("claim_note_path"))).is_absolute()
         or str(_normalized(Path(str(record.get("claim_note_path")))))
@@ -3477,11 +3554,9 @@ def load_admitted_claim_publication_receipt(
         or not isinstance(publication_id, str)
         or not publication_id.startswith("claim-pub-")
         or not is_hash(publication_digest)
-        or record.get("claim_mode") not in {"claim", "resume"}
-        or (record.get("claim_mode") == "claim" and record.get("to_status") != "claimed")
-        or (
-            record.get("claim_mode") == "resume"
-            and record.get("to_status") != record.get("from_status")
+        or record.get("claim_mode") not in _CLAIM_PUBLICATION_CLAIM_MODES
+        or not _claim_mode_transition_valid(
+            record.get("claim_mode"), record.get("from_status"), record.get("to_status")
         )
         or not Path(str(record.get("claim_note_path"))).is_absolute()
         or str(_normalized(Path(str(record.get("claim_note_path")))))
@@ -3697,6 +3772,21 @@ def _locked_preflight(
             "resolve the current active task note and construct a fresh claim intent",
             intent.task_id,
         )
+    if intent.claim_mode == "blocked_recovery":
+        # The witness can expire or its producer can change after intent preparation.
+        # Rebuild under the publication lock before any projection is written.
+        checked = ClaimPublicationIntent.create(
+            task=task,
+            cache_dir=intent.cache_dir,
+            note_after=intent.note_after,
+            binding=intent.binding,
+        )
+        if checked != intent:
+            raise ClaimPublicationError(
+                "blocked_recovery_intent_changed",
+                "rebuild the recovery intent from current evidence",
+                intent.task_id,
+            )
     try:
         _assert_preimages(projections)
     except LifecycleTransitionError as exc:
