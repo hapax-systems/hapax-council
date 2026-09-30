@@ -84,6 +84,12 @@ from shared.execution_admission import (
     require_current_execution_lease,
     require_historical_applied_claim_ownership_proof,
 )
+from shared.gate0b_claim_publication_effect import publish_gate0b_claim
+from shared.gate0b_claim_publication_install import (
+    ClaimPublicationCompositionInstall,
+    ClaimPublicationCompositionRoots,
+    install_claim_publication_composition,
+)
 from shared.sdlc_claim import (
     ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA,
     ADMITTED_CLAIM_PUBLICATION_SCHEMA,
@@ -2306,6 +2312,92 @@ def test_blocked_recovery_intent_binds_blocked_preimage_to_claimed_postimage(
     assert basis.to_status == "claimed"
 
 
+def _install_recovery_publisher(
+    tmp_path: Path, fixture: ClaimFixture
+) -> ClaimPublicationCompositionInstall:
+    return install_claim_publication_composition(
+        roots=ClaimPublicationCompositionRoots(
+            invocation_store_root=str(tmp_path / "invocations"),
+            claim_vault_root=str(fixture.vault),
+            claim_cache_dir=str(fixture.cache),
+            claim_transaction_root=str(fixture.transactions),
+            claim_receipt_root=str(tmp_path / "receipts"),
+            claim_lock_root=str(fixture.locks),
+        ),
+        installed_at=datetime.now(UTC),
+        install_task_ref="claimed-blocked-row-recovery-20260929-test",
+    )
+
+
+def test_blocked_recovery_publication_refuses_receipt_invalidated_after_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _blocked_recovery_fixture(tmp_path, monkeypatch)
+    install = _install_recovery_publisher(tmp_path, fixture)
+    (tmp_path / "platform-capability-receipts/codex.json").write_text("{}")
+    before = (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache))
+
+    with pytest.raises(ClaimPublicationError) as raised:
+        publish_gate0b_claim(fixture.intent, root=install.root, now=datetime.now(UTC))
+
+    assert raised.value.reason_code == "blocked_recovery_witness_refuse"
+    assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
+    assert not list((tmp_path / "receipts").rglob("*.json"))
+    assert not list(fixture.transactions.rglob("manifest.json"))
+
+
+def test_blocked_recovery_publishes_admitted_claim_with_durable_readback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _blocked_recovery_fixture(tmp_path, monkeypatch)
+    install = _install_recovery_publisher(tmp_path, fixture)
+    before = resolve_task_note(fixture.vault, fixture.intent.task_id).frontmatter
+
+    receipt = publish_gate0b_claim(fixture.intent, root=install.root, now=datetime.now(UTC))
+
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
+    assert receipt.schema == ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA
+    assert receipt.admission_consumption is not None
+    assert receipt.execution_admission is not None
+    assert receipt.execution_lease is not None
+    record = load_admitted_claim_publication_receipt(receipt.receipt_path)
+    assert record["claim_mode"] == "blocked_recovery"
+    assert record["from_status"] == "blocked"
+    assert record["to_status"] == "claimed"
+    assert record["receipt_hash"] == receipt.receipt_hash
+    assert record["binding_receipt_hash"] == fixture.intent.binding.receipt_hash
+    assert (
+        record["claim_note_postimage_sha256"]
+        == hashlib.sha256(fixture.intent.note_after).hexdigest()
+    )
+    manifest = json.loads(receipt.manifest_path.read_text())
+    assert manifest["state"] == "applied"
+    assert manifest["publication_id"] == receipt.publication_id
+
+    # Resolve from durable receipt, journal, note and role/session sidecars, rather
+    # than treating the publisher's return value as proof that recovery happened.
+    snapshot_before_readback = _tree_snapshot(tmp_path)
+    applied = resolve_applied_claim_publication(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        role=fixture.intent.role,
+        session_id=fixture.intent.session_id,
+        task_id=fixture.intent.task_id,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+    )
+    assert applied.receipt.receipt_hash == receipt.receipt_hash
+    assert applied.intent == fixture.intent
+    assert applied.admission_consumption is not None
+    assert applied.current_task.content == fixture.intent.note_after
+    assert applied.current_task.frontmatter["status"] == "claimed"
+    assert applied.current_task.frontmatter["assigned_to"] == fixture.intent.role
+    for field in ("claimed_at", "blocked_reason", "blocked_witness"):
+        assert applied.current_task.frontmatter[field] == before[field]
+    assert _tree_snapshot(tmp_path) == snapshot_before_readback
+
+
 def test_blocked_recovery_preflight_refuses_source_change_race(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2351,25 +2443,29 @@ def test_publish_claim_is_gate0a_hold_without_mutation(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "damage",
+    ("damage", "verdict", "reason_code"),
     [
-        "path_exists",
-        "unrelated_fresh_yaml",
-        "outside_producer_root",
-        "invalid_sibling",
-        "wrong_platform",
-        "wrong_route",
-        "stale_receipt",
-        "future_receipt",
-        "stale_surface",
-        "blocked_surface",
-        "superseded_receipt",
-        "unknown_reason",
-        "reason_mismatch",
+        ("path_exists", "refuse", "blocked_recovery_witness_unbound"),
+        ("unrelated_fresh_yaml", "refuse", "blocked_recovery_witness_refuse"),
+        ("outside_producer_root", "refuse", "blocked_recovery_witness_refuse"),
+        ("invalid_sibling", "refuse", "blocked_recovery_witness_refuse"),
+        ("wrong_platform", "refuse", "blocked_recovery_witness_refuse"),
+        ("wrong_route", "refuse", "blocked_recovery_witness_refuse"),
+        ("stale_receipt", "unsatisfied", "blocked_recovery_witness_unsatisfied"),
+        ("future_receipt", "unsatisfied", "blocked_recovery_witness_unsatisfied"),
+        ("stale_surface", "unsatisfied", "blocked_recovery_witness_unsatisfied"),
+        ("blocked_surface", "unsatisfied", "blocked_recovery_witness_unsatisfied"),
+        ("superseded_receipt", "unsatisfied", "blocked_recovery_witness_unsatisfied"),
+        ("unknown_reason", "refuse", "blocked_recovery_reason_unsupported"),
+        ("reason_mismatch", "refuse", "blocked_recovery_reason_mismatch"),
     ],
 )
 def test_blocked_recovery_checks_original_receipt_predicate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+    verdict: str,
+    reason_code: str,
 ) -> None:
     from shared.blocked_witness import evaluate_claimant_blocked_recovery
 
@@ -2413,7 +2509,8 @@ def test_blocked_recovery_checks_original_receipt_predicate(
     before = _tree_snapshot(tmp_path)
     result = evaluate_claimant_blocked_recovery(fields)
 
-    assert result.verdict != "satisfied"
+    assert result.verdict == verdict
+    assert result.reason_code == reason_code
     assert _tree_snapshot(tmp_path) == before
 
 
