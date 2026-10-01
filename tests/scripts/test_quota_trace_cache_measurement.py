@@ -286,3 +286,104 @@ def test_existing_checker_forwards_explicit_measurement_arguments(monkeypatch):
     checker = runpy.run_path(str(ROOT / "scripts/check-quota-headroom-mutations.py"))
     assert checker["main"](["--trace-cache-measure", "--", *argv]) == 0
     assert received == argv
+
+
+@pytest.fixture
+def pinned(prepared, capsys):
+    argv, trace, scratch = prepared
+    other = trace.with_name("rollout-other.jsonl")
+    other.write_bytes(trace.read_bytes())
+    os.utime(other, (1, 1))
+    assert replay.main(argv) == 0
+    report = json.loads(Path(json.loads(capsys.readouterr().out)["report"]).read_text())
+    report["sources_before"].reverse()  # Manifest order, not the live selector's order.
+    manifest = scratch / "manifest.json"
+    manifest.write_text(json.dumps(report))
+    return [*argv, "--input-manifest", str(manifest)], trace, manifest, report
+
+
+def test_manifest_pins_selection_time_and_sources(pinned, monkeypatch, capsys):
+    argv, trace, manifest, old = pinned
+    extra = trace.with_name("rollout-newer.jsonl")
+    extra.write_bytes(trace.read_bytes())
+    os.utime(extra, (1, 1))
+    seen = []
+    measure = replay.measure
+
+    def observed(*args, **kwargs):
+        seen.append(kwargs["now"].isoformat())
+        return measure(*args, **kwargs)
+
+    monkeypatch.setattr(replay, "measure", observed)
+    assert status(argv) == 0
+    report = json.loads(Path(json.loads(capsys.readouterr().out)["report"]).read_text())
+    assert seen == [old["now"]] * 3
+    assert report["sources_before"] == report["sources_after"] == old["sources_before"]
+    assert report["input_manifest_sha256"] == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    assert report["warm"]["raw_bytes_read"] == old["warm"]["raw_bytes_read"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing",
+        "json",
+        "empty",
+        "time",
+        "baseline",
+        "candidate",
+        "duplicate",
+        "bounds",
+        "removed",
+        "replaced",
+        "content",
+        "metadata",
+    ],
+)
+def test_manifest_failure_never_selects_replacements(pinned, failure, capsys):
+    argv, trace, manifest, data = pinned
+    existing = set(manifest.parent.glob("quota-trace-measure-*"))
+    if failure == "empty":
+        data["sources_before"] = []
+    elif failure == "time":
+        data["now"] = "2026-10-01T00:00:00"
+    elif failure == "baseline":
+        data["baseline_commit"] = "0" * 40
+    elif failure == "candidate":
+        data["candidate_sha256"]["shared/quota_trace_cache.py"] = "0" * 64
+    elif failure == "duplicate":
+        data["sources_before"] *= 2
+    elif failure == "bounds":
+        argv += ["--max-bytes", "65536"]
+    elif failure == "removed":
+        trace.unlink()
+    elif failure == "replaced":
+        replacement = trace.with_suffix(".new")
+        replacement.write_bytes(trace.read_bytes())
+        replacement.replace(trace)
+    elif failure == "content":
+        # Correct metadata with a false content digest must still refuse.
+        data["sources_before"][0]["sha256"] = "0" * 64
+    elif failure == "metadata":
+        os.utime(trace, (2, 2))
+    manifest.write_text("{" if failure == "json" else json.dumps(data))
+    if failure == "missing":
+        manifest.unlink()
+    assert status(argv) == 2
+    assert "input manifest recheck refused" in capsys.readouterr().err
+    assert set(manifest.parent.glob("quota-trace-measure-*")) == existing
+
+
+def test_manifest_race_cannot_report_success(pinned, monkeypatch, capsys):
+    argv, trace, _, _ = pinned
+    measure = replay.measure
+
+    def changed(*args, **kwargs):
+        result = measure(*args, **kwargs)
+        os.utime(trace, (2, 2))
+        return result
+
+    monkeypatch.setattr(replay, "measure", changed)
+    assert status(argv) == 1
+    report = json.loads(Path(json.loads(capsys.readouterr().out)["report"]).read_text())
+    assert not report["raw_bytes_and_identity_preserved"]

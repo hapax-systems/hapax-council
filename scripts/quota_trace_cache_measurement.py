@@ -5,6 +5,8 @@ Use the --trace-cache-measure mode of scripts/check-quota-headroom-mutations.py.
 Uses stable files, at most 64 MiB / 32 files, an explicit baseline commit and scratch root.
 Pass arguments after -- in the existing checker. Example on appendix:
   --trace-cache-measure -- --baseline-ref <full-pre-change-SHA> --scratch-root /store-fast/tmp
+Add --input-manifest <retained-input-manifest.json> to recheck its exact ordered inputs
+and timestamp. Missing or changed inputs refuse; no replacement sample is selected.
 Does not invoke the live writer, probe providers, mint receipts or change original traces.
 """
 
@@ -142,6 +144,7 @@ def main(argv=None):
     parser.add_argument("--max-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--max-files", type=int, default=32)
     parser.add_argument("--baseline-ref", required=True, help="Full pre-change commit SHA")
+    parser.add_argument("--input-manifest", type=Path, help="Pinned input manifest or prior report")
     parser.add_argument(
         "--scratch-root", type=Path, required=True, help="Existing scratch directory"
     )
@@ -213,13 +216,64 @@ def main(argv=None):
         )
 
 
+def pinned_inputs(args, baseline_commit, baseline_bytes, candidate_sources, parser):
+    try:
+        raw = args.input_manifest.read_bytes()
+        manifest = json.loads(raw)
+        now = datetime.fromisoformat(manifest["now"])
+        rows = manifest["sources_before"]
+        paths = [Path(row["source"]) for row in rows]
+        if (
+            now.utcoffset() is None
+            or not 0 < len(paths) <= args.max_files
+            or len(set(paths)) != len(paths)
+            or any(not p.is_absolute() or not p.match("rollout-*.jsonl") for p in paths)
+            or any(type(row["size"]) is not int or row["size"] < 65536 for row in rows)
+            or sum(row["size"] for row in rows) > args.max_bytes
+        ):
+            raise ValueError("invalid time, selection or bounds")
+        if (
+            manifest["baseline_ref"] != baseline_commit
+            or manifest["baseline_commit"] != baseline_commit
+            or manifest["baseline_sha256"] != hashlib.sha256(baseline_bytes).hexdigest()
+            or manifest["candidate_sha256"]
+            != {p: hashlib.sha256(b).hexdigest() for p, b in candidate_sources.items()}
+        ):
+            raise ValueError("reader source binding differs")
+        # Check size before hashing: a grown file must not widen the bounded experiment.
+        if any(
+            not p.is_file() or p.stat().st_size != r["size"]
+            for p, r in zip(paths, rows, strict=True)
+        ):
+            raise ValueError("trace missing or size changed")
+        before = [fingerprint(path) for path in paths]
+        if before != rows:
+            raise ValueError("trace content or identity changed")
+        return now, paths, before, hashlib.sha256(raw).hexdigest()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        parser.error(
+            f"input manifest recheck refused ({exc}). Next action: preserve this evidence; "
+            "restore the exact inputs or report the historical replay unavailable"
+        )
+
+
 def replay(args, baseline_commit, baseline_bytes, candidate_commit, candidate_sources, parser):
     if not args.scratch_root.is_dir():
         parser.error("scratch root unavailable. Next action: supply an existing --scratch-root")
     now = datetime.now(UTC)
     selected = []
     total = 0
-    for path in sorted(args.sessions.glob("**/rollout-*.jsonl"), reverse=True):
+    manifest_sha256 = None
+    if args.input_manifest is not None:
+        now, selected, before, manifest_sha256 = pinned_inputs(
+            args, baseline_commit, baseline_bytes, candidate_sources, parser
+        )
+        total = sum(row["size"] for row in before)
+    for path in (
+        []
+        if args.input_manifest
+        else sorted(args.sessions.glob("**/rollout-*.jsonl"), reverse=True)
+    ):
         stat = path.stat()
         if stat.st_mtime > now.timestamp() - 600 or not 65536 <= stat.st_size <= args.max_bytes:
             continue
@@ -237,7 +291,8 @@ def replay(args, baseline_commit, baseline_bytes, candidate_commit, candidate_so
     directory = Path(tempfile.mkdtemp(prefix="quota-trace-measure-", dir=args.scratch_root))
     sessions = directory / "sessions"
     sessions.mkdir()
-    before = [fingerprint(path) for path in selected]
+    if args.input_manifest is None:
+        before = [fingerprint(path) for path in selected]
     for index, path in enumerate(selected):
         (sessions / f"rollout-{index:04}.jsonl").symlink_to(path.absolute())
     baseline = {
@@ -264,6 +319,7 @@ def replay(args, baseline_commit, baseline_bytes, candidate_commit, candidate_so
     report = {
         "scope": "bounded real-trace Codex reader replay; not an installed or full writer tick",
         "now": now.isoformat(),
+        "input_manifest_sha256": manifest_sha256,
         "files": len(selected),
         "source_bytes": total,
         "baseline_ref": args.baseline_ref,

@@ -212,6 +212,41 @@ MUTANTS = [
         "if len(selected) == args.max_files:",
         "if False:",
     ),
+    (
+        "manifest-selection-time",
+        f"{MEASUREMENT_TEST}::test_manifest_pins_selection_time_and_sources",
+        MEASUREMENT,
+        "return now, paths, before, hashlib.sha256(raw).hexdigest()",
+        "return datetime.now(UTC), paths[::-1], before[::-1], hashlib.sha256(raw).hexdigest()",
+    ),
+    (
+        "manifest-bounds",
+        f"{MEASUREMENT_TEST}::test_manifest_failure_never_selects_replacements",
+        MEASUREMENT,
+        "if (\n            now.utcoffset() is None",
+        "if False and (\n            now.utcoffset() is None",
+    ),
+    (
+        "manifest-reader-binding",
+        f"{MEASUREMENT_TEST}::test_manifest_failure_never_selects_replacements",
+        MEASUREMENT,
+        'if (\n            manifest["baseline_ref"] != baseline_commit',
+        'if False and (\n            manifest["baseline_ref"] != baseline_commit',
+    ),
+    (
+        "manifest-fingerprint",
+        f"{MEASUREMENT_TEST}::test_manifest_failure_never_selects_replacements",
+        MEASUREMENT,
+        "if before != rows:",
+        "if False:",
+    ),
+    (
+        "manifest-preservation",
+        f"{MEASUREMENT_TEST}::test_manifest_race_cannot_report_success",
+        MEASUREMENT,
+        "preserved = before == after",
+        "preserved = True",
+    ),
 ]
 
 
