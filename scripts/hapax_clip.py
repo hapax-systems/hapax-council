@@ -468,7 +468,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.file == "-":
             data = sys.stdin.buffer.read(MAX_TEXT + 1)
         else:
-            with Path(args.file).open("rb") as handle:
+            fd = os.open(args.file, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise ClipError("Input files must be regular files; use stdin for streams.")
                 data = handle.read(MAX_TEXT + 1)
         data = render(data, args.mode)
         endpoints = load_endpoints(args.config)

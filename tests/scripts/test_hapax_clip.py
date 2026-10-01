@@ -153,8 +153,24 @@ def test_enrollment_rejects_option_shell_injection_or_unsupported_binding(tmp_pa
 
 
 def test_route_uses_pinned_key_and_fixed_commands_no_payload_argv(tmp_path):
+    key = tmp_path / "identity"
+    key.write_bytes(b"synthetic private fixture")
+    key.chmod(0o600)
+    config = tmp_path / "enrollment"
+    config.write_bytes(
+        clip.encode_json(dict(v=1, endpoints={"client": endpoint() | {"identity_file": str(key)}}))
+    )
+    config.chmod(0o600)
+    enrolled = clip.load_endpoints(config)["client"]
     for platform in ("wayland", "windows"):
-        argv = clip.ssh_argv(endpoint() | {"platform": platform}, tmp_path / "pin")
+        argv = clip.ssh_argv(enrolled | {"platform": platform}, tmp_path / "pin")
+        assert argv[argv.index("-i") + 1] == str(key) and "IdentitiesOnly=yes" in argv
+        command = (
+            "~/.local/bin/hapax-clip --receive"
+            if platform == "wayland"
+            else r'cmd.exe /d /s /c ""%LOCALAPPDATA%\Hapax\Clipboard\current\hapax-clip-windows.exe" --client"'
+        )
+        assert argv[-4:] == ["-l", enrolled["user"], enrolled["host"], command]
         joined = " ".join(argv)
         assert "StrictHostKeyChecking=yes" in joined
         assert "GlobalKnownHostsFile=/dev/null" in joined
@@ -404,7 +420,8 @@ def test_actual_predecessor_receipt_followed_symlink(actual_clipboard_predecesso
     assert target.read_bytes() == b"unchanged"
 
 
-def test_named_pipe_receipt_refused_without_blocking(tmp_path):
+@pytest.mark.parametrize("operation", ["receipt", "input"])
+def test_named_pipe_receipt_refused_without_blocking(tmp_path, operation):
     import subprocess
 
     path = tmp_path / "receipt-fifo"
@@ -419,13 +436,21 @@ except (clip.ClipError, OSError):
 raise SystemExit(1)
 """
     child = subprocess.Popen(
-        [sys.executable, "-c", program, str(path)],
+        (
+            [sys.executable, "-c", program, str(path)]
+            if operation == "receipt"
+            else [sys.executable, str(SCRIPTS / "hapax_clip.py"), "client", str(path)]
+        ),
         env=dict(os.environ, PYTHONPATH=str(SCRIPTS)),
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
     try:
-        assert child.wait(timeout=1) == 0
+        assert child.wait(timeout=2) == (0 if operation == "receipt" else 1)
+        if operation == "input":
+            error = child.stderr.read()
+            assert b"Input files must be regular files" in error and b"Next action:" in error
+            assert str(path).encode() not in error
     finally:
         if child.poll() is None:
             child.kill()
