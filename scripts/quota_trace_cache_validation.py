@@ -20,6 +20,8 @@ CACHE = "shared/quota_trace_cache.py"
 READER = "shared/quota_headroom.py"
 WRITER = "scripts/hapax-quota-telemetry-writer"
 TEST = "tests/shared/test_quota_trace_cache.py"
+MEASUREMENT = "scripts/quota_trace_cache_measurement.py"
+MEASUREMENT_TEST = "tests/scripts/test_quota_trace_cache_measurement.py"
 MUTANTS = [
     (
         "raw-line-bound",
@@ -119,6 +121,132 @@ MUTANTS = [
         "if not args.check\n                else None",
         "if False\n                else None",
     ),
+    (
+        "baseline-identity",
+        f"{MEASUREMENT_TEST}::test_same_reader_bytes_cannot_claim_prechange_comparison",
+        MEASUREMENT,
+        "if baseline_bytes == candidate_bytes:",
+        "if False:",
+    ),
+    (
+        "baseline-immutable",
+        f"{MEASUREMENT_TEST}::test_baseline_is_required_and_must_be_immutable",
+        MEASUREMENT,
+        'if not re.fullmatch(r"[0-9a-f]{40}", args.baseline_ref):',
+        "if False:",
+    ),
+    (
+        "pressure-admission",
+        f"{MEASUREMENT_TEST}::test_unavailable_or_busy_pressure_refuses_replay",
+        MEASUREMENT,
+        "if avg10 > 10:",
+        "if False:",
+    ),
+    (
+        "pressure-finite",
+        f"{MEASUREMENT_TEST}::test_unavailable_or_busy_pressure_refuses_replay",
+        MEASUREMENT,
+        "if not math.isfinite(avg10) or not 0 <= avg10 <= 100:",
+        "if False:",
+    ),
+    (
+        "candidate-commit",
+        f"{MEASUREMENT_TEST}::test_dirty_candidate_cannot_claim_commit",
+        MEASUREMENT,
+        "if any((ROOT / path).read_bytes() != data for path, data in candidate_sources.items()):",
+        "if False:",
+    ),
+    (
+        "candidate-execution",
+        f"{MEASUREMENT_TEST}::test_candidate_execution_and_hashes_use_captured_commit",
+        MEASUREMENT,
+        'exec(compile(data, module.__file__, "exec"), module.__dict__)',
+        'exec(compile((ROOT / relative).read_bytes(), module.__file__, "exec"), module.__dict__)',
+    ),
+    (
+        "candidate-hashes",
+        f"{MEASUREMENT_TEST}::test_candidate_execution_and_hashes_use_captured_commit",
+        MEASUREMENT,
+        "p: hashlib.sha256(data).hexdigest() for p, data in candidate_sources.items()",
+        "p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in candidate_sources",
+    ),
+    (
+        "candidate-imports",
+        f"{MEASUREMENT_TEST}::test_committed_cache_behavior_is_the_executed_candidate",
+        MEASUREMENT,
+        "with patch.dict(sys.modules, modules):",
+        "with patch.dict(sys.modules, {}):",
+    ),
+    (
+        "zero-baseline",
+        f"{MEASUREMENT_TEST}::test_zero_baseline_reads_refuse_a_reduction_claim",
+        MEASUREMENT,
+        'if full_read["raw_bytes_read"] == 0:',
+        "if False:",
+    ),
+    (
+        "count-read",
+        f"{MEASUREMENT_TEST}::test_logical_read_accounting_has_known_scope",
+        MEASUREMENT,
+        "data = self.stream.read(*args)\n        self.counter[0] += len(data)",
+        "data = self.stream.read(*args)\n        self.counter[0] += 0",
+    ),
+    (
+        "count-readline",
+        f"{MEASUREMENT_TEST}::test_logical_read_accounting_has_known_scope",
+        MEASUREMENT,
+        "data = self.stream.readline(*args)\n        self.counter[0] += len(data)",
+        "data = self.stream.readline(*args)\n        self.counter[0] += 0",
+    ),
+    (
+        "sample-byte-bound",
+        f"{MEASUREMENT_TEST}::test_partial_sample_respects_byte_and_file_bounds",
+        MEASUREMENT,
+        "if total + stat.st_size > args.max_bytes:",
+        "if False:",
+    ),
+    (
+        "sample-file-bound",
+        f"{MEASUREMENT_TEST}::test_partial_sample_respects_byte_and_file_bounds",
+        MEASUREMENT,
+        "if len(selected) == args.max_files:",
+        "if False:",
+    ),
+    (
+        "manifest-selection-time",
+        f"{MEASUREMENT_TEST}::test_manifest_pins_selection_time_and_sources",
+        MEASUREMENT,
+        "return now, paths, before, hashlib.sha256(raw).hexdigest()",
+        "return datetime.now(UTC), paths[::-1], before[::-1], hashlib.sha256(raw).hexdigest()",
+    ),
+    (
+        "manifest-bounds",
+        f"{MEASUREMENT_TEST}::test_manifest_failure_never_selects_replacements",
+        MEASUREMENT,
+        "if (\n            now.utcoffset() is None",
+        "if False and (\n            now.utcoffset() is None",
+    ),
+    (
+        "manifest-reader-binding",
+        f"{MEASUREMENT_TEST}::test_manifest_failure_never_selects_replacements",
+        MEASUREMENT,
+        'if (\n            manifest["baseline_ref"] != baseline_commit',
+        'if False and (\n            manifest["baseline_ref"] != baseline_commit',
+    ),
+    (
+        "manifest-fingerprint",
+        f"{MEASUREMENT_TEST}::test_manifest_failure_never_selects_replacements",
+        MEASUREMENT,
+        "if before != rows:",
+        "if False:",
+    ),
+    (
+        "manifest-preservation",
+        f"{MEASUREMENT_TEST}::test_manifest_race_cannot_report_success",
+        MEASUREMENT,
+        "preserved = before == after",
+        "preserved = True",
+    ),
 ]
 
 
@@ -137,7 +265,8 @@ def main():
             file=sys.stderr,
         )
         return 2
-    harness["COPIES"].update({CACHE, TEST})
+    harness["COPIES"].update({CACHE, TEST, MEASUREMENT, MEASUREMENT_TEST})
+    harness["DIRECTORIES"].add("tests/scripts")
     evidence = Path(tempfile.mkdtemp(prefix="quota-trace-mutations-"))
     work = harness["build_overlay"](evidence / "overlay")
     results = []
