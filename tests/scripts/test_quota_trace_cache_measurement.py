@@ -5,6 +5,7 @@ import json
 import os
 import runpy
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,20 +15,7 @@ from scripts import quota_trace_cache_measurement as replay
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def status(argv):
-    try:
-        return replay.main(argv)
-    except SystemExit as exc:
-        return exc.code
-
-
-@pytest.fixture
-def comparison(tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    (repo / "shared").mkdir(parents=True)
-    for name in ("quota_headroom.py", "quota_trace_cache.py"):
-        (repo / "shared" / name).write_bytes((ROOT / "shared" / name).read_bytes())
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+def commit_sources(repo):
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(
         [
@@ -45,7 +33,24 @@ def comparison(tmp_path, monkeypatch):
         cwd=repo,
         check=True,
     )
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+
+def status(argv):
+    try:
+        return replay.main(argv)
+    except SystemExit as exc:
+        return exc.code
+
+
+@pytest.fixture
+def comparison(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / "shared").mkdir(parents=True)
+    for name in ("quota_headroom.py", "quota_trace_cache.py"):
+        (repo / "shared" / name).write_bytes((ROOT / "shared" / name).read_bytes())
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    commit = commit_sources(repo)
     monkeypatch.setattr(replay, "ROOT", repo)
     return repo, commit
 
@@ -73,10 +78,22 @@ def prepared(comparison, tmp_path, monkeypatch):
     # Different bytes suffice for this tool test; this fixture claims no historical speedup.
     with (repo / "shared/quota_headroom.py").open("ab") as stream:
         stream.write(b"\n# candidate fixture\n")
+    commit_sources(repo)
     sessions = tmp_path / "sessions"
     sessions.mkdir()
     trace = sessions / "rollout-test.jsonl"
-    trace.write_bytes(b'{"irrelevant":"' + b"x" * 70000 + b'"}\n')
+    event = {
+        "timestamp": "2026-09-30T20:00:00Z",
+        "payload": {
+            "type": "token_count",
+            "info": {"total_token_usage": {"total_tokens": 123}},
+            "rate_limits": {
+                "primary": {"used_percent": 20, "window_minutes": 10080, "resets_at": 1790899200},
+                "credits": {"balance": 90},
+            },
+        },
+    }
+    trace.write_bytes(json.dumps(event).encode() + b'\n{"irrelevant":"' + b"x" * 70000 + b'"}\n')
     os.utime(trace, (1, 1))
     original = Path.read_text
 
@@ -100,11 +117,128 @@ def test_explicit_scratch_binding_and_resolved_sources(prepared, capsys):
     report = json.loads(report_path.read_text())
     assert report["baseline_commit"] == argv[1]
     assert report["baseline_sha256"] != report["candidate_sha256"]["shared/quota_headroom.py"]
-    assert report["candidate_commit"] == argv[1]
+    assert report["candidate_commit"] != argv[1]
+    assert (
+        report["candidate_commit"]
+        == subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=replay.ROOT, text=True).strip()
+    )
     assert report["outputs"]["baseline"] == report["outputs"]["cold"] == report["outputs"]["warm"]
     assert report["exact_outputs_equal"] and report["raw_bytes_and_identity_preserved"]
     assert report["sources_before"][0]["sha256"] == hashlib.sha256(before).hexdigest()
     assert trace.read_bytes() == before
+    assert report["outputs"]["baseline"][0]["quantity"] == 20
+    assert report["baseline"]["raw_bytes_read"] == len(before)
+    assert report["cold"]["raw_bytes_read"] == len(before) + 8192
+    assert report["warm"]["raw_bytes_read"] == 16384
+    assert report["warm_read_reduction"] == 1 - 16384 / len(before)
+
+
+@pytest.mark.parametrize("name", ["quota_headroom.py", "quota_trace_cache.py"])
+def test_dirty_candidate_cannot_claim_commit(prepared, capsys, name):
+    argv, _, scratch = prepared
+    with (replay.ROOT / "shared" / name).open("ab") as stream:
+        stream.write(b"\n# uncommitted reader behavior\n")
+    assert status(argv) == 2
+    assert "candidate source differs from HEAD" in capsys.readouterr().err
+    assert not list(scratch.glob("quota-trace-measure-*"))
+
+
+def test_candidate_execution_and_hashes_use_captured_commit(prepared, monkeypatch, capsys):
+    argv, _, _ = prepared
+    original = replay.replay
+    captured = {
+        name: (replay.ROOT / name).read_bytes()
+        for name in ("shared/quota_headroom.py", "shared/quota_trace_cache.py")
+    }
+
+    def changed_after_admission(*args):
+        for name in captured:
+            (replay.ROOT / name).write_text(
+                "def read_codex_token_count(*args, **kwargs): return []\n"
+            )
+        return original(*args)
+
+    monkeypatch.setattr(replay, "replay", changed_after_admission)
+    assert replay.main(argv) == 0
+    report = json.loads(Path(json.loads(capsys.readouterr().out)["report"]).read_text())
+    assert report["candidate_sha256"] == {
+        name: hashlib.sha256(data).hexdigest() for name, data in captured.items()
+    }
+    assert report["outputs"]["warm"][0]["quantity"] == 20
+
+
+def test_zero_baseline_reads_refuse_a_reduction_claim(prepared, capsys):
+    argv, _, scratch = prepared
+    path = replay.ROOT / "shared/quota_headroom.py"
+    candidate = path.read_bytes()
+    path.write_text("def read_codex_token_count(*args, **kwargs): return []\n")
+    argv[1] = commit_sources(replay.ROOT)
+    path.write_bytes(candidate)
+    commit_sources(replay.ROOT)
+    try:
+        result = status(argv)
+    except ZeroDivisionError:
+        result = None
+    assert result == 2
+    assert "baseline read zero counted bytes" in capsys.readouterr().err
+    assert not list(scratch.glob("quota-trace-measure-*/measurement.json"))
+
+
+def test_committed_cache_behavior_is_the_executed_candidate(prepared, capsys):
+    argv, _, _ = prepared
+    path = replay.ROOT / "shared/quota_trace_cache.py"
+    path.write_text(path.read_text().replace("PROBE_BYTES = 4096", "PROBE_BYTES = 1024"))
+    candidate_commit = commit_sources(replay.ROOT)
+    assert replay.main(argv) == 0
+    report = json.loads(Path(json.loads(capsys.readouterr().out)["report"]).read_text())
+    assert report["candidate_commit"] == candidate_commit
+    assert report["warm"]["raw_bytes_read"] == 4096
+
+
+@pytest.mark.parametrize("method", ["read", "readline", "iteration"])
+def test_logical_read_accounting_has_known_scope(prepared, method):
+    _, trace, scratch = prepared
+    sessions = scratch / "linked"
+    sessions.mkdir()
+    link = sessions / trace.name
+    link.symlink_to(trace)
+    raw = trace.read_bytes()
+
+    def reader(root, **kwargs):
+        # Direct source spelling lies outside this explicitly scoped counter.
+        trace.read_bytes()
+        with (root / trace.name).open("rb") as stream:
+            if method == "read":
+                stream.read()
+            elif method == "readline":
+                while stream.readline():
+                    pass
+            else:
+                list(stream)
+            stream.seek(0)
+            stream.read(7)
+        return []
+
+    _, measured = replay.measure(reader, sessions, now=datetime.now(UTC))
+    assert measured["raw_bytes_read"] == len(raw) + 7
+
+
+@pytest.mark.parametrize("max_files,expected", [(3, ["z", "x"]), (1, ["z"])])
+def test_partial_sample_respects_byte_and_file_bounds(prepared, capsys, max_files, expected):
+    argv, trace, _ = prepared
+    raw = trace.read_bytes()
+    for name, size in [("z", 80000), ("y", 76000), ("x", 66000)]:
+        path = trace.with_name(f"rollout-{name}.jsonl")
+        event = raw.split(b"\n", 1)[0] + b"\n"
+        path.write_bytes(event + b" " * (size - len(event) - 1) + b"\n")
+        os.utime(path, (1, 1))
+    trace.unlink()
+    assert replay.main([*argv, "--max-bytes", "150000", "--max-files", str(max_files)]) == 0
+    report = json.loads(Path(json.loads(capsys.readouterr().out)["report"]).read_text())
+    assert [Path(row["source"]).stem for row in report["sources_before"]] == [
+        f"rollout-{name}" for name in expected
+    ]
+    assert report["source_bytes"] == (146000 if max_files == 3 else 80000)
 
 
 @pytest.mark.parametrize(

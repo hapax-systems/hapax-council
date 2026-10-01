@@ -20,14 +20,39 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from shared.quota_headroom import read_codex_token_count  # noqa: E402
+SOURCES = ("shared/quota_headroom.py", "shared/quota_trace_cache.py")
+
+
+@contextmanager
+def candidate_reader(sources, directory):
+    """Execute the captured Git bytes, including lazy reader/cache cross-imports.
+
+    Snapshot files also bind the cache's __file__-based parser fingerprint. Never
+    reuse a previously imported reader or reload later working-tree bytes.
+    """
+    modules = {}
+    for relative, data in sources.items():
+        path = directory / relative
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+        name = relative.removesuffix(".py").replace("/", ".")
+        module = ModuleType(name)
+        module.__file__ = str(path)
+        modules[name] = module
+    with patch.dict(sys.modules, modules):
+        for relative, data in sources.items():
+            module = modules[relative.removesuffix(".py").replace("/", ".")]
+            exec(compile(data, module.__file__, "exec"), module.__dict__)
+        yield modules["shared.quota_headroom"].read_codex_token_count
 
 
 def fingerprint(path):
@@ -81,6 +106,12 @@ class Counted:
 
 
 def measure(reader, sessions, *, now, **kwargs):
+    """Count binary Path.open read/readline/iteration through scratch trace paths.
+
+    This is scoped logical I/O, not a general I/O interceptor: builtin/os.open,
+    resolved source paths, other stream methods and physical reads are excluded.
+    The pinned reader/cache use the covered paths; tests check their known counts.
+    """
     counter = [0]
     original = Path.open
 
@@ -96,6 +127,7 @@ def measure(reader, sessions, *, now, **kwargs):
     elapsed = time.monotonic() - start
     return rows, {
         "wall_seconds": elapsed,
+        "read_accounting_scope": "binary Path.open read/readline/iteration in scratch sessions",
         "raw_bytes_read": counter[0],
         "io_before": io_before,
         "io_after": Path("/proc/self/io").read_text(),
@@ -136,7 +168,18 @@ def main(argv=None):
             stderr=subprocess.PIPE,
             text=True,
         ).strip()
-        candidate_bytes = (ROOT / "shared/quota_headroom.py").read_bytes()
+        candidate_sources = {
+            path: subprocess.check_output(
+                ["git", "show", f"{candidate_commit}:{path}"], cwd=ROOT, stderr=subprocess.PIPE
+            )
+            for path in SOURCES
+        }
+        if any((ROOT / path).read_bytes() != data for path, data in candidate_sources.items()):
+            parser.error(
+                "candidate source differs from HEAD. "
+                "Next action: commit the reader/cache changes before measuring"
+            )
+        candidate_bytes = candidate_sources["shared/quota_headroom.py"]
     except (OSError, subprocess.CalledProcessError):
         parser.error("source identity unavailable. Next action: fetch the explicit baseline commit")
     if baseline_bytes == candidate_bytes:
@@ -160,7 +203,9 @@ def main(argv=None):
             "host full IO PSI avg10 > 10%. Next action: wait for an idle window, keep evidence unchanged"
         )
     try:
-        return replay(args, baseline_commit, baseline_bytes, candidate_commit, parser)
+        return replay(
+            args, baseline_commit, baseline_bytes, candidate_commit, candidate_sources, parser
+        )
     except (OSError, ValueError) as exc:
         parser.error(
             f"replay unavailable ({type(exc).__name__}). "
@@ -168,7 +213,7 @@ def main(argv=None):
         )
 
 
-def replay(args, baseline_commit, baseline_bytes, candidate_commit, parser):
+def replay(args, baseline_commit, baseline_bytes, candidate_commit, candidate_sources, parser):
     if not args.scratch_root.is_dir():
         parser.error("scratch root unavailable. Next action: supply an existing --scratch-root")
     now = datetime.now(UTC)
@@ -201,12 +246,18 @@ def replay(args, baseline_commit, baseline_bytes, candidate_commit, parser):
     }
     exec(compile(baseline_bytes, "quota_trace_baseline", "exec"), baseline)
     expected, full_read = measure(baseline["read_codex_token_count"], sessions, now=now)
-    cold, cold_read = measure(
-        read_codex_token_count, sessions, now=now, cache_path=directory / "cache.json"
-    )
-    warm, warm_read = measure(
-        read_codex_token_count, sessions, now=now, cache_path=directory / "cache.json"
-    )
+    if full_read["raw_bytes_read"] == 0:
+        parser.error(
+            "baseline read zero counted bytes; no reduction can be measured. "
+            "Next action: verify the baseline reader and the declared read-accounting scope"
+        )
+    with candidate_reader(candidate_sources, directory) as read_candidate:
+        cold, cold_read = measure(
+            read_candidate, sessions, now=now, cache_path=directory / "cache.json"
+        )
+        warm, warm_read = measure(
+            read_candidate, sessions, now=now, cache_path=directory / "cache.json"
+        )
     after = [fingerprint(path) for path in selected]
     equal = expected == cold == warm
     preserved = before == after
@@ -218,10 +269,10 @@ def replay(args, baseline_commit, baseline_bytes, candidate_commit, parser):
         "baseline_ref": args.baseline_ref,
         "baseline_commit": baseline_commit,
         "candidate_commit": candidate_commit,
+        "candidate_source_binding": "captured Git reader/cache bytes; worktree matched at admission",
         "baseline_sha256": hashlib.sha256(baseline_bytes).hexdigest(),
         "candidate_sha256": {
-            p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest()
-            for p in ("shared/quota_headroom.py", "shared/quota_trace_cache.py")
+            p: hashlib.sha256(data).hexdigest() for p, data in candidate_sources.items()
         },
         "baseline": full_read,
         "cold": cold_read,
