@@ -179,19 +179,33 @@ def burn_rows(readings: list[QuotaMeasurement]) -> list[QuotaMeasurement]:
 
 
 def read_codex_token_count(
-    sessions_root: Path, *, now: datetime | None = None
+    sessions_root: Path, *, now: datetime | None = None, cache_path: Path | None = None
 ) -> list[QuotaMeasurement]:
     """Select by event time across all rollouts; mtime never supplies freshness.
 
     An event dated after ``now`` (clock skew) is ignored rather than shadowing current limits.
     """
+    from shared.quota_trace_cache import QuotaTraceCache
+
+    # Cache storage must never be a raw trace or an alias into the source tree.
+    cache = (
+        QuotaTraceCache(cache_path)
+        if cache_path is not None
+        and not cache_path.resolve().is_relative_to(sessions_root.resolve())
+        else None
+    )
     samples = []
     window_samples = []
     local_usage_times = []
     latest = None
     for path in sorted(sessions_root.glob("**/rollout-*.jsonl")):
         previous_total = 0.0
-        for event in json_lines(path, contains=b'"token_count"'):
+        events = (
+            cache.records(path, json_lines)
+            if cache is not None
+            else json_lines(path, contains=b'"token_count"')
+        )
+        for event in events:
             payload = event.get("payload") or {}
             if not isinstance(payload, dict) or payload.get("type") != "token_count":
                 continue
@@ -222,6 +236,8 @@ def read_codex_token_count(
             )
             if latest is None or at >= latest[0]:
                 latest = (at, str(path), limits)
+    if cache is not None:
+        cache.save()
     if not samples:
         return [measurement("codex.subscription.weekly", reason="no_token_count_event")]
     samples.sort(key=lambda row: (row[0], row[1]))
@@ -971,12 +987,16 @@ def read_other_family(home: Path, family: str) -> list[QuotaMeasurement]:
 
 
 def collect_measurements(
-    home: Path, receipts: Path, *, now: datetime
+    home: Path, receipts: Path, *, now: datetime, trace_cache_path: Path | None = None
 ) -> dict[str, list[QuotaMeasurement]]:
     """One reading per family. A family whose source is unreadable becomes ``unobserved`` with a
     typed reason; it never stops the other families or the admission ledger around them."""
     readers = {
-        "codex": lambda: read_codex_token_count(home / ".codex/sessions", now=now),
+        "codex": lambda: read_codex_token_count(
+            home / ".codex/sessions",
+            now=now,
+            cache_path=trace_cache_path,
+        ),
         "claude": lambda: read_claude_wall_and_spend(
             receipts,
             home / ".claude/projects",
