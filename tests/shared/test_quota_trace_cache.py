@@ -380,3 +380,11 @@ def test_normal_writer_creates_and_reuses_trace_cache(tmp_path, monkeypatch, cap
     codex = next(row for row in payload["quota_snapshots"] if row["family"] == "codex")
     assert any(row["quantity"] == 20 for row in [codex, *codex["measurements"]])
     capsys.readouterr()
+
+
+def test_validation_harness_contract_failure_is_actionable(monkeypatch, capsys):
+    from scripts import quota_trace_cache_validation as validation
+
+    monkeypatch.setattr(validation.runpy, "run_path", lambda _: {})
+    assert validation.main() == 2
+    assert "Next action:" in capsys.readouterr().err
