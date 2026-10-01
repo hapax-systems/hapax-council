@@ -87,10 +87,26 @@ overwrite non-matching install artifacts.
 
 The admitted writer stages the task note, epoch sidecars, and dispatch-binding
 sidecars first. It persists the content-addressed claim-publication receipt
-before constructing or publishing any `cc-active-task-*` activation file. If a
-normal close leaves terminal dispatch-only residue, the next admitted
-`cc-claim` archives that residue under the old task's `_lineage/` before
-publishing the fresh claim.
+before constructing or publishing any `cc-active-task-*` activation file. A
+normal close clears activation markers, it retains the epoch and dispatch
+sidecars as journal-bound evidence. Run the same role's governed release before
+the next admitted claim; otherwise the claim HOLD names the release command:
+
+```bash
+cc-close <task-id>
+cc-claim --release-claim-residue <task-id>
+cc-claim <next-task-id>
+```
+
+After successful closure, expect retained epoch/dispatch evidence and a closed
+task note. After successful release, expect that evidence in the task's
+`_lineage/<task-id>/claim-residue-release-*/` archive, then a fresh admitted
+claim. A later session of the same role can release the original session's
+remaining markers as well. If release refuses, preserve the evidence and
+follow its named repair action; never delete sidecars to make the next claim
+pass. The automatic dispatch-only archive remains for legacy residue whose
+activation markers and epochs were already removed; it is not the normal
+close sequence.
 
 Governed dispatch may still pass an explicit dispatch-issued binding:
 
@@ -250,20 +266,20 @@ after-image of a claim-publication journal of that role and task, and must be on
 journal's own session sidecars. It holds the role's publication lock. It moves each file out of
 its live name, and copies the moved bytes, verified, into
 `_lineage/<task-id>/claim-residue-release-<stamp>-<role>/` (with a README). It never unlinks
-anything, and never touches the task note. It covers four shapes:
+anything, and never touches the task note. It covers these shapes:
 
 | Shape | What is left | What the release does |
 |-------|--------------|-----------------------|
 | `held_publication` (M166, M167) | A `recovery_required` journal whose note has moved past both of its images, so recovery holds on a projection conflict. Epoch and dispatch sidecars exist; the markers were never written. | Archives the sidecars, then quarantines the journal in place as `claim-pub-<sha>.quarantined-<stamp>`. |
 | `lapsed_lease` (M168) | Epoch and dispatch sidecars with no `cc-active-task-*` marker; the next claim holds on `claim_cache_missing`. | Archives the sidecars. |
-| `closed_task` (M173) | Markers, epochs and dispatch naming a row that another process closed (it is terminal and absent from `active/`); the next claim holds on `claim_task_mismatch`. | Archives all six sidecars. |
+| `closed_task` (M173) | Remaining markers, epochs and dispatch naming a terminal row absent from `active/`, including an original session's marker after a later same-role close; the next claim holds on the incomplete claim. | Archives all remaining sidecars. With no markers left, normal close instead uses the `lapsed_lease` shape above. |
 | `reassigned_task` | Markers naming an active row whose note no longer names this role (re-offered or reassigned). Every other role's claim or resume of it refuses on them. | Archives all six sidecars, run by the lane that owns them. |
 | `pipeline_held` (#4826) | Markers naming this role's row that the pipeline now holds (`pr_open` through `merged_awaiting_runtime_witness`). | Archived automatically by the next `cc-claim` of another row, which frees the slot; the row stays assigned to this role, its named resumer. |
 | `returned_claim` (#4832) | This role's own live, unstarted claim, returned with `cc-claim --return-claim` (below). | The note is returned to `offered` first; then all six sidecars are archived. |
 
 It refuses, with exit 8 and a named `claim_residue_*` reason, before the first mutation (except
 `live-differed`, below):
-- on a live claim (a marker naming a task that is not closed, or another session's marker for it);
+- on a live claim, including another session's marker for an active worker-held task;
 - on a sidecar that differs from the journal;
 - on a journal that recovery can still finish, or whose admission evidence drifted;
 - when the calling role has no journal for the task.
@@ -362,7 +378,7 @@ the claim path, not by `--release-claim-residue`, not by `--return-claim`.
 
 Use this manual procedure only with operator approval, and only for the shape the governed release
 refuses: an **expired** claim HOLD (exit 7) that names an exact `cc-active-task-*` path whose task
-is still live. For the four shapes above, use `cc-claim --release-claim-residue` instead.
+is still live. For the releasable shapes above, use `cc-claim --release-claim-residue` instead.
 
 ```bash
 set -euo pipefail
