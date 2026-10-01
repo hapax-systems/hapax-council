@@ -329,3 +329,54 @@ def test_writer_check_does_not_create_a_trace_cache(tmp_path, capsys):
     assert not (tmp_path / ".cache").exists()
     assert not (tmp_path / "out.json").exists()
     capsys.readouterr()
+
+
+def test_normal_writer_creates_and_reuses_trace_cache(tmp_path, monkeypatch, capsys):
+    from shared.quota_trace_cache import QuotaTraceCache
+
+    root = tmp_path / ".codex/sessions"
+    root.mkdir(parents=True)
+    path = root / "rollout-test.jsonl"
+    raw = line(event()) + line({"irrelevant": "x" * 70000})
+    path.write_bytes(raw)
+    script = Path(__file__).resolve().parents[2] / "scripts/hapax-quota-telemetry-writer"
+    writer = runpy.run_path(str(script))
+    argv = [
+        "--skip-receipts",
+        "--trace-home",
+        str(tmp_path),
+        "--now",
+        NOW.isoformat(),
+        "--relay-receipt-dir",
+        str(tmp_path / "receipts"),
+        "--platform-capability-receipt-dir",
+        str(tmp_path / "platform-receipts"),
+        "--out",
+        str(tmp_path / "out.json"),
+        "--live-schema-version",
+        "2",
+        "--nvidia-smi",
+        "/bin/false",
+    ]
+    observed = []
+    records = QuotaTraceCache.records
+
+    def observe(self, *args, **kwargs):
+        result = records(self, *args, **kwargs)
+        observed.append((self.hits, self.bytes_read))
+        return result
+
+    monkeypatch.setattr(QuotaTraceCache, "records", observe)
+    assert writer["main"](argv) == 0
+    cache = tmp_path / ".cache/hapax/orchestration/quota-trace-cache.json"
+    assert cache.exists()
+    before = cache.read_bytes()
+    assert writer["main"](argv) == 0
+    assert observed[0][0] == 0 and observed[1][0] == 1
+    assert observed[1][1] < observed[0][1]
+    assert cache.read_bytes() == before
+    assert path.read_bytes() == raw
+    payload = json.loads((tmp_path / "out.json").read_text())
+    codex = next(row for row in payload["quota_snapshots"] if row["family"] == "codex")
+    assert any(row["quantity"] == 20 for row in [codex, *codex["measurements"]])
+    capsys.readouterr()

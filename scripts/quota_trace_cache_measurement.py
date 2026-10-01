@@ -2,7 +2,9 @@
 """Bounded read-only replay of real Codex traces; never an installed-effect claim.
 
 Use the --trace-cache-measure mode of scripts/check-quota-headroom-mutations.py.
-Uses stable files, at most 64 MiB / 32 files; stores private hashes/results on /store-fast.
+Uses stable files, at most 64 MiB / 32 files, an explicit baseline commit and scratch root.
+Pass arguments after -- in the existing checker. Example on appendix:
+  --trace-cache-measure -- --baseline-ref <full-pre-change-SHA> --scratch-root /store-fast/tmp
 Does not invoke the live writer, probe providers, mint receipts or change original traces.
 """
 
@@ -11,7 +13,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -105,17 +109,68 @@ def main(argv=None):
     parser.add_argument("--sessions", type=Path, default=Path.home() / ".codex/sessions")
     parser.add_argument("--max-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--max-files", type=int, default=32)
-    parser.add_argument("--baseline-ref", default="HEAD")
+    parser.add_argument("--baseline-ref", required=True, help="Full pre-change commit SHA")
+    parser.add_argument(
+        "--scratch-root", type=Path, required=True, help="Existing scratch directory"
+    )
     args = parser.parse_args(argv)
     if not 0 < args.max_bytes <= 64 * 1024 * 1024 or not 0 < args.max_files <= 32:
-        parser.error("replay is bounded to 64 MiB and 32 files")
-    # Admission for this optional experiment: avoid adding reads during the incident.
-    psi = Path("/proc/pressure/io").read_text()
-    full = next(line for line in psi.splitlines() if line.startswith("full "))
-    if float(full.split("avg10=")[1].split()[0]) > 10:
-        parser.error(
-            "host full IO PSI avg10 > 10%; wait for an idle window, keep evidence unchanged"
+        parser.error("replay is bounded to 64 MiB and 32 files. Next action: lower the bounds")
+    if not re.fullmatch(r"[0-9a-f]{40}", args.baseline_ref):
+        parser.error("baseline must be a full commit SHA. Next action: supply the pre-change SHA")
+    try:
+        baseline_commit = subprocess.check_output(
+            ["git", "rev-parse", "--verify", f"{args.baseline_ref}^{{commit}}"],
+            cwd=ROOT,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).strip()
+        baseline_bytes = subprocess.check_output(
+            ["git", "show", f"{baseline_commit}:shared/quota_headroom.py"],
+            cwd=ROOT,
+            stderr=subprocess.PIPE,
         )
+        candidate_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).strip()
+        candidate_bytes = (ROOT / "shared/quota_headroom.py").read_bytes()
+    except (OSError, subprocess.CalledProcessError):
+        parser.error("source identity unavailable. Next action: fetch the explicit baseline commit")
+    if baseline_bytes == candidate_bytes:
+        parser.error(
+            "identical reader bytes cannot witness a pre-change comparison. "
+            "Next action: supply the actual pre-change commit SHA"
+        )
+    # Admission for this optional experiment: avoid adding reads during the incident.
+    try:
+        psi = Path("/proc/pressure/io").read_text()
+        full = next(line for line in psi.splitlines() if line.startswith("full "))
+        avg10 = float(dict(item.split("=", 1) for item in full.split()[1:])["avg10"])
+        if not math.isfinite(avg10) or not 0 <= avg10 <= 100:
+            raise ValueError("invalid pressure")
+    except (OSError, StopIteration, ValueError, KeyError):
+        parser.error(
+            "host IO pressure unavailable. Next action: use a Linux host with readable IO PSI"
+        )
+    if avg10 > 10:
+        parser.error(
+            "host full IO PSI avg10 > 10%. Next action: wait for an idle window, keep evidence unchanged"
+        )
+    try:
+        return replay(args, baseline_commit, baseline_bytes, candidate_commit, parser)
+    except (OSError, ValueError) as exc:
+        parser.error(
+            f"replay unavailable ({type(exc).__name__}). "
+            "Next action: check source readability and scratch capacity, then retry"
+        )
+
+
+def replay(args, baseline_commit, baseline_bytes, candidate_commit, parser):
+    if not args.scratch_root.is_dir():
+        parser.error("scratch root unavailable. Next action: supply an existing --scratch-root")
     now = datetime.now(UTC)
     selected = []
     total = 0
@@ -130,16 +185,16 @@ def main(argv=None):
         if len(selected) == args.max_files:
             break
     if not selected:
-        parser.error("no stable bounded trace sample; no measurement made")
-    directory = Path(tempfile.mkdtemp(prefix="quota-trace-measure-", dir="/store-fast/tmp"))
+        parser.error(
+            "no stable bounded trace sample; no measurement made. "
+            "Next action: point --sessions at traces unchanged for at least ten minutes"
+        )
+    directory = Path(tempfile.mkdtemp(prefix="quota-trace-measure-", dir=args.scratch_root))
     sessions = directory / "sessions"
     sessions.mkdir()
     before = [fingerprint(path) for path in selected]
     for index, path in enumerate(selected):
         (sessions / f"rollout-{index:04}.jsonl").symlink_to(path.absolute())
-    baseline_bytes = subprocess.check_output(
-        ["git", "show", f"{args.baseline_ref}:shared/quota_headroom.py"], cwd=ROOT
-    )
     baseline = {
         "__name__": "quota_trace_baseline",
         "__file__": str(ROOT / "shared/quota_headroom.py"),
@@ -161,6 +216,8 @@ def main(argv=None):
         "files": len(selected),
         "source_bytes": total,
         "baseline_ref": args.baseline_ref,
+        "baseline_commit": baseline_commit,
+        "candidate_commit": candidate_commit,
         "baseline_sha256": hashlib.sha256(baseline_bytes).hexdigest(),
         "candidate_sha256": {
             p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest()
@@ -171,6 +228,10 @@ def main(argv=None):
         "warm": warm_read,
         "exact_outputs_equal": equal,
         "raw_bytes_and_identity_preserved": preserved,
+        "outputs": {
+            label: [row.model_dump(mode="json") for row in rows]
+            for label, rows in (("baseline", expected), ("cold", cold), ("warm", warm))
+        },
         "output_sha256": hashlib.sha256(
             json.dumps([r.model_dump(mode="json") for r in expected], sort_keys=True).encode()
         ).hexdigest(),

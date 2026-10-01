@@ -20,6 +20,8 @@ CACHE = "shared/quota_trace_cache.py"
 READER = "shared/quota_headroom.py"
 WRITER = "scripts/hapax-quota-telemetry-writer"
 TEST = "tests/shared/test_quota_trace_cache.py"
+MEASUREMENT = "scripts/quota_trace_cache_measurement.py"
+MEASUREMENT_TEST = "tests/scripts/test_quota_trace_cache_measurement.py"
 MUTANTS = [
     (
         "raw-line-bound",
@@ -112,22 +114,70 @@ MUTANTS = [
         "previous = self.entries.get(key)",
         "previous = None",
     ),
+    (
+        "writer-cache",
+        "test_normal_writer_creates_and_reuses_trace_cache",
+        WRITER,
+        "if not args.check\n                else None",
+        "if False\n                else None",
+    ),
+    (
+        "baseline-identity",
+        f"{MEASUREMENT_TEST}::test_same_reader_bytes_cannot_claim_prechange_comparison",
+        MEASUREMENT,
+        "if baseline_bytes == candidate_bytes:",
+        "if False:",
+    ),
+    (
+        "baseline-immutable",
+        f"{MEASUREMENT_TEST}::test_baseline_is_required_and_must_be_immutable",
+        MEASUREMENT,
+        'if not re.fullmatch(r"[0-9a-f]{40}", args.baseline_ref):',
+        "if False:",
+    ),
+    (
+        "pressure-admission",
+        f"{MEASUREMENT_TEST}::test_unavailable_or_busy_pressure_refuses_replay",
+        MEASUREMENT,
+        "if avg10 > 10:",
+        "if False:",
+    ),
+    (
+        "pressure-finite",
+        f"{MEASUREMENT_TEST}::test_unavailable_or_busy_pressure_refuses_replay",
+        MEASUREMENT,
+        "if not math.isfinite(avg10) or not 0 <= avg10 <= 100:",
+        "if False:",
+    ),
 ]
 
 
 def main():
     harness = runpy.run_path(str(ROOT / "scripts/check-quota-headroom-mutations.py"))
-    harness["COPIES"].update({CACHE, TEST})
+    invalid = [name for name in ("COPIES", "DIRECTORIES") if not isinstance(harness.get(name), set)]
+    invalid += [
+        name
+        for name in ("build_overlay", "run_mutant", "clear_caches")
+        if not callable(harness.get(name))
+    ]
+    if invalid:
+        print(
+            f"quota trace validation harness contract missing or invalid: {', '.join(invalid)}. "
+            "Next action: restore compatible headroom harness symbols before running mutations",
+            file=sys.stderr,
+        )
+        return 2
+    harness["COPIES"].update({CACHE, TEST, MEASUREMENT, MEASUREMENT_TEST})
+    harness["DIRECTORIES"].add("tests/scripts")
     evidence = Path(tempfile.mkdtemp(prefix="quota-trace-mutations-"))
     work = harness["build_overlay"](evidence / "overlay")
     results = []
     for name, test, relative, old, new in MUTANTS:
+        node = test if "::" in test else f"{TEST}::{test}"
         original = (ROOT / relative).read_bytes()
         if original.decode().count(old) != 1:
             raise ValueError(f"nonunique mutant anchor: {name}")
-        result = harness["run_mutant"](
-            work, evidence, (name, f"{TEST}::{test}", relative, old, new)
-        )
+        result = harness["run_mutant"](work, evidence, (name, node, relative, old, new))
         restored = (work / relative).read_bytes() == original
         harness["clear_caches"](work)
         green = subprocess.run(
@@ -135,7 +185,7 @@ def main():
                 sys.executable,
                 "-m",
                 "pytest",
-                f"{TEST}::{test}",
+                node,
                 "-q",
                 "-p",
                 "no:cacheprovider",

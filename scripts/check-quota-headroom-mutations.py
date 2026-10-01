@@ -1144,8 +1144,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("names", nargs="*", help="run only these mutants (default: all)")
     args = parser.parse_args(argv)
     if args.trace_cache or args.trace_cache_measure:
-        if args.names:
-            parser.error("trace-cache modes do not take headroom mutant names")
+        if args.trace_cache and args.names:
+            parser.error(
+                "trace-cache mode does not take headroom mutant names. Next action: remove the names"
+            )
         sys.path.insert(0, str(ROOT))
         if args.trace_cache:
             from scripts.quota_trace_cache_validation import main as verify_trace_cache
@@ -1153,7 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
             return verify_trace_cache()
         from scripts.quota_trace_cache_measurement import main as measure_trace_cache
 
-        return measure_trace_cache([])
+        return measure_trace_cache(args.names)
     selected = [m for m in MUTANTS if not args.names or m[0] in args.names]
     unknown = set(args.names) - {m[0] for m in MUTANTS}
     if unknown or len({m[0] for m in MUTANTS}) != len(MUTANTS):
