@@ -20,6 +20,8 @@ CACHE = "shared/quota_trace_cache.py"
 READER = "shared/quota_headroom.py"
 WRITER = "scripts/hapax-quota-telemetry-writer"
 TEST = "tests/shared/test_quota_trace_cache.py"
+MEASUREMENT = "scripts/quota_trace_cache_measurement.py"
+MEASUREMENT_TEST = "tests/scripts/test_quota_trace_cache_measurement.py"
 MUTANTS = [
     (
         "raw-line-bound",
@@ -119,6 +121,34 @@ MUTANTS = [
         "if not args.check\n                else None",
         "if False\n                else None",
     ),
+    (
+        "baseline-identity",
+        f"{MEASUREMENT_TEST}::test_same_reader_bytes_cannot_claim_prechange_comparison",
+        MEASUREMENT,
+        "if baseline_bytes == candidate_bytes:",
+        "if False:",
+    ),
+    (
+        "baseline-immutable",
+        f"{MEASUREMENT_TEST}::test_baseline_is_required_and_must_be_immutable",
+        MEASUREMENT,
+        'if not re.fullmatch(r"[0-9a-f]{40}", args.baseline_ref):',
+        "if False:",
+    ),
+    (
+        "pressure-admission",
+        f"{MEASUREMENT_TEST}::test_unavailable_or_busy_pressure_refuses_replay",
+        MEASUREMENT,
+        "if avg10 > 10:",
+        "if False:",
+    ),
+    (
+        "pressure-finite",
+        f"{MEASUREMENT_TEST}::test_unavailable_or_busy_pressure_refuses_replay",
+        MEASUREMENT,
+        "if not math.isfinite(avg10) or not 0 <= avg10 <= 100:",
+        "if False:",
+    ),
 ]
 
 
@@ -137,7 +167,8 @@ def main():
             file=sys.stderr,
         )
         return 2
-    harness["COPIES"].update({CACHE, TEST})
+    harness["COPIES"].update({CACHE, TEST, MEASUREMENT, MEASUREMENT_TEST})
+    harness["DIRECTORIES"].add("tests/scripts")
     evidence = Path(tempfile.mkdtemp(prefix="quota-trace-mutations-"))
     work = harness["build_overlay"](evidence / "overlay")
     results = []
