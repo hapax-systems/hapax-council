@@ -14,21 +14,20 @@ cc-task closing it. An axis present at one applicable site but silently absent a
 another is the exact defect this gate forbids: intentional gaps are *visible
 expiring debt*, never silent absence.
 
-Today (origin/main) reasoning-effort, context-mode (1M), fast-mode, structured
-model-identity, and quantization are absent from the governed routing/metering
-plane (they live only at launch time — e.g. ``hapax-claude``/``hapax-claude-headless``
-defaults, and the smuggled ``model_or_engine="gpt-5.5-xhigh"``). Each absence is a
-dated waiver pointing at the cc-task that promotes it. As those tasks land, the
-detector flips to MODELED and the matching waiver MUST be removed (``test_waivers_name_real_absences``),
-which then forces the axis to be considered at *every* applicable site — the
-forcing function.
+As checked on 2026-10-01, fast_mode@quota_ledger is the remaining structural gap.
+Declared routes keep fast mode off; the Codex and Claude review invocation adapters
+reject fast mode, and SpendReceipt has no fast-mode observation. The short waiver
+below records that bounded gap. When metering lands, the detector flips to MODELED
+and the matching waiver MUST be removed (``test_waivers_name_real_absences``).
 """
 
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
@@ -40,6 +39,7 @@ import executor_contract as ec  # noqa: E402
 
 from shared.dispatcher_policy import DIMENSION_WEIGHTS  # noqa: E402
 from shared.platform_capability_registry import (  # noqa: E402
+    FastMode,
     PlatformCapabilityRoute,
     load_platform_capability_registry,
 )
@@ -110,8 +110,12 @@ APPLICABLE: dict[str, frozenset[str]] = {
 # As a closing task lands and the detector flips to MODELED, the matching waiver fails
 # test_waivers_name_real_absences and must be removed — forcing full consideration.
 # ----------------------------------------------------------------------------------
-_EXP = "2026-09-30T00:00:00Z"  # P4 build horizon; bump only with a tracked extension
-_WAIVER_TASK = "capability-consideration-waivers-20260619"
+# The 2026-09-30 expiry failed merge-group job 110214982638; retain that witness.
+# This task's parent brief permits a short extension only for a genuine metering gap.
+# Less than 72 hours gives the coordinator a bounded reconciliation window, not a
+# new build horizon or permission to launch fast mode without observed metering.
+_EXP = "2026-10-04T00:00:00Z"
+_WAIVER_TASK = "capability-fast-mode-waiver-expiry-unblock-20261001"
 
 WAIVERS: tuple[dict[str, str], ...] = (
     # effort — NOW fully modeled: registry (ExecutionDescriptor.effort), dispatcher (effort_fit +
@@ -119,14 +123,26 @@ WAIVERS: tuple[dict[str, str], ...] = (
     # context_mode — NOW fully modeled (registry + dispatcher scoring/demand). No waiver.
     # model_id — NOW fully modeled: registry (ExecutionDescriptor.model_id: ModelId) AND the spend
     # ledger (SpendReceipt.model_id, the structured replacement for free-text model_or_engine). No waiver.
-    # fast_mode — NOW modeled at registry (ExecutionDescriptor.fast_mode); still a client-side
-    # harness flag with no governed launch path, so the spend-ledger metering stays deferred.
+    # fast_mode — declared in the registry, off on every route; not metered in SpendReceipt.
     {
         "axis": "fast_mode",
         "site": "quota_ledger",
         "expires_at": _EXP,
         "tracking_ref": _WAIVER_TASK,
-        "reason": "fast-mode shifts latency/billing; meter once a governed /fast hook exists",
+        "reviewed_at": "2026-10-01T04:52:40Z",
+        "owner": "dev1-seat-codex",
+        "reason": (
+            "2026-10-01 source and installed binding check: every registry route has fast_mode=off; "
+            "shared.capability_execution rejects fast mode for Codex and Claude review; "
+            "SpendReceipt and its searched producers carry no fast-mode observation. "
+            "Reconcile the remaining metering work within 72 hours."
+        ),
+        "closure_criterion": (
+            "Before enabling a governed fast route, carry observed fast-mode identity through "
+            "the spend producer into SpendReceipt and its consumer, reject missing identity "
+            "without a silent default, prove actual metering, and remove this waiver. "
+            "Coordinator owns scope reconciliation before expiry; no automatic renewal."
+        ),
     },
     # quantization — NOW modeled at the spend ledger (SpendReceipt.quantization) as well as the
     # registry (ExecutionDescriptor.quantization). Fully modeled; no waiver.
@@ -193,6 +209,71 @@ def test_waiver_hygiene() -> None:
             f"EXPIRED waiver (intentional debt came due): {w['axis']}@{w['site']} {w['expires_at']}"
         )
         assert w["tracking_ref"].strip(), f"waiver missing tracking_ref: {w}"
+
+
+def test_fast_mode_extension_is_bounded_and_owned() -> None:
+    """A renewed exception needs current ownership and at most 72 hours to reconcile."""
+    for w in WAIVERS:
+        if (w["axis"], w["site"]) != ("fast_mode", "quota_ledger"):
+            continue
+        reviewed = datetime.fromisoformat(w["reviewed_at"].replace("Z", "+00:00"))
+        expiry = datetime.fromisoformat(w["expires_at"].replace("Z", "+00:00"))
+        assert reviewed <= datetime.now(UTC), "waiver review must already have happened"
+        assert timedelta(0) < expiry - reviewed <= timedelta(hours=72), (
+            "fast-mode extension exceeds its 72-hour reconciliation window"
+        )
+        assert w["tracking_ref"] == "capability-fast-mode-waiver-expiry-unblock-20261001"
+        assert w["owner"] == "dev1-seat-codex"
+        assert w["reason"].strip()
+        assert w["closure_criterion"].strip()
+
+
+def test_fast_mode_waiver_requires_disabled_routes() -> None:
+    """Enabling a declared fast route requires metering, even before this waiver expires."""
+    if ("fast_mode", "quota_ledger") not in _waived_pairs():
+        return
+    enabled = [
+        route.route_id
+        for route in load_platform_capability_registry().routes
+        if route.execution_descriptor.fast_mode != "off"
+    ]
+    assert not enabled, f"fast-mode routes require actual quota-ledger metering: {enabled}"
+
+
+def test_enabled_fast_route_cannot_hide_behind_waiver(monkeypatch) -> None:
+    registry = load_platform_capability_registry()
+    route = registry.routes[0]
+    enabled = route.model_copy(
+        update={
+            "execution_descriptor": route.execution_descriptor.model_copy(
+                update={"fast_mode": FastMode.FAST}
+            )
+        }
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "load_platform_capability_registry",
+        lambda: registry.model_copy(update={"routes": (enabled, *registry.routes[1:])}),
+    )
+    with pytest.raises(AssertionError, match="require actual quota-ledger metering"):
+        test_fast_mode_waiver_requires_disabled_routes()
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_waiver_expiry_boundary_remains_fail_closed(monkeypatch, offset) -> None:
+    expiry = datetime.fromisoformat(WAIVERS[0]["expires_at"].replace("Z", "+00:00"))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return expiry + timedelta(microseconds=offset)
+
+    monkeypatch.setattr(sys.modules[__name__], "datetime", Clock)
+    if offset < 0:
+        test_waiver_hygiene()
+    else:
+        with pytest.raises(AssertionError, match="EXPIRED waiver"):
+            test_waiver_hygiene()
 
 
 def test_capacity_pool_positive_control() -> None:
