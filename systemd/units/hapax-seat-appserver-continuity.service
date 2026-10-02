@@ -1,0 +1,14 @@
+[Unit]
+Description=Seat completed-turn policy (source-only, commissioning held)
+# The accepted managed owner must inject the sole SESSION port and observations.
+# This disabled template neither creates a native session nor starts an app-server.
+RefuseManualStart=yes
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -B %h/.cache/hapax/source-activation/worktree/scripts/hapax-seat-appserver-continuity
+Restart=no
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+# No Install section: production assembly, acceptance and installation are separate.
