@@ -166,7 +166,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "marked": "^18.0.3",
-    "yaml": "^2.9.0"
+    "marked": "^18.0.14",
+    "yaml": "^2.9.1"
   }
 }
