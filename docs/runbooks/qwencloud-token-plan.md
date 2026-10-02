@@ -1,108 +1,108 @@
-# Token Plan listed-client measurement
+# Token Plan listed-client support
 
-`scripts/hapax-qwencloud-claude` retains the earlier entry-point filename, but
-launches **OpenCode**, not Claude Code. It provides a bounded synthetic
-measurement of the operator's Singapore Token Plan credentials. It does not
-admit a worker, select real work, infer a second subscription, or activate a
-LiteLLM/backend route.
+Task `qwencloud-entitlement-activation-20260914`, CASE-CAPACITY-ROUTING-001;
+parent `frame/coordination-20260904/FUGU-EFFECTIVE-USE-20260911.md`, current
+2026-10-02 continuation. Source stays in held draft #4977. Independent review,
+acceptance, installed readback and applicable live admission remain separate.
+The task-id argument records provenance; it is not admission.
 
-## Authority and provenance
+## Binding and account evidence
 
-Task: `qwencloud-entitlement-activation-20260914`. The operator's 2026-09-25
-ruling permits per-task use of a listed client. The current activation brief
-requires a genuine claim, current declared route/identity, installed stage
-transition, scoped source edits, independent review, and installed readback.
-The lane's manual claim is not an MQ authority receipt. Stop at an installed
-gate refusal and report the exact predicate to the coordinator.
-
-BACKED prior art: closed, unmerged
-[PR #4630](https://github.com/hapax-systems/hapax-council/pull/4630), head
-`7e01a658541d949fef5852658c8ec47dab0aa233`, contains the earlier isolated
-Claude launcher. Its old key measurements do not establish current entitlement
-use. This implementation retains runtime FileStore resolution and isolated
-client configuration; endpoint/model escape switches now refuse, output is
-reduced to typed measurements, and the complete child process group is reaped.
-
-## Current vendor binding
-
-Alibaba's [OpenCode configuration](https://www.alibabacloud.com/help/en/model-studio/opencode)
-lists OpenCode for Token Plan Personal Edition and specifies
-`@ai-sdk/anthropic` with
+The historical `scripts/hapax-qwencloud-claude` filename launches OpenCode.
+Alibaba's [listed-client guide](https://www.alibabacloud.com/help/en/model-studio/opencode)
+pins `@ai-sdk/anthropic` to Singapore's
 `https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1`.
-The `/v1` suffix belongs to that SDK's base URL configuration.
-The underlying client constructs the provider requests; the launcher does not
-call the model API.
+The explicit Personal catalogue is pinned in `MODELS`; `auto` is excluded.
+The [Personal catalogue](https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-overview)
+and guide were rechecked 2026-10-02. No model-list HTTP probe is used.
 
-The [personal catalogue](https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-overview),
-read 2026-09-30, lists these explicit text model IDs: `qwen3.8-max`,
-`qwen3.8-flash`, `qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-flash`,
-`deepseek-v4.1-flash`, `deepseek-v4-pro`, `deepseek-v4-pro-0813`,
-`deepseek-v4-flash-0731`, `glm-5.3`, and `glm-5.2`. The launcher excludes the
-automatic selector. `qwen3.8-plus` and `qwen3.8-flash-next` were not in that
-table; their absence here is not a provider rejection measurement.
+Current credential: FileStore `alibaba-cloud/plan-api-key`. `qwencloud/apikey`
+remains an explicit legacy smoke selector, never a useful-work retry or another
+inferred subscription. The last account dashboard (2026-09-30) showed Personal
+Token Plan Pro, Singapore, and term end `2026-10-03 11:00`. Its timezone,
+renewal, current Credits and provider-served identity remain unobserved.
+Client tokens do not measure Credits. No backend/LiteLLM route, direct model
+HTTP call, polling, PAYG fallback or top-up is part of this binding.
 
-The [tool policy](https://www.alibabacloud.com/help/en/model-studio/more-tools)
-distinguishes coding clients from prohibited direct backend, automated-script,
-and API-testing consumption. Do not convert this binding to direct HTTP calls,
-a periodic probe, or a LiteLLM service. No PAYG fallback is implemented.
+BACKED source prior art: closed-unmerged [#4630](https://github.com/hapax-systems/hapax-council/pull/4630),
+head `7e01a658541d949fef5852658c8ec47dab0aa233`, supplied the isolated launcher
+and runtime credential pattern. Historical smoke success is not current
+account evidence or useful-work acceptance.
 
-## Invocation
+## Source interface and measured live blocker
 
-After the task's installed admission checks pass:
+`--check --task TASK` is keyless. Existing `--smoke` produces a fixed synthetic
+answer only and still requires external admission. The useful interface is:
 
 ```bash
 uv run --no-sync python scripts/hapax-qwencloud-claude \
-  --task qwencloud-entitlement-activation-20260914 --check
-
-uv run --no-sync python scripts/hapax-qwencloud-claude \
-  --task qwencloud-entitlement-activation-20260914 --smoke
+  --task qwencloud-entitlement-activation-20260914 \
+  --negative-tests public-source.json --output cases.json --timeout 600
 ```
 
-`--check` retrieves no credential and makes no model call. `--smoke` sends one
-fixed synthetic prompt through OpenCode, with tools denied and output capped.
-The default model is `qwen3.8-flash`. `--task` records caller provenance; it
-does not mint authority or replace the installed task/route gates.
+**Useful execution currently refuses before credential retrieval.** Native
+OpenCode 1.17.4 made three loopback requests in the offline HTTP-503 fixture,
+even with `maxRetries: 0`; its session retry layer owns further attempts.
+The single-attempt requirement therefore has no measured supported binding.
+`require_single_attempt` refuses until that boundary is repaired and verified;
+there is no production bypass option or approved version inferred from a string.
+Tests inject a synthetic single-attempt client in process only.
 
-The default FileStore name is `alibaba-cloud/plan-api-key`. Only an explicit
-`--credential legacy` selects `qwencloud/apikey`, at the same Token Plan
-endpoint. A failure never triggers the other key or a different endpoint.
-Different keys and successful calls do not establish different accounts or
-quota pools. Account/plan evidence must settle that question independently.
+Separately, the installed envelope renderer refuses credential environment
+transport because values enter its argv. Its file-bind alternative is
+incompatible with this task's memory-only credential contract. Do not rename
+the environment key to evade its heuristic, persist the key, bypass the carrier,
+or invent `opencode.headless.flash` admission. Repair requires the existing
+carrier/interface owner's governed compatible binding. No live useful call is
+claimed while either predicate remains.
 
-## Credential and process boundary
+## Input, instructions and output
 
-The key is read through `hapax-secret` at execution time, into memory, then
-passed only in the child environment. Its config contains an environment
-placeholder. The client gets a new home and all XDG paths under a verified
-`/dev/shm` tmpfs directory. Caller auth, proxy and configuration variables are
-not inherited. Project config, skills, plugins, sharing, automatic updates and
-model-catalogue fetching are disabled. Existing system-managed OpenCode config
-causes a refusal pending review. Only the fixed provider/model can be selected.
+Input is a UTF-8 JSON array of 1–6 objects, at most 32,768 bytes total. Each has
+exactly `url`, `sha256`, and `text`. URLs identify public Council `shared/`,
+`scripts/`, `tests/` or `docs/` files at a full Git commit; the text hash must
+match. The submitting admitted caller must verify public provenance against
+those URLs: matching self-supplied bytes and hashes alone proves no publication.
+The wrapper never follows a URL or reads a workspace recursively.
 
-The launcher captures stdout/stderr in memory and persists none of the raw
-client output. The printed receipt contains only fixed labels, validated
-identifiers and numeric measurements. It never prints the answer except for a
-boolean exact-match observation. Child groups are killed on timeout and after
-exit, before isolated state is removed. There is no disk-backed scratch
-fallback. A local failure or uncompleted answer returns a nonzero result.
+Useful configuration includes the exact authored global and repository
+`AGENTS.md` bodies from the source/release tree in the agent prompt, with a
+receipt hash. A standalone copied script lacking those files refuses. This
+preserves explicit canonical delivery; it does not prove semantic uptake or
+replace the existing instruction-ingestion admission boundary.
 
-The receipt records **requested** model separately from **served** model.
-OpenCode's captured events do not prove provider-served identity, account
-identity or plan quota delta; those fields remain unobserved. A successful
-synthetic response alone is not source acceptance or production admission.
+The fixed job requests six negative cases: wrong endpoint, wrong model/budget,
+unauthorized imports, missing attempted ledger row, partial/empty response,
+and invalid artifact. Every case requires input/precondition, refusal,
+transport count and persisted evidence. These are support proposals for the
+existing direct API and panel-consumer work, never acceptance or adoption.
 
-## Verification and release
+The client configuration caps output at 8,192 tokens, disables tools, title,
+summary and compaction, and uses a finite process group (maximum 600 seconds).
+Native offline request capture verified `max_tokens=8192`, zero tools, exact
+requested model and canonical instruction bytes. The success fixture made one
+request and yielded six validated cases; the failure fixture exposed retries.
+
+Only one completed text answer with exactly the six typed cases can be written.
+Empty, truncated, error, malformed, over-budget or secret-bearing answers fail.
+The artifact is create-once, mode 0600, file-fsynced and hashed; receipts contain
+measurements/hashes, not raw client events. Semantic quality still needs review.
+Raw stdout/stderr remain in memory. Client home/XDG state stays in tmpfs and the
+whole child group is killed before cleanup. Ambient auth, proxy and config are
+not inherited. Endpoint/model escape knobs refuse; failures never select a new
+key, model or billing surface.
+
+## Verification
 
 ```bash
-uv run --no-sync ruff check scripts/hapax-qwencloud-claude \
-  tests/scripts/test_hapax_qwencloud_claude.py
-uv run --no-sync pytest tests/scripts/test_hapax_qwencloud_claude.py -q
+uv run --no-sync ruff check scripts/hapax-qwencloud-claude tests/scripts/test_hapax_qwencloud_claude.py
+bwrap --unshare-net --bind / / --dev /dev --proc /proc \
+  uv run --no-sync pytest tests/scripts/test_hapax_qwencloud_claude.py -q
 ```
 
-Tests substitute executable client and credential fixtures. Safety mutation
-legs run in an isolated network namespace and must fail under the break,
-restore exact source bytes, then pass. Live smoke receipts and mutation
-observations belong in the task's vault evidence, not as invented test results.
-The coordinator owns independent review and acceptance. Installation and real
-work must wait for their applicable admission/release boundary and require
-readback of the installed bytes and behavior.
+Executable fixtures use synthetic credentials. Mutation evidence retains the
+unsafe break, red test, exact-byte restoration and green test. Native loopback
+fixtures have no provider egress. Durable results and remaining account/use
+unknowns belong in the existing entitlement-utilization vault record. Preserve
+failed specimens and the predecessor head; no installation or task closure is
+implied by passing author tests.

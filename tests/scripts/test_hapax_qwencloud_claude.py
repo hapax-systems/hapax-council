@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -63,9 +64,24 @@ def bench(tmp_path):
     return env, capture, reads, client
 
 
-def run(bench, *args, script=SCRIPT):
+def run(bench, *args, script=SCRIPT, fixture_bounds=False):
+    command = [sys.executable, str(script)]
+    if fixture_bounds:
+        # Test-only injection into the in-process module; no production bypass flag.
+        # The fake executable cannot retry or contact a provider.
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "import runpy, sys\n"
+                "ns=runpy.run_path(sys.argv.pop(1))\n"
+                "ns['main'].__globals__['require_single_attempt']=lambda: None\n"
+                "raise SystemExit(ns['main']())\n"
+            ),
+            str(script),
+        ]
     return subprocess.run(
-        [sys.executable, str(script), "--task", TASK, *args],
+        [*command, "--task", TASK, *args],
         env=bench[0],
         capture_output=True,
         text=True,
@@ -334,3 +350,192 @@ def test_timeout_kills_descendant_and_removes_client_state(bench, tmp_path):
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def useful_fixture(bench, tmp_path):
+    packet = tmp_path / "public.json"
+    code = "def call():\n    raise ValueError('admission_missing')\n"
+    packet.write_text(
+        json.dumps(
+            [
+                {
+                    "url": "https://github.com/hapax-systems/hapax-council/blob/"
+                    + "a" * 40
+                    + "/shared/example.py",
+                    "sha256": hashlib.sha256(code.encode()).hexdigest(),
+                    "text": code,
+                }
+            ]
+        )
+    )
+    artifact = useful_fixture_artifact()
+    bench[3].write_text(bench[3].read_text().replace("'QWENCLOUD_OK'", repr(json.dumps(artifact))))
+    return packet, tmp_path / "answer.json", artifact
+
+
+def test_useful_job_delivers_bounded_context_and_validated_artifact(bench, tmp_path):
+    packet, output, artifact = useful_fixture(bench, tmp_path)
+    proc = run(
+        bench,
+        "--negative-tests",
+        str(packet),
+        "--output",
+        str(output),
+        "--timeout",
+        "600",
+        fixture_bounds=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert json.loads(output.read_text()) == artifact
+    assert output.stat().st_mode & 0o777 == 0o600
+    receipt = json.loads(proc.stdout)
+    assert receipt["artifact_sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert receipt["input_sha256"] == hashlib.sha256(packet.read_bytes()).hexdigest()
+    observed = json.loads(bench[1].read_text())
+    env = observed["env"]
+    cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
+    assert env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] == "8192"
+    assert (
+        cfg["provider"]["bailian-token-plan-personal"]["models"]["qwen3.8-flash"]["limit"]["output"]
+        == 8192
+    )
+    assert cfg["compaction"] == {"auto": False, "prune": False}
+    assert all(cfg["agent"][a]["disable"] for a in ("title", "summary", "compaction"))
+    assert "missing_attempt_ledger" in observed["argv"][-1]
+    assert "def call():" in observed["argv"][-1]
+    assert (SCRIPT.parents[1] / "AGENTS.md").read_text() in cfg["agent"]["plan-probe"]["prompt"]
+    assert (SCRIPT.parents[1] / "config/agent-instructions/AGENTS.md").read_text() in cfg["agent"][
+        "plan-probe"
+    ]["prompt"]
+    assert FIXTURE_KEY not in output.read_text() + proc.stdout + proc.stderr
+    assert not Path(env["HOME"]).exists()
+
+
+@pytest.mark.parametrize(
+    "bad", ["oversize", "hash", "private", "output", "legacy", "model", "timeout"]
+)
+def test_useful_preconditions_refuse_before_credential(bench, tmp_path, bad):
+    packet, output, _ = useful_fixture(bench, tmp_path)
+    extra = {
+        "legacy": ["--credential", "legacy"],
+        "model": ["--model", "glm-5.3"],
+        "timeout": ["--timeout", "601"],
+    }.get(bad, [])
+    if bad == "oversize":
+        source = json.loads(packet.read_text())
+        source[0]["text"] = "x" * 32768
+        source[0]["sha256"] = hashlib.sha256(source[0]["text"].encode()).hexdigest()
+        packet.write_text(json.dumps(source))
+    if bad == "hash":
+        packet.write_text(packet.read_text().replace("def call", "def fail"))
+    if bad == "private":
+        packet.write_text(packet.read_text().replace("hapax-systems", "private-owner"))
+    if bad == "output":
+        output.symlink_to(tmp_path / "not-created")
+    proc = run(
+        bench, "--negative-tests", str(packet), "--output", str(output), *extra, fixture_bounds=True
+    )
+    assert proc.returncode != 0
+    if bad == "oversize":
+        assert "input_too_large" in proc.stdout
+    assert not bench[1].exists() and not bench[2].exists()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "empty",
+        "partial",
+        "error",
+        "duplicate",
+        "field",
+        "field_limit",
+        "count",
+        "secret",
+        "oversize",
+        "nonzero",
+        "late_text",
+        "token_overrun",
+        "missing_tokens",
+        "malformed",
+        "smoke",
+    ],
+)
+def test_invalid_useful_output_is_not_persisted(bench, tmp_path, bad):
+    packet, output, artifact = useful_fixture(bench, tmp_path)
+    if bad == "duplicate":
+        artifact["cases"][-1]["id"] = artifact["cases"][0]["id"]
+    if bad == "field":
+        artifact["cases"][0]["expected_refusal"] = ""
+    if bad == "field_limit":
+        artifact["cases"][0]["expected_refusal"] = "x" * 2001
+    if bad == "count":
+        artifact["cases"][0]["expected_transport_count"] = True
+    if bad == "secret":
+        artifact["cases"][0]["input_precondition"] = FIXTURE_KEY
+    if bad == "oversize":
+        for case in artifact["cases"]:
+            case["input_precondition"] = "🙂" * 1500
+    source = (
+        bench[3]
+        .read_text()
+        .replace(repr(json.dumps(useful_fixture_artifact())), repr(json.dumps(artifact)))
+    )
+    if bad == "empty":
+        source = source.replace(repr(json.dumps(artifact)), "''")
+    if bad == "smoke":
+        source = source.replace(repr(json.dumps(artifact)), "'QWENCLOUD_OK'")
+    if bad == "partial":
+        source = source.replace("'reason':'stop'", "'reason':'length'")
+    if bad == "error":
+        source += "print(json.dumps({'type':'error','error':{'name':'APIError'}}))\n"
+    if bad == "nonzero":
+        source += "sys.exit(1)\n"
+    if bad == "late_text":
+        source += "print(json.dumps({'type':'text','part':{'text':'extra'}}))\n"
+    if bad == "token_overrun":
+        source = source.replace("'output':4", "'output':8193")
+    if bad == "missing_tokens":
+        source = source.replace("'output':4", "'other':4")
+    if bad == "malformed":
+        source = source.replace(repr(json.dumps(artifact)), "{}")
+    bench[3].write_text(source)
+    proc = run(bench, "--negative-tests", str(packet), "--output", str(output), fixture_bounds=True)
+    assert proc.returncode != 0, proc.stdout
+    assert not output.exists()
+    assert FIXTURE_KEY not in proc.stdout + proc.stderr
+
+
+def test_useful_live_path_refuses_unbounded_client_retries(bench, tmp_path):
+    packet, output, _ = useful_fixture(bench, tmp_path)
+    proc = run(bench, "--negative-tests", str(packet), "--output", str(output))
+    assert proc.returncode != 0
+    assert "client_retry_control_unavailable" in proc.stdout
+    assert not bench[1].exists() and not bench[2].exists() and not output.exists()
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_artifact_creation_preserves_an_existing_result(tmp_path, symlink):
+    prior = tmp_path / "prior"
+    prior.write_text("predecessor")
+    output = tmp_path / "output" if symlink else prior
+    if symlink:
+        output.symlink_to(prior)
+    with pytest.raises(FileExistsError):
+        load_script().write_artifact(output, useful_fixture_artifact())
+    assert prior.read_text() == "predecessor"
+
+
+def useful_fixture_artifact():
+    return {
+        "cases": [
+            {
+                "id": case,
+                "input_precondition": "Supply a refused input: " + case,
+                "expected_refusal": "Refuse before delivery",
+                "expected_transport_count": 0,
+                "expected_persisted_evidence": "A fixed refusal receipt; no successful final row",
+            }
+            for case in load_script().CASE_IDS
+        ]
+    }
