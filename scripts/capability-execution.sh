@@ -17,20 +17,33 @@ bind_codex_execution() {
   local execution_lines
   execution_lines="$("$execution_python" -I -c '
 import json,sys
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
 try:
-    binding = json.loads(sys.argv[1])
+    binding = json.loads(sys.argv[1], object_pairs_hook=unique)
     args = binding["argv"]
     descriptor = binding["descriptor"]
+    target = sys.argv[3] == "codex.headless.gpt61_shadow"
     valid = (
-        isinstance(args, list) and len(args) == 4 and args[::2] == ["-c", "-c"]
+        isinstance(args, list) and len(args) == (8 if target else 4)
+        and args[::2] == ["-c"] * (4 if target else 2)
         and all(isinstance(arg, str) and arg and not any(c in arg for c in "\n\r\0") for arg in args)
     )
     if not valid:
         raise ValueError("invalid argument list")
     values = {key: json.loads(value) for key, value in (arg.split("=", 1) for arg in args[1::2])}
-    if not all(
-        isinstance(value, str) and value for value in values.values()
-    ):
+    if target:
+        sys.path.insert(0,sys.argv[2])
+        from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
+        declared = resolve_execution_descriptor(sys.argv[3])
+        if set(binding) != {"argv", "descriptor"} or descriptor != declared.model_dump(mode="json") or args != codex_execution_args(declared):
+            raise ValueError("target descriptor and invocation disagree")
+    elif not all(isinstance(value, str) and value for value in values.values()):
         raise ValueError("missing concrete identity arguments")
     if not isinstance(descriptor, dict) or descriptor.get("model_id") != values["model"] or descriptor.get("effort") != values["model_reasoning_effort"]:
         raise ValueError("descriptor and invocation disagree")
@@ -39,7 +52,7 @@ except (ValueError, TypeError, KeyError):
 print(json.dumps(args))
 print(json.dumps(descriptor))
 print("\n".join(args))
-' "$execution_binding")" || return 9
+' "$execution_binding" "$execution_root" "$EXECUTION_ROUTE")" || return 9
   mapfile -t execution_fields <<< "$execution_lines"
   export HAPAX_CODEX_EXECUTION_ARGS="${execution_fields[0]}"
   export HAPAX_CODEX_EXECUTION_DESCRIPTOR="${execution_fields[1]}"

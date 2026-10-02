@@ -91,6 +91,70 @@ def _payload() -> dict:
     return load_platform_capability_registry().model_dump(mode="json")
 
 
+def test_gpt61_shadow_has_no_inherited_quality_or_mutation_authority() -> None:
+    route = load_platform_capability_registry().require("codex.headless.gpt61_shadow")
+    assert route.route_state == "blocked"
+    assert route.authority_ceiling == "read_only"
+    assert not route.mutability.any_mutation()
+    assert route.quality_envelope.eligible_quality_floors == ["deterministic_ok"]
+    assert route.quality_envelope.explicit_equivalence_records == []
+    assert all(
+        s["score"] == s["confidence"] == 0 and s["observed_at"] is None
+        for s in route.capability_scores.model_dump().values()
+    )
+    supply = build_supply_vector(route)
+    assert supply.authority.supported_quality_floors == ["deterministic_ok"]
+    assert supply.authority.supported_mutation_surfaces == ["none"]
+
+
+@pytest.mark.parametrize(
+    "evidence", ["absent", "fresh", "stale", "wrong_account", "wrong_route", "unknown"]
+)
+def test_gpt61_shadow_generic_receipts_never_clear_measurement_holds(evidence) -> None:
+    from datetime import timedelta
+
+    now = datetime(2026, 10, 2, 21, 0, tzinfo=UTC)
+    registry = load_platform_capability_registry()
+    route = registry.require("codex.headless.gpt61_shadow").model_dump(mode="json")
+    holds = set(route["blocked_reasons"])
+    assert {
+        "gpt61_measurement_execution_contract_absent",
+        "gpt61_quality_measurement_absent",
+        "gpt61_account_route_admission_absent",
+        "gpt61_binary_binding_absent",
+    } <= holds
+    if evidence != "absent":
+        at = now - timedelta(days=2) if evidence == "stale" else now
+        rid = "codex.headless.full" if evidence == "wrong_route" else route["route_id"]
+        receipt = _make_receipt(observed_at=at, routes=[rid]).model_dump(mode="json")
+        receipt["platform"] = "codex"
+        receipt["cli"] = {"binary": "codex", "available": True, "version": "0.160.0"}
+        receipt["quota"].update(
+            status="observed",
+            reason_codes=[],
+            evidence_refs=[
+                f"platform-capability-registry:{rid}:quota:observed",
+                "test:other-account" if evidence == "wrong_account" else "test:candidate-account",
+            ],
+        )
+        if evidence == "unknown":
+            receipt["quota"].update(status="unobservable", reason_codes=["quota_unknown"])
+        _apply_receipt_to_route_payload(
+            route, PlatformCapabilityReceipt.model_validate(receipt), now=now
+        )
+        assert route["freshness"]["capability_checked_at"] is not None  # overlay actually ran
+    candidate = PlatformCapabilityRoute.model_validate(route)
+    assert holds <= set(candidate.blocked_reasons)
+    assert candidate.route_state == "blocked"
+    payload = registry.model_dump(mode="json")
+    payload["routes"] = [
+        route if r["route_id"] == route["route_id"] else r for r in payload["routes"]
+    ]
+    assert not check_registry_freshness(
+        PlatformCapabilityRegistry.model_validate(payload), route_ids=[route["route_id"]], now=now
+    ).ok
+
+
 def _route_payload(payload: dict, route_id: str) -> dict:
     return next(route for route in payload["routes"] if route["route_id"] == route_id)
 

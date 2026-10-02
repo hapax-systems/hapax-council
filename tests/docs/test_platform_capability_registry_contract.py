@@ -27,12 +27,36 @@ SCHEMA = REPO_ROOT / "schemas" / "platform-capability-registry.schema.json"
 REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 
 
+def test_gpt61_shadow_schema_route_and_inventory_agree(tmp_path) -> None:
+    from shared.capability_inventory_aggregator import aggregate_capability_inventory
+    from shared.capability_inventory_contract import inventory_baseline
+    from shared.platform_capability_registry import REQUIRED_ROUTE_IDS, PlatformCapabilityRegistry
+
+    payload = json.loads(REGISTRY.read_text())
+    schema = json.loads(SCHEMA.read_text())
+    jsonschema.validate(payload, schema)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    route_id = "codex.headless.gpt61_shadow"
+    assert route_id in REQUIRED_ROUTE_IDS
+    assert registry.require(route_id).profile == "gpt61_shadow"
+    assert "gpt-6.1-sol" in schema["$defs"]["model_id"]["enum"]
+    assert "gpt61_shadow" in schema["$defs"]["profile"]["enum"]
+    baseline = json.loads((REPO_ROOT / "config/capability-inventory-baseline.json").read_text())
+    actual = inventory_baseline(
+        aggregate_capability_inventory(
+            REPO_ROOT, bare_host_receipt_dir=tmp_path / "no-host-receipts"
+        )
+    ).model_dump(mode="json")
+    assert baseline["count"] == len(baseline["records"])
+    assert baseline["records"][route_id] == actual["records"][route_id]
+
+
 #: The F7 byte pin (first-init R3.10): the assembly annex promises that while the optional
 #: composite_assemblies field is absent, the registry's behavior is byte-identical — and the
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
 REGISTRY_BYTE_PIN = (
-    "b7680b6f12e2a7990393374a007fee55813a767002e88842db7539919713d537"  # pragma: allowlist secret
+    "4300744acccf6322205b1c26ccc594bf13f20d86c332c234b514ffbc4c6ca983"  # pragma: allowlist secret
 )
 
 
@@ -341,14 +365,26 @@ def test_seed_registry_records_dimensional_scores_with_evidence() -> None:
     registry = _json(REGISTRY)
 
     for route in registry["routes"]:
+        unmeasured = route["route_id"] == "codex.headless.gpt61_shadow"
+        if unmeasured:
+            assert route["route_state"] == "blocked"
+            assert "gpt61_quality_measurement_absent" in route["blocked_reasons"]
         scores = route["capability_scores"]
         assert set(scores) >= {"grounding", "source_editing", "test_authoring"}
         for score in scores.values():
             assert 0 <= score["score"] <= 5
             assert 0 <= score["confidence"] <= 5
-            assert score["evidence_refs"]
+            if unmeasured:
+                assert score["score"] == score["confidence"] == 0
+                assert score["observed_at"] is None
+                assert score["evidence_refs"] == []
+            else:
+                assert score["evidence_refs"]
             assert score["stale_after"]
-        assert route["tool_state"]
+        if unmeasured:
+            assert route["tool_state"] == []
+        else:
+            assert route["tool_state"]
 
 
 def test_seed_registry_records_omitted_shapes_as_evidence_only_non_supply() -> None:
