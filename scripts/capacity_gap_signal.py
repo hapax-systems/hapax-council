@@ -501,14 +501,19 @@ def _appliance_demand(bus: Path) -> int:
 def seat_role(seat_document: Path) -> tuple[str, str]:
     """Resolve §0 at send time; refuse an unreadable or ambiguous seat."""
     raw = seat_document.read_text(encoding="utf-8")
-    section = raw.split("## 0. Incumbent and lease", 1)[1].split("## 1.", 1)[0]
-    match = re.search(r"(?m)^\| incumbent \|[^\n]*?role `([^`]+)`", section)
-    if not match:
-        raise ValueError(f"seat incumbent role missing in {seat_document}")
-    role = match.group(1)
+    section = raw.partition("## 0. Incumbent and lease")[2].partition("## 1.")[0]
+    roles = re.findall(r"(?m)^\| incumbent \|[^\n]*?role `([^`]+)`", section)
+    inbox_rows = re.findall(r"(?m)^\| inbox \|([^\n]*)", section)
+    inboxes = re.findall(r"`([^`]+)`", inbox_rows[0]) if len(inbox_rows) == 1 else []
+    if len(roles) != 1 or len(inboxes) != 1:
+        raise ValueError(f"seat role or inbox missing or ambiguous in {seat_document}")
+    role = roles[0]
     if not HOST_RE.fullmatch(role):
         raise ValueError(f"invalid seat role in {seat_document}")
-    return role, role.removesuffix("-seat")
+    inbox = re.fullmatch(r"lanebus/([A-Za-z0-9][A-Za-z0-9.-]{0,99})/", inboxes[0])
+    if not inbox:
+        raise ValueError(f"invalid seat inbox in {seat_document}")
+    return role, inbox.group(1)
 
 
 def cycle(args: argparse.Namespace, now: datetime) -> set[str]:

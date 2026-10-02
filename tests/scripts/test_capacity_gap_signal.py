@@ -3,6 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from scripts import capacity_gap_signal as gap
 
 NOW = datetime(2026, 9, 28, 20, 0, tzinfo=UTC)
@@ -131,13 +133,26 @@ def test_changed_persistent_and_clear_delivery(tmp_path: Path) -> None:
 def test_seat_role_is_read_from_section_zero_each_send(tmp_path: Path) -> None:
     seat = tmp_path / "COORDINATOR-SEAT.md"
     seat.write_text(
-        "## 0. Incumbent and lease\n| incumbent | dev1-seat, role `dev1-seat`. |\n## 1. History\n"
+        "## 0. Incumbent and lease\n| incumbent | role `dev1-seat-codex`. |\n"
+        "| inbox | `lanebus/dev1/` is declared. |\n## 1. History\n"
     )
-    assert gap.seat_role(seat) == ("dev1-seat", "dev1")
+    assert gap.seat_role(seat) == ("dev1-seat-codex", "dev1")
     seat.write_text(
-        "## 0. Incumbent and lease\n| incumbent | grok-owedset, role `grok-owedset`. |\n## 1. History\n"
+        "## 0. Incumbent and lease\n| incumbent | role `grok-owedset`. |\n"
+        "| inbox | `lanebus/grok/` is declared. |\n## 1. History\n"
     )
-    assert gap.seat_role(seat) == ("grok-owedset", "grok-owedset")
+    assert gap.seat_role(seat) == ("grok-owedset", "grok")
+
+
+@pytest.mark.parametrize("inbox", ["", "lanebus/../", "lanebus/dev1/` and `lanebus/other/"])
+def test_seat_role_refuses_missing_escaping_or_ambiguous_inbox(tmp_path: Path, inbox: str) -> None:
+    seat = tmp_path / "COORDINATOR-SEAT.md"
+    seat.write_text(
+        "## 0. Incumbent and lease\n| incumbent | role `dev1-seat-codex`. |\n"
+        f"| inbox | `{inbox}` |\n## 1. History\n"
+    )
+    with pytest.raises(ValueError):
+        gap.seat_role(seat)
 
 
 def test_service_membership_comes_from_both_host_processes() -> None:
