@@ -1210,6 +1210,7 @@ NOT_A_TASK_NOTE_WRITER = {
     "scripts/check-peer-glob-coherence.py": "read-only check",
     "scripts/check-audio-authority-case.py": "read-only check",
     "scripts/cc-task-lint": "read-only lint over the vault",
+    "scripts/capacity_gap_signal.py": "reads task notes; writes cache state JSON and lanebus mail, never task notes",
     "scripts/cc_hygiene/dashboard.py": "writes the _dashboard/ markdown, never a task note",
     "scripts/cc_hygiene/ntfy.py": "writes its own notification state JSON",
     "scripts/cc-pr-review-dispatch.py": "writes review dossiers under _evidence/, not notes",
