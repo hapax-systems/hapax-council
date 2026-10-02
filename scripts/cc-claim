@@ -119,7 +119,7 @@ if [[ ! -x "$python_runner" ]]; then
   exit 3
 fi
 if [[ "$rehydrate_activation_cache_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
+  "$python_runner" -B -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
 import sys
 from pathlib import Path
 
@@ -156,7 +156,7 @@ PYEOF
   exit $?
 fi
 if [[ "$recover_claim_publications_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
+  "$python_runner" -B -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
 import sys
 from pathlib import Path
 
@@ -253,7 +253,7 @@ fi
 # the retired `<role>-$$` spawner fallback — degrades to legacy role keying
 # instead of minting an ambiguous key.
 identity_python="$python_runner"
-if [[ -n "$session_id" ]] && ! "$identity_python" -I -c '
+if [[ -n "$session_id" ]] && ! "$identity_python" -B -I -c '
 import sys
 sys.path.insert(0, sys.argv[2])
 from shared.session_identity import is_claim_keyable_session_id
@@ -298,7 +298,7 @@ vault_root_check="$CC_TASK_ROOT"
 # Governed release of this role's claim residue for one task (M166-M173). It runs before the
 # lease scan, because the residue it releases is what that scan and the claim path hold on.
 if [[ "$release_claim_residue_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" "$return_claim" <<'PYEOF'
+  "$python_runner" -B -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" "$return_claim" <<'PYEOF'
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -373,7 +373,7 @@ _cc_role_release_status() {
 # that parses and states each key once (shared.sdlc_claim._release_frontmatter), never a body
 # line or the last of duplicate keys; otherwise "unreadable", which frees nothing (#4826 r5).
 _cc_release_status() {
-  NOTE="$1" CC_REPO="$SCRIPT_DIR/.." "$python_runner" -I -c '
+  NOTE="$1" CC_REPO="$SCRIPT_DIR/.." "$python_runner" -B -I -c '
 import os, sys
 sys.path.insert(0, os.environ["CC_REPO"])
 from pathlib import Path
@@ -386,13 +386,28 @@ print("unreadable" if fields is None else (str(fields.get("status") or "").strip
 # from the caller's environment would force the charter branch without the
 # child-may-mint check having run for this claim.
 unset HAPAX_CHARTER_KEEP_TASK || true
+# Share exact role/session selection with the Python release consumers. Capture the
+# result before the loop so an unreadable/ambiguous identity cannot disappear behind
+# process substitution or a failed producer in a pipeline.
+claim_marker_rows="$("$python_runner" -B -I - "$SCRIPT_DIR/.." "$role" <<'PYEOF'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from shared.sdlc_claim import ClaimResidueArchiveHold, role_claim_marker_tasks
+
+try:
+    rows = role_claim_marker_tasks(Path.home() / ".cache" / "hapax", sys.argv[2])
+except ClaimResidueArchiveHold as exc:
+    print(f"cc-claim: {exc.message}", file=sys.stderr)
+    sys.exit(7)
+for path, task in rows:
+    print(f"{path}\t{task}")
+PYEOF
+)" || exit $?
 shopt -s nullglob
-for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
-  [[ -f "$cf" ]] || continue
-  # An unreadable marker reads as empty here and is skipped, while the Python release
-  # (shared.sdlc_claim._other_live_markers) treats one as live and holds, so the pair fails
-  # closed. Keep them paired; aligning this side changes the rule for every claim (#4826).
-  existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
+while IFS=$'\t' read -r cf existing_task; do
+  [[ -n "$cf" ]] || continue
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
     if [[ "$canon_enforced" == "1" && "$cf" == "$legacy_claim_file" && -n "$session_claim_file" && -f "$session_claim_file" ]]; then
@@ -451,7 +466,7 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   done
   if [[ -n "$child_note" ]] && \
     EXISTING_NOTE="$existing_note" CHILD_NOTE="$child_note" CHARTER_REPO="$SCRIPT_DIR/.." \
-    "$python_runner" -I -c '
+    "$python_runner" -B -I -c '
 import os, sys
 sys.path.insert(0, os.environ["CHARTER_REPO"])
 from pathlib import Path
@@ -481,7 +496,7 @@ sys.exit(0 if ok else 1)
     exit 7
   fi
   echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
-done
+done <<< "$claim_marker_rows"
 shopt -u nullglob
 
 vault_root="$CC_TASK_ROOT"
@@ -514,7 +529,7 @@ fi
 # Verify status/ownership, then either claim offered work or resume owned
 # ready-state work (PR/merge-queue maintenance).
 claim_epoch="$(date +%s)"
-"$python_runner" -I - \
+"$python_runner" -B -I - \
   "$note_path" "$role" "$task_id" "$SCRIPT_DIR/.." "$session_id" \
   "$canon_enforced" "$HOME/.cache/hapax" "$claim_epoch" \
   "$dispatch_message_id" "$dispatch_binding_hash" "$dispatch_platform" \

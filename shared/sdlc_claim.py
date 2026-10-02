@@ -7154,10 +7154,8 @@ def _other_live_markers(
 
     own = {projection.path for projection in residue}
     hits: list[Path] = []
-    for path in sorted(_normalized(cache_dir).iterdir()):
-        if path in own or not (
-            path.name == f"cc-active-task-{role}" or path.name.startswith(f"cc-active-task-{role}-")
-        ):
+    for path in role_claim_markers(_normalized(cache_dir), role):
+        if path in own:
             continue
         try:
             named = path.read_text(encoding="utf-8").splitlines()
@@ -7702,28 +7700,72 @@ def release_claim_residue(
 _SESSION_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
-def _marker_tasks(cache_dir: Path, role: str) -> list[str]:
-    """Every task this role's claim markers name, each once: the bare key, then each session
-    key. A suffix that is not a session UUID belongs to another role (``cx-red`` vs
-    ``cx-red-operator-email``). Every marker counts: a lingering session-keyed one can name a
-    different row from the bare key (codex on #4826). An unreadable marker is skipped here, as
-    scripts/cc-claim's lease loop skips it; :func:`_other_live_markers` then treats it as live
-    and the release holds, so the pair fails closed."""
+def role_claim_markers(cache_dir: Path, role: str) -> list[Path]:
+    """Select the exact bare role and UUID sessions, preserving legacy session identities.
 
-    prefix = f"cc-active-task-{role}-"
-    markers = [cache_dir / f"cc-active-task-{role}"] + sorted(
-        path
-        for path in cache_dir.glob(f"{prefix}*")
-        if _SESSION_KEY_RE.fullmatch(path.name[len(prefix) :])
-    )
-    tasks: list[str] = []
-    for marker in markers:
-        try:
-            words = marker.read_text(encoding="utf-8").split()
-        except OSError:
+    A non-UUID suffix could be a legacy session or a longer role. Resolve it from the
+    existing dispatch binding and its marker/epoch, never from a role prefix. Missing or
+    conflicting evidence holds visibly; it is not evidence that a marker is foreign.
+    """
+
+    bare = cache_dir / f"cc-active-task-{role}"
+    markers = [bare] if os.path.lexists(bare) else []
+    prefix = f"{bare.name}-"
+    for path in sorted(cache_dir.glob(f"{prefix}*")):
+        if _SESSION_KEY_RE.fullmatch(path.name[len(prefix) :]):
+            markers.append(path)
             continue
-        if words and words[0] not in tasks:
-            tasks.append(words[0])
+        key = path.name.removeprefix("cc-active-task-")
+        try:
+            binding = load_claim_dispatch_binding(claim_dispatch_binding_path(cache_dir, key))
+            marker_content, _ = _file_state(path)
+            epoch_content, _ = _file_state(cache_dir / f"cc-claim-epoch-{key}")
+            if (
+                key not in {binding.lane, f"{binding.lane}-{binding.session_id}"}
+                or marker_content != f"{binding.task_id}\n".encode()
+                or epoch_content != f"{binding.claim_epoch} {binding.task_id}\n".encode()
+            ):
+                raise ValueError("claim identity disagrees with its binding")
+        except (TaskStoreError, LifecycleTransitionError, OSError, ValueError) as exc:
+            raise _release_hold(
+                "claim_residue_live_marker",
+                f"ambiguous claim identity at {path}: {exc}",
+                f"inspect the marker at {path} and reconcile its existing epoch/dispatch binding "
+                "through the governed claim lifecycle",
+            ) from exc
+        if binding.lane == role:
+            markers.append(path)
+    return markers
+
+
+def role_claim_marker_tasks(cache_dir: Path, role: str) -> list[tuple[Path, str]]:
+    """Read the selected markers without turning malformed own evidence into absence."""
+
+    rows = []
+    for marker in role_claim_markers(cache_dir, role):
+        try:
+            content, _ = _file_state(marker)
+            words = content.decode("utf-8").split() if content is not None else []
+            if len(words) != 1:
+                raise ValueError("expected one task id")
+        except (LifecycleTransitionError, OSError, UnicodeError, ValueError) as exc:
+            raise _release_hold(
+                "claim_residue_live_marker",
+                f"unreadable claim marker at {marker}: {exc}",
+                f"inspect '{marker}' to recover the task id, then reconcile it through "
+                "the governed claim lifecycle",
+            ) from exc
+        rows.append((marker, words[0]))
+    return rows
+
+
+def _marker_tasks(cache_dir: Path, role: str) -> list[str]:
+    """Every task this role's markers name, once: the bare key, then session keys."""
+
+    tasks: list[str] = []
+    for _marker, task in role_claim_marker_tasks(cache_dir, role):
+        if task not in tasks:
+            tasks.append(task)
     return tasks
 
 

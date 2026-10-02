@@ -1730,6 +1730,110 @@ def _release_archives(home: Path, task_id: str) -> list[Path]:
     return sorted((_task_root(home) / "_lineage" / task_id).glob("claim-residue-release-*"))
 
 
+@pytest.mark.parametrize(
+    ("role", "peer"),
+    [("cx-test", "cx-test-accept"), ("cx-autoqueue", "cx-autoqueue-venv-accept")],
+)
+@pytest.mark.parametrize("expired", [False, True], ids=["fresh", "expired"])
+def test_claim_does_not_take_prefix_peer_markers(
+    tmp_path: Path, role: str, peer: str, expired: bool
+) -> None:
+    home = tmp_path / "home"
+    peer_note = _write_task(home, "active", "peer-review")
+    published = _claim(
+        home, "peer-review", extra_env={"HAPAX_AGENT_ROLE": peer, "HAPAX_AGENT_NAME": peer}
+    )
+    assert published.returncode == 0, published.stderr
+    sidecars = _role_sidecars(home, role=peer)
+    if expired:
+        old = time.time() - 86400
+        for marker in sidecars["marker"]:
+            os.utime(marker, (old, old))
+    protected = [peer_note, *(p for group in sidecars.values() for p in group)]
+    before = {p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in protected}
+    _write_task(home, "active", "own-work")
+
+    result = _claim(
+        home, "own-work", extra_env={"HAPAX_AGENT_ROLE": role, "HAPAX_AGENT_NAME": role}
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert {
+        p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in protected
+    } == before
+    for marker in _role_sidecars(home, role=role)["marker"]:
+        assert marker.read_text() == "own-work\n"
+
+
+def test_claim_preserves_bound_non_uuid_own_session(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "own-first")
+    assert _claim(home, "own-first", session_id="session-legacy").returncode == 0
+    sidecars = _role_sidecars(home, session="session-legacy")
+    sidecars["marker"][0].unlink()
+    protected = tuple(p for group in sidecars.values() for p in group)
+    before = _bytes_of(protected)
+    _write_task(home, "active", "own-next")
+
+    result = _claim(home, "own-next")
+
+    assert result.returncode == 7, result.stderr
+    assert "own-first" in result.stderr
+    assert _bytes_of(protected) == before
+
+
+@pytest.mark.parametrize("suffix", ["", f"-{_SESSION_ID}", "-session-legacy"])
+@pytest.mark.parametrize("content", [b"\xff\xfe", b"", b"unknown-task\nextra\n"])
+def test_claim_holds_unreadable_or_ambiguous_own_evidence(
+    tmp_path: Path, suffix: str, content: bytes
+) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "own-next")
+    marker = home / ".cache" / "hapax" / f"cc-active-task-cx-test{suffix}"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(content)
+
+    result = _claim(home, "own-next")
+
+    assert result.returncode == 7, result.stderr
+    assert "HOLD" in result.stderr
+    assert str(marker) in result.stderr
+    assert marker.read_bytes() == content
+
+
+@pytest.mark.parametrize("damage", ["missing", "invalid", "wrong-key", "wrong-epoch"])
+def test_claim_does_not_infer_foreign_identity_from_damaged_binding(
+    tmp_path: Path, damage: str
+) -> None:
+    home = tmp_path / "home"
+    _write_task(home, "active", "peer-review")
+    peer = "cx-test-accept"
+    assert (
+        _claim(
+            home, "peer-review", extra_env={"HAPAX_AGENT_ROLE": peer, "HAPAX_AGENT_NAME": peer}
+        ).returncode
+        == 0
+    )
+    sidecars = _role_sidecars(home, role=peer)
+    if damage == "missing":
+        sidecars["dispatch"][0].unlink()
+    elif damage == "invalid":
+        sidecars["dispatch"][0].write_bytes(b"{}\n")
+    elif damage == "wrong-epoch":
+        sidecars["epoch"][0].write_text("1 peer-review\n")
+    else:
+        sidecars["marker"][0].rename(sidecars["marker"][0].with_name("cc-active-task-cx-test-odd"))
+        sidecars["dispatch"][0].rename(
+            sidecars["dispatch"][0].with_name("cc-claim-dispatch-cx-test-odd.json")
+        )
+    _write_task(home, "active", "own-next")
+
+    result = _claim(home, "own-next")
+
+    assert result.returncode == 7, result.stderr
+    assert "HOLD" in result.stderr
+
+
 def test_release_frees_a_role_wedged_by_its_own_lapsed_lease(tmp_path: Path) -> None:
     home = tmp_path / "home"
     lapsed = _write_task(home, "active", "lapsed-row")
