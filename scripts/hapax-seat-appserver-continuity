@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""Addressed MQ obligations consuming the managed owner's sole SESSION port.
+
+The accepted owner must inject its port, request class, authenticated observations
+and observed-use evidence. Production assembly remains held. A FULL SQLite commit
+reserves each wake in existing MQ child receipts before control. Uncertain sends
+stay held. The owner authenticates ingress and revalidates live control authority.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
+
+from shared.relay_mq import _envelope_to_row
+from shared.relay_mq_envelope import Envelope
+
+if TYPE_CHECKING:
+    from shared.platform_session_contract import (
+        CoordinatorControlRequest,
+        CoordinatorControlResult,
+        CoordinatorIdentity,
+        CoordinatorObservation,
+    )
+
+
+class SessionControlPort(Protocol):
+    """Structural consumer seam until the accepted owner exports this protocol."""
+
+    def control(self, request: CoordinatorControlRequest) -> CoordinatorControlResult: ...
+
+
+def _json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _time(value: str | datetime) -> datetime:
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if parsed.tzinfo is None:
+        raise ValueError("timezone-aware evidence required")
+    return parsed.astimezone(UTC)
+
+
+@dataclass(frozen=True)
+class UseEvidence:
+    """Observed effects supplied by trusted assembly, never seat self-report.
+
+    Correlates read coverage, disposition and durable checkpoint evidence;
+    production verification/producer wiring remains separate from these fixtures.
+    """
+
+    identity: CoordinatorIdentity
+    item_id: str
+    attempt_id: str
+    turn_id: str
+    arrival_at: datetime
+    payload_sha256: str
+    read_at: datetime | None
+    disposition: str | None
+    disposition_at: datetime | None
+    checkpoint_ref: str | None
+    checkpoint_at: datetime | None
+
+
+class MQObligations:
+    """Use existing MQ child receipts; reasons are a disposable status projection.
+
+    Serializes collectors before intent persistence. Corrupt/missing MQ raises.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    @contextmanager
+    def edit(self, recipients: tuple[str, ...]) -> Iterator[list[dict]]:
+        conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=rw", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.execute("BEGIN IMMEDIATE")
+            marks = ",".join("?" for _ in recipients)
+            rows = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT m.message_id, m.created_at AS arrival_at, m.payload_hash, "
+                    "m.expires_at, r.id AS recipient_id, r.recipient, r.state, r.reason "
+                    "FROM messages m JOIN recipients r ON r.message_id=m.message_id "
+                    f"WHERE r.recipient IN ({marks}) ORDER BY m.id, r.id",
+                    recipients,
+                )
+            ]
+            for row in rows:
+                row["receipt_role"] = "seat-continuity-receipts-" + row["recipient"]
+                receipt = conn.execute(
+                    "SELECT payload, payload_hash FROM messages WHERE parent_message_id=? "
+                    "AND sender='seat-continuity' AND recipients_spec=? ORDER BY id DESC LIMIT 1",
+                    (row["message_id"], row["receipt_role"]),
+                ).fetchone()
+                raw = receipt["payload"] if receipt else None
+                if receipt and (
+                    not raw or sha256(raw.encode()).hexdigest() != receipt["payload_hash"]
+                ):
+                    raise ValueError("corrupt MQ continuity receipt; retain obligation")
+                row["persisted"] = raw
+                row["progress"] = json.loads(raw)["seat_continuity"] if raw else None
+                if raw and row["reason"] and row["reason"] != raw:
+                    row["progress"]["previous_reason"] = row["reason"]
+            yield rows
+            for row in rows:
+                if row["progress"] is not None:
+                    reason = _json({"seat_continuity": row["progress"]})
+                    if reason != row["persisted"]:
+                        envelope = Envelope(
+                            message_id="seat-continuity-" + sha256(reason.encode()).hexdigest(),
+                            sender="seat-continuity",
+                            message_type="advisory",
+                            subject="Seat continuity receipt",
+                            parent_message_id=row["message_id"],
+                            recipients_spec=row["receipt_role"],
+                            payload=reason,
+                        ).model_copy(update={"expires_at": None, "stale_after": None})
+                        values = _envelope_to_row(envelope)
+                        conn.execute(
+                            f"INSERT INTO messages ({','.join(values)}) "
+                            f"VALUES ({','.join('?' for _ in values)})",
+                            tuple(values.values()),
+                        )
+                        conn.execute(
+                            "INSERT INTO recipients (message_id,recipient,created_at,updated_at) "
+                            "VALUES (?,?,?,?)",
+                            (
+                                envelope.message_id,
+                                row["receipt_role"],
+                                values["created_at"],
+                                values["created_at"],
+                            ),
+                        )
+                    if reason != row["reason"]:
+                        conn.execute(
+                            "UPDATE recipients SET reason=? WHERE id=?",
+                            (reason, row["recipient_id"]),
+                        )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+class SeatContinuity:
+    """Subscribe to owner events before the initial MQ scan; reconcile on arrivals
+    and bounded ticks. Rescanning closes both races without polling a native peer."""
+
+    def __init__(
+        self,
+        *,
+        identity: CoordinatorIdentity,
+        actor_id: str,
+        recipients: tuple[str, ...],
+        mq: MQObligations,
+        port: SessionControlPort | None,
+        request_type: type[CoordinatorControlRequest],
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ):
+        if not recipients or len(set(recipients)) != len(recipients):
+            raise ValueError("explicit current recipient bindings required")
+        self.identity = identity
+        self.binding = identity.model_dump(mode="json")
+        self.actor_id, self.recipients = actor_id, recipients
+        self.mq, self.port, self.request_type, self.clock = mq, port, request_type, clock
+        self.turn: str | None = None
+        self.state = "unobserved"
+        self.observed_at: datetime | None = None
+        self.started: dict[str, datetime] = {}
+        self.attempts: set[str] = set()
+        self._mutex = threading.RLock()
+
+    def observe(self, event: CoordinatorObservation) -> None:
+        with self._mutex:
+            at = _time(event.observed_at)
+            if event.identity != self.identity:
+                self.state = "identity_changed"
+                return
+            if at > _time(self.clock()):
+                self.state = "future_observation"
+                return
+            if self.observed_at is not None and at < self.observed_at:
+                return
+            if event.kind == "unsupported":
+                self.state = "unsupported_observation"
+                return
+            if event.kind != "turn":
+                return
+            if event.state == "completed" and self.turn not in (None, event.turn_id):
+                return  # delayed completion for the predecessor cannot free this turn
+            if event.state == "inProgress":
+                if self.turn not in (None, event.turn_id) and self.state != "completed":
+                    self.state = "competing_turn"
+                    return
+                self.started.setdefault(event.turn_id, at)
+            self.turn, self.state, self.observed_at = event.turn_id, event.state, at
+
+    @staticmethod
+    def _hold(p: dict, reason: str) -> None:
+        p.update(status="held", reason=reason)
+
+    def _rows(self, rows: list[dict], now: datetime) -> None:
+        for row in rows:
+            if row["progress"] is None:
+                if row["state"] in ("processed", "escalated"):
+                    continue
+                row["progress"] = {
+                    "identity": self.binding,
+                    "actor_id": self.actor_id,
+                    "recipient": row["recipient"],
+                    "item_id": row["message_id"],
+                    "arrival_at": row["arrival_at"],
+                    "payload_sha256": row["payload_hash"],
+                    "status": "pending",
+                    "reason": "awaiting_completion",
+                    "previous_reason": row["reason"],
+                }
+            p = row["progress"]
+            if (
+                p["identity"] != self.binding
+                or p["actor_id"] != self.actor_id
+                or p["item_id"] != row["message_id"]
+                or p["recipient"] != row["recipient"]
+                or p["arrival_at"] != row["arrival_at"]
+                or p["payload_sha256"] != row["payload_hash"]
+            ):
+                self._hold(p, "obligation_binding_changed")
+            elif p["status"] == "complete":
+                continue
+            elif self.state not in ("completed", "inProgress", "awaiting_start", "unobserved"):
+                self._hold(p, self.state)
+            elif now < _time(p["arrival_at"]):
+                self._hold(p, "future_arrival")
+            elif (now - _time(p["arrival_at"])).total_seconds() > 600:
+                self._hold(p, "deadline_missed")
+            elif p.get("attempt_id") and p["attempt_id"] not in self.attempts:
+                self._hold(p, "restart_unresolved")
+            elif row["expires_at"] and now >= _time(row["expires_at"]):
+                self._hold(p, "arrival_expired")
+
+    def reconcile(self) -> None:
+        with self._mutex:
+            self._reconcile()
+
+    def _reconcile(self) -> None:
+        now = _time(self.clock())
+        request = None
+        with self.mq.edit(self.recipients) as rows:
+            self._rows(rows, now)
+            records = [r["progress"] for r in rows if r["progress"]]
+            outstanding = any(p.get("attempt_id") and p["status"] != "complete" for p in records)
+            used_turn = any(p.get("expected_turn_id") == self.turn for p in records)
+            for p in records:
+                if p["status"] != "pending":
+                    continue
+                if self.port is None:
+                    self._hold(p, "unsupported_seam")
+                elif self.state not in ("completed", "inProgress", "awaiting_start", "unobserved"):
+                    self._hold(p, self.state)
+                elif self.state == "completed" and self.turn and not outstanding and not used_turn:
+                    material = {**p, "expected_turn_id": self.turn}
+                    attempt = sha256(_json(material).encode()).hexdigest()
+                    request = self.request_type(
+                        actor_id=self.actor_id,
+                        identity=self.identity,
+                        operation="start_turn",
+                        expected_turn_id=self.turn,
+                        item_id=p["item_id"],
+                        attempt_id=attempt,
+                        text=f"Read and disposition addressed MQ item {p['item_id']}; record a checkpoint.",
+                    )
+                    private = request.model_dump(mode="json")
+                    private["text_sha256"] = sha256(request.text.encode()).hexdigest()
+                    p.update(
+                        status="attempted",
+                        reason="wake_reserved",
+                        attempt_id=attempt,
+                        expected_turn_id=self.turn,
+                        requested_at=now.isoformat(),
+                        request_sha256=sha256(_json(private).encode()).hexdigest(),
+                    )
+                    break
+            # Current aliases address one item, not additional actions.
+            for p in records:
+                sibling = next(
+                    (
+                        other
+                        for other in records
+                        if other["item_id"] == p["item_id"] and other.get("attempt_id")
+                    ),
+                    None,
+                )
+                if sibling and not p.get("attempt_id"):
+                    p.update(
+                        {
+                            **sibling,
+                            "recipient": p["recipient"],
+                            "previous_reason": p["previous_reason"],
+                        }
+                    )
+        if request is None:
+            return
+        self.attempts.add(request.attempt_id)
+        try:
+            result = self.port.control(request)
+        except Exception:
+            result = None  # native delivery is unknown; never retry this reserved attempt
+        with self.mq.edit(self.recipients) as rows:
+            self._rows(rows, _time(self.clock()))
+            p = next(
+                r["progress"]
+                for r in rows
+                if r["progress"] and r["progress"].get("attempt_id") == request.attempt_id
+            )
+            if p["status"] == "held":
+                return
+            if result is None:
+                self._hold(p, "wake_uncertain")
+                return
+            exact = (
+                result.identity == request.identity
+                and result.actor_id == request.actor_id
+                and result.operation == "start_turn"
+                and result.item_id == request.item_id
+                and result.attempt_id == request.attempt_id
+                and result.expected_turn_id == request.expected_turn_id
+                and result.request_sha256 == p["request_sha256"]
+                and now <= _time(result.observed_at) <= _time(self.clock())
+            )
+            if not exact:
+                self._hold(p, "uncorrelated_acknowledgement")
+            elif result.outcome != "acknowledged":
+                self._hold(p, "wake_" + result.outcome)
+            elif not result.turn_id or result.turn_id == request.expected_turn_id:
+                self._hold(p, "new_turn_missing")
+            else:
+                p.update(
+                    status="acknowledged",
+                    reason="awaiting_observed_use",
+                    turn_id=result.turn_id,
+                    acknowledged_at=_time(result.observed_at).isoformat(),
+                )
+                self.turn = result.turn_id
+                self.state = "inProgress" if result.turn_id in self.started else "awaiting_start"
+            for row in rows:
+                alias = row["progress"]
+                if alias and alias.get("attempt_id") == request.attempt_id:
+                    alias.update(
+                        {
+                            **p,
+                            "recipient": alias["recipient"],
+                            "previous_reason": alias["previous_reason"],
+                        }
+                    )
+
+    def record_use(self, evidence: UseEvidence) -> None:
+        with self._mutex, self.mq.edit(self.recipients) as rows:
+            now = _time(self.clock())
+            self._rows(rows, now)
+            for row in rows:
+                p = row["progress"]
+                if not p or p["item_id"] != evidence.item_id or p["status"] != "acknowledged":
+                    continue
+                started = self.started.get(evidence.turn_id)
+                if (
+                    evidence.identity != self.identity
+                    or evidence.attempt_id != p["attempt_id"]
+                    or evidence.turn_id != p["turn_id"]
+                    or started is None
+                    or _time(evidence.arrival_at) != _time(p["arrival_at"])
+                    or evidence.payload_sha256 != p["payload_sha256"]
+                ):
+                    self._hold(p, "use_binding_mismatch")
+                    continue
+                if (
+                    evidence.read_at is None
+                    or evidence.disposition_at is None
+                    or evidence.checkpoint_at is None
+                    or evidence.disposition not in ("normal_continuation", "review", "hold")
+                    or not evidence.checkpoint_ref
+                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", evidence.checkpoint_ref)
+                ):
+                    self._hold(p, "use_evidence_incomplete")
+                    continue
+                read, disposed, checked = map(
+                    _time,
+                    (
+                        evidence.read_at,
+                        evidence.disposition_at,
+                        evidence.checkpoint_at,
+                    ),
+                )
+                if not (_time(p["requested_at"]) <= started <= read <= disposed <= checked <= now):
+                    self._hold(p, "use_time_mismatch")
+                elif (checked - _time(p["arrival_at"])).total_seconds() > 600:
+                    self._hold(p, "deadline_missed")
+                else:
+                    p.update(
+                        status="complete",
+                        reason="observed_use",
+                        read_at=read.isoformat(),
+                        turn_started_at=started.isoformat(),
+                        disposition=evidence.disposition,
+                        disposition_at=disposed.isoformat(),
+                        checkpoint_at=checked.isoformat(),
+                        checkpoint_ref=evidence.checkpoint_ref,
+                    )
+
+    def healthy(self, item_id: str) -> bool:
+        with self._mutex, self.mq.edit(self.recipients) as rows:
+            self._rows(rows, _time(self.clock()))
+            matches = [r["progress"] for r in rows if r["message_id"] == item_id]
+            return bool(matches) and all(p and p["status"] == "complete" for p in matches)
+
+
+if __name__ == "__main__":
+    raise SystemExit(
+        "HOLD: source-only policy; next action is independent combined-source acceptance "
+        "and commissioned owner injection of SESSION port and observed-use evidence."
+    )
