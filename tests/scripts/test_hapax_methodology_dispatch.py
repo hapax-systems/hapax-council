@@ -659,11 +659,16 @@ def _recipient_row(db_path: Path, message_id: str, recipient: str) -> sqlite3.Ro
 
 
 @pytest.mark.parametrize(
-    ("status", "assigned_to"),
-    [("claimed", "gamma"), ("blocked", "unassigned"), ("done", "gamma")],
+    ("status", "assigned_to", "body"),
+    [
+        ("claimed", "gamma", ""),
+        ("blocked", "unassigned", ""),
+        ("done", "gamma", ""),
+        ("claimed", "gamma", "\n# Notes\n\nstatus: blocked\nassigned_to: unassigned\n"),
+    ],
 )
 def test_claim_sweep_preserves_aged_claim_without_cleanup_proof(
-    tmp_path: Path, status: str, assigned_to: str
+    tmp_path: Path, status: str, assigned_to: str, body: str
 ) -> None:
     module = _dispatcher_module()
     claims = tmp_path / "claims"
@@ -674,7 +679,7 @@ def test_claim_sweep_preserves_aged_claim_without_cleanup_proof(
     claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
     claim.write_text(f"{task_id}\n", encoding="utf-8")
     (active / f"{task_id}.md").write_text(
-        f"---\ntask_id: {task_id}\nstatus: {status}\nassigned_to: {assigned_to}\n---\n",
+        f"---\ntask_id: {task_id}\nstatus: {status}\nassigned_to: {assigned_to}\n---\n{body}",
         encoding="utf-8",
     )
     old = 1000.0
@@ -687,29 +692,6 @@ def test_claim_sweep_preserves_aged_claim_without_cleanup_proof(
     assert (claim.read_bytes(), claim.stat()) == before
     assert isinstance(held, module.ClaimSweepHold)
     assert held.reason_code == "cross_role_claim_cleanup_unavailable"
-
-
-def test_claim_sweep_ignores_body_status_lines(tmp_path: Path) -> None:
-    module = _dispatcher_module()
-    claims = tmp_path / "claims"
-    active = tmp_path / "tasks" / "active"
-    claims.mkdir(parents=True)
-    active.mkdir(parents=True)
-    task_id = "p0-incident-body-status"
-    claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
-    claim.write_text(f"{task_id}\n", encoding="utf-8")
-    (active / f"{task_id}.md").write_text(
-        f"---\ntask_id: {task_id}\nstatus: claimed\nassigned_to: gamma\n---\n"
-        "\n# Notes\n\nstatus: blocked\nassigned_to: unassigned\n",
-        encoding="utf-8",
-    )
-    old = 1000.0
-    os.utime(claim, (old, old))
-
-    held = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
-
-    assert claim.exists()
-    assert isinstance(held, module.ClaimSweepHold)
 
 
 def _sweep_claim_family(tmp_path: Path) -> tuple[Path, dict[Path, bytes]]:
@@ -796,7 +778,10 @@ def test_claim_sweep_preserves_concurrent_marker_replacement(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("entrypoint", ["explicit", "valid-dispatch", "invalid-dispatch"])
-def test_claim_sweep_entrypoints_preserve_other_roles(tmp_path: Path, entrypoint: str) -> None:
+@pytest.mark.parametrize("sweep_enabled", ["0", "1"])
+def test_claim_sweep_entrypoints_preserve_other_roles(
+    tmp_path: Path, entrypoint: str, sweep_enabled: str
+) -> None:
     claims, family = _sweep_claim_family(tmp_path)
     if entrypoint == "explicit":
         args = ("--sweep-stale-claims",)
@@ -813,12 +798,18 @@ def test_claim_sweep_entrypoints_preserve_other_roles(tmp_path: Path, entrypoint
     result = _run(
         tmp_path,
         *args,
-        extra_env={"HAPAX_CC_CLAIMS_DIR": str(claims), "HAPAX_DISPATCH_CLAIM_SWEEP": "1"},
+        extra_env={
+            "HAPAX_CC_CLAIMS_DIR": str(claims),
+            "HAPAX_DISPATCH_CLAIM_SWEEP": sweep_enabled,
+        },
     )
 
     assert {path: path.read_bytes() for path in family} == family
-    assert "cross_role_claim_cleanup_unavailable" in result.stderr
-    assert "next action:" in result.stderr
+    if entrypoint == "explicit" or sweep_enabled == "1":
+        assert "cross_role_claim_cleanup_unavailable" in result.stderr
+        assert "next action:" in result.stderr
+    else:
+        assert "cc-claim sweep:" not in result.stderr
     if entrypoint == "valid-dispatch":
         assert result.returncode == 0, result.stderr
         assert "eligible: requested" in result.stdout

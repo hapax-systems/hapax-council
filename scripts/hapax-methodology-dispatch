@@ -766,7 +766,11 @@ def sweep_stale_claims(
 
 
 def run_claim_sweep(task_root: Path, *, notify: bool = True) -> ClaimSweepHold:
-    """Return a bounded cleanup hold; no fleet inventory or external notification."""
+    """Return a bounded cleanup hold without inventory or external notification.
+
+    ``notify`` is retained for caller compatibility and is ignored while cleanup
+    is held. It never authorizes an external notification.
+    """
     claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
     return sweep_stale_claims(claims_dir, task_root / "active")
 
@@ -2258,7 +2262,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sweep-stale-claims",
         action="store_true",
-        help="Report the cross-role claim cleanup hold without changing claim state, then exit",
+        help=(
+            "Report the cross-role claim cleanup hold without changing claim state, then exit. "
+            "HAPAX_DISPATCH_CLAIM_SWEEP=0 suppresses only the automatic dispatch hold report; "
+            "it does not suppress this explicit request."
+        ),
     )
     parser.add_argument(
         "--print-prompt", action="store_true", help="Print the governed launch prompt"
