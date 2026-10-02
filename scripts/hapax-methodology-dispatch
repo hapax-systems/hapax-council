@@ -731,49 +731,19 @@ def lane_active_task_lease(lane: str) -> str | None:
     return None
 
 
-# --- Cross-role stale-claim sweeper (reform-identity-coherence, cluster 11) -----
-# codex-claim-audit reaps phantom cx-*/codex-* claims and cc-claim's lease-expiry
-# only frees a claim when the SAME role re-claims; nothing reaps a greek-slot /
-# test-probe / role-less claim left by a dead or wedged lane (the 12-day
-# council-eqi-phase0-run test-probe slot; the zeta dead-lane stale slot). This
-# sweep closes that gap: it scans EVERY cc-active-task-* file and frees the dead
-# ones independent of any role re-claiming.
-_CLAIM_PREFIX = "cc-active-task-"
-_UUID_SUFFIX_RE = re.compile(
-    r"-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
-_TERMINAL_CLAIM_STATUSES = {"done", "completed", "closed", "withdrawn", "superseded"}
-_UNASSIGNED_VALUES = {"", "null", "none", "~", "unassigned"}
-DEFAULT_CLAIM_LEASE_TTL = 21600  # matches cc-claim's HAPAX_CLAIM_LEASE_TTL_SECS default
+# Cross-role cleanup is held until an admitted same-claim lifecycle operation can
+# prove terminal authority, publication/marker identity and shared role-and-task
+# exclusion. Age, missing notes and task status alone cannot authorize deletion.
+DEFAULT_CLAIM_LEASE_TTL = 21600
 
 
-def _claim_role(filename: str) -> str:
-    """The lane role from a cc-active-task-<role>[-<session_id>] filename."""
-    return _UUID_SUFFIX_RE.sub("", filename[len(_CLAIM_PREFIX) :])
-
-
-def _claim_task_dead_reason(task_id: str, active_dir: Path) -> str | None:
-    """Reason the claim is dead, if the lane slot can be freed."""
-    if not task_id:
-        return "terminal-or-missing"
-    note = active_dir / f"{task_id}.md"
-    if not note.exists():
-        variants = sorted(active_dir.glob(f"{task_id}-*.md"))
-        if not variants:
-            return "terminal-or-missing"
-        note = variants[0]
-    try:
-        text = note.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None  # unreadable -> do not reap on this basis
-    fields, _body = parse_document_frontmatter(text)
-    status = str(fields.get("status", "")).strip().strip("\"'").lower()
-    assigned_to = str(fields.get("assigned_to", "")).strip().strip("\"'").lower()
-    if status in _TERMINAL_CLAIM_STATUSES:
-        return "terminal-or-missing"
-    if status == "blocked" and assigned_to in _UNASSIGNED_VALUES:
-        return "blocked-unassigned"
-    return None
+@dataclass(frozen=True)
+class ClaimSweepHold:
+    reason_code: str = "cross_role_claim_cleanup_unavailable"
+    next_action: str = (
+        "Use the governed same-claim lifecycle path; cross-role cleanup requires "
+        "exact terminal authority, publication/marker identity and shared role-and-task exclusion."
+    )
 
 
 def sweep_stale_claims(
@@ -783,67 +753,29 @@ def sweep_stale_claims(
     lease_ttl: int = DEFAULT_CLAIM_LEASE_TTL,
     grace_secs: int = 300,
     now: float | None = None,
-) -> list[tuple[str, str, str]]:
-    """Reap cc-active-task-* claim files across ALL roles. A file is reaped when its
-    task is terminal/missing (and it has settled past ``grace_secs``, so a mid
-    cc-close transition is not raced) or its lease has expired AND its role has no
-    live sibling lease — a live role whose legacy file aged (the gate heartbeats
-    only the session-keyed file) is preserved. Returns (filename, task_id, reason)."""
-    now = time.time() if now is None else now
-    try:
-        files = sorted(p for p in claims_dir.glob(f"{_CLAIM_PREFIX}*") if p.is_file())
-    except OSError:
-        return []
-    metas: list[tuple[Path, str, float, str]] = []
-    freshest_by_role: dict[str, float] = {}
-    for f in files:
-        try:
-            mtime = f.stat().st_mtime
-            raw = f.read_text(encoding="utf-8", errors="ignore").strip()
-        except OSError:
-            continue
-        task_id = raw.splitlines()[0].strip() if raw else ""
-        role = _claim_role(f.name)
-        freshest_by_role[role] = max(freshest_by_role.get(role, 0.0), mtime)
-        metas.append((f, role, mtime, task_id))
-    reaped: list[tuple[str, str, str]] = []
-    for f, role, mtime, task_id in metas:
-        age = now - mtime
-        role_is_live = (now - freshest_by_role.get(role, 0.0)) <= lease_ttl
-        dead_reason = _claim_task_dead_reason(task_id, active_dir)
-        if dead_reason and age > grace_secs:
-            reason = dead_reason
-        elif age > lease_ttl and not role_is_live:
-            reason = "lease-expired"
-        else:
-            continue
-        try:
-            f.unlink()
-        except OSError:
-            continue
-        reaped.append((f.name, task_id, reason))
-    return reaped
+) -> ClaimSweepHold:
+    """Hold fleet-wide cleanup without inspecting or changing unlocked claim state.
+
+    The existing lifecycle release helper is scoped to a role/task publication;
+    this dispatcher has no supported cross-role terminal-proof/exclusion operation.
+    Do not infer one from mtime or a frontmatter snapshot. Keep the call signature
+    for callers, but return an explicit hold, never a successful empty reap list.
+    Qualified positive cleanup remains a separate lifecycle obligation.
+    """
+    return ClaimSweepHold()
 
 
-def run_claim_sweep(task_root: Path, *, notify: bool = True) -> list[tuple[str, str, str]]:
-    """Wire the sweep to the live claims dir + vault, reap, and (best-effort) ntfy."""
+def run_claim_sweep(task_root: Path, *, notify: bool = True) -> ClaimSweepHold:
+    """Return a bounded cleanup hold; no fleet inventory or external notification."""
     claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
-    reaped = sweep_stale_claims(claims_dir, task_root / "active")
-    if reaped and notify:
-        try:
-            from shared.notify import send_notification
+    return sweep_stale_claims(claims_dir, task_root / "active")
 
-            body = "\n".join(
-                f"- {name} → {reason} ({task or '∅'})" for name, task, reason in reaped
-            )
-            send_notification(
-                f"Reaped {len(reaped)} stale cc-task claim(s)",
-                body,
-                tags=["broom", "sdlc"],
-            )
-        except Exception:
-            pass
-    return reaped
+
+def report_claim_sweep_hold(hold: ClaimSweepHold) -> None:
+    print(
+        f"cc-claim sweep: HOLD {hold.reason_code}; next action: {hold.next_action}",
+        file=sys.stderr,
+    )
 
 
 def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
@@ -2326,7 +2258,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sweep-stale-claims",
         action="store_true",
-        help="Reap lease-expired / terminal cc-task claim files across ALL lanes, then exit",
+        help="Report the cross-role claim cleanup hold without changing claim state, then exit",
     )
     parser.add_argument(
         "--print-prompt", action="store_true", help="Print the governed launch prompt"
@@ -2385,11 +2317,8 @@ def main(argv: list[str] | None = None) -> int:
                 str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
             )
         )
-        reaped = run_claim_sweep(sweep_root)
-        for name, task_id, reason in reaped:
-            print(f"reaped {name} ({reason}: {task_id or '∅'})")
-        print(f"cc-claim sweep: reaped {len(reaped)} stale claim(s)")
-        return 0
+        report_claim_sweep_hold(run_claim_sweep(sweep_root))
+        return 10
 
     if not args.task or not args.lane:
         parser.error(
@@ -2403,15 +2332,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # Opportunistic cross-role stale-claim sweep: every dispatch frees lease-expired
-    # / terminal claims fleet-wide so a dead or wedged lane never parks a slot
-    # indefinitely (reform-identity-coherence cluster 11). Best-effort — it must
-    # never block a dispatch; opt out with HAPAX_DISPATCH_CLAIM_SWEEP=0.
+    # Cleanup is held independently of dispatch admission. Report the bounded
+    # hold and continue normal task/claim/route checks, including no-launch calls.
     if os.environ.get("HAPAX_DISPATCH_CLAIM_SWEEP", "1") != "0":
-        try:
-            run_claim_sweep(task_root, notify=True)
-        except Exception:
-            pass
+        report_claim_sweep_hold(run_claim_sweep(task_root))
 
     if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
         if args.platform == "agy":

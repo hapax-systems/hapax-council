@@ -658,7 +658,13 @@ def _recipient_row(db_path: Path, message_id: str, recipient: str) -> sqlite3.Ro
     return row
 
 
-def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("status", "assigned_to"),
+    [("claimed", "gamma"), ("blocked", "unassigned"), ("done", "gamma")],
+)
+def test_claim_sweep_preserves_aged_claim_without_cleanup_proof(
+    tmp_path: Path, status: str, assigned_to: str
+) -> None:
     module = _dispatcher_module()
     claims = tmp_path / "claims"
     active = tmp_path / "tasks" / "active"
@@ -668,16 +674,19 @@ def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> N
     claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
     claim.write_text(f"{task_id}\n", encoding="utf-8")
     (active / f"{task_id}.md").write_text(
-        f"---\ntask_id: {task_id}\nstatus: blocked\nassigned_to: unassigned\n---\n",
+        f"---\ntask_id: {task_id}\nstatus: {status}\nassigned_to: {assigned_to}\n---\n",
         encoding="utf-8",
     )
     old = 1000.0
     os.utime(claim, (old, old))
 
-    reaped = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
+    before = claim.read_bytes(), claim.stat()
+    held = module.sweep_stale_claims(claims, active, now=old + 14 * 86400, grace_secs=300)
 
-    assert reaped == [(claim.name, task_id, "blocked-unassigned")]
-    assert not claim.exists()
+    assert claim.exists()
+    assert (claim.read_bytes(), claim.stat()) == before
+    assert isinstance(held, module.ClaimSweepHold)
+    assert held.reason_code == "cross_role_claim_cleanup_unavailable"
 
 
 def test_claim_sweep_ignores_body_status_lines(tmp_path: Path) -> None:
@@ -697,10 +706,127 @@ def test_claim_sweep_ignores_body_status_lines(tmp_path: Path) -> None:
     old = 1000.0
     os.utime(claim, (old, old))
 
-    reaped = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
+    held = module.sweep_stale_claims(claims, active, now=old + 301, grace_secs=300)
 
-    assert reaped == []
     assert claim.exists()
+    assert isinstance(held, module.ClaimSweepHold)
+
+
+def _sweep_claim_family(tmp_path: Path) -> tuple[Path, dict[Path, bytes]]:
+    claims = tmp_path / "claims"
+    claims.mkdir()
+    family = {}
+    for key in ("gamma", "gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"):
+        for name, content in (
+            (f"cc-active-task-{key}", b"incumbent\n"),
+            (f"cc-claim-epoch-{key}", b"1000 incumbent\n"),
+            (f"cc-claim-dispatch-{key}.json", b'{"task_id":"incumbent"}\n'),
+        ):
+            path = claims / name
+            path.write_bytes(content)
+            os.utime(path, (1000, 1000))
+            family[path] = content
+    return claims, family
+
+
+@pytest.mark.parametrize("note", [None, "not frontmatter", "---\nstatus: unknown\n---\n"])
+def test_claim_sweep_preserves_missing_or_unusable_note(tmp_path: Path, note: str | None) -> None:
+    module = _dispatcher_module()
+    claims, family = _sweep_claim_family(tmp_path)
+    active = tmp_path / "tasks" / "active"
+    active.mkdir(parents=True)
+    if note is not None:
+        (active / "incumbent.md").write_text(note)
+
+    held = module.sweep_stale_claims(claims, active, now=14 * 86400)
+
+    assert {path: path.read_bytes() for path in family} == family
+    assert isinstance(held, module.ClaimSweepHold)
+
+
+def test_claim_sweep_holds_before_reading_unlocked_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _dispatcher_module()
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("cleanup without a supported exclusion must not inspect or mutate state")
+
+    for method in ("glob", "stat", "read_text", "read_bytes", "unlink"):
+        monkeypatch.setattr(Path, method, forbidden)
+    held = module.sweep_stale_claims(tmp_path / "claims", tmp_path / "active")
+    assert isinstance(held, module.ClaimSweepHold)
+    assert held.reason_code == "cross_role_claim_cleanup_unavailable"
+    assert "same-claim" in held.next_action
+
+
+def test_claim_sweep_preserves_concurrent_marker_replacement(tmp_path: Path) -> None:
+    # Exercise real marker replacement while repeatedly entering the actual sweep.
+    # Neither old bytes nor a same-byte replacement inode authorize deletion.
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    module = _dispatcher_module()
+    claims, family = _sweep_claim_family(tmp_path)
+    marker = claims / "cc-active-task-gamma"
+    started = Event()
+    finished = Event()
+
+    def publish() -> None:
+        started.wait(timeout=5)
+        try:
+            for task in (b"incumbent\n", b"successor\n") * 50:
+                replacement = claims / "publication.tmp"
+                replacement.write_bytes(task)
+                os.utime(replacement, (1000, 1000))
+                replacement.replace(marker)
+                assert marker.read_bytes() == task
+        finally:
+            finished.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        publisher = pool.submit(publish)
+        started.set()
+        while not finished.is_set():
+            held = module.sweep_stale_claims(claims, tmp_path / "active", now=14 * 86400)
+            assert isinstance(held, module.ClaimSweepHold)
+        publisher.result(timeout=5)
+    family[marker] = b"successor\n"
+    assert {path: path.read_bytes() for path in family} == family
+
+
+@pytest.mark.parametrize("entrypoint", ["explicit", "valid-dispatch", "invalid-dispatch"])
+def test_claim_sweep_entrypoints_preserve_other_roles(tmp_path: Path, entrypoint: str) -> None:
+    claims, family = _sweep_claim_family(tmp_path)
+    if entrypoint == "explicit":
+        args = ("--sweep-stale-claims",)
+    else:
+        _worktree(tmp_path / "worktree")
+        _task(
+            tmp_path / "tasks",
+            "requested",
+            "kind: intake\ntask_type: read-only\nparent_spec: null"
+            if entrypoint == "valid-dispatch"
+            else "kind: build\nauthority_case: CASE-TEST-001\nparent_spec: null",
+        )
+        args = ("--task", "requested", "--lane", "beta", "--print-prompt")
+    result = _run(
+        tmp_path,
+        *args,
+        extra_env={"HAPAX_CC_CLAIMS_DIR": str(claims), "HAPAX_DISPATCH_CLAIM_SWEEP": "1"},
+    )
+
+    assert {path: path.read_bytes() for path in family} == family
+    assert "cross_role_claim_cleanup_unavailable" in result.stderr
+    assert "next action:" in result.stderr
+    if entrypoint == "valid-dispatch":
+        assert result.returncode == 0, result.stderr
+        assert "eligible: requested" in result.stdout
+    else:
+        assert result.returncode == 10, result.stderr
+    if entrypoint == "invalid-dispatch":
+        assert "missing required AuthorityCase/ISAP fields" in result.stderr
+    assert "reaped" not in result.stdout.lower()
 
 
 def test_lane_active_task_lease_reads_session_keyed_claim(tmp_path: Path) -> None:
