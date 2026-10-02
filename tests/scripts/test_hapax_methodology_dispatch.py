@@ -37,6 +37,78 @@ def _dispatcher_module() -> ModuleType:
     return module
 
 
+def _gpt61_shadow_fake_launcher(tmp_path):
+    launcher = tmp_path / "candidate-launcher"
+    capture = tmp_path / "candidate-argv.json"
+    launcher.write_text(
+        f"#!{sys.executable}\nimport json,sys\n"
+        f"open({str(capture)!r}, 'x').write(json.dumps(sys.argv[1:]))\n"
+    )
+    launcher.chmod(0o700)
+    return launcher, capture
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_gpt61_shadow_normal_dispatch_remains_held(read_only):
+    module = _dispatcher_module()
+    route = module.route_for("codex", "headless", "gpt61_shadow")
+    assert route is not None and not route.mutable
+    validation = module.Validation(True, "synthetic valid task", exempt_read_only=read_only)
+    ok, reason = module.platform_route_validation(route, validation)
+    assert not ok and "measurement execution contract" in reason
+    full = module.route_for("codex", "headless", "full")
+    assert module.platform_route_validation(full, validation)[0]
+
+
+def test_gpt61_shadow_dispatcher_forwards_exact_tuple_to_fake_launcher(tmp_path, monkeypatch):
+    module = _dispatcher_module()
+    launcher, capture = _gpt61_shadow_fake_launcher(tmp_path)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(launcher))
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(REGISTRY))
+    route = module.route_for("codex", "headless", "gpt61_shadow")
+    assert route is not None
+    # This exercises the consumer seam only; admission is separately held above.
+    validation = module.Validation(True, "synthetic admitted controller", exempt_read_only=True)
+    assert (
+        module.launch_codex_headless(
+            "measurement-fixture", "cx-fixture", "fixture", validation, route
+        )
+        == 0
+    )
+    assert json.loads(capture.read_text()) == [
+        "--execution-route",
+        "codex.headless.gpt61_shadow",
+        "--task",
+        "measurement-fixture",
+        "cx-fixture",
+        "fixture",
+    ]
+    assert module.launch_descriptor("codex.headless.gpt61_shadow").model_id == "gpt-6.1-sol"
+    assert module.launch_descriptor("codex.headless.full").model_id == "gpt-6-astra"
+    assert module.route_for("codex", "interactive", "gpt61_shadow") is None
+    assert module.route_for("claude", "headless", "gpt61_shadow") is None
+
+
+def test_gpt61_shadow_refuses_foreign_leaf_before_launcher(tmp_path, monkeypatch):
+    module = _dispatcher_module()
+    launcher, capture = _gpt61_shadow_fake_launcher(tmp_path)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(launcher))
+    route = module.route_for("codex", "headless", "gpt61_shadow")
+    assert route is not None
+    assert (
+        module.launch_codex_headless(
+            "measurement-fixture",
+            "cx-fixture",
+            "fixture",
+            module.Validation(True, "fixture"),
+            route,
+            execution_route="codex.headless.full",
+        )
+        == 9
+    )
+    assert not capture.exists()
+
+
 def _native_lifecycle_writer(variant: str = "matching") -> str:
     """Independent native-stream/receipt fixture, executed only by the fake launcher."""
     return (

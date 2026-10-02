@@ -228,6 +228,16 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "Execution identity comes from the selected capability descriptor.",
     ),
+    ("codex", "headless", "gpt61_shadow"): PlatformPath(
+        "codex",
+        "headless",
+        "gpt61_shadow",
+        "scripts/hapax-codex-headless --execution-route codex.headless.gpt61_shadow "
+        "--task <task> <lane> <prompt>",
+        "Codex held measurement candidate",
+        False,
+        "Identity mapping only; separate measurement execution contract and receipts required.",
+    ),
     ("codex", "headless", "spark"): PlatformPath(
         "codex",
         "headless",
@@ -1800,6 +1810,8 @@ def launch_claude_interactive(
 
 def normalize_profile(platform: str, profile: str) -> str:
     profile = profile.strip().lower().replace("_", "-")
+    if platform == "codex" and profile == "gpt61-shadow":
+        return "gpt61_shadow"
     if platform == "api" and profile in {"api-frontier", "cloud", "cloud-burst", "frontier"}:
         return "api_frontier"
     if platform == "api" and profile in {"or", "open-router", "openrouter"}:
@@ -1876,6 +1888,12 @@ def platform_route_validation(
 ) -> tuple[bool, str]:
     if route is None:
         return False, "unsupported platform/mode/profile route"
+    if (route.platform, route.mode, route.profile) == ("codex", "headless", "gpt61_shadow"):
+        return (
+            False,
+            "candidate held: separate measurement execution contract and route/account receipts "
+            "must be accepted before dispatch; next action: complete the scoped canary binding",
+        )
     if not route.mutable and not validation.exempt_read_only:
         return (
             False,
