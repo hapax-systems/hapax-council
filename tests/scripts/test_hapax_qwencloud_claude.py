@@ -104,8 +104,8 @@ def test_client_receives_only_plan_binding_and_private_state(bench):
         "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1"
     )
     assert provider["npm"] == "@ai-sdk/anthropic"
-    assert provider["options"]["apiKey"] == "{env:HAPAX_QWENCLOUD_PLAN_KEY}"
-    assert env["HAPAX_QWENCLOUD_PLAN_KEY"] == FIXTURE_KEY
+    assert provider["options"]["apiKey"] == "{env:HAPAX_QWENCLOUD_API_KEY}"
+    assert env["HAPAX_QWENCLOUD_API_KEY"] == FIXTURE_KEY
     assert FIXTURE_KEY not in json.dumps(observed["argv"])
     assert FIXTURE_KEY not in env["OPENCODE_CONFIG_CONTENT"]
     assert FIXTURE_KEY not in proc.stdout + proc.stderr
@@ -214,7 +214,7 @@ def test_printable_opaque_plan_credential_reaches_client_unchanged(bench):
     helper.write_text(helper.read_text().replace(FIXTURE_KEY, opaque))
     proc = run(bench, "--smoke")
     assert proc.returncode == 0, proc.stdout
-    assert json.loads(bench[1].read_text())["env"]["HAPAX_QWENCLOUD_PLAN_KEY"] == opaque
+    assert json.loads(bench[1].read_text())["env"]["HAPAX_QWENCLOUD_API_KEY"] == opaque
     assert opaque not in proc.stdout + proc.stderr
 
 
@@ -237,7 +237,7 @@ def test_raw_provider_output_and_failures_cannot_leak(bench):
         + (
             f"print({FIXTURE_KEY!r})\n"
             f"print({FIXTURE_KEY!r}, file=sys.stderr)\n"
-            "print(json.dumps({'type':'text','part':{'text':os.environ['HAPAX_QWENCLOUD_PLAN_KEY']}}))\n"
+            "print(json.dumps({'type':'text','part':{'text':os.environ['HAPAX_QWENCLOUD_API_KEY']}}))\n"
             "sys.exit(1)\n"
         )
     )
@@ -512,6 +512,20 @@ def test_useful_live_path_refuses_unbounded_client_retries(bench, tmp_path):
     assert proc.returncode != 0
     assert "client_retry_control_unavailable" in proc.stdout
     assert not bench[1].exists() and not bench[2].exists() and not output.exists()
+
+
+def test_actual_credential_env_refuses_carrier_argv_transport(tmp_path):
+    from shared.capability_envelope import EnvelopeDeclaration, EnvelopeRefusal, render
+
+    declaration = EnvelopeDeclaration(
+        harness="opencode",
+        argv=("opencode", "run"),
+        env={load_script().KEY_ENV: FIXTURE_KEY},
+        billing_surface="subscription",
+    )
+    with pytest.raises(EnvelopeRefusal, match="looks like a credential"):
+        render(declaration, run_root=tmp_path / "run")
+    assert not (tmp_path / "run").exists()
 
 
 @pytest.mark.parametrize("symlink", [False, True])

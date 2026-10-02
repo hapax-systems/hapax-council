@@ -23,7 +23,7 @@ from pathlib import Path
 
 BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic/v1"
 PROVIDER = "bailian-token-plan-personal"
-KEY_ENV = "HAPAX_QWENCLOUD_PLAN_KEY"
+KEY_ENV = "HAPAX_QWENCLOUD_API_KEY"
 SECRETS = {"alibaba": "alibaba-cloud/plan-api-key", "legacy": "qwencloud/apikey"}
 # Alibaba Token Plan Personal Edition catalogue, read 2026-09-30. Explicit
 # identities only: the vendor's automatic selection is deliberately not a pin.
