@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytest_plugins = ["shared.ci_pytest_diagnostics"]
+
 # Tests should not create live OpenTelemetry exporter threads. GitHub Actions
 # sets this explicitly; keep the same default locally so full-suite runs do not
 # hang on Langfuse/OTLP background workers after pytest reaches 100%.
@@ -160,6 +162,10 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
     import contextlib
     import gc
 
+    diagnostics = session.config.pluginmanager.get_plugin("ci-native-diagnostics")
+    if diagnostics:
+        diagnostics.emit("root_cleanup_start")
+
     # Audio: some tests instantiate persistent PipeWire playback helpers. If a
     # test forgets to close them, their reaper/subprocess state can keep xdist
     # workers alive after all tests pass.
@@ -262,3 +268,5 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
     # Give the gc a nudge so sockets get finalized before interpreter exit.
     with contextlib.suppress(Exception):
         gc.collect()
+    if diagnostics:
+        diagnostics.emit("root_cleanup_complete")

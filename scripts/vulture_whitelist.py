@@ -5460,3 +5460,23 @@ _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
 from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
 
 _EnvelopeOpenWatch.overflowed
+
+# Root conftest.py loads shared.ci_pytest_diagnostics through pytest_plugins.
+# pytest_configure registers Diagnostics; pytest/xdist invoke these hooks through
+# pluggy, so their dynamic consumers are invisible to Vulture's static call scan.
+from shared.ci_pytest_diagnostics import Diagnostics as _CIPytestDiagnostics  # noqa: E402
+from shared.ci_pytest_diagnostics import (
+    pytest_configure as _ci_pytest_configure,
+)
+
+_ci_pytest_configure
+_CIPytestDiagnostics.pytest_runtest_protocol
+_CIPytestDiagnostics.pytest_runtest_setup
+_CIPytestDiagnostics.pytest_runtest_call
+_CIPytestDiagnostics.pytest_runtest_teardown
+_CIPytestDiagnostics.pytest_runtest_makereport
+_CIPytestDiagnostics.pytest_runtest_logreport
+_CIPytestDiagnostics.pytest_configure_node
+_CIPytestDiagnostics.pytest_testnodeready
+_CIPytestDiagnostics.pytest_testnodedown
+_CIPytestDiagnostics.pytest_sessionfinish
