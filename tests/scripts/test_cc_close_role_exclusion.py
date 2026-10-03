@@ -95,12 +95,16 @@ def test_noncanonical_marker_holds_before_note_transition(owned):
     assert marker.read_text() == " original-task \n"
 
 
-def test_close_span_excludes_successor_until_final_marker_removal(owned, tmp_path):
+def test_close_span_excludes_successor_until_final_marker_removal(owned, tmp_path, monkeypatch):
     """Instrument the production transition body at unlink; the publisher is the real CLI."""
     import os
     import subprocess
     import sys
+    import threading
     import time
+    from contextlib import contextmanager
+
+    from shared import sdlc_claim as claim
 
     home, note, install = owned
     _write_task(home, "active", "successor-task")
@@ -141,6 +145,16 @@ def test_close_span_excludes_successor_until_final_marker_removal(owned, tmp_pat
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    publisher_entered = threading.Event()
+    original_exclusion = claim.claim_role_exclusion
+
+    @contextmanager
+    def observed_exclusion(*args, **kwargs):
+        with original_exclusion(*args, **kwargs) as held:
+            publisher_entered.set()
+            yield held
+
+    monkeypatch.setattr(claim, "claim_role_exclusion", observed_exclusion)
 
     def publish_successor():
         from shared.sdlc_claim import release_claim_residue
@@ -165,8 +179,9 @@ def test_close_span_excludes_successor_until_final_marker_removal(owned, tmp_pat
         with ThreadPoolExecutor() as pool:
             future = pool.submit(publish_successor)
             try:
+                assert not publisher_entered.wait(3), "publisher crossed close's role span"
                 with pytest.raises(TimeoutError):
-                    future.result(timeout=3)
+                    future.result(timeout=0.1)
                 assert (
                     home / ".cache/hapax/cc-active-task-cx-test"
                 ).read_text() == "original-task\n"
