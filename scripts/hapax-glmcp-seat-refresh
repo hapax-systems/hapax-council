@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Keep the GLM review seat admitted from ACCEPTED-RELEASE code only.
+#
+# Chain: one sanctioned Coding Plan reviewer round trip (PAYG OFF) -> a passive admission receipt ->
+# a live-ledger fold with the RELEASE telemetry writer -> the dispatcher's glmcp receipt refresh.
+# This replaces the frozen job-tree refresher (~/.claude/jobs/81e6afab/tmp/wt-seat, Sept-5), whose
+# schema-incompatible writer rebuilt the ledger/receipts with stale claude handling and flipped every
+# claude route to blocked every five minutes (measured 2026-10-03T01:22-01:25Z). The release writer
+# folds all three claude.* routes and preserves their account-live evidence, measured across two
+# cycles: see 30-areas/hapax/frame/GLM-ADMISSION-PRODUCER-20261003.md. Prints states only; mints
+# nothing unless a real round trip succeeds. A user timer runs it every five minutes (seat lives 900 s).
+set -euo pipefail
+
+# The scripts this calls come from the activation worktree (the governed loop's accepted release),
+# never a mutable development checkout (review finding on #4624, round 2). An inherited HAPAX_COUNCIL
+# must not redirect the governance-sensitive mint to another tree: refuse any other root unless a
+# test harness says so explicitly.
+ACTIVATION_ROOT="$HOME/.cache/hapax/source-activation/worktree"
+W="${HAPAX_COUNCIL:-$ACTIVATION_ROOT}"
+if [ "$W" != "$ACTIVATION_ROOT" ] && [ "${HAPAX_GLMCP_SEAT_ROOT_OVERRIDE:-0}" != "1" ]; then
+  echo "glm seat refresh REFUSED: HAPAX_COUNCIL=$W is not the activation worktree ($ACTIVATION_ROOT); the mint chain must not run from a mutable tree. Next: unset HAPAX_COUNCIL for this unit, or set HAPAX_GLMCP_SEAT_ROOT_OVERRIDE=1 in a test harness." >&2
+  exit 4
+fi
+PY="$W/.venv/bin/python"
+export PYTHONPATH="$W"
+
+RELAY="${HAPAX_RELAY_RECEIPT_DIR:-$HOME/.cache/hapax/relay/receipts}"
+WDIR="$HOME/.cache/hapax/glmcp-admission-witness"
+LOG="$HOME/.cache/hapax/relay/glmcp-seat-refresh.log"
+mkdir -p "$WDIR" "$RELAY" "$(dirname "$LOG")"
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
+
+# Pin the sanctioned probe so an inherited environment cannot redirect it and mint a receipt for a
+# call that never reached the Coding Plan (review findings on #4624): endpoint, credential, model,
+# thinking and PAYG-OFF are pinned here, not read from the ambient environment. PAYG OFF is the core
+# unsafe-case guard: an exhausted plan answered by API credit would exit 0 and mint a Coding Plan
+# receipt for quota that does not exist.
+endpoint="https://api.z.ai/api/coding/paas/v4"
+model="glm-5.2"
+export HAPAX_GLMCP_REVIEW_BASE_URL="$endpoint"
+export HAPAX_GLMCP_REVIEW_SECRET_ENTRY="glmcp/api-key"  # pragma: allowlist secret
+unset HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE    # pragma: allowlist secret
+export HAPAX_GLMCP_REVIEW_MODEL="$model"
+export HAPAX_GLMCP_REVIEW_THINKING=disabled
+export HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0
+
+# Freshness skip: while the relay admission still has more than SKIP_MIN_REMAINING_S of its 900 s life
+# left, the seat is fresh — do no round trip (bounds Coding Plan spend to roughly when needed).
+SKIP_MIN_REMAINING_S="${HAPAX_GLMCP_SEAT_SKIP_MIN_REMAINING_S:-450}"
+rel="$RELAY/glmcp-quota-admission.yaml"
+if [ -f "$rel" ]; then
+  obs="$(awk '/^observed_at:/{sub(/^observed_at:[[:space:]]*/, ""); print; exit}' "$rel")"
+  ttl="$(awk '/^stale_after_seconds:/{sub(/^stale_after_seconds:[[:space:]]*/, ""); print; exit}' "$rel")"
+  if [ -n "$obs" ] && [ -n "$ttl" ] && obs_s="$(date -u -d "$obs" +%s 2>/dev/null)"; then
+    left=$(( obs_s + ttl - $(date -u +%s) ))
+    if [ "$left" -gt "$SKIP_MIN_REMAINING_S" ]; then
+      log "seat fresh per relay admission (${left}s remain); no round trip"
+      echo "glm seat fresh (${left}s remain); no round trip"
+      exit 0
+    fi
+  fi
+fi
+
+# 1. one bounded round trip; output is counted, never stored. Up to three tries for transient empty
+#    replies (measured 2026-09-02 and 2026-10-03: attempt 1 empty, attempt 2 ok).
+ts="$(date -u +%Y%m%dt%H%M%Sz)"
+ref="glmcp-reviewer-roundtrip-ok-$ts"
+rc=1
+bytes=0
+for attempt in 1 2 3; do
+  out="$(printf 'Blind review smoke. Reply with exactly: OK\n' \
+    | HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS=40 HAPAX_GLMCP_REVIEW_MAX_TOKENS=16 \
+      timeout 60 "$PY" "$W/scripts/hapax-glmcp-reviewer" 2>>"$LOG")" && rc=0 || rc=$?
+  bytes=${#out}
+  echo "roundtrip attempt $attempt: exit=$rc output_bytes=$bytes endpoint=$endpoint model=$model"
+  if [ "$rc" -eq 0 ] && [ "$bytes" -gt 0 ]; then break; fi
+  [ "$attempt" -lt 3 ] && sleep "${HAPAX_GLMCP_SEAT_RETRY_SLEEP:-10}"
+done
+
+# UNSAFE-CASE GUARD: mint ONLY after a real successful Coding Plan round trip. On failure, leave the
+# seat to lapse (narrows action) rather than minting an admission for a call that did not happen.
+if [ "$rc" -ne 0 ] || [ "$bytes" -eq 0 ]; then
+  log "round trip FAILED (exit $rc, $bytes bytes); minted nothing"
+  echo "glm seat NOT refreshed: reviewer round trip failed (exit $rc, $bytes bytes); minted nothing." >&2
+  exit 2
+fi
+
+# 2. witness (schema v1): no prompt, output or secret persisted.
+cat >"$WDIR/$ref.yaml" <<EOF
+schema: hapax.glmcp_admission_witness.v1
+witness_ref: $ref
+host: $(hostname)
+observed_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+supported_tool: hapax-glmcp-reviewer
+endpoint: $endpoint
+model: $model
+invocation_exit_code: 0
+prompt_or_output_persisted: false
+secret_value_persisted: false
+EOF
+
+# 3. passive admission receipt (relay witness, 900 s).
+if ! "$PY" "$W/scripts/hapax-glmcp-quota-admission" observe-success --evidence-ref "$ref" \
+    --supported-tool hapax-glmcp-reviewer --endpoint "$endpoint" --model "$model" >>"$LOG" 2>&1; then
+  log "admission FAILED after a successful round trip (witness $WDIR/$ref.yaml)"
+  echo "glm seat NOT admitted: hapax-glmcp-quota-admission failed after a successful round trip; see $LOG." >&2
+  exit 5
+fi
+
+# 4. fold the live ledger with the RELEASE writer (--skip-receipts: ledger only, no Codex exec-auth
+#    probe). The release writer preserves claude account-live evidence; the frozen writer did not.
+if ! "$PY" "$W/scripts/hapax-quota-telemetry-writer" --json --skip-receipts >>"$LOG" 2>&1; then
+  log "ledger fold FAILED after the admission was minted"
+  echo "glm seat admitted but NOT folded: hapax-quota-telemetry-writer failed; see $LOG." >&2
+  exit 3
+fi
+
+# 5. regenerate the dispatcher's glmcp receipt from the folded ledger (glmcp-scoped: no Codex spend).
+if ! "$PY" "$W/scripts/hapax-platform-capability-receipts" --platform glmcp >>"$LOG" 2>&1; then
+  log "glmcp receipt refresh FAILED after the ledger was folded"
+  echo "glm seat folded but receipt NOT refreshed: hapax-platform-capability-receipts --platform glmcp failed; see $LOG." >&2
+  exit 6
+fi
+
+log "glm seat refreshed from release code (ref=$ref)"
+echo "glm seat refreshed from release code (ref=$ref)"
