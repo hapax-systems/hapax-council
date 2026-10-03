@@ -3056,7 +3056,11 @@ class TestVerdictBlockers:
         assert "review_dossier_writer_family_evidence_missing:evidence" in blockers
 
         dossier["writer_family_session"] = "01a0e556-a50e-7fd3-8e73-95b63b386898"
-        dossier["writer_family_evidence"] = ["claim receipt x: session=…", "family=fugu"]
+        dossier["writer_family_provider"] = "sakana"
+        dossier["writer_family_evidence"] = [
+            "native session record rollout: harness=codex provider=sakana models=fugu-max",
+            "family=fugu",
+        ]
         note = _write_dossier(tmp_path, "task-x", dossier)
         assert (
             rt.review_team_verdict_blockers(
@@ -3064,6 +3068,13 @@ class TestVerdictBlockers:
             )
             == ()
         )
+
+        dossier["writer_family"] = "claude"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            {"task_id": "task-x", "assigned_to": "fugu-omglol"}, note, pr_head_sha="a" * 40
+        )
+        assert "review_dossier_writer_family_evidence_mismatch:rerun_review_for_head" in blockers
 
     def test_a_dossier_with_an_unknown_family_source_is_refused(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
