@@ -1,4 +1,4 @@
-"""Behaviour tests for ``scripts/hapax-glmcp-seat-refresh`` — the accepted-release GLM review-seat
+"""Behaviour tests for ``scripts/hapax-glmcp-review-seat-refresh`` — the accepted-release GLM review-seat
 refresher (seat task ``glmcp-review-admission-accepted-release-producer-20261003``).
 
 Each test RUNS the real bash script against stubbed reviewer / admission / telemetry-writer / receipts
@@ -18,9 +18,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-SCRIPT = REPO / "scripts" / "hapax-glmcp-seat-refresh"
-SERVICE = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.service"
-TIMER = REPO / "systemd" / "units" / "hapax-glmcp-seat-refresh.timer"
+SCRIPT = REPO / "scripts" / "hapax-glmcp-review-seat-refresh"
+SERVICE = REPO / "systemd" / "units" / "hapax-glmcp-review-seat-refresh.service"
+TIMER = REPO / "systemd" / "units" / "hapax-glmcp-review-seat-refresh.timer"
 ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 
@@ -34,6 +34,14 @@ REVIEWER_OK = (
     "echo OK\n"
 )
 REVIEWER_FAILS = "cat >/dev/null 2>&1 || true\nexit 1\n"
+# Fails the first attempt, succeeds the second — exercises the bounded retry loop.
+REVIEWER_FAILS_THEN_OK = (
+    'n=$(cat "$HOME/attempts" 2>/dev/null || echo 0)\n'
+    'n=$((n + 1)); printf "%s" "$n" > "$HOME/attempts"\n'
+    "cat >/dev/null 2>&1 || true\n"
+    'if [ "$n" -lt 2 ]; then exit 1; fi\n'
+    "echo OK\n"
+)
 
 
 def _stub(path: Path, body: str) -> None:
@@ -139,6 +147,7 @@ def test_freshness_skip_does_no_round_trip(tmp_path: Path) -> None:
     home, env = _harness(tmp_path)
     _relay_receipt(home).write_text(
         "schema: hapax.glmcp_quota_admission.v1\nstatus: quota_available\n"
+        "route_id: glmcp.review.direct\n"
         f"observed_at: {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
         "stale_after_seconds: 900\n",
         encoding="utf-8",
@@ -151,7 +160,7 @@ def test_freshness_skip_does_no_round_trip(tmp_path: Path) -> None:
 
 def test_units_run_from_activation_worktree(tmp_path: Path) -> None:
     service = SERVICE.read_text(encoding="utf-8")
-    assert f"ExecStart={ACTIVATION_ROOT}/scripts/hapax-glmcp-seat-refresh" in service
+    assert f"ExecStart={ACTIVATION_ROOT}/scripts/hapax-glmcp-review-seat-refresh" in service
     assert f"WorkingDirectory={ACTIVATION_ROOT}" in service
     # The frozen-tree redirect must not return via the unit environment: no Environment= directive
     # may set HAPAX_COUNCIL or the root override (a mention in a comment is fine).
@@ -166,3 +175,76 @@ def test_units_run_from_activation_worktree(tmp_path: Path) -> None:
         ln.strip().lower().startswith("# hapax-timer-enable-only:") for ln in timer.splitlines()
     )
     assert "[Install]" in timer
+
+
+def _fresh_relay(home: Path, *, status: str, route: str, ttl: str) -> None:
+    _relay_receipt(home).write_text(
+        "schema: hapax.glmcp_quota_admission.v1\n"
+        f"status: {status}\n"
+        f"route_id: {route}\n"
+        f"observed_at: {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
+        f"stale_after_seconds: {ttl}\n",
+        encoding="utf-8",
+    )
+
+
+def test_relay_ttl_is_never_shell_evaluated(tmp_path: Path) -> None:
+    """Major 1 (codex, security): the relay TTL reaches bash arithmetic, so a crafted
+    ``stale_after_seconds`` must never be shell-evaluated, and a non-numeric TTL fails closed
+    (the seat refreshes rather than trusting it)."""
+    home, env = _harness(tmp_path)
+    marker = home / "INJECTED"
+    _fresh_relay(
+        home, status="quota_available", route="glmcp.review.direct", ttl=f'x[$(touch "{marker}")]'
+    )
+    result = _run(env)
+    assert not marker.exists(), "the relay TTL must never be shell-evaluated (arithmetic injection)"
+    # Fail closed: a non-numeric TTL is not trusted, so the seat refreshes (the round trip runs).
+    assert (home / "reviewer-env").exists(), "a non-numeric TTL must fail closed to a refresh"
+    assert result.returncode == 0, result.stderr
+
+
+def test_freshness_skip_requires_quota_available_status(tmp_path: Path) -> None:
+    """Major 2 (codex): a fresh receipt whose status is not ``quota_available`` (a hold/wall) must
+    NOT authorize a skip; the seat refreshes."""
+    home, env = _harness(tmp_path)
+    _fresh_relay(home, status="quota_blocked", route="glmcp.review.direct", ttl="900")
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    assert (home / "reviewer-env").exists(), "a non-available status must not authorize a skip"
+
+
+def test_freshness_skip_requires_expected_route(tmp_path: Path) -> None:
+    """Major 2 (codex): a fresh positive receipt for a DIFFERENT route must not authorize a skip."""
+    home, env = _harness(tmp_path)
+    _fresh_relay(home, status="quota_available", route="glmcp.something.else", ttl="900")
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    assert (home / "reviewer-env").exists(), "another route's receipt must not authorize a skip"
+
+
+def test_admission_failure_exits_5(tmp_path: Path) -> None:
+    """Major 3 (claude-1): exercise the exit-5 branch (admission fails after a good round trip)."""
+    home, env = _harness(tmp_path, admission_rc=1)
+    assert _run(env).returncode == 5
+
+
+def test_ledger_fold_failure_exits_3(tmp_path: Path) -> None:
+    """Major 3: exercise the exit-3 branch (ledger fold fails after the admission was minted)."""
+    home, env = _harness(tmp_path, writer_rc=1)
+    assert _run(env).returncode == 3
+
+
+def test_receipt_refresh_failure_exits_6(tmp_path: Path) -> None:
+    """Major 3: exercise the exit-6 branch (glmcp receipt refresh fails after the fold)."""
+    home, env = _harness(tmp_path, receipts_rc=1)
+    assert _run(env).returncode == 6
+
+
+def test_retry_loop_recovers_from_a_transient_failure(tmp_path: Path) -> None:
+    """Major 3: exercise the bounded retry loop — a transient first-attempt failure then success."""
+    home, env = _harness(tmp_path, reviewer=REVIEWER_FAILS_THEN_OK)
+    result = _run(env)
+    assert result.returncode == 0, result.stderr
+    assert (home / "attempts").read_text(encoding="utf-8").strip() == "2"
+    assert _relay_receipt(home).exists()

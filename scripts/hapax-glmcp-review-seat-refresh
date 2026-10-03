@@ -26,7 +26,7 @@ export PYTHONPATH="$W"
 
 RELAY="${HAPAX_RELAY_RECEIPT_DIR:-$HOME/.cache/hapax/relay/receipts}"
 WDIR="$HOME/.cache/hapax/glmcp-admission-witness"
-LOG="$HOME/.cache/hapax/relay/glmcp-seat-refresh.log"
+LOG="$HOME/.cache/hapax/relay/glmcp-review-seat-refresh.log"
 mkdir -p "$WDIR" "$RELAY" "$(dirname "$LOG")"
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 
@@ -46,15 +46,26 @@ export HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0
 
 # Freshness skip: while the relay admission still has more than SKIP_MIN_REMAINING_S of its 900 s life
 # left, the seat is fresh — do no round trip (bounds Coding Plan spend to roughly when needed).
+# Fail closed on anything but a trustworthy positive admission for THIS route (refresh instead):
+#   - status must be quota_available and route_id must be glmcp.review.direct, so a hold/wall receipt
+#     or another route's receipt can never authorize a skip (review finding codex-1, major 2);
+#   - the TTL reaches bash arithmetic, so it must be digits-only — an unvalidated relay value is a
+#     shell-arithmetic injection surface (review finding codex-1, major 1). obs_s is likewise pinned
+#     to digits before it is used in arithmetic.
 SKIP_MIN_REMAINING_S="${HAPAX_GLMCP_SEAT_SKIP_MIN_REMAINING_S:-450}"
 rel="$RELAY/glmcp-quota-admission.yaml"
 if [ -f "$rel" ]; then
+  st="$(awk '/^status:/{sub(/^status:[[:space:]]*/, ""); print; exit}' "$rel")"
+  rid="$(awk '/^route_id:/{sub(/^route_id:[[:space:]]*/, ""); print; exit}' "$rel")"
   obs="$(awk '/^observed_at:/{sub(/^observed_at:[[:space:]]*/, ""); print; exit}' "$rel")"
   ttl="$(awk '/^stale_after_seconds:/{sub(/^stale_after_seconds:[[:space:]]*/, ""); print; exit}' "$rel")"
-  if [ -n "$obs" ] && [ -n "$ttl" ] && obs_s="$(date -u -d "$obs" +%s 2>/dev/null)"; then
-    left=$(( obs_s + ttl - $(date -u +%s) ))
+  if [ "$st" = "quota_available" ] && [ "$rid" = "glmcp.review.direct" ] \
+     && [ -n "$obs" ] && [[ "$ttl" =~ ^[0-9]+$ ]] \
+     && obs_s="$(date -u -d "$obs" +%s 2>/dev/null)" && [[ "$obs_s" =~ ^[0-9]+$ ]]; then
+    now_s="$(date -u +%s)"
+    left=$(( obs_s + ttl - now_s ))
     if [ "$left" -gt "$SKIP_MIN_REMAINING_S" ]; then
-      log "seat fresh per relay admission (${left}s remain); no round trip"
+      log "seat fresh per relay admission (${left}s remain, status=$st route=$rid); no round trip"
       echo "glm seat fresh (${left}s remain); no round trip"
       exit 0
     fi
