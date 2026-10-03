@@ -27,8 +27,6 @@ def installed_fixture(tmp_path, *, explicit):
         "shared/quota_spend_ledger.py",
         "shared/quota_wall.py",
         "shared/agentic_trust_boundary.py",
-        "shared/quota_headroom.py",
-        "shared/quota_wall.py",
     ):
         target = release / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -147,14 +145,8 @@ def test_installed_copy_cannot_replace_missing_proof_with_ambient_source(tmp_pat
     else:
         Path(env["HAPAX_QUOTA_SPEND_LEDGER"]).unlink()
     result = run_installed(env, installed, workdir, terminal="tmux")
-    if defect == "missing-module":
-        # Main's quota_headroom import is earlier than the guard entrypoint.
-        # A missing release module still refuses before any child execution.
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "No module named 'shared.quota_spend_ledger'" in result.stderr
-    else:
-        assert result.returncode == 4, result.stdout + result.stderr
-        assert "Next action:" in result.stderr
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "Next action:" in result.stderr
     assert not observed.exists()
     assert not (tmp_path / "home/.cache/hapax/claude-spawns").exists()
 
