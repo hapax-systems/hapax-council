@@ -184,6 +184,21 @@ def test_cli_refuses_other_sessions_before_tmux() -> None:
     assert "unsupported_seat_session" in result.stderr
 
 
+@pytest.mark.parametrize("timeout", [float("inf"), float("nan"), 301.0])
+def test_unbounded_timeout_refuses_before_paste(tmp_path: Path, timeout: float) -> None:
+    pane = Pane(tmp_path / "ack")
+    with pytest.raises(seat_send.DeliveryError, match="invalid_timeout"):
+        seat_send.send(
+            "hapax-codex-seat",
+            "Instruction",
+            transport=pane,
+            ack_path=tmp_path / "ack",
+            ack_token="fixture-token",
+            timeout=timeout,
+        )
+    assert not pane.pasted
+
+
 def test_real_tmux_transport_uses_separate_submit_call(monkeypatch) -> None:
     calls = []
 

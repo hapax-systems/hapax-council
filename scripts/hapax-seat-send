@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import secrets
 import shlex
@@ -117,8 +118,8 @@ def send(
         raise DeliveryError("unsupported_seat_session")
     if not message.strip():
         raise DeliveryError("empty_message")
-    if timeout <= NUDGE_AFTER_SECONDS:
-        raise DeliveryError("timeout_too_short")
+    if not math.isfinite(timeout) or not NUDGE_AFTER_SECONDS < timeout <= 300:
+        raise DeliveryError("invalid_timeout")
     transport = transport or TmuxTransport()
     if not transport.exists(session):
         raise DeliveryError("missing_session")
