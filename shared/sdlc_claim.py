@@ -2571,6 +2571,7 @@ def _claim_publication_lock(
     intent: ClaimPublicationIntent,
     *,
     lock_root: Path | None,
+    additional_note_paths: Sequence[Path] = (),
 ) -> Iterator[None]:
     # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
     # it, so a caller that already holds one and asks for this is hold-and-wait across two
@@ -2641,7 +2642,7 @@ def _claim_publication_lock(
         # direction is enforced at the top of this function, not inferred from the number of
         # places the role lock is taken: the guard refuses when the calling thread already holds
         # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
-        with projected_path_lock(intent.task_id, (intent.note_path,)):
+        with projected_path_lock(intent.task_id, (intent.note_path, *additional_note_paths)):
             yield
     finally:
         if locked:
@@ -7699,6 +7700,21 @@ def release_claim_residue(
         )
 
 
+def _other_role_task_marker(
+    cache_dir: Path, task_id: str, own: Sequence[FileProjection]
+) -> Path | None:
+    owned = {item.path for item in own}
+    for path in sorted(_normalized(cache_dir).glob("cc-active-task-*")):
+        if path in owned:
+            continue
+        try:
+            if path.is_symlink() or task_id in path.read_text(encoding="utf-8").splitlines():
+                return path
+        except (OSError, UnicodeError):
+            return path
+    return None
+
+
 def recover_closed_dispatch_residue(
     *,
     vault_root: Path,
@@ -7712,9 +7728,10 @@ def recover_closed_dispatch_residue(
 ) -> ClaimResidueRelease:
     """Archive dispatch-only residue left by the old cc-close, with its exact receipt.
 
-    Missing epochs are admitted only for a terminal row in closed/ with both markers
-    absent. The applied manifest and immutable receipt must agree on every projected
-    byte. This is intentionally separate from ordinary lapsed-lease release.
+    Missing epochs are admitted only when both markers are absent and the exact row
+    is terminal in closed/, or was re-offered unassigned after that old claim.
+    The applied manifest and immutable receipt must agree on every projected byte.
+    This is intentionally separate from ordinary lapsed-lease release.
     """
 
     if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
@@ -7726,7 +7743,17 @@ def recover_closed_dispatch_residue(
             f"no journal of {role} for {task_id}",
             "run recovery as the role that claimed the task",
         )
-    with _claim_publication_lock(journals[0].intent, lock_root=lock_root):
+    active_path = _normalized(journals[0].intent.note_path)
+    if active_path.parent != _normalized(vault_root / "active"):
+        raise _release_hold(
+            "claim_residue_foreign_note",
+            str(active_path),
+            "preserve the journal; its note is outside the declared active task root",
+        )
+    closed_path = _normalized(vault_root / "closed" / active_path.name)
+    with _claim_publication_lock(
+        journals[0].intent, lock_root=lock_root, additional_note_paths=(closed_path,)
+    ):
         journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
         applied = [journal for journal in journals if journal.state == "applied"]
         if len(applied) != 1 or len(journals) != 1:
@@ -7736,21 +7763,39 @@ def recover_closed_dispatch_residue(
                 "preserve all journals and resolve the publication identity",
             )
         journal = applied[0]
-        closed_note = _task_note_path_for_any_state(vault_root, task_id)
-        closed_fields = _release_frontmatter(closed_note) if closed_note is not None else None
-        if (
-            _task_in_active(vault_root, task_id)
-            or closed_note is None
-            or closed_note.parent != vault_root / "closed"
-            or closed_fields is None
-            or closed_fields.get("task_id") != task_id
-            or closed_fields.get("assigned_to") != role
-            or str(closed_fields.get("status") or "").strip() not in TASK_TERMINAL_STATUSES
-        ):
+        row = _task_note_path_for_any_state(vault_root, task_id)
+        fields = _release_frontmatter(row) if row is not None else None
+        if row is None or row.is_symlink() or fields is None or fields.get("task_id") != task_id:
             raise _release_hold(
-                "claim_residue_not_closed",
-                f"{task_id} has no uniquely terminal closed row",
-                "finish the task through cc-close before recovering dispatch residue",
+                "claim_residue_row_identity",
+                task_id,
+                "preserve the sidecars and repair the row identity",
+            )
+        status = str(fields.get("status") or "").strip()
+        closed = (
+            _normalized(row) == closed_path
+            and not _task_in_active(vault_root, task_id)
+            and status in TASK_TERMINAL_STATUSES
+            and fields.get("assigned_to") == role
+        )
+        empty_claimed = fields.get("claimed_at") is None or (
+            isinstance(fields.get("claimed_at"), str) and is_nullish(fields["claimed_at"])
+        )
+        empty_completed = fields.get("completed_at") is None or (
+            isinstance(fields.get("completed_at"), str) and is_nullish(fields["completed_at"])
+        )
+        reopened = (
+            _normalized(row) == active_path
+            and status == "offered"
+            and fields.get("assigned_to") == "unassigned"
+            and empty_claimed
+            and empty_completed
+        )
+        if not (closed or reopened):
+            raise _release_hold(
+                "claim_residue_not_closed_or_reoffered",
+                task_id,
+                "require an exact terminal closed row or an offered, unassigned row with no claim",
             )
         intent, projections, publication_id, state, consumption = _load_any_manifest(
             journal.manifest_path
@@ -7800,6 +7845,12 @@ def recover_closed_dispatch_residue(
                 str(others[0]),
                 "preserve the other session's marker",
             )
+        if other_role := _other_role_task_marker(cache_dir, task_id, residue):
+            raise _release_hold(
+                "claim_residue_live_marker",
+                str(other_role),
+                "preserve the other role's marker",
+            )
         present: list[FileProjection] = []
         staged: dict[Path, Path] = {}
         for item in dispatch:
@@ -7833,11 +7884,17 @@ def recover_closed_dispatch_residue(
             present,
             journal=journal,
             vault_root=vault_root,
-            shape="closed_dispatch",
+            shape="closed_dispatch" if closed else "reopened_dispatch",
             observed_at=observed_at,
             staged=staged,
         )
-        return ClaimResidueRelease("closed_dispatch", publication_id, archive_dir, archived, None)
+        return ClaimResidueRelease(
+            "closed_dispatch" if closed else "reopened_dispatch",
+            publication_id,
+            archive_dir,
+            archived,
+            None,
+        )
 
 
 _SESSION_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")

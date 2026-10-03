@@ -315,6 +315,7 @@ from shared.gate0b_claim_publication_install import default_claim_publication_ro
 from shared.sdlc_claim import (
     ClaimPublicationError, ClaimResidueArchiveHold, recover_closed_dispatch_residue,
 )
+from shared.task_note_lock import TaskNoteLockError
 
 roots = default_claim_publication_roots(home=Path.home())
 try:
@@ -332,6 +333,9 @@ except ClaimResidueArchiveHold as exc:
     sys.exit(8)
 except ClaimPublicationError as exc:
     print(f"cc-claim: HOLD - {exc}. Next action: preserve the journal and receipt; reconcile their mismatch before retrying.", file=sys.stderr)
+    sys.exit(8)
+except TaskNoteLockError as exc:
+    print(f"cc-claim: HOLD - claim_residue_task_lock_unavailable: {exc}. Next action: retry after the task note writer releases its lock.", file=sys.stderr)
     sys.exit(8)
 print(
     f"cc-claim: recovered {recovered.shape} residue of {role} for {task_id} "

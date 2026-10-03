@@ -1712,7 +1712,10 @@ def _release(
     )
 
 
-def test_recover_closed_dispatch_wrapper_preserves_receipt_and_journal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reopen", [False, True])
+def test_recover_closed_dispatch_wrapper_preserves_receipt_and_journal(
+    tmp_path: Path, reopen: bool
+) -> None:
     home = tmp_path / "home"
     task_id = "closed-dispatch-wrapper"
     note = _write_task(home, "active", task_id)
@@ -1720,6 +1723,14 @@ def test_recover_closed_dispatch_wrapper_preserves_receipt_and_journal(tmp_path:
     closed = _task_root(home) / "closed" / note.name
     closed.write_text(note.read_text().replace("status: claimed", "status: done", 1))
     note.unlink()
+    if reopen:
+        reopened = (
+            closed.read_text()
+            .replace("status: done", "status: offered", 1)
+            .replace("assigned_to: cx-test", "assigned_to: unassigned", 1)
+        )
+        note.write_text(re.sub(r"(?m)^claimed_at:.*$", "claimed_at: null", reopened))
+        closed.unlink()
     sidecars = _role_sidecars(home)
     for path in (*sidecars["marker"], *sidecars["epoch"]):
         path.unlink()
@@ -1736,7 +1747,10 @@ def test_recover_closed_dispatch_wrapper_preserves_receipt_and_journal(tmp_path:
     )
 
     assert recovered.returncode == 0, recovered.stderr
-    assert "recovered closed_dispatch residue" in recovered.stdout
+    assert (
+        f"recovered {'reopened_dispatch' if reopen else 'closed_dispatch'} residue"
+        in recovered.stdout
+    )
     assert all(not path.exists() for path in dispatch)
     archive = _release_archives(home, task_id)
     assert len(archive) == 1

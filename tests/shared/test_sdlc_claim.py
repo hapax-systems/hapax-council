@@ -5691,6 +5691,57 @@ def _recover_closed_dispatch(fixture: ClaimFixture, tmp_path: Path, *, role: str
     )
 
 
+def _reopened_dispatch_residue(tmp_path: Path) -> tuple[ClaimFixture, tuple[Path, ...]]:
+    fixture, dispatch = _closed_dispatch_residue(tmp_path)
+    closed = fixture.vault / "closed" / fixture.intent.note_path.name
+    reopened = (
+        closed.read_bytes()
+        .replace(b"status: done", b"status: offered", 1)
+        .replace(b"assigned_to: cx-red", b"assigned_to: unassigned", 1)
+        .replace(b"claimed_at: 2026-07-11T12:00:00Z", b"claimed_at: null", 1)
+    )
+    fixture.intent.note_path.write_bytes(reopened)
+    closed.unlink()
+    return fixture, dispatch
+
+
+def test_reopened_offered_row_recovers_its_prior_receipt_bound_dispatch(
+    tmp_path: Path,
+) -> None:
+    fixture, dispatch = _reopened_dispatch_residue(tmp_path)
+    row_before = fixture.intent.note_path.read_bytes()
+    bytes_before = {path.name: path.read_bytes() for path in dispatch}
+
+    recovered = _recover_closed_dispatch(fixture, tmp_path)
+
+    assert recovered.shape == "reopened_dispatch"
+    assert {path.name: path.read_bytes() for path in recovered.archived} == bytes_before
+    assert fixture.intent.note_path.read_bytes() == row_before
+
+
+@pytest.mark.parametrize("damage", ["assigned", "claimed_at", "other_marker"])
+def test_reopened_dispatch_refuses_a_current_owner(tmp_path: Path, damage: str) -> None:
+    fixture, dispatch = _reopened_dispatch_residue(tmp_path)
+    row = fixture.intent.note_path
+    if damage == "assigned":
+        row.write_bytes(
+            row.read_bytes().replace(b"assigned_to: unassigned", b"assigned_to: cx-other")
+        )
+    elif damage == "claimed_at":
+        row.write_bytes(
+            row.read_bytes().replace(b"claimed_at: null", b"claimed_at: 2026-10-03T16:40:00Z")
+        )
+    else:
+        (fixture.cache / "cc-active-task-cx-other").write_text("task-alpha\n")
+    before = _tree_snapshot(fixture.cache)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold):
+        _recover_closed_dispatch(fixture, tmp_path)
+
+    assert _tree_snapshot(fixture.cache) == before
+    assert all(path.exists() for path in dispatch)
+
+
 def test_closed_dispatch_recovery_archives_only_receipt_bound_sidecars(tmp_path: Path) -> None:
     fixture, dispatch = _closed_dispatch_residue(tmp_path)
     before = {path.name: path.read_bytes() for path in dispatch}
