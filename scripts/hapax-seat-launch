@@ -13,6 +13,7 @@ import json
 import os
 import re
 import resource
+import runpy
 import secrets
 import subprocess
 import sys
@@ -299,8 +300,18 @@ def main() -> int:
     parser.add_argument("--inner-codex", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.harness != "codex":
-        print("hapax-seat-launch: OpenCode launcher is not yet admitted", file=sys.stderr)
-        return 2
+        if args.inner_codex:
+            print("hapax-seat-launch: REFUSED wrong_harness_inner_entry", file=sys.stderr)
+            return 2
+        script = Path(__file__).resolve().with_name("hapax-opencode-seat-smoke")
+        try:
+            return runpy.run_path(str(script))["main"](["--check"] if args.check else [])
+        except (OSError, ImportError) as exc:
+            print(
+                f"hapax-seat-launch: REFUSED opencode_source_unavailable: {type(exc).__name__}",
+                file=sys.stderr,
+            )
+            return 2
     try:
         evidence = verify_codex_binding(Path.home(), os.environ)
     except (OSError, SeatBindingError) as exc:
