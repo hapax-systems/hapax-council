@@ -37,6 +37,7 @@ from shared.platform_capability_registry import (
     build_supply_vector,
     check_registry_freshness,
     load_platform_capability_registry,
+    load_platform_capability_registry_for_dispatch,
 )
 from shared.quota_spend_ledger import QUOTA_SPEND_LEDGER_FIXTURES
 
@@ -48,6 +49,7 @@ def _isolated_receipt_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     without configuration). Tests that call the loader bare must isolate
     explicitly, or live on-disk receipts leak into fixture expectations."""
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(tmp_path / "no-receipts"))
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(tmp_path / "no-live-ledger"))
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2048,6 +2050,77 @@ def test_kimi_fresh_live_admission_clears_route_specific_blocker(
     assert route["blocked_reasons"] == []
     assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == []
     assert KIMI_ADMISSION_EVIDENCE_REF in route["freshness"]["evidence"]["quota"]["evidence_refs"]
+
+
+def test_kimi_dispatch_reader_uses_fresh_ledger_without_platform_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_kimi_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    registry, _ = load_platform_capability_registry_for_dispatch(
+        receipt_dir=tmp_path / "no-platform-receipts",
+        now=KIMI_NOW,
+    )
+    route = registry.require(KIMI_INTERACTIVE_ROUTE_ID)
+
+    assert route.route_state is RouteState.ACTIVE
+    assert "route_specific_quota_receipt_absent" not in route.blocked_reasons
+    assert KIMI_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+
+
+@pytest.mark.parametrize(
+    "ledger_options",
+    [
+        pytest.param({"provider": "z_ai-glm-coding-plan"}, id="wrong-provider"),
+        pytest.param({"fresh_until": "2026-09-11T15:00:00Z"}, id="expired"),
+        pytest.param({"include_telemetry_writer": False}, id="unfolded"),
+    ],
+)
+def test_kimi_dispatch_reader_keeps_blocker_without_valid_live_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    ledger_options: dict,
+) -> None:
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_kimi_live_quota_ledger(live_ledger, **ledger_options)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    registry, _ = load_platform_capability_registry_for_dispatch(
+        receipt_dir=tmp_path / "no-platform-receipts",
+        now=KIMI_NOW,
+    )
+    route = registry.require(KIMI_INTERACTIVE_ROUTE_ID)
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.blocked_reasons == ["route_specific_quota_receipt_absent"]
+
+
+def test_kimi_fresh_ledger_preserves_other_route_blockers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = _payload()
+    route_payload = _route_payload(payload, KIMI_INTERACTIVE_ROUTE_ID)
+    route_payload["blocked_reasons"].append("sanctioned_wrapper_not_executable")
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_kimi_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    registry, _ = load_platform_capability_registry_for_dispatch(
+        path=registry_path,
+        receipt_dir=tmp_path / "no-platform-receipts",
+        now=KIMI_NOW,
+    )
+    route = registry.require(KIMI_INTERACTIVE_ROUTE_ID)
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.blocked_reasons == ["sanctioned_wrapper_not_executable"]
+    assert KIMI_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
 
 
 def _assert_kimi_route_specific_quota_still_blocked(route: dict) -> None:
