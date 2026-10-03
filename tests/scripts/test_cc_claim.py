@@ -1732,7 +1732,11 @@ def _release_archives(home: Path, task_id: str) -> list[Path]:
 
 @pytest.mark.parametrize(
     ("role", "peer"),
-    [("cx-test", "cx-test-accept"), ("cx-autoqueue", "cx-autoqueue-venv-accept")],
+    [
+        ("cx-test", "cx-test-accept"),
+        ("cx-autoqueue", "cx-autoqueue-venv-accept"),
+        ("dev1-seat", "dev1-seat-codex"),
+    ],
 )
 @pytest.mark.parametrize("expired", [False, True], ids=["fresh", "expired"])
 def test_claim_does_not_take_prefix_peer_markers(

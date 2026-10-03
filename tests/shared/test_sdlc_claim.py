@@ -5384,6 +5384,29 @@ def test_marker_tasks_holds_unreadable_own_marker(tmp_path: Path, content: bytes
     assert _tree_snapshot(tmp_path) == before
 
 
+def test_marker_tasks_rejects_dev1_seat_codex_prefix_peer(tmp_path: Path) -> None:
+    """Role ``dev1-seat`` must not read bound ``dev1-seat-codex`` markers as its own.
+
+    This is the exact prefix collision that blocked the coordinator's own claim
+    (the ``dev1-seat`` vs ``dev1-seat-codex`` case, PR #5002). Mutation-verified:
+    replacing the exact selection in :func:`sdlc_claim.role_claim_markers` with the
+    unsafe prefix-only form (``name.startswith(f"cc-active-task-{role}-")``) reddens
+    this, because the bound ``dev1-seat-codex`` task then leaks into ``dev1-seat``'s
+    tasks; restoring the exact-selection bytes greens it. The peer's bytes stay intact.
+    """
+    session = "0f9f9f9f-1111-2222-3333-444455556666"
+    _bound_marker(tmp_path, role="dev1-seat", session=session, task="seat-bare", bare=True)
+    _bound_marker(tmp_path, role="dev1-seat", session=session, task="seat-uuid")
+    for bare in (True, False):
+        _bound_marker(
+            tmp_path, role="dev1-seat-codex", session=session, task="codex-task", bare=bare
+        )
+    before = _tree_snapshot(tmp_path)
+
+    assert sdlc_claim._marker_tasks(tmp_path, "dev1-seat") == ["seat-bare", "seat-uuid"]
+    assert _tree_snapshot(tmp_path) == before
+
+
 def test_release_touches_only_the_cache_its_journal_projected_into(tmp_path: Path) -> None:
     fixture, _journal, _projections = _held_publication(tmp_path)
     other_cache = tmp_path / "other-cache"
