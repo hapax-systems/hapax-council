@@ -321,7 +321,7 @@ def test_queued_and_armed_seats_are_served_before_fresh_evidence(tmp_path: Path)
 def test_fresh_evidence_spends_no_refresh_post_budget(tmp_path: Path) -> None:
     # (c) Fresh rows take the full-exam path; the must-include refresh-POST
     # cap (4 per tick) stays with the queued/armed refresh rows.
-    runner, vault = _estate(tmp_path, count=30, linked=[25])
+    runner, vault = _estate(tmp_path, count=30, linked=[1, 2, 3, 4, 5, 25])
     _examine_all(tmp_path, runner, vault, count=30)
     _land_receipt(vault, "task-25", mtime=_examined_at(tmp_path, 25) + timedelta(seconds=21))
     runner.queued_prs = {1, 2, 3, 4, 5}

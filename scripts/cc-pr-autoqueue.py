@@ -1632,8 +1632,10 @@ class _WindowSelection:
     ``rotation_rows`` take the existing full hydration/classify path.
     ``must_refresh`` are (number, head_sha) identities served by the cheap
     refresh-only path (R5): one status read, at most one status POST, no
-    hydration, no new admission decision. ``full_exam_rows`` are must-include
-    rows that need a full pass this tick (dequeued follow-up, R6).
+    hydration, after rereading private authority. ``full_exam_rows`` are
+    must-include rows needing classification (dequeued follow-up or invalidated
+    authority). ``authority_full_exam`` also retains unserved invalidations so
+    the bounded refusal pass can replace their cached success.
     ``overflow`` lists must-include numbers the cap could not serve (oldest
     proofs are served first). ``fresh_served`` are fresh-evidence rows given a
     one-shot full exam (they are part of ``full_exam_rows``);
@@ -1649,6 +1651,8 @@ class _WindowSelection:
     armed_live: frozenset[int] = frozenset()
     fresh_served: tuple[int, ...] = ()
     fresh_overflow: tuple[int, ...] = ()
+    authority_full_exam: frozenset[int] = frozenset()
+    head_refs: dict[int, str | None] = field(default_factory=dict)
 
 
 def _select_pr_window(
@@ -1662,6 +1666,7 @@ def _select_pr_window(
     full_exam: frozenset[int] | set[int] = frozenset(),
     ephemeral_full_exam: frozenset[int] | set[int] = frozenset(),
     fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
+    cached_authority: Callable[[dict[str, Any]], tuple[str, ...]] | None = None,
 ) -> _WindowSelection:
     """Select without acknowledging work. Repeated failures share the fair rotation.
 
@@ -1703,6 +1708,11 @@ def _select_pr_window(
             armed = set()
         must = (set(must_include) | armed | set(full_exam)) & live
         core_rows = sorted((row for row in rows if row["number"] in must), key=priority)
+        # Private authority is independent of the last proof/examination timestamp.
+        # In particular, an armed row must not subtract a required hold recheck.
+        authority_full_exam = frozenset(
+            row["number"] for row in core_rows if cached_authority and cached_authority(row)
+        )
         fresh: set[int] = set()
         if fresh_evidence is not None and not _must_include_guarantee_disabled():
             for row in rows:
@@ -1738,7 +1748,7 @@ def _select_pr_window(
         # but has never queued (or re-armed after a dequeue) stays on the cheap
         # refresh path; the R6 one-shot full exam belongs to rows that left the
         # queue unarmed.
-        full_exam_live = ((set(full_exam) & live) - armed) | fresh
+        full_exam_live = ((set(full_exam) & live) - armed) | fresh | authority_full_exam
         full_exam_rows = [row for row in served if row["number"] in full_exam_live]
         must_refresh = tuple(
             (row["number"], _listing_head_sha(row))
@@ -1765,6 +1775,8 @@ def _select_pr_window(
             overflow=overflow,
             must_identities=must_identities,
             armed_live=frozenset(armed),
+            authority_full_exam=authority_full_exam,
+            head_refs={row["number"]: _listing_head_ref(row) for row in core_rows},
             fresh_served=tuple(row["number"] for row in served if row["number"] in fresh),
             fresh_overflow=tuple(
                 number for number in unserved if number in fresh and number not in rotation_numbers
@@ -1863,6 +1875,7 @@ def fetch_rotating_open_prs(
     must_include: frozenset[int] | set[int] = frozenset(),
     full_exam: frozenset[int] | set[int] = frozenset(),
     fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
+    cached_authority: Callable[[dict[str, Any]], tuple[str, ...]] | None = None,
     armed_note_reconciliation: _ArmedNoteReconciliation | None = None,
 ) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]], _WindowSelection]:
     """Prove the complete estate, then hydrate at most limit identities independently.
@@ -1909,6 +1922,7 @@ def fetch_rotating_open_prs(
         full_exam=full_exam,
         ephemeral_full_exam=ephemeral_full_exam,
         fresh_evidence=fresh_evidence,
+        cached_authority=cached_authority,
     )
     if selection.overflow:
         LOG.warning(
@@ -2686,6 +2700,7 @@ def _task_note_from_frontmatter(
 
 
 def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
+    TASK_NOTE_PARSE_FAILURES.clear()
     notes: list[TaskNote] = []
     vault_base = (
         vault_root.parent.parent
@@ -2739,6 +2754,61 @@ def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
     if by_pr:
         return by_pr
     return [task for task in tasks if pr.head_ref and task.branch == pr.head_ref]
+
+
+def _cached_admission_blockers(
+    number: int,
+    head_sha: str | None,
+    head_ref: str | None,
+    *,
+    tasks: list[TaskNote],
+) -> tuple[str, ...]:
+    """Read private authority before reusing proof; no GitHub or review hydration.
+
+    The cached proof never certifies the absence of a newly added hold. Missing
+    or unreadable links require examination, even if the old proof is fresh.
+    Reuse the classifier's identity and head predicates, without treating note
+    mtime or a previous refresh acknowledgment as an authority version.
+    """
+    pr = _parse_pr({"number": number, "headRefOid": head_sha, "headRefName": head_ref})
+    assert pr is not None
+    if TASK_NOTE_PARSE_FAILURES:
+        # An unreadable note cannot be ruled out as another matching hold.
+        # Use the existing pending/hold representation, not inferred release
+        # permission or a new queue cancellation policy.
+        return ("missing_cc_task_link (cached authority inventory unreadable)",)
+    matches = _matching_tasks(pr, tasks)
+    if not matches:
+        return (
+            "missing_cc_task_link (NOTE: link this PR to a cc-task note — run "
+            "scripts/cc-task-pr-link.sh or set pr:/branch: on the note)",
+        )
+    blockers: list[str] = []
+    for task in matches:
+        fm, error = _frontmatter(task.path)
+        if error or fm is None:
+            blockers.append(f"cached_task_unreadable:{task.task_id}:{error}")
+            continue
+        if fm.get("type") != "cc-task" or _scalar(fm.get("task_id")) != task.task_id:
+            blockers.append(f"cached_task_identity_changed:{task.task_id}")
+        blockers.extend(
+            _release_auto_arm_current_admission_blockers(fm, pr_number=number, head_ref=head_ref)
+        )
+        if not _scalar(fm.get("authority_case") or fm.get("case_id")):
+            blockers.append(
+                "task_missing_authority_case. Next action: set authority_case: "
+                "(or case_id:) on the linked cc-task note"
+            )
+        if not _scalar(fm.get("parent_spec")):
+            blockers.append("task_missing_parent_spec")
+        if fm.get("implementation_authorized") is False:
+            blockers.append(
+                "implementation_authorized_false. Next action: set "
+                "implementation_authorized: true on the task once it is authorized"
+            )
+        blockers.extend(_release_authorized_head_blockers(fm, pr_head_sha=head_sha))
+        blockers.extend(_release_seat_hold_blockers(fm, pr_head_sha=head_sha))
+    return tuple(blockers)
 
 
 def _release_authorized_head_blockers(
@@ -3186,8 +3256,13 @@ def classify_pr(
     expected_auto_merge_method_source: str | None = None,
     expected_auto_merge_method_is_override: bool = False,
     require_expected_auto_merge_method: bool = False,
+    revalidate_cached_authority: bool = False,
 ) -> Decision:
-    reasons: list[str] = []
+    reasons = (
+        list(_cached_admission_blockers(pr.number, pr.head_sha, pr.head_ref, tasks=tasks))
+        if revalidate_cached_authority
+        else []
+    )
     if pr.is_draft:
         reasons.append("draft")
     queued = pr.number in queued_prs
@@ -3383,7 +3458,7 @@ def classify_pr(
             task=task,
             tasks=matched_tasks,
             action=action,
-            reasons=tuple(reasons),
+            reasons=tuple(dict.fromkeys(reasons)),
             expected_auto_merge_method=expected_auto_merge_method,
             notes=tuple(notes),
         )
@@ -3455,6 +3530,14 @@ def merge_pr(
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
     graphql_args: list[str] | None = None
+    if decision.action in {"dequeue", "disable_auto_merge"} and any(
+        "release_seat_hold" in reason for reason in decision.reasons
+    ):
+        evidence_ok, current_head, _ = fetch_pr_release_evidence(
+            decision.pr.number, repo=repo, repo_root=repo_root, runner=runner, route=route
+        )
+        if not evidence_ok or current_head != decision.pr.head_sha:
+            return False, "release_seat_hold:head_revalidation_failed"
     if decision.action == "dequeue":
         queued_prs = fetch_merge_queue_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
         if queued_prs is None:
@@ -4373,11 +4456,14 @@ def _refresh_must_include_proof(
     now: datetime,
     apply: bool,
     route: ListingRoute | str | None,
+    tasks: list[TaskNote],
+    head_ref: str | None = None,
 ) -> dict[str, Any]:
     """The R4/R5 cheap path: repost the existing successful admission proof.
 
-    One status read, at most one status POST, no hydration, no new admission
-    decision. Only successful proofs are refreshed (R3): a non-success status
+    No hydration and at most one status POST. Read private authority before
+    renewing success; invalidation uses the existing status writer (with its
+    own idempotency read). Only successful proofs are refreshed (R3): a non-success status
     on a must-include PR is a signal the full path must re-examine, not
     something to re-stamp.
     """
@@ -4387,6 +4473,27 @@ def _refresh_must_include_proof(
     current, read_error = _read_admission_status_for_refresh(
         head_sha, repo=repo, repo_root=repo_root, runner=runner, route=route
     )
+    # Read authority after the network read, immediately before acknowledging
+    # or renewing its proof. Selection's earlier observation is not this check.
+    blockers = _cached_admission_blockers(number, head_sha, head_ref, tasks=tasks)
+    if blockers:
+        pr = _parse_pr({"number": number, "headRefOid": head_sha, "headRefName": head_ref})
+        assert pr is not None
+        decision = Decision(pr=pr, action="hold", reasons=blockers)
+        status_result = (
+            set_autoqueue_admission_status(
+                decision, repo=repo, repo_root=repo_root, runner=runner, now=now, route=route
+            )
+            if apply
+            else None
+        )
+        return {
+            **result,
+            "ok": False,
+            "invalidated": True,
+            "message": "cached_authority_revalidation_required:" + ",".join(blockers),
+            "admission_status": status_result,
+        }
     if read_error is not None:
         return {**result, "ok": False, "message": read_error}
     if current is None:
@@ -4500,6 +4607,8 @@ def _refresh_must_include_batch(
     now: datetime,
     apply: bool,
     route: ListingRoute | str | None,
+    tasks: list[TaskNote],
+    head_refs: dict[int, str | None] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """R5: bounded per-tick refresh pass.
 
@@ -4521,6 +4630,8 @@ def _refresh_must_include_batch(
             now=now,
             apply=apply,
             route=route,
+            tasks=tasks,
+            head_ref=(head_refs or {}).get(number),
         )
     return results
 
@@ -4581,6 +4692,11 @@ def _must_include_report_summary(
             str(number): result.get("message")
             for number, result in sorted(results.items())
             if not result.get("ok")
+        },
+        "invalidated": {
+            str(number): result.get("admission_status")
+            for number, result in sorted(results.items())
+            if result.get("invalidated")
         },
         "overflow": list(overflow),
         "post_cap": MUST_INCLUDE_REFRESH_POST_CAP,
@@ -5067,9 +5183,14 @@ def run_reconciler(
         and must_include_state_path is not None
         and not _must_include_guarantee_disabled()
     ):
-        # R3: the queue snapshot is indeterminate, but the persisted last-known
-        # must-include set can still keep its proofs fresh — refresh-only, then
-        # skip the cycle exactly as before.
+        # R3: the queue snapshot is indeterminate. This path carries no head_ref,
+        # so the persisted last-known must-include set can still refresh proofs
+        # whose task note matches by PR number (head_ref-independent) or refuse
+        # them; a branch-only note (no `pr:` link) cannot be re-identified here and
+        # is conservatively refused (missing_cc_task_link) — a fail-closed
+        # availability loss, not a dropped must-include item (the entry is retained
+        # with a failure counter and the next determinate tick, which carries
+        # head_ref, recovers it by branch). No queue mutation on this path.
         must_include_state = _load_must_include_state(must_include_state_path, repo=repo, now=now)
         refresh_only = _refresh_must_include_batch(
             [
@@ -5082,6 +5203,7 @@ def run_reconciler(
             now=now,
             apply=apply,
             route=None,
+            tasks=tasks,
         )
         must_include_report = _must_include_report_summary(refresh_only, overflow=())
         _record_must_include_outcomes(
@@ -5195,6 +5317,9 @@ def run_reconciler(
                 must_include=queued_prs,
                 full_exam=dequeued_followup,
                 fresh_evidence=_fresh_evidence_probe(tasks, now=now),
+                cached_authority=lambda row: _cached_admission_blockers(
+                    row["number"], _listing_head_sha(row), _listing_head_ref(row), tasks=tasks
+                ),
                 armed_note_reconciliation=armed_note_reconciliation,
             )
         else:
@@ -5248,15 +5373,26 @@ def run_reconciler(
         )
     must_refresh_results: dict[int, dict[str, Any]] = {}
     must_overflow: tuple[int, ...] = ()
-    if window is not None and window.must_refresh:
+    if window is not None:
+        # Unserved/failed hydration must not leave cached success renewable.
+        # Refusal shares the refresh budget; remaining entries stay explicitly
+        # deferred and are retried by the existing fair rotation.
+        examined_numbers = {pr.number for pr in prs}
+        invalidated_unexamined = [
+            identity
+            for identity in window.must_identities
+            if identity[0] in window.authority_full_exam and identity[0] not in examined_numbers
+        ]
         must_refresh_results = _refresh_must_include_batch(
-            list(window.must_refresh),
+            [*invalidated_unexamined, *window.must_refresh],
             repo=repo,
             repo_root=repo_root,
             runner=runner or subprocess.run,
             now=now,
             apply=apply,
             route=listing_route,
+            tasks=tasks,
+            head_refs=window.head_refs,
         )
         must_overflow = window.overflow
         if apply:
@@ -5268,8 +5404,6 @@ def run_reconciler(
                         number, repo=repo, state_path=rotation_state_path, failures={}
                     ):
                         pass
-    elif window is not None:
-        must_overflow = window.overflow
     if expected_auto_merge_method is not None:
         governance_by_base: dict[
             tuple[str | None, str | None, str | None, str | None, tuple[str, ...]],
@@ -5303,6 +5437,8 @@ def run_reconciler(
             expected_auto_merge_method_source=merge_method_source,
             expected_auto_merge_method_is_override=expected_auto_merge_method_override is not None,
             require_expected_auto_merge_method=True,
+            revalidate_cached_authority=window is not None
+            and pr.number in dict(window.must_identities),
         )
         for pr in prs
     ]
@@ -5370,6 +5506,8 @@ def run_reconciler(
                 expected_auto_merge_method_is_override=expected_auto_merge_method_override
                 is not None,
                 require_expected_auto_merge_method=True,
+                revalidate_cached_authority=window is not None
+                and pr.number in dict(window.must_identities),
             )
             for pr in prs
         ]
@@ -5718,6 +5856,7 @@ def run_reconciler(
         "must_include": {
             **_must_include_report_summary(must_refresh_results, overflow=must_overflow),
             "starved": starved,
+            "authority_revalidation": sorted(window.authority_full_exam) if window else [],
             "dequeued_followup": sorted(
                 dequeued_followup - (window.armed_live if window is not None else frozenset())
             ),
