@@ -697,3 +697,33 @@ def test_codex_native_status_cannot_bypass_lifecycle_vocabulary() -> None:
         )
 
     assert exc.value.code == "off_vocabulary_lifecycle"
+
+
+def test_coordinator_control_is_closed_bounded_and_private():
+    from pydantic import ValidationError
+
+    from shared.platform_session_contract import CoordinatorControlRequest, CoordinatorIdentity
+
+    identity = CoordinatorIdentity(
+        seat_id="seat",
+        task_id="task",
+        claim_session_id="claim",
+        claim_epoch=1,
+        runtime_id="runtime",
+        native_version="0.158.0",
+        thread_id="thread",
+    )
+    fields = dict(
+        actor_id="principal",
+        identity=identity,
+        operation="start_turn",
+        expected_turn_id=None,
+        item_id="item",
+        attempt_id="a" * 64,
+    )
+    request = CoordinatorControlRequest(**fields, text="private message")
+    assert "private message" not in request.model_dump_json()
+    assert "private message" not in repr(request)
+    for extra in ({"model": "override"}, {"text": "x" * 16385}, {"text": ["attachment"]}):
+        with pytest.raises(ValidationError):
+            CoordinatorControlRequest(**fields, **extra)
