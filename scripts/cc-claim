@@ -128,14 +128,19 @@ task_id = sys.argv[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.execution_admission import ExecutionAdmissionError  # noqa: E402
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots, load_claim_publication_composition,
+)
 from shared.sdlc_claim import (  # noqa: E402
     ClaimPublicationError,
     rehydrate_applied_activation_projections,
 )
 
-roots = default_claim_publication_roots(home=Path.home())
 try:
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
+    ).receipt.roots
     results = rehydrate_applied_activation_projections(
         cache_dir=Path(roots.claim_cache_dir),
         transaction_root=Path(roots.claim_transaction_root),
@@ -143,7 +148,7 @@ try:
         lock_root=Path(roots.claim_lock_root),
         task_id=task_id,
     )
-except ClaimPublicationError as exc:
+except (ClaimPublicationError, ExecutionAdmissionError) as exc:
     detail = f" ({exc.detail})" if exc.detail else ""
     print(
         f"cc-claim: HOLD — {exc.reason_code}{detail}. Next action: {exc.repair_action}.",
@@ -165,11 +170,16 @@ task_id = sys.argv[2] or None
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.execution_admission import ExecutionAdmissionError  # noqa: E402
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots, load_claim_publication_composition,
+)
 from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402
 
-roots = default_claim_publication_roots(home=Path.home())
 try:
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
+    ).receipt.roots
     results = recover_claim_publications(
         cache_dir=Path(roots.claim_cache_dir),
         transaction_root=Path(roots.claim_transaction_root),
@@ -177,7 +187,7 @@ try:
         lock_root=Path(roots.claim_lock_root),
         task_id=task_id,
     )
-except ClaimPublicationError as exc:
+except (ClaimPublicationError, ExecutionAdmissionError) as exc:
     print(
         f"cc-claim: HOLD — {exc}. Next action: repair the named recovery root, "
         "then rerun cc-claim --recover-claim-publications"
@@ -308,7 +318,10 @@ returning = sys.argv[5] == "true"
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.execution_admission import ExecutionAdmissionError  # noqa: E402
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots, load_claim_publication_composition,
+)
 from shared.sdlc_claim import (  # noqa: E402
     ClaimPublicationError,
     ClaimResidueArchiveHold,
@@ -316,8 +329,10 @@ from shared.sdlc_claim import (  # noqa: E402
     return_claim,
 )
 
-roots = default_claim_publication_roots(home=Path.home())
 try:
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
+    ).receipt.roots
     # --return-claim: the holder returns its own unstarted claim to offered; else the governed
     # release of residue that no live claim owns.
     released = (return_claim if returning else release_claim_residue)(
@@ -332,7 +347,7 @@ try:
 except ClaimResidueArchiveHold as exc:
     print(f"cc-claim: {exc.message}", file=sys.stderr)
     sys.exit(8)
-except ClaimPublicationError as exc:
+except (ClaimPublicationError, ExecutionAdmissionError) as exc:
     print(f"cc-claim: HOLD - {exc}. Next action: repair the named root, then rerun.", file=sys.stderr)
     sys.exit(8)
 if returning:
@@ -551,7 +566,7 @@ claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
 charter_keep = sys.argv[16].strip() if len(sys.argv) > 16 else ""
 
 
-def _write_charter_sidecar() -> None:
+def _write_charter_sidecar(exclusion, *, check_only=False) -> None:
     """One condition for every writer of the cc-active-charter sidecar.
 
     The sidecar records which charter this session's claim belongs to: the
@@ -563,9 +578,20 @@ def _write_charter_sidecar() -> None:
     if not keep and _frontmatter_scalar(text, "claim_form").strip() == "charter":
         keep = task_id
     if keep and session_id:
-        (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
-            f"{keep}\n", encoding="utf-8"
-        )
+        exclusion.require_held(role=role, lock_root=exclusion.lock_root)
+        from shared.coord_projection import _file_state
+        destination = cache_dir / f"cc-active-charter-{role}-{session_id}"
+        existing = _file_state(destination)
+        expected = (f"{keep}\n".encode(), 0o644)
+        if existing == expected:
+            return
+        if existing != (None, None):
+            raise ClaimPublicationError(
+                "claim_charter_marker_conflict", "preserve the conflicting charter marker",
+                str(destination),
+            )
+        if not check_only:
+            destination.write_bytes(expected[0])
 
 
 if str(repo_root) not in sys.path:
@@ -818,8 +844,21 @@ if canon_enforced:
                 file=sys.stderr,
             )
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
     gate0b_roots = default_claim_publication_roots(home=Path.home())
+    try:
+        gate0b_roots = load_claim_publication_composition(
+            Path(gate0b_roots.invocation_store_root)
+        ).receipt.roots
+    except ExecutionAdmissionError as exc:
+        # Preserve the existing first-use installation path below. An existing
+        # corrupt composition never selects a fallback maintenance namespace.
+        if exc.reason_code not in {"gate0b_install_receipt_missing", "gate0b_install_manifest_missing"}:
+            print(claim_publication_hold_message(exc, intent_ref=str(path)), file=sys.stderr)
+            sys.exit(8)
+    if Path(gate0b_roots.claim_cache_dir) != cache_dir or Path(gate0b_roots.claim_vault_root) != path.parent.parent:
+        print("cc-claim: HOLD — claim_ownership_root_mismatch; use the installed task/cache roots", file=sys.stderr)
+        sys.exit(8)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     if not dispatch_message_id:
         manual_authority_case = _frontmatter_scalar(text, "authority_case")
         if not manual_authority_case:
@@ -1435,7 +1474,39 @@ text = re.sub(
 )
 text = _insert_session_log(text, log_line)
 
-if not canon_enforced:
+from contextlib import contextmanager  # noqa: E402
+from shared.coord_projection import LifecycleTransitionError, _file_state  # noqa: E402
+from shared.execution_admission import ExecutionAdmissionError  # noqa: E402
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots,
+    load_claim_publication_composition,
+)
+from shared.sdlc_claim import ClaimPublicationError, claim_role_exclusion  # noqa: E402
+from shared.task_note_lock import TaskNoteLockError, projected_path_lock  # noqa: E402
+
+
+@contextmanager
+def _ownership_span():
+    # Auxiliary writers must consume the execution host's installed composition too.
+    # A missing install is a hold; this path never creates a substitute lock namespace.
+    try:
+        installed = load_claim_publication_composition(
+            Path(default_claim_publication_roots().invocation_store_root)
+        )
+        roots = installed.receipt.roots
+        if Path(roots.claim_cache_dir) != cache_dir or Path(roots.claim_vault_root) != path.parent.parent:
+            raise ClaimPublicationError(
+                "claim_ownership_root_mismatch",
+                "use the execution host's installed task and cache roots",
+            )
+        with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)) as exclusion:
+            yield exclusion, roots
+    except (ClaimPublicationError, ExecutionAdmissionError, TaskNoteLockError, LifecycleTransitionError, ValueError) as exc:
+        print(f"cc-claim: HOLD — {exc}", file=sys.stderr)
+        sys.exit(8)
+
+
+def _legacy_claim_under_exclusion():
     # The legacy writer, reached only via HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1. The admitted
     # path takes the projection lock inside shared/sdlc_claim._claim_publication_lock; this
     # fallback must too, or the documented emergency route would be the one way to write a task
@@ -1496,7 +1567,7 @@ if not canon_enforced:
             f"{task_id}\n",
             encoding="utf-8",
         )
-        _write_charter_sidecar()
+        _write_charter_sidecar(exclusion)
         if charter_keep and session_id:
             print(
                 f"cc-claim: charter {charter_keep} remains; "
@@ -1511,6 +1582,48 @@ if not canon_enforced:
         print(result_message)
         print(f"cc-claim: wrote ~/.cache/hapax/cc-active-task-{role}")
     sys.exit(0)
+
+
+if not canon_enforced:
+    with _ownership_span() as (exclusion, roots):
+        with projected_path_lock(task_id, (path,)):
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            # The exact-role parser belongs to the claim-key owner (#5002).
+            try:
+                from shared.sdlc_claim import role_claim_marker_tasks
+            except ImportError as exc:
+                raise ClaimPublicationError(
+                    "claim_role_parser_unavailable",
+                    "qualify and integrate the claim-key owner's public exact-role parser",
+                ) from exc
+            for marker, named in role_claim_marker_tasks(cache_dir, role):
+                if named != task_id:
+                    raise ClaimPublicationError(
+                        "claim_role_owner_changed",
+                        "preserve the current owner and resolve its claim before retrying",
+                        str(marker),
+                    )
+            expected = []
+            for key in (role, f"{role}-{session_id}" if session_id else ""):
+                if key:
+                    expected.extend((
+                        (cache_dir / f"cc-active-task-{key}", f"{task_id}\n".encode()),
+                        (cache_dir / f"cc-claim-epoch-{key}", f"{claim_epoch} {task_id}\n".encode()),
+                    ))
+            states = [_file_state(destination) for destination, _ in expected]
+            if any(state != (None, None) for state in states) and any(
+                state != (payload, 0o644)
+                for state, (_, payload) in zip(states, expected, strict=True)
+            ):
+                raise ClaimPublicationError(
+                    "claim_emergency_projection_conflict",
+                    "preserve partial or conflicting ownership projections and use governed recovery",
+                )
+            if _file_state(path)[0] != note_before:
+                raise ClaimPublicationError(
+                    "claim_emergency_note_changed", "rerun against the current safe note preimage",
+                )
+            _legacy_claim_under_exclusion()
 
 try:
     binding = ClaimDispatchBinding.create(
@@ -1540,20 +1653,7 @@ except (ClaimPublicationError, TaskStoreError) as exc:
     )
     sys.exit(8)
 
-if charter_keep:
-    # A unit continues under the charter's lease; no new claim is published.
-    # The parent must actually hold that lease: live sidecars for this role
-    # AND an applied publication that resolves. Naming the publication
-    # receipt check means performing it, and an absent lease is a hold, not
-    # a fallthrough to minting a fresh claim.
-    charter_note = None
-    for candidate in (
-        path.parent / f"{charter_keep}.md",
-        *sorted(path.parent.glob(f"{charter_keep}-*.md")),
-    ):
-        if candidate.is_file():
-            charter_note = candidate
-            break
+def _record_charter_under_exclusion(exclusion, roots, charter_note):
     if charter_note is None or not child_may_mint(
         charter_note.read_text(encoding="utf-8"), text
     ):
@@ -1617,9 +1717,9 @@ if charter_keep:
             cache_dir=cache_dir,
             role=role,
             task_id=charter_keep,
-            transaction_root=transaction_root,
-            receipt_root=receipt_root,
-            lock_root=lock_root,
+            transaction_root=Path(roots.claim_transaction_root),
+            receipt_root=Path(roots.claim_receipt_root),
+            lock_root=Path(roots.claim_lock_root),
         )
     except ClaimPublicationError as exc:
         print(
@@ -1634,6 +1734,21 @@ if charter_keep:
     from shared.charter_claim import record_unit  # noqa: E402
     from shared.task_note_lock import projected_path_lock  # noqa: E402
 
+    _write_charter_sidecar(exclusion, check_only=True)
+    ledger = cache_dir / f"charter-units-{role}-{session_id}.jsonl"
+    ledger_bytes, ledger_mode = _file_state(ledger)
+    if ledger_bytes is not None:
+        try:
+            rows = [json.loads(line) for line in ledger_bytes.decode("utf-8").splitlines()]
+            valid = ledger_mode == 0o644 and all(
+                isinstance(row, dict) and row.get("schema") == "hapax.charter-unit.v1"
+                and row.get("charter_id") == charter_keep and isinstance(row.get("unit_id"), str)
+                for row in rows
+            )
+        except (ValueError, UnicodeError):
+            valid = False
+        if not valid:
+            raise ClaimPublicationError("claim_charter_ledger_unsafe", "preserve the partial unit ledger")
     with projected_path_lock(task_id, (path,)):
         if path.exists():
             disk_status = ""
@@ -1649,9 +1764,9 @@ if charter_keep:
                 )
                 sys.exit(8)
         path.write_text(text, encoding="utf-8")
-    _write_charter_sidecar()
+    _write_charter_sidecar(exclusion)
     record_unit(
-        cache_dir / f"charter-units-{role}-{session_id}.jsonl",
+        ledger,
         charter_id=charter_keep,
         unit_id=task_id,
     )
@@ -1660,6 +1775,32 @@ if charter_keep:
         "The lease stays. No new claim was requested."
     )
     sys.exit(0)
+
+
+if charter_keep:
+    with _ownership_span() as (exclusion, roots):
+        # A unit continues under the charter's lease; no new claim is published.
+        # The parent must actually hold that lease: live sidecars for this role
+        # AND an applied publication that resolves. Naming the publication
+        # receipt check means performing it, and an absent lease is a hold, not
+        # a fallthrough to minting a fresh claim.
+        charter_note = None
+        for candidate in (
+            path.parent / f"{charter_keep}.md",
+            *sorted(path.parent.glob(f"{charter_keep}-*.md")),
+        ):
+            if candidate.is_file():
+                charter_note = candidate
+                break
+        if charter_note is None:
+            raise ClaimPublicationError("claim_charter_missing", "restore the original charter note")
+        with projected_path_lock(task_id, (path, charter_note)):
+            if path.read_bytes() != note_before:
+                raise ClaimPublicationError(
+                    "claim_charter_unit_preimage_changed",
+                    "preserve the changed note and rerun against its current bytes",
+                )
+            _record_charter_under_exclusion(exclusion, roots, charter_note)
 
 try:
     try:
@@ -1695,9 +1836,16 @@ print(
     "cc-claim: admitted publication applied "
     f"(publication={receipt.publication_id}, receipt={receipt.receipt_hash})"
 )
-# Charter sidecar for a canonical mint: the publication applied, so the
-# charter's lease sidecars exist and the session's charter record may too.
-_write_charter_sidecar()
+# Publication already applied. Recheck under the role lock before its auxiliary marker.
+if session_id and _frontmatter_scalar(text, "claim_form").strip() == "charter":
+    with _ownership_span() as (exclusion, roots):
+        resolve_applied_claim_publication_for_task(
+            vault_root=Path(roots.claim_vault_root), cache_dir=Path(roots.claim_cache_dir),
+            role=role, task_id=task_id,
+            transaction_root=Path(roots.claim_transaction_root),
+            receipt_root=Path(roots.claim_receipt_root), lock_root=Path(roots.claim_lock_root),
+        )
+        _write_charter_sidecar(exclusion)
 PYEOF
 
 exit 0

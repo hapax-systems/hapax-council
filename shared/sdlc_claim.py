@@ -20,6 +20,7 @@ import re
 import secrets
 import shutil
 import stat
+import threading
 import time
 from collections.abc import Callable, Hashable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
@@ -2566,12 +2567,54 @@ def _persist_admitted_receipt(
     )
 
 
+@dataclass(frozen=True)
+class ClaimRoleExclusion:
+    """Ephemeral evidence of this thread's held exclusion; never authority or liveness."""
+
+    role: str
+    lock_root: Path
+    _pid: int
+    _thread_id: int
+    _fd: int
+
+    def require_held(self, *, role: str, lock_root: Path) -> None:
+        if (
+            self.role != role
+            or lock_root is None
+            or self.lock_root != _normalized(lock_root)
+            or self._pid != os.getpid()
+            or self._thread_id != threading.get_ident()
+            or _HELD_ROLE_EXCLUSIONS.get(self._thread_id) is not self
+        ):
+            raise ClaimPublicationError(
+                "claim_role_exclusion_not_held",
+                "hold the exact role and installed root continuously through observation and action",
+                role,
+            )
+
+
+_HELD_ROLE_EXCLUSIONS: dict[int, ClaimRoleExclusion] = {}
+
+
+def _forget_inherited_role_exclusions() -> None:
+    # Close, never unlock: the parent's open file description still owns its flock.
+    for handle in _HELD_ROLE_EXCLUSIONS.values():
+        os.close(handle._fd)
+    _HELD_ROLE_EXCLUSIONS.clear()
+
+
+os.register_at_fork(after_in_child=_forget_inherited_role_exclusions)
+
+
 @contextmanager
-def _claim_publication_lock(
-    intent: ClaimPublicationIntent,
-    *,
-    lock_root: Path | None,
-) -> Iterator[None]:
+def claim_role_exclusion(role: str, *, lock_root: Path) -> Iterator[ClaimRoleExclusion]:
+    """Serialize participating ownership writers and dependent consumers on this host.
+
+    Pass ``receipt.roots.claim_lock_root`` from the execution host's validated installed
+    composition. Acquire before projected-path locks and hold through the actual dependent
+    action. Nested acquisition is refused, including resolvers which reacquire this lock.
+    Raw writers do not participate. Holding exclusion grants no permission to act.
+    """
     # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
     # it, so a caller that already holds one and asks for this is hold-and-wait across two
     # lock domains: it would sit on the role lock while a publisher on the other side sits on
@@ -2587,9 +2630,20 @@ def _claim_publication_lock(
             "taken first and the note lock inside it, never the reverse",
             ", ".join(f"{lock_root_}:{name}" for lock_root_, name in held),
         )
-    root = _lock_root(lock_root)
+    if lock_root is None:
+        raise ClaimPublicationError(
+            "claim_role_exclusion_root_required",
+            "load the execution host's installed composition and pass its claim_lock_root",
+        )
+    if threading.get_ident() in _HELD_ROLE_EXCLUSIONS:
+        raise ClaimPublicationError(
+            "claim_role_exclusion_nested",
+            "reuse the held exclusion; never nest a role acquisition or a locking resolver",
+            role,
+        )
+    root = _normalized(lock_root)
     _ensure_claim_private_directory(root)
-    digest = _claim_publication_role_lock_digest(intent.role)
+    digest = _claim_publication_role_lock_digest(role)
     path = root / f"{digest}.lock"
     try:
         fd = os.open(
@@ -2604,6 +2658,7 @@ def _claim_publication_lock(
             str(path),
         ) from exc
     locked = False
+    owner_pid = os.getpid()
     try:
         os.fchmod(fd, 0o600)
         metadata = os.fstat(fd)
@@ -2631,26 +2686,31 @@ def _claim_publication_lock(
                         str(path),
                     ) from exc
                 time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
-        # The role lock above serializes one role's publications against each other. It does
-        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
-        # not by the note, and it lives under a different root. So the publication's
-        # _apply_projections calls — which take no lock of their own — could land between a
-        # transition's preimage pin and its atomic install. Take the projection lock too.
-        #
-        # Order is role-then-note, always. One direction only means no cycle — and the
-        # direction is enforced at the top of this function, not inferred from the number of
-        # places the role lock is taken: the guard refuses when the calling thread already holds
-        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
+        handle = ClaimRoleExclusion(role, root, os.getpid(), threading.get_ident(), fd)
+        _HELD_ROLE_EXCLUSIONS[handle._thread_id] = handle
+        yield handle
+    finally:
+        if os.getpid() == owner_pid:
+            _HELD_ROLE_EXCLUSIONS.pop(threading.get_ident(), None)
+            if locked:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+            else:
+                os.close(fd)
+
+
+@contextmanager
+def _claim_publication_lock(
+    intent: ClaimPublicationIntent,
+    *,
+    lock_root: Path | None,
+) -> Iterator[None]:
+    # Keep the existing producer binding and order: role, then task/projected paths.
+    with claim_role_exclusion(intent.role, lock_root=_lock_root(lock_root)):
         with projected_path_lock(intent.task_id, (intent.note_path,)):
             yield
-    finally:
-        if locked:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
-        else:
-            os.close(fd)
 
 
 def _static_manifest(
@@ -5008,6 +5068,269 @@ def resolve_applied_claim_publication_for_task(
         receipt_root=receipt_root,
         lock_root=lock_root,
     )
+
+
+@dataclass(frozen=True)
+class TerminalClaimHold:
+    reason_code: str
+    repair_action: str
+    detail: str | None = None
+    may_authorize: Literal[False] = False
+
+
+@dataclass(frozen=True)
+class TerminalClaimEvidence:
+    """Exact terminal work observation; neither close admission nor permission to signal."""
+
+    task_id: str
+    role: str
+    session_id: str
+    claim_epoch: int
+    publication_id: str
+    task: TaskNoteSnapshot
+    receipt: ClaimPublicationReceipt
+    manifest: ContentAddress
+    retained: tuple[ContentAddress, ...]
+    release: ClaimPublicationRelease | None
+    snapshot: ContentAddress
+    may_authorize: Literal[False] = False
+
+
+def observe_terminal_claim(
+    *,
+    exclusion: ClaimRoleExclusion,
+    task_id: str,
+    role: str,
+    session_id: str,
+    claim_epoch: int,
+    publication_id: str,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    receipt_root: Path,
+    lock_root: Path,
+) -> TerminalClaimEvidence | TerminalClaimHold:
+    """Read under an already-held installed role exclusion, without reacquiring it.
+
+    Keep that exclusion through final role/task/process checks and the actual dependent
+    action. Returning this value to an unlocked caller proves no safe action interval.
+    Applied journal state is checked separately from a unique terminal task. Missing
+    epochs from historical shell closes hold unless their original release is verifiable.
+    """
+    try:
+        exclusion.require_held(role=role, lock_root=lock_root)
+        if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(publication_id) is None:
+            raise ClaimPublicationError(
+                "claim_terminal_identity_invalid", "supply the exact publication ID"
+            )
+        try:
+            # Integration prerequisite owned by the claim-key row; no duplicate parser.
+            from shared.sdlc_claim import role_claim_markers
+        except ImportError as exc:
+            raise ClaimPublicationError(
+                "claim_role_parser_unavailable", "integrate the qualified public exact-role parser"
+            ) from exc
+        with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
+            journal = _capture_publication_journal(
+                snapshot, _normalized(transaction_root) / publication_id / "manifest.json"
+            )
+            intent, projections, found_id, state, consumption = _load_admitted_manifest(
+                journal.manifest_path,
+                manifest_content=journal.manifest_content,
+                captured_blobs=journal.blobs,
+            )
+            if (
+                (intent.task_id, intent.role, intent.session_id, intent.claim_epoch, found_id)
+                != (task_id, role, session_id, claim_epoch, publication_id)
+                or intent.note_path.parent.parent != _normalized(vault_root)
+                or intent.cache_dir != _normalized(cache_dir)
+                or state != "applied"
+                or not isinstance(consumption, ClaimAdmissionConsumption)
+            ):
+                raise ClaimPublicationError(
+                    "claim_terminal_identity_mismatch", "preserve the original exact claim identity"
+                )
+            receipt_path = claim_publication_receipt_path(
+                cache_dir, intent.binding, receipt_root=receipt_root
+            )
+            receipt_capture = _capture_receipt(snapshot, receipt_path)
+            receipt = _as_admitted_receipt(
+                journal.manifest_path,
+                receipt_path,
+                intent,
+                consumption,
+                projections,
+                publication_id,
+                recovered=False,
+                receipt_content=receipt_capture.content,
+                receipt_mode=stat.S_IMODE(receipt_capture.stamp.mode),
+            )
+            active = _capture_task_state_candidates(snapshot, vault_root, task_id, "active")
+            closed = _capture_task_state_candidates(snapshot, vault_root, task_id, "closed")
+            if active or len(closed) != 1:
+                raise ClaimPublicationError(
+                    "claim_terminal_task_not_unique", "require one closed task and no active twin"
+                )
+            task = closed[0]
+            fields = _release_fields(task.content.decode("utf-8"))
+            if (
+                fields is None
+                or fields.get("status") not in TASK_TERMINAL_STATUSES
+                or fields.get("assigned_to") != role
+                or fields.get("authority_case") != intent.binding.authority_case
+                or task.path != intent.note_path.parent.parent / "closed" / intent.note_path.name
+                or task.mode != intent.note_mode
+            ):
+                raise ClaimPublicationError(
+                    "claim_terminal_note_mismatch",
+                    "preserve a unique exact-owner terminal task note",
+                )
+            cache = snapshot.pin_absolute_dir(_normalized(cache_dir), private_final=False)
+            assert cache is not None
+            snapshot.list_names(cache)
+            if role_claim_markers(cache_dir, role):
+                raise ClaimPublicationError(
+                    "claim_terminal_live_marker",
+                    "retain the process while role ownership is live or unknown",
+                )
+            # A failed participating publication may have installed its note before its
+            # activation markers. Marker absence cannot classify that owner as dead.
+            active_directory = snapshot.pin_absolute_dir(
+                _normalized(vault_root / "active"), private_final=False
+            )
+            assert active_directory is not None
+            for name in snapshot.list_names(active_directory):
+                if not name.endswith(".md"):
+                    continue
+                captured = snapshot.observe_file_at(
+                    active_directory,
+                    name,
+                    private=False,
+                    max_bytes=_CLAIM_SNAPSHOT_MAX_TASK_NOTE_BYTES,
+                ).captured
+                if captured is None:
+                    raise ClaimPublicationError(
+                        "claim_terminal_role_state_changed", "retry the role ownership observation"
+                    )
+                other = _release_fields(captured.content.decode("utf-8"))
+                if other is None or other.get("assigned_to") == role:
+                    raise ClaimPublicationError(
+                        "claim_terminal_role_owner_unknown",
+                        "retain the process until active role ownership is unambiguous",
+                        str(captured.path),
+                    )
+            retained: list[ContentAddress] = []
+            missing = 0
+            sidecars = tuple(p for p in projections[1:7] if not _is_claim_activation_projection(p))
+            for projection in sidecars:
+                observed = snapshot.observe_file_at(
+                    cache,
+                    projection.path.name,
+                    private=False,
+                    max_bytes=_CLAIM_SNAPSHOT_MAX_PROJECTION_BYTES,
+                )
+                captured = observed.captured
+                if captured is None:
+                    missing += 1
+                elif (captured.content, stat.S_IMODE(captured.stamp.mode)) != (
+                    projection.after,
+                    projection.after_mode,
+                ):
+                    raise ClaimPublicationError(
+                        "claim_terminal_sidecar_changed", "preserve changed ownership evidence"
+                    )
+                else:
+                    retained.append(_captured_observation_address(captured))
+            released = None
+            if missing:
+                if missing != len(sidecars):
+                    raise ClaimPublicationError(
+                        "claim_terminal_partial_sidecars",
+                        "preserve partial state for governed reconciliation",
+                    )
+                # Pin all archive/staging inputs before consulting the existing verified
+                # release reader; seal afterward catches identity, bytes and mode churn.
+                lineage_path = vault_root / "_lineage" / _safe_lineage_component(task_id)
+                lineage = snapshot.pin_absolute_dir(
+                    lineage_path, private_final=False, allow_missing=True
+                )
+                if lineage is not None:
+                    suffix = "-" + _safe_lineage_component(role)
+                    for name in snapshot.list_names(lineage):
+                        if not name.startswith("claim-residue-release-") or not name.endswith(
+                            suffix
+                        ):
+                            continue
+                        stamp = name[len("claim-residue-release-") : -len(suffix)]
+                        if _RELEASE_STAMP_RE.fullmatch(stamp) is None:
+                            continue
+                        archive = snapshot.pin_dir_at(lineage, name, private=False)
+                        staging = snapshot.pin_absolute_dir(
+                            cache_dir
+                            / "claim-residue-release"
+                            / _safe_lineage_component(task_id)
+                            / (stamp + suffix),
+                            private_final=False,
+                        )
+                        assert staging is not None
+                        for directory in (archive, staging):
+                            for child in snapshot.list_names(directory):
+                                captured = snapshot.observe_file_at(
+                                    directory,
+                                    child,
+                                    private=False,
+                                    max_bytes=_CLAIM_SNAPSHOT_MAX_PROJECTION_BYTES,
+                                ).captured
+                                if captured is not None:
+                                    if (
+                                        child in {"README.md", "PUBLICATION"}
+                                        and stat.S_IMODE(captured.stamp.mode) != 0o644
+                                    ):
+                                        raise ClaimPublicationError(
+                                            "claim_terminal_archive_mode_changed",
+                                            "preserve the original release modes",
+                                        )
+                                    retained.append(_captured_observation_address(captured))
+                released = _resolve_governed_applied_release(
+                    intent=intent,
+                    consumption=consumption,
+                    projections=projections,
+                    publication_id=publication_id,
+                    manifest_path=journal.manifest_path,
+                    receipt_path=receipt_path,
+                )
+                if released is None:
+                    raise ClaimPublicationError(
+                        "claim_terminal_release_unverified",
+                        "retain historical missing-epoch state; restore qualified original close/archive evidence",
+                    )
+            exclusion.require_held(role=role, lock_root=lock_root)
+            seal = snapshot.seal()
+            return TerminalClaimEvidence(
+                task_id,
+                role,
+                session_id,
+                claim_epoch,
+                publication_id,
+                task,
+                receipt,
+                ContentAddress(
+                    ref=str(journal.manifest_path), sha256=_sha256(journal.manifest_content)
+                ),
+                tuple(retained),
+                released,
+                ContentAddress(ref=seal.seal_ref, sha256=seal.seal_hash),
+            )
+    except ClaimResidueArchiveHold as exc:
+        return TerminalClaimHold(
+            "claim_terminal_ownership_unknown", "reconcile role evidence", str(exc)
+        )
+    except (ClaimPublicationError, ReadOnlySnapshotError) as exc:
+        return TerminalClaimHold(exc.reason_code, exc.repair_action, exc.detail)
+    except (OSError, UnicodeError) as exc:
+        return TerminalClaimHold(
+            "claim_terminal_unreadable", "preserve unreadable evidence for reconciliation", str(exc)
+        )
 
 
 def _resolve_applied_successor(
@@ -7985,12 +8308,17 @@ __all__ = [
     "ClaimPublicationSuccessor",
     "ClaimResidueArchiveHold",
     "ClaimResidueRelease",
+    "ClaimRoleExclusion",
+    "TerminalClaimEvidence",
+    "TerminalClaimHold",
     "admitted_claim_publication_id",
     "archive_dispatch_only_claim_residue",
     "admitted_claim_publication_id",
     "claim_publication_id",
     "claim_publication_mutation_scope_address",
     "claim_publication_receipt_path",
+    "claim_role_exclusion",
+    "observe_terminal_claim",
     "load_admitted_claim_publication_receipt",
     "load_claim_publication_receipt",
     "publish_admitted_claim",

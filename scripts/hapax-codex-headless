@@ -667,29 +667,59 @@ os.environ.pop("CODEX_ACCESS_TOKEN",None); os.environ.pop("CODEX_HOME",None); os
 # back to stale legacy lane state and reject the governed dispatch.
 sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); claim_epoch=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH",""); keyable=False; materialized=False; claim_epoch_verified=False
 try:
-    sys.path.insert(0, p["workdir"])
-    from shared.session_identity import is_claim_keyable_session_id
-    keyable=is_claim_keyable_session_id(sid)
-except Exception:
-    keyable=bool(sid) and "/" not in sid and not sid.isdigit() and not sid.rsplit("-",1)[-1].isdigit()
-try:
-    if keyable and role:
-        cache=os.path.join(os.path.expanduser("~"),".cache","hapax")
-        os.makedirs(cache,exist_ok=True)
-        open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
+    if sid or role or task:
+        # Resolve only the declared execution-host installation. A checkout cannot supply
+        # claim helpers or a fallback lock root for materialization.
+        source=os.path.realpath(os.path.expanduser(os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE","~/.cache/hapax/source-activation/worktree")))
+        runtime=os.path.join(source,".venv","bin","python")
+        if not os.path.isfile(runtime) or not os.access(runtime,os.X_OK):
+            raise RuntimeError("execution_host_installed_runtime_missing")
+        if os.path.abspath(sys.executable) != runtime or not sys.flags.isolated:
+            code=sys.orig_argv[sys.orig_argv.index("-c")+1]
+            os.execv(runtime,[runtime,"-B","-I","-c",code])
+        sys.path.insert(0,source)
+        from pathlib import Path
+        from shared.session_identity import is_claim_keyable_session_id
+        from shared.gate0b_claim_publication_install import default_claim_publication_roots,load_claim_publication_composition
+        from shared.sdlc_claim import claim_role_exclusion
+        from shared.sdlc_task_store import claim_dispatch_binding_path
+        from shared.coord_projection import _file_state
+        installed=load_claim_publication_composition(Path(default_claim_publication_roots().invocation_store_root))
+        roots=installed.receipt.roots
+        keyable=is_claim_keyable_session_id(sid)
+        if not keyable or not role or role.split() != [role]:
+            raise ValueError("execution_host_claim_identity_invalid")
+        cache=Path(roots.claim_cache_dir)
+        claim_dispatch_binding_path(cache,role)
+        projections=[(cache / ("session-role-"+sid),(role+"\n").encode())]
         if task:
             epoch,sep,epoch_task=claim_epoch.partition(" ")
-            if not sep or not epoch.isdigit() or epoch_task != task:
+            if not sep or not epoch.isdigit() or epoch_task != task or task.split() != [task] or "/" in task:
                 print("hapax-codex-headless: refusing remote claim materialization without matching local cc-claim epoch; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch", file=sys.stderr)
                 sys.exit(78)
-            epoch_line=claim_epoch+"\n"
-            open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
-            open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
-            open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
-            open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
-            materialized=True; claim_epoch_verified=True
+            for key in (role,role+"-"+sid):
+                projections.extend(((cache / ("cc-claim-epoch-"+key),(claim_epoch+"\n").encode()),(cache / ("cc-active-task-"+key),(task+"\n").encode())))
+        with claim_role_exclusion(role,lock_root=Path(roots.claim_lock_root)):
+            cache.mkdir(parents=True,exist_ok=True)
+            from shared.sdlc_claim import role_claim_marker_tasks
+            projected={path:payload for path,payload in projections}
+            for marker,named in role_claim_marker_tasks(cache,role):
+                if marker not in projected or named != task:
+                    raise ValueError("execution_host_other_claim_owner")
+            before=[_file_state(path) for path,_ in projections]
+            absent=[state == (None,None) for state in before]
+            if not all(absent) and any(state != (payload,0o644) for state,(_,payload) in zip(before,projections,strict=True)):
+                raise ValueError("execution_host_claim_partial_or_conflicting")
+            if all(absent):
+                for path,payload in projections:
+                    fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o644)
+                    with os.fdopen(fd,"wb") as output:
+                        output.write(payload); output.flush(); os.fsync(output.fileno())
+            if any(_file_state(path) != (payload,0o644) for path,payload in projections):
+                raise ValueError("execution_host_claim_postimage_changed")
+            materialized=bool(task); claim_epoch_verified=bool(task)
 except Exception as exc:
-    print("hapax-codex-headless: failed to materialize remote claim cache ("+exc.__class__.__name__+"); next action: repair ~/.cache/hapax permissions on the dispatch host before retrying", file=sys.stderr)
+    print("hapax-codex-headless: failed to materialize remote claim cache ("+exc.__class__.__name__+"); next action: restore the execution-host installed composition/runtime or reconcile partial claim projections; preserve all existing evidence", file=sys.stderr)
     sys.exit(78)
 codex_bin,codex_resolution_error=_resolve_codex_bin()
 if codex_bin is None:
