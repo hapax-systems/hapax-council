@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -30,10 +31,14 @@ def ordinary_test_host(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module.socket, "gethostname", lambda: "test-host")
 
 
-def lane(tmp_path: Path, *, provider: str = "codex") -> dict:
-    role = "codex-openmarket" if provider == "codex" else "dev1-seat"
-    tmux = "hapax-codex-openmarket" if provider == "codex" else "hapax-claude-dev1-seat"
-    inbox = tmp_path / ("codex-openmarket" if provider == "codex" else "dev1")
+def lane(tmp_path: Path, *, provider: str = "codex", seat: bool = False) -> dict:
+    if provider == "codex":
+        role = "dev1-seat-codex" if seat else "codex-openmarket"
+        tmux = "hapax-codex-seat" if seat else "hapax-codex-openmarket"
+    else:
+        role = "dev1-seat" if seat else "dev20"
+        tmux = f"hapax-claude-{role}"
+    inbox = tmp_path / ("dev1" if seat else role)
     inbox.mkdir(exist_ok=True)
     cwd = tmp_path / "workspace"
     cwd.mkdir(exist_ok=True)
@@ -58,13 +63,8 @@ def test_codex_seat_binding_is_exact_and_keeps_claude_custody(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(module, "ROOT", tmp_path)
-    predecessor = lane(tmp_path, provider="claude")
-    codex_seat = lane(tmp_path)
-    codex_seat.update(
-        role="dev1-seat-codex",
-        tmux="hapax-codex-seat",
-        inbox=str(tmp_path / "dev1"),
-    )
+    predecessor = lane(tmp_path, provider="claude", seat=True)
+    codex_seat = lane(tmp_path, seat=True)
     module.validate(predecessor)
     module.validate(codex_seat)
     assert "HAPAX_AGENT_ROLE=dev1-seat-codex" in module.launch_args(codex_seat)
@@ -431,7 +431,7 @@ def test_restore_rebuilds_bounded_commands_and_reports_failures(
         calls.append(args)
         if args[1] == "has-session":
             return subprocess.CompletedProcess(args, 1)
-        if args[1] == "new-session" and args[4] == "hapax-claude-dev1-seat":
+        if args[1] == "new-session" and args[4] == "hapax-claude-dev20":
             raise subprocess.CalledProcessError(1, args)
         return subprocess.CompletedProcess(args, 0)
 
@@ -452,7 +452,7 @@ def test_restore_rebuilds_bounded_commands_and_reports_failures(
         assert "prlimit --nofile=65536:1048576 -- env" in command
         assert TRANSCRIPT in command
         assert "SEAT " not in command
-    assert "hapax-claude-dev1-seat" in result["failed"]
+    assert "hapax-claude-dev20" in result["failed"]
     assert result["restored"] == ["hapax-codex-openmarket"]
     assert len(reports) == 1
     assert json.loads(path.read_text())["boot_id"] == "old-boot"
@@ -510,6 +510,220 @@ def test_dry_run_simulates_missing_live_lane_without_mutation(
     assert result["simulated_missing"] == [entry["tmux"]]
     assert path.read_bytes() == before
     assert all(call[:2] == ["tmux", "has-session"] for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("provider", "seat", "incumbent", "wall_event", "expected"),
+    [
+        ("codex", False, None, None, True),  # Worker recovery keeps its path.
+        ("codex", True, "dev1-seat-codex", None, True),
+        ("codex", True, "dev1-seat", None, False),
+        ("codex", True, None, None, False),
+        ("claude", True, "dev1-seat-codex", None, False),
+        ("codex", False, None, "walled", False),
+        ("codex", True, "dev1-seat-codex", "walled", False),
+        ("codex", False, None, "cleared", True),
+        ("claude", False, None, "walled", False),
+        ("claude", False, None, "cleared", True),
+    ],
+)
+def test_restore_disposition_blocks_only_nonincumbent_seats_and_native_walls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    provider: str,
+    seat: bool,
+    incumbent: str | None,
+    wall_event: str | None,
+    expected: bool,
+) -> None:
+    entry = lane(tmp_path, provider=provider, seat=seat)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "STATE", tmp_path / "state")
+    monkeypatch.setattr(module, "SEAT_CHARTER", tmp_path / "COORDINATOR-SEAT.md", raising=False)
+    monkeypatch.setattr(module, "NATIVE_ROOT", tmp_path, raising=False)
+    module.SEAT_CHARTER.write_text(
+        "---\ntype: seat\nid: COORDINATOR-SEAT\n"
+        "incumbent_role: dev1-seat-codex\n---\ncurrent seat charter version\n"
+    )
+    if incumbent is not None:
+        module.STATE.mkdir()
+        disposition = module.STATE / "seat-disposition.json"
+        disposition.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "source": "coordinator-seat",
+                    "charter_sha256": hashlib.sha256(module.SEAT_CHARTER.read_bytes()).hexdigest(),
+                    "incumbent_role": incumbent,
+                }
+            )
+        )
+        disposition.chmod(0o600)
+    if wall_event is not None:
+        trace = (
+            tmp_path / ".codex" / "sessions" / "2026" / "10" / "03" / f"rollout-{TRANSCRIPT}.jsonl"
+            if provider == "codex"
+            else tmp_path / ".claude" / "projects" / "-test" / f"{TRANSCRIPT}.jsonl"
+        )
+        trace.parent.mkdir(parents=True)
+        if provider == "codex":
+            events = [
+                {"type": "session_meta", "payload": {"id": TRANSCRIPT, "cwd": entry["cwd"]}},
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_complete",
+                        "error": {"codex_error_info": "usage_limit_exceeded"},
+                    },
+                },
+            ]
+            if wall_event == "cleared":
+                events.append(
+                    {"type": "event_msg", "payload": {"type": "task_complete", "error": None}}
+                )
+        else:
+            events = [
+                {"type": "system", "sessionId": TRANSCRIPT},
+                {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}},
+            ]
+            if wall_event == "cleared":
+                events.append({"type": "result", "is_error": False})
+        trace.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+    path = tmp_path / "manifest.json"
+    module.atomic_json(
+        path, {"schema": 1, "host": "test-host", "boot_id": "old-boot", "lanes": [entry]}
+    )
+    monkeypatch.setattr(module, "boot_id", lambda: BOOT)
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1 if args[1] == "has-session" else 0)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "report", lambda result: None)
+    result = module.restore(path, dry_run=True)
+    assert (entry["tmux"] in result["restored"]) is expected
+    assert (entry["tmux"] in result["suppressed"]) is not expected
+    assert all(call[1] != "new-session" for call in calls)
+    assert json.loads(path.read_text())["lanes"] == [entry]  # Crash custody retained.
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "stale",
+        "wrong-owner-mode",
+        "wrong-source",
+        "unknown-role",
+        "conflict",
+        "missing-field",
+        "duplicate-field",
+    ],
+)
+def test_seat_disposition_refuses_missing_provenance_or_stale_charter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, damage: str
+) -> None:
+    monkeypatch.setattr(module, "STATE", tmp_path)
+    monkeypatch.setattr(module, "SEAT_CHARTER", tmp_path / "COORDINATOR-SEAT.md", raising=False)
+    module.SEAT_CHARTER.write_text(
+        "---\ntype: seat\nid: COORDINATOR-SEAT\n"
+        "incumbent_role: dev1-seat-codex\n---\ncurrent charter\n"
+    )
+    path = tmp_path / "seat-disposition.json"
+    data = {
+        "schema": 1,
+        "source": "coordinator-seat",
+        "charter_sha256": hashlib.sha256(module.SEAT_CHARTER.read_bytes()).hexdigest(),
+        "incumbent_role": "dev1-seat-codex",
+    }
+    path.write_text(json.dumps(data))
+    path.chmod(0o600)
+    assert module.incumbent_role() == "dev1-seat-codex"
+    if damage == "stale":
+        module.SEAT_CHARTER.write_text("new charter\n")
+    elif damage == "wrong-owner-mode":
+        path.chmod(0o644)
+    elif damage == "wrong-source":
+        path.write_text(json.dumps(data | {"source": "manifest"}))
+    elif damage == "conflict":
+        module.SEAT_CHARTER.write_text(
+            "---\ntype: seat\nid: COORDINATOR-SEAT\n"
+            "incumbent_role: dev1-seat\n---\ncurrent charter\n"
+        )
+        path.write_text(
+            json.dumps(
+                data
+                | {
+                    "charter_sha256": hashlib.sha256(module.SEAT_CHARTER.read_bytes()).hexdigest(),
+                }
+            )
+        )
+    elif damage in {"missing-field", "duplicate-field"}:
+        text = module.SEAT_CHARTER.read_text()
+        text = (
+            text.replace("incumbent_role: dev1-seat-codex\n", "")
+            if damage == "missing-field"
+            else text.replace(
+                "incumbent_role: dev1-seat-codex\n",
+                "incumbent_role: dev1-seat-codex\nincumbent_role: dev1-seat-codex\n",
+            )
+        )
+        module.SEAT_CHARTER.write_text(text)
+        path.write_text(
+            json.dumps(
+                data
+                | {"charter_sha256": hashlib.sha256(module.SEAT_CHARTER.read_bytes()).hexdigest()}
+            )
+        )
+    else:
+        path.write_text(json.dumps(data | {"incumbent_role": "codex-openmarket"}))
+    with pytest.raises(ValueError, match="seat disposition"):
+        module.incumbent_role()
+
+
+def test_native_wall_blocks_real_launch_and_keeps_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    entry = lane(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "NATIVE_ROOT", tmp_path, raising=False)
+    monkeypatch.setattr(module, "boot_id", lambda: BOOT)
+    trace = tmp_path / ".codex" / "sessions" / "2026" / "10" / "03" / f"rollout-{TRANSCRIPT}.jsonl"
+    trace.parent.mkdir(parents=True)
+    trace.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in [
+                {"type": "session_meta", "payload": {"id": TRANSCRIPT, "cwd": entry["cwd"]}},
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_complete",
+                        "error": {"codex_error_info": "usage_limit_exceeded"},
+                    },
+                },
+            ]
+        )
+        + "\n"
+    )
+    path = tmp_path / "manifest.json"
+    module.atomic_json(
+        path, {"schema": 1, "host": "test-host", "boot_id": "old-boot", "lanes": [entry]}
+    )
+    original = path.read_bytes()
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["tmux", "new-session"]:
+            pytest.fail("walled lane was relaunched")
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "report", lambda result: None)
+    result = module.restore(path)
+    assert result["suppressed"] == [entry["tmux"]]
+    assert "provider-native" in result["failed"][entry["tmux"]]
+    assert path.read_bytes() == original
 
 
 def test_unit_recovery_starts_missing_declared_unit(

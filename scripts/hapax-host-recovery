@@ -35,6 +35,8 @@ APPROVAL_MODES = {"on-request", "never"}
 ROOT = Path.home() / "Documents/Personal/30-areas/hapax/lanebus"
 STATE = Path.home() / ".local/state/hapax/host-recovery"
 CODEX_NODE_WRAPPER = Path.home() / ".npm-global/bin/codex"
+SEAT_CHARTER = Path.home() / "Documents/Personal/30-areas/hapax/frame/COORDINATOR-SEAT.md"
+NATIVE_ROOT = Path.home()
 
 
 class ReportError(RuntimeError):
@@ -100,6 +102,123 @@ def read_manifest(path: Path) -> dict | None:
     if len({e["tmux"] for e in data.get("lanes", [])}) != len(data.get("lanes", [])):
         raise ValueError("duplicate recovery lane")
     return data
+
+
+def seat_role(entry: dict) -> bool:
+    """The seat launch bindings supported by this restorer, not lane self-report."""
+    return entry["role"] in {"dev1-seat", CODEX_SEAT_ROLE} or entry["tmux"] == CODEX_SEAT_TMUX
+
+
+def incumbent_role() -> str:
+    """Read the seat-maintained structured disposition bound to current charter bytes."""
+    path = STATE / "seat-disposition.json"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("seat disposition missing or unsafe")
+    stat = path.stat()
+    if stat.st_uid != os.getuid() or stat.st_mode & 0o077:
+        raise ValueError("seat disposition owner/mode differs")
+    data = json.loads(path.read_text())
+    if set(data) != {"schema", "source", "charter_sha256", "incumbent_role"} or (
+        data["schema"] != 1 or data["source"] != "coordinator-seat"
+    ):
+        raise ValueError("seat disposition schema/provenance differs")
+    if data["incumbent_role"] not in {"dev1-seat", CODEX_SEAT_ROLE}:
+        raise ValueError("seat disposition names unknown incumbent")
+    if SEAT_CHARTER.is_symlink() or not SEAT_CHARTER.is_file():
+        raise ValueError("current seat charter missing or unsafe")
+    charter = SEAT_CHARTER.read_bytes()
+    if data["charter_sha256"] != hashlib.sha256(charter).hexdigest():
+        raise ValueError("seat disposition is stale against current charter")
+    lines = charter.decode("utf-8").splitlines()
+    if not lines or lines[0] != "---" or "---" not in lines[1:]:
+        raise ValueError("seat disposition charter metadata missing")
+    metadata = lines[1 : lines.index("---", 1)]
+    fields: dict[str, list[str]] = {}
+    for line in metadata:
+        key, separator, value = line.partition(":")
+        if separator and key in {"type", "id", "incumbent_role"}:
+            fields.setdefault(key, []).append(value.strip())
+    if (
+        fields.get("type") != ["seat"]
+        or fields.get("id") != ["COORDINATOR-SEAT"]
+        or fields.get("incumbent_role") != [data["incumbent_role"]]
+    ):
+        raise ValueError("seat disposition conflicts with current charter metadata")
+    return data["incumbent_role"]
+
+
+def native_trace_paths(entry: dict) -> list[Path]:
+    transcript = entry["transcript"]
+    if entry["provider"] == "claude":
+        return list((NATIVE_ROOT / ".claude/projects").glob(f"*/{transcript}.jsonl"))
+    paths: list[Path] = []
+    for home in NATIVE_ROOT.glob(".codex*"):
+        sessions = home / "sessions"
+        if sessions.is_dir() and not sessions.is_symlink():
+            paths.extend(sessions.glob(f"*/*/*/*{transcript}.jsonl"))
+    return paths
+
+
+def native_wall(entry: dict) -> bool:
+    """Use the saved transcript identity and the last decisive provider event."""
+    paths = native_trace_paths(entry)
+    if not paths:
+        return False  # Preserve worker recovery when there is no native wall evidence.
+    if len(paths) != 1:
+        raise ValueError("conflicting provider-native transcript identity")
+    path = paths[0]
+    if path.is_symlink() or path.stat().st_uid != os.getuid():
+        raise ValueError("unsafe provider-native transcript")
+    with path.open("rb") as stream:
+        head = [stream.readline() for _ in range(80)]
+        stream.seek(max(0, path.stat().st_size - 1024 * 1024))
+        if stream.tell():
+            stream.readline()
+        tail = stream.readlines()
+
+    def records(lines: list[bytes]) -> list[dict]:
+        parsed = []
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(item, dict):
+                parsed.append(item)
+        return parsed
+
+    first = records(head)
+    if entry["provider"] == "codex":
+        bound = any(
+            item.get("type") == "session_meta"
+            and item.get("payload", {}).get("id") == entry["transcript"]
+            for item in first
+        )
+    else:
+        bound = any(item.get("sessionId") == entry["transcript"] for item in first)
+    if not bound:
+        raise ValueError("provider-native transcript identity differs")
+    decisive: bool | None = None
+    for item in records(tail):
+        if entry["provider"] == "codex":
+            payload = item.get("payload", {})
+            if item.get("type") == "event_msg" and payload.get("type") == "task_complete":
+                error = payload.get("error")
+                if error is None:
+                    decisive = False
+                elif (
+                    isinstance(error, dict)
+                    and error.get("codex_error_info") == "usage_limit_exceeded"
+                ):
+                    decisive = True
+        elif item.get("type") == "rate_limit_event":
+            if item.get("rate_limit_info", {}).get("status") == "rejected":
+                decisive = True
+        elif item.get("type") == "result" and item.get("is_error") is False:
+            decisive = False
+    if decisive is None:
+        raise ValueError("provider-native wall disposition unavailable")
+    return decisive
 
 
 def validate_unit(unit: dict) -> None:
@@ -540,6 +659,7 @@ def restore(path: Path, *, dry_run: bool = False, simulate_missing: tuple[str, .
         "boot_id": current,
         "restored": [],
         "already_live": [],
+        "suppressed": [],
         "units_started": [],
         "failed": {},
     }
@@ -598,6 +718,15 @@ def restore(path: Path, *, dry_run: bool = False, simulate_missing: tuple[str, .
                 result["already_live"].append(name)
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 result["failed"][name] = f"live session readback: {exc}"
+            continue
+        try:
+            if seat_role(entry) and entry["role"] != incumbent_role():
+                raise ValueError("saved coordinator seat is not the current incumbent")
+            if native_wall(entry):
+                raise ValueError("latest provider-native evidence is walled")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            result["suppressed"].append(name)
+            result["failed"][name] = f"relaunch suppressed: {exc}"
             continue
         try:
             command = launch_args(entry)

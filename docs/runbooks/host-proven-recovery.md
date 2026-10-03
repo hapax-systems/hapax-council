@@ -84,6 +84,33 @@ panes for crash recovery, so a recapture does not retire either binding or
 confer coordinator authority on a restored pane. Check the current seat
 charter and disposition before deciding which recovered pane may coordinate.
 
+The restore gate keeps both seat bindings in crash custody but relaunches only
+the incumbent named in an owner-only
+`~/.local/state/hapax/host-recovery/seat-disposition.json`. The seat publishes
+this structured file as part of its charter transition. It has exactly
+`schema: 1`, `source: "coordinator-seat"`, `incumbent_role` (`dev1-seat` or
+`dev1-seat-codex`), and `charter_sha256` of the current
+`frame/COORDINATOR-SEAT.md` bytes. Restore checks the file owner, private mode,
+schema, role and current charter hash. A missing, conflicting or stale file
+suppresses a missing seat and leaves its manifest entry intact. This source
+change does not create the seat's disposition or infer an operator act. Do not
+activate this version for seat recovery until the incumbent has published and
+read back the file under separate runtime authority. The charter must also
+carry a single structured frontmatter `incumbent_role` with the same value;
+restore reads only that field, never §0 prose. The current charter lacks that
+field, so the source remains held until the seat amends both surfaces under
+its own authority and verifies their agreement.
+
+For each missing lane, restore inspects the saved provider transcript UUID at
+the provider's native session path. A Codex `task_complete` carrying
+`usage_limit_exceeded`, or a Claude `rate_limit_event` with rejected status,
+suppresses relaunch. A later successful provider-native completion clears it.
+Ambiguous or mismatched native identity suppresses relaunch. Ordinary workers
+with no such native wall evidence retain their existing recovery path. A
+suppressed lane is reported as a failure, so the boot manifest is not stamped
+restored and the retry watcher can observe later clearance. Existing live
+sessions are read back but never replaced by this gate.
+
 For an appendix dry run that exercises lane reconstruction without stopping a
 live pane, first capture and verify the current owner-only manifest, and choose
 one lane name present in it. Record the manifest SHA-256 and `tmux has-session`
