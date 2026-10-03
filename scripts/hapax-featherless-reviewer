@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Featherless substitute reviewer seat for the review-team registry (read-only, prepaid).
+
+Sends the dispatcher's blind prompt to Featherless's OpenAI-compatible chat completions
+endpoint (``https://api.featherless.ai/v1``) as one non-streaming completion, no tools.
+Follows scripts/hapax-muse-reviewer and scripts/hapax-local-reviewer.
+
+Billing: the Featherless key is a $200/month prepaid flat plan (FileStore ``featherless-api-key``),
+never a PAYG key. The pinned model is a §B2 shape match. DeepSeek-V4-Pro's 32k context is a
+known mismatch for long review packets, so the wrapper refuses prompts above its measured fit
+and the constitution substitutes another family. Anti-inflation: a Featherless seat counts as
+its served model's family (scripts/hapax_review_family_inflation.py), so pin a model whose
+family is NOT a core or already-seated family (not GLM, not the local Qwen, not Kimi).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.hapax_review_http_seat import (  # noqa: E402
+    SEAT_PREAMBLE,
+    USER_AGENT,
+    http_failure,
+    over_ceiling,
+    read_api_key,
+    read_prompt,
+    record_served_model,
+    refuse,
+    seat_text,
+)
+
+WRAPPER = "hapax-featherless-reviewer"
+DEFAULT_BASE_URL = "https://api.featherless.ai/v1"
+DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Pro"
+SECRET_ENTRY = "featherless-api-key"  # pragma: allowlist secret
+# DeepSeek-V4-Pro is a 32k-context model; reserve the output budget and refuse longer packets.
+MAX_PROMPT_BYTES = 80_000
+MAX_OUTPUT_TOKENS = 8192
+TIMEOUT_SECONDS = 900
+
+
+def request_body(prompt: str, model: str) -> dict:
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SEAT_PREAMBLE},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        "stream": False,
+    }
+
+
+def main() -> int:
+    prompt = read_prompt()
+    if not prompt.strip():
+        return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
+    base_url = os.environ.get("HAPAX_FEATHERLESS_REVIEW_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    model = os.environ.get("HAPAX_FEATHERLESS_REVIEW_MODEL", DEFAULT_MODEL)
+    over = over_ceiling(WRAPPER, seat_text(prompt), MAX_PROMPT_BYTES)
+    if over is not None:
+        return over
+    key, key_refusal = read_api_key(WRAPPER, SECRET_ENTRY, env="HAPAX_FEATHERLESS_REVIEW_API_KEY")
+    if key is None:
+        return key_refusal
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(request_body(prompt, model)).encode("utf-8"),
+        headers={
+            "content-type": "application/json",
+            "authorization": f"Bearer {key}",
+            "user-agent": USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — a body read failure must not mask the status
+            detail = ""
+        return http_failure(WRAPPER, exc.code, detail, key)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return refuse(
+            WRAPPER, f"featherless endpoint {base_url} unreachable ({type(exc).__name__})"
+        )
+    try:
+        choice = payload["choices"][0]
+        content = choice["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        return refuse(WRAPPER, "featherless returned no choices; check the model id")
+    if choice.get("finish_reason") == "length":
+        return refuse(WRAPPER, f"reply truncated at {MAX_OUTPUT_TOKENS} tokens; not a review")
+    if not content.strip():
+        return refuse(WRAPPER, "featherless returned empty content; not a review")
+    record_served_model(WRAPPER, payload.get("model"), model)
+    sys.stdout.write(content)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

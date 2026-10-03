@@ -825,10 +825,11 @@ class TestConstitution:
 class TestDistinctFamilyFloor:
     """review-constitution-walled-family-substitution-20260924, seat finding 21:05:30Z: the
     diversity floor is distinct families. A second seat from the same family is never a
-    substitute. Declared substitute families (Muse, Vibe, the local fleet) fill seats the
-    core families cannot, and every seated family must vote."""
+    substitute. Declared substitute families (Muse, Vibe, the local fleet, and the entitlement
+    seats Kimi/Featherless/Verboo) fill seats the core families cannot, and every seated family
+    must vote."""
 
-    SUBSTITUTES = {"muse", "vibe", "local"}
+    SUBSTITUTES = {"muse", "vibe", "local", "kimi", "featherless", "verboo"}
 
     def test_registry_declares_the_granted_substitute_families(self) -> None:
         rt = _load_review_team_module()
