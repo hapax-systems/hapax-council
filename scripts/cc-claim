@@ -35,6 +35,7 @@ fi
 force=false
 recover_claim_publications_only=false
 release_claim_residue_only=false
+recover_closed_dispatch_only=false
 return_claim=false
 rehydrate_activation_cache_only=false
 # Default mode publishes through the admitted Gate-0B claim-publication path.
@@ -47,6 +48,7 @@ usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim --recover-claim-publications [<task_id>]
        cc-claim --rehydrate-activation-cache <task_id>
        cc-claim --release-claim-residue <task_id>
+       cc-claim --recover-closed-dispatch-residue <task_id>
        cc-claim --return-claim <task_id>
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
@@ -80,6 +82,7 @@ while [[ $# -gt 0 ]]; do
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
     --rehydrate-activation-cache) rehydrate_activation_cache_only=true; shift ;;
     --release-claim-residue) release_claim_residue_only=true; shift ;;
+    --recover-closed-dispatch-residue) recover_closed_dispatch_only=true; shift ;;
     --return-claim) release_claim_residue_only=true; return_claim=true; shift ;;
     --dispatch-message-id) require_option_value "$1" "${2:-}"; dispatch_message_id="$2"; shift 2 ;;
     --dispatch-binding-hash) require_option_value "$1" "${2:-}"; dispatch_binding_hash="$2"; shift 2 ;;
@@ -99,6 +102,10 @@ if [[ "$rehydrate_activation_cache_only" == "true" && ( -z "$task_id" || "$recov
 fi
 if [[ "$release_claim_residue_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$rehydrate_activation_cache_only" == "true" || "$force" == "true" ) ]]; then
   echo "cc-claim: release_usage_invalid: supply one task id and no other mode. Next action: rerun cc-claim --release-claim-residue <task_id> (or --return-claim <task_id>), naming the one task." >&2
+  exit 1
+fi
+if [[ "$recover_closed_dispatch_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$rehydrate_activation_cache_only" == "true" || "$release_claim_residue_only" == "true" || "$force" == "true" ) ]]; then
+  echo "cc-claim: closed_dispatch_usage_invalid: supply one task id and no other mode. Next action: rerun cc-claim --recover-closed-dispatch-residue <task_id>." >&2
   exit 1
 fi
 if [[ -z "$task_id" && "$recover_claim_publications_only" != "true" ]]; then
@@ -295,6 +302,45 @@ fi
 . "$ROOT_HELPER"
 cc_task_root_resolve || exit $?
 vault_root_check="$CC_TASK_ROOT"
+if [[ "$recover_closed_dispatch_only" == "true" ]]; then
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" <<'PYEOF'
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+repo_root, vault_root, role, task_id = Path(sys.argv[1]).resolve(), Path(sys.argv[2]), *sys.argv[3:5]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+from shared.gate0b_claim_publication_install import default_claim_publication_roots
+from shared.sdlc_claim import (
+    ClaimPublicationError, ClaimResidueArchiveHold, recover_closed_dispatch_residue,
+)
+
+roots = default_claim_publication_roots(home=Path.home())
+try:
+    recovered = recover_closed_dispatch_residue(
+        vault_root=vault_root,
+        cache_dir=Path(roots.claim_cache_dir),
+        transaction_root=Path(roots.claim_transaction_root),
+        receipt_root=Path(roots.claim_receipt_root),
+        lock_root=Path(roots.claim_lock_root),
+        role=role, task_id=task_id,
+        observed_at=datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
+    )
+except ClaimResidueArchiveHold as exc:
+    print(f"cc-claim: {exc.message}", file=sys.stderr)
+    sys.exit(8)
+except ClaimPublicationError as exc:
+    print(f"cc-claim: HOLD - {exc}. Next action: preserve the journal and receipt; reconcile their mismatch before retrying.", file=sys.stderr)
+    sys.exit(8)
+print(
+    f"cc-claim: recovered {recovered.shape} residue of {role} for {task_id} "
+    f"(publication {recovered.publication_id}); archived {len(recovered.archived)} "
+    f"file(s) to {recovered.archive_dir}"
+)
+PYEOF
+  exit $?
+fi
 # Governed release of this role's claim residue for one task (M166-M173). It runs before the
 # lease scan, because the residue it releases is what that scan and the claim path hold on.
 if [[ "$release_claim_residue_only" == "true" ]]; then

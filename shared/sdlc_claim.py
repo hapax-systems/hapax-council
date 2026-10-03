@@ -7699,6 +7699,147 @@ def release_claim_residue(
         )
 
 
+def recover_closed_dispatch_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    receipt_root: Path,
+    lock_root: Path,
+    role: str,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    """Archive dispatch-only residue left by the old cc-close, with its exact receipt.
+
+    Missing epochs are admitted only for a terminal row in closed/ with both markers
+    absent. The applied manifest and immutable receipt must agree on every projected
+    byte. This is intentionally separate from ordinary lapsed-lease release.
+    """
+
+    if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
+        raise _release_hold("claim_residue_stamp_invalid", repr(observed_at), "pass a UTC stamp")
+    journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+    if not journals:
+        raise _release_hold(
+            "claim_residue_no_journal",
+            f"no journal of {role} for {task_id}",
+            "run recovery as the role that claimed the task",
+        )
+    with _claim_publication_lock(journals[0].intent, lock_root=lock_root):
+        journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+        applied = [journal for journal in journals if journal.state == "applied"]
+        if len(applied) != 1 or len(journals) != 1:
+            raise _release_hold(
+                "claim_residue_ambiguous",
+                f"{len(journals)} journals of {role} for {task_id}",
+                "preserve all journals and resolve the publication identity",
+            )
+        journal = applied[0]
+        closed_note = _task_note_path_for_any_state(vault_root, task_id)
+        closed_fields = _release_frontmatter(closed_note) if closed_note is not None else None
+        if (
+            _task_in_active(vault_root, task_id)
+            or closed_note is None
+            or closed_note.parent != vault_root / "closed"
+            or closed_fields is None
+            or closed_fields.get("task_id") != task_id
+            or closed_fields.get("assigned_to") != role
+            or str(closed_fields.get("status") or "").strip() not in TASK_TERMINAL_STATUSES
+        ):
+            raise _release_hold(
+                "claim_residue_not_closed",
+                f"{task_id} has no uniquely terminal closed row",
+                "finish the task through cc-close before recovering dispatch residue",
+            )
+        intent, projections, publication_id, state, consumption = _load_any_manifest(
+            journal.manifest_path
+        )
+        if (
+            publication_id != journal.publication_id
+            or state != "applied"
+            or intent != journal.intent
+            or projections != journal.projections
+        ):
+            raise _release_hold(
+                "claim_residue_journal_changed",
+                str(journal.manifest_path),
+                "preserve the changed journal and inspect its receipt",
+            )
+        receipt_path = claim_publication_receipt_path(
+            cache_dir, intent.binding, receipt_root=receipt_root
+        )
+        _as_any_receipt(
+            journal.manifest_path,
+            receipt_path,
+            intent,
+            projections,
+            publication_id,
+            consumption,
+            recovered=False,
+        )
+        residue = _journal_residue(journal, cache_dir)
+        markers = [item for item in residue if _is_claim_activation_projection(item)]
+        epochs = [item for item in residue if item.path.name.startswith("cc-claim-epoch-")]
+        dispatch = [item for item in residue if item.path.name.startswith("cc-claim-dispatch-")]
+        if len(markers) != 2 or len(epochs) != 2 or len(dispatch) != 2:
+            raise _release_hold(
+                "claim_residue_projection_shape",
+                publication_id,
+                "preserve the journal and inspect its six sidecar projections",
+            )
+        if any(_residue_state(item) != "absent" for item in (*markers, *epochs)):
+            raise _release_hold(
+                "claim_residue_live_marker",
+                publication_id,
+                "use ordinary release for remaining markers or epochs",
+            )
+        if others := _other_live_markers(cache_dir, role, task_id, residue):
+            raise _release_hold(
+                "claim_residue_live_marker",
+                str(others[0]),
+                "preserve the other session's marker",
+            )
+        present: list[FileProjection] = []
+        staged: dict[Path, Path] = {}
+        for item in dispatch:
+            state = _residue_state(item)
+            if state == "other":
+                raise _release_hold(
+                    "claim_residue_hash_mismatch",
+                    str(item.path),
+                    "preserve the sidecar; it differs from the receipt-bound projection",
+                )
+            if state == "after":
+                present.append(item)
+            elif _previously_archived(item, journal, vault_root):
+                continue
+            elif (original := _staged_original(item, journal)) is not None:
+                staged[item.path] = original
+                present.append(item)
+            else:
+                raise _release_hold(
+                    "claim_residue_projection_missing",
+                    str(item.path),
+                    "preserve the journal and inspect the missing dispatch sidecar",
+                )
+        if not present:
+            raise _release_hold(
+                "claim_residue_none",
+                task_id,
+                "nothing remains to recover",
+            )
+        archive_dir, archived = _archive_residue(
+            present,
+            journal=journal,
+            vault_root=vault_root,
+            shape="closed_dispatch",
+            observed_at=observed_at,
+            staged=staged,
+        )
+        return ClaimResidueRelease("closed_dispatch", publication_id, archive_dir, archived, None)
+
+
 _SESSION_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
@@ -7998,6 +8139,7 @@ __all__ = [
     "prospective_claim_publication_basis",
     "inspect_claim_publications",
     "recover_claim_publications",
+    "recover_closed_dispatch_residue",
     "rehydrate_applied_activation_projections",
     "release_claim_residue",
     "release_pipeline_held_residue",
