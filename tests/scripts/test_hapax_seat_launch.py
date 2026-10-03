@@ -21,6 +21,9 @@ seat = importlib.util.module_from_spec(spec)
 loader.exec_module(seat)
 VERIFY_BINARY = seat._verified_codex_binary
 PREFIX = b"<!-- Generated from Council config/agent-instructions; edit the source. -->\n\n"
+PINNED_BINARY_RELATIVE = Path(
+    ".codex/packages/standalone/releases/0.160.0-x86_64-unknown-linux-musl/bin/codex"
+)
 
 
 @pytest.fixture
@@ -347,11 +350,16 @@ def test_live_session_refuses_before_tmux_creation(binding, monkeypatch):
 
 def test_version_drift_refuses_before_creating_session(binding, monkeypatch):
     home, environment = binding
+    binary = home / PINNED_BINARY_RELATIVE
+    binary.parent.mkdir(parents=True)
+    body = b"pinned fixture executable"
+    binary.write_bytes(body)
+    binary.chmod(0o755)
     calls = []
     monkeypatch.setattr(seat.Path, "home", lambda: home)
     monkeypatch.setattr(seat.os, "environ", environment)
     monkeypatch.setattr(seat.sys, "argv", [str(SCRIPT), "codex"])
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(seat, "PINNED_CODEX_CLI_SHA256", hashlib.sha256(body).hexdigest())
     monkeypatch.setattr(seat, "_verified_codex_binary", VERIFY_BINARY)
 
     def fake_run(command, **_kwargs):
@@ -363,6 +371,53 @@ def test_version_drift_refuses_before_creating_session(binding, monkeypatch):
     monkeypatch.setattr(seat.subprocess, "run", fake_run)
     assert seat.main() == 2
     assert not any(command[:2] == ["tmux", "new-session"] for command in calls)
+
+
+def test_verified_absolute_pin_ignores_stale_path(binding, monkeypatch):
+    home, _environment = binding
+    binary = home / PINNED_BINARY_RELATIVE
+    binary.parent.mkdir(parents=True)
+    body = b"pinned fixture executable"
+    binary.write_bytes(body)
+    binary.chmod(0o755)
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        seat, "PINNED_CODEX_CLI_SHA256", hashlib.sha256(body).hexdigest(), raising=False
+    )
+    calls = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="codex-cli 0.160.0\n")
+
+    monkeypatch.setattr(seat.subprocess, "run", fake_run)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/stale/path/codex")
+    assert VERIFY_BINARY() == str(binary)
+    assert calls == [[str(binary), "--version"]]
+
+
+def test_missing_absolute_pin_refuses_before_version_probe(binding, monkeypatch):
+    home, _environment = binding
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        seat.subprocess, "run", lambda *_a, **_k: pytest.fail("version probe reached")
+    )
+    with pytest.raises(seat.SeatBindingError, match="codex_cli_missing"):
+        VERIFY_BINARY()
+
+
+def test_absolute_pin_hash_drift_refuses_before_version_probe(binding, monkeypatch):
+    home, _environment = binding
+    binary = home / PINNED_BINARY_RELATIVE
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"drifted executable")
+    binary.chmod(0o755)
+    monkeypatch.setattr(seat.Path, "home", lambda: home)
+    monkeypatch.setattr(
+        seat.subprocess, "run", lambda *_a, **_k: pytest.fail("version probe reached")
+    )
+    with pytest.raises(seat.SeatBindingError, match="codex_cli_hash_drift"):
+        VERIFY_BINARY()
 
 
 def test_inner_wrong_tmux_session_refuses_before_scope(binding, monkeypatch):

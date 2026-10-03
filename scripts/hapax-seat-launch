@@ -14,7 +14,6 @@ import os
 import re
 import resource
 import secrets
-import shutil
 import subprocess
 import sys
 import time
@@ -25,7 +24,13 @@ INNER_MARKER = "HAPAX_SEAT_LAUNCH_INNER"
 LAUNCH_ID_VAR = "HAPAX_SEAT_LAUNCH_ID"
 SEAT_MODEL = "gpt-6-sol"
 SEAT_EFFORT = "high"
-PINNED_CODEX_CLI_VERSION = "0.158.0"
+PINNED_CODEX_CLI_VERSION = "0.160.0"
+PINNED_CODEX_CLI_SHA256 = (
+    "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad"  # pragma: allowlist secret
+)
+PINNED_CODEX_CLI_RELATIVE = Path(
+    ".codex/packages/standalone/releases/0.160.0-x86_64-unknown-linux-musl/bin/codex"
+)
 
 
 class SeatBindingError(ValueError):
@@ -117,20 +122,26 @@ def _raise_nofile() -> None:
 
 
 def _verified_codex_binary() -> str:
-    """Pin the executable actually passed into the seat scope."""
-    found = shutil.which("codex")
-    if not found:
+    """Select the verified release, independently of the active PATH link."""
+    binary = Path.home() / PINNED_CODEX_CLI_RELATIVE
+    if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
         raise SeatBindingError("codex_cli_missing")
-    binary = str(Path(found).resolve())
+    try:
+        with binary.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    except OSError as exc:
+        raise SeatBindingError("codex_cli_unreadable") from exc
+    if digest != PINNED_CODEX_CLI_SHA256:
+        raise SeatBindingError("codex_cli_hash_drift")
     try:
         version = subprocess.run(
-            [binary, "--version"], capture_output=True, text=True, timeout=5, check=False
+            [str(binary), "--version"], capture_output=True, text=True, timeout=5, check=False
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SeatBindingError("codex_cli_version_unavailable") from exc
     if version.returncode != 0 or version.stdout.strip() != f"codex-cli {PINNED_CODEX_CLI_VERSION}":
         raise SeatBindingError("codex_cli_version_drift")
-    return binary
+    return str(binary)
 
 
 def _require_inner_session() -> None:
