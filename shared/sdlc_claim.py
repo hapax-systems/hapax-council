@@ -7784,12 +7784,28 @@ def recover_closed_dispatch_residue(
         empty_completed = fields.get("completed_at") is None or (
             isinstance(fields.get("completed_at"), str) and is_nullish(fields["completed_at"])
         )
+        # The old close left this generated log line when it moved the row to closed/.
+        # A later governed re-offer may move the same note back to active/, so a current
+        # offered status alone cannot distinguish that history from lost epoch files.
+        try:
+            _, heading, history = row.read_text(encoding="utf-8").partition("\n## Session log\n")
+        except (OSError, UnicodeError):
+            heading, history = "", ""
+        has_close_record = bool(
+            heading
+            and re.search(
+                r"(?m)^- \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+ closed as "
+                r"(?:done|withdrawn|superseded).* \(cc-close\)$",
+                history,
+            )
+        )
         reopened = (
             _normalized(row) == active_path
             and status == "offered"
             and fields.get("assigned_to") == "unassigned"
             and empty_claimed
             and empty_completed
+            and has_close_record
         )
         if not (closed or reopened):
             raise _release_hold(

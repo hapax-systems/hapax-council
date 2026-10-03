@@ -5700,6 +5700,7 @@ def _reopened_dispatch_residue(tmp_path: Path) -> tuple[ClaimFixture, tuple[Path
         .replace(b"assigned_to: cx-red", b"assigned_to: unassigned", 1)
         .replace(b"claimed_at: 2026-07-11T12:00:00Z", b"claimed_at: null", 1)
     )
+    reopened += b"\n## Session log\n- 2026-07-11T12:30:00Z cx-red closed as done (cc-close)\n"
     fixture.intent.note_path.write_bytes(reopened)
     closed.unlink()
     return fixture, dispatch
@@ -5719,8 +5720,8 @@ def test_reopened_offered_row_recovers_its_prior_receipt_bound_dispatch(
     assert fixture.intent.note_path.read_bytes() == row_before
 
 
-@pytest.mark.parametrize("damage", ["assigned", "claimed_at", "other_marker"])
-def test_reopened_dispatch_refuses_a_current_owner(tmp_path: Path, damage: str) -> None:
+@pytest.mark.parametrize("damage", ["assigned", "claimed_at", "other_marker", "missing_history"])
+def test_reopened_dispatch_refuses_unproved_or_owned_row(tmp_path: Path, damage: str) -> None:
     fixture, dispatch = _reopened_dispatch_residue(tmp_path)
     row = fixture.intent.note_path
     if damage == "assigned":
@@ -5730,6 +5731,10 @@ def test_reopened_dispatch_refuses_a_current_owner(tmp_path: Path, damage: str) 
     elif damage == "claimed_at":
         row.write_bytes(
             row.read_bytes().replace(b"claimed_at: null", b"claimed_at: 2026-10-03T16:40:00Z")
+        )
+    elif damage == "missing_history":
+        row.write_bytes(
+            row.read_bytes().replace(b" closed as done (cc-close)", b" close was not recorded")
         )
     else:
         (fixture.cache / "cc-active-task-cx-other").write_text("task-alpha\n")

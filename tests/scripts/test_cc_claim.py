@@ -1729,7 +1729,10 @@ def test_recover_closed_dispatch_wrapper_preserves_receipt_and_journal(
             .replace("status: done", "status: offered", 1)
             .replace("assigned_to: cx-test", "assigned_to: unassigned", 1)
         )
-        note.write_text(re.sub(r"(?m)^claimed_at:.*$", "claimed_at: null", reopened))
+        note.write_text(
+            re.sub(r"(?m)^claimed_at:.*$", "claimed_at: null", reopened)
+            + "\n## Session log\n- 2026-10-03T16:24:50Z cx-test closed as done (cc-close)\n"
+        )
         closed.unlink()
     sidecars = _role_sidecars(home)
     for path in (*sidecars["marker"], *sidecars["epoch"]):
