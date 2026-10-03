@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "check-unused-functions.py"
 
@@ -85,3 +90,109 @@ def test_findings_on_changed_lines_selects_definition_line_only() -> None:
     active = gate.findings_on_changed_lines(findings, {Path("agents/example.py"): {10, 11}})
 
     assert active == [findings[0]]
+
+
+def test_vulture_unions_central_and_sorted_module_fragments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = load_gate_module()
+    central = tmp_path / "vulture_whitelist.py"
+    central.write_text("# legacy\n")
+    fragment_dir = tmp_path / "vulture_whitelist.d"
+    fragment_dir.mkdir()
+    (fragment_dir / "z.py").write_text("# z\n")
+    (fragment_dir / "a.py").write_text("# a\n")
+    (fragment_dir / "ignore.txt").write_text("# ignored\n")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "")
+
+    monkeypatch.setattr(gate, "run_command", fake_run)
+    assert gate.run_vulture(["shared"], gate.whitelist_paths(central), 60) == []
+    assert commands == [
+        [
+            sys.executable,
+            "-m",
+            "vulture",
+            "shared",
+            str(central),
+            str(fragment_dir / "a.py"),
+            str(fragment_dir / "z.py"),
+            "--min-confidence",
+            "60",
+        ]
+    ]
+
+
+def test_fragment_migration_preserves_the_vulture_finding_set(tmp_path: Path) -> None:
+    gate = load_gate_module()
+    source = tmp_path / "module.py"
+    source.write_text("def dynamic_entry():\n    return 1\n")
+    central = tmp_path / "vulture_whitelist.py"
+    central.write_text("from module import dynamic_entry\ndynamic_entry\n")
+    before = gate.run_vulture([str(source)], [central], 60)
+    assert before == []
+
+    central.write_text("# existing central entries stay here\n")
+    fragment = tmp_path / "vulture_whitelist.d" / "module.py"
+    fragment.parent.mkdir()
+    fragment.write_text(
+        "# dynamic caller: module registry\nfrom module import dynamic_entry\ndynamic_entry\n"
+    )
+    after = gate.run_vulture([str(source)], gate.whitelist_paths(central), 60)
+    assert after == before
+
+
+def test_seven_migrated_references_match_pre_migration_text() -> None:
+    """Pin this migration without freezing unrelated central whitelist entries."""
+    gate = load_gate_module()
+    central = SCRIPT_PATH.parent / "vulture_whitelist.py"
+    fragment = central.parent / "vulture_whitelist.d" / "shared_encountered_machinery_audit.py"
+    assert fragment in gate.whitelist_paths(central)
+
+    def code_lines(path: Path) -> set[str]:
+        return {
+            stripped
+            for line in path.read_text().splitlines()
+            if (stripped := line.strip())
+            and not stripped.startswith("#")
+            and not (stripped.startswith('"""') and stripped.endswith('"""'))
+        }
+
+    # Text-level entry set moved from d081137ae:scripts/vulture_whitelist.py.
+    # It is confined to this fragment, so unrelated central additions stay valid.
+    expected = {
+        "from shared.encountered_machinery_audit import Trend as _EmaTrend  # noqa: E402",
+        "from shared.encountered_machinery_audit import (  # noqa: E402",
+        "parse_catalogue as _ema_parse_catalogue,",
+        "parse_ledger as _ema_parse_ledger,",
+        "render_flag_drop as _ema_render_flag_drop,",
+        "render_pile_status as _ema_render_pile_status,",
+        "render_reduction_row as _ema_render_reduction_row,",
+        "split_frontmatter as _ema_split_frontmatter,",
+        "_ = (",
+        ")",
+        "_EmaTrend.unobserved,",
+        "_ema_parse_catalogue,",
+        "_ema_parse_ledger,",
+        "_ema_render_flag_drop,",
+        "_ema_render_pile_status,",
+        "_ema_render_reduction_row,",
+        "_ema_split_frontmatter,",
+    }
+    entries = code_lines(fragment)
+    assert entries == expected
+
+    migrated = {
+        "_EmaTrend.unobserved,",
+        "_ema_parse_catalogue,",
+        "_ema_parse_ledger,",
+        "_ema_render_flag_drop,",
+        "_ema_render_pile_status,",
+        "_ema_render_reduction_row,",
+        "_ema_split_frontmatter,",
+    }
+    assert migrated <= entries
+    assert migrated.isdisjoint(code_lines(central))
