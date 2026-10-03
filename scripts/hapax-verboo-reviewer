@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Verboo substitute reviewer seat for the review-team registry (read-only, flat plan).
+
+Sends the dispatcher's blind prompt to Verboo's OpenAI-compatible router
+(``https://code.verboo.ai/router/v1/chat/completions``) as ONE streamed completion, no tools.
+Follows scripts/hapax-muse-reviewer and scripts/hapax-local-reviewer.
+
+Verboo is streamed only (routing-table §B3a/§B3b): the wrapper always sends ``stream: true`` and
+reassembles the SSE deltas into the reply. Failure handling is retry-free — one attempt, then
+classify: HTTP 429 -> quota wall, 5xx -> provider outage, auth/config/unreachable/truncation ->
+route-unavailable refusal. The flat-plan key is FileStore ``verboo-api-key``; never a PAYG key.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.hapax_review_http_seat import (  # noqa: E402
+    SEAT_PREAMBLE,
+    USER_AGENT,
+    http_failure,
+    over_ceiling,
+    read_api_key,
+    read_prompt,
+    record_served_model,
+    refuse,
+    seat_text,
+)
+
+WRAPPER = "hapax-verboo-reviewer"
+DEFAULT_BASE_URL = "https://code.verboo.ai/router/v1"
+DEFAULT_MODEL = "minimax-m3"
+SECRET_ENTRY = "verboo-api-key"  # pragma: allowlist secret
+MAX_PROMPT_BYTES = 180_000
+MAX_OUTPUT_TOKENS = 8192
+TIMEOUT_SECONDS = 900
+
+
+def request_body(prompt: str, model: str) -> dict:
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SEAT_PREAMBLE},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        "stream": True,
+    }
+
+
+def _iter_sse_data(response) -> tuple[list[str], str | None, str | None]:
+    """Reassemble an OpenAI SSE stream. Returns (content_parts, finish_reason, served_model)."""
+    parts: list[str] = []
+    finish_reason: str | None = None
+    served_model: str | None = None
+    for raw in response:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == "[DONE]":
+            break
+        chunk = json.loads(data)
+        if served_model is None and isinstance(chunk.get("model"), str):
+            served_model = chunk["model"]
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        first = choices[0]
+        if isinstance(first, dict):
+            delta = first.get("delta")
+            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+                parts.append(delta["content"])
+            if first.get("finish_reason"):
+                finish_reason = first["finish_reason"]
+    return parts, finish_reason, served_model
+
+
+def main() -> int:
+    prompt = read_prompt()
+    if not prompt.strip():
+        return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
+    base_url = os.environ.get("HAPAX_VERBOO_REVIEW_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    model = os.environ.get("HAPAX_VERBOO_REVIEW_MODEL", DEFAULT_MODEL)
+    over = over_ceiling(WRAPPER, seat_text(prompt), MAX_PROMPT_BYTES)
+    if over is not None:
+        return over
+    key, key_refusal = read_api_key(WRAPPER, SECRET_ENTRY, env="HAPAX_VERBOO_REVIEW_API_KEY")
+    if key is None:
+        return key_refusal
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(request_body(prompt, model)).encode("utf-8"),
+        headers={
+            "content-type": "application/json",
+            "authorization": f"Bearer {key}",
+            "accept": "text/event-stream",
+            "user-agent": USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            parts, finish_reason, served_model = _iter_sse_data(response)
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — a body read failure must not mask the status
+            detail = ""
+        return http_failure(WRAPPER, exc.code, detail, key)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        # retry-free: one attempt, then classify as a route outage.
+        return refuse(WRAPPER, f"verboo stream {base_url} failed ({type(exc).__name__})")
+    if finish_reason == "length":
+        return refuse(WRAPPER, f"reply truncated at {MAX_OUTPUT_TOKENS} tokens; not a review")
+    content = "".join(parts)
+    if not content.strip():
+        return refuse(WRAPPER, "verboo stream returned no content; check the model id")
+    record_served_model(WRAPPER, served_model, model)
+    sys.stdout.write(content)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Kimi Code subscription substitute reviewer seat for the review-team registry (read-only).
+
+Sends the dispatcher's blind prompt to the Kimi Code subscription's Anthropic-compatible
+Messages endpoint (``https://api.kimi.com/coding/v1/messages``) as one non-streaming message,
+no tools. Follows scripts/hapax-muse-reviewer and scripts/hapax-local-reviewer.
+
+Booster-wallet guard: the Kimi *Code* plan bills the coding subscription only at the
+``api.kimi.com/coding`` base; the Moonshot PAYG surface (``api.moonshot.ai``, the booster
+wallet) is out of scope. The wrapper refuses any base that is not the coding subscription, so
+a misconfigured override cannot silently bill the booster wallet. The Anthropic Messages path
+is used because Moonshot gates the coding plan's OpenAI ``/chat/completions`` behind a
+User-Agent whitelist; ``/v1/messages`` is open to non-whitelisted clients.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.hapax_review_http_seat import (  # noqa: E402
+    USER_AGENT,
+    http_failure,
+    over_ceiling,
+    read_api_key,
+    read_prompt,
+    record_served_model,
+    refuse,
+    seat_text,
+)
+
+WRAPPER = "hapax-kimi-reviewer"
+DEFAULT_BASE_URL = "https://api.kimi.com/coding"
+DEFAULT_MODEL = "kimi-for-coding"
+SECRET_ENTRY = "kimi-api-key"  # pragma: allowlist secret
+ANTHROPIC_VERSION = "2023-06-01"
+MAX_PROMPT_BYTES = 180_000
+MAX_OUTPUT_TOKENS = 8192
+TIMEOUT_SECONDS = 900
+
+
+def valid_coding_base(base_url: str) -> bool:
+    """True only for the Kimi *Code* subscription base; never the Moonshot booster/PAYG wallet."""
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or parsed.netloc != "api.kimi.com":
+        return False
+    if parsed.query or parsed.fragment:
+        return False
+    return parsed.path.rstrip("/") == "/coding"
+
+
+def request_body(prompt: str, model: str) -> dict:
+    # Anthropic Messages shape: the blind-seat preamble is the system prompt.
+    text = seat_text(prompt)
+    system, _, user = text.partition("\n\n")
+    return {
+        "model": model,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        "temperature": 0,
+        "system": system,
+        "messages": [{"role": "user", "content": user or text}],
+    }
+
+
+def extract_text(payload: dict) -> str | None:
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        return None
+    parts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+    return "".join(parts) if parts else None
+
+
+def main() -> int:
+    prompt = read_prompt()
+    if not prompt.strip():
+        return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
+    base_url = os.environ.get("HAPAX_KIMI_REVIEW_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    if not valid_coding_base(base_url):
+        return refuse(
+            WRAPPER,
+            f"base {base_url!r} is not the Kimi Code subscription (api.kimi.com/coding); "
+            "refusing so the call cannot bill the Moonshot booster/PAYG wallet",
+        )
+    model = os.environ.get("HAPAX_KIMI_REVIEW_MODEL", DEFAULT_MODEL)
+    text = seat_text(prompt)
+    over = over_ceiling(WRAPPER, text, MAX_PROMPT_BYTES)
+    if over is not None:
+        return over
+    key, key_refusal = read_api_key(WRAPPER, SECRET_ENTRY, env="HAPAX_KIMI_REVIEW_API_KEY")
+    if key is None:
+        return key_refusal
+    request = urllib.request.Request(
+        f"{base_url}/v1/messages",
+        data=json.dumps(request_body(prompt, model)).encode("utf-8"),
+        headers={
+            "content-type": "application/json",
+            "x-api-key": key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "user-agent": USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — a body read failure must not mask the status
+            detail = ""
+        return http_failure(WRAPPER, exc.code, detail, key)
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        return refuse(WRAPPER, f"kimi endpoint {base_url} unreachable ({type(exc).__name__})")
+    if payload.get("stop_reason") == "max_tokens":
+        return refuse(WRAPPER, f"reply truncated at {MAX_OUTPUT_TOKENS} tokens; not a review")
+    content = extract_text(payload)
+    if not content:
+        return refuse(WRAPPER, "kimi returned no text content; check the model id")
+    record_served_model(WRAPPER, payload.get("model"), model)
+    sys.stdout.write(content)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
