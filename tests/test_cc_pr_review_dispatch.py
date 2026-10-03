@@ -2021,6 +2021,7 @@ checklist:
         assert dossier["registry_declared_at"]
         assert dossier["writer_family"] == "claude"
         assert dossier["constitution_writer_family"] == "claude"
+        # The observation the family came from, so a reader can re-derive it.
         assert dossier["writer_family_provider"] is None
         assert dossier["changed_file_count"] == 1
         assert dossier["changed_files"] == ["scripts/review_team.py"]
@@ -2085,6 +2086,234 @@ checklist:
         assert result["status"] == "writer_family_unobserved"
         assert not reviewers.invocations
         assert not (note.parent / "vault-row.review-dossier.yaml").exists()
+
+    def test_an_unobservable_author_holds_and_dispatches_no_reviewers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The unsafe case, ENFORCE mode (the killswitch's mode): nothing
+        # observed means no dossier, no seat, and above all no silent claude. The
+        # default OBSERVEs instead -- next test.
+        monkeypatch.setenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, "1")
+        result, _, reviewers, note = _review(
+            tmp_path,
+            gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
+            task_kwargs={"assigned_to": "fugu-omglol"},
+            identity_roots=_identity_roots_for(tmp_path, "empty-identity"),
+        )
+        assert result["status"] == "writer_family_unobserved"
+        assert result["plan"]["writer_family_enforcement"] is True
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        (unobserved,) = result["plan"]["unobserved_writer_family"]
+        assert unobserved["task_id"] == "task-a"
+        assert unobserved["lane"] == "fugu-omglol"
+        assert unobserved["reason"] == "claim_receipt_absent"
+        assert any("claim receipts read from" in line for line in unobserved["evidence"])
+
+    def test_an_unobservable_author_is_recorded_and_dispatched_in_observe_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # OBSERVE, the default: the would-be hold is recorded on the dossier and
+        # in the log, and the team still seats -- on the lane's transport family,
+        # said out loud as `fallback`, never presented as identity.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+        result, _, reviewers, _ = _review(
+            tmp_path,
+            gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
+            task_kwargs={"assigned_to": "fugu-omglol"},
+            identity_roots=_identity_roots_for(tmp_path, "empty-identity"),
+        )
+
+        assert result["status"] == "dispatched"
+        dossier = result["dossier"]
+        assert dossier["writer_family"] == "claude"  # the lane's transport family
+        assert dossier["writer_family_source"] == "fallback"
+        assert dossier["writer_family_reason"] == "claim_receipt_absent"
+        held = dossier["writer_family_unobserved"]
+        assert held["lane"] == "fugu-omglol"
+        assert held["mode"] == "observe"
+        assert held["would_hold_under"] == dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV
+        assert reviewers.invocations, "observe mode still seats the team"
+        assert "writer family unobserved" in caplog.text
+
+    def test_a_current_head_dossier_with_a_fallback_family_is_re_rounded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex review of #4835: the fresh-dossier return used to skip the
+        # identity check, so a dossier whose family was only a fallback stayed
+        # admissible after the authoring execution became observable.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        empty = _identity_roots_for(tmp_path, "empty-identity")
+        first, gh, _, note = _review(
+            tmp_path,
+            task_kwargs={"assigned_to": "fugu-omglol", "observed_family": "fugu"},
+            identity_roots=empty,
+        )
+        assert first["status"] == "dispatched"
+        assert first["dossier"]["writer_family_source"] == "fallback"
+        assert first["dossier"]["writer_family"] == "claude"  # the transport family
+
+        # The producer arrives: the same row is now observable. The default roots
+        # carry that observation (written with the row), the empty ones do not.
+        reviewers = RecordingReviewers()
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=False,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert second["status"] == "planned"
+        assert second["plan"]["writer_family"] == "fugu"
+        assert second["plan"]["writer_family_source"] == "observed"
+
+    def test_a_fallback_dossier_is_not_re_rounded_while_the_identity_is_unobserved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The other half of the guard: while nothing is observable the fallback
+        # stands, or every row would re-round on every cycle.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        empty = _identity_roots_for(tmp_path, "empty-identity")
+        first, gh, _, note = _review(
+            tmp_path,
+            task_kwargs={"assigned_to": "fugu-omglol"},
+            identity_roots=empty,
+        )
+        assert first["status"] == "dispatched"
+        assert first["dossier"]["writer_family_source"] == "fallback"
+
+        second = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=note.parent.parent,
+            apply=False,
+            gh_runner=gh,
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+            identity_roots=empty,
+        )
+
+        assert second["status"] == "skipped_fresh"
+
+    def test_a_lane_rename_does_not_change_the_dossier_family(self, tmp_path: Path) -> None:
+        # Identity is per authoring session: the same row observed twice, once
+        # under its real lane name and once renamed, records the same family.
+        families: dict[str, str] = {}
+        for lane in ("fugu-omglol", "renamed-lane-42"):
+            result, _, _, _ = _review(
+                tmp_path / lane.replace("/", "-"),
+                gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
+                task_kwargs={"assigned_to": lane, "observed_family": "fugu"},
+            )
+            families[lane] = result["dossier"]["writer_family"]
+        assert families == {"fugu-omglol": "fugu", "renamed-lane-42": "fugu"}
+
+    def test_a_multi_row_pr_excludes_the_union_of_observed_families(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Clause (9): a two-row PR must exclude BOTH families, not just the first.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", assigned_to="fugu-omglol", observed_family="fugu")
+        _write_task(vault, task_id="task-b", assigned_to="cx-gold", observed_family="codex")
+
+        planned = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert planned["status"] == "planned"
+        plan = planned["plan"]
+        assert plan["writer_family_union"] == ["codex", "fugu"]
+        assert not {seat["family"] for seat in plan["seats"]} & {"codex", "fugu"}
+        assert plan["ambiguous_authoring_rows"] == ["codex", "fugu"]
+
+    def test_a_fallback_union_is_excluded_too_in_observe_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An unobservable row's recorded family is its fallback -- the gate treats it as
+        # the writer's, so the team must exclude it too.
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", assigned_to="fugu-omglol", observed_family="fugu")
+        _write_task(vault, task_id="task-b", assigned_to="zeta")
+        (tmp_path / "writer-identity" / "claim-publication-receipts" / "task-b.json").unlink()
+
+        planned = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+
+        assert planned["status"] == "planned"
+        plan = planned["plan"]
+        assert plan["writer_family_union"] == ["claude", "fugu"]
+        assert not {seat["family"] for seat in plan["seats"]} & {"claude", "fugu"}
+
+    def test_distinct_authoring_rows_still_get_their_own_dossier_families(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # gemini major: family names must not be logged inside the task-id list.
+        caplog.set_level(logging.WARNING, logger=dispatch.LOG.name)
+        monkeypatch.delenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", assigned_to="fugu-omglol", observed_family="fugu")
+        _write_task(vault, task_id="task-b", assigned_to="cx-gold", observed_family="codex")
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=FakeGh(),
+            reviewer_runner=RecordingReviewers(),
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T22:00:00+00:00",
+            route_blocked_families={},
+        )
+        assert result["status"] == "multi_dispatched"
+        by_task = {item["task_id"]: item["dossier"] for item in result["results"]}
+        assert by_task["task-a"]["writer_family"] == "fugu"
+        assert by_task["task-b"]["writer_family"] == "codex"
+        assert by_task["task-a"]["constitution_authoring_rows_ambiguous"] == ["codex", "fugu"]
+        assert "several authoring families (codex,fugu)" in caplog.text, caplog.text
+        assert "task(s) codex,fugu" not in caplog.text, (
+            "family names must not be logged as task ids"
+        )
+        assert by_task["task-b"]["constitution_authoring_rows_ambiguous"] == ["codex", "fugu"]
 
     def test_dispatch_records_changed_source_excerpt_evidence(self, tmp_path: Path) -> None:
         rel = "scripts/hapax-glmcp-reviewer"
@@ -3955,6 +4184,10 @@ public_gate_authority:
         assert "zeta" in " ".join(sent[0])
 
     def test_a_glm_lane_wakes_through_the_codex_sender(self, tmp_path: Path) -> None:
+        # The wake send path, restored: a GLM lane's authoring execution has no
+        # declared provider, so in OBSERVE mode the row still dispatches on the
+        # transport family -- and the wake goes to the lane through the sender its
+        # harness family names, which is what the lane map is for.
         reg = dispatch.review_team.load_lens_registry()
         for lane in ("codex-glmcp", "glm-alpha"):
             assert dispatch.review_team.writer_family_for_lane(lane, reg) == "glm"
@@ -3971,6 +4204,7 @@ public_gate_authority:
         )
         assert result["status"] == "dispatched"
         assert result["dossier"]["writer_family"] == "glm"
+        assert result["dossier"]["writer_family_source"] == "fallback"
         assert result["dossier"]["review_team_verdict"] == "blocked"
         assert sent, "auto-wake send was not attempted"
         assert sent[0][0].endswith("hapax-codex-send")
@@ -6900,6 +7134,9 @@ class TestWalledFamilySubstitution:
         assert state["gemini"]["cause"] == "seat_output"
 
     def test_wall_and_route_block_substitute_a_distinct_family(self, tmp_path: Path) -> None:
+        # Today's #4729 shape: codex walled, glm route-blocked. Three distinct families are
+        # seated; a declared substitute fills the third seat, never a reseat. The author is a
+        # non-roster family here, so the subject stays the wall and the substitute floor.
         _write_codex_weekly_wall(tmp_path / "wall-home")
         result, _, _, _ = _review(
             tmp_path,
@@ -7073,6 +7310,39 @@ def _review_artifact(
 
 
 class TestVaultArtifactAcceptance:
+    def test_enforce_mode_seats_nothing_and_writes_no_dossier_on_both_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # codex major: enforce must hold on BOTH paths -- PR review and artifact.
+        monkeypatch.setenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, "1")
+        empty = _identity_roots_for(tmp_path, "empty-identity")
+
+        reviewers = RecordingReviewers()
+        pr_result, _, _, note = _review(
+            tmp_path,
+            gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
+            task_kwargs={"assigned_to": "fugu-omglol"},
+            identity_roots=empty,
+            reviewers=reviewers,
+        )
+        assert pr_result["status"] == "writer_family_unobserved"
+        assert pr_result["plan"]["writer_family_enforcement"] is True
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+
+        artifact = tmp_path / "artifact-case"
+        artifact.mkdir()
+        artifact_reviewers = RecordingReviewers()
+        artifact_result, _, artifact_note, _ = _review_artifact(
+            artifact,
+            reviewer_runner=artifact_reviewers,
+            identity_roots=_identity_roots_for(artifact, "empty-identity"),
+        )
+        assert artifact_result["status"] == "writer_family_unobserved"
+        assert artifact_result["plan"]["writer_family_enforcement"] is True
+        assert artifact_reviewers.invocations == []
+        assert not (artifact_note.parent / "vault-row.review-dossier.yaml").exists()
+
     ROOT_FILES = [
         "30-areas/hapax/frame/CENSUS-APPENDIX.md",
         "30-areas/hapax/frame/CENSUS.md",
