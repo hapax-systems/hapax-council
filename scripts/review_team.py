@@ -611,9 +611,11 @@ def strongest_team_class(classes: Sequence[str]) -> str:
 def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str:
     """TRANSPORT family of a lane name (exact map, then prefixes, then default).
 
-    "Which harness carries a wake message to this lane" is a question about a name,
-    not writer identity: ``fugu-omglol`` resolves here to ``claude``. A dossier's
-    ``writer_family`` comes from :func:`observed_writer_identity``.
+    Answers "which harness carries a wake message to this lane", which is a
+    question about a name. It is NOT writer identity and must never be used as
+    one: a lane name is compatible with any model, so ``fugu-omglol`` (Sakana
+    Fugu in the codex harness) resolves here to ``claude``. A dossier's
+    ``writer_family`` comes from :func:`observed_writer_identity` instead.
     """
 
     lane_families = registry["lane_families"]
@@ -636,11 +638,19 @@ def writer_family_for_lane(lane: str | None, registry: Mapping[str, Any]) -> str
 #: A family no observation supports: a dossier carrying it asserts nothing.
 WRITER_FAMILY_UNOBSERVED = "unobserved"
 
+#: Clause 11 of the row (seat rulings 2026-09-28T04:06Z / 04:08Z): the hold on an
+#: unobservable author is INERT unless this names it. Measured 2026-09-28, the
+#: claim plane's session id joins to a native record for 18 of 234 receipts
+#: (7.7%), so a default hold would stall ~86% of rows.
 WRITER_FAMILY_ENFORCE_ENV = "HAPAX_REVIEW_TEAM_WRITER_FAMILY_ENFORCE"
 
 
 def writer_family_enforcement_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """Enable the unobserved-author hold only for an explicit truthy switch."""
+    """Whether an unobservable author holds, or is recorded and dispatched.
+
+    Only a truthy switch enables the hold: any other value keeps the inert
+    default, so a typo cannot stop the review plane.
+    """
 
     source = os.environ if environ is None else environ
     return str(source.get(WRITER_FAMILY_ENFORCE_ENV, "")).strip().lower() in {
@@ -683,8 +693,11 @@ class WriterIdentityRoots:
 class ObservedWriterIdentity:
     """What the execution record says about who authored a row.
 
-    ``family`` is a registry family or :data:`WRITER_FAMILY_UNOBSERVED`, never a
-    third state; ``reason`` is the machine-readable disposition behind it.
+    ``family`` is a registry family or :data:`WRITER_FAMILY_UNOBSERVED`; there is
+    no third state. ``evidence`` is the replayable chain (claim receipt -> session
+    -> native record -> provider), ``reason`` the machine-readable disposition
+    behind ``family``, and ``fallback_family`` what the transport map answers for
+    the lane.
     """
 
     task_id: str
@@ -708,7 +721,8 @@ class ObservedWriterIdentity:
         return WRITER_FAMILY_SOURCE_OBSERVED if self.observed else WRITER_FAMILY_SOURCE_FALLBACK
 
 
-# Stat-only tree signatures: they catch an added AND a rewritten file.
+# Stat-only tree-signature guards: they catch an added AND a rewritten file,
+# which a directory mtime does not.
 _CLAIM_RECEIPT_INDEX: dict[str, tuple[tuple, dict[str, tuple[tuple[int, str, str, str], ...]]]] = {}
 _NATIVE_SESSION_INDEX: dict[tuple[str, str], tuple[tuple, dict[str, Path]]] = {}
 
@@ -736,7 +750,7 @@ def _claim_receipt_index(root: Path) -> dict[str, tuple[tuple[int, str, str, str
     """task_id -> every claim receipt for it, oldest first.
 
     (claim_epoch, session_id, role, receipt ref) -- ALL of them: the highest epoch
-    is not the author.
+    is not the author (codex review of #4835).
     """
 
     key = str(root)
@@ -830,7 +844,8 @@ def _native_session_observation(
 ) -> tuple[str | None, str, tuple[str, ...], str] | None:
     """(provider, harness, models, ref) for the record a session wrote, or None.
 
-    A Claude transcript has no provider field: its harness is the observation.
+    A Claude transcript is written by the Anthropic-only Claude Code harness, so
+    it has no provider field to read; the harness is the observation there.
     """
 
     codex_path = _native_session_index(roots.codex_sessions_root, "codex").get(session_id)
@@ -917,8 +932,11 @@ def observed_writer_identity(
 ) -> ObservedWriterIdentity:
     """Derive the authoring family from an observed execution record.
 
-    Fail-closed: an unresolved link yields :data:`WRITER_FAMILY_UNOBSERVED` with a
-    ``reason``. Never the lane name, which is only the subject of the claim.
+    Fail-closed by construction: every unresolved link yields
+    :data:`WRITER_FAMILY_UNOBSERVED` with a ``reason``, and the caller decides
+    the switch (see :func:`writer_family_enforcement_enabled`). Never the lane name -- the lane is carried through only as the
+    subject of the claim, and its transport family is offered separately as
+    ``fallback_family`` for a caller that must keep dispatching.
     """
 
     roots = roots or WriterIdentityRoots()
@@ -2632,10 +2650,10 @@ def t2_family_floor_release(
     ``accepts`` are the checklist-complete accepts the admission gate counted. The rule
     holds only for a row whose ``risk_tier`` is T2 reviewed by a ``t2_standard`` team, with
     the accept quorum met and at least one accept from a family other than the writer's.
-    Until the dispatch path records observed authoring identity, exclude both the
-    dossier's recorded families and the current row lane's transport family. A
-    reassignment after dispatch must not weaken the writer set. A dossier that
-    records no writer family still refuses the rule.
+    Exclude the dossier's recorded authoring families. For an unobserved or legacy
+    family, also exclude the current lane's transport family. A reassignment after
+    dispatch must not weaken the writer set. A dossier that records no writer
+    family still refuses the rule.
     """
 
     if frontmatter is None:
@@ -2667,7 +2685,11 @@ def t2_family_floor_release(
         return None
     if not isinstance(row_writer, str) or not row_writer.strip():
         return None
-    writer_families.add(row_writer)
+    if not (
+        dossier.get("writer_family_source") == WRITER_FAMILY_SOURCE_OBSERVED
+        or dossier.get("writer_family_reason") in {"provider_observed", "harness_observed"}
+    ):
+        writer_families.add(row_writer)
     distinct = [r for r in accepts if str(r.get("family")) not in writer_families]
     if len(accepts) < quorum or not distinct:
         return None
