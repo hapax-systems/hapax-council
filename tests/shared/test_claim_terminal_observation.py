@@ -82,6 +82,7 @@ def test_applied_journal_on_active_task_is_not_terminal(owned):
         "epoch",
         "publication",
         "active-twin",
+        "active-twin-same-owner",
         "duplicate",
         "missing-epoch",
         "changed-epoch",
@@ -104,8 +105,11 @@ def test_terminal_evidence_holds_on_ambiguous_or_changed_identity(owned, change)
         args["claim_epoch"] = identity[0] + 1
     elif change == "publication":
         args["publication_id"] = "claim-pub-" + "0" * 64
-    elif change == "active-twin":
-        (note.parent.parent / "active" / note.name).write_bytes(note.read_bytes())
+    elif change in {"active-twin", "active-twin-same-owner"}:
+        twin = note.read_bytes()
+        if change == "active-twin":
+            twin = twin.replace(b"assigned_to: cx-test", b"assigned_to: cx-other")
+        (note.parent.parent / "active" / note.name).write_bytes(twin)
     elif change == "duplicate":
         note.with_name("original-task-duplicate.md").write_bytes(note.read_bytes())
     elif change == "missing-epoch":
