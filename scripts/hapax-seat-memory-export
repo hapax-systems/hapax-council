@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Project the Claude seat's existing memory files into the canonical vault.
+
+This is a byte-for-byte, read-only projection, not a second memory writer. Run
+it on the seat-watch timer: unchanged source bytes cause no destination writes.
+The dated 2026-09-29 handoff snapshot remains historical evidence.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+DEFAULT_SOURCE = Path.home() / ".claude/projects/-home-hapax/memory"
+DEFAULT_DEST = (
+    Path.home()
+    / "Documents/Personal/30-areas/hapax/frame/coordinator-succession-20260924"
+    / "memory-export-current"
+)
+
+
+class ExportRefusal(Exception):
+    """Fixed diagnostic without source content or private paths."""
+
+
+def _regular_bytes(path: Path, *, source: bool) -> bytes:
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise ExportRefusal("source_unreadable" if source else "destination_unreadable") from exc
+    if stat.S_ISLNK(mode):
+        raise ExportRefusal("source_symlink" if source else "destination_symlink")
+    if not stat.S_ISREG(mode):
+        raise ExportRefusal("source_not_regular" if source else "destination_not_regular")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            return stream.read()
+    except OSError as exc:
+        raise ExportRefusal("source_unreadable" if source else "destination_unreadable") from exc
+
+
+def _atomic_read_only_write(path: Path, data: bytes) -> None:
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fchmod(stream.fileno(), 0o444)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def _managed_files(dest: Path) -> dict[str, str]:
+    index_path = dest / "INDEX.json"
+    if not index_path.is_symlink() and not index_path.exists():
+        return {}
+    try:
+        index = json.loads(_regular_bytes(index_path, source=False))
+        if index.get("schema_version") != 1 or index.get("kind") != "claude-seat-memory-projection":
+            raise ValueError("wrong index")
+        rows = index["files"]
+        managed = {}
+        for row in rows:
+            name, digest = row["name"], row["sha256"]
+            if (
+                not isinstance(name, str)
+                or Path(name).name != name
+                or not name.endswith(".md")
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or name in managed
+            ):
+                raise ValueError("invalid index entry")
+            managed[name] = digest
+        return managed
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ExportRefusal("managed_index_invalid") from exc
+
+
+def export(source: Path, dest: Path) -> dict[str, object]:
+    if not source.is_dir() or source.is_symlink():
+        raise ExportRefusal("source_directory_unavailable")
+    if dest.is_symlink():
+        raise ExportRefusal("destination_symlink")
+    if dest.exists() and not dest.is_dir():
+        raise ExportRefusal("destination_not_directory")
+    if source.resolve() == dest.resolve():
+        raise ExportRefusal("source_equals_destination")
+
+    # Preflight every source file before writing any destination byte. The seat
+    # store is a flat directory; other formats and hidden files are not memory.
+    source_files: list[tuple[str, bytes]] = []
+    for path in sorted(source.iterdir()):
+        if path.suffix != ".md":
+            continue
+        source_files.append((path.name, _regular_bytes(path, source=True)))
+    if not any(name == "MEMORY.md" for name, _ in source_files):
+        raise ExportRefusal("source_index_missing")
+
+    dest.mkdir(parents=True, exist_ok=True)
+    previous = _managed_files(dest)
+    files = [
+        {"name": name, "sha256": hashlib.sha256(data).hexdigest()} for name, data in source_files
+    ]
+    index = (
+        json.dumps(
+            {"schema_version": 1, "kind": "claude-seat-memory-projection", "files": files},
+            sort_keys=True,
+            indent=2,
+        ).encode()
+        + b"\n"
+    )
+    planned = [(dest / name, data) for name, data in source_files]
+    stale = sorted(set(previous) - {name for name, _ in source_files})
+    # A corrupted/symlinked destination holds the whole refresh before any
+    # replacement; the writer never follows an output link.
+    for path, _ in planned:
+        if path.is_symlink() or path.exists():
+            _regular_bytes(path, source=False)
+    for name in stale:
+        path = dest / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        current = _regular_bytes(path, source=False)
+        if hashlib.sha256(current).hexdigest() != previous[name]:
+            raise ExportRefusal("managed_file_changed")
+    changed = 0
+    for path, data in planned:
+        current = _regular_bytes(path, source=False) if path.exists() else None
+        if current != data:
+            _atomic_read_only_write(path, data)
+            changed += 1
+    for name in stale:
+        path = dest / name
+        if path.exists():
+            path.unlink()
+            changed += 1
+    index_path = dest / "INDEX.json"
+    current_index = _regular_bytes(index_path, source=False) if index_path.exists() else None
+    if current_index != index:
+        _atomic_read_only_write(index_path, index)
+        changed += 1
+    return {
+        "status": "updated" if changed else "unchanged",
+        "files": len(files),
+        "changed": changed,
+        "export_dir": str(dest),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE)
+    parser.add_argument("--dest-dir", type=Path, default=DEFAULT_DEST)
+    args = parser.parse_args()
+    try:
+        result = export(args.source_dir, args.dest_dir)
+    except ExportRefusal as exc:
+        print(f"hapax-seat-memory-export: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
