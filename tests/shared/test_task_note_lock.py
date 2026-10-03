@@ -866,7 +866,7 @@ def test_a_forked_child_does_not_inherit_the_parents_locks(tmp_path: Path) -> No
 def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> None:
     """Containment: the projection lock is taken inside the role lock and nowhere else here.
 
-    ``sdlc_claim``'s role lock is acquired in exactly five places, all inside
+    ``sdlc_claim``'s role lock is acquired in exactly six places, all inside
     ``_claim_publication_lock``, and the projection lock is taken inside it — so the order is
     always role-then-note. The fourth, ``release_claim_residue`` (2026-09-27), was re-derived
     when it was added: it is a top-level entry that ``cc-claim --release-claim-residue`` calls
@@ -875,7 +875,9 @@ def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> 
     entry that ``cc-claim --return-claim`` calls holding no lock, it takes nothing else under the
     role lock. It writes only the note the role lock's own projection lock covers, and holds
     (``claim_return_note_moved``) when the note is not that path, so it adds no projection-lock
-    site either.
+    site either. The sixth, historical closed-dispatch recovery, is a top-level cc-claim verb
+    entered with no note lock. It passes the active and closed note paths to the role lock in
+    one outermost projection-lock acquisition, so there is no lock expansion or reverse order.
     This is a containment check, not the enforcement: the inversion that
     matters (a note-holder calling onward into claim publication) needs no new acquisition site,
     so a site count cannot see it (round 5, claude-1). The direction itself is asserted at the
@@ -891,8 +893,8 @@ def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> 
     stripped = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in source.splitlines())
 
     takers = re.findall(r"with _claim_publication_lock\(", stripped)
-    assert len(takers) == 5, (
-        f"the role lock is now taken in {len(takers)} places, not 5 — re-derive the ordering "
+    assert len(takers) == 6, (
+        f"the role lock is now taken in {len(takers)} places, not 6 — re-derive the ordering "
         "argument before assuming role-then-note is still the only direction"
     )
 
@@ -903,6 +905,9 @@ def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> 
     assert "with projected_path_lock(" in body.group(0), (
         "claim publication no longer takes the projection lock, so its _apply_projections "
         "calls can land inside a transition's pin/install window again"
+    )
+    assert "(intent.note_path, *additional_note_paths)" in body.group(0), (
+        "recovery's active and closed note paths must be locked in the one outermost acquisition"
     )
 
     # And nothing in this module may take the projection lock anywhere BUT inside the role

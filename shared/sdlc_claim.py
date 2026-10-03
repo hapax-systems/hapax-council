@@ -2571,6 +2571,7 @@ def _claim_publication_lock(
     intent: ClaimPublicationIntent,
     *,
     lock_root: Path | None,
+    additional_note_paths: Sequence[Path] = (),
 ) -> Iterator[None]:
     # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
     # it, so a caller that already holds one and asks for this is hold-and-wait across two
@@ -2641,7 +2642,7 @@ def _claim_publication_lock(
         # direction is enforced at the top of this function, not inferred from the number of
         # places the role lock is taken: the guard refuses when the calling thread already holds
         # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
-        with projected_path_lock(intent.task_id, (intent.note_path,)):
+        with projected_path_lock(intent.task_id, (intent.note_path, *additional_note_paths)):
             yield
     finally:
         if locked:
@@ -7699,6 +7700,219 @@ def release_claim_residue(
         )
 
 
+def _other_role_task_marker(
+    cache_dir: Path, task_id: str, own: Sequence[FileProjection]
+) -> Path | None:
+    owned = {item.path for item in own}
+    for path in sorted(_normalized(cache_dir).glob("cc-active-task-*")):
+        if path in owned:
+            continue
+        try:
+            if path.is_symlink() or task_id in path.read_text(encoding="utf-8").splitlines():
+                return path
+        except (OSError, UnicodeError):
+            return path
+    return None
+
+
+def recover_closed_dispatch_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    transaction_root: Path,
+    receipt_root: Path,
+    lock_root: Path,
+    role: str,
+    task_id: str,
+    observed_at: str,
+) -> ClaimResidueRelease:
+    """Archive dispatch-only residue left by the old cc-close, with its exact receipt.
+
+    Missing epochs are admitted only when both markers are absent and the exact row
+    is terminal in closed/, or was re-offered unassigned after that old claim.
+    The applied manifest and immutable receipt must agree on every projected byte.
+    This is intentionally separate from ordinary lapsed-lease release.
+    """
+
+    if _RELEASE_STAMP_RE.fullmatch(observed_at) is None:
+        raise _release_hold("claim_residue_stamp_invalid", repr(observed_at), "pass a UTC stamp")
+    journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+    if not journals:
+        raise _release_hold(
+            "claim_residue_no_journal",
+            f"no journal of {role} for {task_id}",
+            "run recovery as the role that claimed the task",
+        )
+    active_path = _normalized(journals[0].intent.note_path)
+    if active_path.parent != _normalized(vault_root / "active"):
+        raise _release_hold(
+            "claim_residue_foreign_note",
+            str(active_path),
+            "preserve the journal; its note is outside the declared active task root",
+        )
+    closed_path = _normalized(vault_root / "closed" / active_path.name)
+    with _claim_publication_lock(
+        journals[0].intent, lock_root=lock_root, additional_note_paths=(closed_path,)
+    ):
+        journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
+        applied = [journal for journal in journals if journal.state == "applied"]
+        if len(applied) != 1 or len(journals) != 1:
+            raise _release_hold(
+                "claim_residue_ambiguous",
+                f"{len(journals)} journals of {role} for {task_id}",
+                "preserve all journals and resolve the publication identity",
+            )
+        journal = applied[0]
+        row = _task_note_path_for_any_state(vault_root, task_id)
+        fields = _release_frontmatter(row) if row is not None else None
+        if row is None or row.is_symlink() or fields is None or fields.get("task_id") != task_id:
+            raise _release_hold(
+                "claim_residue_row_identity",
+                task_id,
+                "preserve the sidecars and repair the row identity",
+            )
+        status = str(fields.get("status") or "").strip()
+        closed = (
+            _normalized(row) == closed_path
+            and not _task_in_active(vault_root, task_id)
+            and status in TASK_TERMINAL_STATUSES
+            and fields.get("assigned_to") == role
+        )
+        empty_claimed = fields.get("claimed_at") is None or (
+            isinstance(fields.get("claimed_at"), str) and is_nullish(fields["claimed_at"])
+        )
+        empty_completed = fields.get("completed_at") is None or (
+            isinstance(fields.get("completed_at"), str) and is_nullish(fields["completed_at"])
+        )
+        # The old close left this generated log line when it moved the row to closed/.
+        # A later governed re-offer may move the same note back to active/, so a current
+        # offered status alone cannot distinguish that history from lost epoch files.
+        try:
+            _, heading, history = row.read_text(encoding="utf-8").partition("\n## Session log\n")
+        except (OSError, UnicodeError):
+            heading, history = "", ""
+        has_close_record = bool(
+            heading
+            and re.search(
+                r"(?m)^- \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+ closed as "
+                r"(?:done|withdrawn|superseded).* \(cc-close\)$",
+                history,
+            )
+        )
+        reopened = (
+            _normalized(row) == active_path
+            and status == "offered"
+            and fields.get("assigned_to") == "unassigned"
+            and empty_claimed
+            and empty_completed
+            and has_close_record
+        )
+        if not (closed or reopened):
+            raise _release_hold(
+                "claim_residue_not_closed_or_reoffered",
+                task_id,
+                "require an exact terminal closed row or an offered, unassigned row with no claim",
+            )
+        intent, projections, publication_id, state, consumption = _load_any_manifest(
+            journal.manifest_path
+        )
+        if (
+            publication_id != journal.publication_id
+            or state != "applied"
+            or intent != journal.intent
+            or projections != journal.projections
+        ):
+            raise _release_hold(
+                "claim_residue_journal_changed",
+                str(journal.manifest_path),
+                "preserve the changed journal and inspect its receipt",
+            )
+        receipt_path = claim_publication_receipt_path(
+            cache_dir, intent.binding, receipt_root=receipt_root
+        )
+        _as_any_receipt(
+            journal.manifest_path,
+            receipt_path,
+            intent,
+            projections,
+            publication_id,
+            consumption,
+            recovered=False,
+        )
+        residue = _journal_residue(journal, cache_dir)
+        markers = [item for item in residue if _is_claim_activation_projection(item)]
+        epochs = [item for item in residue if item.path.name.startswith("cc-claim-epoch-")]
+        dispatch = [item for item in residue if item.path.name.startswith("cc-claim-dispatch-")]
+        if len(markers) != 2 or len(epochs) != 2 or len(dispatch) != 2:
+            raise _release_hold(
+                "claim_residue_projection_shape",
+                publication_id,
+                "preserve the journal and inspect its six sidecar projections",
+            )
+        if any(_residue_state(item) != "absent" for item in (*markers, *epochs)):
+            raise _release_hold(
+                "claim_residue_live_marker",
+                publication_id,
+                "use ordinary release for remaining markers or epochs",
+            )
+        if others := _other_live_markers(cache_dir, role, task_id, residue):
+            raise _release_hold(
+                "claim_residue_live_marker",
+                str(others[0]),
+                "preserve the other session's marker",
+            )
+        if other_role := _other_role_task_marker(cache_dir, task_id, residue):
+            raise _release_hold(
+                "claim_residue_live_marker",
+                str(other_role),
+                "preserve the other role's marker",
+            )
+        present: list[FileProjection] = []
+        staged: dict[Path, Path] = {}
+        for item in dispatch:
+            state = _residue_state(item)
+            if state == "other":
+                raise _release_hold(
+                    "claim_residue_hash_mismatch",
+                    str(item.path),
+                    "preserve the sidecar; it differs from the receipt-bound projection",
+                )
+            if state == "after":
+                present.append(item)
+            elif _previously_archived(item, journal, vault_root):
+                continue
+            elif (original := _staged_original(item, journal)) is not None:
+                staged[item.path] = original
+                present.append(item)
+            else:
+                raise _release_hold(
+                    "claim_residue_projection_missing",
+                    str(item.path),
+                    "preserve the journal and inspect the missing dispatch sidecar",
+                )
+        if not present:
+            raise _release_hold(
+                "claim_residue_none",
+                task_id,
+                "nothing remains to recover",
+            )
+        archive_dir, archived = _archive_residue(
+            present,
+            journal=journal,
+            vault_root=vault_root,
+            shape="closed_dispatch" if closed else "reopened_dispatch",
+            observed_at=observed_at,
+            staged=staged,
+        )
+        return ClaimResidueRelease(
+            "closed_dispatch" if closed else "reopened_dispatch",
+            publication_id,
+            archive_dir,
+            archived,
+            None,
+        )
+
+
 _SESSION_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
@@ -7998,6 +8212,7 @@ __all__ = [
     "prospective_claim_publication_basis",
     "inspect_claim_publications",
     "recover_claim_publications",
+    "recover_closed_dispatch_residue",
     "rehydrate_applied_activation_projections",
     "release_claim_residue",
     "release_pipeline_held_residue",

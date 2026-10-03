@@ -5662,6 +5662,137 @@ def _applied_publication(tmp_path: Path) -> ClaimFixture:
     return fixture
 
 
+def _closed_dispatch_residue(tmp_path: Path) -> tuple[ClaimFixture, tuple[Path, ...]]:
+    fixture = _applied_publication(tmp_path)
+    note = fixture.intent.note_path
+    closed = fixture.vault / "closed" / note.name
+    closed.parent.mkdir(parents=True, exist_ok=True)
+    closed.write_bytes(note.read_bytes().replace(b"status: claimed", b"status: done", 1))
+    note.unlink()
+    for path in fixture.cache.glob("cc-active-task-cx-red*"):
+        path.unlink()
+    for path in fixture.cache.glob("cc-claim-epoch-cx-red*"):
+        path.unlink()
+    dispatch = tuple(sorted(fixture.cache.glob("cc-claim-dispatch-cx-red*.json")))
+    assert len(dispatch) == 2
+    return fixture, dispatch
+
+
+def _recover_closed_dispatch(fixture: ClaimFixture, tmp_path: Path, *, role: str = "cx-red"):
+    return sdlc_claim.recover_closed_dispatch_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        role=role,
+        task_id="task-alpha",
+        observed_at=_RELEASE_STAMP,
+    )
+
+
+def _reopened_dispatch_residue(tmp_path: Path) -> tuple[ClaimFixture, tuple[Path, ...]]:
+    fixture, dispatch = _closed_dispatch_residue(tmp_path)
+    closed = fixture.vault / "closed" / fixture.intent.note_path.name
+    reopened = (
+        closed.read_bytes()
+        .replace(b"status: done", b"status: offered", 1)
+        .replace(b"assigned_to: cx-red", b"assigned_to: unassigned", 1)
+        .replace(b"claimed_at: 2026-07-11T12:00:00Z", b"claimed_at: null", 1)
+    )
+    reopened += b"\n## Session log\n- 2026-07-11T12:30:00Z cx-red closed as done (cc-close)\n"
+    fixture.intent.note_path.write_bytes(reopened)
+    closed.unlink()
+    return fixture, dispatch
+
+
+def test_reopened_offered_row_recovers_its_prior_receipt_bound_dispatch(
+    tmp_path: Path,
+) -> None:
+    fixture, dispatch = _reopened_dispatch_residue(tmp_path)
+    row_before = fixture.intent.note_path.read_bytes()
+    bytes_before = {path.name: path.read_bytes() for path in dispatch}
+
+    recovered = _recover_closed_dispatch(fixture, tmp_path)
+
+    assert recovered.shape == "reopened_dispatch"
+    assert {path.name: path.read_bytes() for path in recovered.archived} == bytes_before
+    assert fixture.intent.note_path.read_bytes() == row_before
+
+
+@pytest.mark.parametrize("damage", ["assigned", "claimed_at", "other_marker", "missing_history"])
+def test_reopened_dispatch_refuses_unproved_or_owned_row(tmp_path: Path, damage: str) -> None:
+    fixture, dispatch = _reopened_dispatch_residue(tmp_path)
+    row = fixture.intent.note_path
+    if damage == "assigned":
+        row.write_bytes(
+            row.read_bytes().replace(b"assigned_to: unassigned", b"assigned_to: cx-other")
+        )
+    elif damage == "claimed_at":
+        row.write_bytes(
+            row.read_bytes().replace(b"claimed_at: null", b"claimed_at: 2026-10-03T16:40:00Z")
+        )
+    elif damage == "missing_history":
+        row.write_bytes(
+            row.read_bytes().replace(b" closed as done (cc-close)", b" close was not recorded")
+        )
+    else:
+        (fixture.cache / "cc-active-task-cx-other").write_text("task-alpha\n")
+    before = _tree_snapshot(fixture.cache)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold):
+        _recover_closed_dispatch(fixture, tmp_path)
+
+    assert _tree_snapshot(fixture.cache) == before
+    assert all(path.exists() for path in dispatch)
+
+
+def test_closed_dispatch_recovery_archives_only_receipt_bound_sidecars(tmp_path: Path) -> None:
+    fixture, dispatch = _closed_dispatch_residue(tmp_path)
+    before = {path.name: path.read_bytes() for path in dispatch}
+    closed = fixture.vault / "closed" / fixture.intent.note_path.name
+    note_before = closed.read_bytes()
+
+    recovered = _recover_closed_dispatch(fixture, tmp_path)
+
+    assert recovered.shape == "closed_dispatch"
+    assert len(recovered.archived) == 2
+    assert {path.name: path.read_bytes() for path in recovered.archived} == before
+    assert all(not path.exists() for path in dispatch)
+    assert closed.read_bytes() == note_before
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["missing_receipt", "changed_dispatch", "live_row", "other_role", "wrong_closed_identity"],
+)
+def test_closed_dispatch_recovery_refuses_unproved_residue(tmp_path: Path, damage: str) -> None:
+    fixture, dispatch = _closed_dispatch_residue(tmp_path)
+    if damage == "missing_receipt":
+        next((tmp_path / "receipts").glob("*.json")).unlink()
+    elif damage == "changed_dispatch":
+        dispatch[0].write_bytes(b"other claim\n")
+    elif damage == "live_row":
+        closed = fixture.vault / "closed" / fixture.intent.note_path.name
+        fixture.intent.note_path.write_bytes(
+            closed.read_bytes().replace(b"status: done", b"status: claimed", 1)
+        )
+    elif damage == "wrong_closed_identity":
+        closed = fixture.vault / "closed" / fixture.intent.note_path.name
+        closed.write_bytes(
+            closed.read_bytes().replace(b"task_id: task-alpha", b"task_id: other-task", 1)
+        )
+    before = _tree_snapshot(fixture.cache)
+
+    with pytest.raises((sdlc_claim.ClaimResidueArchiveHold, sdlc_claim.ClaimPublicationError)):
+        _recover_closed_dispatch(
+            fixture, tmp_path, role="cx-other" if damage == "other_role" else "cx-red"
+        )
+
+    assert _tree_snapshot(fixture.cache) == before
+    assert all(path.exists() for path in dispatch)
+
+
 @pytest.mark.parametrize(
     ("assignment", "reassigned"),
     [

@@ -1712,6 +1712,57 @@ def _release(
     )
 
 
+@pytest.mark.parametrize("reopen", [False, True])
+def test_recover_closed_dispatch_wrapper_preserves_receipt_and_journal(
+    tmp_path: Path, reopen: bool
+) -> None:
+    home = tmp_path / "home"
+    task_id = "closed-dispatch-wrapper"
+    note = _write_task(home, "active", task_id)
+    assert _claim(home, task_id).returncode == 0
+    closed = _task_root(home) / "closed" / note.name
+    closed.write_text(note.read_text().replace("status: claimed", "status: done", 1))
+    note.unlink()
+    if reopen:
+        reopened = (
+            closed.read_text()
+            .replace("status: done", "status: offered", 1)
+            .replace("assigned_to: cx-test", "assigned_to: unassigned", 1)
+        )
+        note.write_text(
+            re.sub(r"(?m)^claimed_at:.*$", "claimed_at: null", reopened)
+            + "\n## Session log\n- 2026-10-03T16:24:50Z cx-test closed as done (cc-close)\n"
+        )
+        closed.unlink()
+    sidecars = _role_sidecars(home)
+    for path in (*sidecars["marker"], *sidecars["epoch"]):
+        path.unlink()
+    receipts = tuple((home / ".local" / "share" / "hapax").rglob("*.json"))
+    dispatch = sidecars["dispatch"]
+    before = {path: path.read_bytes() for path in dispatch}
+
+    recovered = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=["--recover-closed-dispatch-residue"],
+    )
+
+    assert recovered.returncode == 0, recovered.stderr
+    assert (
+        f"recovered {'reopened_dispatch' if reopen else 'closed_dispatch'} residue"
+        in recovered.stdout
+    )
+    assert all(not path.exists() for path in dispatch)
+    archive = _release_archives(home, task_id)
+    assert len(archive) == 1
+    assert {path.name: path.read_bytes() for path in archive[0].glob("*.json")} == {
+        path.name: content for path, content in before.items()
+    }
+    assert receipts and all(path.is_file() for path in receipts)
+
+
 def _role_sidecars(
     home: Path, *, role: str = "cx-test", session: str = _SESSION_ID
 ) -> dict[str, tuple[Path, Path]]:
