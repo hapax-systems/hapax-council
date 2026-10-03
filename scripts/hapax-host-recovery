@@ -19,7 +19,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 UUID = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.I)
-ROLE = re.compile(r"^(?:codex-[a-z0-9-]+|dev[0-9]*|dev1-seat)$")
+ROLE = re.compile(r"^(?:codex-[a-z0-9-]+|dev[0-9]*|dev1-seat|dev1-seat-codex)$")
+CODEX_SEAT_ROLE = "dev1-seat-codex"
+CODEX_SEAT_TMUX = "hapax-codex-seat"
 UNIT = re.compile(r"^[a-z0-9][a-z0-9@_.-]*\.(?:service|timer|socket)$")
 MEMORY = {"high": "5G", "max": "7G", "swap": "1G"}
 APPENDIX_HOST = "hapax-appendix"
@@ -158,17 +160,21 @@ def declare_unit(spec: str) -> dict:
 def validate(entry: dict, *, require_mode: bool = False) -> None:
     role = entry["role"]
     provider = entry["provider"]
-    expected = f"hapax-{provider}-{role.removeprefix('codex-') if provider == 'codex' else role}"
+    expected = (
+        CODEX_SEAT_TMUX
+        if provider == "codex" and role == CODEX_SEAT_ROLE
+        else f"hapax-{provider}-{role.removeprefix('codex-') if provider == 'codex' else role}"
+    )
     if provider not in {"codex", "claude"} or not ROLE.fullmatch(role) or entry["tmux"] != expected:
         raise ValueError("invalid recovery lane identity")
-    if (provider == "codex") != role.startswith("codex-"):
+    if (provider == "codex") != (role.startswith("codex-") or role == CODEX_SEAT_ROLE):
         raise ValueError("recovery provider/role mismatch")
     if not UUID.fullmatch(entry["transcript"]) or not UUID.fullmatch(entry["session_id"]):
         raise ValueError("invalid recovery session identifier")
     cwd = Path(entry["cwd"])
     if not cwd.is_absolute() or not cwd.is_dir() or cwd.is_symlink():
         raise ValueError(f"recovery workdir unavailable: {cwd}")
-    inbox = ROOT / ("dev1" if role == "dev1-seat" else role)
+    inbox = ROOT / ("dev1" if role in {"dev1-seat", CODEX_SEAT_ROLE} else role)
     if entry["inbox"] != str(inbox) or not inbox.is_dir():
         raise ValueError(f"recovery inbox unavailable: {inbox}")
     if entry["memory"] != MEMORY:
@@ -336,7 +342,9 @@ def live_lanes() -> list[dict]:
     entries: list[dict] = []
     for row in panes.splitlines():
         tmux, pid, cwd = row.split("\t", 2)
-        if tmux.startswith("hapax-codex-"):
+        if tmux == CODEX_SEAT_TMUX:
+            provider, role = "codex", CODEX_SEAT_ROLE
+        elif tmux.startswith("hapax-codex-"):
             provider, role = "codex", "codex-" + tmux.removeprefix("hapax-codex-")
         elif tmux.startswith("hapax-claude-"):
             provider, role = "claude", tmux.removeprefix("hapax-claude-")
@@ -355,7 +363,7 @@ def live_lanes() -> list[dict]:
             "transcript": transcript,
             "session_id": session_id,
             "cwd": cwd,
-            "inbox": str(ROOT / ("dev1" if role == "dev1-seat" else role)),
+            "inbox": str(ROOT / ("dev1" if role in {"dev1-seat", CODEX_SEAT_ROLE} else role)),
             "memory": MEMORY.copy(),
             **session_mode(provider, argv),
         }
@@ -516,10 +524,15 @@ def report(result: dict, mail_root: Path = ROOT / "dev1") -> None:
         raise ReportError("; ".join(errors))
 
 
-def restore(path: Path, *, dry_run: bool = False) -> dict:
+def restore(path: Path, *, dry_run: bool = False, simulate_missing: tuple[str, ...] = ()) -> dict:
     data = read_manifest(path)
     if data is None:
         raise ValueError("host recovery manifest missing; capture before host-affecting work")
+    if simulate_missing and not dry_run:
+        raise ValueError("simulated missing lanes require dry-run")
+    lane_names = {entry["tmux"] for entry in data["lanes"]}
+    if set(simulate_missing) - lane_names:
+        raise ValueError("simulated missing lane is not in the manifest")
     units = recovery_units(data["host"], data.get("units", []))
     current = boot_id()
     result: dict = {
@@ -530,6 +543,9 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
         "units_started": [],
         "failed": {},
     }
+    if dry_run:
+        result["dry_run"] = True
+        result["simulated_missing"] = list(simulate_missing)
     all_units_live = True
     for unit in units:
         try:
@@ -537,7 +553,8 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
         except (OSError, ValueError, subprocess.SubprocessError):
             all_units_live = False
     if (
-        data["boot_id"] == current
+        not simulate_missing
+        and data["boot_id"] == current
         and all_units_live
         and all(
             subprocess.run(
@@ -570,7 +587,7 @@ def restore(path: Path, *, dry_run: bool = False) -> dict:
             result["failed"][label] = str(exc)
     for entry in data["lanes"]:
         name = entry["tmux"]
-        if (
+        if name not in simulate_missing and (
             subprocess.run(
                 ["tmux", "has-session", "-t", f"={name}"], capture_output=True, check=False
             ).returncode
@@ -631,10 +648,18 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=manifest_path())
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
+        "--simulate-missing-lane",
+        action="append",
+        default=[],
+        help="in restore dry-run, plan a recorded lane as though its session were missing",
+    )
+    parser.add_argument(
         "--unit", action="append", default=[], help="declare an active user: or system: unit"
     )
     args = parser.parse_args()
     try:
+        if args.simulate_missing_lane and (args.action != "restore" or not args.dry_run):
+            raise ValueError("--simulate-missing-lane requires restore --dry-run")
         if args.action == "capture":
             if args.dry_run:
                 result = {
@@ -645,7 +670,11 @@ def main() -> int:
             else:
                 result = capture(args.manifest, tuple(args.unit))
         else:
-            result = restore(args.manifest, dry_run=args.dry_run)
+            result = restore(
+                args.manifest,
+                dry_run=args.dry_run,
+                simulate_missing=tuple(args.simulate_missing_lane),
+            )
         print(json.dumps(result, sort_keys=True))
         return 1 if result.get("failed") else 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:

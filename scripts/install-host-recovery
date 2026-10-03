@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Stage and activate host recovery only from the published source release.
+set -euo pipefail
+
+for override in HAPAX_HOST_RECOVERY_BIN HAPAX_HOST_RECOVERY_UNIT_DIR HAPAX_HOST_RECOVERY_SYSTEMCTL; do
+    if [ "${!override+x}" ]; then
+        echo "host recovery override refused: $override" >&2
+        exit 2
+    fi
+done
+SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ACTIVATION="$HOME/.cache/hapax/source-activation"
+DEST="$HOME/.local/bin/hapax-host-recovery"
+UNIT_DIR="$HOME/.config/systemd/user"
+MODE=check
+REPORT_HOST=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --source|--install) echo "direct source/install refused: $1" >&2; exit 2 ;;
+        --prepare) MODE=prepare; shift ;;
+        --check) MODE=check; shift ;;
+        --activate) MODE=activate; shift ;;
+        --check-active) MODE=check-active; shift ;;
+        --report-host) REPORT_HOST="${2:?}"; shift 2 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+if [ -n "$REPORT_HOST" ] && ! [[ "$REPORT_HOST" =~ ^[a-z0-9-]+$ ]]; then
+    echo "invalid report host" >&2
+    exit 2
+fi
+if [ -z "$REPORT_HOST" ] && [ -e "$UNIT_DIR/hapax-host-recovery-restore.service.d/report.conf" ]; then
+    echo "report host is installed but not declared; pass --report-host" >&2
+    exit 2
+fi
+python3 - "$SOURCE" "$ACTIVATION" <<'PY'
+import json
+import pathlib
+import string
+import subprocess
+import sys
+
+source, activation = map(pathlib.Path, sys.argv[1:])
+try:
+    active = activation / "worktree"
+    if not active.is_symlink():
+        raise ValueError("active source link missing")
+    receipt = json.loads((activation / "current.json").read_text())
+    head = receipt["active_source_head"]
+    if len(head) != 40 or any(c not in string.hexdigits[:16] for c in head):
+        raise ValueError("invalid active source head")
+    expected = (activation / "releases" / head).resolve(strict=True)
+    if pathlib.Path(receipt["active_source_target"]).resolve(strict=True) != expected:
+        raise ValueError("active source receipt target differs")
+    if active.resolve(strict=True) != expected or source != expected:
+        raise ValueError("installer source is not active release")
+    files = ["scripts/install-host-recovery", "scripts/hapax-host-recovery"]
+    files += [f"systemd/units/hapax-host-recovery-{kind}.{suffix}"
+              for kind in ("capture", "restore") for suffix in ("service", "timer")]
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(source), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+    if git("rev-parse", "HEAD") != head:
+        raise ValueError("active release commit differs from receipt")
+    git("ls-files", "--error-unmatch", "--", *files)
+    if git("status", "--porcelain", "--untracked-files=all", "--", *files):
+        raise ValueError("active release recovery files differ from reviewed commit")
+except (OSError, KeyError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
+    raise SystemExit(f"reviewed source binding refused: {exc}") from None
+PY
+
+units=(
+    hapax-host-recovery-capture.service
+    hapax-host-recovery-capture.timer
+    hapax-host-recovery-restore.service
+    hapax-host-recovery-restore.timer
+)
+check_files() {
+    cmp -s "$SOURCE/scripts/hapax-host-recovery" "$DEST" || {
+        echo "host recovery script differs from source: $DEST" >&2; return 1;
+    }
+    for unit in "${units[@]}"; do
+        cmp -s "$SOURCE/systemd/units/$unit" "$UNIT_DIR/$unit" || {
+            echo "host recovery unit differs from source: $unit" >&2; return 1;
+        }
+    done
+    if [ -n "$REPORT_HOST" ]; then
+        cmp -s <(printf '[Service]\nEnvironment=HAPAX_RECOVERY_REPORT_HOST=%s\n' "$REPORT_HOST") \
+            "$UNIT_DIR/hapax-host-recovery-restore.service.d/report.conf" || {
+            echo "host recovery report host differs from source" >&2; return 1;
+        }
+    fi
+}
+if [ "$MODE" = prepare ]; then
+    mkdir -p "$(dirname "$DEST")" "$UNIT_DIR"
+    install -m 755 "$SOURCE/scripts/hapax-host-recovery" "$DEST"
+    for unit in "${units[@]}"; do
+        install -m 644 "$SOURCE/systemd/units/$unit" "$UNIT_DIR/$unit"
+    done
+    if [ -n "$REPORT_HOST" ]; then
+        install -d -m 755 "$UNIT_DIR/hapax-host-recovery-restore.service.d"
+        printf '[Service]\nEnvironment=HAPAX_RECOVERY_REPORT_HOST=%s\n' "$REPORT_HOST" \
+            > "$UNIT_DIR/hapax-host-recovery-restore.service.d/report.conf"
+    fi
+fi
+check_files
+if [ "$MODE" = activate ]; then
+    systemctl --user daemon-reload
+    systemctl --user enable hapax-host-recovery-restore.service
+    systemctl --user enable --now hapax-host-recovery-capture.timer
+    systemctl --user stop hapax-host-recovery-restore.timer
+    systemctl --user enable hapax-host-recovery-restore.timer
+fi
+if [ "$MODE" = check-active ]; then
+    for unit in hapax-host-recovery-capture.timer hapax-host-recovery-restore.timer hapax-host-recovery-restore.service; do
+        systemctl --user is-enabled --quiet "$unit"
+    done
+    systemctl --user is-active --quiet hapax-host-recovery-capture.timer
+    if systemctl --user is-active --quiet hapax-host-recovery-restore.timer; then
+        echo "restore timer is active before reboot" >&2
+        exit 1
+    fi
+fi
+echo "host recovery $MODE verified"
