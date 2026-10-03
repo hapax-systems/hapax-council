@@ -92,6 +92,8 @@ def test_unbound_wall_is_diagnostic_while_subscription_probe_decides(
             NOW.isoformat(),
             "--receipt-dir",
             str(receipts),
+            "--route-id",
+            "claude.interactive.full",
             "--json",
             *mode,
         ]
@@ -119,7 +121,7 @@ def test_unbound_wall_is_diagnostic_while_subscription_probe_decides(
     }
     written = list(receipts.glob("*.yaml"))
     if outcome == "served":
-        assert len(written) == len(obs.DEFAULT_ROUTE_IDS)
+        assert len(written) == 1
         assert payload["source"] == "active-probe"
         for path in written:
             receipt = yaml.safe_load(path.read_text())

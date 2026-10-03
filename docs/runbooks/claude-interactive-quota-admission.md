@@ -40,6 +40,39 @@ an instrument failure (exit 7), with an executable/service check and bounded
 rerun in the diagnostic. Recheck these boundaries through the real observer and
 receipt writer with `tests/scripts/test_claude_passive_wall_authority.py`.
 
+A controlled quota refusal writes a separate, immutable `*-quota-wall.yaml`
+receipt in `$HAPAX_RELAY_RECEIPT_DIR` (default `~/.cache/hapax/relay/receipts`).
+It carries the existing subscription provider/authentication fields and a proof
+bound to the exact request credential and observation time. Earlier positive
+receipts remain intact. Telemetry accepts only these bound observations as
+subscription walls; unbound lane/gateway walls remain diagnostic counts and do
+not exhaust the subscription pool. A genuinely bound wall inhibits all three
+Claude subscription routes. A newer account-live serve supersedes it by observed
+time; a predicted future reset cannot overrule that newer measurement.
+
+When the producer and guard resolve the same receipt directory, the interactive
+guard also reads controlled wall receipts directly at preflight,
+inside the tmux runner and after the CLI authentication check. Thus an earlier
+positive ledger cannot admit the same credential after a later bound refusal
+while telemetry awaits its next tick. The launcher pins the receipt-directory
+binding across tmux along with its configuration and ledger. A simultaneous
+refusal wins over a positive; a different credential's parseable proof cannot revoke this
+credential. Malformed or unreadable controlled receipts hold the child. Neither
+wall expiry nor an instrument failure creates positive evidence.
+
+Exit 3 means the bound refusal was durably published. If publication fails, exit
+5 reports that earlier telemetry has **not** been revoked; repair receipt-directory
+permissions before retrying observation or launch. The observer never reports a
+write failure as durable inhibition. Once quota recovers, rerun the same authorized
+`hapax-claude-account-live-observe --probe --json` route and regenerate
+`hapax-quota-telemetry-writer --json`. No failed instrument run publishes a wall.
+Recheck wall publication, timing and launch inhibition with
+`tests/scripts/test_claude_bound_wall.py` and
+`tests/scripts/test_hapax_claude_interactive_admission.py`. Separately,
+`tests/scripts/test_hapax_quota_telemetry_writer.py::test_writer_emitted_refs_fullmatch_ledger_regex_bound_and_unbound`
+runs the telemetry writer for both credential-bound and unbound receipts and
+checks each emitted composite ref against the ledger regex.
+
 The active probe reads the existing Claude saved-login credential binding
 `$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`).
 It requires Pro/Max subscription metadata, the `user:inference` scope, and an
@@ -104,8 +137,10 @@ and [settings precedence](https://code.claude.com/docs/en/settings), checked
 2026-09-24 against installed CLI 2.1.281. The host-control entry was present in
 the vendor's Korean reference but absent from the English page retrieved on that
 date. The executable effect, not documentation alone, is the boundary: versions
-other than the exercised 2.1.281 hold until the isolated contract is rechecked
-and its source pin is reviewed. This does not claim when the feature was introduced.
+other than the exercised 2.1.288 hold until the isolated contract is rechecked
+and its source pin is reviewed. The 2.1.288 check used an isolated network
+namespace with synthetic credentials on 2026-10-03; it does not establish live
+subscription headroom. This does not claim when the feature was introduced.
 
 Before exec, the CLI must report `loggedIn: true`, `authMethod: oauth_token`,
 `apiProvider: firstParty`, and no API-key source for the child's environment and
@@ -175,8 +210,9 @@ Expected boundaries:
   `tests/scripts/test_claude_interactive_admission_review.py::test_ledger_read_checks_receipt_window_independently_of_snapshot`;
   direct malformed/reversed/equal-window rejection with
   `tests/scripts/test_claude_interactive_admission_auth_review.py::test_admission_reference_rejects_invalid_windows`.
-- Unexpired quota walls on the shared Claude subscription pool inhibit the
-  interactive route too, using the existing wall precedence and recovery rules.
+- Bound quota walls on the shared Claude subscription pool inhibit the
+  interactive route too; unbound gateway and lane observations cannot establish
+  that subscription authority.
   Recheck: `tests/scripts/test_hapax_claude_interactive_admission.py::test_interactive_admission_respects_shared_pool_wall`.
 - No billing mode, model, quality floor or interactive-only task rule changes.
 
@@ -206,6 +242,7 @@ uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
   tests/scripts/test_claude_interactive_admission_review.py \
   tests/scripts/test_claude_interactive_admission_auth_review.py \
   tests/scripts/test_claude_passive_wall_authority.py \
+  tests/scripts/test_claude_bound_wall.py \
   tests/scripts/test_claude_probe_subscription_boundary.py \
   tests/scripts/test_claude_interactive_launch_auth.py \
   tests/scripts/test_claude_interactive_installed_copy.py \

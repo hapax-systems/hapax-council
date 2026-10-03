@@ -117,7 +117,7 @@ def test_descriptor_reaches_native_child_through_real_claude_launcher(tmp_path, 
     _stub_bin(
         bin_dir,
         "claude",
-        'if [[ "$1" == "--version" ]]; then echo "2.1.281 (Claude Code)"; exit 0; fi\n'
+        'if [[ "$1" == "--version" ]]; then echo "2.1.288 (Claude Code)"; exit 0; fi\n'
         'if [[ " $* " == *" auth status "* ]]; then\n'
         'printf \'%s\\n\' \'{"loggedIn":true,"authMethod":"oauth_token",'
         '"apiProvider":"firstParty","apiKeySource":null}\'\nexit 0\nfi\n'

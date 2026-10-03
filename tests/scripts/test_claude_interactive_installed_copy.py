@@ -53,7 +53,9 @@ def installed_fixture(tmp_path, *, explicit):
     )
     python = tmp_path / "bin/python3"
     python.write_text(
-        f"#!/usr/bin/env bash\nexec {shlex.quote(sys.executable)} -S -c "
+        f"#!/usr/bin/env bash\n"
+        f'if [ "${{1:-}}" = "-c" ]; then exec {shlex.quote(sys.executable)} "$@"; fi\n'
+        f"exec {shlex.quote(sys.executable)} -S -c "
         f'{shlex.quote(bootstrap)} "$@"\n'
     )
     python.chmod(0o700)
