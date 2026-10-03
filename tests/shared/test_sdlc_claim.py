@@ -5316,6 +5316,97 @@ def test_release_counts_an_unreadable_marker_as_a_live_claim(tmp_path: Path) -> 
     assert (_tree_snapshot(fixture.cache), _tree_snapshot(fixture.transactions)) == before
 
 
+def _bound_marker(cache: Path, *, role: str, session: str, task: str, bare: bool = False) -> Path:
+    binding = ClaimDispatchBinding.create(
+        task_id=task,
+        lane=role,
+        session_id=session,
+        claim_epoch=1_720_700_000,
+        dispatch_message_id="dispatch-marker-fixture",
+        platform="codex",
+        mode="headless",
+        profile="ultra",
+        authority_case="CASE-CLAIM-001",
+        binding_hash="a" * 64,
+    )
+    key = role if bare else f"{role}-{session}"
+    marker = cache / f"cc-active-task-{key}"
+    marker.write_text(f"{task}\n")
+    (cache / f"cc-claim-epoch-{key}").write_text(f"{binding.claim_epoch} {task}\n")
+    sdlc_task_store.write_claim_dispatch_binding(cache, key, binding)
+    return marker
+
+
+def test_marker_tasks_selects_exact_role_and_retains_bound_legacy_sessions(tmp_path: Path) -> None:
+    session = "0f9f9f9f-1111-2222-3333-444455556666"
+    _bound_marker(tmp_path, role="cx-red", session=session, task="bare-task", bare=True)
+    _bound_marker(tmp_path, role="cx-red", session=session, task="uuid-task")
+    _bound_marker(tmp_path, role="cx-red", session="session-legacy", task="legacy-task")
+    for bare in (True, False):
+        _bound_marker(tmp_path, role="cx-red-accept", session=session, task="peer-task", bare=bare)
+    before = _tree_snapshot(tmp_path)
+
+    assert sdlc_claim._marker_tasks(tmp_path, "cx-red") == ["bare-task", "uuid-task", "legacy-task"]
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("bare", [True, False], ids=["peer-bare", "peer-session"])
+def test_release_ignores_bound_prefix_peer_and_preserves_its_bytes(
+    tmp_path: Path, bare: bool
+) -> None:
+    fixture, _journal, _projections = _held_publication(tmp_path)
+    _bound_marker(
+        fixture.cache,
+        role="cx-red-accept",
+        session="0f9f9f9f-1111-2222-3333-444455556666",
+        task="task-alpha",
+        bare=bare,
+    )
+    peer_paths = [p for p in fixture.cache.iterdir() if "cx-red-accept" in p.name]
+    before = {p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in peer_paths}
+
+    assert _release_held(fixture).shape == "held_publication"
+
+    assert {
+        p: (p.read_bytes(), p.stat().st_mode, p.stat().st_mtime_ns) for p in peer_paths
+    } == before
+
+
+@pytest.mark.parametrize("content", [b"\xff\xfe", b"", b"one\ntwo\n"])
+def test_marker_tasks_holds_unreadable_own_marker(tmp_path: Path, content: bytes) -> None:
+    marker = tmp_path / "cc-active-task-cx-red"
+    marker.write_bytes(content)
+    before = _tree_snapshot(tmp_path)
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold, match="claim_residue_live_marker"):
+        sdlc_claim._marker_tasks(tmp_path, "cx-red")
+
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_marker_tasks_rejects_dev1_seat_codex_prefix_peer(tmp_path: Path) -> None:
+    """Role ``dev1-seat`` must not read bound ``dev1-seat-codex`` markers as its own.
+
+    This is the exact prefix collision that blocked the coordinator's own claim
+    (the ``dev1-seat`` vs ``dev1-seat-codex`` case, PR #5002). Mutation-verified:
+    replacing the exact selection in :func:`sdlc_claim.role_claim_markers` with the
+    unsafe prefix-only form (``name.startswith(f"cc-active-task-{role}-")``) reddens
+    this, because the bound ``dev1-seat-codex`` task then leaks into ``dev1-seat``'s
+    tasks; restoring the exact-selection bytes greens it. The peer's bytes stay intact.
+    """
+    session = "0f9f9f9f-1111-2222-3333-444455556666"
+    _bound_marker(tmp_path, role="dev1-seat", session=session, task="seat-bare", bare=True)
+    _bound_marker(tmp_path, role="dev1-seat", session=session, task="seat-uuid")
+    for bare in (True, False):
+        _bound_marker(
+            tmp_path, role="dev1-seat-codex", session=session, task="codex-task", bare=bare
+        )
+    before = _tree_snapshot(tmp_path)
+
+    assert sdlc_claim._marker_tasks(tmp_path, "dev1-seat") == ["seat-bare", "seat-uuid"]
+    assert _tree_snapshot(tmp_path) == before
+
+
 def test_release_touches_only_the_cache_its_journal_projected_into(tmp_path: Path) -> None:
     fixture, _journal, _projections = _held_publication(tmp_path)
     other_cache = tmp_path / "other-cache"
