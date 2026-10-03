@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Send to the Codex coordinator seat and wait for a delivery acknowledgement.
+
+The ACK instruction and private receipt path follow hapax-codex-send. A pane
+transition alone is insufficient: a missing ACK leaves the send visibly held.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import secrets
+import shlex
+import subprocess
+import sys
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import NamedTuple
+
+SEAT_SESSION = "hapax-codex-seat"
+NUDGE_AFTER_SECONDS = 12.0
+_BUSY = re.compile(r"Working \(|esc to interrupt|tab to queue", re.IGNORECASE)
+
+
+class DeliveryError(RuntimeError):
+    """A send lacks an observable delivery receipt."""
+
+
+class Receipt(NamedTuple):
+    session: str
+    mode: str
+    acknowledged: bool
+    ack_path: str
+
+
+def _tmux(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["tmux", *args],
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DeliveryError("tmux_unavailable") from exc
+
+
+class TmuxTransport:
+    def exists(self, session: str) -> bool:
+        return _tmux("has-session", "-t", session).returncode == 0
+
+    def capture(self, session: str) -> str:
+        result = _tmux("capture-pane", "-p", "-t", session, "-S", "-30")
+        if result.returncode:
+            raise DeliveryError("pane_unreadable")
+        return result.stdout
+
+    def paste(self, session: str, payload: str) -> None:
+        buffer_name = f"hapax-seat-send-{secrets.token_hex(8)}"
+        loaded = _tmux("load-buffer", "-b", buffer_name, "-", input_text=payload)
+        if loaded.returncode:
+            raise DeliveryError("buffer_load_failed")
+        try:
+            pasted = _tmux("paste-buffer", "-b", buffer_name, "-t", session)
+            if pasted.returncode:
+                raise DeliveryError("pane_paste_failed")
+        finally:
+            _tmux("delete-buffer", "-b", buffer_name)
+
+    def key(self, session: str, key: str) -> None:
+        sent = _tmux("send-keys", "-t", session, key)
+        if sent.returncode:
+            raise DeliveryError(f"key_send_failed:{key}")
+
+
+def _prompt_line(snapshot: str) -> str | None:
+    prompts = [line for line in snapshot.splitlines()[-30:] if line.lstrip().startswith("›")]
+    return prompts[-1] if prompts else None
+
+
+def _is_busy(snapshot: str) -> bool:
+    return bool(_BUSY.search("\n".join(snapshot.splitlines()[-10:])))
+
+
+def _acknowledged(path: Path, token: str) -> bool:
+    try:
+        return not path.is_symlink() and path.is_file() and path.read_text().strip() == token
+    except OSError:
+        return False
+
+
+def _ack_instruction(message: str, path: Path, token: str) -> str:
+    return (
+        f"Seat delivery token: {token}\n\n{message}\n\n"
+        "ACK REQUIRED: before substantial work, write this exact token "
+        f"to this exact path:\nmkdir -p {shlex.quote(str(path.parent))} && "
+        f"printf '%s\\n' {shlex.quote(token)} > {shlex.quote(str(path))}"
+    )
+
+
+def send(
+    session: str,
+    message: str,
+    *,
+    transport: TmuxTransport | None = None,
+    ack_path: Path | None = None,
+    ack_token: str | None = None,
+    timeout: float = 60.0,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Receipt:
+    if session != SEAT_SESSION:
+        raise DeliveryError("unsupported_seat_session")
+    if not message.strip():
+        raise DeliveryError("empty_message")
+    if not math.isfinite(timeout) or not NUDGE_AFTER_SECONDS < timeout <= 300:
+        raise DeliveryError("invalid_timeout")
+    transport = transport or TmuxTransport()
+    if not transport.exists(session):
+        raise DeliveryError("missing_session")
+
+    snapshot = transport.capture(session)
+    prompt = _prompt_line(snapshot)
+    if prompt is None:
+        raise DeliveryError("pane_unrecognized")
+    if prompt.split("›", 1)[1].strip():
+        raise DeliveryError("composer_not_empty")
+    mode = "queued" if _is_busy(snapshot) else "idle"
+
+    token = ack_token or f"ack-{secrets.token_hex(16)}"
+    path = ack_path or Path.home() / ".cache/hapax/seat-acks" / f"{session}-{token}"
+    if path.exists() or path.is_symlink():
+        raise DeliveryError("ack_path_occupied")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = _ack_instruction(message, path, token)
+    transport.paste(session, payload)
+    sleep(1.5)  # separate the paste burst from the TUI submit key (09-28 witness)
+    if mode == "queued":
+        transport.key(session, "Tab")
+        sleep(0.1)
+    transport.key(session, "Enter")
+
+    started = monotonic()
+    nudged = False
+    while monotonic() - started < timeout:
+        if _acknowledged(path, token):
+            return Receipt(session, mode, True, str(path))
+        if mode == "idle" and not nudged and monotonic() - started >= NUDGE_AFTER_SECONDS:
+            current = transport.capture(session)
+            composer = _prompt_line(current)
+            if composer and token in composer and not _is_busy(current):
+                transport.key(session, "Enter")
+            nudged = True
+        sleep(0.25)
+    raise DeliveryError(f"ack_timeout:held:{session}:{path}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("session")
+    parser.add_argument("message", nargs="+")
+    parser.add_argument("--timeout", type=float, default=60.0)
+    args = parser.parse_args()
+    try:
+        receipt = send(args.session, " ".join(args.message), timeout=args.timeout)
+    except DeliveryError as exc:
+        print(f"hapax-seat-send: HELD {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(receipt._asdict(), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
