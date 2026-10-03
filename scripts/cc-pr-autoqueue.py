@@ -2779,7 +2779,10 @@ def _cached_admission_blockers(
         return ("missing_cc_task_link (cached authority inventory unreadable)",)
     matches = _matching_tasks(pr, tasks)
     if not matches:
-        return ("missing_cc_task_link",)
+        return (
+            "missing_cc_task_link (NOTE: link this PR to a cc-task note — run "
+            "scripts/cc-task-pr-link.sh or set pr:/branch: on the note)",
+        )
     blockers: list[str] = []
     for task in matches:
         fm, error = _frontmatter(task.path)
@@ -2792,11 +2795,17 @@ def _cached_admission_blockers(
             _release_auto_arm_current_admission_blockers(fm, pr_number=number, head_ref=head_ref)
         )
         if not _scalar(fm.get("authority_case") or fm.get("case_id")):
-            blockers.append("task_missing_authority_case")
+            blockers.append(
+                "task_missing_authority_case. Next action: set authority_case: "
+                "(or case_id:) on the linked cc-task note"
+            )
         if not _scalar(fm.get("parent_spec")):
             blockers.append("task_missing_parent_spec")
         if fm.get("implementation_authorized") is False:
-            blockers.append("implementation_authorized_false")
+            blockers.append(
+                "implementation_authorized_false. Next action: set "
+                "implementation_authorized: true on the task once it is authorized"
+            )
         blockers.extend(_release_authorized_head_blockers(fm, pr_head_sha=head_sha))
         blockers.extend(_release_seat_hold_blockers(fm, pr_head_sha=head_sha))
     return tuple(blockers)
@@ -5174,9 +5183,14 @@ def run_reconciler(
         and must_include_state_path is not None
         and not _must_include_guarantee_disabled()
     ):
-        # R3: the queue snapshot is indeterminate, but the persisted last-known
-        # must-include set can still refresh proofs backed by readable private
-        # authority, or publish a refusal. No queue mutation on this path.
+        # R3: the queue snapshot is indeterminate. This path carries no head_ref,
+        # so the persisted last-known must-include set can still refresh proofs
+        # whose task note matches by PR number (head_ref-independent) or refuse
+        # them; a branch-only note (no `pr:` link) cannot be re-identified here and
+        # is conservatively refused (missing_cc_task_link) — a fail-closed
+        # availability loss, not a dropped must-include item (the entry is retained
+        # with a failure counter and the next determinate tick, which carries
+        # head_ref, recovers it by branch). No queue mutation on this path.
         must_include_state = _load_must_include_state(must_include_state_path, repo=repo, now=now)
         refresh_only = _refresh_must_include_batch(
             [

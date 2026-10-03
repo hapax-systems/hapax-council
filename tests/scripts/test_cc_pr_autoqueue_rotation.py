@@ -1007,6 +1007,50 @@ def test_autoqueue_indeterminate_queue_snapshot_refreshes_persisted_set(
     assert report["must_include"]["refreshed"] == [7]
 
 
+def test_autoqueue_indeterminate_branch_only_refuses_while_pr_linked_refreshes(
+    tmp_path: Path,
+) -> None:
+    # R3 (indeterminate queue) carries no head_ref. A PR-number-linked must-include
+    # note still matches by number and its unchanged proof REFRESHES; a branch-only
+    # note (no `pr:`) can no longer be re-identified, so its proof is REFUSED
+    # (missing_cc_task_link), never renewed, and the entry is RETAINED — fail-closed
+    # availability, not a dropped must-include item. The determinate tick, which
+    # carries head_ref, recovers the branch-only entry by branch.
+    vault = tmp_path / "tasks"
+    (vault / "active").mkdir(parents=True, exist_ok=True)
+    _write_task(vault, task_id="pr-linked-8", pr=8)  # control: PR-number-linked
+    _write_task(vault, task_id="branch-only-7", branch="feat/7")  # subject: branch-only
+    runner = RotationRunner(25)
+    runner.queued_prs = {7, 8}
+    runner.head_statuses["sha-7"] = [_admission_status("success", age_minutes=16)]
+    runner.head_statuses["sha-8"] = [_admission_status("success", age_minutes=16)]
+    # Determinate tick: head_ref present, so the branch-only note matches by branch
+    # and both proofs refresh and enter the persisted must-include set.
+    assert sorted(tick(tmp_path, runner)["must_include"]["refreshed"]) == [7, 8]
+    state_path = tmp_path / MUST_INCLUDE_STATE_NAME
+    persisted = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    assert {"7", "8"} <= set(persisted)
+    # Indeterminate tick: the queue snapshot (and head_ref) are unavailable.
+    runner.merge_queue_stdout = "not-json"
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert report["reason"] == "merge_queue_state_indeterminate"
+    # PR-number-linked control: unchanged authority still refreshes (success posted).
+    assert 8 in report["must_include"]["refreshed"]
+    assert any("state=success" in cmd for cmd in _status_posts(runner, "sha-8")), report
+    # Branch-only subject: refusal only — never renewed, flagged missing_cc_task_link.
+    assert 7 not in report["must_include"]["refreshed"]
+    assert 7 not in report["must_include"]["ok"]
+    assert "7" in report["must_include"]["invalidated"]
+    assert "missing_cc_task_link" in report["must_include"]["deferred"]["7"]
+    assert not any("state=success" in cmd for cmd in _status_posts(runner, "sha-7")), report
+    # Retained, not dropped: the branch-only must-include item survives with a
+    # failure counter that feeds the starvation alert on the next determinate tick.
+    persisted_after = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    assert "7" in persisted_after
+    assert persisted_after["7"]["consecutive_failures"] >= 1
+
+
 def test_autoqueue_expired_persisted_must_include_entry_is_dropped(tmp_path: Path) -> None:
     # R3: the persisted set lives no longer than the proof TTL it protects.
     _cached_tasks(tmp_path, 7)
