@@ -163,7 +163,7 @@ def native_wall(entry: dict) -> bool:
     """Use the saved transcript identity and the last decisive provider event."""
     paths = native_trace_paths(entry)
     if not paths:
-        return False  # Preserve worker recovery when there is no native wall evidence.
+        raise ValueError("provider-native transcript missing")
     if len(paths) != 1:
         raise ValueError("conflicting provider-native transcript identity")
     path = paths[0]

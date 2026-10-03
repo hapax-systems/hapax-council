@@ -414,6 +414,7 @@ def test_restore_rebuilds_bounded_commands_and_reports_failures(
 ) -> None:
     monkeypatch.setattr(module, "ROOT", tmp_path)
     monkeypatch.setattr(module, "boot_id", lambda: BOOT)
+    monkeypatch.setattr(module, "native_wall", lambda entry: False)
     entries = [lane(tmp_path), lane(tmp_path, provider="claude")]
     path = tmp_path / "manifest.json"
     module.atomic_json(
@@ -489,6 +490,7 @@ def test_dry_run_simulates_missing_live_lane_without_mutation(
 ) -> None:
     monkeypatch.setattr(module, "ROOT", tmp_path)
     monkeypatch.setattr(module, "boot_id", lambda: BOOT)
+    monkeypatch.setattr(module, "native_wall", lambda entry: False)
     entry = lane(tmp_path)
     path = tmp_path / "manifest.json"
     module.atomic_json(path, {"schema": 1, "host": "test-host", "boot_id": BOOT, "lanes": [entry]})
@@ -515,15 +517,18 @@ def test_dry_run_simulates_missing_live_lane_without_mutation(
 @pytest.mark.parametrize(
     ("provider", "seat", "incumbent", "wall_event", "expected"),
     [
-        ("codex", False, None, None, True),  # Worker recovery keeps its path.
-        ("codex", True, "dev1-seat-codex", None, True),
-        ("codex", True, "dev1-seat", None, False),
-        ("codex", True, None, None, False),
-        ("claude", True, "dev1-seat-codex", None, False),
+        ("codex", False, None, None, False),  # Missing native trace is unsafe.
+        ("codex", True, "dev1-seat-codex", None, False),
+        ("codex", True, "dev1-seat", "healthy", False),
+        ("codex", True, None, "healthy", False),
+        ("claude", True, "dev1-seat-codex", "healthy", False),
         ("codex", False, None, "walled", False),
         ("codex", True, "dev1-seat-codex", "walled", False),
+        ("codex", True, "dev1-seat-codex", "healthy", True),
+        ("codex", False, None, "healthy", True),
         ("codex", False, None, "cleared", True),
         ("claude", False, None, "walled", False),
+        ("claude", False, None, "healthy", True),
         ("claude", False, None, "cleared", True),
     ],
 )
@@ -567,26 +572,28 @@ def test_restore_disposition_blocks_only_nonincumbent_seats_and_native_walls(
         )
         trace.parent.mkdir(parents=True)
         if provider == "codex":
-            events = [
-                {"type": "session_meta", "payload": {"id": TRANSCRIPT, "cwd": entry["cwd"]}},
-                {
-                    "type": "event_msg",
-                    "payload": {
-                        "type": "task_complete",
-                        "error": {"codex_error_info": "usage_limit_exceeded"},
-                    },
-                },
-            ]
-            if wall_event == "cleared":
+            events = [{"type": "session_meta", "payload": {"id": TRANSCRIPT, "cwd": entry["cwd"]}}]
+            if wall_event != "healthy":
+                events.append(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "task_complete",
+                            "error": {"codex_error_info": "usage_limit_exceeded"},
+                        },
+                    }
+                )
+            if wall_event in {"healthy", "cleared"}:
                 events.append(
                     {"type": "event_msg", "payload": {"type": "task_complete", "error": None}}
                 )
         else:
-            events = [
-                {"type": "system", "sessionId": TRANSCRIPT},
-                {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}},
-            ]
-            if wall_event == "cleared":
+            events = [{"type": "system", "sessionId": TRANSCRIPT}]
+            if wall_event != "healthy":
+                events.append(
+                    {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}}
+                )
+            if wall_event in {"healthy", "cleared"}:
                 events.append({"type": "result", "is_error": False})
         trace.write_text("\n".join(json.dumps(event) for event in events) + "\n")
     path = tmp_path / "manifest.json"
@@ -716,6 +723,32 @@ def test_native_wall_blocks_real_launch_and_keeps_manifest(
     def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if args[:2] == ["tmux", "new-session"]:
             pytest.fail("walled lane was relaunched")
+        return subprocess.CompletedProcess(args, 1)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "report", lambda result: None)
+    result = module.restore(path)
+    assert result["suppressed"] == [entry["tmux"]]
+    assert "provider-native" in result["failed"][entry["tmux"]]
+    assert path.read_bytes() == original
+
+
+def test_missing_native_transcript_refuses_before_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    entry = lane(tmp_path)
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "NATIVE_ROOT", tmp_path, raising=False)
+    monkeypatch.setattr(module, "boot_id", lambda: BOOT)
+    path = tmp_path / "manifest.json"
+    module.atomic_json(
+        path, {"schema": 1, "host": "test-host", "boot_id": "old-boot", "lanes": [entry]}
+    )
+    original = path.read_bytes()
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["tmux", "new-session"]:
+            pytest.fail("lane with missing native evidence was relaunched")
         return subprocess.CompletedProcess(args, 1)
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
@@ -863,6 +896,7 @@ def test_restore_reports_agent_readback_timeout_after_20_seconds(
 ) -> None:
     monkeypatch.setattr(module, "ROOT", tmp_path)
     monkeypatch.setattr(module, "boot_id", lambda: BOOT)
+    monkeypatch.setattr(module, "native_wall", lambda entry: False)
     entry = lane(tmp_path)
     path = tmp_path / "manifest.json"
     module.atomic_json(

@@ -105,8 +105,8 @@ For each missing lane, restore inspects the saved provider transcript UUID at
 the provider's native session path. A Codex `task_complete` carrying
 `usage_limit_exceeded`, or a Claude `rate_limit_event` with rejected status,
 suppresses relaunch. A later successful provider-native completion clears it.
-Ambiguous or mismatched native identity suppresses relaunch. Ordinary workers
-with no such native wall evidence retain their existing recovery path. A
+Missing, ambiguous or mismatched native identity suppresses relaunch. Ordinary
+workers with a valid, unwalled native transcript retain their recovery path. A
 suppressed lane is reported as a failure, so the boot manifest is not stamped
 restored and the retry watcher can observe later clearance. Existing live
 sessions are read back but never replaced by this gate.
