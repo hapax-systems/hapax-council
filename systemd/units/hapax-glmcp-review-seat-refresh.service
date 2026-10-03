@@ -1,0 +1,33 @@
+[Unit]
+Description=Keep the GLM review seat admitted from accepted-release code: a sanctioned reviewer round-trip, a passive admission receipt and a claude-preserving ledger fold when the relay admission nears expiry (seat lives 900 s)
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-glmcp-review-seat-refresh
+After=hapax-secrets.service
+OnFailure=notify-failure@%n.service
+# Deliberately named hapax-glmcp-review-seat-refresh, DISTINCT from the deployed legacy
+# hapax-glmcp-seat-refresh unit, so this release unit never shares the legacy unit's install path
+# (review finding claude-1, major 5: deploy-drift). The legacy unit is retired by its own process.
+
+[Service]
+Type=oneshot
+# Runs the refresher from the ACTIVATION WORKTREE (the governed loop's accepted release), never a
+# frozen job tree. The release telemetry writer folds all three claude.* routes and preserves their
+# account-live evidence; the Sept-5 frozen refresher did not and flipped every claude route to
+# blocked (measured 2026-10-03T01:22-01:25Z; see
+# 30-areas/hapax/frame/GLM-ADMISSION-PRODUCER-20261003.md). This unit deliberately sets NEITHER
+# HAPAX_COUNCIL NOR HAPAX_GLMCP_SEAT_ROOT_OVERRIDE, so the wrapper's root guard pins the tree.
+# The reviewer reads glmcp/api-key from the FileStore (hapax-secrets.env). PAYG fallback is pinned
+# OFF inside the wrapper, so a quota wall never mints a receipt for a call the Coding Plan did not
+# serve; and the admission is minted only after a round trip that exits 0 with non-empty output.
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-glmcp-review-seat-refresh
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+EnvironmentFile=-/run/user/1000/hapax-secrets.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-glmcp-review-seat-refresh
+MemoryMax=512M
+# One ~5 s round trip (up to three tries, 40 s each) plus a ledger fold that scans the relay dir;
+# 660 s bounds a wedged tick well inside the 900 s seat life.
+TimeoutStartSec=660

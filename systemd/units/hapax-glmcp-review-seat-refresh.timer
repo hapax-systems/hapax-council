@@ -1,0 +1,15 @@
+[Unit]
+Description=Every 5 minutes, keep the GLM review seat admitted from accepted-release code (the service skips the round trip while the relay admission still has headroom; the seat lives 900 s)
+# Hapax-Timer-Enable-Only: true
+# hapax-post-merge-deploy ENABLES this timer on deploy but does NOT start it, so the seat installs
+# (starts) it explicitly only after independent review — and so a merge never auto-starts a Coding
+# Plan round-trip timer over the currently-stopped legacy unit.
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
