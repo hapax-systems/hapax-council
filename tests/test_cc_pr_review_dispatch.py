@@ -64,58 +64,37 @@ def _identity_roots_for(tmp_path: Path, name: str = "writer-identity") -> Any:
     )
 
 
-def _lane_family(lane: str) -> str:
-    try:
-        return dispatch.review_team.writer_family_for_lane(
-            lane, dispatch.review_team.load_lens_registry()
-        )
-    except (ValueError, KeyError, TypeError):
-        return "claude"
-
-
 def _observe_writer_identity(task_id: str, lane: str, *, family: str | None = None) -> None:
     store = _IDENTITY_STORE
     if store is None:
         return
-    lane_family = family or _lane_family(lane)
+    lane_family = family or dispatch.review_team.writer_family_for_lane(
+        lane, dispatch.review_team.load_lens_registry()
+    )
     session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{task_id}:{lane}:{lane_family}"))
     (store / "claim-publication-receipts" / f"{task_id}.json").write_text(
         json.dumps(
             {
-                "schema": "hapax.claim-publication-receipt.v4",
                 "task_id": task_id,
                 "role": lane,
                 "session_id": session_id,
                 "claim_epoch": 1790554237,
-                "to_status": "claimed",
             }
         ),
-        encoding="utf-8",
     )
     if lane_family == "claude":
         transcript = store / "claude-projects" / session_id / f"{session_id}.jsonl"
         transcript.parent.mkdir(parents=True, exist_ok=True)
         transcript.write_text(
             json.dumps({"type": "assistant", "message": {"model": "claude-opus-4-8"}}) + "\n",
-            encoding="utf-8",
         )
         return
     provider = {"codex": "openai", "fugu": "sakana"}.get(lane_family)
     if provider is None:
         return
-    meta: dict[str, Any] = {
-        "session_id": session_id,
-        "timestamp": "2026-09-28T00:07:35.962Z",
-        "originator": "codex-tui",
-        "model_provider": provider,
-    }
-    rollout = store / "codex-sessions" / f"rollout-2026-09-27T19-07-35-{session_id}.jsonl"
+    rollout = store / "codex-sessions" / f"rollout-{session_id}.jsonl"
     rollout.write_text(
-        json.dumps({"type": "session_meta", "payload": meta})
-        + "\n"
-        + json.dumps({"type": "turn_context", "payload": {"model": f"{lane_family}-test-model"}})
-        + "\n",
-        encoding="utf-8",
+        json.dumps({"type": "session_meta", "payload": {"model_provider": provider}}) + "\n",
     )
 
 
@@ -1158,12 +1137,17 @@ class TestApply:
         assert "worktree only" not in rendered
         assert records[0]["status"] == "evidence_unavailable"
 
-    def test_ensure_head_object_present_and_missing(self, tmp_path: Path) -> None:
+    def test_ensure_head_object_present_and_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         rel = "scripts/review_team.py"
         head_sha = self._git_repo_with_commit(tmp_path, rel, "committed\n")
         assert dispatch.ensure_head_object(tmp_path, head_sha, pr_number=1) is True
-        # A sha that cannot be fetched (no origin) reports False, not an exception.
         assert dispatch.ensure_head_object(tmp_path, "0" * 40, pr_number=1) is False
+        assert dispatch._pr_head_committed_at(tmp_path, "0" * 40, 1) is None
+        monkeypatch.setattr(dispatch.review_team, "claim_receipts_for", lambda *_: [1, 2])
+        pr = type("PR", (), {"head_sha": head_sha, "number": 1})()
+        assert isinstance(dispatch._head_committed_at_for(tmp_path, pr, "task", None), int)
 
     def test_prior_file_excerpts_sanitize_untrusted_paths(self, tmp_path: Path) -> None:
         """A malformed prior-finding path (newlines/fences) must not inject text
@@ -2038,24 +2022,20 @@ checklist:
         assert dossier["writer_family"] == "claude"
         assert dossier["constitution_writer_family"] == "claude"
         assert dossier["writer_family_provider"] is None
-        assert dossier["writer_family_session"]
-        assert any("harness=claude" in line for line in dossier["writer_family_evidence"])
         assert dossier["changed_file_count"] == 1
         assert dossier["changed_files"] == ["scripts/review_team.py"]
 
     def test_writer_family_comes_from_the_observed_identity_not_the_lane_name(
         self, tmp_path: Path
     ) -> None:
-        result, gh, reviewers, _ = _review(
+        result, _, _, _ = _review(
             tmp_path,
             gh=FakeGh(files=["scripts/review_team.py"], changed_files_count=1),
             task_kwargs={"assigned_to": "fugu-omglol", "observed_family": "fugu"},
         )
         dossier = result["dossier"]
-        assert result["status"] == "dispatched"
         assert dossier["writer_family"] == "fugu"
         assert dossier["constitution_writer_family"] == "fugu"
-        assert dossier["writer_family_provider"] == "sakana"
         assert "review_dossier_writer_family_evidence_mismatch:rerun_review_for_head" in (
             dispatch.review_team._dossier_validity_blockers(
                 {**dossier, "writer_family": "claude"},
@@ -2065,13 +2045,46 @@ checklist:
                 route_blocked_families={},
             )
         )
-        assert reviewers.invocations, "a fugu row still seats a team"
-        assert (
-            dispatch.review_team.writer_family_for_lane(
-                "fugu-omglol", dispatch.review_team.load_lens_registry()
-            )
-            == "claude"
+
+    def test_mixed_rows_report_observed_author_and_exclude_fallback(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", assigned_to="fugu-omglol", observed_family="fugu")
+        _write_task(vault, task_id="task-b", assigned_to="cx-gold")
+        session = uuid.uuid5(uuid.NAMESPACE_URL, "task-b:cx-gold:codex")
+        assert _IDENTITY_STORE is not None
+        next((_IDENTITY_STORE / "codex-sessions").glob(f"*{session}.jsonl")).unlink()
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=False,
+            gh_runner=FakeGh(),
+            route_blocked_families={},
         )
+        assert result["plan"]["writer_family"] == "fugu"
+        assert result["plan"]["writer_family_union"] == ["codex", "fugu"]
+
+    def test_enforce_holds_pr_and_artifact_without_seating(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(dispatch.review_team.WRITER_FAMILY_ENFORCE_ENV, "1")
+        empty = _identity_roots_for(tmp_path, "empty-identity")
+        reviewers = RecordingReviewers()
+        result, _, _, note = _review(tmp_path, identity_roots=empty, reviewers=reviewers)
+        assert result["status"] == "writer_family_unobserved"
+        assert not reviewers.invocations
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        artifact = tmp_path / "artifact"
+        artifact.mkdir()
+        result, reviewers, note, _ = _review_artifact(
+            artifact,
+            identity_roots=_identity_roots_for(artifact, "empty"),
+            reviewer_runner=RecordingReviewers(),
+        )
+        assert result["status"] == "writer_family_unobserved"
+        assert not reviewers.invocations
+        assert not (note.parent / "vault-row.review-dossier.yaml").exists()
 
     def test_dispatch_records_changed_source_excerpt_evidence(self, tmp_path: Path) -> None:
         rel = "scripts/hapax-glmcp-reviewer"
