@@ -77,6 +77,13 @@ names units started, lanes restored, lanes already live, and every failure.
 Invalid manifests are refused and reported. Re-running restore on a complete
 same-boot state is a no-op.
 
+The Sep 29 Codex successor has the exact binding `dev1-seat-codex` /
+`hapax-codex-seat` / `lanebus/dev1`. The Claude `dev1-seat` /
+`hapax-claude-dev1-seat` binding is separate. Capture retains saved missing
+panes for crash recovery, so a recapture does not retire either binding or
+confer coordinator authority on a restored pane. Check the current seat
+charter and disposition before deciding which recovered pane may coordinate.
+
 For an appendix dry run that exercises lane reconstruction without stopping a
 live pane, first capture and verify the current owner-only manifest, and choose
 one lane name present in it. Record the manifest SHA-256 and `tmux has-session`

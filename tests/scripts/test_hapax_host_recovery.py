@@ -54,6 +54,86 @@ def lane(tmp_path: Path, *, provider: str = "codex") -> dict:
     }
 
 
+def test_codex_seat_binding_is_exact_and_keeps_claude_custody(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    predecessor = lane(tmp_path, provider="claude")
+    codex_seat = lane(tmp_path)
+    codex_seat.update(
+        role="dev1-seat-codex",
+        tmux="hapax-codex-seat",
+        inbox=str(tmp_path / "dev1"),
+    )
+    module.validate(predecessor)
+    module.validate(codex_seat)
+    assert "HAPAX_AGENT_ROLE=dev1-seat-codex" in module.launch_args(codex_seat)
+
+    for changed in (
+        {"tmux": "hapax-codex-dev1-seat-codex"},
+        {"inbox": str(tmp_path / "codex-openmarket")},
+        {"provider": "claude"},
+        {"role": "dev1-seat-codex-other"},
+    ):
+        with pytest.raises(ValueError):
+            module.validate(codex_seat | changed)
+
+    monkeypatch.setattr(module, "boot_id", lambda: BOOT)
+    monkeypatch.setattr(module, "live_lanes", lambda: [codex_seat])
+    path = tmp_path / "manifest.json"
+    module.atomic_json(
+        path,
+        {"schema": 1, "host": "test-host", "boot_id": BOOT, "lanes": [predecessor], "units": []},
+    )
+    captured = module.capture(path)
+    assert [(entry["role"], entry["tmux"]) for entry in captured["lanes"]] == [
+        ("dev1-seat", "hapax-claude-dev1-seat"),
+        ("dev1-seat-codex", "hapax-codex-seat"),
+    ]
+
+
+def test_live_lanes_maps_exact_codex_seat_pane_to_declared_role_and_inbox(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    expected = lane(tmp_path)
+    (tmp_path / "dev1").mkdir()
+    expected.update(
+        role="dev1-seat-codex",
+        tmux="hapax-codex-seat",
+        inbox=str(tmp_path / "dev1"),
+    )
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 0, f"{expected['tmux']}\t123\t{expected['cwd']}\n", ""
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "agent_process",
+        lambda pid, provider: (
+            pid,
+            ["codex", "resume", TRANSCRIPT, "-s", "danger-full-access", "-a", "never"],
+            {"HAPAX_AGENT_ROLE": expected["role"], "HAPAX_SESSION_ID": TRANSCRIPT},
+        ),
+    )
+    monkeypatch.setattr(module, "scope_readback", lambda pid: None)
+    assert module.live_lanes() == [expected]
+    monkeypatch.setattr(
+        module,
+        "agent_process",
+        lambda pid, provider: (
+            pid,
+            ["codex", "resume", TRANSCRIPT],
+            {"HAPAX_AGENT_ROLE": "codex-seat"},
+        ),
+    )
+    with pytest.raises(ValueError, match="lane role mismatch"):
+        module.live_lanes()
+
+
 def test_capture_refuses_to_erase_previous_boot(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
