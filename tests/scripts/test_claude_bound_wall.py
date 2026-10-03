@@ -287,7 +287,7 @@ def test_bound_wall_appearing_during_auth_check_holds_exec(tmp_path, monkeypatch
 
     def check(argv, **kwargs):
         if "--version" in argv:
-            return subprocess.CompletedProcess(argv, 0, "2.1.281 (Claude Code)", "")
+            return subprocess.CompletedProcess(argv, 0, "2.1.288 (Claude Code)", "")
         wall.rename(Path(env["HAPAX_RELAY_RECEIPT_DIR"]) / wall.name)
         status = dict(
             loggedIn=True, authMethod="oauth_token", apiProvider="firstParty", apiKeySource=None

@@ -137,8 +137,10 @@ and [settings precedence](https://code.claude.com/docs/en/settings), checked
 2026-09-24 against installed CLI 2.1.281. The host-control entry was present in
 the vendor's Korean reference but absent from the English page retrieved on that
 date. The executable effect, not documentation alone, is the boundary: versions
-other than the exercised 2.1.281 hold until the isolated contract is rechecked
-and its source pin is reviewed. This does not claim when the feature was introduced.
+other than the exercised 2.1.288 hold until the isolated contract is rechecked
+and its source pin is reviewed. The 2.1.288 check used an isolated network
+namespace with synthetic credentials on 2026-10-03; it does not establish live
+subscription headroom. This does not claim when the feature was introduced.
 
 Before exec, the CLI must report `loggedIn: true`, `authMethod: oauth_token`,
 `apiProvider: firstParty`, and no API-key source for the child's environment and

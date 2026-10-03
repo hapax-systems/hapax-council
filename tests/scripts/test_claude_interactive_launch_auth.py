@@ -105,7 +105,7 @@ if '--version' in sys.argv:
     version = Path("""
         + repr(str(tmp_path / "cli-version.txt"))
         + """)
-    print(version.read_text() if version.exists() else '2.1.281 (Claude Code)')
+    print(version.read_text() if version.exists() else '2.1.288 (Claude Code)')
     raise SystemExit(0)
 config = Path(env.get('CLAUDE_CONFIG_DIR') or Path.home()/'.claude')
 host = env.get('CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST') == '1'
@@ -301,7 +301,7 @@ def test_auth_check_failure_never_executes_or_exposes_output(
 ):
     def check(argv, **kwargs):
         if "--version" in argv:
-            return subprocess.CompletedProcess(argv, 0, "2.1.281 (Claude Code)", "")
+            return subprocess.CompletedProcess(argv, 0, "2.1.288 (Claude Code)", "")
         if failure == "timeout":
             raise subprocess.TimeoutExpired(argv, 15, output="synthetic-sensitive-output")
         status = {
@@ -439,7 +439,7 @@ def test_final_exec_boundary_holds_without_leaking_errors(tmp_path, monkeypatch,
 
     def check(argv, **kwargs):
         if "--version" in argv:
-            return subprocess.CompletedProcess(argv, 0, "2.1.281 (Claude Code)", "")
+            return subprocess.CompletedProcess(argv, 0, "2.1.288 (Claude Code)", "")
         if failure == "evidence-expired":
             ledger.unlink()
         return subprocess.CompletedProcess(

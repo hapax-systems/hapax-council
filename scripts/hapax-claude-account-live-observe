@@ -539,7 +539,7 @@ INTERACTIVE_ENV_NAMES = frozenset(
 )
 # CLI whose host-routing effect this producer has actually exercised. An
 # unmeasured version's interpretation of the flag is not an auth boundary.
-INTERACTIVE_VALIDATED_CLI = (2, 1, 281)
+INTERACTIVE_VALIDATED_CLI = (2, 1, 288)
 
 
 def _interactive_credential_admitted(token: str) -> bool:
@@ -644,7 +644,7 @@ def interactive_subscription(argv: list[str], *, execute: bool) -> int:
             or tuple(map(int, version.groups())) != INTERACTIVE_VALIDATED_CLI
         ):
             return hold(
-                "Claude CLI 2.1.281 is the validated host-routing version; other versions "
+                "Claude CLI 2.1.288 is the validated host-routing version; other versions "
                 "require the isolated CLI contract recheck before route admission"
             )
         # Check the installed interpreter's selection with the exact child env
