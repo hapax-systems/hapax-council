@@ -187,7 +187,9 @@ _QUOTA_WALL_MAX_CHARS = 600
 #: wall produces NO review output).
 _QUOTA_WALL_LINE_RE = re.compile(
     r"\A(?:ERROR:\s*)?"
-    r"You(?:'ve| have) hit your (?:weekly|usage|session|5-hour) (?:limit|cap)"
+    # Accept the straight (U+0027) and curly (U+2019) apostrophe: codex 0.160's
+    # TUI prints "You’ve hit your usage limit" with the curly form.
+    r"You(?:['’]ve| have) hit your (?:weekly|usage|session|5-hour) (?:limit|cap)"
     rf"(?:(?:\s+·\s+resets\s+{_RESET_TIME_SHAPE})"
     r"|(?:\.\s+Visit\s+\S+.*(?:purchase more credits|upgrade your plan|try again).*))?"
     r"\Z",
