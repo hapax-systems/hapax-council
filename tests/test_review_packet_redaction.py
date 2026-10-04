@@ -1,11 +1,7 @@
-"""Review-packet redaction of registered personal tokens (review-packet-redacts-scrubbed-pii-lines-20261004).
+"""Review-packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004).
 
-Before a review packet leaves to an external provider, any line carrying a registered principal
-token (local registry, the SAME matcher the pre-push guard uses) is replaced by an opaque
-sha256-keyed marker, so a privacy scrub can be reviewed without re-sending what it removes.
-
-No real name appears in this test: every fixture uses SYNTHETIC tokens passed to the real matcher,
-which is exactly how the redactor runs (tokens come from the registry at runtime, never literals).
+A line carrying a registered principal token is replaced by an opaque sha256-keyed marker before a
+packet leaves. SYNTHETIC tokens only, passed to the real matcher (no real name in any test).
 """
 
 from __future__ import annotations
@@ -129,26 +125,20 @@ def test_empty_text_or_empty_names_is_a_noop():
     assert rt.redact_registered_tokens("some text", []) == ("some text", 0)
 
 
-def test_load_principal_tokens_fails_closed_on_unreadable_registry(monkeypatch):
-    """A registry read failure must raise, so a packet never leaves unredacted (fail-closed)."""
+@pytest.mark.parametrize(
+    ("names_result", "exc"),
+    [
+        # Unreadable registry -> fail closed. Empty-but-readable -> a DISTINCT subclass (seat (e)),
+        # still a PacketRedactionError so every fail-closed catch catches it.
+        (([], "the registry cannot be read"), "PacketRedactionError"),
+        (([], None), "EmptyPrincipalRegistryError"),
+    ],
+)
+def test_load_principal_tokens_fails_closed(monkeypatch, names_result, exc):
     monkeypatch.setattr(
-        rt,
-        "_PRINCIPAL_MATCHER",
-        SimpleNamespace(registry_names=lambda root: ([], "the registry cannot be read")),
+        rt, "_PRINCIPAL_MATCHER", SimpleNamespace(registry_names=lambda root: names_result)
     )
-    with pytest.raises(rt.PacketRedactionError):
-        rt.load_principal_tokens(REPO_ROOT)
-
-
-def test_load_principal_tokens_fails_closed_on_empty_registry(monkeypatch):
-    """A loaded-but-EMPTY registry fails closed too (seat ruling (e)): an empty name set cannot be
-    distinguished from a misconfiguration that silently disables the redactor."""
-    monkeypatch.setattr(
-        rt, "_PRINCIPAL_MATCHER", SimpleNamespace(registry_names=lambda root: ([], None))
-    )
-    # A DISTINCT subclass so the dispatcher can report empty-but-readable apart from unreadable;
-    # still a PacketRedactionError, so every fail-closed catch still catches it.
-    with pytest.raises(rt.EmptyPrincipalRegistryError):
+    with pytest.raises(getattr(rt, exc)):
         rt.load_principal_tokens(REPO_ROOT)
 
 

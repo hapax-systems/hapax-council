@@ -4287,16 +4287,11 @@ def _apply_review(
         route=route,
         allow_local=apply,
     )
-    # Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): before any packet
-    # leaves to an external reviewer, replace every outbound line that carries a registered
-    # principal token (local registry, same matcher as the pre-push guard) with an opaque
-    # sha256-keyed marker, across EVERY outbound packet component — diff, task note, source
-    # excerpts (incl. prior-file/pre-scrub content), PR body, and prior-round criticals — so a
-    # privacy scrub can be reviewed without re-sending what it removes.
-    #
-    # Fail CLOSED with NO off switch (seat ruling 2026-10-04): a privacy redaction's failure
-    # handling narrows, never widens, so there is no env bypass. If a packet cannot be redacted —
-    # the principal-name registry is unreadable or empty — the dispatcher sends NOTHING.
+    # Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): redact every registered
+    # principal token from EVERY outbound component below — diff, task note, source excerpts, PR
+    # body/title, prior criticals — so a privacy scrub is reviewable without re-sending what it
+    # removes. Fail CLOSED, NO off switch (seat ruling): an unreadable or empty registry sends
+    # NOTHING.
     try:
         _principal_tokens = review_team.load_principal_tokens(repo_root)
     except review_team.PacketRedactionError as exc:
@@ -4325,9 +4320,7 @@ def _apply_review(
     reviewer_source_excerpts, _rc_exc = review_team.redact_registered_tokens(
         reviewer_source_excerpts, _principal_tokens
     )
-    # pr_info itself is an outbound component: render_reviewer_prompt emits pr_info.title into the
-    # metadata block, so the title (and body) must be redacted on the object passed, not only the
-    # separate pr_body string. Pass a redacted copy.
+    # pr_info is outbound too: the prompt emits pr_info.title, so redact title+body on a copy.
     redacted_title, _rc_title = review_team.redact_registered_tokens(
         pr_info.title or "", _principal_tokens
     )
@@ -4858,10 +4851,9 @@ def review_artifact(
         encoding="utf-8"
     )
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
-    # Packet redaction also governs the vault-only artifact path (same privacy gate; glm/claude on
-    # #5030): the artifact contents, task note, manifest and lineage all leave to external
-    # reviewers. Fail CLOSED with NO off switch (seat ruling 2026-10-04): if the artifact cannot be
-    # redacted, send nothing.
+    # Packet redaction governs the vault-only path too (#5030 (d)): contents, task note, manifest
+    # and lineage all leave to reviewers. Fail CLOSED, no off switch — if it can't be redacted, send
+    # nothing.
     try:
         _artifact_tokens = review_team.load_principal_tokens()
     except review_team.PacketRedactionError as exc:

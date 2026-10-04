@@ -7343,150 +7343,132 @@ def test_the_budget_marker_is_the_wrappers_own_line_not_a_substring_of_it() -> N
     assert "HTTP 400 upstream rejected the request" in forged["runner_stderr_excerpt"]
 
 
+# --- packet-redaction wiring (review-packet-redacts-scrubbed-pii-lines-20261004) shared helpers ---
+_RTOK = "Zsyntheticregistrant"
+
+
+def _set_tokens(monkeypatch: pytest.MonkeyPatch, tokens: list[str]) -> None:
+    monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: list(tokens))
+
+
+def _set_tokens_raise(monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
+    def _raise(*_a: Any, **_k: Any) -> list[str]:
+        raise exc
+
+    monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _raise)
+
+
+def _diff_with(token: str) -> str:
+    return (
+        "diff --git a/about.md b/about.md\n--- a/about.md\n+++ b/about.md\n"
+        f"-the statement concerning {token} is withdrawn\n"
+    )
+
+
+def _assert_token_absent(invocations: list, token: str) -> None:
+    assert invocations, "expected the packet to be dispatched"
+    for _seat_id, _family, prompt in invocations:
+        assert token not in prompt, "a registered token must never reach an external reviewer"
+
+
 class TestPacketRedactionWiring:
-    """The dispatcher wiring + fail-closed branch for packet redaction
-    (review-packet-redacts-scrubbed-pii-lines-20261004), exercised through the real review_pr path."""
+    """Dispatcher wiring + fail-closed branch, exercised through the real review_pr path."""
 
-    def test_dispatch_fails_closed_and_sends_nothing_when_registry_unreadable(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("exc", "status"),
+        [
+            (
+                dispatch.review_team.PacketRedactionError("x"),
+                "packet_redaction_registry_unreadable",
+            ),
+            (
+                dispatch.review_team.EmptyPrincipalRegistryError("x"),
+                "packet_redaction_registry_empty",
+            ),
+        ],
+    )
+    def test_fails_closed_and_sends_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception, status: str
     ) -> None:
-        def _raise(*_a: Any, **_k: Any) -> list[str]:
-            raise dispatch.review_team.PacketRedactionError("registry unreadable (fixture)")
-
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _raise)
-        reviewers = RecordingReviewers()
-        result, _gh, reviewers, _note = _review(tmp_path, reviewers=reviewers)
-        assert result["status"] == "packet_redaction_registry_unreadable", result
+        # Unreadable and empty-but-readable both send NOTHING, with distinct status codes.
+        _set_tokens_raise(monkeypatch, exc)
+        result, _gh, reviewers, _n = _review(tmp_path, reviewers=RecordingReviewers())
+        assert result["status"] == status, result
         assert reviewers.invocations == [], "no packet may be sent when redaction cannot run"
 
-    def test_dispatch_redacts_a_registered_token_from_every_outbound_prompt(
+    def test_token_in_diff_is_redacted_and_counted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        token = "Zsyntheticregistrant"
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
+        _set_tokens(monkeypatch, [_RTOK])
         gh = FakeGh()
-        gh.diff = (
-            "diff --git a/about.md b/about.md\n"
-            "--- a/about.md\n"
-            "+++ b/about.md\n"
-            f"-the statement concerning {token} is withdrawn\n"
-            "+a neutral replacement line\n"
-        )
-        reviewers = RecordingReviewers()
-        result, _gh, reviewers, _note = _review(tmp_path, gh=gh, reviewers=reviewers)
-        assert reviewers.invocations, "expected the packet to be dispatched"
-        for _seat_id, _family, prompt in reviewers.invocations:
-            assert token not in prompt, "a registered token must never reach an external reviewer"
-        dossier = result.get("dossier") or {}
-        assert dossier.get("packet_redactions", 0) >= 1, result
+        gh.diff = _diff_with(_RTOK)
+        result, _gh, reviewers, _n = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
+        _assert_token_absent(reviewers.invocations, _RTOK)
+        assert (result.get("dossier") or {}).get("packet_redactions", 0) >= 1, result
 
-    def test_redaction_off_env_var_still_redacts(
+    def test_token_in_pr_title_is_redacted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A privacy redaction has NO off switch: the former bypass env var does not disable it."""
-        monkeypatch.setenv("HAPAX_REVIEW_PACKET_REDACTION_OFF", "1")
-        token = "Zsyntheticregistrant"
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
+        # The PR title is emitted into the metadata block; it must be redacted on pr_info.
+        _set_tokens(monkeypatch, [_RTOK])
         gh = FakeGh()
-        gh.diff = (
-            "diff --git a/about.md b/about.md\n"
-            "--- a/about.md\n"
-            "+++ b/about.md\n"
-            f"-the statement concerning {token} is withdrawn\n"
-        )
-        _result, _gh, reviewers, _note = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
-        assert reviewers.invocations, "the env flag must not stop dispatch"
-        for _seat_id, _family, prompt in reviewers.invocations:
-            assert token not in prompt, "the env flag must not disable redaction"
-
-    def test_redaction_off_env_var_does_not_bypass_fail_closed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """With the env var set and the registry unreadable, the dispatcher STILL sends nothing —
-        the flag cannot widen what leaves."""
-        monkeypatch.setenv("HAPAX_REVIEW_PACKET_REDACTION_OFF", "1")
-
-        def _raise(*_a: Any, **_k: Any) -> list[str]:
-            raise dispatch.review_team.PacketRedactionError("registry unreadable (fixture)")
-
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _raise)
-        result, _gh, reviewers, _note = _review(tmp_path, reviewers=RecordingReviewers())
-        assert result["status"] == "packet_redaction_registry_unreadable", result
-        assert reviewers.invocations == [], "the env flag must not bypass fail-closed"
-
-    def test_registered_token_in_the_pr_title_never_reaches_a_seat(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The PR TITLE is an outbound component (rendered into the metadata block): a registered
-        token in it must be redacted on the pr_info passed to the prompt."""
-        token = "Zsyntheticregistrant"
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
-        gh = FakeGh()
-        gh.title = f"Fix the statement about {token}"
-        result, _gh, reviewers, _note = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
-        assert reviewers.invocations, "expected dispatch"
-        for _seat_id, _family, prompt in reviewers.invocations:
-            assert token not in prompt, "a registered token in the PR title must not reach a seat"
+        gh.title = f"Fix the statement about {_RTOK}"
+        _r, _gh, reviewers, _n = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
+        _assert_token_absent(reviewers.invocations, _RTOK)
 
     def test_redaction_survives_a_truncating_diff(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A token in a diff large enough to force truncation is still absent from the packet —
-        redaction runs on the FULL diff before truncate_diff, so a mid-line cut cannot leak it."""
-        token = "Zsyntheticregistrant"
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
-        gh = FakeGh()
-        filler = "".join(f"+filler line {i} with ordinary content\n" for i in range(4000))
+        # Redaction runs on the FULL diff before truncate_diff, so a mid-line cut cannot leak it.
+        _set_tokens(monkeypatch, [_RTOK])
+        filler = "".join(f"+filler line {i} ordinary content\n" for i in range(4000))
         assert len(filler) > dispatch.MAX_DIFF_CHARS, "fixture must exceed the truncation budget"
-        gh.diff = (
-            "diff --git a/about.md b/about.md\n--- a/about.md\n+++ b/about.md\n"
-            + filler
-            + f"-the statement concerning {token} is withdrawn\n"
-        )
-        result, _gh, reviewers, _note = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
-        assert reviewers.invocations, "expected dispatch"
-        for _seat_id, _family, prompt in reviewers.invocations:
-            assert token not in prompt, "a token must not survive a truncating diff"
+        gh = FakeGh()
+        gh.diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n" + filler + f"-about {_RTOK}\n"
+        _r, _gh, reviewers, _n = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
+        _assert_token_absent(reviewers.invocations, _RTOK)
 
-    def test_empty_registry_gets_a_distinct_fail_closed_status(
+    def test_off_switch_env_var_is_inert_still_redacts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An empty-but-readable registry fails closed with a DISTINCT status from an unreadable one."""
+        # A privacy redaction has NO off switch: the former bypass env var does not disable it.
+        monkeypatch.setenv("HAPAX_REVIEW_PACKET_REDACTION_OFF", "1")
+        _set_tokens(monkeypatch, [_RTOK])
+        gh = FakeGh()
+        gh.diff = _diff_with(_RTOK)
+        _r, _gh, reviewers, _n = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
+        _assert_token_absent(reviewers.invocations, _RTOK)
 
-        def _empty(*_a: Any, **_k: Any) -> list[str]:
-            raise dispatch.review_team.EmptyPrincipalRegistryError("registry is empty (fixture)")
-
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _empty)
-        result, _gh, reviewers, _note = _review(tmp_path, reviewers=RecordingReviewers())
-        assert result["status"] == "packet_redaction_registry_empty", result
-        assert reviewers.invocations == []
+    def test_off_switch_env_var_does_not_bypass_fail_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HAPAX_REVIEW_PACKET_REDACTION_OFF", "1")
+        _set_tokens_raise(monkeypatch, dispatch.review_team.PacketRedactionError("x"))
+        result, _gh, reviewers, _n = _review(tmp_path, reviewers=RecordingReviewers())
+        assert result["status"] == "packet_redaction_registry_unreadable", result
+        assert reviewers.invocations == [], "the env flag must not bypass fail-closed"
 
 
 class TestVaultArtifactRedaction:
-    """Build-1 component / #5030 (d): the vault-only artifact path redacts and fails closed too."""
+    """#5030 (d): the vault-only artifact path redacts and fails closed too."""
 
-    def test_vault_artifact_redacts_a_registered_token_from_every_prompt(
+    def test_vault_artifact_redacts_a_registered_token(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        token = "Zsyntheticregistrant"
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
+        _set_tokens(monkeypatch, [_RTOK])
         root, vault, _note, files = _artifact_setup(tmp_path)
-        files[0].write_text(f"# Census\n\na statement concerning {token}\n", encoding="utf-8")
+        files[0].write_text(f"# Census\n\na statement concerning {_RTOK}\n", encoding="utf-8")
         reviewers = RecordingReviewers()
-        kwargs = _artifact_kwargs(tmp_path, vault, root, reviewer_runner=reviewers)
-        result = dispatch.review_artifact("vault-row", files, **kwargs)
-        assert reviewers.invocations, "expected artifact dispatch"
-        for _seat_id, _family, prompt in reviewers.invocations:
-            assert token not in prompt, "a registered token must not reach a seat via the artifact"
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=reviewers)
+        )
+        _assert_token_absent(reviewers.invocations, _RTOK)
         assert (result.get("dossier") or {}).get("packet_redactions", 0) >= 1, result
 
     def test_vault_artifact_fails_closed_and_sends_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _raise(*_a: Any, **_k: Any) -> list[str]:
-            raise dispatch.review_team.PacketRedactionError("registry unreadable (fixture)")
-
-        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _raise)
+        _set_tokens_raise(monkeypatch, dispatch.review_team.PacketRedactionError("x"))
         result, reviewers, _note, _files = _review_artifact(tmp_path)
         assert result["status"] == "packet_redaction_registry_unreadable", result
         assert reviewers.invocations == [], (

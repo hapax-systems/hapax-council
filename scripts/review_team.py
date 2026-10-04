@@ -90,13 +90,13 @@ LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 #: Dossier filename suffix; the dossier lives beside the task note.
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
 
-#: Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004). Before any review packet
-#: leaves to an external provider, every line that carries a registered principal token — read from
-#: the LOCAL registry at runtime by the SAME matcher the pre-push guard uses, never from literals —
-#: is replaced by this marker so a privacy scrub can be reviewed without re-sending what it removes.
+#: Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): any outbound line carrying
+#: a registered principal token (from the LOCAL registry at runtime, via the pre-push guard's own
+#: matcher, never literals) is replaced by this marker, so a privacy scrub can be reviewed without
+#: re-sending what it removes.
 _PACKET_REDACTION_MARKER = "[REDACTED: registered token; line sha256 {digest}]"
-#: The matcher script (hyphenated → loaded by path, not import). registry_names()/matches() live
-#: there and are never re-implemented here (the registry is the single source of truth).
+#: The matcher script (hyphenated → loaded by path); registry_names()/matches() are reused, never
+#: re-implemented.
 _PRINCIPAL_MATCHER_PATH = REPO_ROOT / "scripts" / "check-principal-names-diff.py"
 _PRINCIPAL_MATCHER: Any = None
 
@@ -135,11 +135,9 @@ def _principal_matcher() -> Any:
 
 def load_principal_tokens(repo_root: Path | None = None) -> list[str]:
     """Registered tokens from the local registry via the matcher's own reader. Fail CLOSED: an
-    unreadable/invalid registry raises — and so does a loaded-but-EMPTY one (seat ruling 2026-10-04
-    (e)): a registry with no names cannot be distinguished from a misconfiguration that silently
-    disables redaction, so an empty registry is refused exactly like an unreadable one rather than
-    letting a packet leave with a no-op redactor. The operator-consent killswitch is the only
-    bypass."""
+    unreadable/invalid registry raises, and a loaded-but-EMPTY one raises EmptyPrincipalRegistryError
+    (seat ruling (e)) — an empty name set can't be told from a misconfig that disables the redactor.
+    There is NO bypass."""
     matcher = _principal_matcher()
     names, error = matcher.registry_names(repo_root or REPO_ROOT)
     if error:
@@ -151,9 +149,8 @@ def load_principal_tokens(repo_root: Path | None = None) -> list[str]:
     return names
 
 
-#: Unified-diff STRUCTURE lines (file/hunk headers). They are not added/deleted content, carry no
-#: scrubbed body, and redacting them would corrupt the diff (so a parser/reviewer misreads the
-#: packet). Left intact; only content and prose lines are redacted.
+#: Unified-diff STRUCTURE lines (file/hunk headers): not added/deleted content, and redacting them
+#: would corrupt the diff. Left intact; only content and prose lines are redacted.
 _DIFF_HEADER_PREFIXES = (
     "@@",
     "diff --git",
@@ -182,15 +179,12 @@ def _redact_line(line: str, marker: str) -> str:
 
 
 def redact_registered_tokens(text: str, names: Sequence[str]) -> tuple[str, int]:
-    """Replace every line of ``text`` that carries a registered token with an opaque, sha256-keyed
-    marker, preserving any unified-diff prefix. Returns (redacted_text, redaction_count). Pure: the
-    caller supplies ``names`` (loaded once via load_principal_tokens), so this is testable with
-    synthetic tokens and never embeds a real name. A line with no registered token — and every
-    structural diff header — is passed through unchanged.
+    """Replace every line carrying a registered token with an opaque sha256-keyed marker, preserving
+    any unified-diff prefix; structural headers and token-free lines pass through. Returns
+    (text, count). Pure (caller supplies ``names``), so it is testable with synthetic tokens.
 
-    NOTE on the matcher: it anchors on the registered token being intact within a line. So redaction
-    must run on the FULL text BEFORE any truncation; truncating first can cut a line mid-token and
-    leave a surviving fragment the matcher no longer flags (the dispatcher orders it accordingly)."""
+    The matcher anchors on an intact token, so redaction must run on the FULL text BEFORE truncation
+    (truncating first can sever a line mid-token and leave a fragment) — the dispatcher orders it so."""
     if not text or not names:
         return text, 0
     matcher = _principal_matcher()
