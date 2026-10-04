@@ -1,0 +1,36 @@
+# chatbind container — reuses the estate's existing LiteLLM image, run BESIDE llm-stack
+# (a separate instance, not added to llm-stack's compose; see CHAT-BINDING.md section 10,
+# which keeps ~/llm-stack on its own fate).
+# Task: chatbind-featherless-verboo-proxy-build-and-probes-20261004, CHAT-BINDING.md section 6.
+#
+# Container START/STOP is a SEAT runtime act (fresh-Opus challenge + ISAM line) — this
+# file is authored source only and starts nothing. The two secrets are injected into the
+# process env by the existing secret_env_from_filestore.py pattern (reins k0 FileStore,
+# scripts/secret_env_from_filestore.py) at start time; they are passthrough references
+# here, never inlined, and NEVER read from ~/llm-stack/.env.
+services:
+  chatbind:
+    # Reuse the estate LiteLLM image. SEAT: pin by digest
+    # (ghcr.io/berriai/litellm@sha256:<digest>) at build; the moving tag is shown only for
+    # provenance and must be replaced with the resolved digest before start.
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: chatbind
+    restart: "no"
+    command: ["--config", "/app/config.yaml", "--port", "4100"]
+    # Loopback ONLY — the loopback boundary is the auth boundary (no master key).
+    ports:
+      - "127.0.0.1:4100:4100"
+    volumes:
+      - ./chatbind-config.yaml:/app/config.yaml:ro
+      - ./ledger:/app/ledger
+    # EXACTLY the two FileStore-resolved secrets, passthrough from the process env set by
+    # secret_env_from_filestore.py. No DATABASE_URL, no REDIS, no LANGFUSE, no master key.
+    environment:
+      - FEATHERLESS_API_KEY
+      - VERBOO_API_KEY
+    networks:
+      - chatbind
+
+networks:
+  chatbind:
+    driver: bridge
