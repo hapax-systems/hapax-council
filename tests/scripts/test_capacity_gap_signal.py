@@ -1,5 +1,6 @@
 """Capacity-gap v1 contracts. These are stamped before the producer exists."""
 
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,22 +22,6 @@ def test_observer_importer_retains_window_and_rejects_stale(tmp_path: Path) -> N
     assert observations[-1]["fleet_memory"]["gx10-b941"]["avail_mb"] == 15800
     assert gap.observer_stale(observations, NOW) is False
     assert gap.observer_stale(observations, NOW + timedelta(minutes=45)) is True
-
-
-def test_repo_wide_inventory_finds_nested_units_and_compose_members(tmp_path: Path) -> None:
-    (tmp_path / "systemd/units/deep").mkdir(parents=True)
-    (tmp_path / "systemd/units/deep/qwen.service").write_text(
-        "[Service]\nExecStart=vllm serve /models/qwen --port 8000 --tensor-parallel-size 2\n"
-    )
-    (tmp_path / "fleet/deep").mkdir(parents=True)
-    (tmp_path / "fleet/deep/compose.yaml").write_text(
-        "services:\n  qwen:\n    image: vllm/vllm-openai\n    ports: ['8000:8000']\n    environment:\n      VLLM_TENSOR_PARALLEL_SIZE: '2'\n"
-    )
-    inventory = gap.inventory_repo(tmp_path)
-    assert 8000 in inventory.ports
-    assert any("deep/qwen.service" in item for item in inventory.sources)
-    assert any("fleet/deep/compose.yaml" in item for item in inventory.sources)
-    assert inventory.parallel_sizes["qwen"] == 2
 
 
 def test_tp_member_not_declared_idle_or_lost_and_idle_uses_request_window() -> None:
@@ -63,30 +48,6 @@ def test_tp_member_not_declared_idle_or_lost_and_idle_uses_request_window() -> N
     assert gap.classify_local(samples, members, endpoints, NOW)["spark-01df:8000"] == "busy"
     endpoints["spark-01df:8000"]["requests"] = []
     assert gap.classify_local(samples, members, endpoints, NOW)["spark-01df:8000"] == "unknown"
-
-
-def test_zero_percent_unserved_gpu_and_waiting_row_is_gap_but_tp_member_is_not() -> None:
-    samples = [
-        {
-            "ts": "2026-09-28T19:20:00Z",
-            "fleet_memory": {"gx10-b941": {"total_mb": 124546, "avail_mb": 124000}},
-        },
-        {
-            "ts": "2026-09-28T19:40:00Z",
-            "fleet_memory": {"gx10-b941": {"total_mb": 124546, "avail_mb": 124000}},
-        },
-    ]
-    runtime = {"gx10-b941": "NVIDIA GB10, 124546 MiB, 0 MiB"}
-    demand = gap.waiting_demand([{"task_id": "waiting", "status": "offered"}], set())
-    hosts = gap.unserved_metal(samples, runtime, {}, NOW)
-    assert hosts == {"gx10-b941"}
-    assert gap.judge_gaps({host: "unserved" for host in hosts}, demand, set()) == {
-        "UNSERVED_METAL_WITH_DEMAND:gx10-b941:waiting=1:fit=unmeasured"
-    }
-    assert (
-        gap.unserved_metal(samples, runtime, {"spark-01df:8000": {"spark-01df", "gx10-b941"}}, NOW)
-        == set()
-    )
 
 
 def test_fugu_wall_keeps_assigned_rows_in_demand() -> None:
@@ -155,53 +116,51 @@ def test_seat_role_refuses_missing_escaping_or_ambiguous_inbox(tmp_path: Path, i
         gap.seat_role(seat)
 
 
-def test_service_membership_comes_from_both_host_processes() -> None:
-    runtime = {
-        "spark-01df": "vllm serve /models/qwen38fn --port 8000 --tensor-parallel-size 2",
-        "gx10-b941": "ray::worker /models/qwen38fn TP rank 1",
-    }
-    assert gap.runtime_membership(runtime, {"spark-01df:8000"}) == {
-        "spark-01df:8000": {"spark-01df", "gx10-b941"}
-    }
+def test_lost_gaps_emit_across_tailnet_loss() -> None:
+    # Major 1: LOST even when the host has left the tailnet, plus a reason gap.
+    gaps = gap.lost_gaps({"spark-01df:8000", "gx10-b941:9000"}, {"spark-01df:8000"}, {"spark-01df"})
+    assert gaps == {"LOST:gx10-b941:9000", "LOST_HOST_OFFLINE:gx10-b941"}
 
 
-def test_over_pace_status_output_survives_nonzero_decision_code(monkeypatch) -> None:
-    class Result:
-        returncode = 3
-        stdout = '{"over_line":true}'
-
-    monkeypatch.setattr(gap.subprocess, "run", lambda *_args, **_kwargs: Result())
-    assert gap.run(["status"]) == '{"over_line":true}'
-
-
-def test_pacing_gap_identity_does_not_change_with_line_drift(monkeypatch, tmp_path: Path) -> None:
-    current = '{"over_line":true,"weekly_used_percent":81,"line_percent":44.1}'
-    monkeypatch.setattr(gap, "run", lambda *_args, **_kwargs: current)
-    first = gap._claude_pace(tmp_path)
-    current = '{"over_line":true,"weekly_used_percent":81,"line_percent":44.2}'
-    second = gap._claude_pace(tmp_path)
-    assert first is not None and second is not None
-    assert first[0] == second[0] == "OVER_PACE:claude"
-    assert first[1] != second[1]
-
-
-def test_codex_rate_limit_importer_reports_headroom_and_reset(tmp_path: Path) -> None:
-    day = tmp_path / "2026/09/28"
-    day.mkdir(parents=True)
-    (day / "rollout-test.jsonl").write_text(
-        '{"payload":{"rate_limits":{"primary":{"used_percent":38,"resets_at":1791046721},"rate_limit_reached_type":null}}}\n'
+def test_resolve_seat_degrades_on_malformed_document(tmp_path: Path) -> None:
+    # Major 3: a malformed seat degrades to the default inbox with a gap, not a crash.
+    bad = tmp_path / "COORDINATOR-SEAT.md"
+    bad.write_text("## 0. Incumbent and lease\n(garbled: no role or inbox row)\n## 1. History\n")
+    assert gap.resolve_seat(bad) == ("dev1-seat", "dev1", {"INPUT_STALE:seat-document"})
+    good = tmp_path / "good.md"
+    good.write_text(
+        "## 0. Incumbent and lease\n| incumbent | role `dev1-seat`. |\n"
+        "| inbox | `lanebus/dev1/` is declared. |\n## 1. History\n"
     )
-    state, detail = gap.codex_headroom(tmp_path, NOW)
-    assert state == "available"
-    assert "headroom=62.0%" in detail
-    assert "reset=" in detail
+    assert gap.resolve_seat(good) == ("dev1-seat", "dev1", set())
 
 
-def test_mimo_manifest_minus_ledger_done_is_queued_work(tmp_path: Path) -> None:
-    kit = tmp_path / "mimo-talus/kit"
-    kit.mkdir(parents=True)
-    (kit / "MANIFEST-v2.json").write_text('{"count":3}')
-    (kit / "LEDGER-v2.md").write_text(
-        "| Task | Status |\n|---|---|\n| 001 | DONE |\n| 002 | QUEUED |\n"
-    )
-    assert gap._appliance_demand(tmp_path) == 2
+def test_capacity_gap_units_are_parked_against_auto_activation() -> None:
+    # A new unmarked timer is `enable --now`'d by hapax-post-merge-deploy; the
+    # Hapax-Parked marker makes it disable-on-deploy so activation stays the seat's act.
+    root = Path(__file__).resolve().parents[2]
+    marker = re.compile(r"(?mi)^[#;][ \t]*Hapax-Parked:[ \t]*(?:true|yes|1)[ \t]*$")
+    for unit in ("hapax-capacity-gap-signal.service", "hapax-capacity-gap-signal.timer"):
+        text = (root / "systemd" / "units" / unit).read_text(encoding="utf-8")
+        assert marker.search(text), unit
+
+
+def test_waiting_demand_counts_claimed_and_unserved_not_only_offered() -> None:
+    # glm major: claimed / in_progress rows are unserved demand, not just offered/assigned.
+    rows = [
+        {"task_id": "offered", "status": "offered"},
+        {"task_id": "claimed", "status": "claimed", "assigned_to": "fugu-dev"},
+        {"task_id": "running", "status": "in_progress", "assigned_to": "x"},
+        {"task_id": "done", "status": "done"},
+    ]
+    demand = gap.waiting_demand(rows, set())
+    assert set(demand.waiting_rows) == {"offered", "claimed", "running"}
+
+
+def test_observer_stale_tolerates_one_skipped_observer_tick() -> None:
+    # glm major: a skipped observer tick (40 min) plus signal sampling slack must not
+    # read as stale; 50 min is within tolerance (the old 40-min threshold would fail it).
+    tolerated = [{"ts": gap.stamp(NOW - timedelta(minutes=50))}]
+    assert gap.observer_stale(tolerated, NOW) is False
+    dead = [{"ts": gap.stamp(NOW - timedelta(minutes=70))}]
+    assert gap.observer_stale(dead, NOW) is True

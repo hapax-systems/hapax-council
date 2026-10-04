@@ -22,10 +22,14 @@ import yaml
 OBSERVER_PERIOD = timedelta(minutes=20)
 CYCLE = timedelta(minutes=15)
 STALE_AFTER = OBSERVER_PERIOD * 2
+# Tolerate one skipped observer tick plus a signal cycle before crying stale.
+OBSERVER_STALE_AFTER = OBSERVER_PERIOD * 2 + CYCLE
 REQUEST_WINDOW = timedelta(minutes=15)
+TERMINAL_STATUSES = {"done", "closed", "cancelled", "abandoned"}
 PORT_RE = re.compile(r"(?<!\d)(?:--port[= ]|localhost:|127\.0\.0\.1:|['\"])(\d{4,5})(?!\d)")
 RUNTIME_PORT_RE = re.compile(r"(?:--port[= ]|:[ ]?|^)(\d{4,5})(?:/tcp|\b)")
 ROUTE_ENDPOINT_RE = re.compile(r"https?://[A-Za-z0-9.-]+:(\d{4,5})")
+ROUTE_ENDPOINT_HOSTPORT_RE = re.compile(r"https?://([A-Za-z0-9.-]+):(\d{4,5})")
 PARALLEL_RE = re.compile(r"(?:--tensor-parallel-size[= ]|VLLM_TENSOR_PARALLEL_SIZE[^\d]*)(\d+)")
 MODEL_RE = re.compile(r"(?:/models/|--model[= ])([A-Za-z0-9_.-]+)")
 HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,99}")
@@ -60,7 +64,7 @@ def load_observations(path: Path, now: datetime) -> list[dict[str, Any]]:
 
 
 def observer_stale(observations: list[dict[str, Any]], now: datetime) -> bool:
-    return not observations or now - instant(observations[-1]["ts"]) > STALE_AFTER
+    return not observations or now - instant(observations[-1]["ts"]) > OBSERVER_STALE_AFTER
 
 
 @dataclass
@@ -272,12 +276,11 @@ def waiting_demand(rows: list[dict[str, Any]], walled_families: set[str]) -> Dem
             continue
         status = str(row.get("status") or "")
         assigned = str(row.get("assigned_to") or "").lower()
-        if status == "offered" or (
-            assigned not in {"", "unassigned", "none"} and status in {"assigned", "offered"}
-        ):
+        # Every not-yet-served status is waiting demand, not only offered/assigned.
+        if status and status not in TERMINAL_STATUSES:
             demand.waiting_rows.append(task_id)
         for family in walled_families:
-            if family in assigned and status not in {"done", "closed", "cancelled", "abandoned"}:
+            if family in assigned and status not in TERMINAL_STATUSES:
                 demand.walled_rows.setdefault(family, []).append(task_id)
     return demand
 
@@ -516,6 +519,28 @@ def seat_role(seat_document: Path) -> tuple[str, str]:
     return role, inbox.group(1)
 
 
+def resolve_seat(seat_document: Path) -> tuple[str, str, set[str]]:
+    """Resolve the seat recipient/inbox, degrading to the default coordinator inbox
+    with a reported gap rather than crashing the cycle on a malformed document."""
+    try:
+        recipient, inbox_name = seat_role(seat_document)
+        return recipient, inbox_name, set()
+    except (OSError, ValueError):
+        return "dev1-seat", "dev1", {"INPUT_STALE:seat-document"}
+
+
+def lost_gaps(known: set[str], answering: set[str], online: set[str]) -> set[str]:
+    """Predicate clause (1): a registered endpoint that stops answering is LOST
+    regardless of tailnet presence; a departed host is its own reason gap."""
+    gaps: set[str] = set()
+    for key in known - answering:
+        gaps.add(f"LOST:{key}")
+        host = key.split(":", 1)[0]
+        if host not in online:
+            gaps.add(f"LOST_HOST_OFFLINE:{host}")
+    return gaps
+
+
 def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     state = _state(args.state)
     observations = load_observations(args.observer, now)
@@ -566,7 +591,13 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     states.update(
         {host: "unserved" for host in unserved_metal(observations, runtime, members, now)}
     )
+    registered_text = args.routing.read_text(encoding="utf-8") if args.routing.is_file() else ""
     known = set(state.get("known_endpoints") or [])
+    # Seed from the routing table so a registered endpoint that was never seen
+    # answering still emits LOST after state loss, a rename, or a first deploy.
+    known |= {
+        f"{host}:{port}" for host, port in ROUTE_ENDPOINT_HOSTPORT_RE.findall(registered_text)
+    }
     states = {key: value for key, value in states.items() if value != "lost" or key in known}
     quota = _subscribed_state(args.quota_ledger, now)
     codex_state, codex_detail = codex_headroom(args.codex_sessions, now)
@@ -586,7 +617,6 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     demand = waiting_demand(rows, walled)
     demand.review_queue, demand.writer_queue = _pr_demand()
     demand.appliance_queue = _appliance_demand(args.lanebus)
-    registered_text = args.routing.read_text(encoding="utf-8") if args.routing.is_file() else ""
     registered = {name for name in tailnet if name in registered_text}
     discovered = {
         host
@@ -602,9 +632,7 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
         models = endpoints[endpoint].get("models") or []
         if any(model not in registered_text for model in models):
             gaps.add(f"UNREGISTERED:{endpoint}:{','.join(sorted(models))}")
-    for key in known - answering:
-        if key.split(":", 1)[0] in online:
-            gaps.add(f"LOST:{key}")
+    gaps |= lost_gaps(known, answering, online)
     if stale:
         gaps.add("INPUT_STALE:capacity-observer")
     if not tailnet:
@@ -624,7 +652,8 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
     state["known_endpoints"] = sorted(known | answering)
     _write_state(args.state, state)
     detail = f"Waiting rows: {len(demand.waiting_rows)}; review queue: {demand.review_queue}; writer queue: {demand.writer_queue}; MiMo queued work: {demand.appliance_queue}. {codex_detail}. {pace[1] if pace else 'Claude pace=within line or unknown'}. Endpoint fit remains unmeasured unless a work-spec profile supplies it. TP membership: {json.dumps({key: sorted(value) for key, value in members.items()}, sort_keys=True)}"
-    recipient, inbox_name = seat_role(args.seat_document)
+    recipient, inbox_name, seat_gaps = resolve_seat(args.seat_document)
+    gaps |= seat_gaps
     deliver(gaps, args.state, args.lanebus / inbox_name, now, detail, recipient=recipient)
     return gaps
 

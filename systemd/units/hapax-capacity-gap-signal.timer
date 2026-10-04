@@ -1,3 +1,4 @@
+# Hapax-Parked: true
 [Unit]
 Description=Judge capacity gaps every 15 minutes
 
