@@ -11922,6 +11922,39 @@ def test_routed_base_evidence_reaches_queue_governance(
             ):
                 self.calls.append(list(cmd))
                 return subprocess.CompletedProcess(cmd, 1, "", "API rate limit exceeded")
+            if cmd[:3] == ["gh", "api", "graphql"] and any("rulesets" in arg for arg in cmd):
+                # On a GraphQL-routed cycle the rulesets read is served over GraphQL too
+                # (github-rest-hourly-budget-exhausted-by-estate-20261004): same ruleset as
+                # the REST path, in repository.rulesets shape (enum-cased), rules inline.
+                self.calls.append(list(cmd))
+                payload = {
+                    "data": {
+                        "repository": {
+                            "rulesets": {
+                                "nodes": [
+                                    {
+                                        "databaseId": 16186443,
+                                        "name": "main-merge-queue",
+                                        "enforcement": "ACTIVE",
+                                        "target": "BRANCH",
+                                        "rules": {
+                                            "nodes": [
+                                                {
+                                                    "type": "MERGE_QUEUE",
+                                                    "parameters": {
+                                                        "__typename": "MergeQueueParameters",
+                                                        "mergeMethod": "SQUASH",
+                                                    },
+                                                }
+                                            ]
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
             return super().__call__(cmd, **kwargs)
 
         @staticmethod

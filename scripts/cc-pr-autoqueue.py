@@ -66,6 +66,7 @@ from github_pr_status import (  # noqa: E402
     RestIndeterminateError,
     _pull_status_row_from_rest,
     _rest_get_json,
+    _rulesets_graphql,
     choose_transport,
     fetch_status_check_rollup_rest,
     get_pr_status_graphql,
@@ -126,6 +127,14 @@ KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 EXPECTED_MERGE_METHOD_OVERRIDE_ENV = "HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD"
 OVERRIDE_CONTRADICTION_PREFIX = "auto_merge_method_override_contradicts_queue_governance:"
 TRANSIENT_TRANSPORT_UNVERIFIED_PREFIX = "auto_merge_method_unverified:transient_transport:"
+# The GraphQL->REST fallback (when GraphQL is CHOSEN for load-balancing and then fails) may only
+# spend REST when header-measured REST remaining is at or above this conservative floor -- set
+# deliberately ABOVE the 500 routing floor so a failed load-balancing read cannot silently drain the
+# shared budget down to the routing floor. This is the "(3)-lite" guard for
+# github-rest-hourly-budget-exhausted-by-estate-20261004; full remaining/reset surfacing is the
+# task's deferred item (3). Override: HAPAX_GITHUB_GRAPHQL_FALLBACK_REST_MIN.
+GRAPHQL_FALLBACK_REST_MIN_REMAINING_ENV = "HAPAX_GITHUB_GRAPHQL_FALLBACK_REST_MIN"
+DEFAULT_GRAPHQL_FALLBACK_REST_MIN_REMAINING = 1000
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
@@ -796,13 +805,60 @@ def fetch_merge_queue_merge_method(
 ) -> tuple[str | None, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    ok, rulesets, message = _gh_api_get_json(
-        f"repos/{repo}/rulesets",
-        repo_root=repo_root,
-        runner=runner,
+    # Load-balance the rulesets read across REST and GraphQL by measured HEADER headroom
+    # (choose_transport), diverting BEFORE the call so a REST-core exhaustion no longer yields
+    # rulesets_fetch_failed while GraphQL sits idle
+    # (github-rest-hourly-budget-exhausted-by-estate-20261004). The REST branch is unchanged;
+    # the GraphQL branch returns rulesets with rules inline (one query, no REST detail fetch).
+    # One snapshot, shared by the routing decision and the fallback below, so both read the
+    # same measured headroom under the same floor (no second, possibly-disagreeing measurement).
+    snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
+    transport, route_reason = choose_transport(
+        repo_root=repo_root, runner=runner, snapshot=snapshot
     )
-    if not ok:
-        return None, f"rulesets_fetch_failed:{message}"
+    if transport is None:
+        # Both pools measured below floor: hold with the reason rather than spend into a
+        # doomed pool. Keep the `rulesets_fetch_failed:` prefix so the transient-transport
+        # retry path (`:~640`) still recognises it.
+        return None, f"rulesets_fetch_failed:{route_reason}"
+    if transport == "graphql":
+        rulesets, gql_reason = _rulesets_graphql(repo, repo_root=repo_root, runner=runner)
+        if rulesets is None:
+            # GraphQL can be CHOSEN for load-balancing while REST is still healthy, so a GraphQL
+            # failure here (e.g. a parameters-union schema miss -> rc!=0) must not hard-fail and
+            # re-create the rulesets_fetch_failed arming stall this task exists to fix. Fall back
+            # to REST -- but only when header-measured REST remaining is at or above the
+            # conservative fallback floor (default 1000, above the 500 routing floor), so the
+            # fallback cannot silently drain the shared budget. Below it, HOLD with a reason
+            # (never spend a near-exhausted pool). Read from the SAME snapshot the chooser saw.
+            override = _int_or_none(os.environ.get(GRAPHQL_FALLBACK_REST_MIN_REMAINING_ENV))
+            fallback_floor = (
+                DEFAULT_GRAPHQL_FALLBACK_REST_MIN_REMAINING
+                if override is None
+                else max(0, override)
+            )
+            rest_block = rest_pool_blocked(snapshot, min_remaining=fallback_floor)
+            if rest_block is not None:
+                return None, (
+                    f"rulesets_fetch_failed:graphql_failed_rest_below_fallback_floor:"
+                    f"graphql={gql_reason};rest={rest_block};"
+                    f"next=wait_for_graphql_reset_then_retry"
+                )
+            ok, rulesets, message = _gh_api_get_json(
+                f"repos/{repo}/rulesets",
+                repo_root=repo_root,
+                runner=runner,
+            )
+            if not ok:
+                return None, f"rulesets_fetch_failed:{message}"
+    else:
+        ok, rulesets, message = _gh_api_get_json(
+            f"repos/{repo}/rulesets",
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if not ok:
+            return None, f"rulesets_fetch_failed:{message}"
     if not isinstance(rulesets, list):
         return None, f"rulesets_payload_not_list:{type(rulesets).__name__}"
 
