@@ -5460,3 +5460,19 @@ _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
 from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
 
 _EnvelopeOpenWatch.overflowed
+
+# resource_state_producer (estate-resource-state-determinative-projection-20261004): the extensionless
+# scripts/hapax-resources reader calls build_bundle + resource_summary_for_boundary (vulture scans
+# Python suffixes only and cannot see that caller), and claim_cites_fresh_resource_fact is the
+# D-011/OFP enforcement predicate wired at dispatch + the fresh-challenge in the consumer slice.
+from shared.resource_state_producer import (  # noqa: E402
+    build_bundle as _rsp_build_bundle,
+)
+from shared.resource_state_producer import (
+    claim_cites_fresh_resource_fact as _rsp_claim_cites_fresh_resource_fact,
+)
+from shared.resource_state_producer import (
+    resource_summary_for_boundary as _rsp_resource_summary_for_boundary,
+)
+
+_ = (_rsp_build_bundle, _rsp_resource_summary_for_boundary, _rsp_claim_cites_fresh_resource_fact)

@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""hapax-resources — the one read point for estate resource state.
+
+A THIN reader over the resource-state producer + reins_context projection. It builds the
+reins_context_fact_bundle from the latest read-only observation (hapax-capacity-observer) joined with
+the E1 entitlement surface and the kimi-bench usage ledger, then prints the boundary summary (default)
+or the full per-audience projection (--json). It is not a second store or a new projection engine:
+the projection is reins_context.project(); this script only assembles inputs and renders.
+
+Usage:
+  hapax-resources              # boundary summary (BCA: what SessionStart/reset would deliver)
+  hapax-resources --json       # full operator_private projection as JSON
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import UTC, datetime
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+
+from shared import resource_state_producer as rsp  # noqa: E402
+
+OBS = os.path.expanduser(
+    os.environ.get("HAPAX_CAPACITY_OBS", "~/.cache/hapax/capacity-observations.jsonl")
+)
+SURFACE = os.path.expanduser(
+    "~/Documents/Personal/30-areas/hapax/frame/entitlement-surface-20261004/SURFACE.json"
+)
+KIMI_LEDGER = os.path.expanduser(
+    os.environ.get("HAPAX_KIMI_BENCH_LEDGER", "~/.cache/hapax/kimi-spawns/kimi-bench/ledger.jsonl")
+)
+
+
+def _latest_observation() -> dict:
+    try:
+        lines = [line for line in open(OBS, encoding="utf-8").read().splitlines() if line.strip()]
+        return json.loads(lines[-1]) if lines else {}
+    except OSError:
+        return {}
+
+
+def _surface() -> dict | None:
+    try:
+        return json.load(open(SURFACE, encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _kimi_usage() -> list[dict] | None:
+    try:
+        return [
+            json.loads(line)
+            for line in open(KIMI_LEDGER, encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
+    except OSError:
+        return None
+
+
+def main(argv: list[str]) -> int:
+    bundle = rsp.build_bundle(
+        observation=_latest_observation(),
+        surface=_surface(),
+        kimi_usage=_kimi_usage(),
+        now=datetime.now(UTC),
+    )
+    if "--json" in argv[1:]:
+        try:
+            reins_api = os.path.expanduser("~/projects/reins/api")
+            if reins_api not in sys.path:
+                sys.path.insert(0, reins_api)
+            import reins_context  # noqa: PLC0415
+
+            print(json.dumps(reins_context.project(bundle, "operator_private"), indent=1))
+        except Exception:  # noqa: BLE001 — reader must not fabricate; fall back to the raw bundle
+            print(json.dumps(bundle, indent=1))
+        return 0
+    print(rsp.resource_summary_for_boundary(bundle))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

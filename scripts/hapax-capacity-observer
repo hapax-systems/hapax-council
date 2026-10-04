@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# hapax-capacity-observer — append one JSON line of estate capacity state (read-only).
+#
+# Brought into council source and extended for the resource-state producer
+# (estate-resource-state-determinative-projection-20261004): per-card VRAM (total/used/free/util),
+# loaded models from /v1/models per endpoint, per-host fleet memory, with hearth hosts classed
+# separately. It records only ALREADY-OBSERVABLE state and never invokes a paid model, so running it
+# costs nothing. shared/resource_state_producer.py reduces its output to reins_context facts.
+set -uo pipefail
+OUT="${HAPAX_CAPACITY_OBS:-$HOME/.cache/hapax/capacity-observations.jsonl}"
+mkdir -p "$(dirname "$OUT")"
+python3 - "$OUT" <<'PY'
+import datetime
+import glob
+import json
+import os
+import subprocess
+import sys
+import time
+
+out = sys.argv[1]
+now = datetime.datetime.now(datetime.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+HEARTH_HOSTS = {"beelink1"}
+FLEET = ("gx10-b941", "spark-01df", "beelink1", "evo-x2", "evo-x2-2", "hapax-podium")
+ENDPOINTS = (5000, 5001, 8000, 11434)
+
+
+def sh(c, t=25):
+    try:
+        return subprocess.run(c, shell=True, capture_output=True, text=True, timeout=t).stdout.strip()
+    except Exception:
+        return ""
+
+
+rec = {"ts": now}
+
+# admission receipt freshness per route (free)
+rr = os.path.expanduser("~/.cache/hapax/relay/receipts")
+fresh = {}
+for pat, key in (
+    ("claude-subscription-quota-admission-*", "claude"),
+    ("agy-quota-admission-*", "agy"),
+    ("glmcp-quota-admission-*", "glm"),
+    ("codex-*admission*", "codex"),
+):
+    fs = sorted(glob.glob(os.path.join(rr, pat)), key=os.path.getmtime, reverse=True)
+    fresh[key] = {"newest_age_s": int(time.time() - os.path.getmtime(fs[0])) if fs else None, "count": len(fs)}
+rec["admission_receipts"] = fresh
+
+# lanes + claude procs
+rec["lanes"] = [s for s in sh("tmux ls -F '#{session_name}' 2>/dev/null").splitlines() if s]
+rec["claude_procs"] = len([_ for _ in sh("pgrep -af 'npm-global/bin/claude' || true").splitlines() if _])
+
+# local GPUs: name,total,used (back-compat line) PLUS per-card detail (the per-card-VRAM fix)
+rec["gpus"] = [
+    line for line in sh(
+        "nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv,noheader 2>/dev/null"
+    ).splitlines() if line
+]
+rec["gpus_percard"] = [
+    line for line in sh(
+        "nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu "
+        "--format=csv,noheader 2>/dev/null"
+    ).splitlines() if line
+]
+
+# fleet memory (hearth classed separately)
+fleet = {}
+for h in FLEET:
+    o = sh(
+        f"timeout 8 ssh -o BatchMode=yes -o ConnectTimeout=5 {h} "
+        f"\"free -m | awk '/Mem:/{{print \\$2\\\",\\\"\\$7}}'\" 2>/dev/null", 12
+    )
+    entry = {"owner": "hearth" if h in HEARTH_HOSTS else "hapax"}
+    if o and "," in o:
+        t, a = o.split(",")[:2]
+        try:
+            entry.update(total_mb=int(t), avail_mb=int(a))
+        except ValueError:
+            entry["raw"] = o
+        fleet[h] = entry
+    else:
+        fleet[h] = None  # unreachable -> DARK in the producer
+rec["fleet_memory"] = fleet
+
+# local serving endpoints: alive flag + loaded model ids (the WHY join reads these)
+endpoints = {}
+loaded = {}
+for p in ENDPOINTS:
+    body = sh(f"curl -s -m 4 http://localhost:{p}/v1/models 2>/dev/null", 8)
+    endpoints[str(p)] = bool(body)
+    try:
+        loaded[str(p)] = [m.get("id") for m in (json.loads(body).get("data") or [])][:8] if body else []
+    except Exception:
+        loaded[str(p)] = []
+rec["local_endpoints"] = endpoints
+rec["loaded_models"] = loaded
+
+with open(out, "a", encoding="utf-8") as f:
+    f.write(json.dumps(rec) + "\n")
+print(f"capacity-observer: appended {now}")
+PY

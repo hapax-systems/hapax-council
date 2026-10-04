@@ -1,0 +1,17 @@
+[Unit]
+Description=Append one read-only estate capacity observation (per-card VRAM, loaded models, fleet memory) for the resource-state producer
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-capacity-observer
+
+[Service]
+Type=oneshot
+# Read-only: records already-observable state only; never invokes a paid model (costs nothing).
+# Its output (~/.cache/hapax/capacity-observations.jsonl) is the producer's primary input.
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-capacity-observer
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-capacity-observer
+MemoryMax=256M
+TimeoutStartSec=120
