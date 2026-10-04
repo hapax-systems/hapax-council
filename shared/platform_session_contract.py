@@ -12,8 +12,9 @@ import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -28,6 +29,76 @@ class PlatformSessionContractError(ValueError):
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+ControlId = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,255}$")]
+
+
+class CoordinatorIdentity(StrictModel):
+    """Instance binding supplied by the managed seat, never inferred from a PID."""
+
+    seat_id: ControlId
+    task_id: ControlId
+    claim_session_id: ControlId
+    claim_epoch: int = Field(gt=0, strict=True)
+    runtime_id: ControlId
+    native_version: ControlId
+    thread_id: ControlId
+
+
+class CoordinatorControlRequest(StrictModel):
+    """One bounded control. Text is private; ids alone do not confer authority."""
+
+    actor_id: ControlId
+    identity: CoordinatorIdentity
+    operation: Literal["observe", "start_turn", "steer", "interrupt"]
+    expected_turn_id: ControlId | None
+    item_id: ControlId
+    attempt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    text: str = Field(default="", max_length=16384, repr=False, exclude=True)
+
+
+class CoordinatorControlResult(StrictModel):
+    """SESSION bus receipt; acknowledgment is not semantic use or turn completion."""
+
+    op: Literal["coordinator_control"] = "coordinator_control"
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    actor_id: ControlId
+    identity: CoordinatorIdentity
+    operation: Literal["observe", "start_turn", "steer", "interrupt"]
+    expected_turn_id: ControlId | None
+    item_id: ControlId
+    attempt_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    outcome: Literal["attempted", "acknowledged", "refused", "uncertain"]
+    reason: ControlId
+    turn_id: ControlId | None = None
+
+
+class CoordinatorObservation(StrictModel):
+    """Bounded control observation, not a transcript or AIR/context projection."""
+
+    identity: CoordinatorIdentity
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    kind: Literal["initialized", "thread", "turn", "item", "unsupported"]
+    turn_id: ControlId | None = None
+    item_id: ControlId | None = None
+    state: ControlId
+
+
+class SessionControlPort(Protocol):
+    """Policy consumes an installed port; it never constructs machine authority."""
+
+    def control(self, request: CoordinatorControlRequest) -> CoordinatorControlResult: ...
+
+
+def request_digest(request: CoordinatorControlRequest) -> str:
+    """Bind every control field and the full private text without retaining text."""
+    if type(request) is not CoordinatorControlRequest:
+        raise ValueError("exact coordinator request required")
+    value = request.model_dump(mode="json")
+    value["text_sha256"] = sha256(request.text.encode()).hexdigest()
+    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class LifecycleState(StrEnum):

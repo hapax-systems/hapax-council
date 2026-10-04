@@ -5460,3 +5460,11 @@ _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
 from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
 
 _EnvelopeOpenWatch.overflowed
+
+# reins-session-adapter-20261003 slice A producers; consumed by slice C's adapter
+# (shared/capability_adapter_protocol.py). Remove this bridge when slices B and C land.
+from shared.codex_session_transport import CodexSessionTransport as _reins_tx  # noqa: E402
+from shared.platform_session_contract import SessionControlPort as _reins_port  # noqa: E402
+
+_reins_tx._control
+_ = _reins_port
