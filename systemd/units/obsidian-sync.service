@@ -1,12 +1,16 @@
 [Unit]
 Description=Obsidian vault sync
 OnFailure=notify-failure@%n.service
-# Defect 2 (vault-nfs-mount-boot-race-and-gate-fail-closed-20261003): require the vault
-# mount so sync fails cleanly rather than operating on an unmounted mount point.
-RequiresMountsFor=%h/Documents/Personal
+# Defect 2 (vault-nfs-mount-boot-race-and-gate-fail-closed-20261003): a USER unit cannot order
+# against the SYSTEM vault .mount — RequiresMountsFor binds to nothing in the user manager — so
+# the vault-presence check moves to an ExecCondition marker probe in [Service] (below).
 
 [Service]
 Type=oneshot
+# Skip CLEANLY (condition-not-met, not a failure) when the vault is unmounted/absent, so no
+# writer touches a boot-race shadow directory: a real vault root carries .git or .obsidian (the
+# defect-3 marker a shadow writer never creates); a shadow directory carries neither.
+ExecCondition=/bin/sh -c 'test -e %h/Documents/Personal/.git || test -e %h/Documents/Personal/.obsidian'
 WorkingDirectory=/home/hapax/projects/hapax-council
 ExecStartPre=/home/hapax/.local/bin/hapax-env-setup
 ExecStart=/home/hapax/.local/bin/uv run python -m agents.obsidian_sync --auto

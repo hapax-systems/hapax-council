@@ -15,6 +15,22 @@ from pathlib import Path
 UNITS_DIR = Path(__file__).resolve().parents[2] / "systemd" / "units"
 MOUNT = UNITS_DIR / "home-hapax-Documents-Personal.mount"
 AUTOMOUNT = UNITS_DIR / "home-hapax-Documents-Personal.automount"
+# The user-manager vault writers that must skip cleanly when the vault is absent.
+VAULT_WRITERS = (
+    UNITS_DIR / "obsidian-sync.service",
+    UNITS_DIR / "vault-context-writer.service",
+    UNITS_DIR / "vault-git-snapshot.service",
+)
+
+
+def _directives(path: Path) -> list[str]:
+    """Non-comment, non-blank directive lines — so assertions never match a unit's own prose
+    (the conformance-greps-match-their-own-comments trap)."""
+    return [
+        line
+        for raw in path.read_text().splitlines()
+        if (line := raw.strip()) and not line.startswith("#")
+    ]
 
 
 def test_mount_has_no_install_target() -> None:
@@ -67,3 +83,59 @@ def test_automount_does_not_order_after_network_online() -> None:
         f"the .automount must not order after network-online.target (ordering cycle); the network "
         f"wait belongs on the .mount. Offending directives: {ordering}"
     )
+
+
+def test_mount_waits_for_network_online() -> None:
+    """The backing .mount must wait for the network so it does not fire into an unreachable
+    server at boot (#5021 defect 1)."""
+    directives = _directives(MOUNT)
+    assert "After=network-online.target" in directives, (
+        ".mount must order After=network-online.target"
+    )
+    assert "Wants=network-online.target" in directives, ".mount must Wants=network-online.target"
+
+
+def test_mount_does_not_latch_on_start_limit() -> None:
+    """A transient network-down must retry on the next automount access, not latch failed past the
+    start limit (the 2026-10-03 failure mode)."""
+    assert "StartLimitIntervalSec=0" in _directives(MOUNT), (
+        ".mount must set StartLimitIntervalSec=0 so a transient failure is not latched"
+    )
+
+
+def test_mount_alerts_on_failure() -> None:
+    """A failed vault mount must never be silent."""
+    assert any(line.startswith("OnFailure=") for line in _directives(MOUNT)), (
+        ".mount must declare an OnFailure= alert handler"
+    )
+
+
+def test_mount_and_automount_have_timeouts() -> None:
+    """The .mount bounds its own attempt (TimeoutSec) and the automount pins the mount once up
+    (TimeoutIdleSec=0, so the hot vault is not auto-unmounted)."""
+    assert any(line.startswith("TimeoutSec=") for line in _directives(MOUNT)), (
+        ".mount must bound its attempt with TimeoutSec="
+    )
+    assert "TimeoutIdleSec=0" in _directives(AUTOMOUNT), (
+        ".automount must pin the mount with TimeoutIdleSec=0"
+    )
+
+
+def test_vault_writers_skip_cleanly_when_vault_absent() -> None:
+    """A USER-manager unit cannot order against the SYSTEM vault .mount, so RequiresMountsFor binds
+    to nothing (#5021 re-round major 1). Each writer instead gates on an ExecCondition that probes
+    the vault-root marker (.git / .obsidian — the defect-3 marker a shadow writer never creates), so
+    it SKIPS cleanly (condition-not-met, not a failure) when the vault is unmounted/absent."""
+    for unit in VAULT_WRITERS:
+        directives = _directives(unit)
+        assert not any(line.startswith("RequiresMountsFor=") for line in directives), (
+            f"{unit.name}: RequiresMountsFor binds to nothing in the user manager — remove it"
+        )
+        conditions = [line for line in directives if line.startswith("ExecCondition=")]
+        assert conditions, f"{unit.name}: must gate on an ExecCondition vault-marker probe"
+        assert any(
+            "Documents/Personal/.git" in line or "Documents/Personal/.obsidian" in line
+            for line in conditions
+        ), (
+            f"{unit.name}: ExecCondition must probe the vault-root marker (.git/.obsidian): {conditions}"
+        )
