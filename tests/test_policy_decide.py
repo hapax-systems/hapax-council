@@ -14,6 +14,7 @@ this slice: the bash gate remains authoritative.
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from hypothesis import given
@@ -1147,3 +1148,160 @@ class TestVaultRelativeScopeAnchoring:
         )
         assert d.blocked
         assert d.gate == "scope:denied"
+
+
+class TestShellCognitionEarlyAllow:
+    """The shell cognition carve-out, at its MINIMAL shape (seat's exit condition, 2026-09-28): a vault
+    `cat >`/`tee` arrives before the claim check and is ledgered cognition_allow, and everything else —
+    every other head, every option — falls through to the normal gates."""
+
+    def test_unclaimed_cat_into_vault_is_cognition(self):
+        home = os.path.expanduser("~")
+        note = f"{home}/Documents/Personal/30-areas/hapax/frame/note.md"
+        decision = policy_decide(_bash(f"cat > {note}"), None, None)
+        assert decision.allowed, decision.gate
+        assert decision.gate == "cognition"
+
+    def test_unclaimed_mv_within_vault_is_no_longer_cognition(self):
+        # The old carve-out admitted `mv` (it was grok-sonar's reason for reviving #4704). Four rounds
+        # of admit paths later, the seat's exit condition cut the carve-out to cat/echo/printf/tee, so
+        # a vault mv is now an ordinary blocked shell mutation — fail closed, and no longer special.
+        home = os.path.expanduser("~")
+        src = f"{home}/Documents/Personal/30-areas/hapax/frame/note.md"
+        dest = f"{home}/Documents/Personal/00-inbox/quack/done/"
+        decision = policy_decide(_bash(f"mv {src} {dest}"), None, None)
+        assert decision.blocked
+        assert decision.gate != "cognition"
+
+    def test_unclaimed_mv_to_projects_is_blocked(self):
+        home = os.path.expanduser("~")
+        src = f"{home}/Documents/Personal/30-areas/hapax/frame/note.md"
+        decision = policy_decide(_bash(f"mv {src} {home}/projects/x"), None, "theta")
+        assert decision.blocked
+
+    def test_mv_of_repo_file_into_vault_is_blocked(self):
+        home = os.path.expanduser("~")
+        dest = f"{home}/Documents/Personal/30-areas/hapax/frame/note.md"
+        src = f"{home}/projects/hapax-council/scripts/x.py"
+        decision = policy_decide(_bash(f"mv {src} {dest}"), None, "theta")
+        assert decision.blocked
+
+    def test_command_substitution_redirect_is_blocked(self):
+        decision = policy_decide(_bash("cat > $(cmd)"), None, "theta")
+        assert decision.blocked
+
+    def test_ssot_redirects_are_blocked(self):
+        home = os.path.expanduser("~")
+        task = f"{home}/Documents/Personal/20-projects/hapax-cc-tasks/active/t.md"
+        request = f"{home}/Documents/Personal/20-projects/hapax-requests/active/r.md"
+        assert policy_decide(_bash(f"cat > {task}"), None, "theta").blocked
+        assert policy_decide(_bash(f"cat > {request}"), None, "theta").blocked
+
+
+# --- parity with the bash gate's own decision (review of #4704, gemini-1, 2026-09-28) -------------
+#
+# `_shell_targets_cognition_only` is a Python shadow of `_bash_writes_cognition_only`. It handled
+# only cat/sed, so it failed closed where the bash gate allowed — safe, but broken parity, and it
+# could not see the read-only allowlist at all. These cases run BOTH implementations over the same
+# table, so the next drift fails here rather than in the field.
+_BASH_GATE = Path(__file__).resolve().parents[1] / "hooks" / "scripts" / "cc-task-gate.impl.sh"
+
+_PARITY_CASES: tuple[tuple[str, bool], ...] = (
+    # The minimal carve-out (seat's exit condition, 2026-09-28) admits these.
+    ("cat > {vault}", True),
+    ("cat >> {vault}", True),
+    ("cat <<EOF > {vault}", True),
+    ("tee {vault}", True),
+    ("echo x > {vault}", True),
+    ("printf x >> {vault}", True),
+    ("echo x | tee {vault}", True),
+    ("cd /tmp && cat > {vault}", True),
+    # Everything else refuses: another head, an option token, a non-cognition target, nothing written at
+    # all, or a dynamic form — refused BEFORE the strip, because the strip hides it while the shell runs it.
+    ("cat > {src}", False),
+    ("cat > $SOME_VAR", False),
+    ("tee -a {vault}", False),
+    ("cat -n {src} > {vault}", False),
+    ("cat -- {src} > {vault}", False),
+    ("rm -f {src}; cat > {vault}", False),
+    ("dd if=/dev/zero of={src}; echo x > {vault}", False),
+    ("mv {vault} {vault}.bak", False),
+    ("touch {vault}", False),
+    ("sort -o{src} {vault}; cat > {vault}", False),
+    ("mv -t {src} {vault}", False),
+    ("mv -- {src} {vault}; cat > {vault}", False),
+    ("grep -q x /dev/null; cat > {vault}", False),
+    ('echo "$(rm {src})" > {vault}', False),
+    ("echo `rm {src}` > {vault}", False),
+    ("cat <(rm {src}) > {vault}", False),
+    ('eval "cat > {vault}"', False),
+    ("source x.sh; cat > {vault}", False),
+)
+
+
+def _bash_decides(command: str, tmp_path: Path) -> bool:
+    """The SHIPPED bash gate's decision, over its own extracted text.
+
+    The gate's quote-strip happens upstream of the decision and is exercised by the bash suite;
+    every case in the table below is quote-free, so it is a no-op here and is not reproduced.
+    """
+    import subprocess
+
+    impl = _BASH_GATE.read_text(encoding="utf-8")
+    script = ""
+    for name in (
+        "_bash_segments",
+        "_bash_seg_head",
+        "_bash_command_is_static",
+        "_bash_write_targets",
+        "_bash_writes_cognition_only",
+        "is_cognition_path",
+    ):
+        start = impl.index(name + "() {")
+        end = impl.index("\n}", start)
+        script += impl[start : end + 2] + "\n\n"
+    # Mirrors the gate's call site: the RAW command is refused when it carries a dynamic form, BEFORE
+    # the strip is trusted, and only then is the stripped text handed to the decision.
+    script += (
+        'if ! _bash_command_is_static "$1"; then echo REFUSE; '
+        'elif _bash_writes_cognition_only "$1"; then echo ALLOW; else echo REFUSE; fi\n'
+    )
+    path = tmp_path / "gate-fns.sh"
+    path.write_text(script, encoding="utf-8")
+    proc = subprocess.run(
+        ["bash", str(path), command], capture_output=True, text=True, timeout=60, check=False
+    )
+    assert proc.stdout.strip() in {"ALLOW", "REFUSE"}, proc.stderr
+    return proc.stdout.strip() == "ALLOW"
+
+
+@pytest.mark.parametrize(
+    ("template", "expected"),
+    _PARITY_CASES,
+    ids=[c.replace("{", "").replace("}", "").replace(" ", "-")[:48] for c, _ in _PARITY_CASES],
+)
+def test_the_shadow_and_the_bash_gate_agree(template: str, expected: bool, tmp_path: Path):
+    home = Path.home()
+    command = template.format(
+        vault=home / "Documents/Personal/30-areas/hapax/frame/note.md",
+        src=home / "projects/hapax-council/scripts/x.py",
+    )
+    from shared.policy_decide import _shell_targets_cognition_only
+
+    assert _shell_targets_cognition_only(command) is expected, command
+    assert _bash_decides(command, tmp_path) is expected, command
+
+
+def test_the_shadow_and_the_bash_gate_agree_on_forms_neither_has_seen(tmp_path: Path):
+    """Forms the bash suite does not carry: if both implementations drift together, the table above
+    still catches it, and this pins a few shapes neither side has seen."""
+    from shared.policy_decide import _shell_targets_cognition_only
+
+    home = Path.home()
+    vault = str(home / "Documents/Personal/30-areas/hapax/frame/note.md")
+    for command in (
+        f"cat <<EOF > {vault}",
+        f"echo done | tee {vault}",
+        f"sleep 1; cat > {vault}",
+    ):
+        assert _shell_targets_cognition_only(command) is _bash_decides(command, tmp_path), command

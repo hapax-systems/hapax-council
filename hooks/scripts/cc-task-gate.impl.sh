@@ -325,6 +325,14 @@ bash_is_runtime_mutation() {
 bash_is_mutating() {
   local cmd="$1" seg
   bash_is_runtime_mutation "$cmd" && return 0
+  # A dynamic form (`$( … )`, backticks, `<( … )`, `>( … )`, eval/source/.) makes the command's real
+  # targets unknowable — the shell executes text this gate cannot read — so a command that ALSO carries a
+  # redirect is a write whose targets cannot be verified: gate it rather than waving it through. Without
+  # this, `echo "$(rm <repo file>)" > <vault note>` took the non-mutating early-out and the rm ran
+  # (review of #4704, codex-1 and gemini-1, 2026-09-28).
+  if [[ "$cmd" == *'>'* ]] && ! _bash_command_is_static "$cmd"; then
+    return 0
+  fi
   while IFS= read -r seg; do
     [[ -z "${seg// /}" ]] && continue
     _bash_seg_head "$seg"
@@ -444,6 +452,76 @@ connector_tool_is_mutating() {
 # Repo docs/*.md are deliberately NOT carved here — they keep the existing
 # docs_mutation_authorized gate below; broadening cognition to repo docs is a
 # separate, explicit follow-on (it would change the docs-authorization invariant).
+#: True when the RAW command carries no dynamic form — command substitution, a process substitution, or
+#: a head that evaluates text. Checked BEFORE the quote-strip: the strip removes quoted content, but the
+#: shell still EXECUTES it, so `echo "$(rm /repo/file)" > /vault/note` showed only the vault target while
+#: the rm ran (review of #4704, codex-1 and gemini-1, 2026-09-28). A cognition-only write never needs any
+#: of these, so refusing them costs the carve-out nothing.
+_bash_command_is_static() {
+  local cmd="$1" head_re dot_re
+  case "$cmd" in
+    *'$('* | *'`'* | *'<('* | *'>('*) return 1 ;;
+  esac
+  # Both regexes are held in variables: an unquoted `[[ … =~ … ]]` pattern ending in `]]` (as
+  # `[[:space:]]` does) makes the conditional parse fail.
+  head_re='(^|[[:space:];&|(])(eval|source)([[:space:]]|$)'
+  dot_re='(^|[[:space:];&|(])\.[[:space:]]'
+  [[ "$cmd" =~ $head_re ]] && return 1
+  [[ "$cmd" =~ $dot_re ]] && return 1
+  return 0
+}
+
+_bash_write_targets() {
+  local cmd="$1" seg tok
+  while IFS= read -r seg; do
+    [[ -z "${seg// /}" ]] && continue
+      seg="$(printf '%s' "$seg" | sed -E 's/<<-?[A-Za-z_'"'"'"]+//g')"
+    # stdout redirect: `> f`, `>> f`, `1> f`. fd-dup / stderr forms already stripped upstream.
+    printf '%s\n' "$seg" | grep -oE '(^|[[:space:]])1?>>?[[:space:]]*[^[:space:]<>|&;]+' \
+      | sed -E 's/.*>>?[[:space:]]*//' | grep -v '^$'
+    _bash_seg_head "$seg"
+    case "$_HEAD" in
+      cd)
+        ;;
+      echo | printf | cat)
+        for tok in "${_ARGS[@]}"; do
+          if [[ "$tok" == -* ]]; then printf '!unresolved:%s\n' "$_HEAD"; fi
+        done ;;
+      tee)
+        for tok in "${_ARGS[@]}"; do
+          if [[ "$tok" == -* ]]; then printf '!unresolved:%s\n' "$_HEAD"
+          else printf '%s\n' "$tok"; fi
+        done ;;
+      "")
+        ;;
+      *)
+        printf '!unresolved:%s\n' "$_HEAD" ;;
+    esac
+  done < <(_bash_segments "$cmd") | sed '/^$/d' | sort -u
+}
+
+# True iff a quote-stripped bash command writes ONLY cognition paths — the whole decision, in one
+# place, so a test can exercise THIS text rather than a copy of it.
+#
+# (Defined after is_cognition_path below via late binding: bash resolves the call at run time.)
+#
+# Fails closed twice over: an empty target list is a refusal (we extracted nothing, so we know
+# nothing), and any single non-cognition target is a refusal. Both properties are load-bearing and
+# are mutation-tested in tests/hooks/test_cc_task_gate_cognition_shell.sh.
+_bash_writes_cognition_only() {
+  local targets t
+  targets="$(_bash_write_targets "$1")"
+  [[ -z "$targets" ]] && return 1
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    # An unresolved segment is refused HERE, explicitly, rather than left to is_cognition_path()
+    # rejecting a sentinel it has never seen: the property has to be visible at the decision.
+    [[ "$t" == "!unresolved:"* ]] && return 1
+    is_cognition_path "$(realpath -m -- "$t" 2>/dev/null || printf '%s' "$t")" || return 1
+  done <<<"$targets"
+  return 0
+}
+
 is_cognition_path() {
   local p="$1"
   [[ -z "$p" ]] && return 1
@@ -460,6 +538,22 @@ is_cognition_path() {
     "$HOME"/Documents/Personal/*) return 0 ;;  # personal vault (cognition / PARA notes)
     /dev/shm/*) return 0 ;;                     # ephemeral diagnostic scratch
     /tmp/hapax-*|/tmp/hapax/*) return 0 ;;      # project diagnostic scratch
+  esac
+  # The harness-assigned per-session scratchpad. The agent is TOLD to work here — its environment
+  # block names the directory and says it "can generally be used without permission prompts" — and
+  # the gate did not know the surface existed, so writes there were refused like any other. Measured
+  # 2026-09-20: a `cp` between two files inside a session's own scratchpad was refused, and the
+  # reasoning of two reviewers was lost because the backup never ran.
+  #
+  # Derived from $TMPDIR rather than a hardcoded mount: the path here happens to be /store-fast/tmp,
+  # which is an accident of this host. Kept as NARROW as the /tmp/hapax-* carve-out above — only the
+  # claude-<uid> session scratch root, never $TMPDIR at large, so an unclaimed lane still cannot
+  # write arbitrary temp source. The legacy /tmp form is included for hosts with no TMPDIR override.
+  local _tmpbase="${TMPDIR:-/tmp}"
+  _tmpbase="${_tmpbase%/}"
+  case "$p" in
+    "$_tmpbase"/claude-*/*) return 0 ;;
+    /tmp/claude-*/*) return 0 ;;
   esac
   return 1
 }
@@ -519,6 +613,28 @@ if [[ -n "$edit_path" ]] && is_cognition_path "$edit_path"; then
     >> "$_cog_ledger" 2>/dev/null || true
   echo "cc-task-gate: cognition surface — allowed (advisory, logged): $edit_path" >&2
   exit 0
+fi
+
+# A bash command has no edit_path, so the block above never saw a vault mv. Same
+# allow, same ledger line, still before the claim check. Empty or non-cognition
+# targets fail closed inside _bash_writes_cognition_only and fall through.
+if [[ -z "$edit_path" && -n "$bash_cmd" && "$mutation_surface_hint" != "runtime" ]]; then
+  _cmd_stripped="$(printf '%s' "$bash_cmd" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g; s/(^|[[:space:]])#[^\n]*//g")"
+  if ! _bash_command_is_static "$bash_cmd"; then
+    : # a dynamic form: never a cognition write, fall through to the ordinary gates
+  elif _bash_writes_cognition_only "$_cmd_stripped"; then
+    _cog_role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-unknown}}}"
+    _cog_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+    mkdir -p "$(dirname "$_cog_ledger")" 2>/dev/null || true
+    while IFS= read -r _cog_t; do
+      [[ -z "$_cog_t" ]] && continue
+      printf '{"ts":"%s","kind":"cognition_allow","role":"%s","tool":"%s","path":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_cog_role" "$tool_name" "$_cog_t" \
+        >> "$_cog_ledger" 2>/dev/null || true
+      echo "cc-task-gate: cognition surface — allowed (advisory, logged): $_cog_t" >&2
+    done <<<"$(_bash_write_targets "$_cmd_stripped")"
+    exit 0
+  fi
 fi
 
 # --- 3. Bypass for incident response (DEPRECATED — incident-only, now ledgered) ---
@@ -1372,13 +1488,35 @@ if [[ -z "$edit_path" && -n "$bash_cmd" && "$mutation_surface_hint" != "runtime"
   # closed. (FR-BASH-MUTATION-FALSE-POSITIVES)
   _cmd_stripped="$(printf '%s' "$bash_cmd" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g; s/(^|[[:space:]])#[^\n]*//g")"
   if bash_source_mutation_requires_scope "$_cmd_stripped"; then
-    _emit_block <<EOF
+    # INV-5 reaches shell writes too (2026-09-20). is_cognition_path() exists so that "a blocked
+    # lane must still be able to think, take notes, and report state" — but it was consulted only
+    # for $edit_path, i.e. the Edit/Write tools. A bash command has no $edit_path, so EVERY shell
+    # write was refused unconditionally, including writes to the very paths cognition exists to keep
+    # open. Measured: `cat > <vault note>` with the body `probe` was refused, while the identical
+    # bytes through the Write tool were allowed. One invariant, honoured on one surface only.
+    #
+    # The refusal was also the thing teaching evasion: if no shell write can succeed, the only way to
+    # write from a shell is to not look like a shell write, and every agent finds that door at once.
+    #
+    # This narrows the refusal and never widens it. The precondition is machine-checkable at the
+    # moment of use: allow ONLY when at least one target was extracted AND every extracted target is
+    # a cognition path. Anything unresolvable, or any non-cognition target, still fails closed
+    # exactly as before — so a command whose targets cannot be read is refused, not waved through.
+    if ! _bash_writes_cognition_only "$_cmd_stripped"; then
+      _cog_targets="$(_bash_write_targets "$_cmd_stripped")"
+      _emit_block <<EOF
 cc-task-gate: BLOCKED — cannot verify mutation_scope_refs for shell source mutation.
 
   Command: ${bash_cmd:0:160}
+  Targets read: ${_cog_targets:-"(none could be extracted)"}
   Task: $note_path
+  Next action: the carve-out admits only `echo`, `printf`, `cat` or `tee` with NO option token at all,
+  writing through `>`/`>>`/`tee` into a cognition path, with an optional leading `cd <path>`; every other
+  head, every option, and any dynamic form (`$( … )`, backticks, `<( … )`, `>( … )`, `eval`, `source`, `.`)
+  refuses. Writes to a cognition path may also be made through the Edit/Write tools.
 EOF
-    exit 2
+      exit 2
+    fi
   fi
 fi
 
