@@ -1,0 +1,19 @@
+[Unit]
+Description=Vault NFS automount (on-demand) — podium 192.168.68.85
+Documentation=file://%h/Documents/Personal/20-projects/hapax-cc-tasks/active/vault-nfs-mount-boot-race-and-gate-fail-closed-20261003.md
+# Defect 1 companion to home-hapax-Documents-Personal.mount. On-demand automount so a
+# vault access blocks until the backing .mount completes (which waits for
+# network-online) instead of failing the access at boot. The automount point itself is
+# established EARLY (part of local-fs setup) and must NOT order after
+# network-online.target — doing so forms an ordering cycle (local-fs.target ->
+# automount -> network-online -> sysinit -> local-fs), caught by `systemd-analyze
+# verify`. The network wait lives on the .mount, which is what actually touches NFS.
+# TimeoutIdleSec=0 keeps the mount pinned once up (the vault is hot). ACTIVATION IS A
+# RUNTIME ACT for the seat (see the .mount header); proven on the reboot rehearsal.
+
+[Automount]
+Where=/home/hapax/Documents/Personal
+TimeoutIdleSec=0
+
+[Install]
+WantedBy=remote-fs.target
