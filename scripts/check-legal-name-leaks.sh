@@ -65,6 +65,13 @@ WHITELIST_GLOBS=(
     'hooks/scripts/pii-guard.sh'
     'tests/scripts/test_check_legal_name_leaks.py'
     'tests/hooks/test_pii_guard.py'
+    # CITATION.cff carries the formal author name a citation file requires, the same
+    # carve-out as .zenodo.json (seat ruling 2026-10-04, #5024 re-round).
+    'CITATION.cff'
+    'packages/*/CITATION.cff'
+    # .gitleaks.toml is a secret-scanner config; it carries the name as a detection
+    # pattern/allowlist entry, the same reason this script is whitelisted (same ruling).
+    '.gitleaks.toml'
 )
 
 is_whitelisted() {
@@ -91,6 +98,15 @@ elif [ "$1" = "--diff" ]; then
     while IFS= read -r -d '' f; do
         [ -n "$f" ] && FILES+=("$f")
     done < <(git diff --name-only -z --diff-filter=ACMR "$base_head" 2>/dev/null || true)
+elif [ "$1" = "--all" ]; then
+    # Repo-wide guard: every tracked file. A registered token anywhere outside the
+    # whitelist fails. Because a scan with no names is a no-op, --all REQUIRES the
+    # registry and fails closed when it is absent (inject it in CI from a secret;
+    # the pre-push hook uses the local registry). Satisfies the gap-scrub predicate.
+    REQUIRE_REGISTRY=1
+    while IFS= read -r -d '' f; do
+        [ -n "$f" ] && FILES+=("$f")
+    done < <(git ls-files -z 2>/dev/null || true)
 else
     FILES=("$@")
 fi
@@ -108,6 +124,11 @@ registry_names="$(principal_names)" || names_status=$?
 if [ "$names_status" -ne 0 ]; then
     echo "check-legal-name-leaks: the principal-name-map registry at $(principal_name_map_path) cannot be used (see above)." >&2
     echo "Repair it (a readable file of valid entries) or remove it. Failing closed." >&2
+    exit 2
+fi
+if [ "${REQUIRE_REGISTRY:-0}" = "1" ] && [ -z "$registry_names" ]; then
+    echo "check-legal-name-leaks: --all requires the principal-name registry, and none was found at $(principal_name_map_path)." >&2
+    echo "Failing closed: a repo-wide given-name scan with no names is a no-op. In CI, inject the registry from the HAPAX_PRINCIPAL_NAME_MAP secret before this runs; locally it lives at the path above." >&2
     exit 2
 fi
 

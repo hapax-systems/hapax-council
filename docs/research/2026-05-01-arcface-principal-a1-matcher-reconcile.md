@@ -48,7 +48,7 @@ saved, and used by downstream cross-camera ReID.
 The closed task's load-bearing scope — the **per-person face-matcher
 gate for principal-a1** — was not implemented:
 
-- No code references `principal-a1`, `principal-a1`, or
+- No code references `principal-a1` or
   `per_person_face_matcher` in `agents/`, `shared/`, or `logos/`.
 - No enrollment artifact at `~/hapax-state/face-enrollments/
   principal-a1.npz` (the path the consent contract names).
