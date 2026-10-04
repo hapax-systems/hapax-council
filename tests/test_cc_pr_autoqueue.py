@@ -117,6 +117,8 @@ def _write_review_dossier(
         "head_sha": head_sha,
         "team_class": "t2_standard",
         "quorum_required": 2,
+        "writer_family": "fugu",
+        "constitution_writer_family": "fugu",
         "constituted_at": "2026-06-11T00:00:00+00:00",
         "constitution_notes": [],
         "lenses": list(COMPLETE_ALWAYS_ON_CHECKLIST),

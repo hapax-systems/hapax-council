@@ -822,6 +822,107 @@ class TestConstitution:
                 rt.writer_family_for_lane(lane, reg)
 
 
+class TestObservedWriterIdentity:
+    def test_missing_observation_table_is_unobserved(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        reg.pop("observed_identity_families")
+        roots = rt.WriterIdentityRoots(
+            tmp_path / "receipts", tmp_path / "codex", tmp_path / "claude"
+        )
+        identity = rt.observed_writer_identity("task-x", "fugu-omglol", reg, roots=roots)
+        assert identity.family == "unobserved"
+        assert identity.reason == "registry_has_no_observation_table"
+
+    def test_missing_claim_receipt_is_unobserved_not_a_lane_default(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        roots = rt.WriterIdentityRoots(
+            claim_receipt_root=tmp_path / "receipts",
+            codex_sessions_root=tmp_path / "codex",
+            claude_projects_root=tmp_path / "claude",
+        )
+        identity = rt.observed_writer_identity(
+            "missing-task", "fugu-omglol", rt.load_lens_registry(), roots=roots
+        )
+        assert identity.family == "unobserved"
+        assert identity.reason == "claim_receipt_absent"
+
+    def test_sakana_provider_in_codex_rollout_is_fugu(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        receipts, sessions = tmp_path / "receipts", tmp_path / "sessions"
+        receipts.mkdir()
+        sessions.mkdir()
+        session_id = "01a0e556-a50e-7fd3-8e73-95b63b386898"
+        (receipts / "task-x.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "task-x",
+                    "role": "fugu-omglol",
+                    "session_id": session_id,
+                    "claim_epoch": 100,
+                    "to_status": "claimed",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (sessions / f"rollout-{session_id}.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "session_meta",
+                    "payload": {"session_id": session_id, "model_provider": "sakana"},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        roots = rt.WriterIdentityRoots(receipts, sessions, tmp_path / "claude")
+        identity = rt.observed_writer_identity(
+            "task-x", "fugu-omglol", rt.load_lens_registry(), roots=roots
+        )
+        assert identity.family == "fugu"
+        assert identity.provider == "sakana"
+
+    def test_later_reassignment_does_not_change_the_head_author(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        receipts, sessions = tmp_path / "receipts", tmp_path / "sessions"
+        receipts.mkdir()
+        sessions.mkdir()
+        for index, epoch, provider in ((1, 100, "sakana"), (2, 200, "openai")):
+            session_id = f"01a0e556-a50e-7fd3-8e73-95b63b38689{index}"
+            (receipts / f"task-x-{index}.json").write_text(
+                json.dumps(
+                    {
+                        "task_id": "task-x",
+                        "role": "fugu-omglol",
+                        "session_id": session_id,
+                        "claim_epoch": epoch,
+                        "to_status": "claimed",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (sessions / f"rollout-{session_id}.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {"session_id": session_id, "model_provider": provider},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        roots = rt.WriterIdentityRoots(receipts, sessions, tmp_path / "claude")
+        reg = rt.load_lens_registry()
+        before = rt.observed_writer_identity(
+            "task-x", "fugu-omglol", reg, roots=roots, head_committed_at=150
+        )
+        after = rt.observed_writer_identity(
+            "task-x", "fugu-omglol", reg, roots=roots, head_committed_at=250
+        )
+        assert before.family == "fugu"
+        assert after.family == "codex"
+
+
 class TestDistinctFamilyFloor:
     """review-constitution-walled-family-substitution-20260924, seat finding 21:05:30Z: the
     diversity floor is distinct families. A second seat from the same family is never a
@@ -1112,23 +1213,39 @@ class TestSeatT2FamilyFloorRelease:
         assert "review_dossier_below_family_floor:voting=1/seated=3" in blockers
         assert sink == {}
 
-    def test_the_rows_writer_family_counts_as_the_writers_too(self) -> None:
-        # The dossier recorded claude; the row now names a codex lane. Neither family's accept
-        # is distinct from the writer's, so the floor stands.
+    def test_t2_release_never_weakens_main(self) -> None:
         rt = _load_review_team_module()
-        dossier = _synth(
-            rt,
-            [
-                _review("claude-1", "claude", "accept"),
-                _review("codex-1", "codex", "accept"),
-                _review("gemini-1", "gemini", "invalid-output"),
-            ],
-            writer_family="claude",
-        )
-        sink: dict = {}
-        blockers = self._blockers(rt, dossier, self._frontmatter(assigned_to="cx-blue"), sink=sink)
-        assert self.FLOOR in blockers
-        assert sink == {}
+        gl, cc = ("gemini", "local"), ("claude", "codex")
+        # case, lane, dossier family, lane default, accepts, main admits
+        cases = [
+            ("missing", "", "claude", "claude", gl, True),
+            ("unmapped/renamed", "renamed", "claude", "", gl, True),
+            ("reassigned", "cx-blue", "claude", "claude", cc, False),
+            ("dossier differs", "renamed", "codex", "claude", cc, False),
+            ("empty dossier", "zeta", "", "claude", gl, True),
+            ("malformed dossier", "zeta", {"family": "claude"}, "claude", gl, True),
+        ]
+        for case, lane, family, default, accepted, main_admits in cases:
+            reg = rt.load_lens_registry()
+            reg["lane_families"]["default"] = default
+            dossier = {"team_class": "t2_standard", "writer_family": family}
+            votes = [{"id": name, "family": name} for name in accepted]
+            # Main @ 90b52a72f, T2 predicate on these fixtures.
+            main_writers = {
+                str(dossier.get(key) or "").strip()
+                for key in ("writer_family", "constitution_writer_family")
+            } | {rt.writer_family_for_lane(lane, reg)}
+            main_writers.discard("")
+            quorum = int(reg["sizing"]["t2_standard"]["quorum_accept"])
+            main_admitted = len(votes) >= quorum and any(
+                v["family"] not in main_writers for v in votes
+            )
+            assert main_admitted is main_admits, case
+            row = self._frontmatter(assigned_to=lane)
+            candidate = rt.t2_family_floor_release(
+                dossier, frontmatter=row, registry=reg, accepts=votes
+            )
+            assert not candidate, case
 
     def test_a_short_quorum_is_not_rescued(self) -> None:
         rt = _load_review_team_module()
@@ -1187,8 +1304,9 @@ class TestSeatT2FamilyFloorRelease:
         assert "review_dossier_unresolved_critical:1" in blockers
 
     def test_an_unresolvable_writer_or_quorum_refuses_the_rule(self) -> None:
-        # The rule's fallback narrows: a retired writer lane, or a registry without the t2
-        # quorum, returns no release rather than raising or guessing.
+        # The rule's fallback narrows: a dossier that records no writer family, or a
+        # registry without the t2 quorum, returns no release rather than raising or
+        # guessing. A reassigned lane's family remains excluded in this piece.
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
         dossier = self._writer_seat_dead(rt)
@@ -1200,6 +1318,15 @@ class TestSeatT2FamilyFloorRelease:
             rt.t2_family_floor_release(
                 dossier,
                 frontmatter=self._frontmatter(assigned_to="agy-1"),
+                registry=reg,
+                accepts=accepts,
+            )
+            is None
+        )
+        assert (
+            rt.t2_family_floor_release(
+                {**dossier, "writer_family": None, "constitution_writer_family": None},
+                frontmatter=self._frontmatter(),
                 registry=reg,
                 accepts=accepts,
             )
