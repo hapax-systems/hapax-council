@@ -34,6 +34,9 @@ def sh(c, t=25):
 
 
 rec = {"ts": now}
+# The host that actually ran the observer, so the producer attributes local GPUs/endpoints to it
+# rather than a hard-coded 'appendix' (review #5027 major 4).
+rec["host"] = (sh("hostname -s 2>/dev/null") or os.uname().nodename or "localhost").strip()
 
 # admission receipt freshness per route (free)
 rr = os.path.expanduser("~/.cache/hapax/relay/receipts")

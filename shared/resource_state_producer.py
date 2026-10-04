@@ -146,26 +146,67 @@ def build_bundle(
         "declared_endpoint": [],
         "remote_entitlement": [],
         "usage": [],
-        "capability_shape": [],
     }
+    # capability_shape (BUILD item 4) is deferred to this row's next slice (seat disposition, review
+    # #5027): no empty bucket is emitted, so the bundle never signals a capability that does not exist.
 
     # --- VRAM / memory per host and tier (hearth classed separately in provenance) ---
     HEARTH = {"beelink1"}
-    for line in observation.get("gpus", []) or []:
+    # Attribute local GPUs/endpoints to the host that actually ran the observer, never a hard-coded
+    # 'appendix' (review #5027 major 4): a mislabeled host is the silently-wrong resource statement this
+    # task exists to eliminate.
+    local_host = observation.get("host") or "localhost"
+    # Per-card VRAM from gpus_percard (index,name,total,used,FREE,util). Per-card FREE is the operator's
+    # never-correct-me item (review #5027 major 1); the old 3-column gpus line dropped free+util on the
+    # floor. Fall back to the back-compat line only when percard is absent, and then free/util are
+    # honestly partial, never fabricated.
+    for line in observation.get("gpus_percard", []) or []:
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 3:
-            name, total, used = parts[0], parts[1], parts[2]
+        if len(parts) >= 6:
+            idx, name, total, used, free, util = parts[:6]
             facts["resource_vram"].append(
                 _fact(
                     "resource_vram",
-                    f"host:appendix/{name}",
+                    f"host:{local_host}/card:{idx}",
                     now=now,
                     observed_at=obs_at,
-                    value={"card": name, "total": total, "used": used, "owner": "hapax"},
+                    value={
+                        "card": name,
+                        "index": idx,
+                        "total": total,
+                        "used": used,
+                        "free": free,
+                        "util": util,
+                        "owner": "hapax",
+                    },
                     value_state="lit",
-                    source="nvidia-smi",
+                    source="nvidia-smi --query-gpu per-card",
                 )
             )
+    if not (observation.get("gpus_percard") or []):
+        for line in observation.get("gpus", []) or []:
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                name, total, used = parts[0], parts[1], parts[2]
+                facts["resource_vram"].append(
+                    _fact(
+                        "resource_vram",
+                        f"host:{local_host}/{name}",
+                        now=now,
+                        observed_at=obs_at,
+                        value={
+                            "card": name,
+                            "total": total,
+                            "used": used,
+                            "free": None,
+                            "util": None,
+                            "owner": "hapax",
+                        },
+                        value_state="partial",
+                        reason_codes=["per_card_free_util_absent_backcompat_gpus"],
+                        source="nvidia-smi (3-col back-compat)",
+                    )
+                )
     for host, mem in (observation.get("fleet_memory") or {}).items():
         owner = "hearth" if host in HEARTH else "hapax"
         if mem is None:
@@ -199,20 +240,32 @@ def build_bundle(
                 )
             )
 
-    # --- declared serving endpoints -> LOST when dead (ERRATA: appendix serving = NAS-backed Docker) ---
+    # --- declared serving endpoints -> LOST when dead. Only KNOWN-declared ports are classified:
+    #     a probe-only port (e.g. ollama 11434) that is not a declared serving endpoint must not be
+    #     reported LOST when down (declared/probed conflation overstated the LOST set). Host-attributed
+    #     to the observed host, never a hard-coded 'appendix' (major 4). The NAS-backed-Docker backing
+    #     is an appendix-specific ERRATA, so it is only asserted when the observer ran on appendix.
+    DECLARED_PORTS = {
+        "5000",
+        "5001",
+    }  # the declared local_serving endpoints (baseline serving.* rows)
+    appendix_backing = (
+        "NAS-backed Docker container (ERRATA 2026-10-04)" if local_host == "appendix" else None
+    )
     for port, alive in (observation.get("local_endpoints") or {}).items():
+        if str(port) not in DECLARED_PORTS:
+            continue  # probed-but-not-declared: feeds loaded_model, not a declared_endpoint/LOST claim
         vs, reasons = classify_declared_endpoint(declared=True, alive=bool(alive))
+        value: dict[str, Any] = {"port": port, "alive": bool(alive)}
+        if appendix_backing:
+            value["backing"] = appendix_backing
         facts["declared_endpoint"].append(
             _fact(
                 "declared_endpoint",
-                f"serving.appendix-{port}",
+                f"serving.{local_host}-{port}",
                 now=now,
                 observed_at=obs_at,
-                value={
-                    "port": port,
-                    "alive": bool(alive),
-                    "backing": "NAS-backed Docker container (ERRATA 2026-10-04)",
-                },
+                value=value,
                 value_state=vs,
                 reason_codes=reasons,
                 source="curl /v1/models",
@@ -227,7 +280,7 @@ def build_bundle(
     serving_procs = observation.get("serving_procs") or []
     for endpoint, model_ids in (observation.get("loaded_models") or {}).items():
         for model in model_ids or []:
-            subj = f"host:appendix:{endpoint}/{model}"
+            subj = f"host:{local_host}:{endpoint}/{model}"
             vs, reasons = classify_loaded_model(loaded=True, admitting_row=admitting_rows.get(subj))
             facts["loaded_model"].append(
                 _fact(
@@ -236,7 +289,7 @@ def build_bundle(
                     now=now,
                     observed_at=obs_at,
                     value={
-                        "host": "appendix",
+                        "host": local_host,
                         "endpoint": endpoint,
                         "model": model,
                         "admitting_row": admitting_rows.get(subj),
@@ -274,6 +327,22 @@ def build_bundle(
                     source="SURFACE.json",
                 )
             )
+    else:
+        # Honest missing-state (review #5027 major 3): when the entitlement surface is not present,
+        # emit an absent fact rather than silently dropping every entitlement (matching the kimi path).
+        facts["remote_entitlement"].append(
+            _fact(
+                "remote_entitlement",
+                "entitlement:surface",
+                now=now,
+                observed_at=None,
+                value={},
+                value_state="absent",
+                reason_codes=["entitlement_surface_absent"],
+                confidence_word="absent",
+                source="SURFACE.json",
+            )
+        )
 
     # --- usage facts from the kimi-bench ledger (absent when the input is not present) ---
     if kimi_usage:

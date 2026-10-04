@@ -66,6 +66,11 @@ def test_absent_observation_is_absent_not_fabricated() -> None:
 def _observation() -> dict:
     return {
         "ts": _iso(NOW),
+        "host": "appendix",
+        "gpus_percard": [
+            "0, NVIDIA GeForce RTX 3090, 24576 MiB, 1 MiB, 24175 MiB, 0 %",
+            "1, NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 2 MiB, 15941 MiB, 0 %",
+        ],
         "gpus": [
             "NVIDIA GeForce RTX 3090, 24576 MiB, 1 MiB",
             "NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 2 MiB",

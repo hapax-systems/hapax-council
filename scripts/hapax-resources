@@ -28,8 +28,14 @@ from shared import resource_state_producer as rsp  # noqa: E402
 OBS = os.path.expanduser(
     os.environ.get("HAPAX_CAPACITY_OBS", "~/.cache/hapax/capacity-observations.jsonl")
 )
+# SURFACE.json via a DECLARED binding (env), not a hard-coded vault path (review #5027 major 3). The
+# default is the vault location; an absent file yields an honest `absent` entitlement fact in the
+# producer, never a silent drop.
 SURFACE = os.path.expanduser(
-    "~/Documents/Personal/30-areas/hapax/frame/entitlement-surface-20261004/SURFACE.json"
+    os.environ.get(
+        "HAPAX_ENTITLEMENT_SURFACE",
+        "~/Documents/Personal/30-areas/hapax/frame/entitlement-surface-20261004/SURFACE.json",
+    )
 )
 KIMI_LEDGER = os.path.expanduser(
     os.environ.get("HAPAX_KIMI_BENCH_LEDGER", "~/.cache/hapax/kimi-spawns/kimi-bench/ledger.jsonl")
