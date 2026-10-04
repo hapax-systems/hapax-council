@@ -146,7 +146,9 @@ def test_load_principal_tokens_fails_closed_on_empty_registry(monkeypatch):
     monkeypatch.setattr(
         rt, "_PRINCIPAL_MATCHER", SimpleNamespace(registry_names=lambda root: ([], None))
     )
-    with pytest.raises(rt.PacketRedactionError):
+    # A DISTINCT subclass so the dispatcher can report empty-but-readable apart from unreadable;
+    # still a PacketRedactionError, so every fail-closed catch still catches it.
+    with pytest.raises(rt.EmptyPrincipalRegistryError):
         rt.load_principal_tokens(REPO_ROOT)
 
 

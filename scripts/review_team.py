@@ -108,6 +108,12 @@ class PacketRedactionError(RuntimeError):
     failure (the same stance as the pre-push guard, which refuses the push)."""
 
 
+class EmptyPrincipalRegistryError(PacketRedactionError):
+    """The registry loaded cleanly but has NO names — distinct from unreadable so the operator can
+    tell a misconfigured/empty registry from a broken one. Still fail-closed (a subclass): both
+    refuse to let a packet leave."""
+
+
 def _principal_matcher() -> Any:
     """Load the pre-push principal-name matcher once (registry_names, matches)."""
     global _PRINCIPAL_MATCHER
@@ -139,7 +145,9 @@ def load_principal_tokens(repo_root: Path | None = None) -> list[str]:
     if error:
         raise PacketRedactionError(f"principal-name registry unreadable: {error}")
     if not names:
-        raise PacketRedactionError("principal-name registry is empty; refusing (fail-closed)")
+        raise EmptyPrincipalRegistryError(
+            "principal-name registry is empty; refusing (fail-closed)"
+        )
     return names
 
 

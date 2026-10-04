@@ -58,7 +58,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1630,6 +1630,15 @@ class PRInfo:
     changed_file_count: int | None
     is_draft: bool
     files: tuple[str, ...]
+
+
+def _packet_redaction_block_status(exc: Exception) -> str:
+    """The dispatch status when packet redaction cannot run. Both fail closed (send nothing), but
+    an empty-but-readable registry gets a DISTINCT code from an unreadable one so the operator can
+    tell a misconfiguration (no names) from a broken registry."""
+    if isinstance(exc, review_team.EmptyPrincipalRegistryError):
+        return "packet_redaction_registry_empty"
+    return "packet_redaction_registry_unreadable"
 
 
 def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120) -> str:
@@ -4292,7 +4301,7 @@ def _apply_review(
         _principal_tokens = review_team.load_principal_tokens(repo_root)
     except review_team.PacketRedactionError as exc:
         return {
-            "status": "packet_redaction_registry_unreadable",
+            "status": _packet_redaction_block_status(exc),
             "pr": pr_number,
             "reason": str(exc),
             "next_action": (
@@ -4316,16 +4325,23 @@ def _apply_review(
     reviewer_source_excerpts, _rc_exc = review_team.redact_registered_tokens(
         reviewer_source_excerpts, _principal_tokens
     )
+    # pr_info itself is an outbound component: render_reviewer_prompt emits pr_info.title into the
+    # metadata block, so the title (and body) must be redacted on the object passed, not only the
+    # separate pr_body string. Pass a redacted copy.
+    redacted_title, _rc_title = review_team.redact_registered_tokens(
+        pr_info.title or "", _principal_tokens
+    )
     redacted_pr_body, _rc_body = review_team.redact_registered_tokens(
         pr_info.body or "", _principal_tokens
     )
+    redacted_pr_info = replace(pr_info, title=redacted_title, body=redacted_pr_body)
     redacted_prior_criticals, _rc_prior = review_team.redact_structure(
         prior_criticals, _principal_tokens
     )
-    packet_redactions = _rc_diff + _rc_note + _rc_exc + _rc_body + _rc_prior
+    packet_redactions = _rc_diff + _rc_note + _rc_exc + _rc_title + _rc_body + _rc_prior
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
     prompt_inputs = {
-        "pr_info": pr_info,
+        "pr_info": redacted_pr_info,
         "diff_source": pr_diff.source,
         "comparison_base": pr_diff.comparison_base,
         "task_id": task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
@@ -4850,7 +4866,7 @@ def review_artifact(
         _artifact_tokens = review_team.load_principal_tokens()
     except review_team.PacketRedactionError as exc:
         return {
-            "status": "packet_redaction_registry_unreadable",
+            "status": _packet_redaction_block_status(exc),
             "task_id": task_id,
             "reason": str(exc),
             "next_action": "repair the local principal-name registry and retry; no packet was sent",

@@ -178,6 +178,8 @@ class FakeGh:
         self.base_sha = base_sha
         self.head_sha = head_sha
         self.diff = "diff --git a/shared/foo.py b/shared/foo.py\n+changed\n"
+        self.title = f"PR {self.pr_number}"
+        self.body = "PR body acceptance evidence"
         self.fail_comment = False
         self.fail_view_prs: set[int] = set()
         self.comments: list[str] = []
@@ -187,7 +189,7 @@ class FakeGh:
         return [
             {
                 "number": self.pr_number,
-                "title": f"PR {self.pr_number}",
+                "title": self.title,
                 "base": {"ref": "main", "sha": self.base_sha},
                 "head": {"ref": f"feat/{self.pr_number}", "sha": self.head_sha},
                 "draft": False,
@@ -200,8 +202,8 @@ class FakeGh:
             return None
         return {
             "number": self.pr_number,
-            "title": f"PR {self.pr_number}",
-            "body": "PR body acceptance evidence",
+            "title": self.title,
+            "body": self.body,
             "base": {"ref": "main", "sha": self.base_sha},
             "head": {"ref": f"feat/{self.pr_number}", "sha": self.head_sha},
             "draft": False,
@@ -252,8 +254,8 @@ class FakeGh:
                 return subprocess.CompletedProcess(cmd, 1, "", "view failed")
             payload = {
                 "number": self.pr_number,
-                "title": f"PR {self.pr_number}",
-                "body": "PR body acceptance evidence",
+                "title": self.title,
+                "body": self.body,
                 "baseRefName": "main",
                 "baseRefOid": self.base_sha,
                 "headRefName": f"feat/{self.pr_number}",
@@ -7411,3 +7413,82 @@ class TestPacketRedactionWiring:
         result, _gh, reviewers, _note = _review(tmp_path, reviewers=RecordingReviewers())
         assert result["status"] == "packet_redaction_registry_unreadable", result
         assert reviewers.invocations == [], "the env flag must not bypass fail-closed"
+
+    def test_registered_token_in_the_pr_title_never_reaches_a_seat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The PR TITLE is an outbound component (rendered into the metadata block): a registered
+        token in it must be redacted on the pr_info passed to the prompt."""
+        token = "Zsyntheticregistrant"
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
+        gh = FakeGh()
+        gh.title = f"Fix the statement about {token}"
+        result, _gh, reviewers, _note = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
+        assert reviewers.invocations, "expected dispatch"
+        for _seat_id, _family, prompt in reviewers.invocations:
+            assert token not in prompt, "a registered token in the PR title must not reach a seat"
+
+    def test_redaction_survives_a_truncating_diff(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A token in a diff large enough to force truncation is still absent from the packet —
+        redaction runs on the FULL diff before truncate_diff, so a mid-line cut cannot leak it."""
+        token = "Zsyntheticregistrant"
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
+        gh = FakeGh()
+        filler = "".join(f"+filler line {i} with ordinary content\n" for i in range(4000))
+        assert len(filler) > dispatch.MAX_DIFF_CHARS, "fixture must exceed the truncation budget"
+        gh.diff = (
+            "diff --git a/about.md b/about.md\n--- a/about.md\n+++ b/about.md\n"
+            + filler
+            + f"-the statement concerning {token} is withdrawn\n"
+        )
+        result, _gh, reviewers, _note = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
+        assert reviewers.invocations, "expected dispatch"
+        for _seat_id, _family, prompt in reviewers.invocations:
+            assert token not in prompt, "a token must not survive a truncating diff"
+
+    def test_empty_registry_gets_a_distinct_fail_closed_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty-but-readable registry fails closed with a DISTINCT status from an unreadable one."""
+
+        def _empty(*_a: Any, **_k: Any) -> list[str]:
+            raise dispatch.review_team.EmptyPrincipalRegistryError("registry is empty (fixture)")
+
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _empty)
+        result, _gh, reviewers, _note = _review(tmp_path, reviewers=RecordingReviewers())
+        assert result["status"] == "packet_redaction_registry_empty", result
+        assert reviewers.invocations == []
+
+
+class TestVaultArtifactRedaction:
+    """Build-1 component / #5030 (d): the vault-only artifact path redacts and fails closed too."""
+
+    def test_vault_artifact_redacts_a_registered_token_from_every_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        token = "Zsyntheticregistrant"
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
+        root, vault, _note, files = _artifact_setup(tmp_path)
+        files[0].write_text(f"# Census\n\na statement concerning {token}\n", encoding="utf-8")
+        reviewers = RecordingReviewers()
+        kwargs = _artifact_kwargs(tmp_path, vault, root, reviewer_runner=reviewers)
+        result = dispatch.review_artifact("vault-row", files, **kwargs)
+        assert reviewers.invocations, "expected artifact dispatch"
+        for _seat_id, _family, prompt in reviewers.invocations:
+            assert token not in prompt, "a registered token must not reach a seat via the artifact"
+        assert (result.get("dossier") or {}).get("packet_redactions", 0) >= 1, result
+
+    def test_vault_artifact_fails_closed_and_sends_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raise(*_a: Any, **_k: Any) -> list[str]:
+            raise dispatch.review_team.PacketRedactionError("registry unreadable (fixture)")
+
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _raise)
+        result, reviewers, _note, _files = _review_artifact(tmp_path)
+        assert result["status"] == "packet_redaction_registry_unreadable", result
+        assert reviewers.invocations == [], (
+            "no artifact packet may be sent when redaction can't run"
+        )
