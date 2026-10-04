@@ -16,10 +16,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCANNER = ROOT / "scripts" / "check-legal-name-leaks.sh"
 
-# The demo surface this row's gap scrub cleaned (opaque-id names only).
+# The files this row's gap scrub cleaned (opaque-id names only).
 SCRUBBED = (
     "scripts/render_principal_c1_demo.py",
     "hapax-logos/src/demo/scripts/principal-c1.ts",
+    "docs/research/2026-05-01-arcface-principal-a1-matcher-reconcile.md",
 )
 
 
