@@ -711,7 +711,7 @@ class TestStatusGating:
             home=tmp_path,
         )
         assert result.returncode == 2
-        assert "cannot verify mutation_scope_refs" in result.stderr
+        assert "does not verify shell source mutations" in result.stderr
 
     def test_git_commit_not_treated_as_unscoped_source_edit(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="in_progress", assigned="alpha")
