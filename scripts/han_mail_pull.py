@@ -13,6 +13,7 @@ import html
 import json
 import os
 import re
+import secrets
 import subprocess
 import tempfile
 import time
@@ -21,16 +22,22 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from email import policy
 from email.parser import BytesHeaderParser
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote
 
 import httpx
 
+from shared import chanc
+
 MAX_BYTES = 256 * 1024
 POLL_SECONDS = 300
-LIMITS = {"lists": 288, "gets": 500, "deletes": 500}
+LIMITS = {"lists": 288, "gets": 500, "deletes": 500, "receipts": 500}
 HASH = re.compile(r"[0-9a-f]{64}\Z")
+# A usable reply address for the intake auto-reply (§5: sent only to the address the message came
+# from). Deliberately conservative — a non-address suppresses the reply rather than guessing.
+ADDRESS = re.compile(r"\A[^@\s]+@[^@\s]+\.[^@\s]+\Z")
 QUARANTINE = Path.home() / "hapax-state/han-mail/quarantine"
 DEPLOYMENT = Path(__file__).resolve().parents[1] / "workers/han-mail-receive/deployment.toml"
 
@@ -112,6 +119,46 @@ def subject_only(raw: bytes) -> str:
         return "(subject unavailable)"
 
 
+def _reply_address(value: object) -> str:
+    """The bare address to reply to, or "" if there is none usable. Suppresses rather than guesses."""
+    if not isinstance(value, str):
+        return ""
+    _, addr = parseaddr(value)
+    return addr if ADDRESS.match(addr) else ""
+
+
+def intake_signals(raw: bytes) -> dict:
+    """Header-only signals the receipt step needs: the Message-ID (for ``In-Reply-To``) and whether
+    the message looks auto-generated or bulk, which suppresses the auto-reply so a receipt never
+    starts a mail loop (§5). Parsed from the SAME bounded header block as the subject; never the
+    body."""
+    boundaries = [i for marker in (b"\r\n\r\n", b"\n\n") if (i := raw.find(marker)) >= 0]
+    if not boundaries or min(boundaries) > 32768:
+        return {"message_id": "", "loop_indicated": True}  # unparseable headers: do not auto-reply
+    headers = BytesHeaderParser(policy=policy.default).parsebytes(
+        raw[: min(boundaries)] + b"\r\n\r\n"
+    )
+
+    def header(name: str) -> str:
+        try:
+            value = headers.get(name)
+        except (ValueError, LookupError):
+            return ""
+        return "" if value is None else safe_text(value, 320)
+
+    auto_submitted = header("Auto-Submitted").lower()
+    precedence = header("Precedence").lower()
+    loop_indicated = (
+        (bool(auto_submitted) and auto_submitted != "no")
+        or precedence in {"bulk", "list", "junk", "auto_reply"}
+        or bool(header("List-Id"))
+        or bool(header("List-Unsubscribe"))
+        or bool(header("X-Autoreply"))
+        or bool(header("X-Autorespond"))
+    )
+    return {"message_id": header("Message-ID"), "loop_indicated": loop_indicated}
+
+
 def verify_local(path: Path, key: str, size: int) -> None:
     if path.is_symlink():
         raise IntakeError("Refusing symlink in quarantine")
@@ -150,6 +197,7 @@ def store_item(root: Path, key: str, raw: bytes, metadata: dict) -> dict:
     if not isinstance(auth, dict):
         raise IntakeError("Invalid authentication metadata; remote copy retained")
     allowed = {"pass", "fail", "softfail", "neutral", "none", "temperror", "permerror", "unknown"}
+    signals = intake_signals(raw)
     item = {
         "type": "han.mail.foreign-data",
         "schema": 1,
@@ -170,6 +218,14 @@ def store_item(root: Path, key: str, raw: bytes, metadata: dict) -> dict:
         "raw_file": f"{key}.eml",
         "notified": False,
         "notification_attempts": 0,
+        # §5 receipt bookkeeping. The handle/receipt_id are filled when the receipt is minted;
+        # receipt_issued flips only on a successful send; receipt_suppressed records a terminal
+        # no-reply decision (auto-generated/bulk mail, or no usable reply address) so it is not
+        # retried. message_id rides into the reply's In-Reply-To.
+        "message_id": signals["message_id"],
+        "loop_indicated": signals["loop_indicated"],
+        "receipt_issued": False,
+        "receipt_suppressed": None,
     }
     write_json(item_path, item)
     return item
@@ -298,8 +354,102 @@ def notify_pending(root: Path, notify: Callable[..., bool]) -> int:
     return 0
 
 
+def emit_receipts(
+    root: Path,
+    budget: Budget,
+    clock: Callable[[], float] = time.time,
+    *,
+    send_receipt: Callable[..., bool],
+    persist_intake: Callable[..., None],
+    key: bytes,
+    terms_digest: str,
+    withdrawal_instructions: str,
+) -> int:
+    """Issue at most one §5 intake receipt per quarantined message, as a side effect of the pull.
+
+    Idempotent: each item is handled exactly once. The random handle (D4) and the create-once intake
+    record are established BEFORE the first send and made durable on the item, so a failed send, a
+    replayed store, or a re-run reuses the same handle and never produces a second receipt.
+    ``receipt_issued`` flips only on a successful send; a terminal suppression (auto-generated or
+    bulk mail, or no usable reply address) is recorded and never retried. Each send reserves a budget
+    leg (B3/B9); when the cap is reached the remaining items wait for the next pull.
+
+    ``send_receipt`` and ``persist_intake`` are injected: the keeper-signed create-once receipt record
+    and the SMTP send are the Worker's I/O, wired by the caller. ``key`` is the keeper key for the
+    salted commitment (D4).
+    """
+    issued = 0
+    for path in sorted(root.glob("*.json")):
+        if not HASH.fullmatch(path.stem):
+            continue
+        item = read_json(path)
+        if item.get("receipt_issued") or item.get("receipt_suppressed"):
+            continue
+        content_digest = path.stem
+        reply_to = _reply_address(item.get("sender", ""))
+        if item.get("loop_indicated") or not reply_to:
+            # §5 suppression: never auto-reply to auto-generated/bulk mail (a loop) or when there is
+            # no usable reply address. Terminal — recorded so it is not retried.
+            item["receipt_suppressed"] = (
+                "loop-indicated" if item.get("loop_indicated") else "no-reply-address"
+            )
+            write_json(path, item)
+            continue
+        # Reserve a send leg first (B3/B9); when the cap is reached the remaining items wait for the
+        # next pull, and no intake record is minted for a message whose receipt cannot be sent now.
+        if not budget.reserve("receipts"):
+            break
+        # Mint the random handle and persist the intake binding + receipt record ONCE, durable before
+        # the send, so a failed send or a re-run reuses them (one receipt per inbound).
+        if not item.get("handle"):
+            handle = chanc.generate_handle()
+            salt = secrets.token_bytes(16)
+            commitment = chanc.salted_commitment(content_digest, salt=salt, key=key)
+            receipt = chanc.build_intake_receipt(
+                handle=handle,
+                content_digest=content_digest,
+                issued_at=datetime.fromtimestamp(clock(), UTC),
+                terms_digest=terms_digest,
+            )
+            persist_intake(
+                handle=handle,
+                content_digest=content_digest,
+                commitment=commitment,
+                salt_hex=salt.hex(),
+                from_address=reply_to,
+                receipt=receipt,
+            )
+            item["handle"] = handle
+            item["receipt_id"] = receipt["receipt_id"]
+            item["receipt_issued_at"] = receipt["issued_at"]
+            write_json(path, item)
+        receipt = chanc.build_intake_receipt(
+            handle=item["handle"],
+            content_digest=content_digest,
+            issued_at=datetime.fromisoformat(item["receipt_issued_at"]),
+            terms_digest=terms_digest,
+        )
+        subject, body = chanc.format_receipt_email(
+            receipt, withdrawal_instructions=withdrawal_instructions
+        )
+        if send_receipt(
+            to=reply_to,
+            subject=subject,
+            body=body,
+            headers={"Auto-Submitted": "auto-replied", "In-Reply-To": item.get("message_id", "")},
+        ):
+            item["receipt_issued"] = True
+            write_json(path, item)
+            issued += 1
+    return issued
+
+
 def run_once(
-    kv: KV, root: Path, notify: Callable[..., bool], clock: Callable[[], float] = time.time
+    kv: KV,
+    root: Path,
+    notify: Callable[..., bool],
+    clock: Callable[[], float] = time.time,
+    emit: Callable[..., int] | None = None,
 ) -> dict:
     private_directory(root)
     if root.stat().st_mode & 0o077:
@@ -327,9 +477,15 @@ def run_once(
             failure = exc
         # Durable pending notifications survive deletes, outages and process crashes.
         sent = notify_pending(root, notify)
+        # Receipt emission is a batch side effect too (§5); its durable per-item flags survive a
+        # later pull failure, so it runs on the same best-effort footing as the notification.
+        emitted = emit(root, budget, clock) if emit is not None else None
         if failure is not None:
             raise failure
-        return {"pulled": pulled, "notified": sent}
+        result = {"pulled": pulled, "notified": sent}
+        if emitted is not None:
+            result["receipts"] = emitted
+        return result
 
 
 class CloudflareKV:

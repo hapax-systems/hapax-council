@@ -5479,7 +5479,12 @@ _ = (_rsp_build_bundle, _rsp_resource_summary_for_boundary, _rsp_claim_cites_fre
 
 # c1-chanc-build1-20261004: the CHANC core (shared/chanc.py) is slice 1; its callers are the
 # sequenced build-1 wiring slices — component 1 (receipt emission in han_mail_pull) and component 3
-# (the withdrawal reply path). Remove this bridge when the consumer slices land.
+# (the withdrawal reply path). Component 1 lands the discipline but injects its two terminal effects
+# (the keeper-signed create-once record and the SMTP send); its production caller is slice B, which
+# wires ``main()``. Until then ``emit_receipts`` has no source caller. Remove when the slices land.
+from scripts.han_mail_pull import (  # noqa: E402
+    emit_receipts as _hmp_emit_receipts,
+)
 from shared.chanc import (  # noqa: E402
     classify_withdrawal as _chanc_classify_withdrawal,
 )
@@ -5498,4 +5503,5 @@ _ = (
     _chanc_generate_handle,
     _chanc_keyed_digest,
     _chanc_verify_commitment,
+    _hmp_emit_receipts,
 )
