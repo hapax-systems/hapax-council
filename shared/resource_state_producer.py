@@ -4,19 +4,13 @@ Re-scoped task ``estate-resource-state-determinative-projection-20261004``; gove
 ``frame/ESTATE-KNOWLEDGE-PRODUCERS-20261004.md``; contract
 ``reins-text-context-producer-contract-2026-06-30.md``.
 
-This module reduces read-only estate observations (VRAM/compute per host and tier, loaded models and
-WHY, declared endpoints, remote entitlements, usage) to typed facts in a ``reins_context_fact_bundle``
-that ``reins/api/reins_context.py`` projects per audience. It is a PRODUCER only: it reads observations
-and emits facts; it never calls a model, mutates estate state, sends, or injects.
-
-Honest missing-state is load-bearing (contract §Missing-State; reins AIR default-deny):
-
-  * a declared endpoint that is dead  -> value_state ``absent``,  classification **LOST**
-  * a loaded model with no admitting row -> value_state ``hold``, classification **UNEXPLAINED**
-  * a field past its freshness window -> freshness_state ``stale`` (NEVER a fabricated live value)
-  * an unreachable host -> value_state ``dark``
-
-UNEXPLAINED and LOST are fact states, not a separate alarm system.
+Reduces read-only estate observations to typed facts in a ``reins_context_fact_bundle`` that
+``reins/api/reins_context.py`` projects per audience. PRODUCER only: reads observations and emits
+facts; never calls a model, mutates state, sends, or injects. Honest missing-state is load-bearing
+(contract §Missing-State; reins AIR default-deny): a dead declared endpoint -> ``absent`` (**LOST**);
+a loaded model with no admitting row -> ``hold`` (**UNEXPLAINED**); a field past its freshness window
+-> ``stale`` (never a fabricated live value); an unreachable host -> ``dark``. These are fact states,
+not a separate alarm system.
 """
 
 from __future__ import annotations
@@ -147,8 +141,8 @@ def build_bundle(
         "remote_entitlement": [],
         "usage": [],
     }
-    # capability_shape (BUILD item 4) is deferred to this row's next slice (seat disposition, review
-    # #5027): no empty bucket is emitted, so the bundle never signals a capability that does not exist.
+    # capability_shape deferred to this row's next slice (seat disposition, review #5027): no empty
+    # bucket is emitted, so the bundle never signals a capability that does not exist.
 
     # --- VRAM / memory per host and tier (hearth classed separately in provenance) ---
     HEARTH = {"beelink1"}
