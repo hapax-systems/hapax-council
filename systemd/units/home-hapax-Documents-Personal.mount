@@ -26,5 +26,7 @@ Type=nfs4
 Options=rw,hard,_netdev,noatime,nofail,x-systemd.mount-timeout=30,nfsvers=4.2
 TimeoutSec=45
 
-[Install]
-WantedBy=remote-fs.target
+# NO [Install] SECTION BY DESIGN: only the paired .automount is enabled (into
+# remote-fs.target); it pulls this .mount ON DEMAND. An install target here would let
+# `systemctl enable` fire the mount directly at boot via remote-fs.target, bypassing the
+# on-demand automount and re-creating the boot race (#5021, claude-1 major 1).
