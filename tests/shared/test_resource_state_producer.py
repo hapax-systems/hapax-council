@@ -1,45 +1,24 @@
-"""Tests for shared.resource_state_producer — the first producer into the Reins representation
+"""Core tests for shared.resource_state_producer — the first producer into the Reins representation
 (task estate-resource-state-determinative-projection-20261004; review #5027 fix-first round).
 
 The load-bearing contract is honest missing-state: LOST (dead declared endpoint), UNEXPLAINED (a
 loaded model — from /v1/models, NEVER a RAM-occupancy heuristic — with no admitting row), and
-stale-not-live. The AIR default-deny contract ("public_or_air -> 0 facts") is witnessed in CI against
-a vendored copy of reins_context, with a drift guard against the governed reins when it is importable.
-Both shipped scripts are exercised.
+stale-not-live. The reins AIR-projection contract tests (public_or_air -> 0) and the shipped-script
+tests live in the stacked PR (`estate-resource-state-scripts-contract-tests-20261004`) to keep this
+producer PR under the review size cap; both bodies cross-reference.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import json
-import os
-import subprocess
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-
-import pytest
 
 from shared import resource_state_producer as rsp
 
-REPO = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 10, 4, 6, 0, 0, tzinfo=UTC)
 
 
 def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _load_module(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-VENDORED_REINS = _load_module(
-    REPO / "tests" / "fixtures" / "reins_context_vendored.py", "reins_context_vendored"
-)
 
 
 # --- classifiers (the mutation-verify targets) ------------------------------------------------------
@@ -119,8 +98,7 @@ def test_loaded_comes_from_v1_models_never_ram_occupancy() -> None:
     b = rsp.build_bundle(observation=_observation(), now=NOW)
     loaded = b["facts"]["loaded_model"]
     subjects = {f["subject_ref"] for f in loaded}
-    assert _loaded_subject() in subjects  # the real /v1/models id is a loaded fact
-    # no loaded_model fact is derived from RAM occupancy of a host without a /v1/models probe
+    assert _loaded_subject() in subjects
     assert not any("spark" in s or "podium" in s or "gx10" in s for s in subjects)
     assert all(f["provenance"]["source"].startswith("/v1/models") for f in loaded)
 
@@ -218,119 +196,3 @@ def test_claim_must_cite_a_fresh_resource_fact() -> None:
 def test_boundary_summary_names_lost_and_unexplained() -> None:
     s = rsp.resource_summary_for_boundary(rsp.build_bundle(observation=_observation(), now=NOW))
     assert "LOST" in s and "UNEXPLAINED" in s and "Cite a fact id" in s
-
-
-# --- the reins contract, witnessed in CI against the vendored fixture (review #5027 finding 6) -------
-
-
-def test_air_default_deny_public_or_air_is_zero() -> None:
-    """Witnessed in CI (no skip): internal resource facts are DENIED on the public/on-air channel, so
-    they can never leak through a derived channel. AIR default-deny is the contract."""
-    b = rsp.build_bundle(observation=_observation(), now=NOW)
-    assert VENDORED_REINS.project(b, "public_or_air")["fact_count"] == 0
-    op = VENDORED_REINS.project(b, "operator_private")
-    assert op["fact_count"] > 0
-    # an UNEXPLAINED (hold) fact projects a hold affordance, never a live row
-    assert any(any(e["state"] == "hold" for e in a["affordances"]) for a in op["affordances"])
-
-
-def test_a_fact_missing_its_air_decision_is_dropped() -> None:
-    """Defense in depth: a fact with no air decision for an audience is denied (dropped), not allowed."""
-    bundle = {
-        "facts": {"x": [{"fact_id": "x:1", "subject_ref": "x:1", "air": {}}]},
-        "evaluation": {"bundle_state": "partial"},
-    }
-    assert VENDORED_REINS.project(bundle, "operator_private")["fact_count"] == 0
-
-
-def test_vendored_reins_does_not_drift_from_governed() -> None:
-    """Drift guard: when the governed reins is importable (HAPAX_REINS_ROOT), its projection of our
-    bundle must match the vendored fixture's, so the vendored copy cannot silently diverge."""
-    root = os.environ.get("HAPAX_REINS_ROOT", "").strip()
-    if not root:
-        pytest.skip("HAPAX_REINS_ROOT unset; vendored fixture carries the CI contract")
-    if os.path.expanduser(root) not in sys.path:
-        sys.path.insert(0, os.path.expanduser(root))
-    try:
-        import reins_context as governed  # noqa: PLC0415
-    except ImportError:
-        pytest.skip("governed reins_context not importable at HAPAX_REINS_ROOT")
-    b = rsp.build_bundle(observation=_observation(), now=NOW)
-    for aud in VENDORED_REINS.AUDIENCES:
-        assert (
-            governed.project(b, aud)["fact_count"] == VENDORED_REINS.project(b, aud)["fact_count"]
-        )
-
-
-# --- both shipped scripts (review #5027 finding 7) --------------------------------------------------
-
-
-def _run(args: list[str], env: dict) -> subprocess.CompletedProcess[str]:
-    base = {"PATH": os.environ["PATH"]}
-    base.update(env)
-    return subprocess.run(args, capture_output=True, text=True, env=base, timeout=60)
-
-
-def _write_observation(tmp_path: Path) -> Path:
-    obs = tmp_path / "obs.jsonl"
-    obs.write_text(json.dumps(_observation()) + "\n", encoding="utf-8")
-    return obs
-
-
-def test_script_hapax_resources_boundary_summary(tmp_path: Path) -> None:
-    obs = _write_observation(tmp_path)
-    r = _run(
-        [sys.executable, str(REPO / "scripts" / "hapax-resources")],
-        {"HAPAX_CAPACITY_OBS": str(obs)},
-    )
-    assert r.returncode == 0, r.stderr
-    assert "resource-state" in r.stdout and "Cite a fact id" in r.stdout
-
-
-def test_script_hapax_resources_json_fails_loud_without_governed_reins(tmp_path: Path) -> None:
-    """Review #5027 findings 4, 5: with no governed reins, --json must fail loud (a refused state with a
-    next action, exit 3) — never the raw bundle, never the mutable dev tree."""
-    obs = _write_observation(tmp_path)
-    r = _run(
-        [sys.executable, str(REPO / "scripts" / "hapax-resources"), "--json"],
-        {"HAPAX_CAPACITY_OBS": str(obs), "HAPAX_REINS_ROOT": ""},
-    )
-    assert r.returncode == 3, r.stderr
-    payload = json.loads(r.stdout)
-    assert payload["value_state"] == "refused"
-    assert "HAPAX_REINS_ROOT" in payload["next_action"]
-
-
-def test_script_hapax_resources_json_projects_through_governed_reins(tmp_path: Path) -> None:
-    """With HAPAX_REINS_ROOT pointing at a governed reins_context, --json projects (operator channel)."""
-    reins_dir = tmp_path / "reins_api"
-    reins_dir.mkdir()
-    (reins_dir / "reins_context.py").write_text(
-        (REPO / "tests" / "fixtures" / "reins_context_vendored.py").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    obs = _write_observation(tmp_path)
-    r = _run(
-        [sys.executable, str(REPO / "scripts" / "hapax-resources"), "--json"],
-        {"HAPAX_CAPACITY_OBS": str(obs), "HAPAX_REINS_ROOT": str(reins_dir)},
-    )
-    assert r.returncode == 0, r.stderr
-    proj = json.loads(r.stdout)
-    assert proj["audience"] == "operator_private"
-    assert proj["fact_count"] > 0
-
-
-def test_script_hapax_capacity_observer_appends_valid_json(tmp_path: Path) -> None:
-    """The observer runs read-only and appends one valid JSON observation with the producer's input
-    keys, even where probes find nothing (no GPU/ssh/tmux in CI)."""
-    obs = tmp_path / "cap.jsonl"
-    r = _run(
-        ["bash", str(REPO / "scripts" / "hapax-capacity-observer")],
-        {"HAPAX_CAPACITY_OBS": str(obs)},
-    )
-    assert r.returncode == 0, r.stderr
-    lines = [line for line in obs.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) == 1
-    rec = json.loads(lines[0])
-    for key in ("ts", "loaded_models", "local_endpoints", "serving_procs", "fleet_memory", "gpus"):
-        assert key in rec
