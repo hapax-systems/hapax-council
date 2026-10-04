@@ -151,6 +151,22 @@ PUBLIC_GATE_TRUSTED_AUTHORITY_ISSUERS = frozenset(
 PUBLIC_GATE_AUTHORITY_SIGNATURE_PREFIX = "hmac-sha256:"
 PUBLIC_GATE_AUTHORITY_CASE_RE = re.compile(r"\A(?:CASE|REQ)-[A-Za-z0-9][A-Za-z0-9_.:-]{2,}\Z")
 PUBLIC_GATE_REVIEW_HEAD_RE = re.compile(r"\A[0-9a-f]{40}\Z", re.IGNORECASE)
+# A vault-artifact review acceptance binds to the artifact's content head — the
+# ``artifact-sha256:<64-hex>`` digest over its manifest (shared.review_artifact_manifest.
+# artifact_head_sha) — not a 40-hex git head. Both forms are valid public-gate heads; the
+# head-equality check (``_authority_head_matches``) still requires the receipt's head to equal
+# the caller's expected head, so a git-PR receipt can never satisfy a vault expected head or
+# vice versa, and a wrong artifact sha still mismatches.
+PUBLIC_GATE_ARTIFACT_HEAD_RE = re.compile(r"\Aartifact-sha256:[0-9a-f]{64}\Z", re.IGNORECASE)
+
+
+def _is_valid_public_gate_head(value: str) -> bool:
+    return (
+        PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(value) is not None
+        or PUBLIC_GATE_ARTIFACT_HEAD_RE.fullmatch(value) is not None
+    )
+
+
 PUBLIC_GATE_EXPLICIT_EXPECTED_HEAD_KEYS = (
     "expected_head_sha",
     "release_head_sha",
@@ -334,7 +350,7 @@ def _normalized_expected_head_sha(expected_head_sha: str | None) -> str | None:
     if expected_head_sha is None:
         return None
     normalized = expected_head_sha.strip().casefold()
-    if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(normalized) is None:
+    if not _is_valid_public_gate_head(normalized):
         return None
     return normalized
 
@@ -843,7 +859,7 @@ def _authority_head_matches(
     expected_head_sha: str | None,
 ) -> bool:
     observed = _direct_text_value(data, "head_sha").casefold()
-    if PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(observed) is None:
+    if not _is_valid_public_gate_head(observed):
         return False
     return expected_head_sha is None or hmac.compare_digest(observed, expected_head_sha)
 

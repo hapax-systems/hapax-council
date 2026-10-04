@@ -53,6 +53,7 @@ def _write_review_evidence(
     reviewers: list[dict[str, str]] | None = None,
     quorum_required: int = 1,
     accept_count: int = 1,
+    head_sha: str = "a" * 40,
 ) -> None:
     del root
     authority_root = public_gate_receipts._public_gate_authority_roots()[0]
@@ -60,7 +61,7 @@ def _write_review_evidence(
     payload = {
         "dossier_schema": 1,
         "task_id": TASK_ID,
-        "head_sha": "a" * 40,
+        "head_sha": head_sha,
         "review_team_verdict": "quorum-accept",
         "quorum_required": quorum_required,
         "accept_count": accept_count,
@@ -851,4 +852,46 @@ def test_rejects_root_escape_and_malformed_yaml(tmp_path: Path) -> None:
         "public-gate:bad.yaml",
         expected_gate=GATE,
         roots=(tmp_path,),
+    )
+
+
+# ── Vault-artifact head binding (artifact-sha256), cc-task c1-cross-post fix ──
+# A vault-artifact review acceptance binds to an artifact-sha256 head (the manifest
+# digest), not a 40-hex git head. The gate must accept that head when the expected
+# head is the artifact head, and must still reject a wrong artifact sha or a missing
+# gate. See shared/review_artifact_manifest.artifact_head_sha.
+ARTIFACT_HEAD = "artifact-sha256:" + "b" * 64
+ARTIFACT_HEAD_WRONG = "artifact-sha256:" + "c" * 64
+
+
+def test_accepts_vault_artifact_sha256_head(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(tmp_path, receipt_name="receipt-1.yaml", head_sha=ARTIFACT_HEAD)
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha=ARTIFACT_HEAD,
+    )
+
+
+def test_rejects_wrong_vault_artifact_sha(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(tmp_path, receipt_name="receipt-1.yaml", head_sha=ARTIFACT_HEAD)
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha=ARTIFACT_HEAD_WRONG,
+    )
+
+
+def test_rejects_vault_artifact_missing_gate(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(tmp_path, receipt_name="receipt-1.yaml", head_sha=ARTIFACT_HEAD)
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate="source_refs_present",
+        roots=(tmp_path,),
+        expected_head_sha=ARTIFACT_HEAD,
     )
