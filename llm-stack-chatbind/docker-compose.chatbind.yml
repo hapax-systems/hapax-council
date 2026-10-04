@@ -10,10 +10,11 @@
 # here, never inlined, and NEVER read from ~/llm-stack/.env.
 services:
   chatbind:
-    # Reuse the estate LiteLLM image. SEAT: pin by digest
-    # (ghcr.io/berriai/litellm@sha256:<digest>) at build; the moving tag is shown only for
-    # provenance and must be replaced with the resolved digest before start.
-    image: ghcr.io/berriai/litellm:main-stable
+    # Reuse the estate LiteLLM image, pinned by DIGEST (not the moving :main-stable tag) so it
+    # cannot change under the binding between review and start. Digest resolved 2026-10-04 from
+    # ghcr.io/berriai/litellm:main-stable; the guard (test_image_is_pinned_by_digest) enforces the
+    # @sha256 form. The seat re-resolves/confirms the digest at activation.
+    image: ghcr.io/berriai/litellm@sha256:625981c83410a3ea68eb0697590a57ec1d764d634514d54fa5db0591077ee839  # pragma: allowlist secret - image digest, not a secret
     container_name: chatbind
     restart: "no"
     command: ["--config", "/app/config.yaml", "--port", "4100"]
@@ -22,7 +23,6 @@ services:
       - "127.0.0.1:4100:4100"
     volumes:
       - ./chatbind-config.yaml:/app/config.yaml:ro
-      - ./ledger:/app/ledger
     # EXACTLY the two FileStore-resolved secrets, passthrough from the process env set by
     # secret_env_from_filestore.py. No DATABASE_URL, no REDIS, no LANGFUSE, no master key.
     environment:

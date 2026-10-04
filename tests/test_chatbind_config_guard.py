@@ -13,6 +13,7 @@ test reads the committed config/compose; it starts nothing.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -74,14 +75,42 @@ def test_model_list_has_exactly_two_entries():
         )
 
 
+# Every LiteLLM fallback/alias key form — any one opens a second route out of the two pins.
+_FALLBACK_KEY_FORMS = (
+    "fallbacks",
+    "default_fallbacks",
+    "content_policy_fallbacks",
+    "context_window_fallbacks",
+    "model_group_alias",
+)
+
+
 def test_no_fallbacks_aliases_or_wildcards():
     cfg = _load(CONFIG)
     router = cfg.get("router_settings") or {}
-    assert "fallbacks" not in router, "no fallbacks allowed"
-    assert "default_fallbacks" not in router, "no default_fallbacks allowed"
-    assert "model_group_alias" not in cfg and "model_group_alias" not in router, (
-        "no model_group_alias allowed"
-    )
+    for key in _FALLBACK_KEY_FORMS:
+        assert key not in router, f"no router_settings.{key} allowed"
+        assert key not in cfg, f"no top-level {key} allowed"
+
+
+def test_litellm_params_model_has_no_wildcard_or_provider_alias():
+    """The upstream route itself (litellm_params.model), not only model_name, must be a concrete
+    `provider/model` — a wildcard like `openai/*` or `featherless_ai/*` opens the PAYG-leak route
+    this binding exists to prevent (the fast-tier-alias leak, inverted)."""
+    cfg = _load(CONFIG)
+    for entry in cfg.get("model_list") or []:
+        params = entry.get("litellm_params") or {}
+        model = str(params.get("model") or "")
+        assert model, f"every model entry needs litellm_params.model: {entry.get('model_name')!r}"
+        assert "*" not in model, f"no wildcard upstream route allowed: {model!r}"
+        # A concrete provider/model has a provider segment and a non-empty, non-wildcard id.
+        provider, _, upstream_id = model.partition("/")
+        assert provider and upstream_id and "*" not in upstream_id, (
+            f"litellm_params.model must be a concrete provider/model, not an alias/wildcard: {model!r}"
+        )
+        assert provider.lower() not in {"fast", "balanced", "cheap", "default"}, (
+            f"no tier-alias provider allowed: {model!r}"
+        )
 
 
 def test_no_database_cache_master_key_or_callbacks():
@@ -132,7 +161,16 @@ def test_compose_has_only_the_two_secrets_and_no_backing_services():
         for k, v in env.items():
             assert v in (None, "", f"${{{k}}}"), f"compose must not inline a secret value for {k}"
     else:
-        env_names = {str(e).split("=", 1)[0] for e in env}
+        # List-style entries are passthrough only. Name-only checking would let an entry that
+        # carries an inline value (NAME then "=" then a literal secret) through, so reject any
+        # inline VALUE: an entry may be a bare name, `NAME=` (empty), or `NAME=${NAME}` (shell
+        # passthrough) — never a committed literal after the `=`.
+        for e in env:
+            name, sep, value = str(e).partition("=")
+            assert not sep or value in ("", f"${{{name}}}"), (
+                f"compose must not inline a secret value in a list env entry: {e!r}"
+            )
+        env_names = {str(e).partition("=")[0] for e in env}
     assert env_names == ALLOWED_ENV_SECRETS, (
         f"chatbind service env must be exactly {sorted(ALLOWED_ENV_SECRETS)}; found {sorted(env_names)}"
     )
@@ -140,3 +178,66 @@ def test_compose_has_only_the_two_secrets_and_no_backing_services():
     flat = yaml.safe_dump(compose).lower()
     for banned in ("database_url", "master_key", "redis", "langfuse", "store_model_in_db"):
         assert banned not in flat, f"compose must not reference {banned}"
+
+
+def _chatbind_service() -> dict:
+    compose = _load(COMPOSE)
+    services = compose.get("services") or {}
+    svc = services.get("chatbind")
+    assert isinstance(svc, dict), "compose must define the chatbind service"
+    return svc
+
+
+def test_ports_are_loopback_only():
+    """With no master_key, the loopback port prefix is the ONLY access control; the guard must
+    assert it (claude-1 major). A host-published port with no loopback prefix would expose the
+    proxy to the network."""
+    svc = _chatbind_service()
+    ports = svc.get("ports") or []
+    assert ports, "chatbind must publish its port on loopback only"
+    for entry in ports:
+        if isinstance(entry, dict):
+            host_ip = str(entry.get("host_ip") or "")
+            assert host_ip in {"127.0.0.1", "::1"}, f"port must bind loopback only: {entry!r}"
+        else:
+            assert str(entry).startswith(("127.0.0.1:", "::1:")), (
+                f"port must bind loopback only (127.0.0.1: prefix): {entry!r}"
+            )
+
+
+def test_image_is_pinned_by_digest():
+    """The image must be digest-pinned (`@sha256:<64hex>`), not a moving tag — the README/PR claim
+    pinned-by-digest and nothing but this guard enforces it (glm-1 major). A moving `:main-stable`
+    tag can change under the binding between review and start."""
+    svc = _chatbind_service()
+    image = str(svc.get("image") or "")
+    assert re.search(r"@sha256:[0-9a-f]{64}$", image), (
+        f"chatbind image must be pinned by digest (name@sha256:<64 hex>), not a moving tag: {image!r}"
+    )
+
+
+def test_featherless_non_default_user_agent():
+    """README names the Featherless non-default User-Agent a guard invariant (claude-1 major)."""
+    cfg = _load(CONFIG)
+    entry = next(
+        (m for m in cfg.get("model_list") or [] if m.get("model_name") == "featherless-builder"),
+        None,
+    )
+    assert entry is not None, "the featherless-builder model entry must exist"
+    headers = (entry.get("litellm_params") or {}).get("extra_headers") or {}
+    assert headers.get("User-Agent") == "hapax-chatbind/1", (
+        f"featherless upstream must send the non-default UA hapax-chatbind/1; got {headers!r}"
+    )
+
+
+def test_verboo_concurrency_cap():
+    """README names the Verboo max_parallel_requests: 2 cap a guard invariant (claude-1 major)."""
+    cfg = _load(CONFIG)
+    entry = next(
+        (m for m in cfg.get("model_list") or [] if m.get("model_name") == "verboo-builder"),
+        None,
+    )
+    assert entry is not None, "the verboo-builder model entry must exist"
+    assert (entry.get("litellm_params") or {}).get("max_parallel_requests") == 2, (
+        "verboo upstream must cap concurrency at max_parallel_requests: 2 (flat-plan rate limit)"
+    )

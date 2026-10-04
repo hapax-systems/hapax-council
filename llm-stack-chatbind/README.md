@@ -14,11 +14,12 @@ proxy, and it does not touch `~/llm-stack` or its `.env`.
   guard invariant (`tests/test_chatbind_config_guard.py`): exactly two model pins, no
   fallbacks/aliases/wildcards, no database/cache/master-key/callbacks/budgets/virtual-keys,
   `drop_params` on, `modify_params` off, `num_retries` 0, Featherless non-default UA, Verboo
-  concurrency 2. The per-call JSONL ledger is the only state.
-- `docker-compose.chatbind.yml` — the container (reuses `ghcr.io/berriai/litellm`, pin by digest
-  at build), loopback `127.0.0.1:4100`, exactly the two FileStore secrets passed through, no
-  backing services.
-- `ledger/` — per-call JSONL ledger mount (created at start).
+  concurrency 2. It keeps **no state**: no cache, no callbacks, no database. A LiteLLM per-call
+  ledger would need a callback, which the guard forbids — spend/identity witnessing stays with the
+  calling harness and the headroom ledger (#4698), not this proxy.
+- `docker-compose.chatbind.yml` — the container (reuses `ghcr.io/berriai/litellm`, **pinned by
+  digest**; the guard enforces the `@sha256` form), loopback `127.0.0.1:4100`, exactly the two
+  FileStore secrets passed through, no backing services.
 
 ## The two model pins are a SEAT choice
 `chatbind-config.yaml` carries candidate defaults (measured live 2026-10-03) marked `SEAT PIN`.

@@ -38,10 +38,10 @@ litellm_settings:
   drop_params: true
   modify_params: false
   num_retries: 0
-  # No cache, no cache_params, no success_callback, no callbacks. The ONLY state is the
-  # per-call JSONL ledger (label, upstream model sent, upstream model returned, usage,
-  # request id, ratelimit headers), written beside the container; it is the identity and
-  # spend boundary and feeds the headroom ledger (#4698).
+  # No cache, no cache_params, no success_callback, no callbacks — so this proxy emits no
+  # per-call record of its own and keeps NO state. A LiteLLM per-call ledger would require a
+  # callback, which the config-guard forbids; spend/identity witnessing therefore stays with the
+  # calling harness and the headroom ledger (#4698), not here.
 
 # Deliberately empty: no master_key (loopback is the auth boundary), no database_url, no
 # store_model_in_db, no virtual_keys, no budgets.
