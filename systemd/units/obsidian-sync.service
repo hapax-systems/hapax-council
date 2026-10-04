@@ -11,9 +11,12 @@ Type=oneshot
 # writer touches a boot-race shadow directory: a real vault root carries .git or .obsidian (the
 # defect-3 marker a shadow writer never creates); a shadow directory carries neither.
 ExecCondition=/bin/sh -c 'test -e %h/Documents/Personal/.git || test -e %h/Documents/Personal/.obsidian'
-WorkingDirectory=/home/hapax/projects/hapax-council
+# Canonical root: run from the governed activation worktree (like vault-context-writer and
+# vault-git-snapshot), NEVER the mutable dev tree ~/projects/hapax-council (canonical-root lens).
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 ExecStartPre=/home/hapax/.local/bin/hapax-env-setup
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.obsidian_sync --auto
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.obsidian_sync --auto
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax

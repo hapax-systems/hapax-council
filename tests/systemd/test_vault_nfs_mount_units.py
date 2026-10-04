@@ -139,3 +139,16 @@ def test_vault_writers_skip_cleanly_when_vault_absent() -> None:
         ), (
             f"{unit.name}: ExecCondition must probe the vault-root marker (.git/.obsidian): {conditions}"
         )
+
+
+def test_no_unit_references_the_mutable_dev_tree() -> None:
+    """Every unit this PR touches must run from the governed activation worktree, never the mutable
+    dev tree ~/projects/hapax-council (canonical-root lens; raised by gemini and glm). Checked on
+    DIRECTIVE lines so a unit's own explanatory comment naming the dev tree does not match."""
+    pr_units = (MOUNT, AUTOMOUNT, *VAULT_WRITERS)
+    for unit in pr_units:
+        offenders = [line for line in _directives(unit) if "projects/hapax-council" in line]
+        assert not offenders, (
+            f"{unit.name}: directive references the mutable dev tree — use "
+            f"%h/.cache/hapax/source-activation/worktree: {offenders}"
+        )
