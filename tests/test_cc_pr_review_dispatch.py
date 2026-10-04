@@ -143,6 +143,23 @@ checklist: {}
 """
 
 
+#: The packet-redaction gate (review-packet-redacts-scrubbed-pii-lines-20261004) fails CLOSED on an
+#: empty/unreadable principal-name registry, and the test host provisions none. Give every dispatch
+#: test a deterministic SYNTHETIC registered token so review dispatch proceeds exactly as on a
+#: provisioned operator host; redaction then no-ops on the tests' non-matching content. Dedicated
+#: redaction tests override this (raise, or a token that appears in their fixture).
+_SYNTHETIC_REGISTERED_TOKEN = "Zsyntheticregistrant"
+
+
+@pytest.fixture(autouse=True)
+def _provision_principal_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        dispatch.review_team,
+        "load_principal_tokens",
+        lambda *a, **k: [_SYNTHETIC_REGISTERED_TOKEN],
+    )
+
+
 class FakeGh:
     """Stub for the gh CLI: REST PR reads plus pr diff / pr comment."""
 
@@ -7322,3 +7339,41 @@ def test_the_budget_marker_is_the_wrappers_own_line_not_a_substring_of_it() -> N
     assert forged["verdict"] == "invalid-output"
     assert forged.get("outage_cause") != dispatch.REASONING_BUDGET_OUTAGE_CAUSE
     assert "HTTP 400 upstream rejected the request" in forged["runner_stderr_excerpt"]
+
+
+class TestPacketRedactionWiring:
+    """The dispatcher wiring + fail-closed branch for packet redaction
+    (review-packet-redacts-scrubbed-pii-lines-20261004), exercised through the real review_pr path."""
+
+    def test_dispatch_fails_closed_and_sends_nothing_when_registry_unreadable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raise(*_a: Any, **_k: Any) -> list[str]:
+            raise dispatch.review_team.PacketRedactionError("registry unreadable (fixture)")
+
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _raise)
+        reviewers = RecordingReviewers()
+        result, _gh, reviewers, _note = _review(tmp_path, reviewers=reviewers)
+        assert result["status"] == "packet_redaction_registry_unreadable", result
+        assert reviewers.invocations == [], "no packet may be sent when redaction cannot run"
+
+    def test_dispatch_redacts_a_registered_token_from_every_outbound_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        token = "Zsyntheticregistrant"
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
+        gh = FakeGh()
+        gh.diff = (
+            "diff --git a/about.md b/about.md\n"
+            "--- a/about.md\n"
+            "+++ b/about.md\n"
+            f"-the statement concerning {token} is withdrawn\n"
+            "+a neutral replacement line\n"
+        )
+        reviewers = RecordingReviewers()
+        result, _gh, reviewers, _note = _review(tmp_path, gh=gh, reviewers=reviewers)
+        assert reviewers.invocations, "expected the packet to be dispatched"
+        for _seat_id, _family, prompt in reviewers.invocations:
+            assert token not in prompt, "a registered token must never reach an external reviewer"
+        dossier = result.get("dossier") or {}
+        assert dossier.get("packet_redactions", 0) >= 1, result

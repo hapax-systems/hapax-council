@@ -4278,30 +4278,45 @@ def _apply_review(
         route=route,
         allow_local=apply,
     )
-    diff = truncate_diff(pr_diff)
+    # Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): before any packet
+    # leaves to an external reviewer, replace every outbound line that carries a registered
+    # principal token (local registry, same matcher as the pre-push guard) with an opaque
+    # sha256-keyed marker, across EVERY outbound packet component — diff, task note, source
+    # excerpts (incl. prior-file/pre-scrub content), PR body, and prior-round criticals — so a
+    # privacy scrub can be reviewed without re-sending what it removes.
+    #
+    # Fail CLOSED: a registry read failure sends nothing. An explicit, default-off operator-consent
+    # killswitch (HAPAX_REVIEW_PACKET_REDACTION_OFF=1) is the documented emergency bypass if a
+    # registry/matcher change would otherwise freeze the whole review plane; when set, redaction is
+    # skipped under recorded operator consent (the dossier marks it).
+    _redaction_off = os.environ.get("HAPAX_REVIEW_PACKET_REDACTION_OFF") == "1"
+    if _redaction_off:
+        _principal_tokens: list[str] = []
+    else:
+        try:
+            _principal_tokens = review_team.load_principal_tokens(repo_root)
+        except review_team.PacketRedactionError as exc:
+            return {
+                "status": "packet_redaction_registry_unreadable",
+                "pr": pr_number,
+                "reason": str(exc),
+                "next_action": (
+                    "repair the local principal-name registry and retry; no packet was sent. "
+                    "Emergency operator bypass (records consent in the dossier): "
+                    "HAPAX_REVIEW_PACKET_REDACTION_OFF=1"
+                ),
+            }
+    # Redact the FULL diff BEFORE truncation: truncate_diff cuts spans at character budgets and can
+    # sever a line mid-token, leaving a fragment the matcher no longer flags. Redaction preserves
+    # the unified-diff prefixes/headers, so truncation still operates on a valid diff.
+    redacted_full_diff, _rc_diff = review_team.redact_registered_tokens(
+        str(pr_diff), _principal_tokens
+    )
+    diff = truncate_diff(redacted_full_diff)
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
     )
-    charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
-    # Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): before any packet
-    # leaves to an external reviewer, replace every outbound line that carries a registered
-    # principal token (local registry, same matcher as the pre-push guard) with an opaque
-    # sha256-keyed marker, across EVERY packet component (diff, task note, source excerpts, PR
-    # body) — so a privacy scrub can be reviewed without re-sending what it removes. Fail CLOSED
-    # on a registry read failure: no packet is sent unredacted.
-    try:
-        _principal_tokens = review_team.load_principal_tokens(repo_root)
-    except review_team.PacketRedactionError as exc:
-        return {
-            "status": "packet_redaction_registry_unreadable",
-            "pr": pr_number,
-            "reason": str(exc),
-            "next_action": (
-                "repair the local principal-name registry, then retry; no packet was sent"
-            ),
-        }
-    diff, _rc_diff = review_team.redact_registered_tokens(diff, _principal_tokens)
     task_note_text, _rc_note = review_team.redact_registered_tokens(
         task_note_text, _principal_tokens
     )
@@ -4311,7 +4326,11 @@ def _apply_review(
     redacted_pr_body, _rc_body = review_team.redact_registered_tokens(
         pr_info.body or "", _principal_tokens
     )
-    packet_redactions = _rc_diff + _rc_note + _rc_exc + _rc_body
+    redacted_prior_criticals, _rc_prior = review_team.redact_structure(
+        prior_criticals, _principal_tokens
+    )
+    packet_redactions = _rc_diff + _rc_note + _rc_exc + _rc_body + _rc_prior
+    charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
     prompt_inputs = {
         "pr_info": pr_info,
         "diff_source": pr_diff.source,
@@ -4323,7 +4342,7 @@ def _apply_review(
         "pr_body": redacted_pr_body,
         "task_note_text": task_note_text,
         "diff": diff,
-        "prior_criticals": prior_criticals,
+        "prior_criticals": redacted_prior_criticals,
     }
     if reviewer_source_excerpts:
         try:
@@ -4830,6 +4849,33 @@ def review_artifact(
         encoding="utf-8"
     )
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
+    # Packet redaction also governs the vault-only artifact path (same privacy gate; glm/claude on
+    # #5030): the artifact contents, task note, manifest and lineage all leave to external
+    # reviewers. Fail CLOSED, with the same documented operator-consent bypass as the PR-diff path.
+    if os.environ.get("HAPAX_REVIEW_PACKET_REDACTION_OFF") == "1":
+        _artifact_tokens: list[str] = []
+    else:
+        try:
+            _artifact_tokens = review_team.load_principal_tokens()
+        except review_team.PacketRedactionError as exc:
+            return {
+                "status": "packet_redaction_registry_unreadable",
+                "task_id": task_id,
+                "reason": str(exc),
+                "next_action": (
+                    "repair the local principal-name registry and retry; no packet was sent. "
+                    "Emergency operator bypass: HAPAX_REVIEW_PACKET_REDACTION_OFF=1"
+                ),
+            }
+    artifact_redactions = 0
+    task_note_text, _n = review_team.redact_registered_tokens(task_note_text, _artifact_tokens)
+    artifact_redactions += _n
+    contents, _n = review_team.redact_structure(contents, _artifact_tokens)
+    artifact_redactions += _n
+    manifest, _n = review_team.redact_structure(manifest, _artifact_tokens)
+    artifact_redactions += _n
+    lineage, _n = review_team.redact_structure(lineage, _artifact_tokens)
+    artifact_redactions += _n
     prompts = [
         render_artifact_reviewer_prompt(
             seat=seat,
@@ -4874,6 +4920,7 @@ def review_artifact(
         changed_files=files,
         changed_file_count=len(files),
         repo_root=None,  # no checkout to refute a phantom critical against: criticals stand
+        packet_redactions=artifact_redactions,
     )
     dossier["pr"] = None
     dossier["artifact_review"] = {

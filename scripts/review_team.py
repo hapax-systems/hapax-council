@@ -128,33 +128,102 @@ def _principal_matcher() -> Any:
 
 
 def load_principal_tokens(repo_root: Path | None = None) -> list[str]:
-    """Registered tokens from the local registry via the matcher's own reader. Fail CLOSED:
-    an unreadable/invalid registry raises rather than letting a packet leave unredacted."""
+    """Registered tokens from the local registry via the matcher's own reader. Fail CLOSED: an
+    unreadable/invalid registry raises — and so does a loaded-but-EMPTY one (seat ruling 2026-10-04
+    (e)): a registry with no names cannot be distinguished from a misconfiguration that silently
+    disables redaction, so an empty registry is refused exactly like an unreadable one rather than
+    letting a packet leave with a no-op redactor. The operator-consent killswitch is the only
+    bypass."""
     matcher = _principal_matcher()
     names, error = matcher.registry_names(repo_root or REPO_ROOT)
     if error:
         raise PacketRedactionError(f"principal-name registry unreadable: {error}")
+    if not names:
+        raise PacketRedactionError("principal-name registry is empty; refusing (fail-closed)")
     return names
+
+
+#: Unified-diff STRUCTURE lines (file/hunk headers). They are not added/deleted content, carry no
+#: scrubbed body, and redacting them would corrupt the diff (so a parser/reviewer misreads the
+#: packet). Left intact; only content and prose lines are redacted.
+_DIFF_HEADER_PREFIXES = (
+    "@@",
+    "diff --git",
+    "index ",
+    "--- ",
+    "+++ ",
+    "new file mode",
+    "deleted file mode",
+    "old mode",
+    "new mode",
+    "rename ",
+    "copy ",
+    "similarity ",
+    "dissimilarity ",
+    "Binary files",
+)
+
+
+def _redact_line(line: str, marker: str) -> str:
+    """Replace a matching line with the marker while PRESERVING unified-diff validity: a content
+    line keeps its single ``+``/``-``/`` `` prefix; a prose line (PR body, task note, prior
+    criticals) has none. Structural headers are handled by the caller and never reach here."""
+    if line[:1] in ("+", "-", " "):
+        return line[0] + marker
+    return marker
 
 
 def redact_registered_tokens(text: str, names: Sequence[str]) -> tuple[str, int]:
     """Replace every line of ``text`` that carries a registered token with an opaque, sha256-keyed
-    marker. Returns (redacted_text, redaction_count). Pure: the caller supplies ``names`` (loaded
-    once via load_principal_tokens), so this is testable with synthetic tokens and never embeds a
-    real name. A line with no registered token is passed through unchanged."""
+    marker, preserving any unified-diff prefix. Returns (redacted_text, redaction_count). Pure: the
+    caller supplies ``names`` (loaded once via load_principal_tokens), so this is testable with
+    synthetic tokens and never embeds a real name. A line with no registered token — and every
+    structural diff header — is passed through unchanged.
+
+    NOTE on the matcher: it anchors on the registered token being intact within a line. So redaction
+    must run on the FULL text BEFORE any truncation; truncating first can cut a line mid-token and
+    leave a surviving fragment the matcher no longer flags (the dispatcher orders it accordingly)."""
     if not text or not names:
         return text, 0
     matcher = _principal_matcher()
+    name_list = list(names)
     out: list[str] = []
     count = 0
     for line in text.split("\n"):
-        if matcher.matches(line, list(names)):
+        if line.startswith(_DIFF_HEADER_PREFIXES):
+            out.append(line)  # structure: never content; redacting it corrupts the diff
+            continue
+        if matcher.matches(line, name_list):
             digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
-            out.append(_PACKET_REDACTION_MARKER.format(digest=digest))
+            out.append(_redact_line(line, _PACKET_REDACTION_MARKER.format(digest=digest)))
             count += 1
         else:
             out.append(line)
     return "\n".join(out), count
+
+
+def redact_structure(obj: Any, names: Sequence[str]) -> tuple[Any, int]:
+    """Redact registered tokens in every string leaf of a nested structure — e.g. prior_criticals
+    (a list of finding dicts a prior round produced, rendered into the packet), whose detail can
+    quote a diff line carrying a token. Returns (redacted_obj, count)."""
+    if isinstance(obj, str):
+        return redact_registered_tokens(obj, names)
+    if isinstance(obj, Mapping):
+        out: dict[Any, Any] = {}
+        total = 0
+        for key, value in obj.items():
+            out[key], n = redact_structure(value, names)
+            total += n
+        return out, total
+    if isinstance(obj, (list, tuple)):
+        items = []
+        total = 0
+        for value in obj:
+            red, n = redact_structure(value, names)
+            items.append(red)
+            total += n
+        return (tuple(items) if isinstance(obj, tuple) else items), total
+    return obj, 0
 
 
 #: The only dossier verdict that admits a PR, except under the seat's T2 rule below.
