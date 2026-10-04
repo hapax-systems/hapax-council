@@ -219,32 +219,35 @@ def build_bundle(
             )
         )
 
-    # --- loaded models -> UNEXPLAINED when no admitting row ---
-    for host, mem in (observation.get("fleet_memory") or {}).items():
-        if mem and isinstance(mem.get("avail_mb"), int) and isinstance(mem.get("total_mb"), int):
-            loaded = (mem["total_mb"] - mem["avail_mb"]) > (mem["total_mb"] * 0.5)
-            if loaded:
-                subj = f"host:{host}:loaded"
-                vs, reasons = classify_loaded_model(
-                    loaded=True, admitting_row=admitting_rows.get(subj)
+    # --- loaded models: ONLY from observed /v1/models ids + process inspection, NEVER a RAM-occupancy
+    #     heuristic. A RAM heuristic is exactly the false resource claim this producer exists to end
+    #     (review #5027 finding 1): used memory does not name a model, a quant, or a serving stack. A
+    #     model with no admitting row is UNEXPLAINED. A host with no /v1/models probe makes NO loaded
+    #     claim here (its memory is reported as a VRAM value above, not as a loaded model).
+    serving_procs = observation.get("serving_procs") or []
+    for endpoint, model_ids in (observation.get("loaded_models") or {}).items():
+        for model in model_ids or []:
+            subj = f"host:appendix:{endpoint}/{model}"
+            vs, reasons = classify_loaded_model(loaded=True, admitting_row=admitting_rows.get(subj))
+            facts["loaded_model"].append(
+                _fact(
+                    "loaded_model",
+                    subj,
+                    now=now,
+                    observed_at=obs_at,
+                    value={
+                        "host": "appendix",
+                        "endpoint": endpoint,
+                        "model": model,
+                        "admitting_row": admitting_rows.get(subj),
+                        "serving_procs": serving_procs,
+                    },
+                    value_state=vs,
+                    reason_codes=reasons,
+                    confidence_word="high",
+                    source="/v1/models + process inspection",
                 )
-                facts["loaded_model"].append(
-                    _fact(
-                        "loaded_model",
-                        subj,
-                        now=now,
-                        observed_at=obs_at,
-                        value={
-                            "host": host,
-                            "used_mb": mem["total_mb"] - mem["avail_mb"],
-                            "admitting_row": admitting_rows.get(subj),
-                        },
-                        value_state=vs,
-                        reason_codes=reasons,
-                        confidence_word="medium",
-                        source="ssh free -m (occupancy)",
-                    )
-                )
+            )
 
     # --- remote entitlements from the E1 surface (ERRATA: Featherless billing is low-confidence) ---
     if surface:

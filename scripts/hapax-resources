@@ -62,6 +62,23 @@ def _kimi_usage() -> list[dict] | None:
         return None
 
 
+def _governed_reins():
+    """Import reins_context from the GOVERNED path ONLY — never the mutable ~/projects/reins dev tree
+    (review #5027 finding 4). Resolution order: HAPAX_REINS_ROOT (the governed reins api dir, set by
+    the deployment), then an already-installed reins_context. Returns the module or None."""
+    root = os.environ.get("HAPAX_REINS_ROOT", "").strip()
+    if root:
+        root = os.path.expanduser(root)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+    try:
+        import reins_context  # noqa: PLC0415
+
+        return reins_context
+    except ImportError:
+        return None
+
+
 def main(argv: list[str]) -> int:
     bundle = rsp.build_bundle(
         observation=_latest_observation(),
@@ -70,15 +87,26 @@ def main(argv: list[str]) -> int:
         now=datetime.now(UTC),
     )
     if "--json" in argv[1:]:
-        try:
-            reins_api = os.path.expanduser("~/projects/reins/api")
-            if reins_api not in sys.path:
-                sys.path.insert(0, reins_api)
-            import reins_context  # noqa: PLC0415
-
-            print(json.dumps(reins_context.project(bundle, "operator_private"), indent=1))
-        except Exception:  # noqa: BLE001 — reader must not fabricate; fall back to the raw bundle
-            print(json.dumps(bundle, indent=1))
+        reins = _governed_reins()
+        if reins is None:
+            # Fail loud with a next action — never fabricate, never fall back to the raw bundle or the
+            # mutable dev tree (review #5027 findings 4, 5). An honest refused state, not a silent skip.
+            print(
+                json.dumps(
+                    {
+                        "value_state": "refused",
+                        "reason": "reins_context unavailable from the governed path",
+                        "next_action": (
+                            "set HAPAX_REINS_ROOT to the governed reins api dir and rerun; "
+                            "the mutable ~/projects/reins dev tree is deliberately not used"
+                        ),
+                        "bundle_id": bundle.get("bundle_id"),
+                    },
+                    indent=1,
+                )
+            )
+            return 3
+        print(json.dumps(reins.project(bundle, "operator_private"), indent=1))
         return 0
     print(rsp.resource_summary_for_boundary(bundle))
     return 0

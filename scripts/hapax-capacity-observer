@@ -97,6 +97,14 @@ for p in ENDPOINTS:
 rec["local_endpoints"] = endpoints
 rec["loaded_models"] = loaded
 
+# process inspection: serving stacks actually running (the producer pairs these with /v1/models ids
+# so "loaded" is an observed model + process, never a RAM-occupancy inference).
+rec["serving_procs"] = [
+    line for line in sh(
+        "pgrep -af 'vllm|tabbyapi|tabbyAPI|llama-server|llama.cpp|ollama|sglang|text-generation' || true"
+    ).splitlines() if line
+]
+
 with open(out, "a", encoding="utf-8") as f:
     f.write(json.dumps(rec) + "\n")
 print(f"capacity-observer: appended {now}")
