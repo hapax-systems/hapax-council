@@ -1982,11 +1982,14 @@ def _rulesets_graphql(repo: str, *, repo_root: Path, runner: Any) -> tuple[list[
 
     Returns rules inline so a REST-core exhaustion no longer forces a second REST detail fetch
     for the merge-queue method. The exact ``parameters`` union schema is validated live at the
-    P-series probe; a schema miss yields a non-zero rc here and the caller falls back to REST
-    when REST has measured room.
+    P-series probe; a schema miss yields a non-zero rc here. On any failure the caller
+    (``fetch_merge_queue_merge_method``) falls back to the REST rulesets read ONLY when
+    header-measured REST remaining is at or above its conservative fallback floor
+    (``DEFAULT_GRAPHQL_FALLBACK_REST_MIN_REMAINING``); below it, it holds with a reason rather
+    than draining a near-exhausted pool.
     """
     if "/" not in repo:
-        return None, f"rulesets_graphql_bad_repo:{repo}"
+        return None, f"rulesets_graphql_bad_repo:{repo};next=pass_repo_as_owner/name"
     owner, name = repo.split("/", 1)
     query = (
         "query($o:String!,$n:String!){repository(owner:$o,name:$n){"
@@ -2000,12 +2003,15 @@ def _rulesets_graphql(repo: str, *, repo_root: Path, runner: Any) -> tuple[list[
         runner=runner,
     )
     if proc.returncode != 0:
-        return None, f"rulesets_graphql_rc{proc.returncode}:{(proc.stderr or '').strip()[:100]}"
+        return None, (
+            f"rulesets_graphql_rc{proc.returncode}:{(proc.stderr or '').strip()[:100]}"
+            f";next=caller_falls_back_to_rest_if_spendable_else_retry_after_graphql_reset"
+        )
     payload = _json_from_proc(proc)
     try:
         nodes = payload["data"]["repository"]["rulesets"]["nodes"]  # type: ignore[index]
     except (TypeError, KeyError):
-        return None, "rulesets_graphql_malformed"
+        return None, "rulesets_graphql_malformed;next=recheck_repository.rulesets_query_schema"
     return [
         _map_graphql_ruleset(n) for n in (nodes or []) if isinstance(n, dict)
     ], "rulesets_via_graphql"
