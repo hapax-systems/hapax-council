@@ -87,9 +87,10 @@ def test_specimen_kill_is_reported_as_a_kill_not_a_test_failure(tmp_path: Path) 
     result = _run("137", "0", SPECIMEN_OUTPUT, tmp_path)
 
     assert result.returncode == 1
-    assert "killed at the shard timeout after 648 tests" in result.stdout
+    assert "648 progress markers (lower bound" in result.stdout
     assert "SIGKILL (137)" in result.stdout
-    assert "NOT a test failure" in result.stdout
+    assert "NOT a test failure" not in result.stdout
+    assert "unknown" in result.stdout
     # The in-flight window is the tail of the killed output, not a fabricated list.
     assert "PytestUnraisableExceptionWarning(msg)" in result.stdout
     assert "Tests failed" not in result.stdout
@@ -109,15 +110,14 @@ def test_completed_markers_exclude_lines_that_only_begin_with_marker_characters(
     result = _run("137", "0", output, tmp_path)
 
     # Exactly the one complete progress line: 72, not 72 + 19 + 1 + 4.
-    assert "killed at the shard timeout after 72 tests" in result.stdout
+    assert "72 progress markers (lower bound" in result.stdout
     assert "after 96 tests" not in result.stdout
 
 
 def test_exit_124_is_classified_as_a_kill(tmp_path: Path) -> None:
     result = _run("124", "0", SPECIMEN_OUTPUT, tmp_path)
 
-    assert "SIGTERM (124)" in result.stdout
-    assert "killed at the shard timeout" in result.stdout
+    assert "timeout exit 124" in result.stdout
     assert "Tests failed" not in result.stdout
 
 
@@ -134,8 +134,8 @@ def test_artifact_failure_is_tolerated_only_when_the_shard_was_killed(
         tmp_path,
     )
     assert killed.returncode == 1
-    assert "killed at the shard timeout" in killed.stdout
-    assert "consequence of the kill, not a second failure" in killed.stdout
+    assert "SIGKILL (137)" in killed.stdout
+    assert "secondary" in killed.stdout
     assert "Could not write pytest node duration artifact" not in killed.stdout
     assert "Could not write pytest node duration artifact" not in killed.stderr
 
@@ -168,3 +168,18 @@ def test_missing_output_file_is_a_usage_error(tmp_path: Path) -> None:
 
     assert completed.returncode == 2
     assert "no such pytest output file" in completed.stderr
+
+
+def test_mixed_failure_markers_and_kill_are_separate_facts(tmp_path):
+    result = _run("137", "2", "..F.E... [ 20%]\n", tmp_path)
+    assert "Observed F/E progress marker" in result.stdout
+    assert "SIGKILL (137)" in result.stdout
+    assert "NOT a test failure" not in result.stdout
+    assert "no test result was withheld or lost" not in result.stdout
+
+
+def test_tee_failure_cannot_certify_passing_pytest(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_CI_PIPELINE_EXIT", "1")
+    result = _run("0", "0", "1 passed in 0.1s\n", tmp_path)
+    assert result.returncode == 1
+    assert "Output pipeline failed" in result.stdout
