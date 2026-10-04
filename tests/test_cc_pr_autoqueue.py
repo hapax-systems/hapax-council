@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -10583,6 +10584,34 @@ def test_blocks_review_floor_pr_with_rejected_receipt(tmp_path: Path) -> None:
 
     assert report["counts"]["blocked"] == 1
     assert "acceptance_receipt_verdict_not_accepted:rejected" in report["decisions"][0]["reasons"]
+
+
+def test_admission_refuses_receipt_for_replaced_dossier(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="review-floor-task",
+        pr=90,
+        quality_floor="frontier_review_required",
+        authority_level="support_non_authoritative",
+    )
+    dossier = vault / "active" / "review-floor-task.review-dossier.yaml"
+    digest = hashlib.sha256(b"review_team_verdict: quorum-accept\n").hexdigest()
+    dossier.write_bytes(b"review_team_verdict: blocked\n")
+    (vault / "active" / "review-floor-task.acceptance.yaml").write_text(
+        "acceptor: review-team:codex,gemini\n"
+        "verdict: accepted\n"
+        "timestamp: 2026-06-10T17:00:00Z\n"
+        "artifact: https://github.com/owner/repo/pull/90\n"
+        f"dossier_sha256: sha256:{digest}\n",
+        encoding="utf-8",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(90)]
+    report = autoqueue.run_reconciler(
+        repo="owner/repo", repo_root=tmp_path, vault_root=vault, runner=runner
+    )
+    assert "acceptance_receipt_dossier_sha256_mismatch" in report["decisions"][0]["reasons"]
 
 
 def test_review_floor_receipt_detected_from_nested_route_metadata(tmp_path: Path) -> None:
