@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import hashlib
 import json
 import logging
 import os
@@ -88,6 +89,73 @@ LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 
 #: Dossier filename suffix; the dossier lives beside the task note.
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
+
+#: Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004). Before any review packet
+#: leaves to an external provider, every line that carries a registered principal token — read from
+#: the LOCAL registry at runtime by the SAME matcher the pre-push guard uses, never from literals —
+#: is replaced by this marker so a privacy scrub can be reviewed without re-sending what it removes.
+_PACKET_REDACTION_MARKER = "[REDACTED: registered token; line sha256 {digest}]"
+#: The matcher script (hyphenated → loaded by path, not import). registry_names()/matches() live
+#: there and are never re-implemented here (the registry is the single source of truth).
+_PRINCIPAL_MATCHER_PATH = REPO_ROOT / "scripts" / "check-principal-names-diff.py"
+_PRINCIPAL_MATCHER: Any = None
+
+
+class PacketRedactionError(RuntimeError):
+    """The principal-name registry could not be read, so redaction cannot be guaranteed.
+
+    Privacy-critical and fail-CLOSED: a packet is never sent unredacted on a registry read
+    failure (the same stance as the pre-push guard, which refuses the push)."""
+
+
+def _principal_matcher() -> Any:
+    """Load the pre-push principal-name matcher once (registry_names, matches)."""
+    global _PRINCIPAL_MATCHER
+    if _PRINCIPAL_MATCHER is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "check_principal_names_diff", _PRINCIPAL_MATCHER_PATH
+        )
+        if spec is None or spec.loader is None:  # pragma: no cover - import plumbing
+            raise PacketRedactionError(
+                f"cannot load principal-name matcher: {_PRINCIPAL_MATCHER_PATH}"
+            )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _PRINCIPAL_MATCHER = module
+    return _PRINCIPAL_MATCHER
+
+
+def load_principal_tokens(repo_root: Path | None = None) -> list[str]:
+    """Registered tokens from the local registry via the matcher's own reader. Fail CLOSED:
+    an unreadable/invalid registry raises rather than letting a packet leave unredacted."""
+    matcher = _principal_matcher()
+    names, error = matcher.registry_names(repo_root or REPO_ROOT)
+    if error:
+        raise PacketRedactionError(f"principal-name registry unreadable: {error}")
+    return names
+
+
+def redact_registered_tokens(text: str, names: Sequence[str]) -> tuple[str, int]:
+    """Replace every line of ``text`` that carries a registered token with an opaque, sha256-keyed
+    marker. Returns (redacted_text, redaction_count). Pure: the caller supplies ``names`` (loaded
+    once via load_principal_tokens), so this is testable with synthetic tokens and never embeds a
+    real name. A line with no registered token is passed through unchanged."""
+    if not text or not names:
+        return text, 0
+    matcher = _principal_matcher()
+    out: list[str] = []
+    count = 0
+    for line in text.split("\n"):
+        if matcher.matches(line, list(names)):
+            digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            out.append(_PACKET_REDACTION_MARKER.format(digest=digest))
+            count += 1
+        else:
+            out.append(line)
+    return "\n".join(out), count
+
 
 #: The only dossier verdict that admits a PR, except under the seat's T2 rule below.
 QUORUM_ACCEPT = "quorum-accept"
@@ -1997,6 +2065,7 @@ def synthesize_dossier(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     repo_root: Path | None = None,
+    packet_redactions: int = 0,
 ) -> dict[str, Any]:
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
@@ -2171,6 +2240,7 @@ def synthesize_dossier(
         "constitution_writer_family": constitution_writer_family or writer_family,
         "changed_file_count": changed_file_count,
         "changed_files": scoped_files,
+        "packet_redactions": int(packet_redactions),
         "constitution_notes": list(constitution_notes),
         "degraded_family_outage": degraded_outage,
         "degraded_family_route_blocked": degraded_route_blocked,

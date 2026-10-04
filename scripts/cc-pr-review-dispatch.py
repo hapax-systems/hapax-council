@@ -4284,6 +4284,34 @@ def _apply_review(
         for path, _, _ in keyed_matches
     )
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
+    # Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): before any packet
+    # leaves to an external reviewer, replace every outbound line that carries a registered
+    # principal token (local registry, same matcher as the pre-push guard) with an opaque
+    # sha256-keyed marker, across EVERY packet component (diff, task note, source excerpts, PR
+    # body) — so a privacy scrub can be reviewed without re-sending what it removes. Fail CLOSED
+    # on a registry read failure: no packet is sent unredacted.
+    try:
+        _principal_tokens = review_team.load_principal_tokens(repo_root)
+    except review_team.PacketRedactionError as exc:
+        return {
+            "status": "packet_redaction_registry_unreadable",
+            "pr": pr_number,
+            "reason": str(exc),
+            "next_action": (
+                "repair the local principal-name registry, then retry; no packet was sent"
+            ),
+        }
+    diff, _rc_diff = review_team.redact_registered_tokens(diff, _principal_tokens)
+    task_note_text, _rc_note = review_team.redact_registered_tokens(
+        task_note_text, _principal_tokens
+    )
+    reviewer_source_excerpts, _rc_exc = review_team.redact_registered_tokens(
+        reviewer_source_excerpts, _principal_tokens
+    )
+    redacted_pr_body, _rc_body = review_team.redact_registered_tokens(
+        pr_info.body or "", _principal_tokens
+    )
+    packet_redactions = _rc_diff + _rc_note + _rc_exc + _rc_body
     prompt_inputs = {
         "pr_info": pr_info,
         "diff_source": pr_diff.source,
@@ -4292,7 +4320,7 @@ def _apply_review(
         "team_class": team_class,
         "lenses": lenses,
         "charters": charters,
-        "pr_body": pr_info.body,
+        "pr_body": redacted_pr_body,
         "task_note_text": task_note_text,
         "diff": diff,
         "prior_criticals": prior_criticals,
@@ -4398,6 +4426,7 @@ def _apply_review(
             changed_files=pr_info.files,
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
+            packet_redactions=packet_redactions,
         )
         dossier["family_substitution"] = substitution
         dossier["diff_source"] = pr_diff.source
