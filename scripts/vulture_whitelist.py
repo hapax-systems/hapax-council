@@ -5476,3 +5476,26 @@ from shared.resource_state_producer import (
 )
 
 _ = (_rsp_build_bundle, _rsp_resource_summary_for_boundary, _rsp_claim_cites_fresh_resource_fact)
+
+# c1-chanc-build1-20261004: the CHANC core (shared/chanc.py) is slice 1; its callers are the
+# sequenced build-1 wiring slices — component 1 (receipt emission in han_mail_pull) and component 3
+# (the withdrawal reply path). Remove this bridge when the consumer slices land.
+from shared.chanc import (  # noqa: E402
+    classify_withdrawal as _chanc_classify_withdrawal,
+)
+from shared.chanc import (
+    generate_handle as _chanc_generate_handle,
+)
+from shared.chanc import (
+    keyed_digest as _chanc_keyed_digest,
+)
+from shared.chanc import (
+    verify_commitment as _chanc_verify_commitment,
+)
+
+_ = (
+    _chanc_classify_withdrawal,
+    _chanc_generate_handle,
+    _chanc_keyed_digest,
+    _chanc_verify_commitment,
+)
