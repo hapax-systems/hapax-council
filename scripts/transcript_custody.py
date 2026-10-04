@@ -76,6 +76,8 @@ class TranscriptPath:
 TRANSCRIPT_PATHS: tuple[TranscriptPath, ...] = (
     TranscriptPath("claude", ".claude/projects"),
     TranscriptPath("claude", ".claude/history.jsonl"),
+    TranscriptPath("claude-glmcp", ".glmcp-claude/projects"),
+    TranscriptPath("claude-glmcp", ".glmcp-claude/history.jsonl"),
     TranscriptPath("codex", ".codex/sessions"),
     TranscriptPath("codex", ".codex/archived_sessions"),
     TranscriptPath("codex", ".codex/history.jsonl"),
@@ -98,18 +100,22 @@ TRANSCRIPT_PATHS: tuple[TranscriptPath, ...] = (
 )
 
 #: Credential file names (basename globs). They are excluded from the backup, and a snapshot that holds one fails.
-CREDENTIAL_PATTERNS: tuple[str, ...] = (
-    "auth.json",
-    ".credentials.json",
-    "credentials.json",
-    "credentials",
-    "oauth_creds.json",
-    "google_accounts.json",
-    "antigravity-oauth-token",
-    "*.pem",
-    "*.key",
-    ".env",
-    "*.token",
+CREDENTIAL_PATTERNS: tuple[str, ...] = tuple(
+    pattern
+    for basename in (
+        "auth.json",
+        ".credentials.json",
+        "credentials.json",
+        "credentials",
+        "oauth_creds.json",
+        "google_accounts.json",
+        "antigravity-oauth-token",
+        "*.pem",
+        "*.key",
+        ".env",
+        "*.token",
+    )
+    for pattern in (basename, basename + "*")
 )
 
 
@@ -207,6 +213,180 @@ def backup_args(paths: Sequence[ResolvedPath], tag: str = SNAPSHOT_TAG) -> list[
         args += ["--exclude", pattern]
     args += [p.real for p in paths]
     return args
+
+
+CAPTURE_FILENAME = "transcripts-consistent.tar"
+CAPTURE_MANIFEST = "custody-manifest.json"
+
+
+def _captured_sqlite_sidecar(item: Path, paths: Sequence[ResolvedPath]) -> bool:
+    """Only omit journals whose main SQLite database is in this capture."""
+    if not item.name.endswith(("-wal", "-shm")):
+        return False
+    database = item.with_name(item.name[:-4]).absolute()
+    if (
+        database.suffix.lower() not in (".db", ".sqlite")
+        or database.is_symlink()
+        or not database.is_file()
+        or is_credential(database.name)
+    ):
+        return False
+    return any(
+        database == Path(target.real).absolute()
+        or (target.kind == "dir" and database.is_relative_to(Path(target.real).absolute()))
+        for target in paths
+    )
+
+
+def capture_paths(paths: Sequence[ResolvedPath]) -> list[ResolvedPath]:
+    """Keep every target except journals superseded by an included online SQLite copy."""
+    return [target for target in paths if not _captured_sqlite_sidecar(Path(target.real), paths)]
+
+
+def _capture_items(source: Path, kind: str) -> Iterable[Path]:
+    """Enumerate without suppressing directory or entry metadata errors."""
+    if kind != "dir":
+        yield source
+        return
+    with os.scandir(source) as entries:
+        children = sorted(entries, key=lambda entry: entry.name)
+    for entry in children:
+        item = Path(entry.path)
+        yield item
+        if entry.is_dir(follow_symlinks=False):
+            yield from _capture_items(item, "dir")
+
+
+def capture_tar(paths: Sequence[ResolvedPath], archive: Path) -> None:
+    """Capture the same table into one verified tar; SQLite uses its online backup API.
+
+    The caller creates a private temporary directory and supplies a new archive path.
+    No symlink or credential enters it. An unreadable, empty or dangling source fails.
+    Only a completely written capture is passed to restic by the CLI.
+    """
+    import hashlib
+    import json
+    import shutil
+    import sqlite3
+    import stat
+    import tarfile
+    import tempfile
+    from contextlib import closing
+    from dataclasses import asdict
+
+    paths = capture_paths(paths)
+    if not paths:
+        raise ValueError("no transcript paths to capture")
+    manifest = {"paths": [asdict(p) for p in paths], "files": {}}
+    with tempfile.TemporaryDirectory(dir=archive.parent) as staging:
+        stage = Path(staging)
+        with tarfile.open(archive, "x") as tar:
+            for target in paths:
+                source = Path(target.real)
+                count = 0
+                for item in _capture_items(source, target.kind):
+                    metadata = item.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(metadata.st_mode):
+                        raise ValueError(f"nested symlink: {item}")
+                    if not stat.S_ISREG(metadata.st_mode) or is_credential(item.name):
+                        continue
+                    # Online capture includes committed WAL for an included database.
+                    # Orphan journals and ordinary suffix-named files remain transcripts.
+                    if _captured_sqlite_sidecar(item, paths):
+                        continue
+                    name = str(item).lstrip("/")
+                    output = stage / name
+                    output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    if item.suffix.lower() in (".sqlite", ".db"):
+                        with closing(sqlite3.connect(item.as_uri() + "?mode=ro", uri=True)) as db:
+                            with closing(sqlite3.connect(output)) as copy:
+                                db.backup(copy)
+                                if copy.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                                    raise ValueError(f"invalid SQLite capture: {item}")
+                                copy.execute("PRAGMA journal_mode=DELETE")
+                    else:
+                        shutil.copyfile(item, output)
+                    output.chmod(0o600)
+                    digest = hashlib.sha256()
+                    size = 0
+                    with output.open("rb") as captured:
+                        for block in iter(lambda: captured.read(1024 * 1024), b""):
+                            digest.update(block)
+                            size += len(block)
+                    manifest["files"][name] = {"bytes": size, "sha256": digest.hexdigest()}
+                    tar.add(output, arcname=name, recursive=False)
+                    count += 1
+                if count < target.min_files:
+                    raise ValueError(f"empty transcript capture: {target.real}")
+            info = tarfile.TarInfo(CAPTURE_MANIFEST)
+            data = json.dumps(manifest).encode()
+            info.size = len(data)
+            info.mode = 0o600
+            import io
+
+            tar.addfile(info, io.BytesIO(data))
+        with tarfile.open(archive) as tar:
+            read_capture(tar)
+
+
+def read_capture(members) -> tuple[list[ResolvedPath], list[dict]]:
+    """Read every captured byte, verify its manifest hash, and return existing verifier inputs."""
+    import hashlib
+    import json
+    from pathlib import PurePosixPath
+
+    manifest = None
+    observed = {}
+    nodes = []
+    for member in members:
+        path = PurePosixPath(member.name)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or not member.isfile()
+            or is_credential(path.name)
+        ):
+            raise ValueError(f"unsafe capture member: {member.name}")
+        if member.name in observed:
+            raise ValueError(f"duplicate capture member: {member.name}")
+        handle = members.extractfile(member)
+        if handle is None:
+            raise ValueError(f"unreadable capture member: {member.name}")
+        if member.name == CAPTURE_MANIFEST:
+            if manifest is not None:
+                raise ValueError("duplicate capture manifest")
+            manifest = json.load(handle)
+            continue
+        digest = hashlib.sha256()
+        size = 0
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+            size += len(block)
+        observed[member.name] = {"bytes": size, "sha256": digest.hexdigest()}
+        nodes.append({"struct_type": "node", "path": "/" + member.name, "type": "file"})
+    if manifest is None or not observed or observed != manifest.get("files"):
+        raise ValueError("capture missing, truncated or differs from its file manifest")
+    # tarfile accepts EOF after complete members, even when the two zero end blocks
+    # are missing. Iteration consumed the first end block; require it and the second.
+    import tarfile
+
+    if (
+        members.fileobj.tell() != members.offset + tarfile.BLOCKSIZE
+        or members.fileobj.read(tarfile.BLOCKSIZE) != b"\0" * tarfile.BLOCKSIZE
+    ):
+        raise ValueError("capture missing complete tar end blocks")
+    paths = [ResolvedPath(**p) for p in manifest["paths"]]
+    for path in paths:
+        if path.kind == "dir":
+            nodes.append({"struct_type": "node", "path": path.real, "type": "dir"})
+    failures = verify(
+        paths,
+        count_snapshot(nodes, [p.real for p in paths]),
+        snapshot_targets=[p.real for p in paths],
+    )
+    if failures:
+        raise ValueError("; ".join(failures))
+    return paths, nodes
 
 
 @dataclass

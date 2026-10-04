@@ -19,6 +19,146 @@ import pytest
 from scripts import transcript_custody as tc
 
 
+def test_glmcp_stores_are_in_the_shared_table(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".glmcp-claude/projects").mkdir(parents=True)
+    (home / ".glmcp-claude/projects/session.jsonl").write_text("{}\n")
+    (home / ".glmcp-claude/history.jsonl").write_text("{}\n")
+    assert {p.declared for p in tc.resolve_paths(home).paths} == {
+        "~/.glmcp-claude/projects",
+        "~/.glmcp-claude/history.jsonl",
+    }
+
+
+def test_capture_preserves_committed_sqlite_wal_and_excludes_credentials(tmp_path: Path) -> None:
+    import sqlite3
+    import tarfile
+
+    home = _home(tmp_path)
+    database = home / ".codex/thread_history_1.sqlite"
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("CREATE TABLE messages (text TEXT)")
+        db.execute("INSERT INTO messages VALUES ('committed transcript')")
+        db.commit()
+        assert Path(str(database) + "-wal").stat().st_size > 0
+        archive = tmp_path / "capture.tar"
+        tc.capture_tar(tc.resolve_paths(home).paths, archive)
+    with tarfile.open(archive) as tar:
+        paths, nodes = tc.read_capture(tar)
+        assert tc.credential_nodes(nodes) == []
+        payload = tar.extractfile(str(database.resolve()).lstrip("/")).read()
+    restored = tmp_path / "restored.sqlite"
+    restored.write_bytes(payload)
+    with sqlite3.connect(restored) as db:
+        assert db.execute("SELECT text FROM messages").fetchall() == [("committed transcript",)]
+        assert db.execute("PRAGMA quick_check").fetchone() == ("ok",)
+    assert any(p.real == str(database.resolve()) for p in paths)
+
+
+def test_capture_fails_empty_and_nested_symlink_sources(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    folder = home / ".claude/projects"
+    folder.mkdir(parents=True)
+    with pytest.raises(ValueError, match="empty"):
+        tc.capture_tar(tc.resolve_paths(home).paths, tmp_path / "empty.tar")
+    (folder / "link").symlink_to(tmp_path / "absent")
+    with pytest.raises(ValueError, match="nested symlink"):
+        tc.capture_tar(tc.resolve_paths(home).paths, tmp_path / "link.tar")
+
+
+def test_capture_rejects_tampered_and_truncated_payloads(tmp_path: Path) -> None:
+    import io
+    import tarfile
+
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(_home(tmp_path)).paths, archive)
+    broken = tmp_path / "tampered.tar"
+    with tarfile.open(archive) as source, tarfile.open(broken, "w") as target:
+        for member in source:
+            data = source.extractfile(member).read()
+            if member.name != tc.CAPTURE_MANIFEST:
+                data = b"x" * len(data)
+            target.addfile(member, io.BytesIO(data))
+    with tarfile.open(broken) as tar, pytest.raises(ValueError, match="differs"):
+        tc.read_capture(tar)
+    with pytest.raises((ValueError, tarfile.TarError)):
+        with tarfile.open(fileobj=io.BytesIO(archive.read_bytes()[:100]), mode="r|") as tar:
+            tc.read_capture(tar)
+
+
+def test_cli_consistent_capture_is_backed_up_and_restored_by_restic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import argparse
+    import importlib.machinery
+    import importlib.util
+
+    if shutil.which("restic") is None:
+        pytest.skip("restic required for the real restore boundary")
+    source = Path(__file__).resolve().parents[1] / "scripts/hapax-transcript-custody"
+    loader = importlib.machinery.SourceFileLoader("custody_capture_cli", str(source))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    cli = importlib.util.module_from_spec(spec)
+    loader.exec_module(cli)
+    repository = tmp_path / "repository"
+    env = {
+        **os.environ,
+        "RESTIC_REPOSITORY": str(repository),
+        "RESTIC_PASSWORD": "synthetic-test-password",  # pragma: allowlist secret
+    }  # pragma: allowlist secret
+    subprocess.run(["restic", "init"], env=env, check=True, capture_output=True)
+    monkeypatch.setenv("RESTIC_REPOSITORY", str(repository))
+    monkeypatch.setenv("RESTIC_PASSWORD", "synthetic-test-password")  # pragma: allowlist secret
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_HOST", "synthetic-wsl-seat")
+    monkeypatch.delenv("HAPAX_TRANSCRIPT_REPOSITORY_MOUNT", raising=False)
+    monkeypatch.delenv("HAPAX_TRANSCRIPT_WINDOWS_HOSTS", raising=False)
+    monkeypatch.setattr(cli, "_mount_point", lambda _: str(tmp_path))
+    home = _home(tmp_path)
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+    assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=False)) == 0
+    assert cli.cmd_verify(argparse.Namespace(max_age_hours=26.0)) == 0
+    # A later loss of a harness store fails against the previous captured paths.
+    shutil.rmtree(home / ".grok/sessions")
+    assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=False)) == 0
+    assert cli.cmd_verify(argparse.Namespace(max_age_hours=26.0)) == 1
+
+
+def test_invalid_sqlite_capture_fails_before_restic(tmp_path: Path, monkeypatch, capsys) -> None:
+    import argparse
+
+    cli = _cli_module()
+    home = _home(tmp_path)
+    (home / ".codex/thread_history_1.sqlite").write_bytes(b"invalid SQLite database")
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+
+    def unexpected_backup(*_args, **_kwargs):
+        raise AssertionError("restic must not receive a failed capture")
+
+    monkeypatch.setattr(cli.subprocess, "run", unexpected_backup)
+    assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=False)) == 1
+    assert "capture failed" in capsys.readouterr().err
+
+
+def test_capture_dry_run_reports_resolved_paths_without_writing(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    import argparse
+
+    cli = _cli_module()
+    home = _home(tmp_path)
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_HOST", "synthetic-wsl-seat")
+    assert cli.cmd_backup(argparse.Namespace(capture=True, dry_run=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "host": "synthetic-wsl-seat",
+        "consistent_capture": [p.real for p in tc.resolve_paths(home).paths],
+    }
+    assert not list(tmp_path.rglob(tc.CAPTURE_FILENAME))
+
+
 def _home(tmp_path: Path) -> Path:
     """A fake home: Claude and Grok stores in place, Codex's store behind a symlink (podium's layout)."""
 
@@ -997,3 +1137,304 @@ def test_the_unit_names_the_windows_puller_and_hosts() -> None:
     unit = (_REPO / "systemd/units/hapax-backup-transcripts.service").read_text(encoding="utf-8")
     assert 'Environment="HAPAX_TRANSCRIPT_WINDOWS_HOSTS=hapax-dextra hapax-talus"\n' in unit
     assert "Environment=HAPAX_TRANSCRIPT_WINDOWS_PULLER=hapax-appendix\n" in unit
+
+
+@pytest.mark.parametrize("valid_tar", [True, False])
+def test_cli_verify_reports_failed_capture_dump(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    valid_tar: bool,
+) -> None:
+    """A failed transport or unreadable archive must fail verify with a remedy, even after valid tar bytes."""
+    import io
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    cli = _cli_module()
+    home = _home(tmp_path)
+    resolution = tc.resolve_paths(home)
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(resolution.paths, archive)
+    snapshot = {
+        "id": "failed-dump",
+        "paths": ["/" + tc.CAPTURE_FILENAME],
+        "time": datetime.now(UTC).isoformat(),
+    }
+    process = SimpleNamespace(
+        stdout=io.BytesIO(archive.read_bytes() if valid_tar else b"unreadable archive"),
+        returncode=7,
+        wait=lambda: 7,
+    )
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(cli, "_restic_json", lambda *_args: json.dumps([snapshot]))
+    monkeypatch.setattr(cli.tc, "resolve_paths", lambda _home: resolution)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    assert cli.cmd_verify(SimpleNamespace(max_age_hours=26)) == 1
+    error = capsys.readouterr().err
+    assert "snapshot read failed" in error and tc.REMEDY in error
+    assert "Traceback" not in error
+    assert process.stdout.closed
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_local_resolution_failure_keeps_legacy_windows_puller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capture: bool
+) -> None:
+    """A local failure still services independent Windows stores in legacy mode; capture fails before backup."""
+    from types import SimpleNamespace
+
+    cli = _cli_module()
+    resolution = tc.resolve_paths(_home(tmp_path))
+    resolution = tc.Resolution(resolution.paths, ("dangling local transcript path",))
+    local_runs = []
+    windows_runs = []
+    monkeypatch.setattr(cli.tc, "resolve_paths", lambda _home: resolution)
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args, **kwargs: local_runs.append(args) or SimpleNamespace(returncode=0),
+    )
+    monkeypatch.setattr(cli, "_backup_windows", lambda **kwargs: windows_runs.append(kwargs) or 0)
+    assert cli.cmd_backup(SimpleNamespace(capture=capture, dry_run=False)) == 1
+    assert len(local_runs) == len(windows_runs) == (0 if capture else 1)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "credentials.json.bak",
+        "credentials~",
+        "oauth_creds.json.old",
+        "google_accounts.json.backup",
+        "antigravity-oauth-token.save",
+        ".env.backup",
+        "private.key.old",
+        "private.pem.bak",
+        "session.token.save",
+    ],
+)
+def test_all_credential_basename_variants_are_excluded(tmp_path: Path, name: str) -> None:
+    import tarfile
+
+    home = _home(tmp_path)
+    (home / ".claude/projects" / name).write_text("synthetic excluded fixture")
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(home).paths, archive)
+    with tarfile.open(archive) as tar:
+        _, nodes = tc.read_capture(tar)
+    assert tc.is_credential(name)
+    assert not any(Path(node["path"]).name == name for node in nodes)
+    assert tc.credential_nodes(nodes) == []
+
+
+@pytest.mark.parametrize("suffix", [".Db", ".SQLITE"])
+def test_sqlite_capture_handles_case_and_uri_characters(tmp_path: Path, suffix: str) -> None:
+    import sqlite3
+    import tarfile
+
+    home = _home(tmp_path)
+    database = home / (".claude/projects/uri?#" + suffix)
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("CREATE TABLE messages (text TEXT)")
+        db.execute("INSERT INTO messages VALUES ('committed WAL transcript')")
+        db.commit()
+        archive = tmp_path / "capture.tar"
+        tc.capture_tar(tc.resolve_paths(home).paths, archive)
+    with tarfile.open(archive) as tar:
+        tc.read_capture(tar)
+        payload = tar.extractfile(str(database.resolve()).lstrip("/")).read()
+    restored = tmp_path / "restored.db"
+    restored.write_bytes(payload)
+    with sqlite3.connect(restored) as db:
+        assert db.execute("SELECT text FROM messages").fetchall() == [("committed WAL transcript",)]
+        assert db.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+def test_wsl_verify_failure_names_the_bound_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from types import SimpleNamespace
+
+    cli = _cli_module()
+    resolution = tc.resolve_paths(_home(tmp_path))
+    monkeypatch.setattr(cli.tc, "resolve_paths", lambda _home: resolution)
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(cli, "_restic_json", lambda *_args: "[]")
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_SERVICE", "hapax-backup-transcripts-wsl.service")
+    assert cli.cmd_verify(SimpleNamespace(max_age_hours=26)) == 1
+    error = capsys.readouterr().err
+    assert "start hapax-backup-transcripts-wsl.service" in error
+    assert "start hapax-backup-transcripts.service" not in error
+
+
+@pytest.mark.parametrize("name", ["plain-wal", "plain-shm", "missing.sqlite-wal", "missing.db-shm"])
+def test_suffix_named_transcripts_and_orphan_journals_are_retained(
+    tmp_path: Path, name: str
+) -> None:
+    import tarfile
+
+    home = _home(tmp_path)
+    transcript = home / ".claude/projects" / name
+    transcript.write_text("retained transcript fixture")
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(home).paths, archive)
+    with tarfile.open(archive) as tar:
+        _, nodes = tc.read_capture(tar)
+        assert tar.extractfile(str(transcript).lstrip("/")).read() == b"retained transcript fixture"
+    assert any(node["path"] == str(transcript) for node in nodes)
+
+
+def test_sidecar_of_database_outside_capture_is_retained(tmp_path: Path) -> None:
+    import sqlite3
+    import tarfile
+
+    database = tmp_path / "outside.db"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE messages (text TEXT)")
+    transcript = tmp_path / "outside.db-wal"
+    transcript.write_text("standalone selected transcript")
+    target = tc.ResolvedPath("codex", "~/outside.db-wal", str(transcript), "file", False, 1)
+    assert tc.capture_paths([target]) == [target]
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar([target], archive)
+    with tarfile.open(archive) as tar:
+        paths, nodes = tc.read_capture(tar)
+        assert paths == [target]
+        assert (
+            tar.extractfile(str(transcript).lstrip("/")).read() == b"standalone selected transcript"
+        )
+    assert tc.count_snapshot(nodes, [target.real])[target.real].files == 1
+
+
+def test_selected_sqlite_sidecars_are_superseded_by_committed_database(tmp_path: Path) -> None:
+    import sqlite3
+    import tarfile
+
+    database = tmp_path / "opencode.db"
+    with sqlite3.connect(database) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("CREATE TABLE messages (text TEXT)")
+        db.execute("INSERT INTO messages VALUES ('committed journal row')")
+        db.commit()
+        targets = [
+            tc.ResolvedPath("opencode", "~/" + path.name, str(path), "file", False, 1)
+            for path in sorted(tmp_path.glob("opencode.db*"))
+        ]
+        assert len(targets) == 3
+        archive = tmp_path / "capture.tar"
+        tc.capture_tar(targets, archive)
+    with tarfile.open(archive) as tar:
+        paths, nodes = tc.read_capture(tar)
+        assert [path.real for path in paths] == [str(database)]
+        assert [node["path"] for node in nodes] == [str(database)]
+        restored = tmp_path / "restored.db"
+        restored.write_bytes(tar.extractfile(str(database).lstrip("/")).read())
+    with sqlite3.connect(restored) as db:
+        assert db.execute("SELECT text FROM messages").fetchall() == [("committed journal row",)]
+        assert db.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+@pytest.mark.skipif(shutil.which("restic") is None, reason="restic binary required")
+def test_capture_backup_reports_real_restic_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A real missing-repository failure identifies the transfer phase and WSL remedy."""
+    from types import SimpleNamespace
+
+    cli = _cli_module()
+    resolution = tc.resolve_paths(_home(tmp_path))
+    monkeypatch.setattr(cli.tc, "resolve_paths", lambda _home: resolution)
+    monkeypatch.setattr(
+        cli,
+        "_restic_env",
+        lambda: {
+            "PATH": os.environ["PATH"],
+            "RESTIC_REPOSITORY": str(tmp_path / "missing-repository"),
+            "RESTIC_PASSWORD": "synthetic fixture password",  # pragma: allowlist secret (synthetic test fixture)
+        },
+    )
+    monkeypatch.setenv("HAPAX_TRANSCRIPT_SERVICE", "hapax-backup-transcripts-wsl.service")
+    assert cli.cmd_backup(SimpleNamespace(capture=True, dry_run=False)) == 1
+    error = capsys.readouterr().err
+    assert "restic capture backup exited" in error
+    assert "hapax-backup-transcripts-wsl.service" in error
+    assert "capture failed:" not in error
+
+
+@pytest.mark.parametrize("mode", ["r", "r|"])
+@pytest.mark.parametrize("trailer_bytes", [0, 512])
+def test_capture_truncated_after_complete_manifest_is_rejected(
+    tmp_path: Path, mode: str, trailer_bytes: int
+) -> None:
+    """Payload hashes alone do not prove a structurally complete archive."""
+    import io
+    import tarfile
+
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(_home(tmp_path)).paths, archive)
+    with tarfile.open(archive) as tar:
+        manifest = tar.getmember(tc.CAPTURE_MANIFEST)
+        end = manifest.offset_data + ((manifest.size + 511) // 512) * 512
+    truncated = archive.read_bytes()[: end + trailer_bytes]
+    with tarfile.open(fileobj=io.BytesIO(truncated), mode=mode) as tar:
+        with pytest.raises(ValueError, match="tar end blocks"):
+            tc.read_capture(tar)
+
+
+@pytest.mark.parametrize("mode", ["r", "r|"])
+def test_capture_with_both_tar_end_blocks_is_complete(tmp_path: Path, mode: str) -> None:
+    import io
+    import tarfile
+
+    archive = tmp_path / "capture.tar"
+    tc.capture_tar(tc.resolve_paths(_home(tmp_path)).paths, archive)
+    with tarfile.open(archive) as tar:
+        manifest = tar.getmember(tc.CAPTURE_MANIFEST)
+        end = manifest.offset_data + ((manifest.size + 511) // 512) * 512
+    complete = archive.read_bytes()[: end + 1024]
+    with tarfile.open(fileobj=io.BytesIO(complete), mode=mode) as tar:
+        paths, nodes = tc.read_capture(tar)
+    assert not tc.verify(
+        paths,
+        tc.count_snapshot(nodes, [p.real for p in paths]),
+        snapshot_targets=[p.real for p in paths],
+    )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+def test_capture_refuses_unreadable_nested_directory(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    resolution = tc.resolve_paths(home)
+    unreadable = home / ".claude/projects/unreadable"
+    unreadable.mkdir()
+    (unreadable / "session.jsonl").write_text("synthetic transcript fixture")
+    unreadable.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            tc.capture_tar(resolution.paths, tmp_path / "capture.tar")
+    finally:
+        unreadable.chmod(0o700)
+
+
+def test_capture_refuses_disappearing_nested_transcript(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    resolution = tc.resolve_paths(home)
+    disappearing = home / ".claude/projects/vanishing.jsonl"
+    disappearing.write_text("synthetic transcript fixture")
+    original = Path.stat
+
+    def stat_or_disappear(path: Path, *args, **kwargs):
+        if path == disappearing:
+            raise FileNotFoundError("vanishing transcript fixture")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_or_disappear)
+    with pytest.raises(FileNotFoundError, match="vanishing transcript fixture"):
+        tc.capture_tar(resolution.paths, tmp_path / "capture.tar")
