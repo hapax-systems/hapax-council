@@ -548,15 +548,25 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
+      - name: Check out the reins API (consent custody substrate for the pins)
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: hapax-systems/reins
+          ref: 38c7e395bd36e91f6cc380b280cd569de7fbffbb  # pragma: allowlist secret (reins commit sha, not a secret)
+          path: reins-api
       - name: Run egress-boundary behavior pins
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          HAPAX_REINS_API: ${{ github.workspace }}/reins-api/api
         run: >
           uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
           pytest --confcutdir=tests tests/test_capability_adapter_protocol.py
           tests/test_consent_pipeline_reader.py tests/test_archive_purge.py
           tests/shared/test_face_enrollment_registry.py
           tests/hapax_daimonion/test_conversational_policy.py
-          packages/agentgov/tests/test_carrier.py -q --tb=short
+          packages/agentgov/tests/test_carrier.py
+          tests/shared/test_consent_custody_boundary.py -q --tb=short
 
   capability-envelope-containment:
     # The declared capability envelope (shared/capability_envelope; DESIGN v1.3 §3.2a, canary
@@ -641,6 +651,12 @@ jobs:
         shard_count: [4]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Check out the reins API (consent custody substrate)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: hapax-systems/reins
+          ref: 38c7e395bd36e91f6cc380b280cd569de7fbffbb  # pragma: allowlist secret (reins commit sha, not a secret)
+          path: reins-api
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           enable-cache: true
@@ -706,6 +722,7 @@ jobs:
           LANGFUSE_HOST: "http://0.0.0.0:1"
           PYTEST_SHARD: ${{ matrix.shard }}
           PYTEST_SHARD_COUNT: ${{ matrix.shard_count }}
+          HAPAX_REINS_API: ${{ github.workspace }}/reins-api/api
           # HAPAX_NFS_INTEGRATION_WAIVED is declared once at workflow level so every job
           # that runs the suite inherits it. It lived here, and the separate non-sharded
           # `test` job then ran the same tests with it unset.
