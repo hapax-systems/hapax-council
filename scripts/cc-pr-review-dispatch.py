@@ -4285,27 +4285,20 @@ def _apply_review(
     # excerpts (incl. prior-file/pre-scrub content), PR body, and prior-round criticals — so a
     # privacy scrub can be reviewed without re-sending what it removes.
     #
-    # Fail CLOSED: a registry read failure sends nothing. An explicit, default-off operator-consent
-    # killswitch (HAPAX_REVIEW_PACKET_REDACTION_OFF=1) is the documented emergency bypass if a
-    # registry/matcher change would otherwise freeze the whole review plane; when set, redaction is
-    # skipped under recorded operator consent (the dossier marks it).
-    _redaction_off = os.environ.get("HAPAX_REVIEW_PACKET_REDACTION_OFF") == "1"
-    if _redaction_off:
-        _principal_tokens: list[str] = []
-    else:
-        try:
-            _principal_tokens = review_team.load_principal_tokens(repo_root)
-        except review_team.PacketRedactionError as exc:
-            return {
-                "status": "packet_redaction_registry_unreadable",
-                "pr": pr_number,
-                "reason": str(exc),
-                "next_action": (
-                    "repair the local principal-name registry and retry; no packet was sent. "
-                    "Emergency operator bypass (records consent in the dossier): "
-                    "HAPAX_REVIEW_PACKET_REDACTION_OFF=1"
-                ),
-            }
+    # Fail CLOSED with NO off switch (seat ruling 2026-10-04): a privacy redaction's failure
+    # handling narrows, never widens, so there is no env bypass. If a packet cannot be redacted —
+    # the principal-name registry is unreadable or empty — the dispatcher sends NOTHING.
+    try:
+        _principal_tokens = review_team.load_principal_tokens(repo_root)
+    except review_team.PacketRedactionError as exc:
+        return {
+            "status": "packet_redaction_registry_unreadable",
+            "pr": pr_number,
+            "reason": str(exc),
+            "next_action": (
+                "repair the local principal-name registry and retry; no packet was sent"
+            ),
+        }
     # Redact the FULL diff BEFORE truncation: truncate_diff cuts spans at character budgets and can
     # sever a line mid-token, leaving a fragment the matcher no longer flags. Redaction preserves
     # the unified-diff prefixes/headers, so truncation still operates on a valid diff.
@@ -4851,22 +4844,17 @@ def review_artifact(
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
     # Packet redaction also governs the vault-only artifact path (same privacy gate; glm/claude on
     # #5030): the artifact contents, task note, manifest and lineage all leave to external
-    # reviewers. Fail CLOSED, with the same documented operator-consent bypass as the PR-diff path.
-    if os.environ.get("HAPAX_REVIEW_PACKET_REDACTION_OFF") == "1":
-        _artifact_tokens: list[str] = []
-    else:
-        try:
-            _artifact_tokens = review_team.load_principal_tokens()
-        except review_team.PacketRedactionError as exc:
-            return {
-                "status": "packet_redaction_registry_unreadable",
-                "task_id": task_id,
-                "reason": str(exc),
-                "next_action": (
-                    "repair the local principal-name registry and retry; no packet was sent. "
-                    "Emergency operator bypass: HAPAX_REVIEW_PACKET_REDACTION_OFF=1"
-                ),
-            }
+    # reviewers. Fail CLOSED with NO off switch (seat ruling 2026-10-04): if the artifact cannot be
+    # redacted, send nothing.
+    try:
+        _artifact_tokens = review_team.load_principal_tokens()
+    except review_team.PacketRedactionError as exc:
+        return {
+            "status": "packet_redaction_registry_unreadable",
+            "task_id": task_id,
+            "reason": str(exc),
+            "next_action": "repair the local principal-name registry and retry; no packet was sent",
+        }
     artifact_redactions = 0
     task_note_text, _n = review_team.redact_registered_tokens(task_note_text, _artifact_tokens)
     artifact_redactions += _n

@@ -7377,3 +7377,37 @@ class TestPacketRedactionWiring:
             assert token not in prompt, "a registered token must never reach an external reviewer"
         dossier = result.get("dossier") or {}
         assert dossier.get("packet_redactions", 0) >= 1, result
+
+    def test_redaction_off_env_var_still_redacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A privacy redaction has NO off switch: the former bypass env var does not disable it."""
+        monkeypatch.setenv("HAPAX_REVIEW_PACKET_REDACTION_OFF", "1")
+        token = "Zsyntheticregistrant"
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *a, **k: [token])
+        gh = FakeGh()
+        gh.diff = (
+            "diff --git a/about.md b/about.md\n"
+            "--- a/about.md\n"
+            "+++ b/about.md\n"
+            f"-the statement concerning {token} is withdrawn\n"
+        )
+        _result, _gh, reviewers, _note = _review(tmp_path, gh=gh, reviewers=RecordingReviewers())
+        assert reviewers.invocations, "the env flag must not stop dispatch"
+        for _seat_id, _family, prompt in reviewers.invocations:
+            assert token not in prompt, "the env flag must not disable redaction"
+
+    def test_redaction_off_env_var_does_not_bypass_fail_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With the env var set and the registry unreadable, the dispatcher STILL sends nothing —
+        the flag cannot widen what leaves."""
+        monkeypatch.setenv("HAPAX_REVIEW_PACKET_REDACTION_OFF", "1")
+
+        def _raise(*_a: Any, **_k: Any) -> list[str]:
+            raise dispatch.review_team.PacketRedactionError("registry unreadable (fixture)")
+
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", _raise)
+        result, _gh, reviewers, _note = _review(tmp_path, reviewers=RecordingReviewers())
+        assert result["status"] == "packet_redaction_registry_unreadable", result
+        assert reviewers.invocations == [], "the env flag must not bypass fail-closed"
