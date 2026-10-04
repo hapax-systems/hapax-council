@@ -66,6 +66,7 @@ from github_pr_status import (  # noqa: E402
     RestIndeterminateError,
     _pull_status_row_from_rest,
     _rest_get_json,
+    _rulesets_graphql,
     choose_transport,
     fetch_status_check_rollup_rest,
     get_pr_status_graphql,
@@ -796,13 +797,29 @@ def fetch_merge_queue_merge_method(
 ) -> tuple[str | None, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    ok, rulesets, message = _gh_api_get_json(
-        f"repos/{repo}/rulesets",
-        repo_root=repo_root,
-        runner=runner,
-    )
-    if not ok:
-        return None, f"rulesets_fetch_failed:{message}"
+    # Load-balance the rulesets read across REST and GraphQL by measured HEADER headroom
+    # (choose_transport), diverting BEFORE the call so a REST-core exhaustion no longer yields
+    # rulesets_fetch_failed while GraphQL sits idle
+    # (github-rest-hourly-budget-exhausted-by-estate-20261004). The REST branch is unchanged;
+    # the GraphQL branch returns rulesets with rules inline (one query, no REST detail fetch).
+    transport, route_reason = choose_transport(repo_root=repo_root, runner=runner)
+    if transport is None:
+        # Both pools measured below floor: hold with the reason rather than spend into a
+        # doomed pool. Keep the `rulesets_fetch_failed:` prefix so the transient-transport
+        # retry path (`:~640`) still recognises it.
+        return None, f"rulesets_fetch_failed:{route_reason}"
+    if transport == "graphql":
+        rulesets, gql_reason = _rulesets_graphql(repo, repo_root=repo_root, runner=runner)
+        if rulesets is None:
+            return None, f"rulesets_fetch_failed:{gql_reason}"
+    else:
+        ok, rulesets, message = _gh_api_get_json(
+            f"repos/{repo}/rulesets",
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if not ok:
+            return None, f"rulesets_fetch_failed:{message}"
     if not isinstance(rulesets, list):
         return None, f"rulesets_payload_not_list:{type(rulesets).__name__}"
 

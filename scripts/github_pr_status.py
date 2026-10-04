@@ -1947,6 +1947,70 @@ def run_graphql_rate_aware(
     )
 
 
+def _map_graphql_ruleset(node: dict[str, Any]) -> dict[str, Any]:
+    """Map a GraphQL ``RepositoryRuleset`` node to the REST shape the autoqueue consumes.
+
+    GraphQL enums are upper-case (``BRANCH``/``ACTIVE``/``MERGE_QUEUE``/``MERGE``); the REST
+    consumer matches lower-case (``branch``/``active``/``merge_queue``/``merge``), so each is
+    lower-cased, not normalised to a third spelling.
+    """
+    rules: list[dict[str, Any]] = []
+    for rule_node in (node.get("rules") or {}).get("nodes") or []:
+        if not isinstance(rule_node, dict):
+            continue
+        params = (
+            rule_node.get("parameters") if isinstance(rule_node.get("parameters"), dict) else {}
+        )
+        mapped_params: dict[str, Any] = {}
+        merge_method = params.get("mergeMethod")
+        if merge_method is not None:
+            mapped_params["merge_method"] = str(merge_method).lower()
+        rules.append(
+            {"type": str(rule_node.get("type") or "").lower(), "parameters": mapped_params}
+        )
+    return {
+        "id": node.get("databaseId"),
+        "name": node.get("name"),
+        "enforcement": str(node.get("enforcement") or "").lower(),
+        "target": str(node.get("target") or "").lower(),
+        "rules": rules,
+    }
+
+
+def _rulesets_graphql(repo: str, *, repo_root: Path, runner: Any) -> tuple[list[Any] | None, str]:
+    """GraphQL implementation of the rulesets read (``repository.rulesets``), rate-aware.
+
+    Returns rules inline so a REST-core exhaustion no longer forces a second REST detail fetch
+    for the merge-queue method. The exact ``parameters`` union schema is validated live at the
+    P-series probe; a schema miss yields a non-zero rc here and the caller falls back to REST
+    when REST has measured room.
+    """
+    if "/" not in repo:
+        return None, f"rulesets_graphql_bad_repo:{repo}"
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($o:String!,$n:String!){repository(owner:$o,name:$n){"
+        "rulesets(first:100){nodes{databaseId name enforcement target "
+        "rules(first:100){nodes{type parameters{__typename "
+        "... on MergeQueueParameters{mergeMethod}}}}}}}}"
+    )
+    proc = run_graphql_rate_aware(
+        ["-f", f"query={query}", "-F", f"o={owner}", "-F", f"n={name}"],
+        repo_root=repo_root,
+        runner=runner,
+    )
+    if proc.returncode != 0:
+        return None, f"rulesets_graphql_rc{proc.returncode}:{(proc.stderr or '').strip()[:100]}"
+    payload = _json_from_proc(proc)
+    try:
+        nodes = payload["data"]["repository"]["rulesets"]["nodes"]  # type: ignore[index]
+    except (TypeError, KeyError):
+        return None, "rulesets_graphql_malformed"
+    return [
+        _map_graphql_ruleset(n) for n in (nodes or []) if isinstance(n, dict)
+    ], "rulesets_via_graphql"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
