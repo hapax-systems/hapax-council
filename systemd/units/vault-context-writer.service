@@ -1,6 +1,10 @@
 [Unit]
 Description=Write working context to Obsidian daily note
 After=logos-api.service
+# Defect 2 (vault-nfs-mount-boot-race-and-gate-fail-closed-20261003): require the vault
+# mount so this writer fails cleanly instead of writing the shadow directory when the
+# vault is unmounted (as on the 2026-10-03 reboot).
+RequiresMountsFor=%h/Documents/Personal
 
 [Service]
 Type=oneshot

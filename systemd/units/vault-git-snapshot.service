@@ -2,6 +2,11 @@
 Description=Vault git snapshot — commit on podium, mirror history to appendix bare repo
 Documentation=file://%h/Documents/Personal/20-projects/hapax-requests/active/ratify-line-20260818-infra-gates.txt
 OnFailure=notify-failure@%n.service
+# Defect 2 (vault-nfs-mount-boot-race-and-gate-fail-closed-20261003): a vault writer
+# must require the mount, so it cannot run into an unmounted mount point and write the
+# shadow directory (as happened 2026-10-03). RequiresMountsFor pulls in + orders after
+# the vault mount and fails the unit (not the filesystem) when the vault is absent.
+RequiresMountsFor=%h/Documents/Personal
 
 [Service]
 Type=oneshot

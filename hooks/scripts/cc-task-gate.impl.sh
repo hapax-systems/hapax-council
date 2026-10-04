@@ -786,6 +786,31 @@ done
 if [[ -z "$note_path" && -f "$vault_root/active/$task_id.md" ]]; then
   note_path="$vault_root/active/$task_id.md"
 fi
+# Defect-3 (vault-nfs-mount-boot-race-and-gate-fail-closed-20261003): a MISSING
+# vault SUBSTRATE fails OPEN with a loud alert (INV-5 — a blocked lane must still
+# think/act and repair the mount), NOT fail-closed-stuck. The 2026-10-03 reboot
+# lost the vault NFS boot race; shadow writers had populated active/ with stray
+# notes (so an "active/ empty" probe would be false), yet the gate failed closed on
+# every claimed task and blocked the operator's repair. Distinguish an unmounted/
+# absent vault from a genuinely-missing note by a POSITIVE vault-identity marker a
+# shadow writer never creates: the vault root's .git / .obsidian. Resolve the vault
+# root from the cc-tasks-root binding (CC_TASK_ROOT is <vault>/20-projects/
+# hapax-cc-tasks), never a hard-coded home path.
+if [[ -z "$note_path" ]]; then
+  # Resolve the vault root LEXICALLY (dirname, not `cd`): CC_TASK_ROOT is
+  # <vault>/20-projects/hapax-cc-tasks, and during an unmount the cc-tasks dir may
+  # not exist, so a `cd` through it would fail and mask a present marker.
+  _vault_top="$(dirname -- "$(dirname -- "$vault_root")" 2>/dev/null || true)"
+  if [[ -z "$vault_root" || -z "$_vault_top" || ( ! -e "$_vault_top/.git" && ! -e "$_vault_top/.obsidian" ) ]]; then
+    _vault_log="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
+    mkdir -p "$(dirname "$_vault_log")" 2>/dev/null || true
+    printf '{"ts":"%s","kind":"vault_substrate_missing_failopen","role":"%s","task_id":"%s","vault_root":"%s","vault_top":"%s"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)" "$role" "$task_id" "$vault_root" "${_vault_top:-}" \
+      >> "$_vault_log" 2>/dev/null || true
+    echo "cc-task-gate: vault substrate MISSING — no vault-identity marker (.git/.obsidian) at '${_vault_top:-?}' for cc-tasks root '$vault_root'; claimed task '$task_id' is unresolvable. FAILING OPEN (advisory) per INV-5 so a blocked lane can still repair the mount; check the vault NFS mount. hooks-doctor/host-recovery flags the drift." >&2
+    exit 0
+  fi
+fi
 if [[ -z "$note_path" ]]; then
   _emit_block <<EOF
 cc-task-gate: BLOCKED — claimed task '$task_id' not found in vault.
@@ -1373,10 +1398,17 @@ if [[ -z "$edit_path" && -n "$bash_cmd" && "$mutation_surface_hint" != "runtime"
   _cmd_stripped="$(printf '%s' "$bash_cmd" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g; s/(^|[[:space:]])#[^\n]*//g")"
   if bash_source_mutation_requires_scope "$_cmd_stripped"; then
     _emit_block <<EOF
-cc-task-gate: BLOCKED — cannot verify mutation_scope_refs for shell source mutation.
+cc-task-gate: BLOCKED — the gate does not verify shell source mutations against
+mutation_scope_refs; they are refused by design (operator ruling 2026-09-20 — a scope
+check on command text would classify by spelling and treat ~/\$VAR/globs as identifying).
 
   Command: ${bash_cmd:0:160}
   Task: $note_path
+
+  For in-scope file CONTENT, use the Write/Edit tool — it is scope-checked and permitted
+  inside this task's mutation_scope_refs.
+  A rename, move or delete cannot be verified here: take that act to the seat, or claim a
+  row that authorizes it. The refusal is by design, not by command spelling.
 EOF
     exit 2
   fi

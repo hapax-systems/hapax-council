@@ -1,6 +1,9 @@
 [Unit]
 Description=Obsidian vault sync
 OnFailure=notify-failure@%n.service
+# Defect 2 (vault-nfs-mount-boot-race-and-gate-fail-closed-20261003): require the vault
+# mount so sync fails cleanly rather than operating on an unmounted mount point.
+RequiresMountsFor=%h/Documents/Personal
 
 [Service]
 Type=oneshot
