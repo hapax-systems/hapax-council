@@ -40,6 +40,17 @@ GPU_MEMORY_RE = re.compile(r"(?im)^.*(?:nvidia|geforce|rtx).*?,\s*(\d+) MiB,\s*(
 FUGU_RESET_RE = re.compile(
     r"Try again at ([A-Za-z]{3}) (\d+)(?:st|nd|rd|th), (\d{4}) (\d{1,2}):(\d{2}) (AM|PM)"
 )
+WALL_LINE_RE = re.compile(
+    r"(?i)(?:usage\s+limit|quota\s+(?:exhausted|limit|will\s+reset)|"
+    r"rate\s+limit\s+(?:exceeded|reached))"
+)
+# A later success line means the provider has served a request since the wall, so
+# the wall text above it is stale. An idle prompt box ("> Input"/"> Ask") is NOT
+# recovery — it shows whether or not the pane is walled, so it must not match here.
+WALL_RECOVERY_RE = re.compile(
+    r"(?i)(?:\b2\d\d\s+ok\b|request\s+succeeded|response\s+(?:complete|received)|"
+    r"quota\s+(?:restored|available)|\bresumed\b|\btokens?\s+remaining\b)"
+)
 OPENROUTER_MODELS = "https://openrouter.ai/api/v1/models"
 FEATHERLESS_MODELS = "https://api.featherless.ai/v1/models"
 
@@ -473,25 +484,38 @@ def fetch_catalogue(url: str) -> dict[str, Any] | None:
 
 
 def catalogue_capabilities(catalogues: dict[str, dict[str, Any] | None]) -> dict[str, str]:
+    """Map each catalogue to presence, keeping fetch/parse health distinct from it.
+
+    "unknown" means the fetch failed or the payload was unparseable (a `data` list
+    was never seen) — the input is stale and nothing can be claimed about presence.
+    "absent" means a well-formed response that simply does not carry the model: a
+    measured absence, which is healthy input and never triggers staleness.
+    """
     states = {"space-bunny": "unknown", "featherless": "unknown"}
-    openrouter = catalogues.get(OPENROUTER_MODELS) or {}
-    for item in openrouter.get("data") or []:
-        if not isinstance(item, dict) or item.get("id") != "stealth/space-bunny-alpha":
-            continue
-        pricing = item.get("pricing") or {}
-        try:
-            states["space-bunny"] = (
-                "price0"
-                if Decimal(str(pricing["prompt"])) == 0 and Decimal(str(pricing["completion"])) == 0
-                else "priced"
-            )
-        except (KeyError, InvalidOperation, TypeError):
-            states["space-bunny"] = "unknown"
-        break
-    featherless = catalogues.get(FEATHERLESS_MODELS) or {}
-    models = featherless.get("data") or []
-    if isinstance(models, list) and models:
-        states["featherless"] = f"available:{len(models)}"
+
+    openrouter = catalogues.get(OPENROUTER_MODELS)
+    data = openrouter.get("data") if isinstance(openrouter, dict) else None
+    if isinstance(data, list):
+        states["space-bunny"] = "absent"
+        for item in data:
+            if not isinstance(item, dict) or item.get("id") != "stealth/space-bunny-alpha":
+                continue
+            pricing = item.get("pricing") or {}
+            try:
+                states["space-bunny"] = (
+                    "price0"
+                    if Decimal(str(pricing["prompt"])) == 0
+                    and Decimal(str(pricing["completion"])) == 0
+                    else "priced"
+                )
+            except (KeyError, InvalidOperation, TypeError):
+                states["space-bunny"] = "unknown"
+            break
+
+    featherless = catalogues.get(FEATHERLESS_MODELS)
+    models = featherless.get("data") if isinstance(featherless, dict) else None
+    if isinstance(models, list):
+        states["featherless"] = f"available:{len(models)}" if models else "absent"
     return states
 
 
@@ -540,12 +564,26 @@ def provider_walls(panes: dict[str, str], now: datetime) -> dict[str, tuple[str,
             if state == "walled":
                 walls[family] = (state, reset)
             continue
-        if re.search(
-            r"(?is)(?:usage\s+limit|quota\s+(?:exhausted|limit|will reset)|rate\s+limit\s+(?:exceeded|reached))",
-            pane,
-        ):
+        if _pane_currently_walled(pane):
             walls[family] = ("walled", None)
     return walls
+
+
+def _pane_currently_walled(pane: str) -> bool:
+    """A quota wall counts only when it is the latest evidence in the pane.
+
+    The pane captures recent scrollback newest-last. A wall line below any success
+    line is current; a wall line with a later success line has been superseded by a
+    served request, so the pane has recovered and must not report walled.
+    """
+    lines = pane.splitlines()
+    last_wall = max((i for i, line in enumerate(lines) if WALL_LINE_RE.search(line)), default=-1)
+    if last_wall < 0:
+        return False
+    last_recovery = max(
+        (i for i, line in enumerate(lines) if WALL_RECOVERY_RE.search(line)), default=-1
+    )
+    return last_recovery <= last_wall
 
 
 def _claude_pace(repo: Path) -> tuple[str, str] | None:
@@ -739,6 +777,22 @@ def cycle(args: argparse.Namespace, now: datetime) -> set[str]:
         and "featherless" not in registered_text.lower()
     ):
         gaps.add("UNREGISTERED:featherless")
+    catalogue_presence = {
+        "openrouter:stealth/space-bunny-alpha": catalogue_states["space-bunny"],
+        "featherless": catalogue_states["featherless"],
+    }
+    present_catalogue = {
+        key
+        for key, value in catalogue_presence.items()
+        if value in {"price0", "priced"} or value.startswith("available")
+    }
+    known_catalogue = set(state.get("known_catalogue") or [])
+    for key in known_catalogue - present_catalogue:
+        # Only a measured absence is a loss; an unknown (failed/unparseable fetch)
+        # cannot distinguish removal from an outage, so it never emits LOST.
+        if catalogue_presence.get(key) == "absent":
+            gaps.add(f"LOST:catalogue:{key}")
+    state["known_catalogue"] = sorted(known_catalogue | present_catalogue)
     gaps |= input_staleness(
         state,
         {

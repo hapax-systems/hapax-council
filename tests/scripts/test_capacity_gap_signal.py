@@ -237,6 +237,30 @@ def test_catalogue_importers_require_exact_zero_price_and_featherless_data() -> 
     assert gap.catalogue_capabilities(catalogues)["space-bunny"] == "priced"
 
 
+def test_catalogue_capabilities_separate_fetch_health_from_presence() -> None:
+    # A valid, well-formed response with no matching model is a measured ABSENCE,
+    # not an unknown. Health (staleness) must only trip on failed/unparseable input.
+    valid_empty = gap.catalogue_capabilities(
+        {gap.OPENROUTER_MODELS: {"data": []}, gap.FEATHERLESS_MODELS: {"data": []}}
+    )
+    assert valid_empty == {"space-bunny": "absent", "featherless": "absent"}
+    # A valid list that simply lacks space-bunny is still absence, not unknown.
+    without_bunny = gap.catalogue_capabilities(
+        {gap.OPENROUTER_MODELS: {"data": [{"id": "other/model"}]}, gap.FEATHERLESS_MODELS: {}}
+    )
+    assert without_bunny["space-bunny"] == "absent"
+    # Fetch failure (None) is genuinely unknown.
+    fetch_failed = gap.catalogue_capabilities(
+        {gap.OPENROUTER_MODELS: None, gap.FEATHERLESS_MODELS: None}
+    )
+    assert fetch_failed == {"space-bunny": "unknown", "featherless": "unknown"}
+    # Unparseable shape (dict without a list `data`) is unknown, not absence.
+    unparseable = gap.catalogue_capabilities(
+        {gap.OPENROUTER_MODELS: {"error": "bad gateway"}, gap.FEATHERLESS_MODELS: {"data": "nope"}}
+    )
+    assert unparseable == {"space-bunny": "unknown", "featherless": "unknown"}
+
+
 def test_fugu_wall_importer_uses_live_pane_reset_and_expires() -> None:
     pane = "■ You’ve hit your usage limit. Try again at Oct 4th, 2026 7:00 PM.\n› Ask Codex"
     assert gap.fugu_wall({"hapax-fugu-ci": pane}, NOW) == ("walled", "2026-10-05T00:00:00Z")
@@ -285,6 +309,25 @@ def test_kimi_and_generic_wall_hold_assigned_rows() -> None:
     assert "WALLED_WITH_DEMAND:kimi:rows=7" in gap.judge_gaps(
         {family: state for family, (state, _) in walls.items()}, demand, set()
     )
+
+
+def test_provider_walls_require_current_wall_evidence() -> None:
+    # A pane whose wall text is followed by a later success line has recovered;
+    # the stale 403 must not be reported as a current wall.
+    recovered = (
+        "Error: [provider.auth_error] 403 weekly usage limit reached\n"
+        + "\n".join(f"old output {i}" for i in range(40))
+        + "\n200 OK response received (4210 tokens remaining)\n› Input"
+    )
+    # A pane whose latest signal is the wall (an earlier success precedes it) is walled.
+    current = (
+        "200 OK earlier response received\n"
+        + "\n".join(f"old output {i}" for i in range(40))
+        + "\nError: [provider.auth_error] 403 weekly usage limit reached; quota will reset\n› Input"
+    )
+    walls = gap.provider_walls({"hapax-kimi-kimi-2": recovered, "hapax-glmcp-ci": current}, NOW)
+    assert "kimi" not in walls
+    assert walls["glmcp"][0] == "walled"
 
 
 def test_rerouted_kimi_rows_are_not_still_held_by_kimi() -> None:
@@ -372,3 +415,43 @@ def test_cycle_delivers_catalogue_wall_lost_and_stale_pane_gaps(
         "INPUT_STALE:provider-panes" in path.read_text()
         for path in (args.lanebus / "dev1").glob("*.md")
     )
+
+
+def test_cycle_reports_removed_catalogue_model_without_false_staleness(
+    tmp_path: Path, monkeypatch
+) -> None:
+    seat = tmp_path / "COORDINATOR-SEAT.md"
+    seat.write_text("## 0. Incumbent and lease\n| incumbent | role `dev1-seat` |\n## 1. History\n")
+    state = tmp_path / "state.json"
+    state.write_text(
+        json.dumps({"known_catalogue": ["featherless", "openrouter:stealth/space-bunny-alpha"]})
+    )
+    args = argparse.Namespace(
+        repo=tmp_path,
+        observer=tmp_path / "observer.jsonl",
+        state=state,
+        routing=tmp_path / "routing.md",
+        quota_ledger=tmp_path / "quota.json",
+        codex_sessions=tmp_path / "sessions",
+        tasks=tmp_path / "tasks",
+        lanebus=tmp_path / "lanebus",
+        seat_document=seat,
+    )
+    monkeypatch.setattr(gap, "tailnet_devices", lambda: (set(), set()))
+    monkeypatch.setattr(gap, "_subscribed_state", lambda *_args: {})
+    monkeypatch.setattr(gap, "codex_headroom", lambda *_args: ("unknown", "codex unknown"))
+    monkeypatch.setattr(gap, "read_tasks", lambda *_args: [])
+    monkeypatch.setattr(gap, "_pr_demand", lambda: (0, 0))
+    monkeypatch.setattr(gap, "_claude_pace", lambda *_args: None)
+    monkeypatch.setattr(gap, "provider_panes", lambda: {"hapax-fugu-ci": "ready\n› Input"})
+    # Both catalogues fetch and parse cleanly but no longer carry the tracked models.
+    monkeypatch.setattr(gap, "fetch_catalogue", lambda url: {"data": []})
+    first = gap.cycle(args, NOW)
+    assert "LOST:catalogue:featherless" in first
+    assert "LOST:catalogue:openrouter:stealth/space-bunny-alpha" in first
+    # A measured absence is healthy input: staleness must never trip, even after
+    # the two-cycle threshold that a genuine fetch failure would cross.
+    gap.cycle(args, NOW + timedelta(minutes=1))
+    third = gap.cycle(args, NOW + timedelta(minutes=2))
+    assert "INPUT_STALE:provider-catalogues" not in third
+    assert "LOST:catalogue:featherless" in third
