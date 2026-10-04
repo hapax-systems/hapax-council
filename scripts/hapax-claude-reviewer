@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -12,6 +13,31 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+_local_source = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = Path(
+    os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+    or os.environ.get("HAPAX_COUNCIL_DIR")
+    or (
+        _local_source
+        if (_local_source / "config/agent-instructions/AGENTS.md").is_file()
+        else Path.home() / ".cache/hapax/source-activation/worktree"
+    )
+).resolve()
+
+
+def _canonical_body() -> str:
+    path = SOURCE_ROOT / "shared/canonical_instruction_ingestion.py"
+    spec = importlib.util.spec_from_file_location("hapax_review_instruction_ingestion", path)
+    if spec is None or spec.loader is None:
+        raise ValueError("canonical instruction resolver is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.read_canonical_instructions(
+        source_root=SOURCE_ROOT, native_binding=("claude", ".claude/CLAUDE.md")
+    ).body.decode("utf-8")
+
 
 REVIEW_EXECUTION_ROUTE = "claude.review.opus"
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
@@ -315,6 +341,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 64
 
+    try:
+        canonical_body = _canonical_body()
+    except (ValueError, UnicodeDecodeError, OSError) as exc:
+        print(f"hapax-claude-reviewer: instruction admission refused: {exc}", file=sys.stderr)
+        return 9
+
     prompt = sys.stdin.read()
     cmd = [
         args.claude_bin,
@@ -335,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         EMPTY_MCP_CONFIG,
         "--strict-mcp-config",
         "--append-system-prompt",
-        STRICT_REVIEW_SYSTEM_PROMPT,
+        canonical_body + "\n\n" + STRICT_REVIEW_SYSTEM_PROMPT,
     ]
     deadline = time.monotonic() + args.timeout_seconds
     try:
