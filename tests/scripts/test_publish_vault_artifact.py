@@ -303,6 +303,92 @@ class TestBuildArtifact:
             "reason": "Reviewed receipts",
         }
 
+    def test_vault_artifact_binds_its_manifest_head_not_the_repo_head(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A vault draft's gates bind ``artifact-sha256:`` over its own bytes — or HOLD."""
+
+        vault_root = tmp_path / "Personal"
+        draft = vault_root / "frame" / "draft.md"
+        draft.parent.mkdir(parents=True)
+        draft.write_text("Body\n", encoding="utf-8")
+        monkeypatch.setattr(publish_vault_artifact, "VAULT_ARTIFACT_ROOT", vault_root)
+        frontmatter = _allowed_frontmatter()
+        with pytest.raises(publish_vault_artifact.PublicationGateError):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=frontmatter,
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+                source_path=draft,
+            )
+
+        head = public_gate_receipts.vault_artifact_expected_head_sha(draft, vault_root)
+        assert head is not None and head != "a" * 40
+        dossier = (
+            public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+        )
+        payload = yaml.safe_load(dossier.read_text(encoding="utf-8")) | {"head_sha": head}
+        payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+            {k: v for k, v in payload.items() if k != "authority_signature"}, AUTHORITY_SECRET
+        )
+        dossier.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+        artifact = publish_vault_artifact._build_artifact(
+            body_md="Body",
+            frontmatter=frontmatter,
+            surfaces=["omg-weblog"],
+            approver="Oudepode",
+            source_path=draft,
+        )
+
+        assert artifact.slug == "draft"
+
+        # An unhashable vault draft HOLDs by name; it must never degrade to the repo head.
+        with pytest.raises(publish_vault_artifact.PublicationGateError, match="gone.md"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=frontmatter,
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+                source_path=vault_root / "frame" / "gone.md",
+            )
+
+    def test_unclassifiable_vault_source_holds_and_names_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A source path the classification cannot resolve HOLDs by name; never a fallback."""
+
+        monkeypatch.setattr(publish_vault_artifact, "VAULT_ARTIFACT_ROOT", tmp_path)
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError, match="could not be classified"
+        ):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+                source_path="\x00bad",
+            )
+
+    def test_no_resolvable_head_holds_and_names_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No vault head and no repository head is a named HOLD, not an unnamed gate failure."""
+
+        monkeypatch.setattr(publish_vault_artifact, "_current_repo_head_sha", lambda: None)
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError, match="no public-gate head"
+        ):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
     def test_rejects_publication_gate_receipts_for_unexpected_head(
         self,
         monkeypatch: pytest.MonkeyPatch,
