@@ -496,3 +496,45 @@ def test_a_destination_with_balanced_parens_is_not_truncated() -> None:
     result = neutralize_markdown("[wiki](https://en.wikipedia.org/wiki/Foo_(bar))")
     assert result.links == 0
     assert result.markdown == "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[click][r]\n\n[r]: javascript:alert(1)\n",
+        "[r]\n\n[r]: javascript:alert(1)\n",
+        "[click][r]\n\n> [r]:\n>   <JavaScript:alert(1)>\n",
+        "[click][r]\n\n[r]: javascript&#58;alert(1)\n",
+    ],
+)
+def test_a_reference_definition_cannot_carry_a_live_scheme(body: str) -> None:
+    result = neutralize_markdown(body)
+    assert result.links >= 1
+    assert "\\]:" in result.markdown
+
+
+def test_reference_definitions_with_allowed_schemes_survive() -> None:
+    body = "[a][r] and [b][s]\n\n[r]: https://example.org/a\n[s]: ./notes.md\n"
+    result = neutralize_markdown(body)
+    assert result.links == 0
+    assert result.markdown == body
+
+
+def test_an_escaped_bracket_is_not_double_escaped_into_a_definition() -> None:
+    result = neutralize_markdown("[r\\]: javascript:alert(1)")
+    assert result.markdown == "[r\\]: javascript:alert(1)"
+
+
+def test_an_autolink_cannot_carry_raw_html() -> None:
+    result = neutralize_markdown("<http://x/<script>alert(1)//<http://y/</script>")
+    assert "<script>" not in result.markdown
+    assert "</script>" not in result.markdown
+
+
+def test_a_reference_image_cannot_load_and_keeps_the_text_after_it() -> None:
+    body = "![a][r] Finding one.\n\nFinding two (important).\n\n[r]: https://t.example/p.gif\n"
+    result = neutralize_markdown(body)
+    assert result.images == 1
+    assert "![" not in result.markdown
+    assert "Finding one." in result.markdown
+    assert "Finding two (important)." in result.markdown
