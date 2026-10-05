@@ -5505,3 +5505,12 @@ _ = (
     _chanc_verify_commitment,
     _hmp_emit_receipts,
 )
+
+# split-A-of-5036: the static consumer is scripts/mint_public_gate_receipts.py, which lands in the
+# stacked PR B of the same split, so this half has no call site for it yet. The union of A and B is
+# byte-identical to 53106f8cb plus this line, where the minter calls it. Removable once PR B merges.
+from shared.public_gate_receipts import (  # noqa: E402
+    public_gate_authority_evidence_signed as _public_gate_authority_evidence_signed,
+)
+
+_ = _public_gate_authority_evidence_signed

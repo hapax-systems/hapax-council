@@ -24,6 +24,12 @@ from typing import Any
 
 import yaml
 
+from shared.review_artifact_manifest import (
+    ArtifactSetError,
+    artifact_head_sha,
+    build_artifact_manifest,
+)
+
 log = logging.getLogger(__name__)
 
 PUBLIC_GATE_RECEIPT_PREFIXES: tuple[str, ...] = (
@@ -151,12 +157,8 @@ PUBLIC_GATE_TRUSTED_AUTHORITY_ISSUERS = frozenset(
 PUBLIC_GATE_AUTHORITY_SIGNATURE_PREFIX = "hmac-sha256:"
 PUBLIC_GATE_AUTHORITY_CASE_RE = re.compile(r"\A(?:CASE|REQ)-[A-Za-z0-9][A-Za-z0-9_.:-]{2,}\Z")
 PUBLIC_GATE_REVIEW_HEAD_RE = re.compile(r"\A[0-9a-f]{40}\Z", re.IGNORECASE)
-# A vault-artifact review acceptance binds to the artifact's content head — the
-# ``artifact-sha256:<64-hex>`` digest over its manifest (shared.review_artifact_manifest.
-# artifact_head_sha) — not a 40-hex git head. Both forms are valid public-gate heads; the
-# head-equality check (``_authority_head_matches``) still requires the receipt's head to equal
-# the caller's expected head, so a git-PR receipt can never satisfy a vault expected head or
-# vice versa, and a wrong artifact sha still mismatches.
+# A vault-artifact acceptance binds ``artifact-sha256:<64-hex>`` (its manifest digest) instead of a
+# 40-hex git head; head equality still holds, so neither form can satisfy the other's expected head.
 PUBLIC_GATE_ARTIFACT_HEAD_RE = re.compile(r"\Aartifact-sha256:[0-9a-f]{64}\Z", re.IGNORECASE)
 
 
@@ -165,6 +167,95 @@ def _is_valid_public_gate_head(value: str) -> bool:
         PUBLIC_GATE_REVIEW_HEAD_RE.fullmatch(value) is not None
         or PUBLIC_GATE_ARTIFACT_HEAD_RE.fullmatch(value) is not None
     )
+
+
+#: The reviewer's own artifact cap (scripts/cc-pr-review-dispatch.py MAX_ARTIFACT_CHARS); it does
+#: not enter the digest, so an artifact over it yields a head no acceptance matches.
+VAULT_ARTIFACT_MAX_CHARS = 80_000
+
+
+def vault_artifact_expected_head_sha(
+    source_path: str | Path | None,
+    artifact_root: str | Path,
+    *,
+    max_chars: int = VAULT_ARTIFACT_MAX_CHARS,
+) -> str | None:
+    """The expected public-gate head for a vault artifact: the digest over its manifest.
+
+    A review team accepts a vault artifact as a file set and signs the digest over the sorted
+    ``(path, sha256, bytes)`` manifest — ``artifact-sha256:<64-hex>``. This is the ONE producer of
+    that head for the publication callers, so the head a team signs and the head a publisher
+    expects cannot drift. ``None`` when the artifact cannot be reviewed whole (no path, outside
+    the root, missing, non-regular, non-UTF-8, over ``max_chars``); a caller must HOLD on it.
+    """
+
+    if source_path is None:
+        return None
+    raw = str(source_path).strip()
+    if not raw:
+        return None
+    try:
+        manifest, _contents = build_artifact_manifest(
+            [Path(raw)], Path(artifact_root), max_chars=max_chars
+        )
+    except (ArtifactSetError, OSError, ValueError):
+        return None
+    return artifact_head_sha(manifest)
+
+
+class VaultArtifactHeadUnavailable(ValueError):
+    """A vault artifact's manifest head could not be taken: HOLD and name it, never fall back.
+
+    The ONE classification guard's refusal. No failure to classify a source path or to take its
+    manifest digest — an unresolvable path or root, a malformed path, a file that cannot be hashed
+    whole, or anything else the walk raises — may degrade to another head, because a receipt bound
+    to that other head would release bytes no reviewer accepted.
+    """
+
+    def __init__(self, artifact_name: str, detail: str) -> None:
+        safe_name = str(artifact_name).replace("\x00", "\\0") or "?"
+        super().__init__(
+            f"vault artifact {safe_name} is not content-addressable ({detail}); next action: restore "
+            "its bytes and re-drop it — a repo-head receipt must never release a vault artifact"
+        )
+        self.artifact_name = safe_name
+
+
+def vault_artifact_head(
+    source_path: str | Path | None,
+    artifact_root: str | Path,
+    *,
+    max_chars: int = VAULT_ARTIFACT_MAX_CHARS,
+) -> str | None:
+    """The manifest head when ``source_path`` is a vault artifact under ``artifact_root``.
+
+    The ONE guard the vault-artifact classification shares, so no caller can degrade silently:
+    ``None`` means only "not a vault artifact under this root" (the caller keeps its own head),
+    while every failure to classify or hash a path that *is* under the root raises
+    :class:`VaultArtifactHeadUnavailable` naming the artifact.
+    """
+
+    if source_path is None:
+        return None
+    raw = str(source_path).strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    root = Path(artifact_root).expanduser()
+    try:
+        inside = path.resolve().is_relative_to(root.resolve())
+    except Exception as exc:  # noqa: BLE001 - an unclassifiable artifact is a HOLD, never a fallback
+        raise VaultArtifactHeadUnavailable(
+            path.name, f"it could not be classified: {type(exc).__name__}"
+        ) from exc
+    if not inside:
+        return None
+    head = vault_artifact_expected_head_sha(path, root, max_chars=max_chars)
+    if head is None:
+        raise VaultArtifactHeadUnavailable(
+            path.name, "missing, non-regular, non-UTF-8, or over the cap"
+        )
+    return head
 
 
 PUBLIC_GATE_EXPLICIT_EXPECTED_HEAD_KEYS = (
@@ -892,6 +983,12 @@ def public_gate_authority_signature(data: Mapping[Any, Any], secret: str) -> str
 
 def _public_gate_authority_secret() -> str:
     return os.environ.get(PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+
+
+def public_gate_authority_evidence_signed(data: Mapping[Any, Any], secret: str) -> bool:
+    """Whether ``data`` names a trusted authority issuer and carries its matching signature."""
+
+    return _mapping_has_trusted_authority_signature(data, secret)
 
 
 def _public_gate_authority_roots() -> tuple[Path, ...]:
