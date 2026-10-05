@@ -27,7 +27,7 @@ import hmac
 import re
 import secrets
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 #: §6 disposition codes. One spelling of the pending-precondition code: ``no_pending`` (seat ruling).
@@ -210,3 +210,91 @@ def classify_withdrawal(
     if now < request.confirmed_at + grace:
         return Disposition(PENDING, "confirmed; within the grace window", evidence_refs=refs)
     return Disposition(YES, "withdrawal granted; bytes deleted and tombstoned", evidence_refs=refs)
+
+
+# --- §5 intake receipt (component 1) -------------------------------------------------------------
+# The receipt the sender holds. It proves ARRIVAL: it binds the digest of what the sender sent to the
+# time it was logged, and gives the RANDOM handle the sender cites for withdrawal (D4 — never the
+# content digest, which can be guessed against a known message). Witness SEEN: arrival only, never
+# authorization (U19). These builders are PURE; the keeper-signed create-once record and the send are
+# the Worker's I/O (``han_mail_pull``).
+
+#: §5 witnessed-receipt carrier identifiers.
+RECEIPT_FORMAT = "hapax.chanc.intake"
+RECEIPT_VERSION = 1
+RECEIPT_WITNESS_SEEN = "SEEN"
+#: §5 interaction context — fixed for this channel.
+INTERACTION_PROTOCOL = "email"
+INTERACTION_CHANNEL = "hrl-han@"
+INTERACTION_PURPOSE = "correction"
+
+#: §10 claim ceiling, stated verbatim to the sender. Never "anchored", "tamper-proof" or "immutable",
+#: and never implying the receipt is consent.
+RECEIPT_CLAIM_CEILING = (
+    "This receipt records that your message arrived and was logged at the time shown. It is not a "
+    "promise about what happens next, it does not prove the message cannot be altered or deleted, "
+    "and it is not your consent to anything."
+)
+
+
+def receipt_id(issued_at: datetime, handle: str) -> str:
+    """A time-ordered receipt id: the issuance instant (compact UTC) plus the random handle's prefix.
+    Time-ordered so receipts sort by issuance; the handle prefix disambiguates within one pull. It
+    carries no content hash."""
+    if not is_valid_handle(handle):
+        raise ValueError("handle must be a 64-hex random handle (D4)")
+    return f"{issued_at.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}-{handle[:16]}"
+
+
+def build_intake_receipt(
+    *, handle: str, content_digest: str, issued_at: datetime, terms_digest: str
+) -> dict:
+    """The §5 intake receipt as a plain dict under the witnessed-receipt field names. ``handle`` is
+    the sender's random withdrawal reference (D4); ``content_digest`` binds the receipt to the exact
+    bytes (the quarantine filename — one of the only two places the plain digest lives, §4);
+    ``terms_digest`` is the digest of the corrections terms on the about page (§5). Pure."""
+    if not is_valid_handle(handle):
+        raise ValueError("handle must be a 64-hex random handle (D4)")
+    if not _DIGEST_RE.match(content_digest):
+        raise ValueError("content_digest must be 64 lowercase hex characters")
+    if not _DIGEST_RE.match(terms_digest):
+        raise ValueError("terms_digest must be 64 lowercase hex characters")
+    return {
+        "receipt_format": RECEIPT_FORMAT,
+        "receipt_version": RECEIPT_VERSION,
+        "receipt_id": receipt_id(issued_at, handle),
+        "act_type": "intake",
+        "handle": handle,
+        "content_digest": content_digest,
+        "interaction": {
+            "protocol": INTERACTION_PROTOCOL,
+            "channel": INTERACTION_CHANNEL,
+            "purpose": INTERACTION_PURPOSE,
+        },
+        "witness": RECEIPT_WITNESS_SEEN,
+        "issued_at": issued_at.astimezone(UTC).isoformat(),
+        "terms_digest": terms_digest,
+    }
+
+
+def format_receipt_email(receipt: dict, *, withdrawal_instructions: str) -> tuple[str, str]:
+    """The auto-reply text ``(subject, body)`` for an intake receipt. Pure: no sending. The body
+    states the handle, the receipt id, the time logged, the terms digest, the withdrawal
+    instructions and the §10 claim ceiling verbatim. It never implies authorization (witness SEEN)."""
+    handle = receipt["handle"]
+    subject = f"Received — corrections channel [{receipt['receipt_id']}]"
+    body = "\n".join(
+        [
+            "Your message reached the corrections channel and was logged.",
+            "",
+            f"Reference (keep this to ask about or withdraw your message): {handle}",
+            f"Receipt id: {receipt['receipt_id']}",
+            f"Logged at: {receipt['issued_at']}",
+            f"Corrections terms (by digest): {receipt['terms_digest']}",
+            "",
+            withdrawal_instructions.strip(),
+            "",
+            RECEIPT_CLAIM_CEILING,
+        ]
+    )
+    return subject, body
