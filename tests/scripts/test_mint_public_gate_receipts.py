@@ -21,6 +21,7 @@ SLUG = "announcement"
 REF = {gate: f"public-gate:{SLUG}-{gate.replace('_', '-')}" for gate in GATES}
 CLAUDE = {"id": "claude-1", "family": "claude", "verdict": "accept"}
 GEMINI = {"id": "gemini-1", "family": "gemini", "verdict": "accept"}
+GLM = {"id": "glm-1", "family": "glm", "verdict": "accept"}
 
 
 def _argv(env) -> list[str]:
@@ -62,8 +63,8 @@ def _dossier(env, **overrides) -> None:
         "artifact_fingerprint": env["bindings"]["artifact_fingerprint"],
         "target_surfaces": list(env["bindings"]["target_surfaces"]),
         "artifact_review": {"artifact_root": str(env["root"]), "manifest": env["manifest"]},
-        "reviewers": [GEMINI, {**CLAUDE, "verdict": "accept-with-findings"}],
-        "authority_issuer": "review-team:gemini,claude",
+        "reviewers": [GEMINI, GLM],
+        "authority_issuer": "review-team:gemini,glm",
     }
     payload.update(overrides)
     payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
@@ -142,8 +143,8 @@ def test_mints_receipts_the_validator_accepts(env) -> None:
     with pytest.raises(minter.MintError, match="mint_public_gate_acceptance_unsigned"):
         _mint(env)
 
-    # The standing rule, not a majority: one distinct accepting family is enough.
-    _dossier(env, reviewers=[CLAUDE, CLAUDE, GEMINI])
+    # The writer may vote, but never counts: two distinct families still meet the quorum.
+    _dossier(env, reviewers=[CLAUDE, GEMINI, GLM])
     assert {item["state"] for item in _mint(env)["receipts"].values()} == {"unchanged"}
 
 
@@ -176,17 +177,12 @@ _AUTHORIZED = [gate for gate in GATES if gate != "claim_review_current"]
             "mint_public_gate_missing:claim_review_current",
         ),
         (
-            {"writer_family": "claude", "reviewers": [CLAUDE]},
-            "mint_public_gate_self_acceptor:claude",
+            {"writer_family": "claude", "reviewers": [CLAUDE, CLAUDE]},
+            "mint_public_gate_quorum_not_independent:0/2",
         ),
         (
-            {
-                "quorum_required": 2,
-                "accept_count": 2,
-                "writer_family": "claude",
-                "reviewers": [CLAUDE, CLAUDE],
-            },
-            "mint_public_gate_self_acceptor:claude",
+            {"writer_family": "claude", "reviewers": [CLAUDE, GEMINI]},
+            "mint_public_gate_quorum_not_independent:1/2",
         ),
     ],
 )

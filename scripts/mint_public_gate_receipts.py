@@ -2,10 +2,9 @@
 """Mint the per-gate public-gate receipts for a vault artifact from its signed quorum acceptance.
 
 Its review authority is the review team's signed ``.review-dossier.yaml`` over the artifact's
-manifest head (``artifact-sha256:<64-hex>``); the receipts it produces carry that head and the
-acceptance's bindings. It refuses before writing anything on an acceptance that is unsigned, below
-quorum, or whose acceptors are all the writer's family, or whose head, bindings, or gate
-authorizations do not hold.
+manifest head (``artifact-sha256:<64-hex>``). It refuses before writing anything on an acceptance
+that is unsigned, below quorum, or whose accepting families distinct from the writer's do not meet
+the quorum, or whose head, bindings, or gate authorizations do not hold.
 """
 
 from __future__ import annotations
@@ -95,8 +94,10 @@ def _validate(dossier: Mapping, secret: str, artifact_root: Path) -> tuple[str, 
     writer = str(dossier.get("writer_family") or "").strip().casefold()
     if not accepting or not writer:
         raise MintError("mint_public_gate_acceptor_unresolved")
-    if not any(family != writer for family in accepting):
-        raise MintError(f"mint_public_gate_self_acceptor:{writer}")
+    # A public-gate receipt must not let the writer's family contribute to quorum.
+    independent = {family for family in accepting if family != writer}
+    if len(independent) < quorum:
+        raise MintError(f"mint_public_gate_quorum_not_independent:{len(independent)}/{quorum}")
     head = str(dossier.get("head_sha") or "").strip().casefold()
     review = dossier.get("artifact_review")
     manifest = review.get("manifest") if isinstance(review, Mapping) else None
