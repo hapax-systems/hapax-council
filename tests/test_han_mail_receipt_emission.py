@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -279,3 +280,277 @@ def test_build_intake_receipt_rejects_malformed(kwargs):
 
     with pytest.raises(ValueError):
         chanc.build_intake_receipt(issued_at=datetime(2026, 1, 1, tzinfo=UTC), **kwargs)
+
+
+# --- slice B, deferred from #5032 (dev1 stamp 23:16Z, gemini-1): unparseable headers --------------
+# scripts/han_mail_pull.py:136 returns loop_indicated=True when the header block is missing or
+# begins beyond 32768 bytes. That branch was shipped untested. It is load-bearing: it is the only
+# thing standing between a hostile/unbounded header block and an auto-reply to a stranger.
+def unparseable_no_boundary() -> bytes:
+    """Headers never terminate: no blank line anywhere in the message."""
+    return b"Subject: self-authored\r\n" + b"X-Filler: " + b"a" * 200 + b"\r\nbody without a break"
+
+
+def unparseable_boundary_beyond_limit() -> bytes:
+    """A real boundary, but it starts past the 32768-byte header cap."""
+    return b"Subject: self-authored\r\n" + b"a" * 33000 + b"\r\n\r\nBODY_SENTINEL_DO_NOT_SURFACE"
+
+
+@pytest.mark.parametrize("build", [unparseable_no_boundary, unparseable_boundary_beyond_limit])
+def test_intake_signals_unparseable_is_loop_indicated(build):
+    signals = pull.intake_signals(build())
+    assert signals == {"message_id": "", "loop_indicated": True}
+
+
+@pytest.mark.parametrize("build", [unparseable_no_boundary, unparseable_boundary_beyond_limit])
+def test_unparseable_message_is_suppressed_and_never_sent(root, build):
+    key = store(root, build(), sender="a@example.invalid")
+    sender, persist = FakeSender(), FakePersist()
+
+    assert emit(root, sender, persist) == 0
+    assert sender.calls == []
+    assert persist.records == {}
+    item = read_item(root, key)
+    assert item["loop_indicated"] is True
+    assert item["receipt_suppressed"] == "loop-indicated"
+    assert item["receipt_issued"] is False
+    # Terminal: a re-pull does not reconsider it, and still never sends.
+    assert emit(root, sender, persist) == 0
+    assert sender.calls == []
+
+
+def test_two_unparseable_messages_do_not_collide(root):
+    """Both carry message_id "" — neither may suppress or overwrite the other's record."""
+    k0 = store(root, unparseable_boundary_beyond_limit(), sender="a@example.invalid")
+    k1 = store(root, unparseable_no_boundary(), sender="b@example.invalid")
+    assert k0 != k1
+
+    sender, persist = FakeSender(), FakePersist()
+    assert emit(root, sender, persist) == 0
+    assert sender.calls == [] and persist.records == {}
+
+    first, second = read_item(root, k0), read_item(root, k1)
+    for item in (first, second):
+        assert item["message_id"] == ""
+        assert item["receipt_suppressed"] == "loop-indicated"
+    # Each record still describes its own message: the empty message_id is not an identity.
+    assert first["sha256"] == k0 and second["sha256"] == k1
+    assert first["raw_file"] == f"{k0}.eml" and second["raw_file"] == f"{k1}.eml"
+    assert (root / first["raw_file"]).read_bytes() != (root / second["raw_file"]).read_bytes()
+
+
+def test_receipt_and_create_once_never_key_on_an_empty_message_id(root):
+    """Two messages with NO Message-ID header must each get their own receipt and record.
+
+    A dedupe or create-once keyed on message_id would collapse both onto "" and emit one receipt
+    for two inbounds (or none). The content digest is the identity.
+    """
+    k0 = store(root, make_raw(0, sender=b"a@example.invalid"), sender="a@example.invalid")
+    k1 = store(root, make_raw(1, sender=b"b@example.invalid"), sender="b@example.invalid")
+    sender, persist = FakeSender(), FakePersist()
+
+    assert emit(root, sender, persist) == 2
+    assert len(sender.calls) == 2
+    assert set(persist.records) == {k0, k1}
+    for key in (k0, k1):
+        item = read_item(root, key)
+        assert item["message_id"] == ""
+        assert item["receipt_issued"] is True
+    assert len({read_item(root, k)["handle"] for k in (k0, k1)}) == 2
+
+
+# --- slice B (seat ruling 2026-10-05T00:19:27Z): the keeper key resolves at run time, fail CLOSED --
+def test_emitter_is_disarmed_unless_the_runtime_switch_is_set(root, monkeypatch):
+    """Merging slice B must not arm live sending: the switch is the separate runtime act."""
+    monkeypatch.delenv(pull.RECEIPT_ARM_ENV, raising=False)
+    monkeypatch.setattr(pull, "keeper_key", lambda: KEY)
+    assert (
+        pull.build_receipt_emitter(
+            root,
+            lambda: NOW,
+            terms_digest=TERMS_DIGEST,
+            withdrawal_instructions=WITHDRAWAL,
+        )
+        is None
+    )
+
+
+def test_emitter_fails_closed_when_the_keeper_key_is_absent(root, monkeypatch):
+    """Armed but keyless: no receipt is issued, nothing is sent, and the item is not suppressed."""
+    monkeypatch.setenv(pull.RECEIPT_ARM_ENV, "1")
+    monkeypatch.setattr(pull, "keeper_key", lambda: None)
+    key = store(root, make_raw(0), sender="a@example.invalid")
+
+    assert (
+        pull.build_receipt_emitter(
+            root,
+            lambda: NOW,
+            terms_digest=TERMS_DIGEST,
+            withdrawal_instructions=WITHDRAWAL,
+        )
+        is None
+    )
+    item = read_item(root, key)
+    assert item["receipt_issued"] is False
+    assert item["receipt_suppressed"] is None  # not issued, and not a terminal suppression
+
+
+def test_main_wiring_is_dark_by_default(monkeypatch):
+    """The wiring main() uses passes no emitter unless the runtime switch is set.
+
+    Both the terms copy and the keeper key are stubbed present, so this pins the SWITCH alone:
+    merging slice B must change nothing live until the separate runtime act.
+    """
+    monkeypatch.delenv(pull.RECEIPT_ARM_ENV, raising=False)
+    monkeypatch.setattr(pull, "keeper_key", lambda: KEY)
+    monkeypatch.setattr(pull, "chanc_terms", lambda: (TERMS_DIGEST, WITHDRAWAL))
+    assert pull._armed_emitter() is None
+
+
+def test_armed_emitter_issues_through_injected_io(root, monkeypatch):
+    """Armed with a key: the emitter wires the injected send + create-once persist end to end."""
+    monkeypatch.setenv(pull.RECEIPT_ARM_ENV, "1")
+    monkeypatch.setattr(pull, "keeper_key", lambda: KEY)
+    key = store(root, make_raw(0, extra=b"Message-ID: <abc@example.invalid>\r\n"))
+    sender, persist = FakeSender(), FakePersist()
+
+    emitter = pull.build_receipt_emitter(
+        root,
+        lambda: NOW,
+        terms_digest=TERMS_DIGEST,
+        withdrawal_instructions=WITHDRAWAL,
+        send=sender,
+        persist=persist,
+    )
+    assert emitter is not None
+    assert emitter(root, pull.Budget(root, lambda: NOW), lambda: NOW) == 1
+    assert len(sender.calls) == 1 and set(persist.records) == {key}
+    assert read_item(root, key)["receipt_issued"] is True
+
+
+def test_persist_intake_writes_a_create_once_signed_record(tmp_path):
+    """The receipt record is create-once, keyed to the KEYED digest, and HMAC-signed."""
+    records = tmp_path / "intake"
+    digest = hashlib.sha256(b"self-authored").hexdigest()
+    handle = chanc.generate_handle()
+    receipt = chanc.build_intake_receipt(
+        handle=handle,
+        content_digest=digest,
+        issued_at=datetime.fromtimestamp(NOW, UTC),
+        terms_digest=TERMS_DIGEST,
+    )
+    kwargs = {
+        "handle": handle,
+        "content_digest": digest,
+        "commitment": chanc.salted_commitment(digest, salt=b"s" * 16, key=KEY),
+        "salt_hex": (b"s" * 16).hex(),
+        "from_address": "a@example.invalid",
+        "receipt": receipt,
+        "key": KEY,
+        "root": records,
+    }
+    pull.persist_intake(**kwargs)
+    keyed = chanc.keyed_digest(digest, key=KEY)
+    written = json.loads((records / f"{keyed}.json").read_bytes())
+    assert written["keyed_digest"] == keyed
+    assert digest not in json.dumps(written)  # the plain digest is never in the record
+    assert written["authority_signature"].startswith("hmac-sha256:")
+    assert written["from_address"] == "a@example.invalid"
+
+    # Create-once: a second write for the same message is refused, never overwritten.
+    with pytest.raises(pull.IntakeError):
+        pull.persist_intake(**kwargs)
+    assert json.loads((records / f"{keyed}.json").read_bytes()) == written
+
+
+def test_send_receipt_refuses_without_the_submission_credential(tmp_path, monkeypatch):
+    monkeypatch.setattr(pull, "smtp_credential", lambda: None)
+    sent = []
+
+    def transport(sender, token, message):
+        sent.append(sender)
+        raise AssertionError("no connection may be opened without a credential")
+
+    assert (
+        pull.send_receipt(
+            to="a@example.invalid",
+            subject="s",
+            body="b",
+            headers={},
+            root=tmp_path,
+            transport=transport,
+        )
+        is False
+    )
+    assert sent == []
+    assert list(tmp_path.glob("*.json")) == []
+
+
+def test_send_receipt_is_one_send_per_message(tmp_path):
+    sent = []
+
+    def transport(sender, token, message):
+        sent.append(sender)
+        return True
+
+    kwargs = {
+        "to": "a@example.invalid",
+        "subject": "s",
+        "body": "b",
+        "headers": {"Auto-Submitted": "auto-replied"},
+        "root": tmp_path,
+        "transport": transport,
+        "credential": lambda: "token",
+    }
+    assert pull.send_receipt(**kwargs) is True
+    assert len(sent) == 1
+    # A second attempt for the SAME message never opens a second send.
+    assert pull.send_receipt(**kwargs) is False
+    assert len(sent) == 1
+
+
+def test_send_receipt_ambiguous_result_is_not_retried(tmp_path):
+    """A failure after the transaction started is ambiguous: recorded, never retried blind."""
+    attempts = []
+
+    def transport(sender, token, message):
+        attempts.append(sender)
+        raise pull.IntakeError("connection dropped after DATA")
+
+    kwargs = {
+        "to": "a@example.invalid",
+        "subject": "s",
+        "body": "b",
+        "headers": {},
+        "root": tmp_path,
+        "transport": transport,
+        "credential": lambda: "token",
+    }
+    assert pull.send_receipt(**kwargs) is False
+    assert len(attempts) == 1
+    assert pull.send_receipt(**kwargs) is False
+    assert len(attempts) == 1  # the ambiguous attempt is not repeated
+
+
+def test_send_receipt_pre_send_failure_stays_retryable(tmp_path):
+    """Nothing submitted => no record => a later pull may try again. Never a silent strand."""
+    attempts = []
+
+    def transport(sender, token, message):
+        attempts.append(sender)
+        raise pull.ReceiptTransportError("connect refused")
+
+    kwargs = {
+        "to": "a@example.invalid",
+        "subject": "s",
+        "body": "b",
+        "headers": {},
+        "root": tmp_path,
+        "transport": transport,
+        "credential": lambda: "token",
+    }
+    assert pull.send_receipt(**kwargs) is False
+    assert len(attempts) == 1
+    assert list(tmp_path.glob("*.json")) == []  # nothing was submitted, so nothing is recorded
+    assert pull.send_receipt(**kwargs) is False
+    assert len(attempts) == 2  # and the retry is allowed
