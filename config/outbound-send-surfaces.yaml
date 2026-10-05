@@ -14,3 +14,13 @@ surfaces:
     reason: >-
       Dormant, manual --send only, never scheduled; quarantined by
       tests/test_mail_monitor_credential_scoped_send_guard.py. PR #4768 retires its send path.
+  - path: scripts/han_mail_pull.py
+    reason: >-
+      The §5 CHANC intake receipt auto-reply: one Proton submission per inbound message to
+      hrl-han@hapaxresearch.com, the address the message came from, never more than one per inbound,
+      under the spend cap and the anti-loop suppression. Deliberate and recorded: the CHANC SPEC §5
+      says the Worker's own must-never-reply pin is unchanged and the receipt goes out-of-band from
+      the puller, so agents/mail_monitor/'s SMTP guard does not cover this path. DARK BY DEFAULT:
+      main() builds the emitter only when HAN_MAIL_RECEIPT_SEND is set (unset in every environment),
+      so merging the slice arms no sending; arming is a separate authorized runtime act. Credential
+      is FileStore proton-smtp-hrl-han, read in process and never printed.
