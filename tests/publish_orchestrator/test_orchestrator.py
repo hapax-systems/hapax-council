@@ -1294,6 +1294,43 @@ class TestSingleSurface:
         dossier.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
         assert orch._public_gate_receipts_child(artifact).decision == PublicationGateDecision.PASS
 
+    def test_unhashable_vault_artifact_holds_and_names_itself_and_the_queue_moves_on(
+        self, tmp_path, monkeypatch
+    ):
+        """No manifest head: HOLD and name it — never the process head — and keep processing."""
+
+        fake_module = mock.Mock()
+        fake_module.publish_artifact = mock.Mock(return_value="ok")
+        monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+        vault_root = tmp_path / "Personal"
+        vault_root.mkdir()
+        monkeypatch.setattr(orchestrator_module, "PUBLICATION_SOURCE_PATH_ROOTS", (vault_root,))
+        _drop_artifact(
+            tmp_path,
+            slug="vault-gone",
+            surfaces=["fake"],
+            source_path=vault_root / "frame" / "gone.md",
+        )
+        _drop_artifact(tmp_path, slug="plain-ok", surfaces=["fake"])
+        orch = _make_orchestrator(
+            tmp_path, surface_registry={"fake": "fake_publisher:publish_artifact"}
+        )
+
+        assert orch.run_once() == 2
+
+        # The unobtainable-head artifact held, named itself, and never dispatched.
+        gate_log = json.loads(
+            (tmp_path / "publish/log/vault-gone.publication-hardening-gate.json").read_text()
+        )
+        assert gate_log["result"] == "operator_hold"
+        assert any("gone.md" in issue for issue in gate_log["flagged_issues"])
+        assert (tmp_path / "publish/draft/vault-gone.json").exists()
+        assert not (tmp_path / "publish/published/vault-gone.json").exists()
+
+        # The queue moved past it: the healthy artifact still dispatched.
+        fake_module.publish_artifact.assert_called_once()
+        assert (tmp_path / "publish/published/plain-ok.json").exists()
+
     def test_public_gate_receipts_for_unexpected_head_hold_before_surface_dispatch(
         self,
         tmp_path,

@@ -785,25 +785,39 @@ class Orchestrator:
         findings = (error,) if error is not None else ()
         if policy_error is not None:
             findings = (*findings, policy_error)
-        missing = tuple(
-            gate
-            for gate in required
-            if not public_gate_receipt_value_present(
-                receipts.get(gate),
-                expected_gate=gate,
-                roots=self._public_gate_receipt_roots,
-                bindings=bindings,
-                expected_head_sha=self._expected_public_gate_head(artifact),
-            )
-        )
-        if missing:
+        located = _vault_artifact_source(artifact)
+        expected_head = self._expected_public_gate_head(artifact)
+        if located is not None and expected_head is None:
+            # A vault artifact's manifest digest is the only head that may release it. Hold and
+            # name it: the process head would let a git-head receipt release bytes no reviewer saw.
+            # The hold is visible (gate log, warning, metric) and retryable by re-dropping once the
+            # artifact's bytes are restored, and the queue moves past it.
             findings = (
                 *findings,
-                "publication_gate_receipts missing or invalid required receipt refs: "
-                + ", ".join(missing)
-                + "; next action: hold the artifact until durable public-gate receipt refs "
-                "bound to artifact_slug, artifact_fingerprint, and target_surfaces are recorded",
+                f"public_gate_receipts: vault artifact {located[0].name} is not content-addressable "
+                "(missing, non-regular, non-UTF-8, or over the cap); next action: restore its bytes "
+                "and re-drop it — a repo-head receipt must never release a vault artifact",
             )
+        else:
+            missing = tuple(
+                gate
+                for gate in required
+                if not public_gate_receipt_value_present(
+                    receipts.get(gate),
+                    expected_gate=gate,
+                    roots=self._public_gate_receipt_roots,
+                    bindings=bindings,
+                    expected_head_sha=expected_head,
+                )
+            )
+            if missing:
+                findings = (
+                    *findings,
+                    "publication_gate_receipts missing or invalid required receipt refs: "
+                    + ", ".join(missing)
+                    + "; next action: hold the artifact until durable public-gate receipt refs "
+                    "bound to artifact_slug, artifact_fingerprint, and target_surfaces are recorded",
+                )
 
         if findings:
             return PublicationGateChildResult(
@@ -828,12 +842,16 @@ class Orchestrator:
         return _configured_publication_gate_receipts(surfaces, fallback=fallback)
 
     def _expected_public_gate_head(self, artifact: PreprintArtifact) -> str | None:
-        """The public-gate head for one artifact: its manifest head for a vault artifact."""
+        """The public-gate head for one artifact: its manifest head when it is a vault artifact.
 
-        artifact_head = _vault_artifact_expected_head_sha(artifact)
-        if artifact_head is not None:
-            return artifact_head
-        return self._public_gate_expected_head_sha
+        A vault artifact's manifest digest is the only head that may release it, so an unobtainable
+        one returns ``None`` — the receipts child then HOLDs and names the artifact rather than
+        degrading to the process-wide head, which a git-head receipt could satisfy.
+        """
+        located = _vault_artifact_source(artifact)
+        if located is None:
+            return self._public_gate_expected_head_sha
+        return vault_artifact_expected_head_sha(*located)
 
     def _public_gate_receipts_gate_result(
         self,
@@ -1816,14 +1834,24 @@ def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, 
     }
 
 
-def _vault_artifact_expected_head_sha(artifact: PreprintArtifact) -> str | None:
+def _vault_artifact_source(artifact: PreprintArtifact) -> tuple[Path, Path] | None:
+    """``(source_path, artifact_root)`` when the artifact is a vault artifact, else ``None``.
+
+    A vault artifact is reviewed as a file set under a publication source root, so its gates bind
+    that manifest's digest. A source path outside every root is not a vault artifact and keeps the
+    process-wide head.
+    """
+
     source_path = artifact.source_path
     if not source_path:
         return None
-    for root in PUBLICATION_SOURCE_PATH_ROOTS:
-        head = vault_artifact_expected_head_sha(source_path, root)
-        if head is not None:
-            return head
+    try:
+        path = Path(source_path).expanduser()
+        for root in PUBLICATION_SOURCE_PATH_ROOTS:
+            if path.resolve().is_relative_to(root.resolve()):
+                return path, root
+    except OSError:
+        return None
     return None
 
 
