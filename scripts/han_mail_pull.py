@@ -14,15 +14,20 @@ import json
 import os
 import re
 import secrets
+import smtplib
+import ssl
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from email import policy
+from email.message import EmailMessage
 from email.parser import BytesHeaderParser
 from email.utils import parseaddr
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote
@@ -30,6 +35,7 @@ from urllib.parse import quote
 import httpx
 
 from shared import chanc
+from shared.public_gate_receipts import public_gate_authority_signature
 
 MAX_BYTES = 256 * 1024
 POLL_SECONDS = 300
@@ -444,6 +450,263 @@ def emit_receipts(
     return issued
 
 
+# --- slice B: the live receipt path, armed only by an explicit runtime switch ---------------------
+# RUNTIME SPLIT (seat 2026-10-05T00:07Z): merging this must NOT arm live sending. ``main()`` builds
+# the emitter only when the switch below is set; that switch is a SEPARATE authorized runtime act.
+# Disarmed, the pull behaves exactly as before: no key read, no record written, nothing sent.
+RECEIPT_ARM_ENV = "HAN_MAIL_RECEIPT_SEND"
+#: The DEDICATED intake-receipt keeper key (seat ruling 2026-10-04T20:02Z). Never the
+#: claim-verification-council key: a SEEN receipt to a stranger is a different authority.
+KEEPER_KEY_NAME = "chanc-intake-receipt-hmac"
+RECEIPT_SENDER = "hrl-han@hapaxresearch.com"
+SUBMISSION_HOST = "smtp.protonmail.ch"
+SUBMISSION_PORT = 587
+SUBMISSION_SECRET = "proton-smtp-hrl-han"  # pragma: allowlist secret — a FileStore key NAME
+INTAKE_RECORDS = Path.home() / "hapax-state/han-mail/intake"
+OUTBOUND_RECORDS = Path.home() / "hapax-state/han-mail/outbound"
+#: The local copy of the corrections terms (component 4 publishes the identical text to /about/,
+#: so the digest the sender is shown resolves to the page). Absent => the emitter fails closed.
+CHANC_TERMS = Path.home() / "hapax-state/han-mail/terms.md"
+_ARMED = frozenset({"1", "true", "yes", "on"})
+
+
+def receipt_send_armed() -> bool:
+    """True only when the operator's runtime switch is set. Unset or falsy is the default."""
+    return os.environ.get(RECEIPT_ARM_ENV, "").strip().lower() in _ARMED
+
+
+def _secret(name: str) -> str | None:
+    """Read one FileStore value in process. Never logged, never echoed, never printed."""
+    try:
+        result = subprocess.run(["hapax-secret", name], capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def keeper_key() -> bytes | None:
+    """The dedicated keeper key, resolved by NAME at run time (seat ruling 2026-10-05T00:19:27Z).
+
+    Returns None when it is absent. The caller fails CLOSED — no receipt — rather than signing
+    with anything else, and this function never generates, prints or persists a key.
+    """
+    value = _secret(KEEPER_KEY_NAME)
+    return value.encode() if value else None
+
+
+def smtp_credential() -> str | None:
+    """The Proton submission credential. None when unprovisioned; the send fails closed."""
+    return _secret(SUBMISSION_SECRET)
+
+
+def chanc_terms() -> tuple[str, str] | None:
+    """``(terms_digest, withdrawal_instructions)`` from the local terms copy, or None."""
+    try:
+        text = CHANC_TERMS.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest(), text
+
+
+def persist_intake(
+    *,
+    handle: str,
+    content_digest: str,
+    commitment: str,
+    salt_hex: str,
+    from_address: str,
+    receipt: dict,
+    key: bytes,
+    root: Path | None = None,
+) -> None:
+    """Create-once, HMAC-signed receipt record, keyed to the KEYED digest (§4, Q11).
+
+    The plain content digest never enters the record: the file name and the record's own
+    ``keyed_digest`` are the HMAC of the content digest under the keeper key, the ``commitment``
+    binds the message without revealing it, and the stored receipt carries its identity with
+    ``content_digest`` dropped. §4 keeps the plain digest in exactly two places — the quarantine
+    file name and the receipt the sender holds — and this permanent record must not be a third.
+    The record is signed under the existing public-gate receipt contract, with the dedicated keeper
+    key as the secret. Create-once: an existing record for the same message is a refusal.
+    """
+    root = INTAKE_RECORDS if root is None else root  # resolved at call time, not at import
+    keyed = chanc.keyed_digest(content_digest, key=key)
+    record = {
+        "type": "han.mail.intake-record",
+        "schema": 1,
+        "handle": handle,
+        "keyed_digest": keyed,
+        "commitment": commitment,
+        "salt_hex": salt_hex,
+        "from_address": from_address,
+        "receipt": {name: value for name, value in receipt.items() if name != "content_digest"},
+    }
+    record["authority_signature"] = public_gate_authority_signature(record, key.decode("utf-8"))
+    private_directory(root)
+    path = root / f"{keyed}.json"
+    try:
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError:
+        raise IntakeError(
+            "Intake receipt record already exists for this message; preserve it and reconcile"
+        ) from None
+    fsync_directory(root)
+
+
+def _receipt_message(
+    *, sender: str, to: str, subject: str, body: str, headers: dict
+) -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = to
+    message["Subject"] = subject
+    for name, value in headers.items():
+        if value:
+            message[name] = value
+    message.set_content(body)
+    return message
+
+
+class ReceiptTransportError(IntakeError):
+    """A submission failure BEFORE the SMTP transaction started. Safe to retry."""
+
+
+def _proton_transport(sender: str, token: str, message: EmailMessage) -> None:
+    """One Proton submission over STARTTLS. Never retries internally.
+
+    Raises ``ReceiptTransportError`` only when nothing was submitted — connect, STARTTLS or login
+    failed, so a later attempt cannot duplicate a receipt. Anything raised once ``send_message``
+    has begun is left as-is: the caller must treat that as ambiguous.
+    """
+    try:
+        client = smtplib.SMTP(SUBMISSION_HOST, SUBMISSION_PORT, timeout=30)
+    except OSError as exc:
+        raise ReceiptTransportError("submission connection failed before send") from exc
+    try:
+        try:
+            client.ehlo()
+            client.starttls(context=ssl.create_default_context())
+            client.ehlo()
+            client.login(sender, token)
+        except (OSError, smtplib.SMTPException) as exc:
+            raise ReceiptTransportError("submission setup failed before send") from exc
+        client.send_message(message)
+    finally:
+        client.close()
+
+
+#: The outcome states of one submission attempt.
+OUTCOME_ACCEPTED = "accepted"
+OUTCOME_AMBIGUOUS = "ambiguous"
+OUTCOME_PRE_SEND_FAILED = "pre_send_failed"
+
+
+def send_receipt(
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    headers: dict,
+    sender: str = RECEIPT_SENDER,
+    root: Path | None = None,
+    transport: Callable[..., None] | None = None,
+    credential: Callable[[], str | None] | None = None,
+) -> bool:
+    """One submission for one receipt. True only on an observed acceptance.
+
+    One send per message, and the guard is durable BEFORE the transaction starts: an immutable
+    ``<message_key>.intent.json`` first, so a crash at any point after the attempt begins still
+    refuses a replay — the window in which a second receipt could reach a stranger. The separate
+    ``<message_key>.outcome.json`` records ``accepted``, ``ambiguous`` (a failure after the
+    transaction started, never retried blind), or ``pre_send_failed`` — the only state a later pull
+    may retry. Absent credential: no connection, no record.
+    """
+    root = OUTBOUND_RECORDS if root is None else root  # resolved at call time, not at import
+    credential = credential if credential is not None else smtp_credential
+    token = credential()
+    if not token:
+        return False  # Fail closed: no credential, no connection, no record.
+    message_key = hashlib.sha256(
+        b"\0".join(part.encode("utf-8") for part in (to, subject, body))
+    ).hexdigest()
+    private_directory(root)
+    intent_path = root / f"{message_key}.intent.json"
+    outcome_path = root / f"{message_key}.outcome.json"
+    if (
+        intent_path.exists()
+        and read_json(outcome_path, {}).get("outcome") != OUTCOME_PRE_SEND_FAILED
+    ):
+        return False  # Attempted, and not provably unsubmitted: never a second send.
+    message = _receipt_message(sender=sender, to=to, subject=subject, body=body, headers=headers)
+    send = transport if transport is not None else _proton_transport
+    try:
+        with intent_path.open("x", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(
+                    {"type": "han.mail.receipt-intent", "schema": 1, "to": to}, sort_keys=True
+                )
+                + "\n"
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        fsync_directory(root)
+    except FileExistsError:
+        pass  # A retry after a provably pre-send failure reuses the original intent.
+    try:
+        send(sender, token, message)
+    except ReceiptTransportError:
+        write_json(outcome_path, {"outcome": OUTCOME_PRE_SEND_FAILED, "to": to})
+        return False  # Nothing was submitted, so a later pull may retry.
+    except (IntakeError, OSError, smtplib.SMTPException):
+        write_json(outcome_path, {"outcome": OUTCOME_AMBIGUOUS, "to": to})
+        return False
+    write_json(outcome_path, {"outcome": OUTCOME_ACCEPTED, "to": to})
+    return True
+
+
+def build_receipt_emitter(
+    root: Path,
+    clock: Callable[[], float] = time.time,
+    *,
+    terms_digest: str,
+    withdrawal_instructions: str,
+    send: Callable[..., bool] | None = None,
+    persist: Callable[..., None] | None = None,
+    key_resolver: Callable[[], bytes | None] | None = None,
+) -> Callable[..., int] | None:
+    """The §5 receipt emitter, or None when it must not run.
+
+    Two refusals, both fail-closed and neither destructive: the runtime switch is unset (the
+    default — merging this slice does not arm sending), or the dedicated keeper key is absent (no
+    receipt is signed with anything else, and nothing is sent). Neither refusal marks an item
+    suppressed, so the message is simply handled at a later pull once the condition clears.
+    """
+    if not receipt_send_armed():
+        return None
+    key = (key_resolver if key_resolver is not None else keeper_key)()
+    if key is None:
+        print(
+            "HAN mail pull: intake keeper key unavailable; no receipt issued. "
+            f"Next action: provision {KEEPER_KEY_NAME} in the FileStore via hapax-secret.",
+            file=sys.stderr,
+        )
+        return None
+    return partial(
+        emit_receipts,
+        send_receipt=send if send is not None else send_receipt,
+        persist_intake=persist if persist is not None else partial(persist_intake, key=key),
+        key=key,
+        terms_digest=terms_digest,
+        withdrawal_instructions=withdrawal_instructions,
+    )
+
+
 def run_once(
     kv: KV,
     root: Path,
@@ -555,6 +818,27 @@ class CloudflareKV:
         self._json("DELETE", self.base + "/values/" + quote(key, safe=""))
 
 
+def _armed_emitter() -> Callable[..., int] | None:
+    """The emitter ``main()`` hands to ``run_once``.
+
+    None unless the runtime switch is set AND the terms copy and keeper key both resolve. Disarmed
+    returns before reading a file or a key; every refusal leaves the pull non-emitting (fail closed).
+    """
+    if not receipt_send_armed():
+        return None
+    terms = chanc_terms()
+    if terms is None:
+        print(
+            "HAN mail pull: corrections terms copy missing; no receipt issued. "
+            f"Next action: publish the corrections terms copy at {CHANC_TERMS}.",
+            file=sys.stderr,
+        )
+        return None
+    return build_receipt_emitter(
+        QUARANTINE, terms_digest=terms[0], withdrawal_instructions=terms[1]
+    )
+
+
 def main() -> int:
     os.umask(0o077)
     try:
@@ -563,7 +847,7 @@ def main() -> int:
             raise IntakeError("Quarantine path must not resolve through symlinks")
         config = tomllib.loads(DEPLOYMENT.read_text())
         kv = CloudflareKV(config["namespace_id"])
-        result = run_once(kv, QUARANTINE, send_mail_notification)
+        result = run_once(kv, QUARANTINE, send_mail_notification, emit=_armed_emitter())
         print(json.dumps(result))  # Counts only; no foreign metadata in journal output.
         return 0
     except IntakeError as exc:
