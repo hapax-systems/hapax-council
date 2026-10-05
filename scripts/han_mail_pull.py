@@ -601,6 +601,12 @@ def _proton_transport(sender: str, token: str, message: EmailMessage) -> None:
         client.close()
 
 
+#: The outcome states of one submission attempt.
+OUTCOME_ACCEPTED = "accepted"
+OUTCOME_AMBIGUOUS = "ambiguous"
+OUTCOME_PRE_SEND_FAILED = "pre_send_failed"
+
+
 def send_receipt(
     *,
     to: str,
@@ -614,11 +620,14 @@ def send_receipt(
 ) -> bool:
     """One submission for one receipt. True only on an observed acceptance.
 
-    One send per message: an outcome record keyed to this exact message is written the moment the
-    SMTP transaction starts and is never removed, so a replay cannot send a second receipt. A
-    failure AFTER the transaction started is recorded ``ambiguous`` and never retried blind (the
-    official-mail durable-outbound rule). A failure BEFORE it started (``ReceiptTransportError``)
-    writes no record and stays retryable. Absent credential: no connection, no record, retryable.
+    One send per message, and the guard is durable BEFORE the transaction starts: an immutable
+    ``<message_key>.intent.json`` is created first, so a crash or kill at any point after the attempt
+    begins still refuses a replay — that is the exact window in which a second receipt could reach a
+    stranger. The separate ``<message_key>.outcome.json`` then records the result: ``accepted``;
+    ``ambiguous`` for a failure after the transaction started, never retried blind (the
+    official-mail durable-outbound rule); or ``pre_send_failed``, the one state that means nothing
+    was submitted and therefore the only state a later pull may retry. Absent credential: no
+    connection, no record.
     """
     credential = credential if credential is not None else smtp_credential
     token = credential()
@@ -628,28 +637,38 @@ def send_receipt(
         b"\0".join(part.encode("utf-8") for part in (to, subject, body))
     ).hexdigest()
     private_directory(root)
-    path = root / f"{message_key}.json"
-    if path.exists():
-        return False  # Already attempted for this message: never a second send.
+    intent_path = root / f"{message_key}.intent.json"
+    outcome_path = root / f"{message_key}.outcome.json"
+    if (
+        intent_path.exists()
+        and read_json(outcome_path, {}).get("outcome") != OUTCOME_PRE_SEND_FAILED
+    ):
+        return False  # Attempted, and not provably unsubmitted: never a second send.
     message = _receipt_message(sender=sender, to=to, subject=subject, body=body, headers=headers)
     send = transport if transport is not None else _proton_transport
     try:
-        send(sender, token, message)
-    except ReceiptTransportError:
-        return False  # Nothing was submitted: no record, so a later pull may retry.
-    except (IntakeError, OSError, smtplib.SMTPException):
-        outcome = "ambiguous"
-    else:
-        outcome = "accepted"
-    try:
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps({"outcome": outcome, "to": to}, sort_keys=True) + "\n")
+        with intent_path.open("x", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(
+                    {"type": "han.mail.receipt-intent", "schema": 1, "to": to}, sort_keys=True
+                )
+                + "\n"
+            )
             stream.flush()
             os.fsync(stream.fileno())
         fsync_directory(root)
     except FileExistsError:
-        pass
-    return outcome == "accepted"
+        pass  # A retry after a provably pre-send failure reuses the original intent.
+    try:
+        send(sender, token, message)
+    except ReceiptTransportError:
+        write_json(outcome_path, {"outcome": OUTCOME_PRE_SEND_FAILED, "to": to})
+        return False  # Nothing was submitted, so a later pull may retry.
+    except (IntakeError, OSError, smtplib.SMTPException):
+        write_json(outcome_path, {"outcome": OUTCOME_AMBIGUOUS, "to": to})
+        return False
+    write_json(outcome_path, {"outcome": OUTCOME_ACCEPTED, "to": to})
+    return True
 
 
 def build_receipt_emitter(
@@ -674,7 +693,8 @@ def build_receipt_emitter(
     key = (key_resolver if key_resolver is not None else keeper_key)()
     if key is None:
         print(
-            "HAN mail pull: intake keeper key unavailable; no receipt issued",
+            "HAN mail pull: intake keeper key unavailable; no receipt issued. "
+            f"Next action: provision {KEEPER_KEY_NAME} in the FileStore via hapax-secret.",
             file=sys.stderr,
         )
         return None
@@ -810,7 +830,8 @@ def _armed_emitter() -> Callable[..., int] | None:
     terms = chanc_terms()
     if terms is None:
         print(
-            "HAN mail pull: corrections terms copy missing; no receipt issued",
+            "HAN mail pull: corrections terms copy missing; no receipt issued. "
+            f"Next action: publish the corrections terms copy at {CHANC_TERMS}.",
             file=sys.stderr,
         )
         return None

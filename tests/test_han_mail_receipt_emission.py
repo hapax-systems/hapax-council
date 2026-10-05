@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import smtplib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -490,6 +491,12 @@ def test_send_receipt_is_one_send_per_message(tmp_path):
     sent = []
 
     def transport(sender, token, message):
+        # The finding was that this fake only recorded a call. Assert the built message itself.
+        assert message["From"] == "hrl-han@hapaxresearch.com"
+        assert message["To"] == "a@example.invalid"
+        assert message["Subject"] == "s"
+        assert message["Auto-Submitted"] == "auto-replied"
+        assert "b" in message.get_content()
         sent.append(sender)
         return True
 
@@ -533,7 +540,7 @@ def test_send_receipt_ambiguous_result_is_not_retried(tmp_path):
 
 
 def test_send_receipt_pre_send_failure_stays_retryable(tmp_path):
-    """Nothing submitted => no record => a later pull may try again. Never a silent strand."""
+    """Nothing submitted => outcome pre_send_failed => a later pull may try again."""
     attempts = []
 
     def transport(sender, token, message):
@@ -551,6 +558,239 @@ def test_send_receipt_pre_send_failure_stays_retryable(tmp_path):
     }
     assert pull.send_receipt(**kwargs) is False
     assert len(attempts) == 1
-    assert list(tmp_path.glob("*.json")) == []  # nothing was submitted, so nothing is recorded
+    # The intent is durable (the crash guard) but the outcome records that nothing was submitted.
+    assert len(list(tmp_path.glob("*.intent.json"))) == 1
+    outcomes = list(tmp_path.glob("*.outcome.json"))
+    assert len(outcomes) == 1
+    assert json.loads(outcomes[0].read_bytes())["outcome"] == "pre_send_failed"
     assert pull.send_receipt(**kwargs) is False
     assert len(attempts) == 2  # and the retry is allowed
+
+
+# --- review findings on #5037: the resolvers, the real transport, and the crash guard ------------
+class _Completed:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+@pytest.mark.parametrize(
+    "result,expected",
+    [
+        (_Completed(0, "  a-value\n"), "a-value"),
+        (_Completed(1, "a-value"), None),  # nonzero returncode: fail closed
+        (_Completed(0, "   \n"), None),  # empty value: fail closed
+        (OSError("hapax-secret missing"), None),
+    ],
+)
+def test_secret_resolution_and_its_error_paths(monkeypatch, result, expected):
+    def fake_run(argv, **kwargs):
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(pull.subprocess, "run", fake_run)
+    assert pull._secret("some-name") == expected
+
+
+def test_keeper_key_and_smtp_credential_resolve_by_name(monkeypatch):
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return _Completed(0, "resolved")
+
+    monkeypatch.setattr(pull.subprocess, "run", fake_run)
+    assert pull.keeper_key() == b"resolved"
+    assert pull.smtp_credential() == "resolved"
+    assert seen == [
+        ["hapax-secret", pull.KEEPER_KEY_NAME],
+        ["hapax-secret", pull.SUBMISSION_SECRET],
+    ]
+    monkeypatch.setattr(pull.subprocess, "run", lambda *a, **k: _Completed(1, "x"))
+    assert pull.keeper_key() is None  # absent => None, so the caller fails closed
+
+
+def test_chanc_terms_reads_the_copy_or_refuses(tmp_path, monkeypatch):
+    terms = tmp_path / "terms.md"
+    monkeypatch.setattr(pull, "CHANC_TERMS", terms)
+    assert pull.chanc_terms() is None  # missing file
+    terms.write_text("   \n\n")
+    assert pull.chanc_terms() is None  # whitespace only
+    terms.write_text("Ask to withdraw; never deleted on a sending address alone.")
+    digest, text = pull.chanc_terms()
+    assert digest == hashlib.sha256(terms.read_bytes()).hexdigest()
+    assert text.startswith("Ask to withdraw")
+
+
+def test_receipt_message_populates_headers_and_drops_empty_values():
+    message = pull._receipt_message(
+        sender="hrl-han@hapaxresearch.com",
+        to="a@example.invalid",
+        subject="Received — corrections channel [X]",
+        body="body text",
+        headers={"Auto-Submitted": "auto-replied", "In-Reply-To": "", "X-Kept": "yes"},
+    )
+    assert message["From"] == "hrl-han@hapaxresearch.com"
+    assert message["To"] == "a@example.invalid"
+    assert message["Subject"].startswith("Received")
+    assert message["Auto-Submitted"] == "auto-replied"  # RFC 3834 §5, the loop-safety header
+    assert message["X-Kept"] == "yes"
+    assert message["In-Reply-To"] is None  # an empty header value is dropped, not sent blank
+    assert "body text" in message.get_content()
+
+
+class _FakeSMTP:
+    """Stands in for smtplib.SMTP, with a settable failure stage."""
+
+    def __init__(self, fail_at=None):
+        self.calls = []
+        self.fail_at = fail_at
+
+    def close(self):
+        self.calls.append("close")
+
+    def _stage(self, name):
+        self.calls.append(name)
+        if self.fail_at == name:
+            raise smtplib.SMTPException(f"{name} failed")
+
+    def ehlo(self):
+        self._stage("ehlo")
+        return 250, b""
+
+    def starttls(self, context=None):
+        self._stage("starttls")
+
+    def login(self, sender, token):
+        self._stage("login")
+
+    def send_message(self, message):
+        self._stage("send_message")
+
+
+@pytest.mark.parametrize("fail_at", [None, "ehlo", "starttls", "login"])
+def test_proton_transport_sequence_and_pre_send_boundary(monkeypatch, fail_at):
+    fake = _FakeSMTP(fail_at=fail_at)
+    monkeypatch.setattr(pull.smtplib, "SMTP", lambda *a, **k: fake)
+    message = pull._receipt_message(sender="s", to="t", subject="x", body="b", headers={})
+    if fail_at is None:
+        pull._proton_transport("s", "token", message)
+        assert fake.calls == ["ehlo", "starttls", "ehlo", "login", "send_message", "close"]
+    else:
+        # Connect/STARTTLS/login failures submitted nothing: they must map to the retryable class.
+        with pytest.raises(pull.ReceiptTransportError):
+            pull._proton_transport("s", "token", message)
+
+
+def test_proton_transport_post_start_failure_is_not_pre_send(monkeypatch):
+    """A failure in send_message is ambiguous, NOT the retryable pre-send class."""
+    fake = _FakeSMTP(fail_at="send_message")
+    monkeypatch.setattr(pull.smtplib, "SMTP", lambda *a, **k: fake)
+    message = pull._receipt_message(sender="s", to="t", subject="x", body="b", headers={})
+    with pytest.raises(smtplib.SMTPException) as excinfo:
+        pull._proton_transport("s", "token", message)
+    assert not isinstance(excinfo.value, pull.ReceiptTransportError)
+    assert "close" in fake.calls  # the connection is closed even on a post-start failure
+
+
+def test_proton_transport_connect_failure_is_pre_send(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(pull.smtplib, "SMTP", boom)
+    message = pull._receipt_message(sender="s", to="t", subject="x", body="b", headers={})
+    with pytest.raises(pull.ReceiptTransportError):
+        pull._proton_transport("s", "token", message)
+
+
+def test_send_receipt_writes_the_intent_before_the_send(tmp_path):
+    """The guard must exist at the moment the transaction starts, not after it returns."""
+    observed = {}
+
+    def transport(sender, token, message):
+        observed["intents"] = sorted(p.name for p in tmp_path.glob("*.intent.json"))
+        observed["outcomes_at_send"] = sorted(p.name for p in tmp_path.glob("*.outcome.json"))
+
+    assert (
+        pull.send_receipt(
+            to="a@example.invalid",
+            subject="s",
+            body="b",
+            headers={},
+            root=tmp_path,
+            transport=transport,
+            credential=lambda: "token",
+        )
+        is True
+    )
+    assert len(observed["intents"]) == 1  # durable BEFORE the send
+    assert observed["outcomes_at_send"] == []  # and the outcome only lands after
+    assert len(list(tmp_path.glob("*.outcome.json"))) == 1
+
+
+def test_send_receipt_crash_after_intent_still_refuses_a_replay(tmp_path):
+    """The review's defect: a kill between intent and outcome must NOT permit a second send."""
+    key = hashlib.sha256(
+        b"\0".join(p.encode() for p in ("a@example.invalid", "s", "b"))
+    ).hexdigest()
+    (tmp_path / f"{key}.intent.json").write_text('{"type": "han.mail.receipt-intent"}\n')
+    attempts = []
+
+    def transport(sender, token, message):
+        attempts.append(sender)
+
+    assert (
+        pull.send_receipt(
+            to="a@example.invalid",
+            subject="s",
+            body="b",
+            headers={},
+            root=tmp_path,
+            transport=transport,
+            credential=lambda: "token",
+        )
+        is False
+    )
+    assert attempts == []  # no second receipt can reach the stranger
+
+
+def test_armed_emitter_terms_missing_and_armed_paths(root, monkeypatch):
+    monkeypatch.setenv(pull.RECEIPT_ARM_ENV, "1")
+    monkeypatch.setattr(pull, "keeper_key", lambda: KEY)
+    monkeypatch.setattr(pull, "chanc_terms", lambda: None)
+    assert pull._armed_emitter() is None  # armed but no terms: fail closed
+    monkeypatch.setattr(pull, "chanc_terms", lambda: (TERMS_DIGEST, WITHDRAWAL))
+    assert pull._armed_emitter() is not None  # fully armed
+
+
+def test_persist_intake_refusal_propagates_out_of_run_once(root, monkeypatch):
+    """A create-once refusal must fail the pull loudly, carrying its reconcile instruction."""
+    monkeypatch.setenv(pull.RECEIPT_ARM_ENV, "1")
+    monkeypatch.setattr(pull, "keeper_key", lambda: KEY)
+
+    class EmptyKV:
+        def list_keys(self, cursor):
+            return [], ""
+
+        def get_value(self, key):
+            return None
+
+        def delete_value(self, key):
+            pass
+
+    def refuse(**kwargs):
+        raise pull.IntakeError("Intake receipt record already exists; preserve it and reconcile")
+
+    emitter = pull.build_receipt_emitter(
+        root,
+        lambda: NOW,
+        terms_digest=TERMS_DIGEST,
+        withdrawal_instructions=WITHDRAWAL,
+        send=lambda **kw: True,
+        persist=refuse,
+    )
+    assert emitter is not None
+    store(root, make_raw(0, extra=b"Message-ID: <a@example.invalid>\r\n"))
+    with pytest.raises(pull.IntakeError, match="reconcile"):
+        pull.run_once(EmptyKV(), root, lambda *a, **k: True, lambda: NOW, emit=emitter)

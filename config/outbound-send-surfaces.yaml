@@ -16,11 +16,18 @@ surfaces:
       tests/test_mail_monitor_credential_scoped_send_guard.py. PR #4768 retires its send path.
   - path: scripts/han_mail_pull.py
     reason: >-
-      The §5 CHANC intake receipt auto-reply: one Proton submission per inbound message to
-      hrl-han@hapaxresearch.com, the address the message came from, never more than one per inbound,
-      under the spend cap and the anti-loop suppression. Deliberate and recorded: the CHANC SPEC §5
-      says the Worker's own must-never-reply pin is unchanged and the receipt goes out-of-band from
-      the puller, so agents/mail_monitor/'s SMTP guard does not cover this path. DARK BY DEFAULT:
-      main() builds the emitter only when HAN_MAIL_RECEIPT_SEND is set (unset in every environment),
-      so merging the slice arms no sending; arming is a separate authorized runtime act. Credential
-      is FileStore proton-smtp-hrl-han, read in process and never printed.
+      The §5 CHANC intake receipt auto-reply. Direction: hrl-han@hapaxresearch.com is the From
+      (RECEIPT_SENDER); the receipt is sent TO the inbound message's own reply address, never to
+      hrl-han@. At most one receipt per inbound message: send_receipt writes an immutable intent
+      record before the SMTP transaction starts, so a replay cannot send a second one — enforced by
+      tests/test_han_mail_receipt_emission.py::test_send_receipt_is_one_send_per_message and
+      ::test_send_receipt_crash_after_intent_still_refuses_a_replay. Anti-loop suppression is the
+      auto-submitted/loop-indication path in emit_receipts (::test_unparseable_message_is_suppressed_and_never_sent
+      and ::test_suppressed_without_sending); the daily receipt cap is the pre-existing Budget, applied
+      by emit_receipts before any mint (::test_spend_cap_defers_the_rest). Deliberate and recorded:
+      CHANC SPEC §5 says the Worker's own must-never-reply pin is unchanged and the receipt goes
+      out-of-band from the puller, so agents/mail_monitor/'s SMTP guard does not cover this path.
+      DARK BY DEFAULT: main() builds the emitter only when HAN_MAIL_RECEIPT_SEND is set (unset in
+      every environment), so merging arms no sending; arming is a separate authorized runtime act
+      (::test_main_wiring_is_dark_by_default). Credential is FileStore proton-smtp-hrl-han, read in
+      process and never printed.
