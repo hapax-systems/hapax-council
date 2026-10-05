@@ -1287,11 +1287,9 @@ class TestSingleSurface:
         artifact.publication_gate_context = {"publication_gate_receipts": receipts}
         assert orch._public_gate_receipts_child(artifact).decision == PublicationGateDecision.HOLD
 
-        payload = yaml.safe_load(dossier.read_text(encoding="utf-8"))
-        payload["head_sha"] = manifest_head
+        payload = yaml.safe_load(dossier.read_text(encoding="utf-8")) | {"head_sha": manifest_head}
         payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
-            {key: value for key, value in payload.items() if key != "authority_signature"},
-            AUTHORITY_SECRET,
+            {k: v for k, v in payload.items() if k != "authority_signature"}, AUTHORITY_SECRET
         )
         dossier.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
         assert orch._public_gate_receipts_child(artifact).decision == PublicationGateDecision.PASS

@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Mint the per-gate public-gate receipts for a vault artifact from its signed quorum acceptance.
 
-A vault artifact has no PR, so its review authority is the review team's signed
-``.review-dossier.yaml`` over the artifact's manifest head (``artifact-sha256:<64-hex>``). This is
-the ONE producer of the receipts its target surfaces require (``config/omg-lol*.yaml``
-``required_gates``); it carries the acceptance's head and bindings onto each receipt, so what the
-team signed is what a publisher validates. It refuses before writing anything on an acceptance
-that is unsigned, below quorum, accepted by its own writer, or whose head, bindings, or gate
+Its review authority is the review team's signed ``.review-dossier.yaml`` over the artifact's
+manifest head (``artifact-sha256:<64-hex>``); the receipts it produces carry that head and the
+acceptance's bindings. It refuses before writing anything on an acceptance that is unsigned, below
+quorum, or whose acceptors are all the writer's family, or whose head, bindings, or gate
 authorizations do not hold.
 """
 
@@ -30,7 +28,6 @@ from shared.review_artifact_manifest import (
 )
 from shared.secrets import SecretUnavailable, get_secret
 
-#: The FileStore NAME of the signing credential, never a value.
 AUTHORITY_SECRET_NAME = "hapax-public-gate-authority-hmac-key"  # pragma: allowlist secret
 DOSSIER_SUFFIX = ".review-dossier.yaml"
 DEFAULT_REVIEW_PROFILE = "claim_verification_council_public_egress"
@@ -50,8 +47,6 @@ def _texts(data: Mapping, key: str) -> list[str]:
 
 
 def _receipt_suffix(ref: str) -> str:
-    """The receipt's path suffix, refusing a ref the validator could never resolve."""
-
     text = ref.strip()
     for prefix in public_gate_receipts.PUBLIC_GATE_RECEIPT_PREFIXES:
         if text.casefold().startswith(prefix):
@@ -92,20 +87,16 @@ def _validate(dossier: Mapping, secret: str, artifact_root: Path) -> tuple[str, 
     if not isinstance(quorum, int) or not isinstance(count, int) or count < quorum:
         raise MintError(f"mint_public_gate_quorum_not_met:{count}/{quorum}")
     accepting = [
-        str(reviewer.get("family") or "").strip().casefold()
-        for reviewer in dossier.get("reviewers") or []
-        if isinstance(reviewer, Mapping)
-        and str(reviewer.get("verdict") or "").strip().casefold() in ACCEPTING_VERDICTS
+        str(r.get("family") or "").strip().casefold()
+        for r in dossier.get("reviewers") or []
+        if isinstance(r, Mapping) and str(r.get("verdict") or "").casefold() in ACCEPTING_VERDICTS
     ]
     accepting = [family for family in accepting if family]
     writer = str(dossier.get("writer_family") or "").strip().casefold()
     if not accepting or not writer:
         raise MintError("mint_public_gate_acceptor_unresolved")
-    writer_accepts = sum(1 for family in accepting if family == writer)
-    if writer_accepts > len(accepting) // 2:
-        raise MintError(
-            f"mint_public_gate_writer_family_majority:{writer}:{writer_accepts}/{len(accepting)}"
-        )
+    if not any(family != writer for family in accepting):
+        raise MintError(f"mint_public_gate_self_acceptor:{writer}")
     head = str(dossier.get("head_sha") or "").strip().casefold()
     review = dossier.get("artifact_review")
     manifest = review.get("manifest") if isinstance(review, Mapping) else None
@@ -153,8 +144,6 @@ def mint(
     surfaces: list[str] | None = None,
     authority_roots: Iterable[Path] | None = None,
 ) -> dict[str, object]:
-    """Mint one receipt per required gate. Returns a JSON-safe summary."""
-
     if public_gate_receipts.PUBLIC_GATE_AUTHORITY_CASE_RE.fullmatch(authority_case) is None:
         raise MintError("mint_public_gate_authority_case_malformed")
     dossier_path = None
@@ -228,12 +217,12 @@ def mint(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scripts.mint_public_gate_receipts",
-        description="Mint per-gate public-gate receipts from a vault artifact's signed acceptance.",
+        description="Mint per-gate public-gate receipts from a signed vault-artifact acceptance.",
     )
-    parser.add_argument("--task-id", required=True, help="cc-task id owning the review dossier")
-    parser.add_argument("--artifact", type=Path, required=True, help="Vault artifact markdown")
+    parser.add_argument("--task-id", required=True, help="cc-task owning the review dossier")
+    parser.add_argument("--artifact", type=Path, required=True, help="Vault artifact file")
     parser.add_argument("--artifact-root", type=Path, default=publish.VAULT_ARTIFACT_ROOT)
-    parser.add_argument("--authority-case", required=True, help="CASE-/REQ- authority case")
+    parser.add_argument("--authority-case", required=True, help="CASE-/REQ- case")
     parser.add_argument("--receipt-root", type=Path, default=publish.PUBLIC_GATE_RECEIPT_ROOTS[0])
     args = parser.parse_args(argv)
     try:

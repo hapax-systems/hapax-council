@@ -157,9 +157,8 @@ PUBLIC_GATE_TRUSTED_AUTHORITY_ISSUERS = frozenset(
 PUBLIC_GATE_AUTHORITY_SIGNATURE_PREFIX = "hmac-sha256:"
 PUBLIC_GATE_AUTHORITY_CASE_RE = re.compile(r"\A(?:CASE|REQ)-[A-Za-z0-9][A-Za-z0-9_.:-]{2,}\Z")
 PUBLIC_GATE_REVIEW_HEAD_RE = re.compile(r"\A[0-9a-f]{40}\Z", re.IGNORECASE)
-# A vault-artifact acceptance binds ``artifact-sha256:<64-hex>`` (the digest over its manifest)
-# instead of a 40-hex git head. Both are valid heads, and head equality still holds, so a git-PR
-# receipt can never satisfy a vault expected head or vice versa.
+# A vault-artifact acceptance binds ``artifact-sha256:<64-hex>`` (its manifest digest) instead of a
+# 40-hex git head; head equality still holds, so neither form can satisfy the other's expected head.
 PUBLIC_GATE_ARTIFACT_HEAD_RE = re.compile(r"\Aartifact-sha256:[0-9a-f]{64}\Z", re.IGNORECASE)
 
 
@@ -170,8 +169,8 @@ def _is_valid_public_gate_head(value: str) -> bool:
     )
 
 
-#: The reviewer's own artifact cap (scripts/cc-pr-review-dispatch.py MAX_ARTIFACT_CHARS). It does
-#: not enter the digest: an artifact over it yields a head no acceptance matches.
+#: The reviewer's own artifact cap (scripts/cc-pr-review-dispatch.py MAX_ARTIFACT_CHARS); it does
+#: not enter the digest, so an artifact over it yields a head no acceptance matches.
 VAULT_ARTIFACT_MAX_CHARS = 80_000
 
 
@@ -186,8 +185,8 @@ def vault_artifact_expected_head_sha(
     A review team accepts a vault artifact as a file set and signs the digest over the sorted
     ``(path, sha256, bytes)`` manifest — ``artifact-sha256:<64-hex>``. This is the ONE producer of
     that head for the publication callers, so the head a team signs and the head a publisher
-    expects cannot drift. Returns ``None`` when the artifact cannot be reviewed whole — no path,
-    outside the root, missing, non-regular, non-UTF-8, or over ``max_chars`` — which holds gates.
+    expects cannot drift. ``None`` when the artifact cannot be reviewed whole (no path, outside
+    the root, missing, non-regular, non-UTF-8, over ``max_chars``); a caller must HOLD on it.
     """
 
     if source_path is None:

@@ -828,11 +828,7 @@ class Orchestrator:
         return _configured_publication_gate_receipts(surfaces, fallback=fallback)
 
     def _expected_public_gate_head(self, artifact: PreprintArtifact) -> str | None:
-        """The public-gate head for one artifact: its manifest head when it is a vault artifact.
-
-        Each vault artifact binds its own manifest digest, so a stale or wrong-revision receipt
-        holds; everything else keeps the process-wide head.
-        """
+        """The public-gate head for one artifact: its manifest head for a vault artifact."""
 
         artifact_head = _vault_artifact_expected_head_sha(artifact)
         if artifact_head is not None:

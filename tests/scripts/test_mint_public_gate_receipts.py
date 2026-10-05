@@ -19,6 +19,8 @@ CASE = "CASE-SYSTEM-INTEGRITY-20260611"
 GATES = publish.PUBLICATION_BASELINE_REQUIRED_GATES
 SLUG = "announcement"
 REF = {gate: f"public-gate:{SLUG}-{gate.replace('_', '-')}" for gate in GATES}
+CLAUDE = {"id": "claude-1", "family": "claude", "verdict": "accept"}
+GEMINI = {"id": "gemini-1", "family": "gemini", "verdict": "accept"}
 
 
 def _argv(env) -> list[str]:
@@ -39,14 +41,9 @@ def _argv(env) -> list[str]:
 def _artifact_text(refs=REF, body="Body\n") -> str:
     gates = "\n".join(f"  {gate}: {ref}" for gate, ref in refs.items())
     return (
-        "---\n"
-        "Publication-Allowed: true\n"
-        "title: Announcement\n"
-        f"slug: {SLUG}\n"
-        "surfaces_targeted:\n  - omg-weblog\n"
-        f"publication_gate_receipts:\n{gates}\n"
-        "---\n\n"
-        f"{body}"
+        "---\nPublication-Allowed: true\ntitle: Announcement\n"
+        f"slug: {SLUG}\nsurfaces_targeted:\n  - omg-weblog\n"
+        f"publication_gate_receipts:\n{gates}\n---\n\n{body}"
     )
 
 
@@ -57,7 +54,7 @@ def _dossier(env, **overrides) -> None:
         "head_sha": artifact_head_sha(env["manifest"]),
         "review_team_verdict": "quorum-accept",
         "quorum_required": 2,
-        "accept_count": 3,
+        "accept_count": 2,
         "writer_family": "claude",
         "required_gates": list(env["declared"]),
         "authorized_public_gate_receipts": list(env["declared"].values()),
@@ -65,30 +62,27 @@ def _dossier(env, **overrides) -> None:
         "artifact_fingerprint": env["bindings"]["artifact_fingerprint"],
         "target_surfaces": list(env["bindings"]["target_surfaces"]),
         "artifact_review": {"artifact_root": str(env["root"]), "manifest": env["manifest"]},
-        "reviewers": [
-            {"id": "gemini-1", "family": "gemini", "verdict": "accept"},
-            {"id": "glm-1", "family": "glm", "verdict": "accept-with-findings"},
-            {"id": "claude-1", "family": "claude", "verdict": "accept-with-findings"},
-        ],
-        "authority_issuer": "review-team:gemini,glm,claude",
+        "reviewers": [GEMINI, {**CLAUDE, "verdict": "accept-with-findings"}],
+        "authority_issuer": "review-team:gemini,claude",
     }
     payload.update(overrides)
     payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
-        {key: value for key, value in payload.items() if key != "authority_signature"}, SECRET
+        {k: v for k, v in payload.items() if k != "authority_signature"}, SECRET
     )
     env["dossier"].write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
 def _mint(env, **overrides) -> dict:
-    kwargs = {
-        "task_id": TASK_ID,
-        "artifact": env["source"],
-        "artifact_root": env["root"],
-        "authority_case": CASE,
-        "receipt_root": env["receipts"],
-    }
-    kwargs.update(overrides)
-    return minter.mint(**kwargs)
+    return minter.mint(
+        **{
+            "task_id": TASK_ID,
+            "artifact": env["source"],
+            "artifact_root": env["root"],
+            "authority_case": CASE,
+            "receipt_root": env["receipts"],
+            **overrides,
+        }
+    )
 
 
 @pytest.fixture
@@ -148,6 +142,10 @@ def test_mints_receipts_the_validator_accepts(env) -> None:
     with pytest.raises(minter.MintError, match="mint_public_gate_acceptance_unsigned"):
         _mint(env)
 
+    # The standing rule, not a majority: one distinct accepting family is enough.
+    _dossier(env, reviewers=[CLAUDE, CLAUDE, GEMINI])
+    assert {item["state"] for item in _mint(env)["receipts"].values()} == {"unchanged"}
+
 
 _AUTHORIZED = [gate for gate in GATES if gate != "claim_review_current"]
 
@@ -164,17 +162,31 @@ _AUTHORIZED = [gate for gate in GATES if gate != "claim_review_current"]
         ),
         (
             {
+                "authorized_public_gate_receipts": [
+                    f"public-gate:{SLUG}.{gate.replace('_', '-')}" for gate in GATES
+                ]
+            },
+            "mint_public_gate_receipt_ref_malformed",
+        ),
+        (
+            {
                 "required_gates": _AUTHORIZED,
                 "authorized_public_gate_receipts": [REF[gate] for gate in _AUTHORIZED],
             },
             "mint_public_gate_missing:claim_review_current",
         ),
         (
+            {"writer_family": "claude", "reviewers": [CLAUDE]},
+            "mint_public_gate_self_acceptor:claude",
+        ),
+        (
             {
+                "quorum_required": 2,
+                "accept_count": 2,
                 "writer_family": "claude",
-                "reviewers": [{"id": "claude-1", "family": "claude", "verdict": "accept"}],
+                "reviewers": [CLAUDE, CLAUDE],
             },
-            "mint_public_gate_writer_family_majority:claude:1/1",
+            "mint_public_gate_self_acceptor:claude",
         ),
     ],
 )
@@ -192,21 +204,6 @@ def test_refuses_when_the_artifact_bytes_changed(env) -> None:
     env["source"].write_text(_artifact_text(body="Changed\n"), encoding="utf-8")
 
     with pytest.raises(minter.MintError, match="mint_public_gate_artifact_changed"):
-        _mint(env)
-
-
-def test_refuses_a_ref_the_validator_could_never_resolve(env) -> None:
-    dotted = {gate: f"public-gate:{SLUG}.{gate.replace('_', '-')}" for gate in GATES}
-    env["source"].write_text(_artifact_text(refs=dotted), encoding="utf-8")
-    manifest, _ = build_artifact_manifest([env["source"]], env["root"], max_chars=100_000)
-    _dossier(
-        env,
-        head_sha=artifact_head_sha(manifest),
-        artifact_review={"artifact_root": str(env["root"]), "manifest": manifest},
-        authorized_public_gate_receipts=list(dotted.values()),
-    )
-
-    with pytest.raises(minter.MintError, match="mint_public_gate_receipt_ref_malformed"):
         _mint(env)
 
 

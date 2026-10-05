@@ -912,7 +912,11 @@ def test_vault_artifact_expected_head_sha_is_the_manifest_digest(tmp_path: Path)
 
     source.write_text("Changed\n", encoding="utf-8")
     assert provider(source, root) != head
-    assert provider(source, root / "other") is None
-    assert provider(None, root) is None
-    assert provider("  ", root) is None
-    assert provider(source, root, max_chars=1) is None
+    # Every refusal path is a None head, which a caller must hold on.
+    for args, kwargs in (
+        ((source, root / "other"), {}),
+        ((None, root), {}),
+        (("  ", root), {}),
+        ((source, root), {"max_chars": 1}),
+    ):
+        assert provider(*args, **kwargs) is None
