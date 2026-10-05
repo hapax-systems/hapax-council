@@ -40,9 +40,7 @@ class FakeForge:
         self.responses = responses or {}
 
     def __call__(self, method: str, url: str, body=None, headers=None):
-        self.calls.append(
-            SimpleNamespace(method=method, url=url, body=body, headers=headers or {})
-        )
+        self.calls.append(SimpleNamespace(method=method, url=url, body=body, headers=headers or {}))
         for suffix, response in self.responses.items():
             if url.endswith(suffix):
                 status, payload = response
@@ -60,7 +58,9 @@ def shim(monkeypatch, tmp_path):
     fake = FakeForge()
     monkeypatch.setattr(module, "transport_request", fake)
     monkeypatch.setattr(module, "resolve_repo", lambda cwd=None, env=None: "forge-admin/driver")
-    monkeypatch.setattr(module, "_env", lambda k, d=None: {"FORGE_URL": "http://forge.test"}.get(k, d))
+    monkeypatch.setattr(
+        module, "_env", lambda k, d=None: {"FORGE_URL": "http://forge.test"}.get(k, d)
+    )
     monkeypatch.setattr(module, "_token", lambda: "test-token")
     module._fake_forge = fake
     return module
@@ -96,9 +96,7 @@ def test_issue_view_maps_fields_and_uppercases_state(shim):
             },
         )
     }
-    code, out, err, fake = run(
-        shim, ["issue", "view", "9", "--json", "number,title,body,labels"]
-    )
+    code, out, err, fake = run(shim, ["issue", "view", "9", "--json", "number,title,body,labels"])
     assert code == 0, err
     data = json.loads(out)
     assert data == {
@@ -113,7 +111,10 @@ def test_issue_view_maps_fields_and_uppercases_state(shim):
 
 def test_issue_view_state_mapping_open_and_closed(shim):
     shim._fake_forge.responses = {
-        "/issues/1": (200, {"number": 1, "title": "t", "body": "", "state": "closed", "labels": []}),
+        "/issues/1": (
+            200,
+            {"number": 1, "title": "t", "body": "", "state": "closed", "labels": []},
+        ),
         "/issues/2": (200, {"number": 2, "title": "t", "body": "", "state": "open", "labels": []}),
     }
     for n, expected in ((1, "CLOSED"), (2, "OPEN")):
@@ -215,7 +216,10 @@ def test_pr_view_merged_state_and_mergedat(shim):
 
 def test_pr_view_files_shape(shim):
     shim._fake_forge.responses = {
-        "/pulls/10": (200, {"number": 10, "title": "probe", "head": {"ref": "shim/phase-a-verify"}}),
+        "/pulls/10": (
+            200,
+            {"number": 10, "title": "probe", "head": {"ref": "shim/phase-a-verify"}},
+        ),
         "/pulls/10/files": (200, [{"filename": "shim-phase-a-probe.txt", "additions": 1}]),
     }
     code, out, err, _ = run(shim, ["pr", "view", "10", "--json", "files"])
@@ -281,11 +285,16 @@ def test_pr_create_posts_pull_and_labels_like_gh(shim, tmp_path, monkeypatch):
     code, out, err, fake = run(
         shim,
         [
-            "pr", "create",
-            "--title", "[agent] Probe",
-            "--body", "## Summary\n\nAutomated implementation.",
-            "--label", "agent-authored",
-            "--label", "sdlc:in-review",
+            "pr",
+            "create",
+            "--title",
+            "[agent] Probe",
+            "--body",
+            "## Summary\n\nAutomated implementation.",
+            "--label",
+            "agent-authored",
+            "--label",
+            "sdlc:in-review",
         ],
     )
     assert code == 0, err
@@ -314,8 +323,18 @@ def test_pr_create_explicit_head_and_base_override_inference(shim, tmp_path, mon
     monkeypatch.chdir(tmp_path)
     code, _, err, fake = run(
         shim,
-        ["pr", "create", "--title", "t", "--body", "b",
-         "--head", "agent/issue-2-work", "--base", "stage/x"],
+        [
+            "pr",
+            "create",
+            "--title",
+            "t",
+            "--body",
+            "b",
+            "--head",
+            "agent/issue-2-work",
+            "--base",
+            "stage/x",
+        ],
     )
     assert code == 0, err
     create = next(c for c in fake.calls if c.method == "POST" and c.url.endswith("/pulls"))
@@ -329,7 +348,6 @@ def test_pr_create_without_git_head_fails_closed_with_next_action(shim, tmp_path
     code, _, err, _ = run(shim, ["pr", "create", "--title", "t", "--body", "b"])
     assert code == 1
     assert "Next action" in err
-
 
 
 def test_label_remove_absent_is_noop_success(shim):
