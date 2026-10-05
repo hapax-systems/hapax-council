@@ -72,6 +72,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.opus",
         "claude.headless.sonnet",
         "claude.review.opus",
+        "claude.review.cloud",
         "claude.interactive.full",
         "kimi.interactive.lane",
         "codex.headless.full",
@@ -93,6 +94,11 @@ CLAUDE_HEADLESS_ROUTE_ID = "claude.headless.full"
 CLAUDE_REVIEW_ROUTE_ID = "claude.review.opus"
 CLAUDE_REVIEW_ADMISSION_BLOCKER = "claude_review_seat_receipt_admission_required"
 CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER = "claude_review_route_specific_quota_receipt_absent"
+CLAUDE_CLOUD_REVIEW_ROUTE_ID = "claude.review.cloud"
+CLAUDE_CLOUD_REVIEW_ADMISSION_BLOCKER = "claude_cloud_review_seat_receipt_admission_required"
+CLAUDE_CLOUD_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER = (
+    "claude_cloud_review_route_specific_quota_receipt_absent"
+)
 CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER = "account_live_quota_receipt_absent"
 KIMI_INTERACTIVE_ROUTE_ID = "kimi.interactive.lane"
 KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
@@ -105,6 +111,11 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     # the route stays held — lane/session presence never clears this.
     CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
     CLAUDE_REVIEW_ROUTE_ID: CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER,
+    # claude.review.cloud: same receipt-bounded contract as the claude -p review route, but the
+    # admission receipt attests the promotional cloud credit (ccr_promotional billing witness),
+    # never subscription headroom and never pay-as-you-go. Its freshness is paced separately from
+    # every subscription-pool route.
+    CLAUDE_CLOUD_REVIEW_ROUTE_ID: CLAUDE_CLOUD_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     # kimi.interactive.lane: same contract — a hapax.kimi_quota_admission.v1 receipt minted by
     # ~/.local/bin/hapax-kimi-quota-admission and folded into the live ledger by the telemetry
     # writer (PR #4660) clears the fail-closed receipt blocker. The route id follows the minter's
@@ -165,6 +176,7 @@ class Mode(StrEnum):
 
 class Profile(StrEnum):
     API_FRONTIER = "api_frontier"
+    CLOUD = "cloud"
     DETERMINISTIC = "deterministic"
     DIRECT = "direct"
     FLASH = "flash"
@@ -225,6 +237,7 @@ class ModelId(StrEnum):
 
     CLAUDE_OPUS_4_8 = "claude-opus-4-8"
     CLAUDE_OPUS_4_6 = "claude-opus-4-6"
+    CLAUDE_OPUS_5_5 = "claude-opus-5-5"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
@@ -299,6 +312,7 @@ class CapacityPool(StrEnum):
     API_PAID_SPEND = "api_paid_spend"
     BOOTSTRAP_BUDGET = "bootstrap_budget"
     LOCAL_COMPUTE = "local_compute"
+    PROMOTIONAL_CREDIT_QUOTA = "promotional_credit_quota"
     SUBSCRIPTION_QUOTA = "subscription_quota"
 
 
@@ -2373,7 +2387,13 @@ def _quota_unobservable_nonblocking(
     ):
         return False
     capacity_pool = route_payload.get("capacity_pool")
-    if capacity_pool == CapacityPool.SUBSCRIPTION_QUOTA.value:
+    # Promotional cloud credit is, like subscription quota, a provider-side
+    # quota product that local CLI probes cannot observe; admission arrives
+    # through the live quota ledger, so local unobservability is not a hold.
+    if capacity_pool in {
+        CapacityPool.SUBSCRIPTION_QUOTA.value,
+        CapacityPool.PROMOTIONAL_CREDIT_QUOTA.value,
+    }:
         return True
     return (
         capacity_pool
@@ -2391,6 +2411,8 @@ def _capability_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[
         reasons.add("agy_review_seat_receipt_admission_required")
     if route_payload.get("route_id") == CLAUDE_REVIEW_ROUTE_ID:
         reasons.add(CLAUDE_REVIEW_ADMISSION_BLOCKER)
+    if route_payload.get("route_id") == CLAUDE_CLOUD_REVIEW_ROUTE_ID:
+        reasons.add(CLAUDE_CLOUD_REVIEW_ADMISSION_BLOCKER)
     if route_payload.get("route_id") == "api.headless.provider_gateway":
         reasons.add("provider_gateway_evidence_absent")
     return reasons
@@ -2419,7 +2441,11 @@ def _quota_unobservable_removable_reasons(route_payload: dict[str, Any]) -> set[
 
 
 def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
-    if route_payload.get("route_id") in {"agy.review.direct", CLAUDE_REVIEW_ROUTE_ID}:
+    if route_payload.get("route_id") in {
+        "agy.review.direct",
+        CLAUDE_REVIEW_ROUTE_ID,
+        CLAUDE_CLOUD_REVIEW_ROUTE_ID,
+    }:
         # Platform receipts can prove local reviewer wrapper availability only.
         # Route-specific quota admission is consumed from the live quota ledger,
         # not from a platform-capability quota receipt.
