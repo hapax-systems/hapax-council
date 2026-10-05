@@ -34,7 +34,7 @@ from urllib.parse import quote
 
 import httpx
 
-from shared import chanc
+from shared import chanc, chanc_evidence
 from shared.public_gate_receipts import public_gate_authority_signature
 
 MAX_BYTES = 256 * 1024
@@ -429,6 +429,14 @@ def emit_receipts(
             item["receipt_id"] = receipt["receipt_id"]
             item["receipt_issued_at"] = receipt["issued_at"]
             write_json(path, item)
+            # §4 evidence mirror. The binding is created once per message, so this event is
+            # emitted once per message. Off by default, best-effort, keyed digest only.
+            chanc_evidence.emit_intake(
+                keyed_digest=chanc.keyed_digest(content_digest, key=key),
+                handle=handle,
+                terms_digest=terms_digest,
+                issued_at=receipt["issued_at"],
+            )
         receipt = chanc.build_intake_receipt(
             handle=item["handle"],
             content_digest=content_digest,
@@ -447,6 +455,12 @@ def emit_receipts(
             item["receipt_issued"] = True
             write_json(path, item)
             issued += 1
+            # §4 evidence mirror: the receipt actually went out. Deterministic event id, so a
+            # re-pull cannot double-emit. Off by default, best-effort, keyed digest only.
+            chanc_evidence.emit_receipt_issued(
+                keyed_digest=chanc.keyed_digest(content_digest, key=key),
+                receipt_id=receipt["receipt_id"],
+            )
     return issued
 
 
