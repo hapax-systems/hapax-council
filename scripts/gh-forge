@@ -1,0 +1,598 @@
+#!/usr/bin/env python3
+"""gh-shaped shim over a Forgejo REST API (S2 re-target, Phase A).
+
+Accepts gh CLI argv and emits gh-shaped JSON so command classifiers (hooks,
+policy floor) and callers that pin argv keep working unchanged. Serves the
+surface ``sdlc/github.py`` uses plus ``--repo``/``--jq`` needed by the wider
+Phase B collapse.
+
+Configuration (environment):
+
+  FORGE_URL        base URL of the forge (default http://100.85.131.41:3000)
+  FORGE_TOKEN      API token; preferred when already materialized
+  FORGE_TOKEN_CMD  shell command that prints the token
+                   (default: pass show forgejo-shadow/s2-review-chain)
+  GH_REPO          "owner/name" override; otherwise parsed from the origin
+                   remote of the working directory
+
+Known deliberate gaps (fail closed, with next actions):
+
+  - repository_dispatch (``repos/.../dispatches``) does not exist on Forgejo
+    v15.0.9. Use workflow_dispatch instead:
+    ``POST /repos/{owner}/{repo}/actions/workflows/{file}/dispatches``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+DEFAULT_FORGE_URL = "http://100.85.131.41:3000"
+DEFAULT_TOKEN_CMD = "pass show forgejo-shadow/s2-review-chain"
+TRANSPORT_TIMEOUT_SECONDS = 60
+
+
+class ForgeError(Exception):
+    """API or usage failure; message carries a next action."""
+
+
+def _env(key: str, default: str | None = None) -> str | None:
+    return os.environ.get(key, default)
+
+
+def transport_request(method: str, url: str, body: str | None = None,
+                      headers: dict[str, str] | None = None) -> tuple[int, str]:
+    """Perform one HTTP request. Tests monkeypatch this seam."""
+    data = body.encode() if body is not None else None
+    request = urllib.request.Request(url, data=data, method=method)
+    for key, value in (headers or {}).items():
+        request.add_header(key, value)
+    try:
+        with urllib.request.urlopen(request, timeout=TRANSPORT_TIMEOUT_SECONDS) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode()
+    except urllib.error.URLError as exc:
+        raise ForgeError(
+            f"cannot reach {url}: {exc.reason}. "
+            "Next action: check FORGE_URL and that the forge is running."
+        ) from exc
+
+
+def _token() -> str:
+    token = _env("FORGE_TOKEN")
+    if token:
+        return token.strip()
+    command = _env("FORGE_TOKEN_CMD", DEFAULT_TOKEN_CMD)
+    result = subprocess.run(
+        command, shell=True, capture_output=True, text=True, timeout=30
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ForgeError(
+            f"token command failed: {command}. "
+            "Next action: set FORGE_TOKEN, fix FORGE_TOKEN_CMD, or run "
+            "'pass show forgejo-shadow/s2-review-chain' to check the store."
+        )
+    return result.stdout.strip()
+
+
+def _slug_from_origin(url: str) -> str:
+    url = url.strip()
+    if url.endswith(".git"):
+        url = url[:-4]
+    if "://" in url:
+        rest = url.split("://", 1)[1]
+        path = rest.split("/", 1)[1] if "/" in rest else ""
+    elif ":" in url:
+        path = url.split(":", 1)[1]
+    else:
+        path = url
+    parts = [p for p in path.split("/") if p]
+    if len(parts) < 2:
+        raise ForgeError(
+            f"cannot derive owner/name from origin '{url.strip()}'. "
+            "Next action: set GH_REPO=owner/name."
+        )
+    return "/".join(parts[-2:])
+
+
+def _current_branch(cwd: str | None = None) -> str | None:
+    """Head branch of a git checkout (gh pr create infers head this way)."""
+    try:
+        with open(os.path.join(cwd or os.getcwd(), ".git", "HEAD")) as handle:
+            text = handle.read().strip()
+    except OSError:
+        return None
+    prefix = "ref: refs/heads/"
+    return text[len(prefix):] if text.startswith(prefix) else None
+
+
+def resolve_repo(cwd: str | None = None, env: dict[str, str] | None = None) -> str:
+    source = env if env is not None else dict(os.environ)
+    override = source.get("GH_REPO")
+    if override:
+        return override
+    origin = source.get("FAKE_ORIGIN") or source.get("_FORGE_TEST_ORIGIN")
+    if not origin:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        origin = result.stdout
+    if not origin.strip():
+        raise ForgeError(
+            "no origin remote and no GH_REPO set. "
+            "Next action: run inside a clone of the forge repo or set GH_REPO=owner/name."
+        )
+    return _slug_from_origin(origin)
+
+
+class Forge:
+    """Minimal Forgejo REST client shaped around the gh verbs we serve."""
+
+    def __init__(self) -> None:
+        self.base = (_env("FORGE_URL", DEFAULT_FORGE_URL) or "").rstrip("/")
+        self.api_base = f"{self.base}/api/v1"
+        self.repo = resolve_repo()
+        self._auth: dict[str, str] | None = None
+
+    @property
+    def auth(self) -> dict[str, str]:
+        if self._auth is None:
+            self._auth = {"Authorization": f"token {_token()}"}
+        return self._auth
+
+    def call(self, method: str, path: str, body: dict | None = None,
+             accept: str = "application/json") -> tuple[int, str]:
+        url = path if path.startswith("http") else f"{self.api_base}/{path.lstrip('/')}"
+        headers = {**self.auth, "Accept": accept}
+        payload = json.dumps(body) if body is not None else None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        return transport_request(method, url, payload, headers)
+
+    def json(self, method: str, path: str, body: dict | None = None):
+        status, text = self.call(method, path, body)
+        if status >= 400:
+            raise ForgeError(
+                f"HTTP {status} on {method} {path}: {text[:300]}. "
+                "Next action: check FORGE_TOKEN scopes, GH_REPO, and the forge API."
+            )
+        return json.loads(text) if text.strip() else None
+
+    # -- shared helpers ----------------------------------------------------
+
+    def _labels(self, number: str) -> list[str]:
+        rows = self.json("GET", f"repos/{self.repo}/issues/{number}/labels")
+        return [row.get("name", "") for row in rows or []]
+
+    def _set_labels(self, number: str, names: list[str]) -> None:
+        self.json("PUT", f"repos/{self.repo}/issues/{number}/labels",
+                  {"labels": names})
+
+    def _apply_labels(self, number: str, adds: list[str], removes: list[str]) -> None:
+        current = self._labels(number)
+        desired = [name for name in current if name not in removes]
+        for label in adds:
+            if label not in desired:
+                desired.append(label)
+        if desired != current:
+            self._set_labels(number, desired)
+
+    def _comment(self, number: str, body: str) -> str:
+        created = self.json(
+            "POST", f"repos/{self.repo}/issues/{number}/comments", {"body": body}
+        )
+        return (created or {}).get("html_url", "")
+
+    # -- issue verbs --------------------------------------------------------
+
+    def issue_view(self, number: str, fields: list[str]) -> dict:
+        issue = self.json("GET", f"repos/{self.repo}/issues/{number}")
+        full = {
+            "number": issue.get("number"),
+            "title": issue.get("title"),
+            "body": issue.get("body") or "",
+            "labels": [{"name": lb.get("name")} for lb in issue.get("labels", [])],
+            "state": _issue_state(issue.get("state")),
+        }
+        return {field: full[field] for field in fields}
+
+    def issue_list(self, state: str, search: str, limit: str, fields: list[str]) -> list[dict]:
+        rows = self.json(
+            "GET",
+            f"repos/{self.repo}/issues?type=issues&state={state}&q={search}&limit={limit}",
+        )
+        items = []
+        for row in rows or []:
+            full = {
+                "number": row.get("number"),
+                "title": row.get("title"),
+                "labels": [{"name": lb.get("name")} for lb in row.get("labels", [])],
+                "state": _issue_state(row.get("state")),
+            }
+            items.append({field: full[field] for field in fields})
+        return items
+
+    # -- pr verbs -----------------------------------------------------------
+
+    def _pull(self, number: str) -> dict:
+        return self.json("GET", f"repos/{self.repo}/pulls/{number}")
+
+    def pr_view(self, number: str, fields: list[str]) -> dict:
+        pull = self._pull(number)
+        full = {
+            "number": pull.get("number"),
+            "title": pull.get("title"),
+            "body": pull.get("body") or "",
+            "labels": [{"name": lb.get("name")} for lb in pull.get("labels", [])],
+            "headRefName": (pull.get("head") or {}).get("ref", ""),
+            "state": _pr_state(pull),
+            "mergedAt": pull.get("merged_at"),
+        }
+        if "files" in fields:
+            files = self.json("GET", f"repos/{self.repo}/pulls/{number}/files")
+            full["files"] = [
+                {
+                    "path": row.get("filename"),
+                    "additions": row.get("additions"),
+                    "deletions": row.get("deletions"),
+                }
+                for row in files or []
+            ]
+        return {field: full[field] for field in fields}
+
+    def pr_diff(self, number: str) -> str:
+        status, text = self.call(
+            "GET", f"repos/{self.repo}/pulls/{number}.diff", accept="text/plain"
+        )
+        if status >= 400:
+            raise ForgeError(
+                f"HTTP {status} fetching diff for PR #{number}. "
+                "Next action: check the PR number and token read scope."
+            )
+        return text
+
+    def pr_checks(self, number: str) -> list[dict]:
+        pull = self._pull(number)
+        head_sha = (pull.get("head") or {}).get("sha", "")
+        rows = self.json("GET", f"repos/{self.repo}/commits/{head_sha}/statuses")
+        latest: dict[str, dict] = {}
+        for row in rows or []:
+            context = row.get("context", "")
+            if context not in latest or row.get("id", 0) > latest[context].get("id", 0):
+                latest[context] = row
+        checks = []
+        for context, row in latest.items():
+            raw = row.get("status", "")
+            checks.append(
+                {
+                    "name": context,
+                    "state": {"success": "pass", "failure": "fail", "error": "fail"}.get(
+                        raw, "pending"
+                    ),
+                    "conclusion": raw,
+                }
+            )
+        return checks
+
+    # -- api passthrough ------------------------------------------------------
+
+    def pr_create(self, title: str, body: str, head: str | None, base: str | None,
+                  labels: list[str]) -> str:
+        if not head:
+            head = _current_branch()
+        if not head:
+            raise ForgeError(
+                "pr create needs a head branch. Next action: pass --head or run "
+                "from a git checkout on a branch."
+            )
+        if not base:
+            base = (self.json("GET", f"repos/{self.repo}") or {}).get(
+                "default_branch"
+            ) or "main"
+        created = self.json(
+            "POST", f"repos/{self.repo}/pulls",
+            {"title": title, "body": body, "head": head, "base": base},
+        )
+        number = (created or {}).get("number")
+        if labels and number is not None:
+            self.json("POST", f"repos/{self.repo}/issues/{number}/labels",
+                      {"labels": labels})
+        return (created or {}).get("html_url", "")
+
+    def api(self, path: str, method: str | None, fields: list[tuple[str, str]]) -> None:
+        path = path.replace("{owner}", self.repo.split("/")[0]).replace(
+            "{repo}", self.repo.split("/")[1]
+        )
+        base = path.split("?")[0]
+        if base.endswith("/dispatches") and "/actions/workflows/" not in base:
+            raise ForgeError(
+                "repository_dispatch (repos/.../dispatches) does not exist on Forgejo "
+                "v15.0.9. Next action: declare a workflow_dispatch trigger in the "
+                "target workflow and POST "
+                "/repos/{owner}/{repo}/actions/workflows/{file}/dispatches instead."
+            )
+        body: dict | None = None
+        if fields:
+            body = _nested_body(fields)
+            if base.endswith("/reviews") and "event" in body:
+                body["event"] = {"APPROVE": "APPROVED"}.get(body["event"], body["event"])
+        verb = method or ("POST" if body is not None else "GET")
+        status, text = self.call(verb, path, body)
+        if status >= 400:
+            raise ForgeError(
+                f"HTTP {status} on {verb} {path}: {text[:300]}. "
+                "Next action: check the endpoint, token scopes, and payload."
+            )
+        if text.strip():
+            print(json.dumps(json.loads(text), separators=(",", ":")))
+
+
+def _nested_body(fields: list[tuple[str, str]]) -> dict:
+    """Flat -f pairs to a JSON body; dotted keys nest (inputs.issue_number=9)."""
+    body: dict = {}
+    for key, value in fields:
+        parts = key.split(".")
+        cursor = body
+        for part in parts[:-1]:
+            cursor = cursor.setdefault(part, {})
+        cursor[parts[-1]] = value
+    return body
+
+
+def _issue_state(state: str | None) -> str:
+    return {"open": "OPEN", "closed": "CLOSED"}.get(state or "", "OPEN")
+
+
+def _pr_state(pull: dict) -> str:
+    if pull.get("merged"):
+        return "MERGED"
+    return _issue_state(pull.get("state"))
+
+
+def _parse_kv_flags(args: list[str], prefix: str) -> list[str]:
+    # gh accepts both --flag=value and --flag value; accept both spellings
+    name = prefix[:-1] if prefix.endswith("=") else prefix
+    values: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if prefix and arg.startswith(prefix):
+            values.append(arg[len(prefix) :])
+        elif arg == name and index + 1 < len(args):
+            values.append(args[index + 1])
+            index += 1
+        index += 1
+    return values
+
+
+def _strip_pairs(args: list[str]) -> tuple[list[str], list[tuple[str, str]], dict[str, str]]:
+    """Split argv into positionals, -f/-F pairs, and consumed globals."""
+    positionals: list[str] = []
+    fields: list[tuple[str, str]] = []
+    globals_: dict[str, str] = {}
+    skip_next = False
+    repo_flag = False
+    for index, arg in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if repo_flag:
+            globals_["repo"] = arg
+            repo_flag = False
+            continue
+        if arg == "--repo":
+            repo_flag = True
+            continue
+        if arg.startswith("--repo="):
+            globals_["repo"] = arg.split("=", 1)[1]
+            continue
+        if arg in ("-f", "-F") and index + 1 < len(args):
+            fields.append(tuple(args[index + 1].split("=", 1)))
+            skip_next = True
+            continue
+        if arg.startswith("-f=") or arg.startswith("-F="):
+            fields.append(tuple(arg[2:].split("=", 1)))
+            continue
+        if arg == "-X" and index + 1 < len(args):
+            globals_["method"] = args[index + 1]
+            skip_next = True
+            continue
+        if arg.startswith("-X"):
+            globals_["method"] = arg[2:]
+            continue
+        positionals.append(arg)
+    return positionals, fields, globals_
+
+
+def _split_json_and_jq(args: list[str]) -> tuple[list[str], list[str], str | None]:
+    fields: list[str] = []
+    jq: str | None = None
+    rest: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--json" and index + 1 < len(args):
+            fields = args[index + 1].split(",")
+            index += 2
+            continue
+        if arg.startswith("--json="):
+            fields = arg.split("=", 1)[1].split(",")
+            index += 1
+            continue
+        if arg == "--jq" and index + 1 < len(args):
+            jq = args[index + 1]
+            index += 2
+            continue
+        if arg.startswith("--jq="):
+            jq = arg.split("=", 1)[1]
+            index += 1
+            continue
+        rest.append(arg)
+        index += 1
+    return rest, fields, jq
+
+
+def _emit(payload: str | list | dict, jq: str | None) -> None:
+    text = json.dumps(payload, separators=(",", ":"))
+    if jq:
+        result = subprocess.run(
+            ["jq", "-r", jq], input=text, capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            raise ForgeError(
+                f"jq filter failed: {result.stderr.strip()}. "
+                "Next action: fix the --jq expression."
+            )
+        sys.stdout.write(result.stdout)
+        return
+    print(text)
+
+
+def _body_flag(args: list[str]) -> tuple[list[str], str]:
+    body = ""
+    rest = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--body" and index + 1 < len(args):
+            body = args[index + 1]
+            index += 2
+            continue
+        if arg.startswith("--body="):
+            body = arg.split("=", 1)[1]
+        else:
+            rest.append(arg)
+        index += 1
+    return rest, body
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        print(
+            "gh-forge: no command. Next action: invoke with gh-style argv "
+            "(issue|pr|api ...).",
+            file=sys.stderr,
+        )
+        return 2
+    command = argv[0]
+    rest = argv[1:]
+    try:
+        forge = Forge()
+        if command == "api":
+            positionals, fields, flags = _strip_pairs(rest)
+            if flags.get("repo"):
+                forge.repo = flags["repo"]
+            if not positionals:
+                raise ForgeError("api needs a path. Next action: pass an endpoint path.")
+            forge.api(positionals[0], flags.get("method"), fields)
+            return 0
+
+        args, fields_json, jq = _split_json_and_jq(rest)
+        positionals, api_fields, flags = _strip_pairs(args)
+        if flags.get("repo"):
+            forge.repo = flags["repo"]
+
+        if command == "issue":
+            verb = positionals[0] if positionals else ""
+            number = positionals[1] if len(positionals) > 1 else ""
+            if verb == "view":
+                _emit(forge.issue_view(number, fields_json), jq)
+            elif verb == "list":
+                state = _flag_value(args, "--state", "open")
+                search = _flag_value(args, "--search", "")
+                limit = _flag_value(args, "--limit", "30")
+                _emit(forge.issue_list(state, search, limit, fields_json), jq)
+            elif verb == "comment":
+                _, body = _body_flag(positionals[2:])
+                print(forge._comment(number, body))
+            elif verb == "edit":
+                adds = _parse_kv_flags(positionals[2:], "--add-label=")
+                removes = _parse_kv_flags(positionals[2:], "--remove-label=")
+                forge._apply_labels(number, adds, removes)
+            else:
+                raise ForgeError(
+                    f"unsupported issue verb '{verb}'. Next action: use "
+                    "view|list|comment|edit."
+                )
+            return 0
+
+        if command == "pr":
+            verb = positionals[0] if positionals else ""
+            number = positionals[1] if len(positionals) > 1 else ""
+            if verb == "view":
+                if not fields_json:
+                    raise ForgeError(
+                        "pr view needs --json fields. Next action: pass --json with "
+                        "the fields you consume."
+                    )
+                _emit(forge.pr_view(number, fields_json), jq)
+            elif verb == "diff":
+                sys.stdout.write(forge.pr_diff(number))
+            elif verb == "checks":
+                _emit(forge.pr_checks(number), jq)
+            elif verb == "comment":
+                _, body = _body_flag(positionals[2:])
+                print(forge._comment(number, body))
+            elif verb == "create":
+                title = _flag_value(args, "--title", "")
+                _, body = _body_flag(positionals[2:])
+                head = _flag_value(args, "--head", "")
+                base = _flag_value(args, "--base", "")
+                labels = _flag_values(args, "--label")
+                print(forge.pr_create(title, body, head or None, base or None, labels))
+            elif verb == "edit":
+                adds = _parse_kv_flags(positionals[2:], "--add-label=")
+                removes = _parse_kv_flags(positionals[2:], "--remove-label=")
+                forge._apply_labels(number, adds, removes)
+            else:
+                raise ForgeError(
+                    f"unsupported pr verb '{verb}'. Next action: use "
+                    "view|diff|checks|comment|create|edit."
+                )
+            return 0
+
+        raise ForgeError(
+            f"unsupported command '{command}'. Next action: gh-forge serves "
+            "issue|pr|api (Phase A surface)."
+        )
+    except ForgeError as exc:
+        print(f"gh-forge: {exc}", file=sys.stderr)
+        return 1
+
+
+def _flag_value(args: list[str], flag: str, default: str) -> str:
+    for index, arg in enumerate(args):
+        if arg == flag and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith(flag + "="):
+            return arg.split("=", 1)[1]
+    return default
+
+
+def _flag_values(args: list[str], flag: str) -> list[str]:
+    """Repeatable flag values (--label a --label b, --label=b), gh-style."""
+    values: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == flag and index + 1 < len(args):
+            values.append(args[index + 1])
+            index += 2
+            continue
+        if arg.startswith(flag + "="):
+            values.append(arg.split("=", 1)[1])
+        index += 1
+    return values
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

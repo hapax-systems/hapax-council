@@ -2,13 +2,21 @@
 
 Used by ``scripts/sdlc_*.py`` to interact with GitHub issues and pull requests.
 Depends only on the ``gh`` binary being authenticated (``GITHUB_TOKEN`` or ``gh auth``).
+The binary is read from ``HAPAX_GH_BIN`` at call time (default ``gh``), so a
+gh-shaped shim (``scripts/gh-forge`` against a Forgejo forge) can be swapped in
+without re-importing.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
+
+
+def _gh_bin() -> str:
+    return os.environ.get("HAPAX_GH_BIN", "gh")
 
 
 @dataclass(frozen=True)
@@ -32,7 +40,7 @@ class PullRequest:
 def _run_gh(*args: str, input_text: str | None = None) -> str:
     """Run a ``gh`` CLI command and return stdout."""
     result = subprocess.run(
-        ["gh", *args],
+        [_gh_bin(), *args],
         capture_output=True,
         text=True,
         input=input_text,
