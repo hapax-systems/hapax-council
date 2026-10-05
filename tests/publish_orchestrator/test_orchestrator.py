@@ -1331,6 +1331,93 @@ class TestSingleSurface:
         fake_module.publish_artifact.assert_called_once()
         assert (tmp_path / "publish/published/plain-ok.json").exists()
 
+    def test_unclassifiable_vault_source_holds_and_names_itself(self, tmp_path, monkeypatch):
+        """A source path the classification cannot resolve HOLDs by name; never the process head."""
+
+        vault_root = tmp_path / "Personal"
+        vault_root.mkdir()
+        monkeypatch.setattr(orchestrator_module, "PUBLICATION_SOURCE_PATH_ROOTS", (vault_root,))
+        artifact = PreprintArtifact(
+            slug="bad-path",
+            title="Bad Path",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake"],
+            source_path="\x00bad",
+        )
+        artifact.mark_approved(by_referent="Oudepode")
+        artifact.publication_gate_context = {
+            "publication_gate_receipts": _write_public_gate_receipts(tmp_path, artifact)
+        }
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
+
+        child = orch._public_gate_receipts_child(artifact)
+
+        assert child.decision == PublicationGateDecision.HOLD
+        assert any("could not be classified" in finding for finding in child.findings)
+
+    def test_no_resolvable_head_holds_and_names_itself(self, tmp_path, monkeypatch):
+        """No vault head and no process head is a named HOLD, not an unnamed gate failure."""
+
+        monkeypatch.setattr(orchestrator_module, "_current_repo_head_sha", lambda: None)
+        artifact = PreprintArtifact(
+            slug="headless",
+            title="Headless",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake"],
+        )
+        artifact.mark_approved(by_referent="Oudepode")
+        artifact.publication_gate_context = {
+            "publication_gate_receipts": _write_public_gate_receipts(tmp_path, artifact)
+        }
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
+
+        child = orch._public_gate_receipts_child(artifact)
+
+        assert child.decision == PublicationGateDecision.HOLD
+        assert any("no expected head" in finding for finding in child.findings)
+
+    def test_an_empty_head_override_is_not_a_head(self, tmp_path):
+        """An empty override must not silently become the process head: name it and hold."""
+
+        artifact = PreprintArtifact(
+            slug="empty-override",
+            title="Empty Override",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake"],
+        )
+        artifact.mark_approved(by_referent="Oudepode")
+        artifact.publication_gate_context = {
+            "publication_gate_receipts": _write_public_gate_receipts(tmp_path, artifact)
+        }
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            public_gate_expected_head_sha="",
+            registry=CollectorRegistry(),
+        )
+
+        child = orch._public_gate_receipts_child(artifact)
+
+        assert child.decision == PublicationGateDecision.HOLD
+        assert any("no expected head" in finding for finding in child.findings)
+
     def test_public_gate_receipts_for_unexpected_head_hold_before_surface_dispatch(
         self,
         tmp_path,

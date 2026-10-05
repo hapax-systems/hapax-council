@@ -356,6 +356,39 @@ class TestBuildArtifact:
                 source_path=vault_root / "frame" / "gone.md",
             )
 
+    def test_unclassifiable_vault_source_holds_and_names_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A source path the classification cannot resolve HOLDs by name; never a fallback."""
+
+        monkeypatch.setattr(publish_vault_artifact, "VAULT_ARTIFACT_ROOT", tmp_path)
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError, match="could not be classified"
+        ):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+                source_path="\x00bad",
+            )
+
+    def test_no_resolvable_head_holds_and_names_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No vault head and no repository head is a named HOLD, not an unnamed gate failure."""
+
+        monkeypatch.setattr(publish_vault_artifact, "_current_repo_head_sha", lambda: None)
+
+        with pytest.raises(
+            publish_vault_artifact.PublicationGateError, match="no public-gate head"
+        ):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
     def test_rejects_publication_gate_receipts_for_unexpected_head(
         self,
         monkeypatch: pytest.MonkeyPatch,

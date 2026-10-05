@@ -203,6 +203,61 @@ def vault_artifact_expected_head_sha(
     return artifact_head_sha(manifest)
 
 
+class VaultArtifactHeadUnavailable(ValueError):
+    """A vault artifact's manifest head could not be taken: HOLD and name it, never fall back.
+
+    The ONE classification guard's refusal. No failure to classify a source path or to take its
+    manifest digest — an unresolvable path or root, a malformed path, a file that cannot be hashed
+    whole, or anything else the walk raises — may degrade to another head, because a receipt bound
+    to that other head would release bytes no reviewer accepted.
+    """
+
+    def __init__(self, artifact_name: str, detail: str) -> None:
+        safe_name = str(artifact_name).replace("\x00", "\\0") or "?"
+        super().__init__(
+            f"vault artifact {safe_name} is not content-addressable ({detail}); next action: restore "
+            "its bytes and re-drop it — a repo-head receipt must never release a vault artifact"
+        )
+        self.artifact_name = safe_name
+
+
+def vault_artifact_head(
+    source_path: str | Path | None,
+    artifact_root: str | Path,
+    *,
+    max_chars: int = VAULT_ARTIFACT_MAX_CHARS,
+) -> str | None:
+    """The manifest head when ``source_path`` is a vault artifact under ``artifact_root``.
+
+    The ONE guard the vault-artifact classification shares, so no caller can degrade silently:
+    ``None`` means only "not a vault artifact under this root" (the caller keeps its own head),
+    while every failure to classify or hash a path that *is* under the root raises
+    :class:`VaultArtifactHeadUnavailable` naming the artifact.
+    """
+
+    if source_path is None:
+        return None
+    raw = str(source_path).strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    root = Path(artifact_root).expanduser()
+    try:
+        inside = path.resolve().is_relative_to(root.resolve())
+    except Exception as exc:  # noqa: BLE001 - an unclassifiable artifact is a HOLD, never a fallback
+        raise VaultArtifactHeadUnavailable(
+            path.name, f"it could not be classified: {type(exc).__name__}"
+        ) from exc
+    if not inside:
+        return None
+    head = vault_artifact_expected_head_sha(path, root, max_chars=max_chars)
+    if head is None:
+        raise VaultArtifactHeadUnavailable(
+            path.name, "missing, non-regular, non-UTF-8, or over the cap"
+        )
+    return head
+
+
 PUBLIC_GATE_EXPLICIT_EXPECTED_HEAD_KEYS = (
     "expected_head_sha",
     "release_head_sha",

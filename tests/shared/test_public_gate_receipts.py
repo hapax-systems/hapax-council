@@ -920,3 +920,24 @@ def test_vault_artifact_expected_head_sha_is_the_manifest_digest(tmp_path: Path)
         ((source, root), {"max_chars": 1}),
     ):
         assert provider(*args, **kwargs) is None
+
+
+def test_vault_artifact_head_is_the_one_classification_guard(tmp_path: Path) -> None:
+    """The guard separates "not a vault artifact" (None) from "cannot be classified" (a hold)."""
+
+    root = tmp_path / "Personal"
+    source = root / "frame" / "note.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Body\n", encoding="utf-8")
+    guard = public_gate_receipts.vault_artifact_head
+
+    assert guard(source, root) == public_gate_receipts.vault_artifact_expected_head_sha(
+        source, root
+    )
+    assert guard(None, root) is None
+    assert guard("  ", root) is None
+    assert guard(source, root / "other") is None
+    for path in ("\x00bad", source / "missing.md"):
+        with pytest.raises(public_gate_receipts.VaultArtifactHeadUnavailable) as raised:
+            guard(path, root)
+        assert "not content-addressable" in str(raised.value)
