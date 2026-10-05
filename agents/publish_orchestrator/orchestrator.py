@@ -73,6 +73,7 @@ from shared.preprint_artifact import (
 from shared.public_gate_receipts import (
     PUBLIC_GATE_REVIEW_HEAD_RE,
     public_gate_receipt_value_present,
+    vault_artifact_expected_head_sha,
 )
 from shared.publication_artifact_public_event import (
     PublicationArtifactEventStage,
@@ -792,7 +793,7 @@ class Orchestrator:
                 expected_gate=gate,
                 roots=self._public_gate_receipt_roots,
                 bindings=bindings,
-                expected_head_sha=self._public_gate_expected_head_sha,
+                expected_head_sha=self._expected_public_gate_head(artifact),
             )
         )
         if missing:
@@ -825,6 +826,14 @@ class Orchestrator:
         if self._publication_allowed_surfaces_override is not None:
             return fallback, _configured_publication_policy_validation_error()
         return _configured_publication_gate_receipts(surfaces, fallback=fallback)
+
+    def _expected_public_gate_head(self, artifact: PreprintArtifact) -> str | None:
+        """The public-gate head for one artifact: its manifest head for a vault artifact."""
+
+        artifact_head = _vault_artifact_expected_head_sha(artifact)
+        if artifact_head is not None:
+            return artifact_head
+        return self._public_gate_expected_head_sha
 
     def _public_gate_receipts_gate_result(
         self,
@@ -1805,6 +1814,17 @@ def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, 
         "artifact_fingerprint": _artifact_fingerprint(artifact),
         "target_surfaces": tuple(sorted(artifact.surfaces_targeted)),
     }
+
+
+def _vault_artifact_expected_head_sha(artifact: PreprintArtifact) -> str | None:
+    source_path = artifact.source_path
+    if not source_path:
+        return None
+    for root in PUBLICATION_SOURCE_PATH_ROOTS:
+        head = vault_artifact_expected_head_sha(source_path, root)
+        if head is not None:
+            return head
+    return None
 
 
 def _artifact_fingerprint(artifact: PreprintArtifact) -> str:

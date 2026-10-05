@@ -11,6 +11,7 @@ from shared import public_gate_receipts
 from shared.public_gate_receipts import (
     public_gate_receipt_value_present as _public_gate_receipt_value_present,
 )
+from shared.review_artifact_manifest import artifact_head_sha, build_artifact_manifest
 
 GATE = "rights_privacy_redaction_pass"
 TASK_ID = "cc-task-public-gate-test"
@@ -895,3 +896,27 @@ def test_rejects_vault_artifact_missing_gate(tmp_path: Path) -> None:
         roots=(tmp_path,),
         expected_head_sha=ARTIFACT_HEAD,
     )
+
+
+# ── The provider that produces the artifact head the callers must expect ──
+def test_vault_artifact_expected_head_sha_is_the_manifest_digest(tmp_path: Path) -> None:
+    root = tmp_path / "Personal"
+    source = root / "frame" / "note.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Body\n", encoding="utf-8")
+    manifest, _ = build_artifact_manifest([source], root, max_chars=1000)
+    provider = public_gate_receipts.vault_artifact_expected_head_sha
+
+    head = provider(source, root)
+    assert head == artifact_head_sha(manifest)
+
+    source.write_text("Changed\n", encoding="utf-8")
+    assert provider(source, root) != head
+    # Every refusal path is a None head, which a caller must hold on.
+    for args, kwargs in (
+        ((source, root / "other"), {}),
+        ((None, root), {}),
+        (("  ", root), {}),
+        ((source, root), {"max_chars": 1}),
+    ):
+        assert provider(*args, **kwargs) is None

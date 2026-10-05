@@ -90,11 +90,15 @@ from shared.public_gate_receipts import (
 from shared.public_gate_receipts import (
     PUBLIC_GATE_REVIEW_HEAD_RE,
     public_gate_receipt_value_present,
+    vault_artifact_expected_head_sha,
 )
 
 log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+#: Vault artifacts are reviewed as a file set under this root; their manifest head, not the repo
+#: head, is the public-gate head.
+VAULT_ARTIFACT_ROOT = Path.home() / "Documents" / "Personal"
 DEFAULT_SURFACES = ["zenodo-doi", "omg-weblog"]
 PUBLICATION_POLICY_PATHS = (
     REPO_ROOT / "config" / "omg-lol.yaml",
@@ -606,9 +610,34 @@ def _build_artifact(
         frontmatter,
         surfaces,
         bindings=_publication_gate_receipt_bindings(artifact),
-        expected_head_sha=_current_repo_head_sha(),
+        expected_head_sha=_expected_public_gate_head(source_path),
     )
     return artifact
+
+
+def _expected_public_gate_head(source_path: Path | None) -> str | None:
+    """The head a public-gate receipt must bind for this draft.
+
+    A draft under the vault artifact root binds its manifest digest — and when that digest cannot
+    be taken (missing, outside a readable root, non-UTF-8, over the cap) the gates HOLD by name
+    rather than fall back to a repo head, which a git-head receipt could satisfy. Anything else
+    keeps the repository head.
+    """
+
+    path = Path(source_path).expanduser() if source_path is not None else None
+    try:
+        inside = path is not None and path.resolve().is_relative_to(VAULT_ARTIFACT_ROOT.resolve())
+    except OSError:
+        inside = False
+    if not inside:
+        return _current_repo_head_sha()
+    artifact_head = vault_artifact_expected_head_sha(path, VAULT_ARTIFACT_ROOT)
+    if artifact_head is None:
+        raise PublicationGateError(
+            f"vault artifact {path.name} is not content-addressable; next action: repair its bytes "
+            "(missing, non-regular, non-UTF-8, or over the cap) before publishing"
+        )
+    return artifact_head
 
 
 def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, object]:
