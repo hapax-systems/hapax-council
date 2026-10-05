@@ -9,10 +9,33 @@ pay-as-you-go. Fail narrow:
 - no claude.ai OAuth credential -> the seat refuses before provider contact;
 - no valid promotional billing witness after the session -> its verdict is refused;
 - the session's own ``rate_limit_event`` must witness ``ccr_promotional``
-  with no overage, or the verdict is refused;
+  with no overage; the Max window's ``seven_day``/``five_hour`` at
+  ``allowed_warning`` classifies as witness-inconclusive instead (see the pilot
+  notes below), and every other billing state still refuses the verdict;
 - credit exhaustion classifies as a quota wall (the family outage latch
   engages); there is never a fallback to ``claude -p`` or to pay-as-you-go;
 - the verdict must come from the route descriptor's declared model.
+
+Pilot notes (bounded pilot only)
+--------------------------------
+
+While the Max weekly window sits above its warning threshold, a
+``rate_limit_event`` reading ``rateLimitType: seven_day|five_hour`` with
+``status: allowed_warning`` does not identify the pool that paid. Measured
+2026-10-05: all four ``rate_limit_event``s read ``seven_day`` while the
+promotional credit was in fact paying ($248 -> $237 on the list basis). That
+state is therefore classified **witness-inconclusive** -- never a Max-billing
+proof, and never a verdict-refusing failure. It is reported on stderr as
+``billing-witness-inconclusive``.
+
+A run settled this way is settled by **balance delta**: the operator reads
+claude.ai Settings -> Usage before and after the run and the difference is
+stamped with ``date -u``. That readback is a manual, operator-performed act, so
+it collides with stop condition 9 ("any session tactic that requires operator
+lifecycle management") and is acceptable for **bounded pilot runs only**; it is
+not a routine-operation control and must not become one. A
+``ccr_promotional`` + ``allowed`` witness with no overage settles a run without
+the readback.
 """
 
 from __future__ import annotations
@@ -41,6 +64,16 @@ DEFAULT_CREDENTIALS = Path.home() / ".claude" / ".credentials.json"
 DEFAULT_PUSHED_REF = "origin/main"
 MAX_DESCRIPTION_CHARS = 100_000
 EXPECTED_RATE_LIMIT_TYPE = "ccr_promotional"
+#: The Max subscription window's rateLimitType values, and the status that means
+#: the window is above its warning threshold but not blocking. At that status the
+#: type does not identify the pool that paid, so it is witness-inconclusive
+#: rather than a Max-billing refusal (see the pilot notes in the docstring).
+MAX_WINDOW_RATE_LIMIT_TYPES = frozenset({"seven_day", "five_hour"})
+MAX_WINDOW_WARNING_STATUS = "allowed_warning"
+#: Billing-witness outcomes. The inconclusive one is a distinct outcome, never a
+#: Max-billing proof and never a verdict-refusing failure.
+WITNESS_CREDIT_CONFIRMED = "credit-confirmed"
+WITNESS_INCONCLUSIVE = "witness-inconclusive"
 ANTHROPIC_VERSION = "2023-06-01"
 SESSION_ID_RE = re.compile(r"\b(session_[A-Za-z0-9]+|cse_[A-Za-z0-9]+)\b")
 VERDICT_FENCE_RE = re.compile(r"\A```yaml\b")
@@ -50,6 +83,14 @@ CREDIT_WALL_RE = re.compile(
 )
 QUOTA_WALL_DIAGNOSTIC = (
     "hapax-claude-cloud-reviewer: claude cloud credit quota-wall diagnostic observed"
+)
+INCONCLUSIVE_WITNESS_DIAGNOSTIC = (
+    "hapax-claude-cloud-reviewer: billing-witness-inconclusive: the session's "
+    "rate_limit_event(s) read seven_day/five_hour with status allowed_warning, which does not "
+    "identify the pool that paid (measured 2026-10-05: all four rate_limit_events read seven_day "
+    "while the promotional credit was in fact paying). This is not a Max-billing proof and not a "
+    "refusal: settle this run by balance delta (operator readback of claude.ai Settings -> Usage "
+    "before and after, date -u stamped), which is bounded-pilot-only per stop condition 9."
 )
 STDOUT_NON_WALL_OMITTED = (
     "hapax-claude-cloud-reviewer: cloud session output omitted from classifier "
@@ -479,13 +520,26 @@ def _rate_limit_infos(events: list[dict]) -> list[dict]:
     return infos
 
 
-def _billing_witness(infos: list[dict]) -> None:
+def _billing_witness(infos: list[dict]) -> str:
+    """Classify the session's billing witness.
+
+    Returns ``WITNESS_CREDIT_CONFIRMED`` when a ``rate_limit_event`` witnesses
+    ``ccr_promotional`` at ``allowed`` with no overage, and
+    ``WITNESS_INCONCLUSIVE`` when the witnesses are the Max window's
+    ``seven_day``/``five_hour`` at ``allowed_warning`` -- a state that cannot
+    prove either pool (see the pilot notes in the module docstring), so it is
+    neither a Max-billing proof nor a refusal. Every genuine fail-narrow signal
+    still raises ``SeatRefusal``.
+    """
+
     if not infos:
         raise SeatRefusal(
             "billing witness absent: no session rate_limit_event with "
             f"rateLimitType={EXPECTED_RATE_LIMIT_TYPE} status=allowed; the session cannot be "
             "shown to have billed the promotional cloud credit, so the verdict is refused"
         )
+    confirmed = False
+    inconclusive = False
     for info in infos:
         if info.get("isUsingOverage") is True or info.get("overageStatus") in {
             "accepted",
@@ -502,11 +556,27 @@ def _billing_witness(infos: list[dict]) -> None:
                 "billing witness has an unknown overage state; promotional-only billing "
                 "cannot be shown, so the verdict is refused"
             )
-        if info.get("rateLimitType") != EXPECTED_RATE_LIMIT_TYPE or info.get("status") != "allowed":
-            raise SeatRefusal(
-                "billing witness names a non-promotional or unknown billing state; "
-                "the cloud-credit seat refuses the verdict"
-            )
+        rate_limit_type = info.get("rateLimitType")
+        status = info.get("status")
+        if rate_limit_type == EXPECTED_RATE_LIMIT_TYPE and status == "allowed":
+            confirmed = True
+            continue
+        if rate_limit_type in MAX_WINDOW_RATE_LIMIT_TYPES and status == MAX_WINDOW_WARNING_STATUS:
+            # Above its warning threshold the Max window reports its own type even
+            # when the promotional credit is paying, so this witnesses nothing
+            # about the pool. It is inconclusive, never a refusal.
+            inconclusive = True
+            continue
+        raise SeatRefusal(
+            "billing witness names a non-promotional or unknown billing state; "
+            "the cloud-credit seat refuses the verdict"
+        )
+    # Total over a non-empty list: every entry above either confirmed, was
+    # inconclusive, or raised.
+    if confirmed:
+        return WITNESS_CREDIT_CONFIRMED
+    assert inconclusive
+    return WITNESS_INCONCLUSIVE
 
 
 def _raise_for_error_results(events: list[dict]) -> None:
@@ -609,7 +679,10 @@ def main(argv: list[str] | None = None) -> int:
             poll_seconds=_poll_seconds(),
         )
         _raise_for_error_results(events)
-        _billing_witness(_rate_limit_infos(events))
+        if _billing_witness(_rate_limit_infos(events)) == WITNESS_INCONCLUSIVE:
+            # Distinct outcome, not a refusal: the verdict is still emitted, and
+            # the run is settled by the balance delta in the pilot notes.
+            print(INCONCLUSIVE_WITNESS_DIAGNOSTIC, file=sys.stderr)
         result = _verdict_result(events)
         verdict = str(result["result"])
         model = _verdict_model(events, verdict)
