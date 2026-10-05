@@ -90,11 +90,15 @@ from shared.public_gate_receipts import (
 from shared.public_gate_receipts import (
     PUBLIC_GATE_REVIEW_HEAD_RE,
     public_gate_receipt_value_present,
+    vault_artifact_expected_head_sha,
 )
 
 log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+#: Vault artifacts are reviewed as a file set under this root (the reviewer's artifact root);
+#: their manifest head, not the repo head, is the public-gate head.
+VAULT_ARTIFACT_ROOT = Path.home() / "Documents" / "Personal"
 DEFAULT_SURFACES = ["zenodo-doi", "omg-weblog"]
 PUBLICATION_POLICY_PATHS = (
     REPO_ROOT / "config" / "omg-lol.yaml",
@@ -606,9 +610,22 @@ def _build_artifact(
         frontmatter,
         surfaces,
         bindings=_publication_gate_receipt_bindings(artifact),
-        expected_head_sha=_current_repo_head_sha(),
+        expected_head_sha=_expected_public_gate_head(source_path),
     )
     return artifact
+
+
+def _expected_public_gate_head(source_path: Path | None) -> str | None:
+    """The head a public-gate receipt must bind for this draft.
+
+    A vault artifact binds its manifest digest, so a receipt signed for one revision cannot
+    release another; anything else keeps the repository head.
+    """
+
+    artifact_head = vault_artifact_expected_head_sha(source_path, VAULT_ARTIFACT_ROOT)
+    if artifact_head is not None:
+        return artifact_head
+    return _current_repo_head_sha()
 
 
 def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, object]:

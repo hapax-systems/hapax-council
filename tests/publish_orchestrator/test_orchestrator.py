@@ -1253,6 +1253,49 @@ class TestSingleSurface:
         assert gate_log["publication_gate_decision"] == "hold"
         assert any("rights_privacy_redaction_pass" in issue for issue in gate_log["flagged_issues"])
 
+    def test_vault_artifact_gate_receipts_bind_its_manifest_head(self, tmp_path, monkeypatch):
+        """A vault artifact's receipts must bind its manifest head, not the repo head."""
+
+        vault_root = tmp_path / "Personal"
+        source = vault_root / "frame" / "vault-draft.md"
+        source.parent.mkdir(parents=True)
+        source.write_text("Body.\n", encoding="utf-8")
+        monkeypatch.setattr(orchestrator_module, "PUBLICATION_SOURCE_PATH_ROOTS", (vault_root,))
+        artifact = PreprintArtifact(
+            slug="vault-draft",
+            title="Vault Draft",
+            abstract="Brief.",
+            body_md="Body.",
+            surfaces_targeted=["fake"],
+            source_path=str(source),
+        )
+        artifact.mark_approved(by_referent="Oudepode")
+        manifest_head = public_gate_receipts.vault_artifact_expected_head_sha(source, vault_root)
+        assert manifest_head is not None and manifest_head != "a" * 40
+        receipts = _write_public_gate_receipts(tmp_path, artifact)
+        dossier = (
+            public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+        )
+        orch = Orchestrator(
+            state_root=tmp_path,
+            surface_registry={"fake": "fake_publisher:publish_artifact"},
+            publication_allowed_surfaces={"fake"},
+            public_event_path=tmp_path / "public-events.jsonl",
+            registry=CollectorRegistry(),
+        )
+
+        artifact.publication_gate_context = {"publication_gate_receipts": receipts}
+        assert orch._public_gate_receipts_child(artifact).decision == PublicationGateDecision.HOLD
+
+        payload = yaml.safe_load(dossier.read_text(encoding="utf-8"))
+        payload["head_sha"] = manifest_head
+        payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+            {key: value for key, value in payload.items() if key != "authority_signature"},
+            AUTHORITY_SECRET,
+        )
+        dossier.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        assert orch._public_gate_receipts_child(artifact).decision == PublicationGateDecision.PASS
+
     def test_public_gate_receipts_for_unexpected_head_hold_before_surface_dispatch(
         self,
         tmp_path,

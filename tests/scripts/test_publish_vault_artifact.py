@@ -303,6 +303,53 @@ class TestBuildArtifact:
             "reason": "Reviewed receipts",
         }
 
+    def test_vault_artifact_binds_its_manifest_head_not_the_repo_head(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A vault artifact's gates bind ``artifact-sha256:`` over its own bytes."""
+
+        vault_root = tmp_path / "Personal"
+        draft = vault_root / "frame" / "draft.md"
+        draft.parent.mkdir(parents=True)
+        draft.write_text("Body\n", encoding="utf-8")
+        monkeypatch.setattr(publish_vault_artifact, "VAULT_ARTIFACT_ROOT", vault_root)
+        frontmatter = _allowed_frontmatter()
+        with pytest.raises(publish_vault_artifact.PublicationGateError):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=frontmatter,
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+                source_path=draft,
+            )
+
+        # The leaf receipts carry no head: only the signed dossier binds one, so re-sign it at
+        # the artifact's manifest head and the same draft releases.
+        artifact_head = public_gate_receipts.vault_artifact_expected_head_sha(draft, vault_root)
+        assert artifact_head is not None and artifact_head != "a" * 40
+        dossier = (
+            public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+        )
+        payload = yaml.safe_load(dossier.read_text(encoding="utf-8"))
+        payload["head_sha"] = artifact_head
+        payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+            {key: value for key, value in payload.items() if key != "authority_signature"},
+            AUTHORITY_SECRET,
+        )
+        dossier.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+        artifact = publish_vault_artifact._build_artifact(
+            body_md="Body",
+            frontmatter=frontmatter,
+            surfaces=["omg-weblog"],
+            approver="Oudepode",
+            source_path=draft,
+        )
+
+        assert artifact.slug == "draft"
+
     def test_rejects_publication_gate_receipts_for_unexpected_head(
         self,
         monkeypatch: pytest.MonkeyPatch,
