@@ -64,11 +64,14 @@ class Resolution:
 
     ``record`` is the resolved intake, or None. ``indeterminate`` means the store could not give a
     definite answer — a record that cannot be read, or two records claiming the same handle — and
-    must never be reported as "no such handle".
+    must never be reported as "no such handle". ``candidates`` are the records that DID match, so a
+    contradictory store can still name the sender's own receipt id in its answer; it is empty when
+    nothing could be attributed at all, and then there is no receipt id in existence to cite.
     """
 
     record: chanc.IntakeRecord | None
     indeterminate: bool = False
+    candidates: tuple[chanc.IntakeRecord, ...] = ()
 
 
 def _to_record(payload: dict[str, Any]) -> chanc.IntakeRecord:
@@ -115,7 +118,9 @@ def resolve_intake(cited_handle: object, *, records_root: Path) -> Resolution:
         if payload.get("handle") == cited_handle:
             matches.append(payload)
     if indeterminate or len(matches) > 1:
-        return Resolution(None, indeterminate=True)
+        return Resolution(
+            None, indeterminate=True, candidates=tuple(_to_record(m) for m in matches)
+        )
     if not matches:
         return Resolution(None)
     return Resolution(_to_record(matches[0]))
@@ -136,10 +141,16 @@ def classify_reply(
     """
     resolution = resolve_intake(request.cited_handle, records_root=records_root)
     if resolution.indeterminate:
+        # Cite the sender's own receipt id whenever a record could be attributed — a contradictory
+        # store still names what we hold. When nothing could be attributed there is no receipt id in
+        # existence, so the answer carries the next action instead.
+        refs = tuple(record.receipt_id for record in resolution.candidates if record.receipt_id)
         return (
             chanc.Disposition(
                 chanc.UNRESOLVED,
-                "the intake store could not be resolved; no action was taken",
+                "the intake store could not be resolved; no action was taken. Next action: reply to "
+                "this message and a person will look at it.",
+                evidence_refs=refs,
             ),
             None,
         )

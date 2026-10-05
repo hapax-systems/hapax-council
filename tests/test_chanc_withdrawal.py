@@ -202,10 +202,30 @@ def test_reply_never_claims_beyond_the_ceiling_and_carries_no_submitter_content(
 
 
 def test_the_unresolved_reply_carries_no_submitter_content_either(records):
-    """The store-fault answer is not an exception: it must not leak the handle back either."""
+    """The store-fault answer is not an exception: no handle, and the ceiling is still stated."""
     write_record(records, raw="{not json")
     disposition, _ = chanc_withdrawal.classify_reply(request(), records_root=records, now=NOW)
     assert disposition.code == chanc.UNRESOLVED
     subject, body = chanc_withdrawal.format_disposition_reply(disposition)
     assert HANDLE not in subject + body
     assert FROM not in subject + body
+    assert chanc_withdrawal.REPLY_CLAIM_CEILING in body  # the exit predicate requires the ceiling
+    assert "reply to this message" in body  # and a next action when no record can be attributed
+
+
+def test_the_contradictory_store_reply_states_the_senders_own_receipt_id(records):
+    """The exit predicate requires the store-fault answer to name the sender's own receipt id.
+
+    A contradictory store still holds records for the cited handle, so the answer names them; only an
+    unattributable record leaves no receipt id in existence to cite.
+    """
+    second_receipt = "20261005T070000Z-bbbbbbbbbbbbbbbb"
+    write_record(records)
+    write_record(records, keyed=hashlib.sha256(b"other").hexdigest(), receipt_id=second_receipt)
+    disposition, _ = chanc_withdrawal.classify_reply(request(), records_root=records, now=NOW)
+    assert disposition.code == chanc.UNRESOLVED
+    subject, body = chanc_withdrawal.format_disposition_reply(disposition)
+    assert RECEIPT_ID in body  # the sender's own receipt id IS stated
+    assert second_receipt in body
+    assert chanc_withdrawal.REPLY_CLAIM_CEILING in body
+    assert HANDLE not in subject + body and FROM not in subject + body
