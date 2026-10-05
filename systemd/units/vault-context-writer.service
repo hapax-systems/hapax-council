@@ -1,9 +1,16 @@
 [Unit]
 Description=Write working context to Obsidian daily note
 After=logos-api.service
+# Defect 2 (vault-nfs-mount-boot-race-and-gate-fail-closed-20261003): a USER unit cannot order
+# against the SYSTEM vault .mount — RequiresMountsFor binds to nothing in the user manager — so
+# the vault-presence check moves to an ExecCondition marker probe in [Service] (below).
 
 [Service]
 Type=oneshot
+# Skip CLEANLY (condition-not-met, not a failure) when the vault is unmounted/absent, so this
+# writer never writes a boot-race shadow directory: a real vault root carries .git or .obsidian
+# (the defect-3 marker a shadow writer never creates); a shadow directory carries neither.
+ExecCondition=/bin/sh -c 'test -e %h/Documents/Personal/.git || test -e %h/Documents/Personal/.obsidian'
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.vault_context_writer

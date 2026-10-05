@@ -2,10 +2,12 @@
 
 import asyncio
 import re
+import signal
 import subprocess
 import sys
 import textwrap
 import tomllib
+import types
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -117,7 +119,7 @@ def _run_clean_python(script: str) -> None:
     )
     if completed.returncode:
         pytest.fail(
-            "clean Python smoke path failed. "
+            f"clean Python smoke path failed (returncode={completed.returncode}). "
             f"{NEXT_ACTION}\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}",
             pytrace=False,
         )
@@ -533,12 +535,61 @@ def test_matplotlib_optional_runtime_smoke_path() -> None:
     if not _optional_distribution_installed("matplotlib"):
         pytest.skip("matplotlib is not installed")
 
-    from matplotlib.figure import Figure
+    _run_clean_python(
+        f"""
+        from matplotlib.figure import Figure
 
-    figure = Figure(figsize=(1, 1))
-    axes = figure.subplots()
-    axes.plot([0, 1], [1, 0])
-    assert len(figure.axes) == 1, NEXT_ACTION
+        figure = Figure(figsize=(1, 1))
+        axes = figure.subplots()
+        axes.plot([0, 1], [1, 0])
+        assert len(figure.axes) == 1, {NEXT_ACTION!r}
+        """
+    )
+
+
+def test_matplotlib_smoke_uses_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+    class ChildInvoked(Exception):
+        pass
+
+    def record_child(script: str) -> None:
+        assert "from matplotlib.figure import Figure" in script
+        raise ChildInvoked
+
+    class FakeAxes:
+        def plot(self, *_args: object) -> None:
+            pass
+
+    class FakeFigure:
+        def __init__(self, **_kwargs: object) -> None:
+            self.axes = [FakeAxes()]
+
+        def subplots(self) -> FakeAxes:
+            return self.axes[0]
+
+    matplotlib = types.ModuleType("matplotlib")
+    matplotlib.__path__ = []  # type: ignore[attr-defined]
+    figure = types.ModuleType("matplotlib.figure")
+    figure.Figure = FakeFigure  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "matplotlib", matplotlib)
+    monkeypatch.setitem(sys.modules, "matplotlib.figure", figure)
+    monkeypatch.setitem(globals(), "_optional_distribution_installed", lambda _: True)
+    monkeypatch.setitem(globals(), "_run_clean_python", record_child)
+
+    with pytest.raises(ChildInvoked):
+        test_matplotlib_optional_runtime_smoke_path()
+
+
+def test_clean_python_reports_child_abort() -> None:
+    with pytest.raises(pytest.fail.Exception) as failure:
+        _run_clean_python(
+            """
+            import os
+            import resource
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+            os.abort()
+            """
+        )
+    assert f"returncode={-signal.SIGABRT}" in str(failure.value)
 
 
 def test_playwright_optional_runtime_smoke_path() -> None:

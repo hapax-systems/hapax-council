@@ -4,9 +4,13 @@ description: "Single source of truth for cross-runtime gate wiring until generat
 
 runtimes:
   claude:
-    source: "live Claude settings JSON; hook command roots are ignored, hook basenames and matcher order are authoritative"
+    source: "live Claude settings JSON; hook basenames and matcher order are authoritative, with declared activation commands checked after activation"
     phases:
       SessionStart:
+        - matcher: "startup|resume|clear"
+          hooks:
+            - bash
+          activation_command: "$HOME/.cache/hapax/source-activation/worktree/scripts/hapax-seat-session-start"
         - matcher: ""
           hooks:
             - hook-presence-verify.sh

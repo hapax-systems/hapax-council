@@ -1,0 +1,32 @@
+[Unit]
+Description=Vault NFS mount (podium 192.168.68.85:/home/hapax/Documents/Personal)
+Documentation=file://%h/Documents/Personal/20-projects/hapax-cc-tasks/active/vault-nfs-mount-boot-race-and-gate-fail-closed-20261003.md
+# Defect 1 of vault-nfs-mount-boot-race-and-gate-fail-closed-20261003. The /etc/fstab
+# line (nfs4, x-systemd.automount, _netdev, nofail, mount-timeout=30) fired at boot
+# BEFORE the network was up ("Network is unreachable"), hit start-limit-hit, and stayed
+# failed until a manual `systemctl reset-failed` + start. This explicit unit replaces
+# that fstab line:
+#   - After/Wants network-online.target  -> the mount waits for the network instead of
+#     firing into an unreachable server at boot;
+#   - StartLimitIntervalSec=0            -> a transient network-down retries on the next
+#     automount access instead of latching failed past the start limit;
+#   - OnFailure alert                    -> a failed mount is never silent.
+# ACTIVATION IS A RUNTIME ACT (install the unit, remove the fstab line, daemon-reload,
+# enable): it goes to the seat with a fresh-Opus challenge + ISAM line, and is proven on
+# the reboot rehearsal. Do not enable on the live host from source.
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+OnFailure=notify-failure@%n.service
+
+[Mount]
+What=192.168.68.85:/home/hapax/Documents/Personal
+Where=/home/hapax/Documents/Personal
+Type=nfs4
+Options=rw,hard,_netdev,noatime,nofail,x-systemd.mount-timeout=30,nfsvers=4.2
+TimeoutSec=45
+
+# NO [Install] SECTION BY DESIGN: only the paired .automount is enabled (into
+# remote-fs.target); it pulls this .mount ON DEMAND. An install target here would let
+# `systemctl enable` fire the mount directly at boot via remote-fs.target, bypassing the
+# on-demand automount and re-creating the boot race (#5021, claude-1 major 1).
