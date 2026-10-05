@@ -5514,3 +5514,26 @@ from shared.public_gate_receipts import (  # noqa: E402
 )
 
 _ = _public_gate_authority_evidence_signed
+
+# The stacked delivery and Streamable-HTTP MCP pieces consume these queue and
+# content-screening entrypoints. This base PR is independently mergeable, so
+# those production callers are absent from this diff.
+from shared.research_desk import (  # noqa: E402
+    ResearchDeskConfig as _ResearchDeskConfig,
+)
+from shared.research_desk import (  # noqa: E402
+    get_request as _research_desk_get_request,
+)
+from shared.research_desk import (  # noqa: E402
+    list_open_requests as _research_desk_list_open_requests,
+)
+from shared.research_desk import (  # noqa: E402
+    neutralize_markdown as _research_desk_neutralize_markdown,
+)
+
+_ = (
+    _ResearchDeskConfig.lanebus_dir,
+    _research_desk_get_request,
+    _research_desk_list_open_requests,
+    _research_desk_neutralize_markdown,
+)
