@@ -95,6 +95,19 @@ class FakePersist:
         }
 
 
+class EmptyKV:
+    """A KV namespace with nothing in it, for the pull-lifecycle tests."""
+
+    def list_keys(self, cursor):
+        return [], ""
+
+    def get_value(self, key):
+        return None
+
+    def delete_value(self, key):
+        pass
+
+
 def emit(root, sender, persist, *, clock=lambda: NOW, budget=None):
     budget = budget if budget is not None else pull.Budget(root, clock)
     return pull.emit_receipts(
@@ -230,16 +243,6 @@ def test_receipt_content_and_headers(root):
 
 def test_run_once_without_emit_is_unchanged(root, monkeypatch):
     # The default (no emitter) keeps the legacy result shape — nothing is sent until slice B wires it.
-    class EmptyKV:
-        def list_keys(self, cursor):
-            return [], ""
-
-        def get_value(self, key):
-            return None
-
-        def delete_value(self, key):
-            pass
-
     result = pull.run_once(EmptyKV(), root, lambda *a, **k: True, lambda: NOW)
     assert result == {"pulled": 0, "notified": 0}
     assert "receipts" not in result
@@ -283,10 +286,9 @@ def test_build_intake_receipt_rejects_malformed(kwargs):
         chanc.build_intake_receipt(issued_at=datetime(2026, 1, 1, tzinfo=UTC), **kwargs)
 
 
-# --- slice B, deferred from #5032 (dev1 stamp 23:16Z, gemini-1): unparseable headers --------------
-# scripts/han_mail_pull.py:136 returns loop_indicated=True when the header block is missing or
-# begins beyond 32768 bytes. That branch was shipped untested. It is load-bearing: it is the only
-# thing standing between a hostile/unbounded header block and an auto-reply to a stranger.
+# --- deferred from #5032 (dev1 stamp 23:16Z, gemini-1): unparseable headers ------------------------
+# loop_indicated when the header block is missing or begins beyond 32768 bytes — the only thing
+# between an unbounded header block and an auto-reply to a stranger. Shipped untested.
 def unparseable_no_boundary() -> bytes:
     """Headers never terminate: no blank line anywhere in the message."""
     return b"Subject: self-authored\r\n" + b"X-Filler: " + b"a" * 200 + b"\r\nbody without a break"
@@ -341,10 +343,9 @@ def test_two_unparseable_messages_do_not_collide(root):
 
 
 def test_receipt_and_create_once_never_key_on_an_empty_message_id(root):
-    """Two messages with NO Message-ID header must each get their own receipt and record.
+    """Two messages with NO Message-ID must each get their own receipt and record.
 
-    A dedupe or create-once keyed on message_id would collapse both onto "" and emit one receipt
-    for two inbounds (or none). The content digest is the identity.
+    Keying on message_id would collapse both onto "" — one receipt for two inbounds.
     """
     k0 = store(root, make_raw(0, sender=b"a@example.invalid"), sender="a@example.invalid")
     k1 = store(root, make_raw(1, sender=b"b@example.invalid"), sender="b@example.invalid")
@@ -360,7 +361,7 @@ def test_receipt_and_create_once_never_key_on_an_empty_message_id(root):
     assert len({read_item(root, k)["handle"] for k in (k0, k1)}) == 2
 
 
-# --- slice B (seat ruling 2026-10-05T00:19:27Z): the keeper key resolves at run time, fail CLOSED --
+# --- the keeper key resolves at run time, fail CLOSED (seat ruling 2026-10-05T00:19:27Z) -----------
 def test_emitter_is_disarmed_unless_the_runtime_switch_is_set(root, monkeypatch):
     """Merging slice B must not arm live sending: the switch is the separate runtime act."""
     monkeypatch.delenv(pull.RECEIPT_ARM_ENV, raising=False)
@@ -567,7 +568,7 @@ def test_send_receipt_pre_send_failure_stays_retryable(tmp_path):
     assert len(attempts) == 2  # and the retry is allowed
 
 
-# --- review findings on #5037: the resolvers, the real transport, and the crash guard ------------
+# --- review findings on #5037: resolvers, the real transport, the crash guard ---------------------
 class _Completed:
     def __init__(self, returncode=0, stdout=""):
         self.returncode = returncode
@@ -645,6 +646,7 @@ class _FakeSMTP:
 
     def __init__(self, fail_at=None):
         self.calls = []
+        self.messages = []
         self.fail_at = fail_at
 
     def close(self):
@@ -666,6 +668,7 @@ class _FakeSMTP:
         self._stage("login")
 
     def send_message(self, message):
+        self.messages.append(message)
         self._stage("send_message")
 
 
@@ -769,16 +772,6 @@ def test_persist_intake_refusal_propagates_out_of_run_once(root, monkeypatch):
     monkeypatch.setenv(pull.RECEIPT_ARM_ENV, "1")
     monkeypatch.setattr(pull, "keeper_key", lambda: KEY)
 
-    class EmptyKV:
-        def list_keys(self, cursor):
-            return [], ""
-
-        def get_value(self, key):
-            return None
-
-        def delete_value(self, key):
-            pass
-
     def refuse(**kwargs):
         raise pull.IntakeError("Intake receipt record already exists; preserve it and reconcile")
 
@@ -794,3 +787,55 @@ def test_persist_intake_refusal_propagates_out_of_run_once(root, monkeypatch):
     store(root, make_raw(0, extra=b"Message-ID: <a@example.invalid>\r\n"))
     with pytest.raises(pull.IntakeError, match="reconcile"):
         pull.run_once(EmptyKV(), root, lambda *a, **k: True, lambda: NOW, emit=emitter)
+
+
+# --- fix-first (dev1 ruling 2026-10-05T10:22:16Z): the REAL functions, end to end -----------------
+def test_real_send_and_persist_drive_through_emit_receipts(root, tmp_path, monkeypatch):
+    """Only the SMTP client object is stubbed; the real send_receipt and persist_intake run.
+
+    The gemini major on #5037: (a) keyword compatibility, (b) the Auto-Submitted header on the
+    message ACTUALLY emitted, and (c) the cross-pull one-send guard were all unverified.
+    """
+    monkeypatch.setenv(pull.RECEIPT_ARM_ENV, "1")
+    monkeypatch.setattr(pull, "keeper_key", lambda: KEY)
+    monkeypatch.setattr(pull, "chanc_terms", lambda: (TERMS_DIGEST, WITHDRAWAL))
+    monkeypatch.setattr(pull, "smtp_credential", lambda: "token")
+    records, outbound = tmp_path / "intake", tmp_path / "outbound"
+    monkeypatch.setattr(pull, "INTAKE_RECORDS", records)
+    monkeypatch.setattr(pull, "OUTBOUND_RECORDS", outbound)
+    client = _FakeSMTP()
+    monkeypatch.setattr(pull.smtplib, "SMTP", lambda *a, **k: client)
+
+    key = store(
+        root,
+        make_raw(0, extra=b"Message-ID: <abc@example.invalid>\r\n"),
+        sender="a@example.invalid",
+    )
+    emitter = pull.build_receipt_emitter(
+        root, lambda: NOW, terms_digest=TERMS_DIGEST, withdrawal_instructions=WITHDRAWAL
+    )
+    assert emitter is not None
+    assert emitter(root, pull.Budget(root, lambda: NOW), lambda: NOW) == 1
+
+    # (a) the real persist_intake accepted emit_receipts' keywords and wrote to the redirected root.
+    written = list(records.glob("*.json"))
+    assert len(written) == 1
+    assert json.loads(written[0].read_bytes())["handle"] == read_item(root, key)["handle"]
+
+    # (b) the ACTUAL emitted message, through the real send_receipt and transport.
+    assert len(client.messages) == 1
+    sent = client.messages[0]
+    assert sent["Auto-Submitted"] == "auto-replied"  # RFC 3834 §5, the loop-safety header
+    assert sent["From"] == pull.RECEIPT_SENDER
+    assert sent["To"] == "a@example.invalid"
+    assert sent["In-Reply-To"] == "<abc@example.invalid>"
+    assert read_item(root, key)["receipt_id"] in sent["Subject"] + sent.get_content()
+    assert client.calls == ["ehlo", "starttls", "ehlo", "login", "send_message", "close"]
+
+    # (c) simulate a crash after the send but before the item flag was durable, then pull again.
+    item = read_item(root, key)
+    item["receipt_issued"] = False
+    (root / f"{key}.json").write_text(json.dumps(item))
+    assert emitter(root, pull.Budget(root, lambda: NOW), lambda: NOW) == 0
+    assert len(client.messages) == 1  # never a second receipt to the same stranger
+    assert len(list(outbound.glob("*.intent.json"))) == 1

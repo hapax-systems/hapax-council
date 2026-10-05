@@ -451,10 +451,9 @@ def emit_receipts(
 
 
 # --- slice B: the live receipt path, armed only by an explicit runtime switch ---------------------
-# RUNTIME SPLIT (seat 2026-10-05T00:07Z, adopted from the Mistral challenge gap): merging this
-# slice must NOT arm live sending. ``main()`` therefore builds the emitter only when the runtime
-# switch below is set, and the switch is a SEPARATE authorized runtime act. Disarmed, the pull
-# behaves exactly as before slice B: no key is read, no record is written, nothing is sent.
+# RUNTIME SPLIT (seat 2026-10-05T00:07Z): merging this must NOT arm live sending. ``main()`` builds
+# the emitter only when the switch below is set; that switch is a SEPARATE authorized runtime act.
+# Disarmed, the pull behaves exactly as before: no key read, no record written, nothing sent.
 RECEIPT_ARM_ENV = "HAN_MAIL_RECEIPT_SEND"
 #: The DEDICATED intake-receipt keeper key (seat ruling 2026-10-04T20:02Z). Never the
 #: claim-verification-council key: a SEEN receipt to a stranger is a different authority.
@@ -521,7 +520,7 @@ def persist_intake(
     from_address: str,
     receipt: dict,
     key: bytes,
-    root: Path = INTAKE_RECORDS,
+    root: Path | None = None,
 ) -> None:
     """Create-once, HMAC-signed receipt record, keyed to the KEYED digest (§4, Q11).
 
@@ -533,6 +532,7 @@ def persist_intake(
     The record is signed under the existing public-gate receipt contract, with the dedicated keeper
     key as the secret. Create-once: an existing record for the same message is a refusal.
     """
+    root = INTAKE_RECORDS if root is None else root  # resolved at call time, not at import
     keyed = chanc.keyed_digest(content_digest, key=key)
     record = {
         "type": "han.mail.intake-record",
@@ -614,21 +614,20 @@ def send_receipt(
     body: str,
     headers: dict,
     sender: str = RECEIPT_SENDER,
-    root: Path = OUTBOUND_RECORDS,
+    root: Path | None = None,
     transport: Callable[..., None] | None = None,
     credential: Callable[[], str | None] | None = None,
 ) -> bool:
     """One submission for one receipt. True only on an observed acceptance.
 
     One send per message, and the guard is durable BEFORE the transaction starts: an immutable
-    ``<message_key>.intent.json`` is created first, so a crash or kill at any point after the attempt
-    begins still refuses a replay — that is the exact window in which a second receipt could reach a
-    stranger. The separate ``<message_key>.outcome.json`` then records the result: ``accepted``;
-    ``ambiguous`` for a failure after the transaction started, never retried blind (the
-    official-mail durable-outbound rule); or ``pre_send_failed``, the one state that means nothing
-    was submitted and therefore the only state a later pull may retry. Absent credential: no
-    connection, no record.
+    ``<message_key>.intent.json`` first, so a crash at any point after the attempt begins still
+    refuses a replay — the window in which a second receipt could reach a stranger. The separate
+    ``<message_key>.outcome.json`` records ``accepted``, ``ambiguous`` (a failure after the
+    transaction started, never retried blind), or ``pre_send_failed`` — the only state a later pull
+    may retry. Absent credential: no connection, no record.
     """
+    root = OUTBOUND_RECORDS if root is None else root  # resolved at call time, not at import
     credential = credential if credential is not None else smtp_credential
     token = credential()
     if not token:
