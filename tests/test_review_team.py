@@ -2507,6 +2507,44 @@ class TestVerdictBlockers:
         )
         assert "review_dossier_route_block_degradation_reason_mismatch:gemini" in blockers
 
+    def test_vanished_family_degradation_without_the_rereview_flag_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """Leg G (seat ruling 2026-10-06T23:06:16Z, PR #5049): a recovered/vanished-family
+        degradation is witnessed by the constitution-time record ONLY together with the re-review
+        obligation. A dossier that records the degradation but omits
+        ``post_route_receipt_rereview_required`` must not admit — otherwise the vanished path
+        would be admissible silently, with nothing owed on recovery."""
+
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "degraded_to:t2_standard",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        # _synth derives the flag from the recorded degradation; a hand-edited or buggy dispatch
+        # can record the degradation without it, which is the shape this leg must refuse.
+        dossier["post_route_receipt_rereview_required"] = False
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_degradation_flags_inconsistent" in blockers
+
     @pytest.mark.parametrize(
         ("notes", "why"),
         [
