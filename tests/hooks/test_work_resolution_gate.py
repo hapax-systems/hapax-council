@@ -334,3 +334,167 @@ class TestExternalToolGating:
             timeout=15,
         )
         assert result.returncode == 0
+
+
+# ── Local-forge origins (PLAN §4 S2: local PR refs) ─────────────────
+
+
+def _install_stub_status_helper(repo: Path, *, rows: str, log_path: Path) -> None:
+    """A github_pr_status.py stand-in that prints fixed rows and logs its argv.
+
+    The forge backend inside the real helper is covered by
+    tests/scripts/test_github_pr_status.py; here only the gate's plumbing —
+    slug parsing, --forge-url passing, gh independence — is under test.
+    """
+    scripts = repo / "scripts"
+    scripts.mkdir(exist_ok=True)
+    stub = scripts / "github_pr_status.py"
+    stub.write_text(
+        "import json, os, sys\n"
+        "with open(os.environ['FORGE_HELPER_LOG'], 'a', encoding='utf-8') as fh:\n"
+        "    fh.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        f"print({rows!r})\n",
+        encoding="utf-8",
+    )
+
+
+def _gh_free_path(tmp_path: Path) -> Path:
+    """PATH with the gate's shell tools symlinked in and gh excluded."""
+    bin_dir = tmp_path / "gh-free-bin"
+    bin_dir.mkdir(exist_ok=True)
+    for tool in (
+        "bash",
+        "git",
+        "jq",
+        "python3",
+        "cat",
+        "dirname",
+        "grep",
+        "md5sum",
+        "stat",
+        "date",
+        "cut",
+    ):
+        found = shutil.which(tool)
+        if found:
+            (bin_dir / tool).symlink_to(found)
+    return bin_dir
+
+
+def _forge_repo(tmp_path: Path, origin: str, branch: str = "feat/forge-wip") -> tuple[Path, Path]:
+    repo = _make_repo(tmp_path)
+    subprocess.run(["git", "remote", "add", "origin", origin], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", branch], cwd=repo, check=True)
+    target = repo / "ok.py"
+    target.write_text("# ok\n")
+    subprocess.run(["git", "add", "ok.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feature"], cwd=repo, check=True)
+    return repo, target
+
+
+class TestForgeOrigins:
+    def test_forge_http_origin_no_pr_blocks_without_gh(self, tmp_path: Path) -> None:
+        """An http-origin forge repo is gated on its local PRs, with no gh binary."""
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        bin_dir = _gh_free_path(tmp_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "PATH": f"{bin_dir}",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 2
+        assert "with no PR" in result.stderr
+        calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        assert any("--forge-url" in call and "http://100.85.131.41:3000" in call for call in calls)
+        assert any("--head" in call and "feat/forge-wip" in call for call in calls)
+
+    def test_forge_http_origin_open_pr_allows_and_notes_failing_checks(
+        self, tmp_path: Path
+    ) -> None:
+        repo, target = _forge_repo(tmp_path, "http://100.85.131.41:3000/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(
+            repo,
+            rows=json.dumps(
+                [
+                    {
+                        "number": 12,
+                        "headRefName": "feat/forge-wip",
+                        "statusCheckRollup": [{"context": "ci/lint", "state": "FAILURE"}],
+                    }
+                ]
+            ),
+            log_path=log_path,
+        )
+
+        result = _run(
+            _edit(target),
+            extra_env={"PATH": os.environ["PATH"], "FORGE_HELPER_LOG": str(log_path)},
+        )
+
+        assert result.returncode == 0
+        assert "PR #12" in result.stderr
+        assert "failing check(s)" in result.stderr
+
+    def test_forge_ssh_origin_fails_open_without_forge_url_env(self, tmp_path: Path) -> None:
+        repo, target = _forge_repo(tmp_path, "ssh://git@100.85.131.41:2222/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+        env = {k: v for k, v in os.environ.items() if k != "HAPAX_FORGE_URL"}
+        env["FORGE_HELPER_LOG"] = str(log_path)
+
+        result = subprocess.run(
+            ["bash", str(HOOK)],
+            input=json.dumps(_edit(target)),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=15,
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert not log_path.exists()
+
+    def test_forge_ssh_origin_uses_forge_url_env_when_hosts_match(self, tmp_path: Path) -> None:
+        repo, target = _forge_repo(tmp_path, "ssh://git@100.85.131.41:2222/owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 2
+        assert "with no PR" in result.stderr
+        calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+        assert any("--forge-url" in call and "http://100.85.131.41:3000" in call for call in calls)
+
+    def test_foreign_origin_with_forge_url_env_stays_open(self, tmp_path: Path) -> None:
+        """HAPAX_FORGE_URL set for the forge must not claim an unrelated host."""
+        repo, target = _forge_repo(tmp_path, "git@gitlab.example:owner/repo.git")
+        log_path = tmp_path / "helper.log"
+        _install_stub_status_helper(repo, rows="[]", log_path=log_path)
+
+        result = _run(
+            _edit(target),
+            extra_env={
+                "HAPAX_FORGE_URL": "http://100.85.131.41:3000",
+                "FORGE_HELPER_LOG": str(log_path),
+            },
+        )
+
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert not log_path.exists()
