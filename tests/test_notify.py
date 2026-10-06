@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from shared.notify import (
     _DESKTOP_URGENCY,
     _dismiss_existing_intake_notifications,
+    _notifications_owned,
     _send_desktop,
     briefing_uri,
     nudges_uri,
@@ -35,8 +37,9 @@ def test_desktop_urgency_mapping():
 
 
 class TestSendDesktop:
+    @patch("shared.notify._notifications_owned", return_value=True)
     @patch("shared.notify._run_subprocess")
-    def test_success(self, mock_run):
+    def test_success(self, mock_run, _owned):
         mock_run.return_value = MagicMock(returncode=0)
 
         result = _send_desktop("Title", "Message")
@@ -50,16 +53,18 @@ class TestSendDesktop:
         assert "Title" in cmd
         assert "Message" in cmd
 
+    @patch("shared.notify._notifications_owned", return_value=True)
     @patch("shared.notify._run_subprocess")
-    def test_high_priority_urgency(self, mock_run):
+    def test_high_priority_urgency(self, mock_run, _owned):
         mock_run.return_value = MagicMock(returncode=0)
 
         _send_desktop("T", "M", priority="high")
         cmd = mock_run.call_args[0][0]
         assert "--urgency=critical" in cmd
 
+    @patch("shared.notify._notifications_owned", return_value=True)
     @patch("shared.notify._run_subprocess")
-    def test_replace_id_coalesces_desktop_notification(self, mock_run):
+    def test_replace_id_coalesces_desktop_notification(self, mock_run, _owned):
         mock_run.return_value = MagicMock(returncode=0)
 
         _send_desktop('T "quoted"', "M\nnext", priority="urgent", replace_id=12345)
@@ -82,13 +87,15 @@ class TestSendDesktop:
         assert json.loads(cmd[13]) == "M\nnext"
         assert '{"urgency": <byte 2>, "desktop-entry": <"org.hapax.system">}' in cmd
 
+    @patch("shared.notify._notifications_owned", return_value=True)
     @patch("shared.notify._run_subprocess", side_effect=FileNotFoundError)
-    def test_no_notify_send(self, mock_run):
+    def test_no_notify_send(self, mock_run, _owned):
         result = _send_desktop("T", "M")
         assert result is False
 
+    @patch("shared.notify._notifications_owned", return_value=True)
     @patch("shared.notify._run_subprocess")
-    def test_nonzero_exit(self, mock_run):
+    def test_nonzero_exit(self, mock_run, _owned):
         mock_run.return_value = MagicMock(returncode=1)
         result = _send_desktop("T", "M")
         assert result is False
@@ -330,3 +337,95 @@ class TestObsidianUri:
     def test_nudges_uri(self):
         uri = nudges_uri()
         assert "nudges" in uri
+
+
+# ── Desktop channel structural availability ─────────────────────────────────
+# 2026-10-05 han-mail incident: with ntfy down, send_notification returned
+# False on a headless host (org.freedesktop.Notifications has no owner on the
+# session bus), leaving only a next-action-less journal warning. These pins
+# hold the repaired behavior: fail fast when the channel is structurally
+# absent, and make every total-delivery failure name its mode and a next
+# action.
+
+
+class TestNotificationsOwned:
+    @patch("shared.notify._run_subprocess")
+    def test_probe_asks_bus_daemon_without_activating(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        assert _notifications_owned() is True
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "gdbus"
+        assert "org.freedesktop.DBus.GetNameOwner" in cmd
+        assert cmd[-1] == "org.freedesktop.Notifications"
+        assert "org.freedesktop.Notifications.Notify" not in cmd
+
+    @patch("shared.notify._run_subprocess")
+    def test_probe_reports_missing_owner(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1)
+
+        assert _notifications_owned() is False
+
+    @patch("shared.notify._run_subprocess", side_effect=FileNotFoundError)
+    def test_probe_fails_open_when_gdbus_missing(self, _mock_run):
+        assert _notifications_owned() is True
+
+    @patch(
+        "shared.notify._run_subprocess",
+        side_effect=subprocess.TimeoutExpired(cmd=["gdbus"], timeout=2),
+    )
+    def test_probe_fails_open_on_timeout(self, _mock_run):
+        assert _notifications_owned() is True
+
+
+class TestDesktopStructuralAvailability:
+    @patch("shared.notify._notifications_owned", return_value=False)
+    @patch("shared.notify._run_subprocess")
+    def test_daemon_absent_skips_notify_send_burn(self, mock_run, _owned):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = _send_desktop("T", "M")
+
+        assert result is False
+        mock_run.assert_not_called()
+
+    @patch("shared.notify._notifications_owned", return_value=False)
+    @patch("shared.notify._run_subprocess")
+    def test_daemon_absent_skips_gdbus_replace_path(self, mock_run, _owned):
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = _send_desktop("T", "M", priority="urgent", replace_id=12345)
+
+        assert result is False
+        mock_run.assert_not_called()
+
+
+@patch("shared.notify._logos_is_active", return_value=False)
+@patch("shared.notify._emit_watershed_event")
+@patch("shared.notify._is_duplicate", return_value=False)
+class TestTotalDeliveryFailureReporting:
+    @patch("shared.notify._notifications_owned", return_value=False)
+    @patch("shared.notify._send_desktop", return_value=False)
+    def test_structural_failure_names_mode_and_next_action(
+        self, mock_desktop, _owned, _dedup, _watershed, _logos, caplog
+    ):
+        with caplog.at_level("WARNING", logger="shared.notify"):
+            result = send_notification("HAN mail — 1 pending foreign item(s)", "body")
+
+        assert result is False
+        assert "structurally unavailable" in caplog.text
+        assert "notification daemon" in caplog.text
+        assert "Next action" in caplog.text
+
+    @patch("shared.notify._notifications_owned", return_value=True)
+    @patch("shared.notify._send_desktop", return_value=False)
+    def test_transient_failure_carries_next_action(
+        self, mock_desktop, _owned, _dedup, _watershed, _logos, caplog
+    ):
+        with caplog.at_level("WARNING", logger="shared.notify"):
+            result = send_notification("Stack Failed", "1 check failed")
+
+        assert result is False
+        assert "Notification delivery failed" in caplog.text
+        assert "Next action" in caplog.text

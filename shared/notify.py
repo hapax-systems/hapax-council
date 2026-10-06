@@ -275,7 +275,23 @@ def send_notification(
         delivered = False
 
     if not delivered and not logos_active:
-        _log.warning("Notification delivery failed for: %s", title)
+        if _notifications_owned():
+            _log.warning(
+                "Notification delivery failed for: %s. Next action: inspect the "
+                "desktop notification daemon (journalctl --user) and re-run the "
+                "producer; durable producers keep the payload for retry.",
+                title,
+            )
+        else:
+            _log.warning(
+                "Notification not delivered; desktop channel structurally "
+                "unavailable (no notification daemon owns "
+                "org.freedesktop.Notifications on the session bus — headless "
+                "session?): %s. Next action: deliver via the ntfy/watershed "
+                "channel or start a graphical session; durable producers keep "
+                "the payload for retry.",
+                title,
+            )
 
     return delivered or logos_active
 
@@ -488,6 +504,38 @@ def _dismiss_mako_notifications(predicate) -> None:
         _log.debug("notify: failed to dismiss existing intake notifications", exc_info=True)
 
 
+def _notifications_owned() -> bool:
+    """Return False only when the session bus positively has no notification daemon.
+
+    GetNameOwner is answered by the bus daemon itself and never triggers D-Bus
+    service activation, so the probe stays fast even when no daemon would ever
+    answer a Notify call (the headless case, where notify-send instead burns
+    its full timeout inside StartServiceByName). Inconclusive outcomes (missing
+    gdbus, timeout, OS error) fail open to the historical notify-send path:
+    only a definitive negative answer may skip a delivery attempt.
+    """
+    try:
+        result = _run_subprocess(
+            [
+                "gdbus",
+                "call",
+                "--session",
+                "--dest",
+                "org.freedesktop.DBus",
+                "--object-path",
+                "/org/freedesktop/DBus",
+                "--method",
+                "org.freedesktop.DBus.GetNameOwner",
+                "org.freedesktop.Notifications",
+            ],
+            timeout=2,
+            capture_output=True,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return True
+    return result.returncode == 0
+
+
 def _send_desktop(
     title: str,
     message: str,
@@ -496,6 +544,12 @@ def _send_desktop(
     replace_id: int | None = None,
 ) -> bool:
     """Send notification via notify-send (KDE Plasma native D-Bus)."""
+    if not _notifications_owned():
+        _log.debug(
+            "notify: no notification daemon owns org.freedesktop.Notifications on "
+            "the session bus; skipping desktop delivery"
+        )
+        return False
     if replace_id is not None:
         return _send_desktop_gdbus(title, message, priority=priority, replace_id=replace_id)
 
