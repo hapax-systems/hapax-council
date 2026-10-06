@@ -2425,18 +2425,153 @@ class TestVerdictBlockers:
 
         assert "review_dossier_route_block_degradation_reason_mismatch:glm" in blockers
 
-    def test_recovered_route_block_invalidates_pending_degraded_admission(
+    def test_recovered_route_block_does_not_invalidate_a_constituted_degradation(
         self, tmp_path: Path
     ) -> None:
+        """Row autoqueue-admission-witness-flap-tolerance-20261006, seat ruling
+        2026-10-06T21:46:05Z (Option A): a correctly-constituted route-block degradation is
+        witnessed by the dossier's OWN constitution-time evidence, so a receipt re-mint that
+        makes the family look admissible again at exam time does NOT invalidate it.
+
+        This inverts the former ``test_recovered_route_block_invalidates_pending_degraded_admission``,
+        which pinned the buggy behavior (manifestations 1, 2 and 4 of the row: degrade-and-recover
+        refused a dossier that was valid when it was constituted). The post-recovery obligation
+        rides ``post_route_receipt_rereview_required``, so the case is admissible-WITH-FLAG,
+        never admissible-silently.
+        """
+
         rt = _load_review_team_module()
-        note = _write_dossier(tmp_path, "task-x", self._route_blocked_degraded_dossier(rt))
+        dossier = self._route_blocked_degraded_dossier(rt)
+        note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(
             self._frontmatter(),
             note,
             pr_head_sha="a" * 40,
             route_blocked_families={},
         )
-        assert "review_dossier_route_block_degradation_unwitnessed:gemini" in blockers
+        assert blockers == ()
+        assert dossier["degraded_family_route_blocked"] == ["gemini"]
+        assert dossier["post_route_receipt_rereview_required"] is True
+
+    @pytest.mark.parametrize(
+        ("manifestation", "live_route_blocked"),
+        [
+            # 19:45Z self-mint ordering race: the dispatch's own mint leg re-validates the
+            # family after the dossier was constituted, so nothing is live-blocked at exam.
+            ("19:45Z self-mint ordering race", {}),
+            # 20:31:58Z environment re-mint: a telemetry wave rewrote the receipt between
+            # constitution and exam, so nothing is live-blocked at exam.
+            ("20:31:58Z environment re-mint", {}),
+            # 20:45:09Z receipt-TTL oscillation: the receipt re-minted minutes before the exam.
+            ("20:45:09Z receipt-TTL oscillation", {}),
+            # The orientation that already passed: live-blocked with the recorded reason.
+            (
+                "live-blocked with the recorded reason",
+                {"gemini": ("route_specific_quota_receipt_absent",)},
+            ),
+        ],
+    )
+    def test_route_block_degradation_presence_manifestations_admit_with_the_rereview_flag(
+        self, tmp_path: Path, manifestation: str, live_route_blocked: dict
+    ) -> None:
+        """Manifestations 1, 2 and 4 are one shape: the family is no longer live-blocked at exam
+        time because a receipt re-minted. A constitution-valid degradation is admissible WITH
+        the re-review flag set, never silently."""
+
+        rt = _load_review_team_module()
+        dossier = self._route_blocked_degraded_dossier(rt)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families=live_route_blocked,
+        )
+        assert blockers == (), manifestation
+        assert dossier["post_route_receipt_rereview_required"] is True, manifestation
+
+    def test_live_reason_replacement_while_still_blocked_still_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """The presence comparison is gone; the reason-subset forgery guard is not. A family that
+        is STILL live-blocked, but whose recorded reason is no longer live, still refuses — the
+        dossier may not claim a degradation the live evidence contradicts."""
+
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._route_blocked_degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"gemini": ("route_state_stale",)},
+        )
+        assert "review_dossier_route_block_degradation_reason_mismatch:gemini" in blockers
+
+    @pytest.mark.parametrize(
+        ("notes", "why"),
+        [
+            (
+                (
+                    "degraded_family_route_blocked:gemini",
+                    "degraded_to:t2_standard",
+                    "post_route_receipt_rereview_required",
+                ),
+                "no recorded reason notes at all",
+            ),
+            (
+                (
+                    "degraded_family_route_blocked:gemini",
+                    "route_blocked_family_reason:gemini:some.other.route:reason",
+                    "degraded_to:t2_standard",
+                    "post_route_receipt_rereview_required",
+                ),
+                "the recorded route id is not the family's route",
+            ),
+            (
+                (
+                    "degraded_family_route_blocked:nosuchfamily",
+                    "route_blocked_family_reason:nosuchfamily:agy.review.direct:reason",
+                    "degraded_to:t2_standard",
+                    "post_route_receipt_rereview_required",
+                ),
+                "an unknown family name",
+            ),
+            (
+                (
+                    "degraded_family_route_blocked:gemini",
+                    "route_blocked_family_reason:gemini:agy.review.direct",
+                    "degraded_to:t2_standard",
+                    "post_route_receipt_rereview_required",
+                ),
+                "a malformed reason note (missing the reason field)",
+            ),
+        ],
+    )
+    def test_incoherent_degradation_records_still_refuse(
+        self, tmp_path: Path, notes: tuple[str, ...], why: str
+    ) -> None:
+        """Dropping the live-presence comparison must not make the degradation record
+        self-certifying: the forgery guards stay pinned red-able."""
+
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert blockers, why
 
     def test_no_quorum_dossier_blocks_with_recomputed_count(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
