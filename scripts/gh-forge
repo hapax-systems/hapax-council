@@ -11,7 +11,7 @@ Configuration (environment):
   FORGE_URL        base URL of the forge (default http://100.85.131.41:3000)
   FORGE_TOKEN      API token; preferred when already materialized
   FORGE_TOKEN_CMD  shell command that prints the token
-                   (default: pass show forgejo-shadow/s2-review-chain)
+                   (default: hapax-secret forgejo-shadow/s2-review-chain)
   GH_REPO          "owner/name" override; otherwise parsed from the origin
                    remote of the working directory
 
@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 
 DEFAULT_FORGE_URL = "http://100.85.131.41:3000"
-DEFAULT_TOKEN_CMD = "pass show forgejo-shadow/s2-review-chain"
+DEFAULT_TOKEN_CMD = "hapax-secret forgejo-shadow/s2-review-chain"
 TRANSPORT_TIMEOUT_SECONDS = 60
 
 
@@ -75,7 +75,7 @@ def _token() -> str:
         raise ForgeError(
             f"token command failed: {command}. "
             "Next action: set FORGE_TOKEN, fix FORGE_TOKEN_CMD, or run "
-            "'pass show forgejo-shadow/s2-review-chain' to check the store."
+            "'hapax-secret forgejo-shadow/s2-review-chain' to check the store."
         )
     return result.stdout.strip()
 
