@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the forge queue relay every 2 minutes
+# Hapax-Auto-Enable: true
+
+[Timer]
+OnCalendar=*-*-* *:0/2:00
+RandomizedDelaySec=30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

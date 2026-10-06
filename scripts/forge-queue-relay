@@ -1,0 +1,764 @@
+#!/usr/bin/env python3
+"""forge-queue-relay — relay shunt merge-queue observations into the coord event log.
+
+Polls the shadow shunt (/status, /metrics) and the forge open-PR list plus per-head
+``merge-queue`` commit-status rows, diffs them against a small persisted state file,
+and emits ``forge.queue.*`` events through the sanctioned CLI subprocess path
+(``python -m shared.coord_event_log append … --fail-open``). Event ids are derived
+deterministically from observed epochs (status-row ids, counter values, head shas)
+so a failed run that does not advance state re-derives the same events and the log
+deduplicates them.
+
+R3 (no success for a non-event): a ``forge.queue.merge``/``ejection`` is emitted only
+when a NEW ``merge-queue`` commit-status row on the PR head carries the outcome; a
+departure with no carrier is held on a short watch and then recorded as
+``forge.queue.depart_unknown``, which claims no outcome.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from copy import deepcopy
+from pathlib import Path
+from typing import Any
+
+ACTOR = "forge-queue-relay"
+ORIGIN = "forge-queue-relay"
+STATE_BASENAME = "forge-queue-relay-state.json"
+
+SHUNT_URL_ENV = "SHUNT_URL"
+FORGE_URL_ENV = "FORGE_URL"
+FORGE_QUEUE_REPO_ENV = "FORGE_QUEUE_REPO"
+FORGE_TOKEN_ENV = "FORGE_TOKEN"
+FORGE_TOKEN_CMD_ENV = "FORGE_TOKEN_CMD"
+FORGE_DEFAULT_TOKEN_CMD = "hapax-secret forgejo-shadow/s2-review-chain"
+FORGE_TOKEN_CMD_TIMEOUT_SECONDS = 15
+FETCH_TIMEOUT_SECONDS = 10
+EMIT_TIMEOUT_SECONDS = 20
+PULLS_PAGE_SIZE = 50
+PULLS_MAX_PAGES = 10
+
+DEFAULT_SHUNT_URL = "http://100.85.131.41:8901"
+DEFAULT_FORGE_URL = "http://100.85.131.41:3000"
+DEFAULT_FORGE_QUEUE_REPO = "forge-admin/shadow-ci-driver"
+
+COUNTER_NAMES = (
+    "shunt_bounces_total",
+    "shunt_pr_merges_total",
+    "shunt_batches_started_total",
+    "shunt_reconcile_errors_total",
+    "shunt_staging_conflicts_total",
+)
+ERROR_COUNTER_NAMES = ("shunt_reconcile_errors_total", "shunt_staging_conflicts_total")
+WATCH_RUNS = 2
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+FetchFn = Callable[[str], str]
+RunnerFn = Callable[[list[str], str], tuple[int, str]]
+StatusesFn = Callable[[int, str], list[dict[str, Any]]]
+
+
+class FetchError(Exception):
+    """A read against shunt or the forge failed; carry the next action inline."""
+
+
+# --------------------------------------------------------------- parsing
+
+
+_LINE_RE = re.compile(r"^\s*([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+(\S+)\s*$")
+_LABEL_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"((?:[^"\\]|\\.)*)"')
+
+
+class MetricsView:
+    """Prometheus exposition text reduced to (name, labels, value) samples."""
+
+    def __init__(self, samples: list[tuple[str, dict[str, str], float]]) -> None:
+        self._samples = samples
+
+    def value(self, name: str, **label_filter: str) -> float | None:
+        for sample_name, labels, value in self._samples:
+            if sample_name != name:
+                continue
+            if all(labels.get(k) == v for k, v in label_filter.items()):
+                return value
+        return None
+
+    def total(self, name: str) -> float:
+        return sum(v for sample_name, _, v in self._samples if sample_name == name)
+
+
+def parse_metrics(text: str) -> MetricsView:
+    samples: list[tuple[str, dict[str, str], float]] = []
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = _LINE_RE.match(line)
+        if not match:
+            continue
+        name, label_text, value_text = match.group(1), match.group(2) or "", match.group(3)
+        try:
+            value = float(value_text)
+        except ValueError:
+            continue
+        labels = dict(_LABEL_RE.findall(label_text))
+        samples.append((name, labels, value))
+    return MetricsView(samples)
+
+
+def _flatten_prs(batch: Any, prs: set[int]) -> None:
+    if not isinstance(batch, list):
+        return
+    for item in batch:
+        if isinstance(item, list):
+            _flatten_prs(item, prs)
+        else:
+            try:
+                prs.add(int(item))
+            except (TypeError, ValueError):
+                continue
+
+
+def parse_status(text: str) -> list[dict[str, Any]]:
+    doc = json.loads(text)
+    out: list[dict[str, Any]] = []
+    for q in doc.get("queues") or []:
+        prs: set[int] = set()
+        for key in ("active_batches", "pending_batches"):
+            for batch in q.get(key) or []:
+                _flatten_prs(batch, prs)
+        active_flag = q.get("active_batch")
+        if isinstance(active_flag, list):
+            for batch in active_flag:
+                _flatten_prs(batch, prs)
+        out.append(
+            {
+                "owner": str(q.get("owner") or ""),
+                "repo": str(q.get("repo") or ""),
+                "base": str(q.get("base") or ""),
+                "depth": int(q.get("queue_depth") or 0),
+                "queued_prs": sorted(prs),
+            }
+        )
+    return out
+
+
+def relevant_status_rows(rows: list[dict[str, Any]], *, max_id: int) -> list[dict[str, Any]]:
+    """Merge-queue context rows newer than the last seen row id (the epoch)."""
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("context") != "merge-queue":
+            continue
+        try:
+            row_id = int(row.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if row_id > max_id:
+            kept.append(row)
+    return kept
+
+
+# --------------------------------------------------------------- state
+
+
+def default_state_path() -> Path:
+    base = os.environ.get("HAPAX_COORD_DIR") or str(Path.home() / ".cache" / "hapax" / "coord")
+    return Path(base) / STATE_BASENAME
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def _queue_state(state: dict[str, Any], queue_key: str) -> dict[str, Any]:
+    queues = state.setdefault("queues", {})
+    if queue_key not in queues:
+        queues[queue_key] = {
+            "baseline_done": False,
+            "queued": {},
+            "counters": {},
+            "status_row_max": {},
+            "watch": {},
+        }
+    return queues[queue_key]
+
+
+# --------------------------------------------------------------- derive
+
+
+def _digest(parts: Any) -> str:
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def derive_events(
+    state: dict[str, Any],
+    status_text: str,
+    metrics_text: str,
+    open_prs_json: str,
+    fetch_statuses: StatusesFn,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Diff one observation against ``state``; return (events, new_state).
+
+    Pure with respect to ``state`` (deep-copied); the caller persists ``new_state``
+    only after every event has been emitted, so failed emits re-derive identically.
+    """
+    new_state = deepcopy(state)
+    queues = parse_status(status_text)
+    if not queues:
+        return [], new_state
+    q = queues[0]
+    metrics = parse_metrics(metrics_text)
+    owner, repo, base = q["owner"], q["repo"], q["base"]
+    queue_key = f"{owner}/{repo}:{base}"
+    subject_repo = f"{owner}/{repo}"
+    qs = _queue_state(new_state, queue_key)
+
+    current_counters = {name: int(metrics.total(name)) for name in COUNTER_NAMES}
+    pulls = json.loads(open_prs_json) if open_prs_json.strip() else []
+    pr_map: dict[int, str] = {}
+    for row in pulls if isinstance(pulls, list) else []:
+        if not isinstance(row, dict) or "number" not in row:
+            continue
+        head = row.get("head") if isinstance(row.get("head"), dict) else {}
+        pr_map[int(row["number"])] = str(head.get("sha") or "")
+
+    events: list[dict[str, Any]] = []
+
+    def emit(event_type: str, event_id: str, subject: str, payload: dict[str, Any]) -> None:
+        events.append(
+            {"event_type": event_type, "event_id": event_id, "subject": subject, "payload": payload}
+        )
+
+    moved = {
+        name: (int(qs["counters"].get(name, 0)), current_counters[name])
+        for name in COUNTER_NAMES
+        if current_counters[name] > int(qs["counters"].get(name, 0))
+    }
+    restarted = any(
+        current_counters[name] < int(qs["counters"].get(name, 0)) for name in COUNTER_NAMES
+    )
+
+    queued_now = set(q["queued_prs"])
+    queued_prev = {int(pr): sha for pr, sha in qs["queued"].items()}
+
+    def active_batches() -> list[list[int]]:
+        raw = json.loads(status_text).get("queues") or []
+        return [list(b) for b in (raw[0].get("active_batches") or [])] if raw else []
+
+    if restarted or not qs["baseline_done"]:
+        queued_snapshot = {str(pr): pr_map.get(pr, "") for pr in sorted(queued_now)}
+        emit(
+            "forge.queue.baseline",
+            f"fqr:baseline:{queue_key}:{q['depth']}:{_digest([queued_snapshot, current_counters])}",
+            subject_repo,
+            {
+                "queue": queue_key,
+                "queue_depth": q["depth"],
+                "queued": queued_snapshot,
+                "counters": current_counters,
+                "restarted": restarted,
+            },
+        )
+        qs["baseline_done"] = True
+        qs["queued"] = queued_snapshot
+        qs["counters"] = current_counters
+        for pr in set(qs["watch"]) & {str(p) for p in queued_now}:
+            del qs["watch"][pr]
+        return events, new_state
+
+    # Entries: newly queued PRs (a watched PR that re-enters also cancels its watch).
+    for pr in sorted(queued_now - set(queued_prev)):
+        sha = pr_map.get(pr, "")
+        emit(
+            "forge.queue.entry",
+            f"fqr:entry:{queue_key}:{pr}:{sha[:12]}",
+            f"{subject_repo}#{pr}",
+            {"pr": pr, "head_sha": sha},
+        )
+        qs["queued"][str(pr)] = sha
+        qs["watch"].pop(str(pr), None)
+
+    # Updates: a still-queued PR whose head moved (R4 evidence).
+    for pr in sorted(queued_now & set(queued_prev)):
+        new_sha = pr_map.get(pr, "")
+        old_sha = queued_prev[pr]
+        if new_sha and old_sha and new_sha != old_sha:
+            emit(
+                "forge.queue.update",
+                f"fqr:update:{queue_key}:{pr}:{new_sha[:12]}",
+                f"{subject_repo}#{pr}",
+                {"pr": pr, "old_head_sha": old_sha, "new_head_sha": new_sha},
+            )
+            qs["queued"][str(pr)] = new_sha
+
+    if "shunt_batches_started_total" in moved:
+        old, new = moved["shunt_batches_started_total"]
+        emit(
+            "forge.queue.batch",
+            f"fqr:batch:{queue_key}:{new}",
+            subject_repo,
+            {"batches_started": [old, new], "active_batches": active_batches()},
+        )
+
+    def classify_rows(pr: int, sha: str) -> tuple[list[dict[str, Any]], int]:
+        rows = relevant_status_rows(
+            fetch_statuses(pr, sha), max_id=int(qs["status_row_max"].get(str(pr), 0))
+        )
+        max_row = int(qs["status_row_max"].get(str(pr), 0))
+        for row in rows:
+            try:
+                max_row = max(max_row, int(row.get("id") or 0))
+            except (TypeError, ValueError):
+                continue
+        qs["status_row_max"][str(pr)] = max_row
+        return rows, max_row
+
+    def failure_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        return next((r for r in reversed(rows) if r.get("status") == "failure"), None)
+
+    def success_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        return next((r for r in reversed(rows) if r.get("status") == "success"), None)
+
+    # Watched departures: a late carrier upgrades to a terminal event; expiry records
+    # the unknown departure without claiming an outcome (R3).
+    for pr_str in sorted(qs["watch"]):
+        entry = qs["watch"][pr_str]
+        pr, sha = int(pr_str), entry["head_sha"]
+        if pr in queued_now:
+            continue
+        rows, _ = classify_rows(pr, sha)
+        failure = failure_row(rows)
+        success = success_row(rows)
+        if failure is not None:
+            old_bounces = int(entry.get("bounces", current_counters["shunt_bounces_total"]))
+            reason = str(failure.get("description") or "").strip() or (
+                f"merge-queue bounce (shunt_bounces_total "
+                f"{old_bounces}->{current_counters['shunt_bounces_total']})"
+            )
+            emit(
+                "forge.queue.ejection",
+                f"fqr:ejection:{queue_key}:{pr}:{int(failure.get('id') or 0)}",
+                f"{subject_repo}#{pr}",
+                {
+                    "pr": pr,
+                    "head_sha": sha,
+                    "reason": reason,
+                    "evidence": {
+                        "status_row_id": int(failure.get("id") or 0),
+                        "description": str(failure.get("description") or ""),
+                        "target_url": str(failure.get("target_url") or ""),
+                    },
+                    "bounces": [old_bounces, current_counters["shunt_bounces_total"]],
+                    "late": True,
+                },
+            )
+            del qs["watch"][pr_str]
+        elif success is not None:
+            old_merges = int(entry.get("merges", current_counters["shunt_pr_merges_total"]))
+            emit(
+                "forge.queue.merge",
+                f"fqr:merge:{queue_key}:{pr}:{int(success.get('id') or 0)}",
+                f"{subject_repo}#{pr}",
+                {
+                    "pr": pr,
+                    "head_sha": sha,
+                    "evidence": {
+                        "status_row_id": int(success.get("id") or 0),
+                        "target_url": str(success.get("target_url") or ""),
+                    },
+                    "merges": [old_merges, current_counters["shunt_pr_merges_total"]],
+                    "late": True,
+                },
+            )
+            del qs["watch"][pr_str]
+        else:
+            entry["remaining"] = int(entry.get("remaining", WATCH_RUNS)) - 1
+            if entry["remaining"] <= 0:
+                emit(
+                    "forge.queue.depart_unknown",
+                    (
+                        f"fqr:depart-unknown:{queue_key}:{pr}:{sha[:12]}:"
+                        f"{current_counters['shunt_bounces_total']}:"
+                        f"{current_counters['shunt_pr_merges_total']}"
+                    ),
+                    f"{subject_repo}#{pr}",
+                    {
+                        "pr": pr,
+                        "head_sha": sha,
+                        "bounces": [
+                            int(entry.get("bounces", current_counters["shunt_bounces_total"])),
+                            current_counters["shunt_bounces_total"],
+                        ],
+                        "merges": [
+                            int(entry.get("merges", current_counters["shunt_pr_merges_total"])),
+                            current_counters["shunt_pr_merges_total"],
+                        ],
+                        "watched_runs": WATCH_RUNS,
+                    },
+                )
+                del qs["watch"][pr_str]
+
+    # Departures observed this run.
+    for pr in sorted(set(queued_prev) - queued_now):
+        sha = queued_prev[pr]
+        rows, _ = classify_rows(pr, sha)
+        failure = failure_row(rows)
+        success = success_row(rows)
+        bounced = "shunt_bounces_total" in moved
+        merged = "shunt_pr_merges_total" in moved
+        if bounced and failure is not None:
+            old, new = moved["shunt_bounces_total"]
+            reason = str(failure.get("description") or "").strip() or (
+                f"merge-queue bounce (shunt_bounces_total {old}->{new})"
+            )
+            emit(
+                "forge.queue.ejection",
+                f"fqr:ejection:{queue_key}:{pr}:{int(failure.get('id') or 0)}",
+                f"{subject_repo}#{pr}",
+                {
+                    "pr": pr,
+                    "head_sha": sha,
+                    "reason": reason,
+                    "evidence": {
+                        "status_row_id": int(failure.get("id") or 0),
+                        "description": str(failure.get("description") or ""),
+                        "target_url": str(failure.get("target_url") or ""),
+                    },
+                    "bounces": [old, new],
+                    "late": False,
+                },
+            )
+        elif merged and success is not None:
+            old, new = moved["shunt_pr_merges_total"]
+            emit(
+                "forge.queue.merge",
+                f"fqr:merge:{queue_key}:{pr}:{int(success.get('id') or 0)}",
+                f"{subject_repo}#{pr}",
+                {
+                    "pr": pr,
+                    "head_sha": sha,
+                    "evidence": {
+                        "status_row_id": int(success.get("id") or 0),
+                        "target_url": str(success.get("target_url") or ""),
+                    },
+                    "merges": [old, new],
+                    "late": False,
+                },
+            )
+        else:
+            qs["watch"][str(pr)] = {
+                "head_sha": sha,
+                "remaining": WATCH_RUNS,
+                "bounces": current_counters["shunt_bounces_total"],
+                "merges": current_counters["shunt_pr_merges_total"],
+            }
+        qs["queued"].pop(str(pr), None)
+
+    error_moves = {name: list(moved[name]) for name in ERROR_COUNTER_NAMES if name in moved}
+    if error_moves:
+        emit(
+            "forge.queue.error",
+            (
+                f"fqr:error:{queue_key}:"
+                + ":".join(f"{n}={moved[n][1]}" for n in sorted(error_moves))
+            ),
+            subject_repo,
+            {"counters": error_moves},
+        )
+
+    qs["counters"] = current_counters
+    return events, new_state
+
+
+# --------------------------------------------------------------- emit
+
+
+def build_emit_command(event: dict[str, Any], *, python_exe: str | None = None) -> list[str]:
+    payload = json.dumps(event["payload"], separators=(",", ":"), sort_keys=True)
+    return [
+        python_exe or sys.executable,
+        "-m",
+        "shared.coord_event_log",
+        "append",
+        "--event-type",
+        str(event["event_type"]),
+        "--actor",
+        ACTOR,
+        "--subject",
+        str(event["subject"]),
+        "--event-id",
+        str(event["event_id"]),
+        "--origin",
+        ORIGIN,
+        "--payload",
+        payload,
+        "--fail-open",
+    ]
+
+
+def emit_event(event: dict[str, Any], runner: RunnerFn) -> bool:
+    """Emit one event via the sanctioned CLI; True only on an honest receipt."""
+    cmd = build_emit_command(event)
+    try:
+        rc, stdout = runner(cmd, str(_REPO_ROOT))
+    except Exception:
+        return False
+    if rc != 0:
+        return False
+    try:
+        receipt = json.loads(stdout)
+    except ValueError:
+        return False
+    if not isinstance(receipt, dict):
+        return False
+    return bool(receipt.get("appended") or receipt.get("spooled") or receipt.get("duplicate"))
+
+
+def real_runner(cmd: list[str], cwd: str) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(  # noqa: S603 - argv built internally, no shell
+            list(cmd),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=EMIT_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return 1, ""
+    return proc.returncode, proc.stdout
+
+
+# --------------------------------------------------------------- fetch
+
+
+def forge_headers(forge_base: str, url: str, token: str) -> dict[str, str]:
+    if not token:
+        return {}
+    base = forge_base.rstrip("/")
+    if url == base or url.startswith(base + "/"):
+        return {"Authorization": f"token {token}"}
+    return {}
+
+
+def make_fetcher(forge_url: str, token: str) -> FetchFn:
+    def fetch(url: str) -> str:
+        request = urllib.request.Request(  # noqa: S310 - declared forge/shunt endpoints
+            url, headers=forge_headers(forge_url, url, token)
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as resp:  # noqa: S310
+                return resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raise FetchError(
+                f"HTTP {exc.code} from {url}. "
+                "Next action: check the endpoint and token (FORGE_TOKEN / hapax-secret binding)."
+            ) from exc
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            raise FetchError(
+                f"cannot reach {url}: {exc}. "
+                f"Next action: verify the service is up (shunt at its /status, forge at its API)."
+            ) from exc
+
+    return fetch
+
+
+def resolve_token(source: dict[str, str] | None = None) -> str:
+    """FORGE_TOKEN wins; otherwise the token command. The value is never logged."""
+    env = dict(source if source is not None else os.environ)
+    token = str(env.get(FORGE_TOKEN_ENV, "")).strip()
+    if token:
+        return token
+    command = str(env.get(FORGE_TOKEN_CMD_ENV, FORGE_DEFAULT_TOKEN_CMD)).strip()
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed estate command, no shell
+            shlex.split(command),
+            capture_output=True,
+            text=True,
+            timeout=FORGE_TOKEN_CMD_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        raise FetchError(
+            "forge token command failed to run. "
+            f"Next action: set {FORGE_TOKEN_ENV} or fix the {FORGE_TOKEN_CMD_ENV} binding."
+        ) from exc
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise FetchError(
+            "forge token unavailable. "
+            f"Next action: set {FORGE_TOKEN_ENV} or repair the hapax-secret binding."
+        )
+    return proc.stdout.strip()
+
+
+def pulls_url(forge_url: str, repo: str, page: int) -> str:
+    return (
+        f"{forge_url.rstrip('/')}/api/v1/repos/{repo}/pulls"
+        f"?state=open&type=pulls&limit={PULLS_PAGE_SIZE}&page={page}"
+    )
+
+
+def statuses_url(forge_url: str, repo: str, sha: str) -> str:
+    return f"{forge_url.rstrip('/')}/api/v1/repos/{repo}/commits/{sha}/statuses"
+
+
+def fetch_open_prs(forge_url: str, repo: str, fetch: FetchFn) -> str:
+    """Fetch open PRs across pages; the shadow queue repo is small, so cap pages."""
+    rows: list[dict[str, Any]] = []
+    for page in range(1, PULLS_MAX_PAGES + 1):
+        body = fetch(pulls_url(forge_url, repo, page))
+        page_rows = json.loads(body) if body.strip() else []
+        if not isinstance(page_rows, list):
+            raise FetchError(
+                f"open-PR listing for {repo} is not a list. "
+                "Next action: check the forge API shape and the FORGE_QUEUE_REPO setting."
+            )
+        rows.extend(r for r in page_rows if isinstance(r, dict))
+        if len(page_rows) < PULLS_PAGE_SIZE:
+            break
+    return json.dumps(rows)
+
+
+# --------------------------------------------------------------- run_once / main
+
+
+def run_once(
+    *,
+    shunt_url: str,
+    forge_url: str,
+    repo: str,
+    state_path: Path,
+    fetch: FetchFn,
+    runner: RunnerFn,
+    dry_run: bool = False,
+) -> tuple[int, list[dict[str, Any]]]:
+    """One poll → diff → emit cycle. State advances only after every emit receipts."""
+    try:
+        status_text = fetch(f"{shunt_url.rstrip('/')}/status")
+        metrics_text = fetch(f"{shunt_url.rstrip('/')}/metrics")
+        owner, _, name = repo.partition("/")
+        match = [q for q in parse_status(status_text) if q["owner"] == owner and q["repo"] == name]
+        if not match:
+            raise FetchError(
+                f"no shunt queue for {repo} at {shunt_url}. "
+                "Next action: verify SHUNT_URL/FORGE_QUEUE_REPO against the shunt /status payload."
+            )
+        open_prs_json = fetch_open_prs(forge_url, repo, fetch)
+
+        def fetch_statuses(pr: int, head_sha: str) -> list[dict[str, Any]]:
+            body = fetch(statuses_url(forge_url, repo, head_sha))
+            rows = json.loads(body) if body.strip() else []
+            return rows if isinstance(rows, list) else []
+
+        state = load_state(state_path)
+        events, new_state = derive_events(
+            state, status_text, metrics_text, open_prs_json, fetch_statuses
+        )
+    except FetchError as exc:
+        message = str(exc)
+        if "Next action" not in message:
+            message += " Next action: check the shunt and forge endpoints, then re-run --once."
+        print(message, file=sys.stderr)
+        return 2, []
+
+    if dry_run:
+        return 0, events
+
+    emitted: list[dict[str, Any]] = []
+    for event in events:
+        if not emit_event(event, runner):
+            print(
+                f"coord append failed for {event['event_id']}; state NOT advanced. "
+                "Next action: check shared.coord_event_log append, then re-run --once "
+                "(ids are deterministic and the log deduplicates).",
+                file=sys.stderr,
+            )
+            return 3, emitted
+        emitted.append(event)
+    save_state(state_path, new_state)
+    return 0, emitted
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    fetch: FetchFn | None = None,
+    runner: RunnerFn | None = None,
+) -> int:
+    parser = argparse.ArgumentParser(
+        prog="forge-queue-relay",
+        description="Relay shunt merge-queue state changes into the coord event log.",
+    )
+    parser.add_argument("--once", action="store_true", help="run one poll→diff→emit cycle")
+    parser.add_argument("--dry-run", action="store_true", help="derive events, emit nothing")
+    parser.add_argument(
+        "--shunt-url",
+        default=os.environ.get(SHUNT_URL_ENV, DEFAULT_SHUNT_URL),
+        help=f"shunt base URL (env {SHUNT_URL_ENV})",
+    )
+    parser.add_argument(
+        "--forge-url",
+        default=os.environ.get(FORGE_URL_ENV, DEFAULT_FORGE_URL),
+        help=f"forge base URL (env {FORGE_URL_ENV})",
+    )
+    parser.add_argument(
+        "--repo",
+        default=os.environ.get(FORGE_QUEUE_REPO_ENV, DEFAULT_FORGE_QUEUE_REPO),
+        help=f"queue repository slug owner/name (env {FORGE_QUEUE_REPO_ENV})",
+    )
+    parser.add_argument(
+        "--state-path",
+        default=None,
+        help="state file path (default: coord dir / " + STATE_BASENAME + ")",
+    )
+    args = parser.parse_args(argv)
+    if not args.once:
+        parser.print_usage()
+        print(
+            "Next action: run with --once (add --dry-run to inspect derived events).",
+            file=sys.stderr,
+        )
+        return 2
+
+    fetcher = fetch
+    if fetcher is None:
+        try:
+            token = resolve_token()
+        except FetchError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        fetcher = make_fetcher(args.forge_url, token)
+    state_path = Path(args.state_path) if args.state_path else default_state_path()
+    rc, _ = run_once(
+        shunt_url=args.shunt_url,
+        forge_url=args.forge_url,
+        repo=args.repo,
+        state_path=state_path,
+        fetch=fetcher,
+        runner=runner or real_runner,
+        dry_run=args.dry_run,
+    )
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
