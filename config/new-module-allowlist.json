@@ -1,6 +1,7 @@
 [
   "shared.some_library_module",
   "scripts/check-new-module-consumers.py",
+  "scripts/mint_public_gate_receipts.py",
   "shared.sdlc_close",
   "shared.methodology_dispatch_carrier"
 ]
