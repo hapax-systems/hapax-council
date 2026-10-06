@@ -573,6 +573,7 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
                 parts.append("[")
                 cursor = start + 1
                 continue
+            assert close is not None  # set only alongside a matched destination
             target, end = destination
             nested = bisect_left(labels.targets, close) > bisect_left(labels.targets, start)
             if labels.depths[start] > _MAX_IMAGE_LABEL_DEPTH or nested:
