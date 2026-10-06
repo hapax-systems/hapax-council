@@ -66,15 +66,9 @@ def git_diff_added_files(args: argparse.Namespace) -> list[Path]:
 
     result = run_command(command)
     if result.returncode != 0:
-        # If HEAD~1 fails, fallback to HEAD or empty
-        command = ["git", "diff", "--name-only", "--diff-filter=A", "HEAD"]
-        result = run_command(command)
-        if result.returncode != 0:
-            # FAIL CLOSED (dossier critical 2026-06-12): an unreadable diff
-            # must block the gate, never pass it — empty-list reads as
-            # "nothing to check" and the gate exits green.
-            print(f"Git diff failed: {result.stdout} {result.stderr}", file=sys.stderr)
-            raise SystemExit(2)
+        scope = args.diff_range or args.base_ref or ("staged" if args.staged else "HEAD~1")
+        print(f"Git diff failed for {scope}: {result.stdout.strip()}", file=sys.stderr)
+        raise SystemExit(2)
 
     added_paths = []
     for line in result.stdout.splitlines():
@@ -304,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
 
+        # A __main__ block alone is not a consumer; execution needs a declared binding.
         unit_consumers = systemd_consumer_units(module_name)
         tooling_consumers = tooling_consumer_refs(module_path)
         if unit_consumers or tooling_consumers:

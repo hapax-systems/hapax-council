@@ -45,7 +45,9 @@ def write(path: Path, value: str) -> Path:
     return path
 
 
-def token_event(at="2026-09-19T07:50:00Z", used=100, balance="4593.2239900000", total=100):
+def token_event(
+    at="2026-09-19T07:50:00Z", used=100, balance="4593.2239900000", total=100, reset=1789805412
+):
     # Provider rate_limits fields copied from the named rollout; no prompts or account id.
     return {
         "timestamp": at,
@@ -54,7 +56,7 @@ def token_event(at="2026-09-19T07:50:00Z", used=100, balance="4593.2239900000", 
             "type": "token_count",
             "info": {"total_token_usage": {"total_tokens": total}},
             "rate_limits": {
-                "primary": {"used_percent": used, "window_minutes": 10080, "resets_at": 1789805412},
+                "primary": {"used_percent": used, "window_minutes": 10080, "resets_at": reset},
                 "credits": {"balance": balance},
             },
         },
@@ -93,6 +95,30 @@ def test_codex_reader_uses_latest_token_count_not_mtime(tmp_path):
     os.utime(older, (2000000000, 2000000000))
     os.utime(newer, (1, 1))
     assert read_codex_token_count(tmp_path)[0].quantity == 100
+
+
+def test_codex_reader_takes_window_max_when_a_newer_sample_reads_lower(tmp_path):
+    # Concurrent rollouts within ONE reset window: a lower *newer* percent must
+    # not drop the family's observed usage below the window's high-water mark,
+    # else a 98 arriving right after a 100 un-freezes a live wall.
+    jsonl(tmp_path / "rollout-a.jsonl", token_event(at="2026-09-19T07:50:12Z", used=100))
+    jsonl(tmp_path / "rollout-b.jsonl", token_event(at="2026-09-19T07:50:13Z", used=98))
+    assert read_codex_token_count(tmp_path)[0].quantity == 100
+
+
+def test_codex_reader_old_high_percent_in_prior_window_does_not_win(tmp_path):
+    # Reset detection is preserved: the max is taken only among samples sharing
+    # the newest resets_at, so a pre-reset 100 (earlier resets_at) must not keep
+    # the family walled once a new window reports lower.
+    jsonl(
+        tmp_path / "rollout-old.jsonl",
+        token_event(at="2026-09-19T07:00:00Z", used=100, reset=1789805412),
+    )
+    jsonl(
+        tmp_path / "rollout-new.jsonl",
+        token_event(at="2026-09-20T07:00:00Z", used=30, reset=1789891812),
+    )
+    assert read_codex_token_count(tmp_path)[0].quantity == 30
 
 
 def test_codex_reader_maps_resets_at_unix_to_iso_z(tmp_path):

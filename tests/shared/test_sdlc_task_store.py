@@ -248,6 +248,125 @@ def test_frontier_change_during_resolution_refuses(
         resolve_task_note(tmp_path, "cc-task-a")
 
 
+def test_index_rechecks_only_a_peer_with_a_session_log_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _note(tmp_path / "active" / "cc-task-a.md", "cc-task-a")
+    peer = _note(tmp_path / "active" / "cc-task-b.md", "cc-task-b")
+    original = task_store._index_entry
+    parsed: list[Path] = []
+
+    def append_after_parse(
+        path: Path, *, state: task_store.TaskState, stat_vector: task_store._StatVector
+    ) -> task_store.TaskIdentityEntry:
+        entry = original(path, state=state, stat_vector=stat_vector)
+        parsed.append(path)
+        if path == peer and parsed.count(peer) == 1:
+            peer.write_text(peer.read_text(encoding="utf-8") + "session log\n", encoding="utf-8")
+        return entry
+
+    monkeypatch.setattr(task_store, "_index_entry", append_after_parse)
+    index = build_task_identity_index(tmp_path)
+
+    assert parsed == [target, peer, peer]
+    assert (
+        index.by_task_id["cc-task-b"][0].content_sha256
+        == task_store.hashlib.sha256(peer.read_bytes()).hexdigest()
+    )
+    assert resolve_task_note(tmp_path, "cc-task-a", identity_index=index).path == target
+
+
+@pytest.mark.parametrize("change", ["add", "remove", "move", "task_id"])
+def test_index_refuses_identity_change_during_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    _note(tmp_path / "active" / "cc-task-a.md", "cc-task-a")
+    peer = _note(tmp_path / "active" / "cc-task-b.md", "cc-task-b")
+    original = task_store._index_entry
+    changed = False
+
+    def change_after_parse(
+        path: Path, *, state: task_store.TaskState, stat_vector: task_store._StatVector
+    ) -> task_store.TaskIdentityEntry:
+        nonlocal changed
+        entry = original(path, state=state, stat_vector=stat_vector)
+        if path == peer and not changed:
+            changed = True
+            if change == "add":
+                _note(tmp_path / "active" / "cc-task-c.md", "cc-task-c")
+            elif change == "remove":
+                peer.unlink()
+            elif change == "move":
+                (tmp_path / "closed").mkdir()
+                peer.rename(tmp_path / "closed" / peer.name)
+            else:
+                peer.write_text(
+                    peer.read_text(encoding="utf-8").replace(
+                        "task_id: cc-task-b", "task_id: changed"
+                    ),
+                    encoding="utf-8",
+                )
+        return entry
+
+    monkeypatch.setattr(task_store, "_index_entry", change_after_parse)
+    with pytest.raises(TaskStoreError) as caught:
+        build_task_identity_index(tmp_path)
+    assert caught.value.reason_code == "task_store_frontier_changed_during_index_build"
+
+
+def test_implicit_resolution_tolerates_peer_append_but_reads_target_fresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _note(tmp_path / "active" / "cc-task-a.md", "cc-task-a")
+    peer = _note(tmp_path / "active" / "cc-task-b.md", "cc-task-b")
+    original = task_store._complete_frontier
+    calls = 0
+
+    def append_after_index(
+        vault_root: Path,
+    ) -> dict[task_store.TaskState, task_store._StateManifest]:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            peer.write_text(peer.read_text(encoding="utf-8") + "session log\n", encoding="utf-8")
+        return original(vault_root)
+
+    monkeypatch.setattr(task_store, "_complete_frontier", append_after_index)
+    assert resolve_task_note(tmp_path, "cc-task-a").path == target
+
+    monkeypatch.setattr(task_store, "_complete_frontier", original)
+    original_snapshot = task_store._snapshot
+
+    def change_target_before_read(
+        path: Path, *, expected_task_id: str, state: task_store.TaskState
+    ) -> task_store.TaskNoteSnapshot:
+        target.write_text(target.read_text(encoding="utf-8") + "changed target\n", encoding="utf-8")
+        return original_snapshot(path, expected_task_id=expected_task_id, state=state)
+
+    monkeypatch.setattr(task_store, "_snapshot", change_target_before_read)
+    with pytest.raises(TaskStoreError, match="task_note_changed_since_identity_index"):
+        resolve_task_note(tmp_path, "cc-task-a")
+
+
+def test_implicit_resolution_refuses_target_change_after_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _note(tmp_path / "active" / "cc-task-a.md", "cc-task-a")
+    _note(tmp_path / "active" / "cc-task-b.md", "cc-task-b")
+    original = task_store._snapshot
+
+    def change_target_after_read(
+        path: Path, *, expected_task_id: str, state: task_store.TaskState
+    ) -> task_store.TaskNoteSnapshot:
+        snapshot = original(path, expected_task_id=expected_task_id, state=state)
+        target.write_text(target.read_text(encoding="utf-8") + "changed target\n", encoding="utf-8")
+        return snapshot
+
+    monkeypatch.setattr(task_store, "_snapshot", change_target_after_read)
+    with pytest.raises(TaskStoreError, match="task_store_frontier_changed_during_resolution"):
+        resolve_task_note(tmp_path, "cc-task-a")
+
+
 def test_explicit_index_reuses_parses_and_refreshes_only_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

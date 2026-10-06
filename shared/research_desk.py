@@ -73,7 +73,10 @@ _MAX_IMAGE_LABEL_DEPTH = 16
 _RAW_HTML_RE = re.compile(
     r"(?P<code>(?<![\\`])(?P<ticks>`+)(?!`)[^\n]*?(?<!`)(?P=ticks)(?!`))|(?P<tag><[^>]*>|<)"
 )
-_AUTOLINK_RE = re.compile(r"<(?P<uri>[A-Za-z][A-Za-z0-9+.-]*:[^>\s]*)>")
+#: CommonMark autolinks exclude ``<``, ``>``, spaces and controls; a looser class keeps raw HTML.
+_AUTOLINK_RE = re.compile(r"<(?P<uri>[A-Za-z][A-Za-z0-9+.-]*:[^<>\s\x00-\x1f\x7f]*)>")
+#: A link reference definition's ``]:`` and its destination, possibly on the next line.
+_REF_DEF_RE = re.compile(r"\]:(?P<gap>[ \t]*(?:\n[ \t>]*)?)(?P<dest><[^<>\n]*>|[^\s<>]+)")
 
 
 # --------------------------------------------------------------------------- #
@@ -315,10 +318,18 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
                     depth -= 1
                 pos += 1
             destination = _MD_IMAGE_DEST_RE.match(text, pos) if depth == 0 else None
-            if destination is None or over_cap:
-                # Remove the whole apparent target on malformed or deep labels.
-                close = text.find(")", start + 2)
+            suspect = text.find("](", start + 2) if destination is None and depth else -1
+            if suspect != -1:
+                # An unbalanced label before an inline target: remove through that target.
+                close = text.find(")", suspect + 2)
                 cursor = len(text) if close == -1 else close + 1
+                parts.append("`[image withheld]`")
+            elif destination is None:
+                # A reference or shortcut image, or none: escape the opener and keep the text.
+                cursor = start + 2
+                parts.append("!\\[")
+            elif over_cap:
+                cursor = destination.end()
                 parts.append("`[image withheld]`")
             else:
                 cursor = destination.end()
@@ -396,7 +407,21 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
         links += 1
         return f"`[link withheld — {uri}]`"
 
+    def _definitions(match: re.Match[str]) -> str:
+        nonlocal links
+        scheme = _scheme_of(match.group("dest"))
+        if not scheme or scheme in ALLOWED_URI_SCHEMES:
+            return match.group(0)
+        index = match.start()
+        while index and match.string[index - 1] == "\\":
+            index -= 1
+        if (match.start() - index) % 2:
+            return match.group(0)  # the bracket is already escaped, so this is no definition
+        links += 1
+        return "\\" + match.group(0)
+
     out = _images(body)
+    out = _REF_DEF_RE.sub(_definitions, out)
     out = _links(out)
     out = _AUTOLINK_RE.sub(_autolink, out)
     out = _RAW_HTML_RE.sub(_raw_html, out)

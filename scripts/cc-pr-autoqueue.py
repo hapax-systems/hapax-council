@@ -66,6 +66,7 @@ from github_pr_status import (  # noqa: E402
     RestIndeterminateError,
     _pull_status_row_from_rest,
     _rest_get_json,
+    _rulesets_graphql,
     choose_transport,
     fetch_status_check_rollup_rest,
     get_pr_status_graphql,
@@ -104,6 +105,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     REVIEW_TEAM_QUORUM_EVIDENCE,
     TASK_MERGE_READY_STATUSES,
     ReleaseAutoArmAssessment,
+    _effective_sensitive_flags,
     acceptance_receipt_blockers,
     apply_release_auto_arm,
     assess_release_auto_arm,
@@ -125,6 +127,14 @@ KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 EXPECTED_MERGE_METHOD_OVERRIDE_ENV = "HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD"
 OVERRIDE_CONTRADICTION_PREFIX = "auto_merge_method_override_contradicts_queue_governance:"
 TRANSIENT_TRANSPORT_UNVERIFIED_PREFIX = "auto_merge_method_unverified:transient_transport:"
+# The GraphQL->REST fallback (when GraphQL is CHOSEN for load-balancing and then fails) may only
+# spend REST when header-measured REST remaining is at or above this conservative floor -- set
+# deliberately ABOVE the 500 routing floor so a failed load-balancing read cannot silently drain the
+# shared budget down to the routing floor. This is the "(3)-lite" guard for
+# github-rest-hourly-budget-exhausted-by-estate-20261004; full remaining/reset surfacing is the
+# task's deferred item (3). Override: HAPAX_GITHUB_GRAPHQL_FALLBACK_REST_MIN.
+GRAPHQL_FALLBACK_REST_MIN_REMAINING_ENV = "HAPAX_GITHUB_GRAPHQL_FALLBACK_REST_MIN"
+DEFAULT_GRAPHQL_FALLBACK_REST_MIN_REMAINING = 1000
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
@@ -338,6 +348,7 @@ class TaskNote:
     lane_affinity: str | None = None
     epic_serialize: str | None = None
     frontmatter: dict[str, Any] = field(default_factory=dict)
+    vault_base: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -350,8 +361,7 @@ class Decision:
     auto_arm: bool = False
     auto_arm_verified_checks: tuple[str, ...] = ()
     expected_auto_merge_method: str | None = None
-    # Informational, never blocking: e.g. a stale release-arm stamp surfaced by
-    # the re-arm-follows-head evaluation (ledger 8.1).
+    # Informational diagnostics that do not alter admission.
     notes: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -795,13 +805,60 @@ def fetch_merge_queue_merge_method(
 ) -> tuple[str | None, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    ok, rulesets, message = _gh_api_get_json(
-        f"repos/{repo}/rulesets",
-        repo_root=repo_root,
-        runner=runner,
+    # Load-balance the rulesets read across REST and GraphQL by measured HEADER headroom
+    # (choose_transport), diverting BEFORE the call so a REST-core exhaustion no longer yields
+    # rulesets_fetch_failed while GraphQL sits idle
+    # (github-rest-hourly-budget-exhausted-by-estate-20261004). The REST branch is unchanged;
+    # the GraphQL branch returns rulesets with rules inline (one query, no REST detail fetch).
+    # One snapshot, shared by the routing decision and the fallback below, so both read the
+    # same measured headroom under the same floor (no second, possibly-disagreeing measurement).
+    snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
+    transport, route_reason = choose_transport(
+        repo_root=repo_root, runner=runner, snapshot=snapshot
     )
-    if not ok:
-        return None, f"rulesets_fetch_failed:{message}"
+    if transport is None:
+        # Both pools measured below floor: hold with the reason rather than spend into a
+        # doomed pool. Keep the `rulesets_fetch_failed:` prefix so the transient-transport
+        # retry path (`:~640`) still recognises it.
+        return None, f"rulesets_fetch_failed:{route_reason}"
+    if transport == "graphql":
+        rulesets, gql_reason = _rulesets_graphql(repo, repo_root=repo_root, runner=runner)
+        if rulesets is None:
+            # GraphQL can be CHOSEN for load-balancing while REST is still healthy, so a GraphQL
+            # failure here (e.g. a parameters-union schema miss -> rc!=0) must not hard-fail and
+            # re-create the rulesets_fetch_failed arming stall this task exists to fix. Fall back
+            # to REST -- but only when header-measured REST remaining is at or above the
+            # conservative fallback floor (default 1000, above the 500 routing floor), so the
+            # fallback cannot silently drain the shared budget. Below it, HOLD with a reason
+            # (never spend a near-exhausted pool). Read from the SAME snapshot the chooser saw.
+            override = _int_or_none(os.environ.get(GRAPHQL_FALLBACK_REST_MIN_REMAINING_ENV))
+            fallback_floor = (
+                DEFAULT_GRAPHQL_FALLBACK_REST_MIN_REMAINING
+                if override is None
+                else max(0, override)
+            )
+            rest_block = rest_pool_blocked(snapshot, min_remaining=fallback_floor)
+            if rest_block is not None:
+                return None, (
+                    f"rulesets_fetch_failed:graphql_failed_rest_below_fallback_floor:"
+                    f"graphql={gql_reason};rest={rest_block};"
+                    f"next=wait_for_graphql_reset_then_retry"
+                )
+            ok, rulesets, message = _gh_api_get_json(
+                f"repos/{repo}/rulesets",
+                repo_root=repo_root,
+                runner=runner,
+            )
+            if not ok:
+                return None, f"rulesets_fetch_failed:{message}"
+    else:
+        ok, rulesets, message = _gh_api_get_json(
+            f"repos/{repo}/rulesets",
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if not ok:
+            return None, f"rulesets_fetch_failed:{message}"
     if not isinstance(rulesets, list):
         return None, f"rulesets_payload_not_list:{type(rulesets).__name__}"
 
@@ -2656,7 +2713,9 @@ A PR whose task note is unparseable must NOT read as merely "unlinked".
 """
 
 
-def _task_note_from_frontmatter(path: Path, folder: str, fm: dict[str, Any]) -> TaskNote | None:
+def _task_note_from_frontmatter(
+    path: Path, folder: str, fm: dict[str, Any], *, vault_base: Path | None = None
+) -> TaskNote | None:
     task_id = _scalar(fm.get("task_id"))
     if not task_id:
         return None
@@ -2678,11 +2737,17 @@ def _task_note_from_frontmatter(path: Path, folder: str, fm: dict[str, Any]) -> 
         lane_affinity=_scalar(fm.get("lane_affinity")),
         epic_serialize=_scalar(fm.get("epic_serialize")),
         frontmatter=dict(fm),
+        vault_base=vault_base,
     )
 
 
 def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
     notes: list[TaskNote] = []
+    vault_base = (
+        vault_root.parent.parent
+        if vault_root.name == "hapax-cc-tasks" and vault_root.parent.name == "20-projects"
+        else None
+    )
     for folder in ("active", "closed"):
         root = vault_root / folder
         if not root.is_dir():
@@ -2695,7 +2760,7 @@ def load_task_notes(vault_root: Path = DEFAULT_VAULT_ROOT) -> list[TaskNote]:
                 continue
             if not fm or fm.get("type") != "cc-task":
                 continue
-            task = _task_note_from_frontmatter(path, folder, fm)
+            task = _task_note_from_frontmatter(path, folder, fm, vault_base=vault_base)
             if task is None:
                 continue
             notes.append(task)
@@ -2721,6 +2786,7 @@ def _task_note_with_frontmatter(task: TaskNote, frontmatter: dict[str, Any]) -> 
         lane_affinity=_scalar(frontmatter.get("lane_affinity")),
         epic_serialize=_scalar(frontmatter.get("epic_serialize")),
         frontmatter=dict(frontmatter),
+        vault_base=task.vault_base,
     )
 
 
@@ -2746,33 +2812,21 @@ def _release_authorized_head_blockers(
         expected_head_sha=pr_head_sha,
         expected_label="current",
     )
-    if blocker and not blocker.startswith("release_authorized_head_mismatch:"):
-        return (blocker,)
-    # A mismatch is a stale stamp, not a stop: ledger 8.1 re-arm-follows-head
-    # evaluates the arm against the current head and surfaces the staleness
-    # informationally via _release_authorized_head_stale_note.
-    return ()
+    return (blocker,) if blocker else ()
 
 
-def _release_authorized_head_stale_note(
-    frontmatter: dict[str, Any],
-    *,
-    pr_head_sha: str | None,
-) -> str | None:
-    """Informational staleness token for an armed note whose stamp names another head.
-
-    Ledger 8.1 (ratified 2026-09-14): a ``release_authorized_head_sha`` that is
-    not the current PR head is stale by definition; re-arm evaluation follows
-    the current head and the staleness is surfaced, never blocked on.
-    """
+def _release_seat_hold_blockers(
+    frontmatter: dict[str, Any], *, pr_head_sha: str | None
+) -> tuple[str, ...]:
+    """A seat hold applies to its named head and expires when the head changes."""
+    if "release_seat_hold_head_sha" not in frontmatter:
+        return ()
+    held_head = _scalar(frontmatter.get("release_seat_hold_head_sha"))
+    if not held_head:
+        return ("release_seat_hold_head_missing",)
     if not pr_head_sha:
-        return None
-    if not assess_release_auto_arm(frontmatter).armed:
-        return None
-    authorized_head_sha = _scalar(frontmatter.get("release_authorized_head_sha"))
-    if not authorized_head_sha or authorized_head_sha == pr_head_sha:
-        return None
-    return f"release_authorized_head_stale:authorized={authorized_head_sha}:current={pr_head_sha}"
+        return ("release_seat_hold_current_head_unavailable",)
+    return (f"release_seat_hold:{held_head}",) if held_head == pr_head_sha else ()
 
 
 def _task_blockers(
@@ -2845,6 +2899,7 @@ def _task_blockers(
             blockers.append("release_authorized_false")
 
     blockers.extend(_release_authorized_head_blockers(task.frontmatter, pr_head_sha=pr_head_sha))
+    blockers.extend(_release_seat_hold_blockers(task.frontmatter, pr_head_sha=pr_head_sha))
 
     avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
     blockers.extend(f"avsdlc_release_gate:{blocker}" for blocker in avsdlc_gate.blockers)
@@ -2875,7 +2930,131 @@ def _review_team_quorum_evidence_blockers(
         # The seat's T2 rule admits a merge below the family floor; it is not the
         # quorum-accept that sensitive classes need to auto-arm, so the seat still releases them.
         return (*blockers, f"review_team_quorum_by_seat_rule:{floor_release['rule']}")
-    return blockers
+    if blockers:
+        return blockers
+    return _open_major_release_findings_blockers(task, frontmatter, pr_head_sha=pr_head_sha)
+
+
+def _open_major_release_findings_blockers(
+    task: TaskNote, frontmatter: dict[str, Any], *, pr_head_sha: str | None
+) -> tuple[str, ...]:
+    """Keep a valid quorum from releasing undispositioned major or critical findings."""
+    if not any(
+        REVIEW_TEAM_QUORUM_EVIDENCE in RELEASE_MITIGATION_CHECKS.get(flag, ())
+        for flag in _effective_sensitive_flags(frontmatter)
+    ):
+        return ()
+    if not pr_head_sha:
+        return ("release_review_head_unavailable",)
+    dossier_path = review_team.review_dossier_path(task.path, task.task_id)
+    try:
+        dossier = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return ("release_review_dossier_unreadable",)
+    if not isinstance(dossier, dict) or dossier.get("head_sha") != pr_head_sha:
+        return ("release_review_dossier_head_mismatch",)
+    reviews = dossier.get("reviewers")
+    if not isinstance(reviews, list):
+        return ("release_review_dossier_reviewers_unreadable",)
+    dispositions = frontmatter.get("release_finding_dispositions")
+    dispositions = dispositions if isinstance(dispositions, list) else []
+    vault_root = task.vault_base
+    if dispositions and vault_root is None:
+        return ("release_seat_source_vault_unavailable",)
+    open_counts = {"major": 0, "critical": 0}
+    for review in reviews:
+        if not isinstance(review, dict):
+            return ("release_review_dossier_reviewers_unreadable",)
+        findings = review.get("findings")
+        if not isinstance(findings, list):
+            return ("release_review_dossier_findings_unreadable",)
+        for finding in findings:
+            if not isinstance(finding, dict):
+                return ("release_review_dossier_findings_unreadable",)
+            severity = str(finding.get("severity") or "").lower()
+            if severity not in {"major", "critical"}:
+                continue
+            finding_key = (
+                str(review.get("id") or ""),
+                str(finding.get("file") or ""),
+                str(finding.get("line") or ""),
+                str(finding.get("title") or ""),
+                str(finding.get("lens") or ""),
+            )
+            if not all(finding_key):
+                return ("release_review_finding_identity_missing",)
+            dispositioned = False
+            for item in dispositions:
+                if not isinstance(item, dict) or item.get("head_sha") != pr_head_sha:
+                    continue
+                item_key = tuple(
+                    str(item.get(name) or "")
+                    for name in ("reviewer_id", "file", "line", "title", "lens")
+                )
+                source = item.get("source")
+                if (
+                    item_key != finding_key
+                    or item.get("disposition") not in {"accepted", "deferred"}
+                    or not isinstance(source, str)
+                    or not _seat_disposition_source_valid(
+                        vault_root,
+                        source,
+                        pr_head_sha=pr_head_sha,
+                        finding_title=finding_key[3],
+                        disposition=item["disposition"],
+                    )
+                ):
+                    continue
+                dispositioned = True
+                break
+            if not dispositioned:
+                open_counts[severity] += 1
+    return tuple(
+        f"release_review_open_{severity}:{count}"
+        for severity, count in open_counts.items()
+        if count
+    )
+
+
+def _seat_disposition_source_valid(
+    vault_root: Path | None,
+    source: str,
+    *,
+    pr_head_sha: str,
+    finding_title: str,
+    disposition: str,
+) -> bool:
+    if vault_root is None:
+        return False
+    rel = Path(source)
+    seat_dir = vault_root / "30-areas/hapax/lanebus/dev1"
+    if (
+        rel.is_absolute()
+        or ".." in rel.parts
+        or rel.parts[:4] != ("30-areas", "hapax", "lanebus", "dev1")
+    ):
+        return False
+    path = (vault_root / rel).resolve()
+    if not path.is_relative_to(seat_dir.resolve()):
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    # Seat mail is a source of authority; its path alone is not that proof.
+    if not text.startswith("---\n"):
+        return False
+    end = text.find("\n---", 4)
+    if end < 0:
+        return False
+    ruling = (
+        rf"(?m)^release_finding_head_sha: {re.escape(pr_head_sha)}\n"
+        rf"release_finding_title: {re.escape(finding_title)}\n"
+        rf"release_finding_disposition: {re.escape(disposition)}$"
+    )
+    return bool(re.search(r"(?m)^from: (?:claude/)?dev1\s*$", text[4:end])) and bool(
+        re.search(ruling, text[end:])
+    )
 
 
 def _release_mitigation_verified_checks(
@@ -3102,16 +3281,6 @@ def classify_pr(
     matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
     notes: list[str] = []
-    for matched_task in matches:
-        stale_stamp_note = _release_authorized_head_stale_note(
-            matched_task.frontmatter, pr_head_sha=pr.head_sha
-        )
-        if stale_stamp_note:
-            notes.append(
-                stale_stamp_note
-                if len(matches) == 1
-                else f"task_note:{matched_task.task_id}:{stale_stamp_note}"
-            )
     if not matches:
         if TASK_NOTE_PARSE_FAILURES:
             broken = ",".join(name for name, _ in TASK_NOTE_PARSE_FAILURES[:4])
@@ -3642,18 +3811,7 @@ def _release_head_boundary_blocker(
         expected_label="current",
     )
     if stamp_blocker:
-        if not stamp_blocker.startswith("release_authorized_head_mismatch:"):
-            return stamp_blocker
-        # Ledger 8.1 re-arm-follows-head: a stamp naming another head is stale
-        # by definition. It does not stop the re-arm; evaluation continues
-        # against the current head below, and the staleness is surfaced as an
-        # informational release-authorization waiver.
-        if release_authorization_waivers is not None:
-            stale_note = _release_authorized_head_stale_note(
-                current_frontmatter, pr_head_sha=decision.pr.head_sha
-            )
-            if stale_note:
-                release_authorization_waivers.append(stale_note)
+        return stamp_blocker
     evidence_ok, current_head_sha, current_verified_checks = fetch_pr_release_evidence(
         decision.pr.number,
         repo=repo,
@@ -3870,43 +4028,7 @@ def arm_release_for_task(
                 expected_head_sha=expected_head_sha,
             )
             if head_stamp_blocker:
-                if not head_stamp_blocker.startswith("release_authorized_head_mismatch:"):
-                    return False, head_stamp_blocker
-                # Ledger 8.1 re-arm-follows-head: re-point the stale stamp at the
-                # current head (already evidence-revalidated above) instead of
-                # refusing the re-arm.
-                stale_note = _release_authorized_head_stale_note(
-                    current_frontmatter, pr_head_sha=expected_head_sha
-                )
-                restamped = apply_release_auto_arm(
-                    text,
-                    now_iso=now_iso,
-                    role=role,
-                    head_sha=expected_head_sha,
-                    head_ref=head_ref,
-                )
-                if restamped == text:
-                    return False, "note_unchanged"
-                try:
-                    task.path.write_text(restamped, encoding="utf-8")
-                except OSError as exc:
-                    return False, f"note_write_failed:{exc}"
-                post_arm_assessment = assess_release_auto_arm(
-                    frontmatter_from_text(restamped), verified_checks=verified_checks
-                )
-                _append_release_auto_arm_ledger(
-                    task,
-                    ledger_path=ledger_path,
-                    now_iso=now_iso,
-                    role=role,
-                    frontmatter=current_frontmatter,
-                    pr_head_sha=expected_head_sha,
-                    pr_head_ref=head_ref,
-                    verified_checks=verified_checks,
-                    pre_arm_assessment=pre_arm_assessment,
-                    post_arm_assessment=post_arm_assessment,
-                )
-                return True, f"release re-armed {task.task_id}:{stale_note}"
+                return False, head_stamp_blocker
             return True, "note_unchanged"
         reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"

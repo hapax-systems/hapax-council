@@ -26,6 +26,7 @@ from shared.quota_headroom import read_claude_wall_and_spend
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-account-live-observe"
 _WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
+_REAL_SUBPROCESS_RUN = subprocess.run
 _spec = importlib.util.spec_from_file_location(
     "hapax_claude_account_live_observe_windows",
     _SCRIPT,
@@ -103,6 +104,8 @@ def _durable_sink_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     root = tmp_path / "durable-sink"
     root.mkdir()
     monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(root))
+    # Synthetic receipts must not read this host's armed live pacing marker.
+    monkeypatch.setenv("HAPAX_CLAUDE_POOL_PACE_ACTIVATION", str(tmp_path / "unarmed-pace.json"))
     return root
 
 
@@ -345,7 +348,7 @@ def test_probe_windows_reach_the_ledger_reader(
     event = probe_stream(
         monkeypatch, {"type": "rate_limit_event", "rate_limit_info": info()}, served_result()
     )
-    monkeypatch.undo()  # the writer must really run
+    monkeypatch.setattr(obs.subprocess, "run", _REAL_SUBPROCESS_RUN)
     receipts = mint(event, tmp_path, route_ids=obs.DEFAULT_ROUTE_IDS)
     assert all(r["returncode"] == 0 for r in receipts), receipts
     rows = {
@@ -625,13 +628,14 @@ def test_a_failed_quantity_probe_keeps_the_passive_admission(
     assert calls == [NOW]
     assert (payload["verdict"], rc) == ("served", 7)
     assert payload["probe"]["outcome"] == "probe_failed"
-    assert len(minted(tmp_path)) == 2
+    assert len(minted(tmp_path)) == 3
+    assert any("interactive-full" in name for name in minted(tmp_path))
 
 
 def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
-    # A Fable serve witnesses headless.full but not review.opus, so the probe runs for opus.
+    # A Fable serve witnesses headless.full; review and interactive still need a probe.
     path = tmp_path / "projects/proj/session.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -643,8 +647,12 @@ def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
     broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
     assert calls == [NOW] and rc == 7
-    assert payload["probe"]["requested_for_routes"] == ["claude.review.opus"]
-    assert minted(tmp_path) and all("headless-full" in name for name in minted(tmp_path))
+    assert payload["probe"]["requested_for_routes"] == [
+        "claude.review.opus",
+        "claude.interactive.full",
+    ]
+    assert len(minted(tmp_path)) == 1
+    assert "headless-full" in minted(tmp_path)[0]
 
 
 def test_a_refused_requests_reading_is_still_the_current_quantity(
@@ -743,7 +751,7 @@ def test_a_probe_witnesses_the_subscription_only_on_an_explicit_non_overage_serv
         )
         assert event is not None and event.kind == "served"
         assert event.subscription_served is witnessed
-    monkeypatch.undo()
+    monkeypatch.setattr(obs.subprocess, "run", _REAL_SUBPROCESS_RUN)
     for witnessed in (True, False):
         receipts = tmp_path / str(witnessed)
         event = obs.Observation(

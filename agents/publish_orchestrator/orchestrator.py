@@ -72,7 +72,9 @@ from shared.preprint_artifact import (
 )
 from shared.public_gate_receipts import (
     PUBLIC_GATE_REVIEW_HEAD_RE,
+    VaultArtifactHeadUnavailable,
     public_gate_receipt_value_present,
+    vault_artifact_head,
 )
 from shared.publication_artifact_public_event import (
     PublicationArtifactEventStage,
@@ -326,7 +328,9 @@ class Orchestrator:
             else (self._state_root / "public-gate-receipts", *PUBLIC_GATE_RECEIPT_ROOTS)
         )
         self._public_gate_expected_head_sha = (
-            public_gate_expected_head_sha or _current_repo_head_sha()
+            public_gate_expected_head_sha
+            if public_gate_expected_head_sha is not None
+            else _current_repo_head_sha()
         )
         self._publication_allowed_surfaces_override = (
             frozenset(publication_allowed_surfaces)
@@ -784,25 +788,40 @@ class Orchestrator:
         findings = (error,) if error is not None else ()
         if policy_error is not None:
             findings = (*findings, policy_error)
-        missing = tuple(
-            gate
-            for gate in required
-            if not public_gate_receipt_value_present(
-                receipts.get(gate),
-                expected_gate=gate,
-                roots=self._public_gate_receipt_roots,
-                bindings=bindings,
-                expected_head_sha=self._public_gate_expected_head_sha,
-            )
-        )
-        if missing:
+        expected_head, head_reason = self._expected_public_gate_head(artifact)
+        if head_reason is not None:
+            # The classification held: name it. The process head would let a git-head receipt
+            # release bytes no reviewer saw. The hold is visible (gate log, warning, metric) and
+            # retryable by re-dropping once the artifact's bytes are restored, and the queue moves
+            # past it.
+            findings = (*findings, f"public_gate_receipts: {head_reason}")
+        elif not expected_head:
             findings = (
                 *findings,
-                "publication_gate_receipts missing or invalid required receipt refs: "
-                + ", ".join(missing)
-                + "; next action: hold the artifact until durable public-gate receipt refs "
-                "bound to artifact_slug, artifact_fingerprint, and target_surfaces are recorded",
+                "public_gate_receipts: no expected head could be resolved for this artifact "
+                "(neither a vault artifact head nor the process-wide head); next action: run from a "
+                "git checkout or supply the vault artifact source path the acceptance binds",
             )
+        else:
+            missing = tuple(
+                gate
+                for gate in required
+                if not public_gate_receipt_value_present(
+                    receipts.get(gate),
+                    expected_gate=gate,
+                    roots=self._public_gate_receipt_roots,
+                    bindings=bindings,
+                    expected_head_sha=expected_head,
+                )
+            )
+            if missing:
+                findings = (
+                    *findings,
+                    "publication_gate_receipts missing or invalid required receipt refs: "
+                    + ", ".join(missing)
+                    + "; next action: hold the artifact until durable public-gate receipt refs "
+                    "bound to artifact_slug, artifact_fingerprint, and target_surfaces are recorded",
+                )
 
         if findings:
             return PublicationGateChildResult(
@@ -825,6 +844,22 @@ class Orchestrator:
         if self._publication_allowed_surfaces_override is not None:
             return fallback, _configured_publication_policy_validation_error()
         return _configured_publication_gate_receipts(surfaces, fallback=fallback)
+
+    def _expected_public_gate_head(self, artifact: PreprintArtifact) -> str | None:
+        """``(expected_head, hold_reason)`` for one artifact — the ONE classification call.
+
+        A vault artifact's manifest digest is the only head that may release it, so any failure to
+        classify it or to take that digest returns a named reason for the child to HOLD on, never
+        the process-wide head. ``(None, None)`` means there is no head at all, which the child also
+        holds on by name.
+        """
+        try:
+            located = _vault_artifact_source(artifact)
+            if located is None:
+                return self._public_gate_expected_head_sha, None
+            return vault_artifact_head(*located), None
+        except VaultArtifactHeadUnavailable as exc:
+            return None, str(exc)
 
     def _public_gate_receipts_gate_result(
         self,
@@ -1805,6 +1840,31 @@ def _publication_gate_receipt_bindings(artifact: PreprintArtifact) -> dict[str, 
         "artifact_fingerprint": _artifact_fingerprint(artifact),
         "target_surfaces": tuple(sorted(artifact.surfaces_targeted)),
     }
+
+
+def _vault_artifact_source(artifact: PreprintArtifact) -> tuple[Path, Path] | None:
+    """``(source_path, artifact_root)`` when the artifact is a vault artifact, else ``None``.
+
+    A vault artifact is reviewed as a file set under a publication source root, so its gates bind
+    that manifest's digest. A source path outside every root is not a vault artifact and keeps the
+    process-wide head. A source path that cannot be classified raises
+    :class:`VaultArtifactHeadUnavailable` — an unclassifiable artifact is a HOLD, never a fallback.
+    """
+
+    source_path = artifact.source_path
+    if not source_path:
+        return None
+    raw = str(source_path)
+    try:
+        path = Path(raw).expanduser()
+        for root in PUBLICATION_SOURCE_PATH_ROOTS:
+            if path.resolve().is_relative_to(Path(root).expanduser().resolve()):
+                return path, root
+    except Exception as exc:  # noqa: BLE001 - an unclassifiable source is a HOLD, never a fallback
+        raise VaultArtifactHeadUnavailable(
+            Path(raw).name, f"it could not be classified: {type(exc).__name__}"
+        ) from exc
+    return None
 
 
 def _artifact_fingerprint(artifact: PreprintArtifact) -> str:

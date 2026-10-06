@@ -711,7 +711,7 @@ class TestStatusGating:
             home=tmp_path,
         )
         assert result.returncode == 2
-        assert "cannot verify mutation_scope_refs" in result.stderr
+        assert "does not verify shell source mutations" in result.stderr
 
     def test_git_commit_not_treated_as_unscoped_source_edit(self, tmp_path: Path) -> None:
         _make_vault(tmp_path, status="in_progress", assigned="alpha")
@@ -960,7 +960,13 @@ class TestAutoTransitionClaimed:
 
 class TestVaultMissing:
     def test_missing_note_rejects(self, tmp_path: Path) -> None:
-        # Claim file says task exists; vault has nothing.
+        # Claim file says task exists; the vault is PRESENT (identity marker) but the
+        # note is genuinely missing -> still fail-closed. A MISSING vault SUBSTRATE
+        # (no marker) now fails OPEN instead — that is defect 3 of
+        # vault-nfs-mount-boot-race-and-gate-fail-closed-20261003, pinned in
+        # test_cc_task_gate_missing_vault.py. The marker keeps this the "genuinely
+        # missing note in a mounted vault" case.
+        (tmp_path / "Documents" / "Personal" / ".git").mkdir(parents=True, exist_ok=True)
         _write_claim(tmp_path, "alpha", "ghost-001")
         result = _run_hook(
             {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},

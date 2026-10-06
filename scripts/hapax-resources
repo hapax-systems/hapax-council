@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""hapax-resources — the one read point for estate resource state.
+
+A THIN reader over the resource-state producer + reins_context projection. It builds the
+reins_context_fact_bundle from the latest read-only observation (hapax-capacity-observer) joined with
+the E1 entitlement surface and the kimi-bench usage ledger, then prints the boundary summary (default)
+or the full per-audience projection (--json). It is not a second store or a new projection engine:
+the projection is reins_context.project(); this script only assembles inputs and renders.
+
+Usage:
+  hapax-resources              # boundary summary (BCA: what SessionStart/reset would deliver)
+  hapax-resources --json       # full operator_private projection as JSON
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import UTC, datetime
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+
+from shared import resource_state_producer as rsp  # noqa: E402
+
+OBS = os.path.expanduser(
+    os.environ.get("HAPAX_CAPACITY_OBS", "~/.cache/hapax/capacity-observations.jsonl")
+)
+# SURFACE.json via a DECLARED binding (env), not a hard-coded vault path (review #5027 major 3). The
+# default is the vault location; an absent file yields an honest `absent` entitlement fact in the
+# producer, never a silent drop.
+SURFACE = os.path.expanduser(
+    os.environ.get(
+        "HAPAX_ENTITLEMENT_SURFACE",
+        "~/Documents/Personal/30-areas/hapax/frame/entitlement-surface-20261004/SURFACE.json",
+    )
+)
+KIMI_LEDGER = os.path.expanduser(
+    os.environ.get("HAPAX_KIMI_BENCH_LEDGER", "~/.cache/hapax/kimi-spawns/kimi-bench/ledger.jsonl")
+)
+
+
+def _latest_observation() -> dict:
+    try:
+        lines = [line for line in open(OBS, encoding="utf-8").read().splitlines() if line.strip()]
+        return json.loads(lines[-1]) if lines else {}
+    except OSError:
+        return {}
+
+
+def _surface() -> dict | None:
+    try:
+        return json.load(open(SURFACE, encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _kimi_usage() -> list[dict] | None:
+    try:
+        return [
+            json.loads(line)
+            for line in open(KIMI_LEDGER, encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
+    except OSError:
+        return None
+
+
+def _governed_reins():
+    """Import reins_context from the GOVERNED path ONLY — never the mutable ~/projects/reins dev tree
+    (review #5027 finding 4). Resolution order: HAPAX_REINS_ROOT (the governed reins api dir, set by
+    the deployment), then an already-installed reins_context. Returns the module or None."""
+    root = os.environ.get("HAPAX_REINS_ROOT", "").strip()
+    if root:
+        root = os.path.expanduser(root)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+    try:
+        import reins_context  # noqa: PLC0415
+
+        return reins_context
+    except ImportError:
+        return None
+
+
+def main(argv: list[str]) -> int:
+    bundle = rsp.build_bundle(
+        observation=_latest_observation(),
+        surface=_surface(),
+        kimi_usage=_kimi_usage(),
+        now=datetime.now(UTC),
+    )
+    if "--json" in argv[1:]:
+        reins = _governed_reins()
+        if reins is None:
+            # Fail loud with a next action — never fabricate, never fall back to the raw bundle or the
+            # mutable dev tree (review #5027 findings 4, 5). An honest refused state, not a silent skip.
+            print(
+                json.dumps(
+                    {
+                        "value_state": "refused",
+                        "reason": "reins_context unavailable from the governed path",
+                        "next_action": (
+                            "set HAPAX_REINS_ROOT to the governed reins api dir and rerun; "
+                            "the mutable ~/projects/reins dev tree is deliberately not used"
+                        ),
+                        "bundle_id": bundle.get("bundle_id"),
+                    },
+                    indent=1,
+                )
+            )
+            return 3
+        print(json.dumps(reins.project(bundle, "operator_private"), indent=1))
+        return 0
+    print(rsp.resource_summary_for_boundary(bundle))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

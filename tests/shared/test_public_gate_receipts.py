@@ -11,6 +11,7 @@ from shared import public_gate_receipts
 from shared.public_gate_receipts import (
     public_gate_receipt_value_present as _public_gate_receipt_value_present,
 )
+from shared.review_artifact_manifest import artifact_head_sha, build_artifact_manifest
 
 GATE = "rights_privacy_redaction_pass"
 TASK_ID = "cc-task-public-gate-test"
@@ -53,6 +54,7 @@ def _write_review_evidence(
     reviewers: list[dict[str, str]] | None = None,
     quorum_required: int = 1,
     accept_count: int = 1,
+    head_sha: str = "a" * 40,
 ) -> None:
     del root
     authority_root = public_gate_receipts._public_gate_authority_roots()[0]
@@ -60,7 +62,7 @@ def _write_review_evidence(
     payload = {
         "dossier_schema": 1,
         "task_id": TASK_ID,
-        "head_sha": "a" * 40,
+        "head_sha": head_sha,
         "review_team_verdict": "quorum-accept",
         "quorum_required": quorum_required,
         "accept_count": accept_count,
@@ -852,3 +854,90 @@ def test_rejects_root_escape_and_malformed_yaml(tmp_path: Path) -> None:
         expected_gate=GATE,
         roots=(tmp_path,),
     )
+
+
+# ── Vault-artifact head binding (artifact-sha256), cc-task c1-cross-post fix ──
+# A vault-artifact review acceptance binds to an artifact-sha256 head (the manifest
+# digest), not a 40-hex git head. The gate must accept that head when the expected
+# head is the artifact head, and must still reject a wrong artifact sha or a missing
+# gate. See shared/review_artifact_manifest.artifact_head_sha.
+ARTIFACT_HEAD = "artifact-sha256:" + "b" * 64
+ARTIFACT_HEAD_WRONG = "artifact-sha256:" + "c" * 64
+
+
+def test_accepts_vault_artifact_sha256_head(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(tmp_path, receipt_name="receipt-1.yaml", head_sha=ARTIFACT_HEAD)
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha=ARTIFACT_HEAD,
+    )
+
+
+def test_rejects_wrong_vault_artifact_sha(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(tmp_path, receipt_name="receipt-1.yaml", head_sha=ARTIFACT_HEAD)
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate=GATE,
+        roots=(tmp_path,),
+        expected_head_sha=ARTIFACT_HEAD_WRONG,
+    )
+
+
+def test_rejects_vault_artifact_missing_gate(tmp_path: Path) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(tmp_path, receipt_name="receipt-1.yaml", head_sha=ARTIFACT_HEAD)
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1",
+        expected_gate="source_refs_present",
+        roots=(tmp_path,),
+        expected_head_sha=ARTIFACT_HEAD,
+    )
+
+
+# ── The provider that produces the artifact head the callers must expect ──
+def test_vault_artifact_expected_head_sha_is_the_manifest_digest(tmp_path: Path) -> None:
+    root = tmp_path / "Personal"
+    source = root / "frame" / "note.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Body\n", encoding="utf-8")
+    manifest, _ = build_artifact_manifest([source], root, max_chars=1000)
+    provider = public_gate_receipts.vault_artifact_expected_head_sha
+
+    head = provider(source, root)
+    assert head == artifact_head_sha(manifest)
+
+    source.write_text("Changed\n", encoding="utf-8")
+    assert provider(source, root) != head
+    # Every refusal path is a None head, which a caller must hold on.
+    for args, kwargs in (
+        ((source, root / "other"), {}),
+        ((None, root), {}),
+        (("  ", root), {}),
+        ((source, root), {"max_chars": 1}),
+    ):
+        assert provider(*args, **kwargs) is None
+
+
+def test_vault_artifact_head_is_the_one_classification_guard(tmp_path: Path) -> None:
+    """The guard separates "not a vault artifact" (None) from "cannot be classified" (a hold)."""
+
+    root = tmp_path / "Personal"
+    source = root / "frame" / "note.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Body\n", encoding="utf-8")
+    guard = public_gate_receipts.vault_artifact_head
+
+    assert guard(source, root) == public_gate_receipts.vault_artifact_expected_head_sha(
+        source, root
+    )
+    assert guard(None, root) is None
+    assert guard("  ", root) is None
+    assert guard(source, root / "other") is None
+    for path in ("\x00bad", source / "missing.md"):
+        with pytest.raises(public_gate_receipts.VaultArtifactHeadUnavailable) as raised:
+            guard(path, root)
+        assert "not content-addressable" in str(raised.value)

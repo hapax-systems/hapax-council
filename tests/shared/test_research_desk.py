@@ -14,10 +14,15 @@ import pytest
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.research_desk import (
     ALLOWED_URI_SCHEMES,
+    DEFAULT_DELIVERY_LANE,
+    DEFAULT_STATE_ROOT,
+    DEFAULT_VAULT_ROOT,
     MAX_CITATIONS,
     MAX_LIST_LIMIT,
     MAX_MARKDOWN_BYTES,
+    MAX_REQUEST_BODY_BYTES,
     DeliveryReceipt,
+    MalformedRequest,
     ResearchDeskConfig,
     ResearchDeskError,
     deliver_result,
@@ -108,6 +113,77 @@ def test_traversal_id_never_reaches_the_filesystem(desk: ResearchDeskConfig) -> 
     with pytest.raises(ResearchDeskError) as exc:
         get_request(desk, "../secret")
     assert exc.value.reason_code == "request_id_invalid"
+
+
+# --------------------------------------------------------------------------- #
+# Configuration from the environment
+# --------------------------------------------------------------------------- #
+
+
+def test_from_env_happy_path_reads_strips_and_composes_all_three_roots() -> None:
+    config = ResearchDeskConfig.from_env(
+        {
+            "HAPAX_RESEARCH_DESK_VAULT_ROOT": " /srv/vault ",
+            "HAPAX_RESEARCH_DESK_STATE_ROOT": "/srv/state",
+            "HAPAX_RESEARCH_DESK_LANE": " cx-blue ",
+        }
+    )
+    assert config.vault_root == Path("/srv/vault")
+    assert config.state_root == Path("/srv/state")
+    assert config.delivery_lane == "cx-blue"
+    assert config.requests_dir == Path("/srv/vault/20-projects/hapax-cc-tasks/active")
+    assert config.lanebus_dir == Path("/srv/vault/30-areas/hapax/lanebus/cx-blue")
+    assert config.lock_dir == Path("/srv/state/locks")
+
+
+def test_from_env_without_the_environment_keeps_the_estate_defaults() -> None:
+    config = ResearchDeskConfig.from_env({})
+    assert config.vault_root == DEFAULT_VAULT_ROOT
+    assert config.state_root == DEFAULT_STATE_ROOT
+    assert config.delivery_lane == DEFAULT_DELIVERY_LANE
+
+
+@pytest.mark.parametrize("lane", ["cx/blue", "/lane", "../evil", "a/../../b", ".", ".."])
+def test_from_env_refuses_a_lane_that_could_leave_the_lanebus_directory(lane: str) -> None:
+    """The lane is env-injected and lands in a path join one line later; any value
+    carrying a separator or a traversal component must stop at this guard."""
+    with pytest.raises(ResearchDeskError) as exc:
+        ResearchDeskConfig.from_env({"HAPAX_RESEARCH_DESK_LANE": lane})
+    assert exc.value.reason_code == "delivery_lane_invalid"
+    assert exc.value.repair_action
+
+
+def test_from_env_treats_an_empty_lane_as_unset_not_as_a_path_component() -> None:
+    """The empty string never reaches the guard: the `or DEFAULT_DELIVERY_LANE`
+    fallback runs first, so an empty or whitespace-only lane resolves to the fixed
+    default and never composes a lanebus path from an empty segment. The guard's
+    literal "" member is defense-in-depth for a refactor that drops the fallback."""
+    for raw in ("", "   "):
+        config = ResearchDeskConfig.from_env({"HAPAX_RESEARCH_DESK_LANE": raw})
+        assert config.delivery_lane == DEFAULT_DELIVERY_LANE
+
+
+def test_from_env_path_values_are_stripped_and_expand_a_leading_tilde() -> None:
+    config = ResearchDeskConfig.from_env(
+        {
+            "HAPAX_RESEARCH_DESK_VAULT_ROOT": " ~/desk-vault ",
+            "HAPAX_RESEARCH_DESK_STATE_ROOT": "~/.desk-state",
+        }
+    )
+    assert config.vault_root == Path.home() / "desk-vault"
+    assert config.state_root == Path.home() / ".desk-state"
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_from_env_blank_path_values_fall_back_to_the_defaults(raw: str) -> None:
+    config = ResearchDeskConfig.from_env(
+        {
+            "HAPAX_RESEARCH_DESK_VAULT_ROOT": raw,
+            "HAPAX_RESEARCH_DESK_STATE_ROOT": raw,
+        }
+    )
+    assert config.vault_root == DEFAULT_VAULT_ROOT
+    assert config.state_root == DEFAULT_STATE_ROOT
 
 
 # --------------------------------------------------------------------------- #
@@ -202,6 +278,33 @@ def test_fetch_returns_the_full_brief(desk: ResearchDeskConfig) -> None:
     assert request.deadline == "2026-09-20"
     assert "Line two." in request.brief
     assert request.full()["brief"].strip().endswith("Line two.")
+
+
+def test_fetch_truncates_a_brief_past_the_128_kib_cap(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-huge", body="x" * (MAX_REQUEST_BODY_BYTES + 512))
+    request = get_request(desk, "req-huge")
+    marker = "\n\n[brief truncated by the research desk at 128 KiB]"
+    assert request.brief.endswith(marker)
+    assert len(request.brief[: -len(marker)].encode("utf-8")) == MAX_REQUEST_BODY_BYTES
+
+
+def test_error_to_payload_carries_the_reason_and_the_next_action() -> None:
+    error = ResearchDeskError("request_id_invalid", "pick an id from the list", detail="got '../x'")
+    assert error.to_payload() == {
+        "ok": False,
+        "reason_code": "request_id_invalid",
+        "next_action": "pick an id from the list",
+        "detail": "got '../x'",
+    }
+
+
+def test_malformed_row_to_payload_names_the_row_and_the_reason() -> None:
+    row = MalformedRequest("broken", "question_absent", "the row must carry a question")
+    assert row.to_payload() == {
+        "request_id": "broken",
+        "reason_code": "question_absent",
+        "detail": "the row must carry a question",
+    }
 
 
 def test_fetch_refuses_an_unknown_id(desk: ResearchDeskConfig) -> None:
@@ -705,6 +808,48 @@ def test_a_destination_with_balanced_parens_is_not_truncated() -> None:
     result = neutralize_markdown("[wiki](https://en.wikipedia.org/wiki/Foo_(bar))")
     assert result.links == 0
     assert result.markdown == "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[click][r]\n\n[r]: javascript:alert(1)\n",
+        "[r]\n\n[r]: javascript:alert(1)\n",
+        "[click][r]\n\n> [r]:\n>   <JavaScript:alert(1)>\n",
+        "[click][r]\n\n[r]: javascript&#58;alert(1)\n",
+    ],
+)
+def test_a_reference_definition_cannot_carry_a_live_scheme(body: str) -> None:
+    result = neutralize_markdown(body)
+    assert result.links >= 1
+    assert "\\]:" in result.markdown
+
+
+def test_reference_definitions_with_allowed_schemes_survive() -> None:
+    body = "[a][r] and [b][s]\n\n[r]: https://example.org/a\n[s]: ./notes.md\n"
+    result = neutralize_markdown(body)
+    assert result.links == 0
+    assert result.markdown == body
+
+
+def test_an_escaped_bracket_is_not_double_escaped_into_a_definition() -> None:
+    result = neutralize_markdown("[r\\]: javascript:alert(1)")
+    assert result.markdown == "[r\\]: javascript:alert(1)"
+
+
+def test_an_autolink_cannot_carry_raw_html() -> None:
+    result = neutralize_markdown("<http://x/<script>alert(1)//<http://y/</script>")
+    assert "<script>" not in result.markdown
+    assert "</script>" not in result.markdown
+
+
+def test_a_reference_image_cannot_load_and_keeps_the_text_after_it() -> None:
+    body = "![a][r] Finding one.\n\nFinding two (important).\n\n[r]: https://t.example/p.gif\n"
+    result = neutralize_markdown(body)
+    assert result.images == 1
+    assert "![" not in result.markdown
+    assert "Finding one." in result.markdown
+    assert "Finding two (important)." in result.markdown
 
 
 def test_delivery_refuses_a_request_that_is_not_open(desk: ResearchDeskConfig) -> None:

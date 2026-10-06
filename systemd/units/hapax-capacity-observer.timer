@@ -1,0 +1,14 @@
+[Unit]
+Description=Every 5 minutes, append a read-only estate capacity observation (feeds the resource-state producer)
+# Hapax-Timer-Enable-Only: true
+# hapax-post-merge-deploy ENABLES this timer on deploy but does NOT start it; the seat starts it
+# explicitly after independent review.
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

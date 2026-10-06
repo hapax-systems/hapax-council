@@ -14,3 +14,11 @@ surfaces:
     reason: >-
       Dormant, manual --send only, never scheduled; quarantined by
       tests/test_mail_monitor_credential_scoped_send_guard.py. PR #4768 retires its send path.
+  - path: scripts/han_mail_pull.py
+    reason: >-
+      The §5 CHANC intake receipt auto-reply: hrl-han@ is the From, the receipt goes TO the inbound
+      message's own reply address, at most one per inbound, guarded by an intent record written
+      before the SMTP transaction starts. DARK BY DEFAULT (HAN_MAIL_RECEIPT_SEND unset everywhere).
+      CHANC SPEC §5 keeps the Worker's must-never-reply pin; the receipt is out-of-band from the
+      puller. Enforcing tests: tests/test_han_mail_receipt_emission.py::
+      test_real_send_and_persist_drive_through_emit_receipts, ::test_main_wiring_is_dark_by_default.

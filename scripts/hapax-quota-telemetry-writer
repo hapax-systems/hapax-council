@@ -355,7 +355,11 @@ SUBSCRIPTION_ROUTES = {
     "glmcp": "glmcp.review.direct",
     "kimi": "kimi.interactive.lane",
 }
-CLAUDE_SUBSCRIPTION_ROUTES = ("claude.headless.full", "claude.review.opus")
+CLAUDE_SUBSCRIPTION_ROUTES = (
+    "claude.headless.full",
+    "claude.review.opus",
+    "claude.interactive.full",
+)
 CLAUDE_HEADLESS_ROLES = frozenset(
     {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
 )
@@ -1821,6 +1825,7 @@ def active_claude_admission_receipts(
                     "relay-receipt:"
                     f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
                     f"observation:{observation}:"
+                    f"route_id:{route_id}:"
                     f"observed_at:{_iso_z_seconds(observed_at)}:"
                     f"fresh_until:{_iso_z_seconds(fresh_until)}:"
                     f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
