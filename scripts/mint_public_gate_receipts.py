@@ -85,6 +85,12 @@ def _validate(dossier: Mapping, secret: str, artifact_root: Path) -> tuple[str, 
     quorum, count = dossier.get("quorum_required"), dossier.get("accept_count")
     if not isinstance(quorum, int) or not isinstance(count, int) or count < quorum:
         raise MintError(f"mint_public_gate_quorum_not_met:{count}/{quorum}")
+    if quorum < 1:
+        # The validator refuses quorum_required < 1 (shared.public_gate_receipts, the dossier
+        # evidence rule). A minter that accepted it would write zero-independence receipts
+        # create-once and the validator would then refuse the dossier, wedging the refs. Refuse
+        # here, before the independence check, so the floor matches the validator's.
+        raise MintError(f"mint_public_gate_quorum_below_floor:{quorum}")
     accepting = [
         str(r.get("family") or "").strip().casefold()
         for r in dossier.get("reviewers") or []
@@ -94,8 +100,15 @@ def _validate(dossier: Mapping, secret: str, artifact_root: Path) -> tuple[str, 
     writer = str(dossier.get("writer_family") or "").strip().casefold()
     if not accepting or not writer:
         raise MintError("mint_public_gate_acceptor_unresolved")
+    # Independence counts the validator's allowlist, imported rather than copied: a family alias,
+    # typo or seat id must not count where the validator would not count it. The writer's family is
+    # refused outright when it is outside the allowlist, so "the writer counts nowhere" cannot be
+    # dodged by an alias.
+    allowlisted = public_gate_receipts.PUBLIC_GATE_INDEPENDENT_REVIEW_FAMILIES
+    if writer not in allowlisted:
+        raise MintError(f"mint_public_gate_writer_family_not_allowlisted:{writer}")
     # A public-gate receipt must not let the writer's family contribute to quorum.
-    independent = {family for family in accepting if family != writer}
+    independent = {family for family in accepting if family in allowlisted and family != writer}
     if len(independent) < quorum:
         raise MintError(f"mint_public_gate_quorum_not_independent:{len(independent)}/{quorum}")
     head = str(dossier.get("head_sha") or "").strip().casefold()
@@ -125,6 +138,12 @@ def _check_gates(declared: Mapping[str, str], required: Iterable[str], dossier: 
     refs = {_receipt_suffix(ref) for ref in _texts(dossier, "authorized_public_gate_receipts")}
     if not gates or not refs:
         raise MintError("mint_public_gate_acceptance_unbound")
+    suffixes = [_receipt_suffix(ref) for ref in declared.values()]
+    if len(set(suffixes)) != len(suffixes):
+        # Two gates sharing one ref would pass the set comparisons below and then write the first
+        # receipt, hold on the second (different bytes, same path) and leave a partial mint. Refuse
+        # the pairing before any write.
+        raise MintError("mint_public_gate_receipt_pairing_not_injective")
     missing = sorted(gate for gate in required if gate not in gates)
     if missing:
         raise MintError("mint_public_gate_missing:" + ",".join(missing))

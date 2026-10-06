@@ -180,6 +180,32 @@ _AUTHORIZED = [gate for gate in GATES if gate != "claim_review_current"]
             {"writer_family": "claude", "reviewers": [CLAUDE, CLAUDE]},
             "mint_public_gate_quorum_not_independent:0/2",
         ),
+        # D5 F1: the validator refuses quorum_required < 1, so the minter must too — before the
+        # independence check, or a quorum-0 dossier mints zero-independence receipts create-once
+        # that the validator then refuses, wedging the refs.
+        (
+            {
+                "quorum_required": 0,
+                "accept_count": 0,
+                "writer_family": "claude",
+                "reviewers": [CLAUDE],
+            },
+            "mint_public_gate_quorum_below_floor:0",
+        ),
+        # D5 F2: independence counts only the validator's allowlist, so an alias family does not count.
+        (
+            {
+                "writer_family": "claude",
+                "reviewers": [GLM, {"id": "glm-alias", "family": "glm-1", "verdict": "accept"}],
+            },
+            "mint_public_gate_quorum_not_independent:1/2",
+        ),
+        # D5 F2: a writer family outside the allowlist is refused, so "the writer counts nowhere"
+        # cannot be dodged by an alias.
+        (
+            {"writer_family": "anthropic", "reviewers": [GEMINI, GLM]},
+            "mint_public_gate_writer_family_not_allowlisted:anthropic",
+        ),
         (
             {"writer_family": "claude", "reviewers": [CLAUDE, GEMINI]},
             "mint_public_gate_quorum_not_independent:1/2",
@@ -201,6 +227,27 @@ def test_refuses_when_the_artifact_bytes_changed(env) -> None:
 
     with pytest.raises(minter.MintError, match="mint_public_gate_artifact_changed"):
         _mint(env)
+
+
+def test_refuses_a_non_injective_gate_to_ref_pairing(env) -> None:
+    """D5 F3: two gates sharing one ref must refuse before any write, leaving no partial mint."""
+
+    duplicated = dict(REF)
+    duplicated["claim_review_current"] = duplicated["source_refs_present"]
+    env["source"].write_text(_artifact_text(refs=duplicated), encoding="utf-8")
+    manifest, _ = build_artifact_manifest([env["source"]], env["root"], max_chars=100_000)
+    _dossier(
+        env,
+        head_sha=artifact_head_sha(manifest),
+        artifact_review={"artifact_root": str(env["root"]), "manifest": manifest},
+        required_gates=list(duplicated),
+        authorized_public_gate_receipts=list(duplicated.values()),
+    )
+
+    with pytest.raises(minter.MintError, match="mint_public_gate_receipt_pairing_not_injective"):
+        _mint(env)
+
+    assert not env["receipts"].exists()
 
 
 def test_receipts_are_create_once(env) -> None:
