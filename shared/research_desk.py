@@ -91,10 +91,6 @@ _BACKSLASH_ESCAPE_RE = re.compile(r"\\([!-/:-@\[-`{-~])")
 _PARAGRAPH_BREAK_RE = re.compile(r"(?:\r\n?|\n)(?=[ \t>]*(?:[\r\n]|\Z))")
 #: An image opener or an inline destination, wherever it sits; ``_sever`` rereads each one.
 _SEVER_RE = re.compile(r"!\[|\]\(")
-#: A code span, or the ``<`` that may open a tag; ``_escape_raw_html`` finds the tag's end.
-_CODE_OR_TAG_RE = re.compile(
-    r"(?P<code>(?<![\\`])(?P<ticks>`+)(?!`)[^\n]*?(?<!`)(?P=ticks)(?!`))|<"
-)
 #: CommonMark autolinks exclude ``<``, ``>``, spaces and controls; a looser class keeps raw HTML.
 _AUTOLINK_RE = re.compile(r"<(?P<uri>[A-Za-z][A-Za-z0-9+.-]*:[^<>\s\x00-\x1f\x7f]*)>")
 #: A link reference definition's ``]:`` and its destination, possibly on the next line,
@@ -367,6 +363,7 @@ def _last_char(parts: list[str]) -> str:
 class _Labels:
     """The brackets of a text that CommonMark reads as link-text brackets."""
 
+    breaks: list[int]  # the index where each paragraph ends, in order; the last is len(text)
     closes: dict[int, int]  # each balanced opener's closing index
     depths: dict[int, int]  # each balanced opener's label nesting depth, counting itself as 1
     openers: frozenset[int]  # every live ``[``, balanced or not
@@ -433,7 +430,7 @@ def _bracket_pairs(text: str) -> _Labels:
                 depths[opener] = nested + 1
                 if stack and stack[-1][1] < nested + 1:
                     stack[-1][1] = nested + 1
-    return _Labels(closes, depths, frozenset(openers), targets)
+    return _Labels(breaks, closes, depths, frozenset(openers), targets)
 
 
 def _match_destination(text: str, pos: int, parens: list[int]) -> tuple[str, int] | None:
@@ -458,8 +455,9 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
     """Demote images, defang unsafe links, and escape raw HTML.
 
     Bare URLs that a reader turns into links are not screened. Every pass is linear
-    in the length of the body. The last pass reads no markdown structure, so a reader
-    who splits code spans differently still finds no image or unsafe inline target.
+    in the length of the body. The raw-HTML pass and the last pass read no code spans,
+    so a reader who splits code spans differently still finds no raw HTML, image or
+    unsafe inline target.
     """
     images = 0
     links = 0
@@ -485,15 +483,21 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
             close = labels.closes.get(start + 1)
             destination = None
             suspect = -1
+            paragraph_end = len(text)
             if close is not None:
                 destination = _match_destination(text, close + 1, parens)
             else:
+                # No label crosses a paragraph break, so only a target in this paragraph
+                # can pair with the opener (review of 37830dc9, F-B).
+                paragraph_end = labels.breaks[bisect_left(labels.breaks, start)]
                 index = bisect_left(labels.targets, start + 2)
-                suspect = labels.targets[index] if index < len(labels.targets) else -1
+                if index < len(labels.targets) and labels.targets[index] < paragraph_end:
+                    suspect = labels.targets[index]
             if suspect != -1:
-                # An unbalanced label before an inline target: remove through that target.
-                end = text.find(")", suspect + 2)
-                cursor = len(text) if end == -1 else end + 1
+                # An unbalanced label before an inline target in its paragraph: remove
+                # through that target, and never past the paragraph's end.
+                end = text.find(")", suspect + 2, paragraph_end)
+                cursor = paragraph_end if end == -1 else end + 1
                 withheld = "[image withheld]"
             elif destination is None:
                 # A reference or shortcut image, or none: escape the opener and keep the text.
@@ -533,17 +537,17 @@ def neutralize_markdown(body: str) -> NeutralizedBody:
         return escape(tag, quote=False)
 
     def _escape_raw_html(text: str) -> str:
+        # Every ``<`` but an allowed autolink's is escaped, in code spans too. A reader
+        # splits code spans its own way: a backtick in a link destination or title, or a
+        # lone CR line ending, puts a ``<`` that looks like code outside any span, where
+        # it opens raw HTML (review of 37830dc9, F-A). In code the reader sees ``&lt;``,
+        # as fenced code already showed it.
         last_gt = text.rfind(">")
         parts: list[str] = []
         cursor = 0
-        while (match := _CODE_OR_TAG_RE.search(text, cursor)) is not None:
-            parts.append(text[cursor : match.start()])
-            if match.group("code"):
-                parts.append(match.group(0))
-                cursor = match.end()
-                continue
+        while (start := text.find("<", cursor)) != -1:
+            parts.append(text[cursor:start])
             # A tag runs to the next ``>``; with none left it is a lone ``<``.
-            start = match.start()
             cursor = text.index(">", start) + 1 if start < last_gt else start + 1
             parts.append(_raw_html(text[start:cursor]))
         parts.append(text[cursor:])

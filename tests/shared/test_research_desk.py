@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
+from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -705,7 +706,9 @@ def test_links_with_a_disallowed_scheme_are_defanged_to_inert_text(target: str) 
     assert result.links == 1
     assert f"]({target})" not in result.markdown
     assert "link withheld" in result.markdown
-    assert target in result.markdown, "the original is shown, just not as a live link"
+    # A ``<`` is escaped even inside the withheld marker's code span (review of 37830dc9, F-A).
+    shown = escape(target, quote=False)
+    assert shown in result.markdown, "the original is shown, just not as a live link"
 
 
 @pytest.mark.parametrize("label", ["a", "a [b]", "a [b [c]]"])
@@ -1452,7 +1455,7 @@ def test_a_target_the_url_parser_rejects_is_withheld_not_raised(body: str) -> No
 _COMMONMARK = MarkdownIt("commonmark")
 #: Render every destination as written: screening it is the desk's job, not the renderer's.
 _COMMONMARK.validateLink = lambda url: True
-_ACTIVE_SCHEMES = ("javascript:", "data:", "vbscript:", "file:")
+_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.-]*(?=:)")
 
 
 class _Rendered(HTMLParser):
@@ -1462,6 +1465,11 @@ class _Rendered(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.live: list[str] = []
         self.text: list[str] = []
+        # Raw HTML counts as live whatever it holds: the desk lets no tag through.
+        for token in _COMMONMARK.parse(markdown):
+            for node in [token, *(token.children or [])]:
+                if node.type in {"html_block", "html_inline"}:
+                    self.live.append(f"raw {node.content.strip()}")
         self.feed(_COMMONMARK.render(markdown))
         self.close()
 
@@ -1470,7 +1478,8 @@ class _Rendered(HTMLParser):
             self.live.append("<img>")
         for name, value in attrs:
             target = re.sub(r"[\x00-\x20]", "", value or "").lower()
-            if name in {"href", "src"} and target.startswith(_ACTIVE_SCHEMES):
+            scheme = _SCHEME_RE.match(target)
+            if name in {"href", "src"} and scheme and scheme.group() not in ALLOWED_URI_SCHEMES:
                 self.live.append(f"{name}={value}")
 
     def handle_data(self, data: str) -> None:
@@ -1627,4 +1636,45 @@ def test_a_definition_destination_after_a_carriage_return_is_screened(newline: s
     assert _Rendered(body).live, "without the desk this shape renders live"
     result = neutralize_markdown(body)
     assert result.links == 1
+    assert _Rendered(result.markdown).live == []
+
+
+# --------------------------------------------------------------------------- #
+# Raw HTML where code spans split differently; image openers stay in their
+# paragraph (review of 37830dc9, F-A to F-C, 2026-10-06)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[a](https://e.org/`) <kbd>x</kbd> `",
+        '[a](https://e.org/ "t`") <kbd>x</kbd> `',
+        "`\r<div>\rx\r</div>\r`",
+    ],
+)
+def test_a_tag_the_reader_does_not_see_as_code_is_escaped(body: str) -> None:
+    assert _Rendered(body).live, "without the desk this shape renders raw HTML"
+    result = neutralize_markdown(body)
+    assert _Rendered(result.markdown).live == []
+
+
+def test_a_tag_in_a_real_code_span_is_shown_escaped() -> None:
+    result = neutralize_markdown("use `List<int>` here")
+    assert result.markdown == "use `List&lt;int&gt;` here"
+    assert _Rendered(result.markdown).live == []
+
+
+def test_an_unbalanced_image_opener_removes_nothing_past_its_paragraph() -> None:
+    body = "Results ![see note\n\nkept words here\n\n[source](https://e.org/x) w2"
+    result = neutralize_markdown(body)
+    assert "kept words here" in result.markdown
+    assert "[source](https://e.org/x) w2" in result.markdown
+    assert _Rendered(result.markdown).live == []
+
+
+def test_an_unbalanced_image_opener_still_removes_a_target_in_its_paragraph() -> None:
+    result = neutralize_markdown("a ![b [c](javascript:x) d\n\nnext")
+    assert "javascript:x)" not in result.markdown.replace("`", "")
+    assert result.markdown.endswith("\n\nnext")
     assert _Rendered(result.markdown).live == []
