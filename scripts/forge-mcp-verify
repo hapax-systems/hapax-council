@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+"""gitea-mcp vs Forgejo base-URL verification harness (S2 slice-2, item 4).
+
+Launches a gitea-mcp server container in HTTP mode against a forge base URL,
+then drives MCP over HTTP: initialize, tools/list, a read-only tools/call
+battery, and two divergence probes. Each battery call is classified
+PASS/FAIL; write-shaped tools discovered in tools/list are refused
+client-side and recorded SKIPPED-WRITE, never called. Writes a JSON-lines
+report that never contains the token.
+
+Exit codes: 0 = every battery tool PASSed (probes are recorded either way);
+1 = at least one battery tool FAILed; 2 = configuration or transport failure
+(stderr carries a next action).
+
+Configuration (flags, with environment fallbacks):
+
+  --base-url URL   forge base URL (default $FORGE_URL, else
+                   http://100.85.131.41:3000)
+  --repo SLUG      owner/name battery target (default forge-admin/shadow-ci-driver)
+  --pr N           pull number for pull_request_read (default 28)
+  --image IMAGE    gitea-mcp image (default docker.gitea.com/gitea-mcp-server:latest)
+  --port N         host port for the container (default 18775)
+  --divergence-repo SLUG
+                   mirror repo where pulls are expected to be disabled
+                   (default forge-admin/hapax-council; empty string skips)
+  --report PATH    JSON-lines report (default ./forge-mcp-verify-report.jsonl)
+
+  FORGE_TOKEN      API token; preferred when already materialized
+  FORGE_TOKEN_CMD  shell command that prints the token
+                   (default: hapax-secret forgejo-shadow/s2-review-chain)
+
+The token reaches the container through its environment only (`-e
+GITEA_ACCESS_TOKEN` name-only passthrough); it never appears in argv, the
+report, or stdout. Read-only enforcement is double-sided: the server runs
+with `-r` / GITEA_READONLY=true and the client allowlist refuses write-shaped
+tool names.
+
+Live verification of gitea-mcp 1.8.0 against the Forgejo shadow (2026-10-06)
+is recorded in lanebus/forge-build receipts; this harness makes that check
+repeatable.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+__version__ = "1.0"
+
+DEFAULT_FORGE_URL = "http://100.85.131.41:3000"
+DEFAULT_TOKEN_CMD = "hapax-secret forgejo-shadow/s2-review-chain"
+DEFAULT_IMAGE = "docker.gitea.com/gitea-mcp-server:latest"
+DEFAULT_REPO = "forge-admin/shadow-ci-driver"
+DEFAULT_DIVERGENCE_REPO = "forge-admin/hapax-council"
+DEFAULT_PORT = 18775
+CONTAINER_PORT = 8080
+CONTAINER_NAME = "forge-mcp-verify"
+REPORT_DEFAULT = "forge-mcp-verify-report.jsonl"
+PROTOCOL_VERSION = "2025-06-18"
+TRANSPORT_TIMEOUT_SECONDS = 60
+HEALTHZ_TIMEOUT_SECONDS = 30
+HEALTHZ_INTERVAL_SECONDS = 0.5
+TEXT_HEAD_CHARS = 800
+
+# Tool-name morphemes that mark a write-shaped tool; the client allowlist
+# refuses these even though the server also runs read-only.
+WRITE_MORPHEMES = (
+    "write",
+    "create",
+    "delete",
+    "update",
+    "remove",
+    "merge",
+    "close",
+    "edit",
+    "apply",
+)
+
+
+class HarnessError(Exception):
+    """Configuration or launch failure; message carries a next action."""
+
+
+class TransportError(Exception):
+    """HTTP transport failure; message carries a next action."""
+
+
+def parse_sse(raw: str) -> dict | None:
+    """Extract one JSON-RPC message from an SSE or plain-JSON body."""
+    for line in raw.splitlines():
+        if line.startswith("data: "):
+            try:
+                return json.loads(line[len("data: ") :])
+            except json.JSONDecodeError:
+                continue
+    stripped = raw.strip()
+    if stripped:
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def transport_request(
+    method: str, url: str, body: str | None = None, headers: dict[str, str] | None = None
+) -> tuple[int, str]:
+    """Perform one HTTP request. Tests monkeypatch this seam."""
+    data = body.encode() if body is not None else None
+    request = urllib.request.Request(url, data=data, method=method)
+    for key, value in (headers or {}).items():
+        request.add_header(key, value)
+    try:
+        with urllib.request.urlopen(request, timeout=TRANSPORT_TIMEOUT_SECONDS) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode()
+    except OSError as exc:
+        # URLError and warmup resets/refusals (ConnectionResetError et al.)
+        reason = getattr(exc, "reason", exc)
+        raise TransportError(
+            f"cannot reach {url}: {reason}. "
+            "Next action: check --base-url/--port and that the container is up."
+        ) from exc
+
+
+def _token() -> str:
+    token = os.environ.get("FORGE_TOKEN")
+    if token:
+        return token.strip()
+    command = os.environ.get("FORGE_TOKEN_CMD", DEFAULT_TOKEN_CMD)
+    result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0 or not result.stdout.strip():
+        raise HarnessError(
+            f"token command failed: {command}. "
+            "Next action: set FORGE_TOKEN, fix FORGE_TOKEN_CMD, or run "
+            f"'{DEFAULT_TOKEN_CMD}' to check the store."
+        )
+    return result.stdout.strip()
+
+
+def docker_argv(
+    image: str, name: str, host_port: int, container_port: int, base_url: str
+) -> list[str]:
+    """docker run argv for the gitea-mcp server in HTTP read-only mode.
+
+    The published image has no ENTRYPOINT (CMD only), so the binary must be
+    passed explicitly after the image; args after the image otherwise replace
+    CMD entirely.
+    """
+    return [
+        "docker",
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        name,
+        "-p",
+        f"127.0.0.1:{host_port}:{container_port}",
+        "-e",
+        f"GITEA_HOST={base_url}",
+        "-e",
+        "GITEA_ACCESS_TOKEN",
+        "-e",
+        "GITEA_READONLY=true",
+        image,
+        "/app/gitea-mcp",
+        "-t",
+        "http",
+        "-b",
+        "0.0.0.0",
+        "-p",
+        str(container_port),
+        "-r",
+    ]
+
+
+def docker_launch(argv: list[str], env: dict[str, str] | None = None) -> int:
+    """Start the container. Tests monkeypatch this seam.
+
+    ``env`` carries GITEA_ACCESS_TOKEN so the token reaches the container
+    through its environment without ever appearing in argv.
+    """
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=120, env=env)
+    if result.returncode != 0:
+        raise HarnessError(
+            f"docker launch failed (rc={result.returncode}): "
+            f"{result.stderr.strip()[:300]}. "
+            "Next action: check --image and that docker is running."
+        )
+    return result.returncode
+
+
+def docker_teardown(name: str) -> None:
+    """Remove the container. Tests monkeypatch this seam."""
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True, timeout=60)
+
+
+def is_write_shaped(name: str) -> bool:
+    return any(morpheme in name for morpheme in WRITE_MORPHEMES)
+
+
+def battery(owner: str, repo: str, pr: int) -> list[tuple[str, dict]]:
+    """Read-only tool calls every one of which must PASS against the forge."""
+    return [
+        ("get_gitea_mcp_server_version", {}),
+        ("get_me", {}),
+        ("list_pull_requests", {"owner": owner, "repo": repo, "state": "open"}),
+        (
+            "pull_request_read",
+            {
+                "method": "get",
+                "owner": owner,
+                "repo": repo,
+                "pull_number": pr,
+            },
+        ),
+        (
+            "pull_request_read",
+            {
+                "method": "get_status",
+                "owner": owner,
+                "repo": repo,
+                "pull_number": pr,
+            },
+        ),
+        ("list_branches", {"owner": owner, "repo": repo, "per_page": 5}),
+        ("list_commits", {"owner": owner, "repo": repo, "per_page": 3}),
+        (
+            "get_file_contents",
+            {
+                "owner": owner,
+                "repo": repo,
+                "ref": "main",
+                "path": "README.md",
+            },
+        ),
+    ]
+
+
+def divergence_probes(owner: str, mirror_repo: str) -> list[tuple[str, str, dict]]:
+    """Calls whose isError outcome is evidence, not a harness failure."""
+    probes = [("org_repos", "list_org_repos", {"org": owner})]
+    if mirror_repo:
+        mirror_owner, mirror_name = mirror_repo.split("/", 1)
+        probes.append(
+            (
+                "pulls_disabled_mirror",
+                "list_pull_requests",
+                {"owner": mirror_owner, "repo": mirror_name, "state": "open"},
+            )
+        )
+    return probes
+
+
+def classify(result: dict) -> tuple[str, str]:
+    """PASS requires isError false and non-empty text content."""
+    content = result.get("content", [])
+    text = ""
+    if content and isinstance(content[0], dict):
+        text = content[0].get("text", "")
+    if result.get("isError", False) or not text.strip():
+        return "FAIL", text
+    return "PASS", text
+
+
+def first_text(result: dict) -> str:
+    content = result.get("content", [])
+    if content and isinstance(content[0], dict):
+        return content[0].get("text", "")
+    return ""
+
+
+class McpClient:
+    """Stateless JSON-RPC-over-HTTP MCP client (SSE or JSON responses)."""
+
+    def __init__(self, host: str, port: int):
+        self.endpoint = f"http://{host}:{port}/mcp"
+        self._id = 0
+
+    def post(self, method: str, params: dict) -> dict:
+        self._id += 1
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": self._id,
+                "method": method,
+                "params": params,
+            }
+        )
+        status, raw = transport_request(
+            "POST",
+            self.endpoint,
+            body,
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            },
+        )
+        if status != 200:
+            raise TransportError(
+                f"HTTP {status} on MCP {method}. "
+                "Next action: check that the gitea-mcp server is healthy."
+            )
+        message = parse_sse(raw)
+        if message is None:
+            raise TransportError(
+                f"unparseable response to MCP {method}. "
+                "Next action: check the gitea-mcp image version."
+            )
+        if "error" in message:
+            raise TransportError(
+                f"MCP {method} failed: {message['error']}. "
+                "Next action: check protocol arguments and server logs."
+            )
+        return message
+
+
+def wait_healthy(port: int) -> None:
+    """Poll /healthz until 200; resets and non-200 retry until the deadline."""
+    deadline = time.monotonic() + HEALTHZ_TIMEOUT_SECONDS
+    url = f"http://127.0.0.1:{port}/healthz"
+    while time.monotonic() < deadline:
+        try:
+            status, _ = transport_request("GET", url)
+        except TransportError:
+            status = 0  # warmup reset: the port is up before the app is
+        if status == 200:
+            return
+        time.sleep(HEALTHZ_INTERVAL_SECONDS)
+    raise TransportError(
+        f"gitea-mcp container did not become healthy at {url} within "
+        f"{HEALTHZ_TIMEOUT_SECONDS}s. Next action: docker logs {CONTAINER_NAME}."
+    )
+
+
+def verify(args: argparse.Namespace) -> tuple[int, list[dict]]:
+    """Run the whole check; returns (exit_code, report_records)."""
+    token = _token()
+
+    def redact(text: str) -> str:
+        return text.replace(token, "<redacted>") if token else text
+
+    owner, repo = args.repo.split("/", 1)
+    launch_argv = docker_argv(args.image, CONTAINER_NAME, args.port, CONTAINER_PORT, args.base_url)
+    launch_env = {**os.environ, "GITEA_ACCESS_TOKEN": token}
+    docker_launch(launch_argv, launch_env)
+    records = [
+        {
+            "kind": "container",
+            "name": CONTAINER_NAME,
+            "image": args.image,
+            "host_port": args.port,
+            "container_port": CONTAINER_PORT,
+            "base_url": args.base_url,
+            "repo": args.repo,
+            "pr": args.pr,
+            "readonly_server": True,
+        }
+    ]
+    try:
+        wait_healthy(args.port)
+        client = McpClient("127.0.0.1", args.port)
+
+        init = client.post(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "forge-mcp-verify", "version": __version__},
+            },
+        )
+        records.append({"kind": "initialize", "result": init.get("result", {})})
+
+        tools = client.post("tools/list", {}).get("result", {}).get("tools", [])
+        names = sorted(tool.get("name", "") for tool in tools)
+        write_shaped = [name for name in names if is_write_shaped(name)]
+        records.append(
+            {
+                "kind": "tools_list",
+                "count": len(tools),
+                "names": names,
+                "write_shaped": write_shaped,
+            }
+        )
+        for name in write_shaped:
+            records.append(
+                {
+                    "kind": "tool_call",
+                    "tool": name,
+                    "status": "SKIPPED-WRITE",
+                    "probe": None,
+                    "reason": "client allowlist refuses write-shaped tools",
+                }
+            )
+
+        exit_code = 0
+        for tool, call_args in battery(owner, repo, args.pr):
+            result = client.post(
+                "tools/call",
+                {
+                    "name": tool,
+                    "arguments": call_args,
+                },
+            ).get("result", {})
+            status, text = classify(result)
+            if status == "FAIL":
+                exit_code = 1
+            records.append(
+                {
+                    "kind": "tool_call",
+                    "tool": tool,
+                    "method": call_args.get("method"),
+                    "status": status,
+                    "isError": result.get("isError", False),
+                    "probe": None,
+                    "text_head": redact(text)[:TEXT_HEAD_CHARS],
+                }
+            )
+
+        for probe, tool, call_args in divergence_probes(owner, args.divergence_repo):
+            result = client.post(
+                "tools/call",
+                {
+                    "name": tool,
+                    "arguments": call_args,
+                },
+            ).get("result", {})
+            records.append(
+                {
+                    "kind": "tool_call",
+                    "probe": probe,
+                    "tool": tool,
+                    "isError": result.get("isError", False),
+                    "text_head": redact(first_text(result))[:TEXT_HEAD_CHARS],
+                }
+            )
+
+        records.append(
+            {
+                "kind": "summary",
+                "exit_code": exit_code,
+                "tools_total": len(tools),
+                "write_shaped_total": len(write_shaped),
+                "battery_calls": len(battery(owner, repo, args.pr)),
+            }
+        )
+        return exit_code, records
+    finally:
+        docker_teardown(CONTAINER_NAME)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="forge-mcp-verify",
+        description="Verify gitea-mcp read-only tool surface against a forge "
+        "base URL (S2 slice-2 item 4).",
+    )
+    parser.add_argument("--base-url", default=os.environ.get("FORGE_URL", DEFAULT_FORGE_URL))
+    parser.add_argument("--repo", default=DEFAULT_REPO, help="owner/name battery target")
+    parser.add_argument("--pr", type=int, default=28, help="pull number for pull_request_read")
+    parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--divergence-repo",
+        default=DEFAULT_DIVERGENCE_REPO,
+        help="repo expected to have pulls disabled; '' skips",
+    )
+    parser.add_argument("--report", default=REPORT_DEFAULT)
+    args = parser.parse_args(argv)
+
+    try:
+        exit_code, records = verify(args)
+    except (HarnessError, TransportError) as exc:
+        print(
+            f"forge-mcp-verify: {exc} Next action: check FORGE_TOKEN/"
+            "FORGE_TOKEN_CMD, --image, --base-url, and that docker is running.",
+            file=sys.stderr,
+        )
+        return 2
+
+    with open(args.report, "w") as handle:
+        for record in records:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+    summary = records[-1]
+    passed = sum(1 for r in records if r.get("kind") == "tool_call" and r.get("status") == "PASS")
+    failed = sum(1 for r in records if r.get("kind") == "tool_call" and r.get("status") == "FAIL")
+    skipped = sum(
+        1 for r in records if r.get("kind") == "tool_call" and r.get("status") == "SKIPPED-WRITE"
+    )
+    print(
+        f"forge-mcp-verify: {passed} PASS, {failed} FAIL, "
+        f"{skipped} SKIPPED-WRITE; tools={summary.get('tools_total')}; "
+        f"exit={exit_code}; report={args.report}"
+    )
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
