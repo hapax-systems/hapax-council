@@ -2209,11 +2209,12 @@ class TestVerdictBlockers:
         assert "review_dossier_blocked_route_family_seated:glm" not in blockers
         assert blockers == ()
 
-    def _route_blocked_degraded_dossier(self, rt) -> dict:
+    def _route_blocked_degraded_dossier(
+        self, rt, reason: str = "route_specific_quota_receipt_absent"
+    ) -> dict:
         notes = (
             "degraded_family_route_blocked:gemini",
-            "route_blocked_family_reason:gemini:agy.review.direct:"
-            "route_specific_quota_receipt_absent",
+            f"route_blocked_family_reason:gemini:agy.review.direct:{reason}",
             "degraded_to:t2_standard",
             "post_route_receipt_rereview_required",
         )
@@ -2454,32 +2455,37 @@ class TestVerdictBlockers:
         assert dossier["post_route_receipt_rereview_required"] is True
 
     @pytest.mark.parametrize(
-        ("manifestation", "live_route_blocked"),
+        ("manifestation", "recorded_reason", "live_route_blocked"),
         [
             # 19:45Z self-mint ordering race: the dispatch's own mint leg re-validates the
             # family after the dossier was constituted, so nothing is live-blocked at exam.
-            ("19:45Z self-mint ordering race", {}),
+            ("19:45Z self-mint ordering race", "route_specific_quota_receipt_absent", {}),
             # 20:31:58Z environment re-mint: a telemetry wave rewrote the receipt between
             # constitution and exam, so nothing is live-blocked at exam.
-            ("20:31:58Z environment re-mint", {}),
+            ("20:31:58Z environment re-mint", "route_state_stale", {}),
             # 20:45:09Z receipt-TTL oscillation: the receipt re-minted minutes before the exam.
-            ("20:45:09Z receipt-TTL oscillation", {}),
+            ("20:45:09Z receipt-TTL oscillation", "freshness_check:receipt_absent", {}),
             # The orientation that already passed: live-blocked with the recorded reason.
             (
                 "live-blocked with the recorded reason",
+                "route_specific_quota_receipt_absent",
                 {"gemini": ("route_specific_quota_receipt_absent",)},
             ),
         ],
     )
     def test_route_block_degradation_presence_manifestations_admit_with_the_rereview_flag(
-        self, tmp_path: Path, manifestation: str, live_route_blocked: dict
+        self, tmp_path: Path, manifestation: str, recorded_reason: str, live_route_blocked: dict
     ) -> None:
         """Manifestations 1, 2 and 4 are one shape: the family is no longer live-blocked at exam
         time because a receipt re-minted. A constitution-valid degradation is admissible WITH
-        the re-review flag set, never silently."""
+        the re-review flag set, never silently.
+
+        Each case carries its own recorded reason (glm-1 minor-1 on the 23:01:18Z dossier: the
+        three inputs were identical), so the parametrization exercises distinct constitution-time
+        evidence rather than the same dossier three times."""
 
         rt = _load_review_team_module()
-        dossier = self._route_blocked_degraded_dossier(rt)
+        dossier = self._route_blocked_degraded_dossier(rt, reason=recorded_reason)
         note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(
             self._frontmatter(),
