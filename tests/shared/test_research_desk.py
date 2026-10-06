@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
+
+# The CommonMark renderer is the locked markdown-it-py (uv.lock, via rich/textual).
+from markdown_it import MarkdownIt
 
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.research_desk import (
@@ -17,9 +24,11 @@ from shared.research_desk import (
     DEFAULT_DELIVERY_LANE,
     DEFAULT_STATE_ROOT,
     DEFAULT_VAULT_ROOT,
+    MAX_CITATION_TITLE_CHARS,
     MAX_CITATIONS,
     MAX_LIST_LIMIT,
     MAX_MARKDOWN_BYTES,
+    MAX_MODEL_NOTES_BYTES,
     MAX_REQUEST_BODY_BYTES,
     DeliveryReceipt,
     MalformedRequest,
@@ -713,11 +722,14 @@ def test_excessively_nested_link_label_is_removed_whole() -> None:
     assert "](javascript:" not in result.markdown
 
 
-def test_unbalanced_link_label_is_removed_whole() -> None:
+def test_unbalanced_link_label_keeps_its_text_and_withholds_the_inner_link() -> None:
+    # F1: an unbalanced `[` keeps its opener and text; the link inside is judged alone.
     result = neutralize_markdown("before [a [b](javascript:alert(1)) after")
     assert result.links == 1
     assert "](javascript:" not in result.markdown
-    assert result.markdown == "before `[link withheld]`) after"
+    assert (
+        result.markdown == "before [a `b [link withheld — javascript: javascript:alert(1)]` after"
+    )
 
 
 def test_http_links_survive_untouched() -> None:
@@ -970,3 +982,649 @@ def test_a_clean_answer_carries_zero_withheld_counts_and_no_banner(
     assert drop.frontmatter["withheld_images"] == 0
     assert drop.frontmatter["withheld_links"] == 0
     assert "Active content removed:" not in drop.body
+
+
+# --------------------------------------------------------------------------- #
+# Review of #4899 at 608b3612 (2026-10-05): F1, F3-F11, F13, F14, F16
+# --------------------------------------------------------------------------- #
+
+INTERVAL_ANSWER = (
+    "## Summary\n\nThe CDF is supported on [0, 1).\n\n"
+    "## Method\n\nInverse transform sampling.\n\n"
+    "## Results\n\nThe fit holds.\n\n"
+    "## Sources\n\n- [Primary study](https://example.org/study)\n- Other notes.\n"
+)
+
+
+def test_an_unbalanced_bracket_keeps_the_text_and_the_safe_link_after_it() -> None:
+    result = neutralize_markdown("supported on [0, 1) and [src](https://example.org/x) tail")
+    assert result.links == 0
+    assert "0, 1) and [src](https://example.org/x) tail" in result.markdown
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[a [b](javascript:alert(1)) tail",
+        "[[a](javascript:alert(1))",
+        "[x [y](data:text/html,x)",
+        "[ [ [ [ [z](vbscript:x)",
+    ],
+)
+def test_an_unbalanced_label_still_withholds_the_unsafe_link_inside_it(body: str) -> None:
+    result = neutralize_markdown(body)
+    assert result.links == 1
+    for scheme in ("javascript", "data", "vbscript"):
+        assert f"]({scheme}:" not in result.markdown
+
+
+def test_delivery_of_a_half_open_interval_loses_no_answer_text(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-interval")
+    receipt = deliver_result(desk, request_id="req-interval", markdown=INTERVAL_ANSWER)
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.frontmatter["withheld_links"] == 0
+    for kept in ("0, 1).", "## Method", "## Results", "- Other notes."):
+        assert kept in drop.body
+    assert "[Primary study](https://example.org/study)" in drop.body
+
+
+def test_delivery_keeps_the_text_after_a_reference_style_image(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-refimg")
+    receipt = deliver_result(
+        desk, request_id="req-refimg", markdown="Revenue tripled![1] The board approved it."
+    )
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert "The board approved it." in drop.body
+
+
+def test_delivery_defuses_and_counts_a_javascript_reference_definition(
+    desk: ResearchDeskConfig,
+) -> None:
+    write_request(desk, "req-refdef")
+    receipt = deliver_result(
+        desk,
+        request_id="req-refdef",
+        markdown="See [the note][1].\n\n[1]: javascript:alert(document.cookie)\n",
+    )
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.frontmatter["withheld_links"] == 1
+    assert "\n[1]: javascript:" not in drop.body
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Don\x92t Panic", "bad￾x", "line sep", "next\x85line", 'plain "q" \\ ok'],
+)
+def test_a_citation_title_round_trips_through_the_drop_frontmatter(
+    desk: ResearchDeskConfig, title: str
+) -> None:
+    write_request(desk, "req-yaml")
+    receipt = deliver_result(
+        desk,
+        request_id="req-yaml",
+        markdown="answer",
+        citations=[{"url": "https://example.org/a", "title": title}],
+    )
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.ok, drop.error_message
+    assert drop.frontmatter["content_trust"] == "untrusted_external"
+    assert drop.frontmatter["citations"] == [{"url": "https://example.org/a", "title": title}]
+
+
+@pytest.mark.parametrize("title", ["Don\x92t Panic", "bad￿x", "para graph"])
+def test_a_request_title_round_trips_through_the_drop_frontmatter(
+    desk: ResearchDeskConfig, title: str
+) -> None:
+    request = replace(get_request(desk, write_request(desk, "req-rtitle").stem), title=title)
+    drop = render_drop(
+        request=request,
+        lane="cx-blue",
+        markdown="answer",
+        citations=(),
+        model_notes="",
+        receipt_id="rd-rtitle",
+        delivered_at="2026-10-05T00:00:00Z",
+    )
+    parsed = parse_frontmatter_with_diagnostics(drop)
+    assert parsed.ok, parsed.error_message
+    assert parsed.frontmatter["request_title"] == title
+
+
+@pytest.mark.parametrize("url", ["https://example.org/a\x9bb", "https://example.org/a\x85b"])
+def test_a_citation_url_with_a_c1_control_is_refused(desk: ResearchDeskConfig, url: str) -> None:
+    write_request(desk, "req-c1")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-c1", markdown="answer", citations=[url])
+    assert exc.value.reason_code == "citations_invalid"
+    assert not list(desk.lanebus_dir.glob("*.md"))
+
+
+def test_a_drop_whose_frontmatter_does_not_round_trip_is_never_written(
+    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_request(desk, "req-render")
+    before = path.read_bytes()
+    monkeypatch.setattr("shared.research_desk._yaml_scalar", lambda value: value)
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(
+            desk,
+            request_id="req-render",
+            markdown="answer",
+            citations=[{"url": "https://example.org/a", "title": "a: b: c"}],
+        )
+    assert exc.value.reason_code == "drop_render_invalid"
+    assert not list(desk.lanebus_dir.iterdir())
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[" * 16384,
+        "![)" * 5462,
+        "[" * 8192 + "]" * 8192,
+        "![" * 8192,
+        "[a](" + "x" * 65536,
+        "[a](" + "(y)" + "x" * 65536,
+        "<" * 131072,
+        "`]" * (MAX_MARKDOWN_BYTES // 2),
+        "[a](" * 32768 + ")",
+        "](" * 65536 + ")",
+        "[<a:]>" * 21845,
+    ],
+    ids=[
+        "open",
+        "image-paren",
+        "nested",
+        "image-open",
+        "dest",
+        "dest-group",
+        "lt",
+        "tick-bracket",
+        "kept-links",
+        "sever",
+        "autolinks",
+    ],
+)
+def test_neutralizing_adversarial_markdown_is_linear(body: str) -> None:
+    started = time.perf_counter()
+    neutralize_markdown(body)
+    assert time.perf_counter() - started < 2.0
+
+
+def test_neutralizing_a_maximal_bracket_flood_is_bounded() -> None:
+    started = time.perf_counter()
+    result = neutralize_markdown("[" * MAX_MARKDOWN_BYTES)
+    assert time.perf_counter() - started < 5.0
+    assert result.links == 0
+
+
+def test_delivery_does_not_hold_the_row_lock_while_neutralizing(
+    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    path = write_request(desk, "req-lockfree")
+    original = neutralize_markdown
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow(body: str):  # noqa: ANN202 - mirrors the patched function
+        entered.set()
+        release.wait(10)
+        return original(body)
+
+    monkeypatch.setattr("shared.research_desk.neutralize_markdown", slow)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(deliver_result, desk, request_id="req-lockfree", markdown="answer")
+        try:
+            assert entered.wait(5)
+            with projected_path_lock("req-lockfree", (path,), timeout=1.0):
+                pass
+        finally:
+            release.set()
+        future.result(timeout=30)
+
+
+def test_the_drop_is_never_visible_at_its_final_name_while_it_is_written(
+    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_request(desk, "req-atomic")
+    seen: list[list[str]] = []
+    real_fsync = os.fsync
+
+    def watching_fsync(fd: int) -> None:
+        seen.append(sorted(p.name for p in desk.lanebus_dir.glob("*-perplexity-desk-*.md")))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", watching_fsync)
+    receipt = deliver_result(desk, request_id="req-atomic", markdown="answer")
+    assert seen[0] == [], "the drop existed at its final name before its bytes were synced"
+    assert receipt.drop_path.is_file()
+    assert [p.name for p in desk.lanebus_dir.iterdir()] == [receipt.drop_path.name]
+
+
+def test_a_failed_drop_write_leaves_no_drop_and_no_temp_file(
+    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = write_request(desk, "req-fsync")
+    before = path.read_bytes()
+
+    def failing_fsync(fd: int) -> None:
+        raise OSError("simulated fsync failure")
+
+    monkeypatch.setattr(os, "fsync", failing_fsync)
+    with pytest.raises(OSError, match="simulated fsync failure"):
+        deliver_result(desk, request_id="req-fsync", markdown="answer")
+    monkeypatch.undo()
+    assert not list(desk.lanebus_dir.iterdir())
+    assert path.read_bytes() == before
+    assert deliver_result(desk, request_id="req-fsync", markdown="answer").drop_path.is_file()
+
+
+def test_publishing_never_replaces_a_file_that_appears_at_the_drop_name(
+    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shared.research_desk as research_desk
+
+    path = write_request(desk, "req-clobber")
+    before = path.read_bytes()
+    racer = desk.lanebus_dir / "20261005T010203Z-perplexity-desk-req-clobber.md"
+    real_check = research_desk._check_rendered_drop
+
+    def racing_check(text: str, **kwargs: str) -> None:
+        real_check(text, **kwargs)
+        racer.write_text("written by another tool\n", encoding="utf-8")
+
+    monkeypatch.setattr(research_desk, "_check_rendered_drop", racing_check)
+    with pytest.raises(FileExistsError):
+        deliver_result(
+            desk,
+            request_id="req-clobber",
+            markdown="answer",
+            now=datetime(2026, 10, 5, 1, 2, 3, tzinfo=UTC),
+        )
+    assert racer.read_text(encoding="utf-8") == "written by another tool\n"
+    assert [p.name for p in desk.lanebus_dir.iterdir()] == [racer.name]
+    assert path.read_bytes() == before
+
+
+def test_the_drop_records_a_digest_of_its_body(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-digest")
+    receipt = deliver_result(desk, request_id="req-digest", markdown="## Finding\n\nThe answer.")
+    raw = receipt.drop_path.read_bytes()
+    body = raw.split(b"\n---\n", 1)[1]
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.frontmatter["body_sha256"] == hashlib.sha256(body).hexdigest()
+
+
+def test_a_row_the_stamp_cannot_flip_is_refused_before_any_drop_is_written(
+    desk: ResearchDeskConfig,
+) -> None:
+    path = write_request(desk, "req-twostatus", status="queued", extra="status: offered\n")
+    before = path.read_bytes()
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-twostatus", markdown="answer")
+    assert exc.value.reason_code == "row_stamp_would_corrupt"
+    assert not list(desk.lanebus_dir.iterdir())
+    assert path.read_bytes() == before
+
+    write_request(desk, "req-twostatus")
+    receipt = deliver_result(desk, request_id="req-twostatus", markdown="answer")
+    assert parse_frontmatter_with_diagnostics(path).frontmatter["status"] == "delivered"
+    assert receipt.drop_path.is_file()
+
+
+def test_a_stale_multiline_stamp_field_is_replaced_whole(desk: ResearchDeskConfig) -> None:
+    path = write_request(desk, "req-stale", extra="delivery_drop:\n  - old/drop.md\n")
+    before = parse_frontmatter_with_diagnostics(path).frontmatter
+    receipt = deliver_result(desk, request_id="req-stale", markdown="answer")
+    after = parse_frontmatter_with_diagnostics(path).frontmatter
+    assert after["created_at"] == before["created_at"]
+    assert after["delivery_drop"].endswith(receipt.drop_path.name)
+
+
+def test_a_stamp_that_would_change_another_field_is_refused_before_any_drop(
+    desk: ResearchDeskConfig,
+) -> None:
+    question = (
+        "Which carriers changed their\ndelivered_at: semantics (signature vs doorstep)\nin 2026?"
+    )
+    path = write_request(desk, "req-wrapped", question=question)
+    before = path.read_bytes()
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-wrapped", markdown="answer")
+    assert exc.value.reason_code == "row_stamp_would_corrupt"
+    assert not list(desk.lanebus_dir.iterdir())
+    assert path.read_bytes() == before
+
+
+def test_the_stamp_keeps_crlf_line_endings(desk: ResearchDeskConfig) -> None:
+    path = write_request(desk, "req-crlf")
+    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    deliver_result(desk, request_id="req-crlf", markdown="answer")
+    raw = path.read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n")
+    assert parse_frontmatter_with_diagnostics(path).frontmatter["status"] == "delivered"
+
+
+def test_a_retry_after_delivery_is_told_the_stored_receipt(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-again")
+    receipt = deliver_result(desk, request_id="req-again", markdown="answer")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-again", markdown="answer")
+    assert exc.value.reason_code == "request_already_delivered"
+    assert "without a receipt" not in exc.value.repair_action
+    assert receipt.receipt_id in (exc.value.detail or "")
+
+
+@pytest.mark.parametrize("request_id", ["12345", "2026-09-16", "no", "1.5"])
+def test_scalar_shaped_ids_stay_strings_in_the_drop(
+    desk: ResearchDeskConfig, request_id: str
+) -> None:
+    write_request(desk, request_id)
+    receipt = deliver_result(desk, request_id=request_id, markdown="answer")
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.frontmatter["request_id"] == request_id
+    assert drop.frontmatter["thread"] == request_id
+
+
+def test_a_scalar_shaped_lane_stays_a_string_in_the_drop(desk: ResearchDeskConfig) -> None:
+    request = get_request(desk, write_request(desk, "req-lane-no").stem)
+    drop = render_drop(
+        request=request,
+        lane="no",
+        markdown="answer",
+        citations=(),
+        model_notes="",
+        receipt_id="rd-no",
+        delivered_at="2026-10-05T00:00:00Z",
+    )
+    assert parse_frontmatter_with_diagnostics(drop).frontmatter["to"] == "no"
+
+
+def test_another_requests_drop_does_not_block_this_one(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "b-perplexity-desk-a2")
+    write_request(desk, "a2")
+    deliver_result(desk, request_id="b-perplexity-desk-a2", markdown="answer b")
+    receipt = deliver_result(desk, request_id="a2", markdown="answer a")
+    assert receipt.drop_path.name.endswith("Z-perplexity-desk-a2.md")
+
+
+def test_concurrent_deliveries_write_exactly_one_drop(
+    desk: ResearchDeskConfig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    write_request(desk, "req-race-deliver")
+    real_get_request = get_request
+
+    def slow_get_request(config: ResearchDeskConfig, request_id: str):  # noqa: ANN202
+        request = real_get_request(config, request_id)
+        time.sleep(0.3)
+        return request
+
+    monkeypatch.setattr("shared.research_desk.get_request", slow_get_request)
+
+    def attempt() -> str:
+        try:
+            deliver_result(desk, request_id="req-race-deliver", markdown="answer")
+        except ResearchDeskError as exc:
+            return exc.reason_code
+        return "ok"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = sorted(pool.map(lambda _: attempt(), range(2)))
+    assert outcomes == ["ok", "request_already_delivered"]
+    assert len(list(desk.lanebus_dir.glob("*.md"))) == 1
+
+
+def test_a_stamp_whose_rebuilt_row_fails_to_parse_leaves_the_row_untouched(
+    desk: ResearchDeskConfig,
+) -> None:
+    path = write_request(desk, "req-flow", extra="meta: {a: 1,\ndelivered_at: x}\n")
+    before = path.read_bytes()
+    with pytest.raises(ResearchDeskError) as exc:
+        stamp_request_row(
+            path, receipt_id="rd-flow", delivered_at="now", drop_relpath="a.md", citation_count=0
+        )
+    assert exc.value.reason_code == "row_stamp_would_corrupt"
+    assert path.read_bytes() == before
+    assert "meta" not in (exc.value.detail or ""), "the refusal must not quote the row"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason_code"),
+    [
+        ({"model_notes": "x" * (MAX_MODEL_NOTES_BYTES + 1)}, "payload_too_large"),
+        ({"citations": ["https:///no-host"]}, "citation_scheme_refused"),
+        ({"citations": {"url": "https://example.org"}}, "citations_invalid"),
+        ({"citations": [123]}, "citations_invalid"),
+        ({"citations": ["https://example.org"] * (MAX_CITATIONS + 1)}, "payload_too_large"),
+        ({"markdown": 123}, "payload_invalid"),
+    ],
+)
+def test_delivery_refuses_bad_shapes_before_writing(
+    desk: ResearchDeskConfig, kwargs: dict[str, object], reason_code: str
+) -> None:
+    write_request(desk, "req-shape")
+    call: dict[str, object] = {"markdown": "answer", **kwargs}
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(desk, request_id="req-shape", **call)  # type: ignore[arg-type]
+    assert exc.value.reason_code == reason_code
+    assert not list(desk.lanebus_dir.iterdir())
+
+
+def test_a_long_citation_title_is_capped() -> None:
+    (citation,) = normalize_citations([{"url": "https://example.org", "title": "t" * 600}])
+    assert len(citation["title"]) == MAX_CITATION_TITLE_CHARS
+
+
+def test_an_offset_timestamp_is_recorded_in_utc(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-tz")
+    moment = datetime(2026, 9, 16, 12, 0, 0, tzinfo=timezone(timedelta(hours=-7)))
+    receipt = deliver_result(desk, request_id="req-tz", markdown="answer", now=moment)
+    assert receipt.delivered_at == "2026-09-16T19:00:00Z"
+    assert receipt.drop_path.name.startswith("20260916T190000Z-")
+
+
+def test_a_lane_without_an_inbox_is_refused(desk: ResearchDeskConfig) -> None:
+    path = write_request(desk, "req-bleu")
+    before = path.read_bytes()
+    config = replace(desk, delivery_lane="cx-bleu")
+    with pytest.raises(ResearchDeskError) as exc:
+        deliver_result(config, request_id="req-bleu", markdown="answer")
+    assert exc.value.reason_code == "lanebus_dir_absent"
+    assert not config.lanebus_dir.exists()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "body", ["[a](http://x[y) ok", "[r]: https://e.org![\n", "<https://[x> ok"]
+)
+def test_a_target_the_url_parser_rejects_is_withheld_not_raised(body: str) -> None:
+    result = neutralize_markdown(body)
+    assert result.total >= 1
+
+
+# --------------------------------------------------------------------------- #
+# Brackets CommonMark does not count (review of #4899, N2, 2026-10-05)
+# --------------------------------------------------------------------------- #
+
+_COMMONMARK = MarkdownIt("commonmark")
+#: Render every destination as written: screening it is the desk's job, not the renderer's.
+_COMMONMARK.validateLink = lambda url: True
+_ACTIVE_SCHEMES = ("javascript:", "data:", "vbscript:", "file:")
+
+
+class _Rendered(HTMLParser):
+    """What a CommonMark reader would load or follow, and the text it would show."""
+
+    def __init__(self, markdown: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.live: list[str] = []
+        self.text: list[str] = []
+        self.feed(_COMMONMARK.render(markdown))
+        self.close()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "img":
+            self.live.append("<img>")
+        for name, value in attrs:
+            target = re.sub(r"[\x00-\x20]", "", value or "").lower()
+            if name in {"href", "src"} and target.startswith(_ACTIVE_SCHEMES):
+                self.live.append(f"{name}={value}")
+
+    def handle_data(self, data: str) -> None:
+        self.text.append(data)
+
+    @property
+    def visible(self) -> str:
+        return _plain("".join(self.text))
+
+
+def _plain(text: str) -> str:
+    """Text as a reader sees it, set as code or not: marks that only delimit drop out."""
+    return " ".join(re.sub(r"[`\\<>]", " ", text).split())
+
+
+@pytest.mark.parametrize(
+    ("body", "label"),
+    [
+        ("[a `]` b](javascript:alert(1))", "a `]` b"),
+        ("[a \\] b](javascript:alert(1))", "a \\] b"),
+        ("[a ``]`` b](javascript:alert(1))", "a ``]`` b"),
+        ("[a ``x]`y`` b](javascript:alert(1))", "a ``x]`y`` b"),
+        ("[a \\[ b](javascript:alert(1))", "a \\[ b"),
+        ("[even \\\\](javascript:alert(1))", "even"),
+        ("[even \\\\\\\\](javascript:alert(1))", "even"),
+        ("[odd \\\\\\] b](javascript:alert(1))", "odd \\\\\\] b"),
+        ("[a [b] `]` c](javascript:alert(1))", "a [b] `]` c"),
+        ("[a [`]`] c](javascript:alert(1))", "a [`]`] c"),
+        ("[a `[` b](javascript:alert(1))", "a `[` b"),
+        ("[a <https://e.org/]> b](javascript:alert(1))", "a <https://e.org/]> b"),
+        ("![a `]` b](javascript:alert(1))", "a `]` b"),
+        ("![a \\] b](javascript:alert(1))", "a \\] b"),
+        ("![a ``]`` b](javascript:alert(1))", "a ``]`` b"),
+        ("![a \\[ b](javascript:alert(1))", "a \\[ b"),
+        ("![even \\\\](javascript:alert(1))", "even"),
+        ("![a [b] `]` c](javascript:alert(1))", "a [b] `]` c"),
+        ("![a `](x)` b](javascript:alert(1))", "a `](x)` b"),
+        ("![a <https://e.org/]> b](javascript:alert(1))", "a <https://e.org/]> b"),
+        ("![a `]` b](data:image/png;base64,AAAA)", "a `]` b"),
+        ("![a \\] b](https://tracker.example/p.gif)", "a \\] b"),
+    ],
+)
+def test_an_escaped_or_code_span_bracket_cannot_end_a_label_early(body: str, label: str) -> None:
+    """CommonMark skips escaped brackets and those in code spans or autolinks.
+
+    So must the pairing, or the label it judges is not the label a reader renders.
+    """
+    assert _Rendered(body).live, "without the desk this shape renders live"
+    page = _Rendered(neutralize_markdown(body).markdown)
+    assert page.live == []
+    assert _plain(label) in page.visible
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[r \\]]: javascript:alert(1)\n\n[r \\]]\n",
+        "[r \\\\]: javascript:alert(1)\n\n[r \\\\]\n",
+        "[r `x\\]]: javascript:alert(1)\n\n[r `x\\]]\n",
+    ],
+)
+def test_a_reference_definition_label_is_read_with_its_escapes(body: str) -> None:
+    """Definitions are found by their ``]:``, not by the pairing; code spans do not bind there."""
+    assert _Rendered(body).live, "without the desk this shape renders live"
+    assert _Rendered(neutralize_markdown(body).markdown).live == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[x](javascript\\:alert(1))",
+        "[x](<javascript\\:alert(1)>)",
+        "[r]: javascript\\:alert(1)\n\n[r]\n",
+        "![x](data\\:image/png;base64,AAAA)",
+    ],
+)
+def test_a_backslash_escape_cannot_hide_a_scheme(body: str) -> None:
+    """CommonMark unescapes a destination before it is used, so the scheme check must too."""
+    assert _Rendered(body).live, "without the desk this shape renders live"
+    result = neutralize_markdown(body)
+    assert result.total >= 1
+    assert _Rendered(result.markdown).live == []
+
+
+def test_a_demoted_image_after_a_bang_is_not_an_image_again() -> None:
+    result = neutralize_markdown("wow!![a](https://tracker.example/p.gif)")
+    assert result.images == 1
+    page = _Rendered(result.markdown)
+    assert page.live == []
+    assert "wow!" in page.visible
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[a](https://example.org/x [b](javascript:alert(1)))",
+        "[a](./x [b](javascript:alert(1)))",
+        '[a](https://example.org/x "t" [b](javascript:alert(1)))',
+        "[]([](javascript:alert(1))",
+    ],
+)
+def test_text_after_a_kept_destination_is_still_screened(body: str) -> None:
+    """A space ends a destination; what follows it is not part of the kept link."""
+    assert _Rendered(body).live, "without the desk this shape renders live"
+    result = neutralize_markdown(body)
+    assert result.links == 1
+    assert _Rendered(result.markdown).live == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[r]\n# ]:\n[r]:vbscript:alert(1)\n",
+        "    ]:\n[r]:javascript:alert(1)\n[r]\n",
+        "x]:\n> [r]:javascript:alert(1)\n\n[r]\n",
+    ],
+)
+def test_a_definition_is_screened_after_a_stray_definition_marker(body: str) -> None:
+    """One ``]:`` must not take the next line's definition as its own destination."""
+    assert _Rendered(body).live, "without the desk this shape renders live"
+    result = neutralize_markdown(body)
+    assert result.links >= 1
+    assert _Rendered(result.markdown).live == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[``[](vbscript:alert(1))``[`",
+        "[ ![a ![b](https://t.example/p.gif) c](javascript:alert(1)) `",
+    ],
+)
+def test_a_code_span_a_reader_drops_cannot_carry_live_content(body: str) -> None:
+    """markdown-it's backtick cache drops these code spans after an unclosed ``[``.
+
+    The final sweep reads no code spans, so it still breaks the target and the image.
+    """
+    assert _Rendered(body).live, "without the desk this shape renders live"
+    result = neutralize_markdown(body)
+    assert result.total >= 1
+    assert _Rendered(result.markdown).live == []
+
+
+def test_a_withheld_marker_cannot_pair_with_a_backtick_before_it() -> None:
+    """A literal backtick before a marker can close on the marker's fence and open it."""
+    result = neutralize_markdown("`<t:](data:text/html,x)>")
+    assert result.links >= 1
+    assert _Rendered(result.markdown).live == []
+
+
+@pytest.mark.parametrize("newline", ["\r\n", "\r"])
+def test_a_definition_destination_after_a_carriage_return_is_screened(newline: str) -> None:
+    body = newline.join(["[r]:", "javascript:alert(1)", "", "[r]", ""])
+    assert _Rendered(body).live, "without the desk this shape renders live"
+    result = neutralize_markdown(body)
+    assert result.links == 1
+    assert _Rendered(result.markdown).live == []
