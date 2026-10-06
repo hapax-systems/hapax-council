@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -201,6 +201,15 @@ MUST_INCLUDE_REFRESH_POST_CAP = 4
 # R4: refresh must-include proofs when older than one tick (~6 min), not
 # TTL/2 — tolerates 3-4 missed ticks before the gate sees a stale proof.
 MUST_INCLUDE_REFRESH_MARGIN_SECONDS = 6 * 60
+# Chronic refresh demotion: a must-include PR whose status write has failed
+# this many consecutive ticks (permanently-blocked statuses can never be
+# re-stamped — R3) keeps its guarantee seat but loses seat priority, so it
+# no longer spends a window seat or the refresh POST cap ahead of healthy
+# must-include PRs (#5045: permanently-blocked queued PRs at 237 consecutive
+# failures starved a CLEAN quorum-accepted PR behind the caps). One past the
+# >=2 starved-alert threshold: once the alert has fired, the row is already
+# eligible; a later success resets the counter and lifts the demotion.
+MUST_INCLUDE_REFRESH_CHRONIC_FAILURES = 3
 # R3: the persisted last-known must-include set lives no longer than the
 # proof TTL it exists to keep fresh.
 MUST_INCLUDE_STATE_MAX_AGE_SECONDS = AUTOQUEUE_ADMISSION_TTL_SECONDS
@@ -1707,6 +1716,17 @@ class _WindowSelection:
     fresh_overflow: tuple[int, ...] = ()
 
 
+def _is_chronic_refresh_failure(number: int, refresh_failures: Mapping[int, int] | None) -> bool:
+    """Whether a must-include PR's status write has failed long enough to lose
+    seat priority. The guarantee itself is untouched — the row keeps its R2/R5
+    seats and the overflow reporting; it only sorts after healthy rows so a
+    permanently-blocked status cannot spend the window or the POST cap.
+    """
+    if not refresh_failures:
+        return False
+    return refresh_failures.get(number, 0) >= MUST_INCLUDE_REFRESH_CHRONIC_FAILURES
+
+
 def _select_pr_window(
     rows: list[dict[str, Any]],
     *,
@@ -1718,6 +1738,7 @@ def _select_pr_window(
     full_exam: frozenset[int] | set[int] = frozenset(),
     ephemeral_full_exam: frozenset[int] | set[int] = frozenset(),
     fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
+    refresh_failures: Mapping[int, int] | None = None,
 ) -> _WindowSelection:
     """Select without acknowledging work. Repeated failures share the fair rotation.
 
@@ -1729,7 +1750,12 @@ def _select_pr_window(
     ``--limit`` legitimately serves more must-include rows than the cap — the
     cap bounds the guarantee's dominance over the rotation, not the window.
     The guarantee never silently dominates: overflow is reported, and the
-    oldest proofs are served first.
+    oldest proofs are served first. A row whose refresh has failed
+    ``MUST_INCLUDE_REFRESH_CHRONIC_FAILURES`` consecutive ticks (per
+    ``refresh_failures``) keeps the guarantee but sorts after every healthy
+    must-include row — a failed refresh never rotation-acks, so without the
+    demotion chronic rows hold the oldest stamps and starve healthy PRs behind
+    the window cap and the POST cap indefinitely.
 
     ``fresh_evidence(row, since)`` marks a previously examined PR whose linked
     receipt or dossier landed after its last examination attempt (a hydration
@@ -1778,6 +1804,21 @@ def _select_pr_window(
         must_rows = [
             *core_rows,
             *sorted((row for row in rows if row["number"] in fresh), key=priority),
+        ]
+        # Chronic refresh failures keep their seats but yield priority, so the
+        # healthy slice of the guarantee is served before rows whose status
+        # write cannot succeed this tick (stable: each part keeps its order).
+        must_rows = [
+            *(
+                row
+                for row in must_rows
+                if not _is_chronic_refresh_failure(row["number"], refresh_failures)
+            ),
+            *(
+                row
+                for row in must_rows
+                if _is_chronic_refresh_failure(row["number"], refresh_failures)
+            ),
         ]
         # No must-include rows: keep the historical window size exactly.
         reserve_floor = (
@@ -1920,6 +1961,7 @@ def fetch_rotating_open_prs(
     full_exam: frozenset[int] | set[int] = frozenset(),
     fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
     armed_note_reconciliation: _ArmedNoteReconciliation | None = None,
+    refresh_failures: Mapping[int, int] | None = None,
 ) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]], _WindowSelection]:
     """Prove the complete estate, then hydrate at most limit identities independently.
 
@@ -1965,6 +2007,7 @@ def fetch_rotating_open_prs(
         full_exam=full_exam,
         ephemeral_full_exam=ephemeral_full_exam,
         fresh_evidence=fresh_evidence,
+        refresh_failures=refresh_failures,
     )
     if selection.overflow:
         LOG.warning(
@@ -4556,13 +4599,28 @@ def _refresh_must_include_batch(
     now: datetime,
     apply: bool,
     route: ListingRoute | str | None,
+    refresh_failures: Mapping[int, int] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """R5: bounded per-tick refresh pass.
 
     Both the reads and the POST count against the per-tick cap; identities
     beyond it are reported as ``deferred_post_cap`` so the R7 counters see the
-    truth instead of a silent skip.
+    truth instead of a silent skip. Identities with a chronic refresh counter
+    (per ``refresh_failures``) are served last — they keep their seat in the
+    pass but cannot spend the cap ahead of refreshable proofs.
     """
+    identities = [
+        *(
+            identity
+            for identity in identities
+            if not _is_chronic_refresh_failure(identity[0], refresh_failures)
+        ),
+        *(
+            identity
+            for identity in identities
+            if _is_chronic_refresh_failure(identity[0], refresh_failures)
+        ),
+    ]
     results: dict[int, dict[str, Any]] = {}
     for index, (number, head_sha) in enumerate(identities):
         if index >= MUST_INCLUDE_REFRESH_POST_CAP:
@@ -5138,6 +5196,10 @@ def run_reconciler(
             now=now,
             apply=apply,
             route=None,
+            refresh_failures={
+                number: int(entry.get("consecutive_failures") or 0)
+                for number, entry in must_include_state.items()
+            },
         )
         must_include_report = _must_include_report_summary(refresh_only, overflow=())
         _record_must_include_outcomes(
@@ -5252,6 +5314,10 @@ def run_reconciler(
                 full_exam=dequeued_followup,
                 fresh_evidence=_fresh_evidence_probe(tasks, now=now),
                 armed_note_reconciliation=armed_note_reconciliation,
+                refresh_failures={
+                    number: int(entry.get("consecutive_failures") or 0)
+                    for number, entry in must_include_state.items()
+                },
             )
         else:
             prs, listing_route = fetch_open_prs(
@@ -5313,6 +5379,10 @@ def run_reconciler(
             now=now,
             apply=apply,
             route=listing_route,
+            refresh_failures={
+                number: int(entry.get("consecutive_failures") or 0)
+                for number, entry in must_include_state.items()
+            },
         )
         must_overflow = window.overflow
         if apply:

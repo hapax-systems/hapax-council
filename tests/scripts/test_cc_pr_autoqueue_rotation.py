@@ -595,6 +595,30 @@ def _status_posts(runner: RotationRunner, sha: str) -> list[list[str]]:
 MUST_INCLUDE_STATE_NAME = "examined.json.must-include.json"
 
 
+def _seed_must_include_state(
+    tmp_path: Path,
+    *,
+    chronic: frozenset[int] = frozenset(),
+    healthy: frozenset[int] = frozenset(),
+) -> None:
+    # Pre-existing persisted counters: `chronic` rows have failed their status
+    # write for hundreds of consecutive ticks (permanently-blocked PRs), the
+    # #5045-shape backlog the demotion must break.
+    now = datetime.now(UTC).isoformat()
+    entries = {
+        str(number): {
+            "head_sha": f"sha-{number}",
+            "last_seen_at": now,
+            "last_success_at": None,
+            "consecutive_failures": 237 if number in chronic else 0,
+        }
+        for number in sorted(chronic | healthy)
+    }
+    (tmp_path / MUST_INCLUDE_STATE_NAME).write_text(
+        json.dumps({"schema_version": 1, "repositories": {"owner/repo": entries}})
+    )
+
+
 def test_autoqueue_queued_pr_proof_refreshed_within_one_reconcile(tmp_path: Path) -> None:
     # R1 control-flow proof: a queued PR at proof age 16 min receives a status
     # POST inside ONE reconcile call, without full hydration.
@@ -831,6 +855,76 @@ def test_autoqueue_post_cap_rotation_serves_next_slice_next_tick(tmp_path: Path)
     for _ in range(4):
         covered.update(tick(tmp_path, runner)["must_include"]["refreshed"])
     assert covered == set(range(1, 13))  # No queued PR can starve behind the caps.
+
+
+def test_autoqueue_chronic_refresh_failures_yield_post_cap_to_healthy_pr(
+    tmp_path: Path,
+) -> None:
+    # Chronic demotion: a must-include PR whose refresh keeps failing (a
+    # permanently-blocked status is never re-stamped — R3) retains its
+    # guarantee seat but no longer spends the per-tick POST cap ahead of a
+    # healthy PR. Without the demotion, four permanently-blocked queued PRs
+    # burn all four refresh slots every tick and the healthy queued PR is
+    # deferred_post_cap forever (the #5045 shape).
+    runner = RotationRunner(25)
+    runner.queued_prs = {1, 2, 3, 4, 5}
+    for number in range(1, 5):
+        runner.head_statuses[f"sha-{number}"] = [
+            _admission_status("failure", age_minutes=16, description="cc-pr-autoqueue blocked: x")
+        ]
+    runner.head_statuses["sha-5"] = [_admission_status("success", age_minutes=16)]
+    _seed_must_include_state(tmp_path, chronic=frozenset({1, 2, 3, 4}))
+    for _ in range(3):
+        runner.calls.clear()
+        report = tick(tmp_path, runner)
+        assert report["must_include"]["refreshed"] == [5]
+        assert _status_posts(runner, "sha-5")
+        # The guarantee itself is unchanged: chronic rows still hold seats and
+        # are still served — just after the healthy row.
+        assert report["must_include"]["deferred"]["4"] == "deferred_post_cap"
+
+
+def test_autoqueue_chronic_refresh_failures_yield_window_seat_to_healthy_pr(
+    tmp_path: Path,
+) -> None:
+    # Window-cap leg of the same starvation: with more chronic must-include PRs
+    # than MUST_INCLUDE_CAP, the healthy queued PR used to overflow unserved
+    # every tick (the 14:13Z exhaustion shape) — failed refreshes never
+    # rotation-ack, so chronic rows keep the oldest stamps and sort first
+    # forever. Demotion must seat the healthy PR on the cheap refresh path,
+    # not leave it to a rotation full exam.
+    runner = RotationRunner(25)
+    runner.queued_prs = set(range(1, 10))
+    for number in range(1, 9):
+        runner.head_statuses[f"sha-{number}"] = [
+            _admission_status("failure", age_minutes=16, description="cc-pr-autoqueue blocked: x")
+        ]
+    runner.head_statuses["sha-9"] = [_admission_status("success", age_minutes=16)]
+    _seed_must_include_state(tmp_path, chronic=frozenset(range(1, 9)))
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["refreshed"] == [9]
+    assert _status_posts(runner, "sha-9")
+    assert 9 not in runner.hydrated_numbers()
+    assert 9 not in report["must_include"]["overflow"]
+
+
+def test_autoqueue_indeterminate_refresh_demotes_chronic_entries(tmp_path: Path) -> None:
+    # R3 leg: with an indeterminate queue snapshot, the refresh-only pass
+    # serves the persisted set; chronic entries must not spend the POST cap
+    # ahead of a healthy entry's stale proof.
+    runner = RotationRunner(25)
+    for number in range(1, 9):
+        runner.head_statuses[f"sha-{number}"] = [
+            _admission_status("failure", age_minutes=16, description="cc-pr-autoqueue blocked: x")
+        ]
+    runner.head_statuses["sha-9"] = [_admission_status("success", age_minutes=16)]
+    _seed_must_include_state(tmp_path, chronic=frozenset(range(1, 9)), healthy=frozenset({9}))
+    runner.merge_queue_stdout = "not-json"
+    report = tick(tmp_path, runner)
+    assert report["skipped"] is True
+    assert report["reason"] == "merge_queue_state_indeterminate"
+    assert report["must_include"]["refreshed"] == [9]
+    assert _status_posts(runner, "sha-9")
 
 
 def test_autoqueue_dequeued_followup_overflow_stays_in_state(tmp_path: Path) -> None:
