@@ -6,6 +6,15 @@ policy floor) and callers that pin argv keep working unchanged. Serves the
 surface ``sdlc/github.py`` uses plus ``--repo``/``--jq`` needed by the wider
 Phase B collapse.
 
+Value flags (``--title --body --head --base --state --search --limit`` and
+the repeatable ``--label/--add-label/--remove-label``) parse
+position-independently: they bind by name wherever they appear, so flag
+order relative to positionals cannot drop or mismap a value. Malformed
+input — unknown flag, flag without a value, ``-f`` without ``key=value``,
+``GH_REPO`` that is not ``owner/name``, or a missing/empty ``--body`` on
+the comment/create verbs — fails closed with a next action instead of
+posting partial state.
+
 Configuration (environment):
 
   FORGE_URL        base URL of the forge (default http://100.85.131.41:3000)
@@ -309,8 +318,14 @@ class Forge:
         return (created or {}).get("html_url", "")
 
     def api(self, path: str, method: str | None, fields: list[tuple[str, str]]) -> None:
-        path = path.replace("{owner}", self.repo.split("/")[0]).replace(
-            "{repo}", self.repo.split("/")[1]
+        repo_parts = self.repo.split("/")
+        if len(repo_parts) != 2 or not all(repo_parts):
+            raise ForgeError(
+                f"repo '{self.repo}' is not owner/name. Next action: set "
+                "GH_REPO=owner/name or --repo owner/name."
+            )
+        path = path.replace("{owner}", repo_parts[0]).replace(
+            "{repo}", repo_parts[1]
         )
         base = path.split("?")[0]
         if base.endswith("/dispatches") and "/actions/workflows/" not in base:
@@ -358,24 +373,19 @@ def _pr_state(pull: dict) -> str:
     return _issue_state(pull.get("state"))
 
 
-def _parse_kv_flags(args: list[str], prefix: str) -> list[str]:
-    # gh accepts both --flag=value and --flag value; accept both spellings
-    name = prefix[:-1] if prefix.endswith("=") else prefix
-    values: list[str] = []
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if prefix and arg.startswith(prefix):
-            values.append(arg[len(prefix) :])
-        elif arg == name and index + 1 < len(args):
-            values.append(args[index + 1])
-            index += 1
-        index += 1
-    return values
+def _field_pair(raw: str, flag: str) -> tuple[str, str]:
+    """A -f/-F value must be key=value with a non-empty key; fail closed."""
+    key, sep, value = raw.partition("=")
+    if not sep or not key:
+        raise ForgeError(
+            f"'{raw}' is not key=value. Next action: pass {flag} key=value "
+            "with an '=' and a non-empty key; raw values are rejected."
+        )
+    return key, value
 
 
 def _strip_pairs(args: list[str]) -> tuple[list[str], list[tuple[str, str]], dict[str, str]]:
-    """Split argv into positionals, -f/-F pairs, and consumed globals."""
+    """Split argv into positionals, validated -f/-F pairs, consumed globals."""
     positionals: list[str] = []
     fields: list[tuple[str, str]] = []
     globals_: dict[str, str] = {}
@@ -395,12 +405,17 @@ def _strip_pairs(args: list[str]) -> tuple[list[str], list[tuple[str, str]], dic
         if arg.startswith("--repo="):
             globals_["repo"] = arg.split("=", 1)[1]
             continue
-        if arg in ("-f", "-F") and index + 1 < len(args):
-            fields.append(tuple(args[index + 1].split("=", 1)))
+        if arg in ("-f", "-F"):
+            if index + 1 >= len(args):
+                raise ForgeError(
+                    f"{arg} needs a key=value value. Next action: pass "
+                    f"{arg} key=value."
+                )
+            fields.append(_field_pair(args[index + 1], arg))
             skip_next = True
             continue
         if arg.startswith("-f=") or arg.startswith("-F="):
-            fields.append(tuple(arg[2:].split("=", 1)))
+            fields.append(_field_pair(arg[2:], arg[:2]))
             continue
         if arg == "-X" and index + 1 < len(args):
             globals_["method"] = args[index + 1]
@@ -411,6 +426,68 @@ def _strip_pairs(args: list[str]) -> tuple[list[str], list[tuple[str, str]], dic
             continue
         positionals.append(arg)
     return positionals, fields, globals_
+
+
+_SINGLE_VALUE_FLAGS = (
+    "--title",
+    "--body",
+    "--head",
+    "--base",
+    "--state",
+    "--search",
+    "--limit",
+)
+_REPEATABLE_FLAGS = ("--label", "--add-label", "--remove-label")
+_KNOWN_VALUE_FLAGS = _SINGLE_VALUE_FLAGS + _REPEATABLE_FLAGS
+
+
+def _tokenize(args: list[str]) -> tuple[list[str], dict[str, str], dict[str, list[str]]]:
+    """Split argv into positionals, single-value flags, repeatable flags.
+
+    Parsing is position-independent: value flags bind by name wherever they
+    appear, so flag order relative to positionals cannot drop or mismap a
+    value. Unknown flags and flags without a value fail closed with a next
+    action; a lone ``-`` stays a positional.
+    """
+    positionals: list[str] = []
+    single: dict[str, str] = {}
+    repeat: dict[str, list[str]] = {}
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg.startswith("-") and "=" in arg:
+            name, _, value = arg.partition("=")
+            if name in _SINGLE_VALUE_FLAGS:
+                single[name] = value
+                index += 1
+                continue
+            if name in _REPEATABLE_FLAGS:
+                repeat.setdefault(name, []).append(value)
+                index += 1
+                continue
+        if arg in _KNOWN_VALUE_FLAGS:
+            if index + 1 >= len(args) or args[index + 1] in _KNOWN_VALUE_FLAGS:
+                raise ForgeError(
+                    f"flag '{arg}' needs a value. Next action: pass "
+                    f"'{arg}=value' or a value that is not itself a flag."
+                )
+            value = args[index + 1]
+            if arg in _SINGLE_VALUE_FLAGS:
+                single[arg] = value
+            else:
+                repeat.setdefault(arg, []).append(value)
+            index += 2
+            continue
+        if arg.startswith("-") and arg != "-":
+            raise ForgeError(
+                f"unsupported flag '{arg}'. Next action: this command serves "
+                "--title --body --head --base --state --search --limit and "
+                "the repeatable --label/--add-label/--remove-label; --json "
+                "--jq --repo -f -F -X are consumed before this stage."
+            )
+        positionals.append(arg)
+        index += 1
+    return positionals, single, repeat
 
 
 def _split_json_and_jq(args: list[str]) -> tuple[list[str], list[str], str | None]:
@@ -457,24 +534,6 @@ def _emit(payload: str | list | dict, jq: str | None) -> None:
     print(text)
 
 
-def _body_flag(args: list[str]) -> tuple[list[str], str]:
-    body = ""
-    rest = []
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == "--body" and index + 1 < len(args):
-            body = args[index + 1]
-            index += 2
-            continue
-        if arg.startswith("--body="):
-            body = arg.split("=", 1)[1]
-        else:
-            rest.append(arg)
-        index += 1
-    return rest, body
-
-
 def main(argv: list[str]) -> int:
     if not argv:
         print(
@@ -500,24 +559,27 @@ def main(argv: list[str]) -> int:
         positionals, api_fields, flags = _strip_pairs(args)
         if flags.get("repo"):
             forge.repo = flags["repo"]
+        tokens, single, repeat = _tokenize(positionals)
 
         if command == "issue":
-            verb = positionals[0] if positionals else ""
-            number = positionals[1] if len(positionals) > 1 else ""
+            verb = tokens[0] if tokens else ""
+            number = tokens[1] if len(tokens) > 1 else ""
             if verb == "view":
                 _emit(forge.issue_view(number, fields_json), jq)
             elif verb == "list":
-                state = _flag_value(args, "--state", "open")
-                search = _flag_value(args, "--search", "")
-                limit = _flag_value(args, "--limit", "30")
+                state = single.get("--state", "open")
+                search = single.get("--search", "")
+                limit = single.get("--limit", "30")
                 _emit(forge.issue_list(state, search, limit, fields_json), jq)
             elif verb == "comment":
-                _, body = _body_flag(positionals[2:])
+                body = _required_body(single, "issue comment")
                 print(forge._comment(number, body))
             elif verb == "edit":
-                adds = _parse_kv_flags(positionals[2:], "--add-label=")
-                removes = _parse_kv_flags(positionals[2:], "--remove-label=")
-                forge._apply_labels(number, adds, removes)
+                forge._apply_labels(
+                    number,
+                    repeat.get("--add-label", []),
+                    repeat.get("--remove-label", []),
+                )
             else:
                 raise ForgeError(
                     f"unsupported issue verb '{verb}'. Next action: use "
@@ -526,8 +588,8 @@ def main(argv: list[str]) -> int:
             return 0
 
         if command == "pr":
-            verb = positionals[0] if positionals else ""
-            number = positionals[1] if len(positionals) > 1 else ""
+            verb = tokens[0] if tokens else ""
+            number = tokens[1] if len(tokens) > 1 else ""
             if verb == "view":
                 if not fields_json:
                     raise ForgeError(
@@ -540,19 +602,25 @@ def main(argv: list[str]) -> int:
             elif verb == "checks":
                 _emit(forge.pr_checks(number), jq)
             elif verb == "comment":
-                _, body = _body_flag(positionals[2:])
+                body = _required_body(single, "pr comment")
                 print(forge._comment(number, body))
             elif verb == "create":
-                title = _flag_value(args, "--title", "")
-                _, body = _body_flag(positionals[2:])
-                head = _flag_value(args, "--head", "")
-                base = _flag_value(args, "--base", "")
-                labels = _flag_values(args, "--label")
-                print(forge.pr_create(title, body, head or None, base or None, labels))
+                body = _required_body(single, "pr create")
+                print(
+                    forge.pr_create(
+                        single.get("--title", ""),
+                        body,
+                        single.get("--head", "") or None,
+                        single.get("--base", "") or None,
+                        repeat.get("--label", []),
+                    )
+                )
             elif verb == "edit":
-                adds = _parse_kv_flags(positionals[2:], "--add-label=")
-                removes = _parse_kv_flags(positionals[2:], "--remove-label=")
-                forge._apply_labels(number, adds, removes)
+                forge._apply_labels(
+                    number,
+                    repeat.get("--add-label", []),
+                    repeat.get("--remove-label", []),
+                )
             else:
                 raise ForgeError(
                     f"unsupported pr verb '{verb}'. Next action: use "
@@ -569,29 +637,15 @@ def main(argv: list[str]) -> int:
         return 1
 
 
-def _flag_value(args: list[str], flag: str, default: str) -> str:
-    for index, arg in enumerate(args):
-        if arg == flag and index + 1 < len(args):
-            return args[index + 1]
-        if arg.startswith(flag + "="):
-            return arg.split("=", 1)[1]
-    return default
-
-
-def _flag_values(args: list[str], flag: str) -> list[str]:
-    """Repeatable flag values (--label a --label b, --label=b), gh-style."""
-    values: list[str] = []
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        if arg == flag and index + 1 < len(args):
-            values.append(args[index + 1])
-            index += 2
-            continue
-        if arg.startswith(flag + "="):
-            values.append(arg.split("=", 1)[1])
-        index += 1
-    return values
+def _required_body(single: dict[str, str], what: str) -> str:
+    """Comment/create verbs require --body; dropped or empty fails closed."""
+    body = single.get("--body", "")
+    if not body:
+        raise ForgeError(
+            f"{what} needs --body (empty or dropped bodies are rejected). "
+            "Next action: pass --body <text>."
+        )
+    return body
 
 
 if __name__ == "__main__":
