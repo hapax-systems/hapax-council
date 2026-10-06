@@ -698,3 +698,30 @@ def test_main_end_to_end_with_fakes(tmp_path: Path) -> None:
     assert rc == 0
     assert len(runner.calls) == 1
     assert (tmp_path / "state.json").exists()
+
+
+def test_main_dry_run_prints_derived_events(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = fqr.main(
+        [
+            "--once",
+            "--dry-run",
+            "--shunt-url",
+            SHUNT_URL,
+            "--forge-url",
+            FORGE_URL,
+            "--repo",
+            REPO,
+            "--state-path",
+            str(tmp_path / "state.json"),
+        ],
+        fetch=make_fetch(LIVE_STATUS_IDLE, metrics_text(), "[]"),
+        runner=FakeRunner(),
+    )
+    assert rc == 0
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
+    assert len(lines) == 1
+    printed = json.loads(lines[0])
+    assert printed["event_type"] == "forge.queue.baseline"
+    assert not (tmp_path / "state.json").exists()

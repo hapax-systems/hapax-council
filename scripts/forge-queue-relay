@@ -748,7 +748,7 @@ def main(
             return 2
         fetcher = make_fetcher(args.forge_url, token)
     state_path = Path(args.state_path) if args.state_path else default_state_path()
-    rc, _ = run_once(
+    rc, events = run_once(
         shunt_url=args.shunt_url,
         forge_url=args.forge_url,
         repo=args.repo,
@@ -757,6 +757,9 @@ def main(
         runner=runner or real_runner,
         dry_run=args.dry_run,
     )
+    if args.dry_run and rc == 0:
+        for event in events:
+            print(json.dumps(event, sort_keys=True))
     return rc
 
 
