@@ -404,6 +404,11 @@ def load_config() -> ReviewConfig:
                 "refused PAYG base URL; this adapter only sends the pass-backed token to "
                 "https://api.z.ai/. Use a reviewed Z.ai endpoint or a separate adapter."
             )
+    if not _valid_payg_base_url(normalized_payg_base):
+        raise ConfigError(
+            "refused PAYG base URL; the fallback endpoint must stay on the Z.ai "
+            "PAYG API path, separate from the Coding Plan request URL"
+        )
     if thinking not in {"disabled", "enabled"}:
         raise ConfigError(
             "HAPAX_GLMCP_REVIEW_THINKING must be disabled or enabled; use disabled "
@@ -511,6 +516,26 @@ def _valid_coding_plan_primary_base_url(base_url: str) -> bool:
     expected_path = expected.path.rstrip("/")
     allowed_paths = {expected_path, f"{expected_path}-beta"}
     return path in allowed_paths or path.startswith(f"{expected_path}/")
+
+
+def _valid_payg_base_url(base_url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(base_url)
+        expected = urllib.parse.urlsplit(DEFAULT_PAYG_BASE_URL)
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or parsed.netloc != expected.netloc:
+        return False
+    if parsed.query or parsed.fragment or _has_forbidden_path_segment(parsed.path):
+        return False
+    path = parsed.path.rstrip("/")
+    expected_path = expected.path.rstrip("/")
+    return path in {
+        expected_path,
+        f"{expected_path}/chat/completions",
+        f"{expected_path}-beta",
+        f"{expected_path}-beta/chat/completions",
+    }
 
 
 def redact(text: str, secret: str) -> str:
@@ -752,7 +777,11 @@ def _call_glm_once_observed(
     }
     # A measured configuration control, not a retry or automatic fallback. Coding Plan
     # still sends the stop, and all replies retain the same client validation below.
-    if base_url.rstrip("/") == config.payg_base_url.rstrip("/") and not config.payg_server_stop:
+    if (
+        base_url.rstrip("/") == config.payg_base_url.rstrip("/")
+        and _valid_payg_base_url(base_url)
+        and not config.payg_server_stop
+    ):
         del payload["stop"]
         print(
             "hapax-glmcp-reviewer: PAYG request_configuration server_stop=omitted "

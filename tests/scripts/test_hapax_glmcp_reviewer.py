@@ -3519,6 +3519,101 @@ def test_payg_forced_thinking_translation_preserves_server_stop_setting() -> Non
     assert translated.max_tokens >= module.PAYG_THINKING_MIN_MAX_TOKENS
 
 
+@pytest.mark.parametrize(
+    "payg_url",
+    [
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+        "https://api.z.ai/api/coding/paas/v4/",
+        "https://api.z.ai/api/paas/v4/../../coding/paas/v4",
+        "https://api.z.ai/api/paas/v4/%2e%2e/coding",
+        "https://api.z.ai/api/paas/v4?endpoint=coding",
+        "https://api.z.ai/api/paas/v4#coding",
+        "https://api.z.ai/unreviewed",
+    ],
+)
+def test_payg_stop_override_rejects_non_payg_path_before_credential_or_network(
+    monkeypatch: pytest.MonkeyPatch, payg_url: str
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE", "1")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_BASE_URL", payg_url)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP", "0")
+    monkeypatch.setattr(module, "read_secret", lambda *_: pytest.fail("credential read"))
+    monkeypatch.setattr(module, "open_no_redirect", lambda *_args, **_kw: pytest.fail("network"))
+    assert module.main([]) == 2
+
+
+@pytest.mark.parametrize("suffix", ["", "/", "/chat/completions", "-beta"])
+def test_reviewed_payg_path_override_retains_configuration(
+    monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE", "1")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_BASE_URL", module.DEFAULT_PAYG_BASE_URL + suffix)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP", "0")
+    assert module.load_config().payg_server_stop is False
+
+
+def test_stop_off_requires_payg_path_at_the_actual_request_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break the _valid_payg_base_url use predicate: this test must fail."""
+    module = _load_module()
+    bodies: list[dict] = []
+    _serve(module, monkeypatch, _coding_plan_reply(FENCE), bodies)
+    config = replace(
+        _coding_plan_config(module),
+        payg_base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        payg_server_stop=False,
+    )
+    module._call_glm_once_observed(
+        "frozen prompt",
+        config,
+        "synthetic-secret",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        provider_label="Coding Plan",
+    )
+    assert bodies[0]["stop"] == [module.CLOSING_FENCE_STOP]
+
+
+@pytest.mark.parametrize("enabled, label", [(True, "retained"), (False, "omitted")])
+def test_payg_stop_check_reports_requested_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], enabled: bool, label: str
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP", "1" if enabled else "0")
+    monkeypatch.setattr(module, "read_secret", lambda *_: "synthetic-secret")
+    assert module.main(["--check"]) == 0
+    assert "payg_server_stop=" + label in capsys.readouterr().out
+
+
+def test_empty_payg_guidance_does_not_recommend_rejected_thinking_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_module()
+    payload = _payg_reply("glm-5.3", "")
+    payload["choices"][0]["message"]["reasoning_content"] = "synthetic reasoning"
+    _serve(module, monkeypatch, payload)
+    config = replace(module._payg_thinking_config(_payg_config(module)), payg_server_stop=False)
+    with pytest.raises(module.ProviderReplyUnusable) as exc:
+        module._call_glm_once_observed(
+            "frozen prompt",
+            config,
+            "synthetic-secret",
+            base_url=module.DEFAULT_PAYG_BASE_URL,
+            provider_label="PAYG API",
+        )
+    assert "PAYG forced thinking remains enabled" in str(exc.value)
+    assert "reliability owner" in str(exc.value)
+    assert "THINKING=disabled" not in str(exc.value)
+    diagnostic = capsys.readouterr().err
+    assert "request_configuration server_stop=omitted" in diagnostic
+    assert "thinking=enabled" in diagnostic
+
+
 def test_payg_server_stop_off_still_refuses_and_freezes_unidentified_spend(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
