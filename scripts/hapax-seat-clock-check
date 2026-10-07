@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""Observe lanebus created_at/current-mtime discrepancies and future stamps.
+
+No writes, model calls, network or repairs. Scope: ROOT/<box>/*.md only;
+read/ receipts and nested/archive directories are not messages. JSONL findings
+go to stdout, one summary to stderr. Exit 0: clear; 1: findings; 2: invalid or
+unavailable evidence (possibly alongside findings). Current mtime is NOT original
+write time. A read ack, when checked by the companion CLI, proves presence only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import stat
+import sys
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+
+# Direct execution must select this source tree and never create import caches.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import yaml  # noqa: E402
+
+from shared.cc_task_root import CcTaskRootUnavailable, _personal_vault  # noqa: E402
+from shared.frontmatter import parse_frontmatter_with_diagnostics  # noqa: E402
+
+MAX_METADATA_BYTES = 65536
+
+
+class InvalidEvidence(ValueError):
+    """A bounded reason, without content from private mail."""
+
+
+def timestamp(value):
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            raise InvalidEvidence("invalid_timestamp") from None
+    else:
+        raise InvalidEvidence("missing_or_invalid_timestamp")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise InvalidEvidence("timestamp_requires_timezone")
+    return parsed.astimezone(UTC)
+
+
+def iso(moment):
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+@contextmanager
+def directory(path, parent=None):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def read_metadata(parent, name, *, receipt=False):
+    """Read a bounded header, refusing symlinks/devices and concurrent edits."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    with os.fdopen(fd, "rb") as handle:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise InvalidEvidence("not_regular_file")
+        lines = []
+        remaining = MAX_METADATA_BYTES
+        while remaining > 0:
+            line = handle.readline(remaining + 1)
+            if not line:
+                break
+            remaining -= len(line)
+            if remaining < 0:
+                raise InvalidEvidence("metadata_too_large")
+            lines.append(line)
+            if receipt or line.strip() != b"---" and len(lines) == 1:
+                break
+            if len(lines) > 1 and line.strip() == b"---":
+                break
+        after = os.fstat(fd)
+        current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+
+        def signature(s):
+            return s.st_dev, s.st_ino, s.st_mode, s.st_size, s.st_mtime_ns
+
+        if signature(before) != signature(after) or signature(after) != signature(current):
+            raise InvalidEvidence("changed_during_read")
+        try:
+            text = b"".join(lines).decode("utf-8")
+        except UnicodeDecodeError:
+            raise InvalidEvidence("invalid_utf8") from None
+        return text, before
+
+
+def created_at(header):
+    parsed = parse_frontmatter_with_diagnostics(header)
+    if not parsed.ok:
+        raise InvalidEvidence(parsed.error_kind)
+    # The canonical parser accepts duplicate YAML keys. Do not let an ambiguous
+    # created_at silently become one chosen timestamp in an observation.
+    node = yaml.compose(header.split("\n---", 1)[0][3:])
+    if isinstance(node, yaml.MappingNode):
+        count = sum(key.value == "created_at" for key, _ in node.value)
+        if count != 1:
+            raise InvalidEvidence("missing_or_duplicate_created_at")
+    return timestamp(parsed.frontmatter.get("created_at"))
+
+
+def has_ack(box_fd, name, now):
+    try:
+        read_info = os.stat("read", dir_fd=box_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(read_info.st_mode):
+        raise InvalidEvidence("invalid_read_directory")
+    with directory("read", box_fd) as read_fd:
+        try:
+            os.stat(name, dir_fd=read_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        header, _ = read_metadata(read_fd, name, receipt=True)
+    fields = header.split()
+    if len(fields) < 2 or fields[0] != "acked:":
+        raise InvalidEvidence("malformed_read_ack")
+    if timestamp(fields[1]) > now:
+        raise InvalidEvidence("future_read_ack")
+    return True
+
+
+def threshold(raw):
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError("threshold must be finite and nonnegative") from None
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError("threshold must be finite and nonnegative")
+    return value
+
+
+def main(kind="clock"):
+    description = (
+        __doc__
+        if kind == "clock"
+        else (
+            "Observe old created_at stamps without valid read/<same-filename> ack twins. "
+            "Receipt presence is not semantic read-to-end. No writes or repairs. "
+            "Exit 0: clear; 1: findings; 2: invalid/unavailable evidence. "
+            "JSONL findings on stdout; bounded scan summary on stderr."
+        )
+    )
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument(
+        "--root", type=Path, help="lanebus root; default PERSONAL_VAULT_PATH binding"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=threshold,
+        default=60.0 if kind == "clock" else 2700.0,
+        help="seconds, strict >; mtime discrepancy or unacked created_at age",
+    )
+    parser.add_argument(
+        "--now", help="aware ISO timestamp for deterministic tests; default UTC clock"
+    )
+    args = parser.parse_args()
+    observed = datetime.now(UTC)
+    try:
+        now = timestamp(args.now) if args.now else observed
+        root = (
+            args.root.expanduser()
+            if args.root is not None
+            else (_personal_vault() / "30-areas" / "hapax" / "lanebus")
+        )
+    except (InvalidEvidence, CcTaskRootUnavailable, RuntimeError) as exc:
+        parser.error(f"invalid root/now binding: {exc}; next: supply --root and aware --now")
+    root = Path(os.path.abspath(root))
+    summary = {
+        "checker": kind,
+        "root": str(root),
+        "scope": "ROOT/<box>/*.md",
+        "now": iso(now),
+        "observed_at": iso(observed),
+        "clock_source": "injected" if args.now else "system_utc",
+        "threshold_seconds": args.threshold,
+        "boxes": 0,
+        "messages": 0,
+        "acknowledged": 0,
+        "skipped": 0,
+        "invalid": 0,
+        "findings": 0,
+        "mtime_basis": "current_filesystem_mtime_not_original_write",
+        "age_basis": "created_at",
+        "read_evidence": "ack_presence_not_semantic_read",
+    }
+
+    def finding(box, file, reason, delta=None, detail=None):
+        counter = "invalid" if reason == "invalid_evidence" else "findings"
+        summary[counter] += 1
+        row = {"box": box, "file": file, "kind": reason, "delta_seconds": delta}
+        if detail:
+            row["detail"] = detail
+        print(json.dumps(row, sort_keys=True))
+
+    def invalid(box, file, exc):
+        # Never print exception text from YAML: it may contain private content.
+        detail = str(exc) if isinstance(exc, InvalidEvidence) else type(exc).__name__
+        finding(box, file, "invalid_evidence", detail=detail)
+
+    errors = (OSError, InvalidEvidence, yaml.YAMLError, ValueError, TypeError, OverflowError)
+    try:
+        with directory(root) as root_fd:
+            for box in sorted(os.listdir(root_fd)):
+                try:
+                    info = os.stat(box, dir_fd=root_fd, follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode):
+                        raise InvalidEvidence("symlink_box")
+                    if not stat.S_ISDIR(info.st_mode):
+                        summary["skipped"] += 1
+                        continue
+                    with directory(box, root_fd) as box_fd:
+                        summary["boxes"] += 1
+                        for name in sorted(os.listdir(box_fd)):
+                            if not name.endswith(".md"):
+                                summary["skipped"] += 1
+                                continue
+                            summary["messages"] += 1
+                            try:
+                                header, info = read_metadata(box_fd, name)
+                                stamp = created_at(header)
+                                if kind == "clock":
+                                    delta = stamp.timestamp() - info.st_mtime
+                                    if abs(delta) > args.threshold:
+                                        finding(box, name, "mtime_discrepancy", delta)
+                                    ahead = (stamp - now).total_seconds()
+                                    if ahead > 0:
+                                        finding(box, name, "future_stamp", ahead)
+                                else:
+                                    age = (now - stamp).total_seconds()
+                                    if has_ack(box_fd, name, now):
+                                        summary["acknowledged"] += 1
+                                    elif age > args.threshold:
+                                        finding(box, name, "missing_read_ack", age)
+                            except errors as exc:
+                                invalid(box, name, exc)
+                except errors as exc:
+                    invalid(box, ".", exc)
+    except errors as exc:
+        invalid(".", ".", exc)
+    summary["finished_at"] = iso(datetime.now(UTC))
+    print(json.dumps(summary, sort_keys=True), file=sys.stderr)
+    return 2 if summary["invalid"] else 1 if summary["findings"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
