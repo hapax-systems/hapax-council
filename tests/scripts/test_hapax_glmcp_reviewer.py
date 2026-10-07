@@ -3528,11 +3528,13 @@ def test_payg_forced_thinking_translation_preserves_server_stop_setting() -> Non
         "https://api.z.ai/api/paas/v4/%2e%2e/coding",
         "https://api.z.ai/api/paas/v4?endpoint=coding",
         "https://api.z.ai/api/paas/v4#coding",
+        "https://api.z.ai/api/paas/v4?",
+        "https://api.z.ai/api/paas/v4#",
         "https://api.z.ai/unreviewed",
     ],
 )
 def test_payg_stop_override_rejects_non_payg_path_before_credential_or_network(
-    monkeypatch: pytest.MonkeyPatch, payg_url: str
+    monkeypatch: pytest.MonkeyPatch, payg_url: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     module = _load_module()
     _clean_env(monkeypatch)
@@ -3542,6 +3544,9 @@ def test_payg_stop_override_rejects_non_payg_path_before_credential_or_network(
     monkeypatch.setattr(module, "read_secret", lambda *_: pytest.fail("credential read"))
     monkeypatch.setattr(module, "open_no_redirect", lambda *_args, **_kw: pytest.fail("network"))
     assert module.main([]) == 2
+    message = capsys.readouterr().err
+    assert "Next action: unset HAPAX_GLMCP_REVIEW_PAYG_BASE_URL" in message
+    assert module.DEFAULT_PAYG_BASE_URL in message
 
 
 @pytest.mark.parametrize("suffix", ["", "/", "/chat/completions", "-beta"])
