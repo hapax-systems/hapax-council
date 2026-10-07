@@ -1039,21 +1039,46 @@ def review_route_blocked_families(
     return blocked
 
 
+def _route_block_observation_iso(value: datetime | str) -> str:
+    """A route-block observation instant as a whole-second UTC ISO stamp.
+
+    The map may carry datetimes (registry freshness) or strings (snapshot
+    instants); fractional seconds are floored and naive values are taken as
+    UTC, matching the outage-witness timestamp convention.
+    """
+    parsed = value if isinstance(value, datetime) else _parse_iso_datetime(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0).isoformat(timespec="seconds")
+
+
 def _degradation_notes(
     *,
     outage_families: Sequence[str],
     route_blocked_families: Mapping[str, Sequence[str]],
     route_ids: Mapping[str, str],
+    route_block_observed_at: Mapping[str, datetime | str] | None = None,
 ) -> list[str]:
+    observed_map = route_block_observed_at or {}
     notes = [f"degraded_family_outage:{family}" for family in sorted(outage_families)]
     for family in sorted(route_blocked_families):
         route_id = route_ids.get(family, "unknown")
         notes.append(f"degraded_family_route_blocked:{family}")
+        normalized_reasons: list[str] = []
         for reason in route_blocked_families[family]:
             normalized_reason = str(reason).strip()
             if normalized_reason.startswith(f"{route_id}:"):
                 normalized_reason = normalized_reason[len(route_id) + 1 :]
             notes.append(f"route_blocked_family_reason:{family}:{route_id}:{normalized_reason}")
+            normalized_reasons.append(normalized_reason)
+        notes.append(
+            f"route_blocked_family_reason_set:{family}:{';'.join(sorted(normalized_reasons))}"
+        )
+        if family in observed_map:
+            notes.append(
+                f"route_blocked_family_observed_at:{family}:"
+                f"{_route_block_observation_iso(observed_map[family])}"
+            )
     if outage_families:
         notes.append("post_recovery_rereview_required")
     if route_blocked_families:
@@ -1078,6 +1103,58 @@ def _route_block_reason_notes(
         reason = parts[3].strip()
         out.setdefault(family, []).append((route_id, reason))
     return {family: tuple(reasons) for family, reasons in out.items()}, tuple(malformed)
+
+
+def _route_block_reason_set_notes(
+    notes: Sequence[str],
+) -> tuple[dict[str, frozenset[str]], tuple[str, ...]]:
+    """Parse ``route_blocked_family_reason_set:<family>:<r1;r2;...>`` notes.
+
+    Comparison is order-insensitive (the note grammar fixes a sorted emission,
+    the exam compares as a set). A duplicate family, an empty payload or an
+    empty segment is malformed — the grammar is enforced, not guessed.
+    """
+    out: dict[str, frozenset[str]] = {}
+    malformed: list[str] = []
+    for note in notes:
+        if not note.startswith("route_blocked_family_reason_set:"):
+            continue
+        parts = note.split(":", 2)
+        if len(parts) != 3 or not parts[1].strip() or not parts[2].strip():
+            malformed.append(note)
+            continue
+        family = parts[1].strip()
+        reasons = [segment.strip() for segment in parts[2].split(";")]
+        if family in out or not reasons or any(not segment for segment in reasons):
+            malformed.append(note)
+            continue
+        out[family] = frozenset(reasons)
+    return out, tuple(malformed)
+
+
+def _route_block_observed_at_notes(
+    notes: Sequence[str],
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Parse ``route_blocked_family_observed_at:<family>:<ISO8601>`` notes.
+
+    The instant is kept as text here; the exam parses it and refuses stale or
+    unparsable observations rather than pre-validating in the parser.
+    """
+    out: dict[str, str] = {}
+    malformed: list[str] = []
+    for note in notes:
+        if not note.startswith("route_blocked_family_observed_at:"):
+            continue
+        parts = note.split(":", 2)
+        if len(parts) != 3 or not parts[1].strip() or not parts[2].strip():
+            malformed.append(note)
+            continue
+        family = parts[1].strip()
+        if family in out:
+            malformed.append(note)
+            continue
+        out[family] = parts[2].strip()
+    return out, tuple(malformed)
 
 
 def _route_reason_code(value: str) -> str:
@@ -1202,6 +1279,7 @@ def constitute_team(
     available_families: Sequence[str] | None = None,
     outage_families: frozenset[str] | set[str] = frozenset(),
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    route_block_observed_at: Mapping[str, datetime | str] | None = None,
     size_excluded_families: frozenset[str] | set[str] = frozenset(),
 ) -> Constitution:
     """Constitute the review team for a class — deterministic, fail-closed.
@@ -1272,6 +1350,7 @@ def constitute_team(
                         outage_families=[f for f in degraded if f in outage_families],
                         route_blocked_families=route_degraded,
                         route_ids=route_ids,
+                        route_block_observed_at=route_block_observed_at,
                     )
                 )
                 notes.append("degraded_to:t2_standard")
@@ -1291,6 +1370,7 @@ def constitute_team(
                     outage_families=out,
                     route_blocked_families={family: route_blocked[family] for family in blocked},
                     route_ids=route_ids,
+                    route_block_observed_at=route_block_observed_at,
                 )
             )
     min_families = int(sizing.get("min_families", 1))
@@ -2596,6 +2676,12 @@ def _dossier_validity_blockers(
     if _note_size_replaced != _field_size_replaced:
         blockers.append("review_dossier_size_replacements_inconsistent")
     _note_route_block_reasons, malformed_reason_notes = _route_block_reason_notes(_notes)
+    _note_route_block_reason_sets, malformed_reason_set_notes = _route_block_reason_set_notes(
+        _notes
+    )
+    _note_route_block_observed_at, malformed_observed_at_notes = _route_block_observed_at_notes(
+        _notes
+    )
     degraded_outage: list[str] = []
     degraded_route_blocked: list[str] = []
     if _note_out or _field_out or _note_route_blocked or _field_route_blocked:
@@ -2609,6 +2695,8 @@ def _dossier_validity_blockers(
             _note_out != _field_out
             or _note_route_blocked != _field_route_blocked
             or malformed_reason_notes
+            or malformed_reason_set_notes
+            or malformed_observed_at_notes
             or (_note_out and not dossier.get("post_recovery_rereview_required"))
             or (_note_route_blocked and not dossier.get("post_route_receipt_rereview_required"))
             or (sizing_degraded and team_class != "t1_critical")
@@ -2724,12 +2812,47 @@ def _dossier_validity_blockers(
             # re-checking, and that orientation has no constitution-time record to appeal to.
             route_ids = review_family_route_ids(registry)
             reason_mismatches: list[str] = []
+            set_missing: list[str] = []
+            observed_missing: list[str] = []
+            set_mismatches: list[str] = []
+            observation_stale: list[str] = []
+            try:
+                constituted_at = _parse_iso_datetime(dossier.get("constituted_at"))
+            except (TypeError, ValueError):
+                constituted_at = None
             for family in degraded_route_blocked:
                 recorded = _note_route_block_reasons.get(family, ())
                 recorded_route_ids = {route_id for route_id, _ in recorded}
                 expected_route_id = route_ids.get(family)
                 if not expected_route_id or recorded_route_ids != {expected_route_id}:
                     reason_mismatches.append(family)
+                    continue
+                # LEGD WITNESS (same row): the constitution-time record must carry its
+                # own complete reason set and a bounded-recency observation instant —
+                # fail-closed, no grandfathering. Every check refuses on its own term.
+                reason_set = _note_route_block_reason_sets.get(family)
+                if reason_set is None:
+                    set_missing.append(family)
+                    continue
+                observed_at_note = _note_route_block_observed_at.get(family)
+                if observed_at_note is None:
+                    observed_missing.append(family)
+                    continue
+                if not {reason for _, reason in recorded} <= reason_set:
+                    set_mismatches.append(family)
+                    continue
+                try:
+                    observed_at = _parse_iso_datetime(observed_at_note)
+                    if (
+                        constituted_at is None
+                        or not 0
+                        <= _seconds_between(constituted_at, observed_at)
+                        <= FAMILY_OUTAGE_TTL_S
+                    ):
+                        observation_stale.append(family)
+                        continue
+                except (TypeError, ValueError):
+                    observation_stale.append(family)
                     continue
                 if family not in live_route_blocked:
                     # Not live-blocked now: the constitution-time record stands (the presence
@@ -2747,6 +2870,29 @@ def _dossier_validity_blockers(
                 # cc-task-review-gate-degradation-subset-20260808.
                 if not recorded_reasons <= live_reasons:
                     reason_mismatches.append(family)
+            legd_witness_blockers: list[str] = []
+            if set_missing:
+                legd_witness_blockers.append(
+                    "review_dossier_route_block_reason_set_missing:" + ",".join(sorted(set_missing))
+                )
+            if observed_missing:
+                legd_witness_blockers.append(
+                    "review_dossier_route_block_observed_at_missing:"
+                    + ",".join(sorted(observed_missing))
+                )
+            if set_mismatches:
+                legd_witness_blockers.append(
+                    "review_dossier_route_block_reason_set_mismatch:"
+                    + ",".join(sorted(set_mismatches))
+                )
+            if observation_stale:
+                legd_witness_blockers.append(
+                    "review_dossier_route_block_observation_stale:"
+                    + ",".join(sorted(observation_stale))
+                )
+            if legd_witness_blockers:
+                blockers.extend(legd_witness_blockers)
+                return tuple(blockers)
             if reason_mismatches:
                 blockers.append(
                     "review_dossier_route_block_degradation_reason_mismatch:"

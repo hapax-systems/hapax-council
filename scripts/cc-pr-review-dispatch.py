@@ -56,7 +56,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -1388,6 +1388,7 @@ class ConstitutionInputs:
     walls: dict[str, dict[str, Any]]
     wall_error: str | None
     causes: dict[str, str]
+    route_block_observed_at: Mapping[str, datetime | str] | None = None
 
 
 def constitution_inputs(
@@ -1396,6 +1397,7 @@ def constitution_inputs(
     now_iso: str,
     *,
     apply: bool,
+    route_block_observed_at: Mapping[str, datetime | str] | None = None,
 ) -> ConstitutionInputs:
     """Outage latch + route recovery + live wall evidence, in that order.
 
@@ -1427,6 +1429,7 @@ def constitution_inputs(
         walls=walls,
         wall_error=wall_error,
         causes=causes,
+        route_block_observed_at=route_block_observed_at,
     )
 
 
@@ -1507,6 +1510,7 @@ def constitute_with_substitution(
                 pr_number=pr_number,
                 outage_families=outage_families,
                 route_blocked_families=route_blocked_families,
+                route_block_observed_at=inputs.route_block_observed_at,
             )
         except ValueError:
             pass  # baseline is only a replacement identity witness
@@ -1518,6 +1522,7 @@ def constitute_with_substitution(
             pr_number=pr_number,
             outage_families=outage_families,
             route_blocked_families=route_blocked_families,
+            route_block_observed_at=inputs.route_block_observed_at,
             available_families=[f for f in roster if f not in excluded_for_capacity],
             size_excluded_families=frozenset(excluded_for_capacity),
         )
@@ -3921,8 +3926,17 @@ def _default_send_runner(cmd: list[str]) -> None:
 def _review_registry_and_route_blocks(
     registry_path: Path | None,
     route_blocked_families: dict[str, tuple[str, ...]] | None,
-) -> tuple[dict[str, Any], dict[str, tuple[str, ...]]]:
-    """The effective review roster and its route-blocked families (injected ones win)."""
+    *,
+    now_iso: str,
+) -> tuple[dict[str, Any], dict[str, tuple[str, ...]], dict[str, datetime | str]]:
+    """The effective review roster, its route-blocked families, and each blocked
+    family's observation instant (injected ones win, snapshotting to ``now_iso``).
+
+    The instant comes from the SAME registry load the blocked set came from: the
+    route's ``freshness.capability_checked_at`` when the route and the value are
+    both present, else the snapshot instant — an unobservable family still gets a
+    timestamped witness rather than silence (seat-settled fork, 2026-10-06).
+    """
 
     registry = review_team.load_lens_registry(registry_path)
     platform_registry = (
@@ -3935,14 +3949,21 @@ def _review_registry_and_route_blocks(
     registry = review_team.review_registry_with_route_families(
         registry, platform_registry=platform_registry
     )
-    effective = (
-        dict(route_blocked_families)
-        if route_blocked_families is not None
-        else review_team.review_route_blocked_families(
+    if route_blocked_families is not None:
+        effective = dict(route_blocked_families)
+        observed_at: dict[str, datetime | str] = {family: now_iso for family in effective}
+    else:
+        effective = review_team.review_route_blocked_families(
             registry, platform_registry=platform_registry
         )
-    )
-    return registry, effective
+        route_map = platform_registry.route_map()
+        route_ids = review_team.review_family_route_ids(registry)
+        observed_at = {}
+        for family in effective:
+            route = route_map.get(route_ids.get(family) or "")
+            checked_at = route.freshness.capability_checked_at if route is not None else None
+            observed_at[family] = checked_at if checked_at is not None else now_iso
+    return registry, effective, observed_at
 
 
 def review_pr(
@@ -3976,8 +3997,10 @@ def review_pr(
     send_runner = send_runner or _default_send_runner
     now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
     try:
-        registry, effective_route_blocked_families = _review_registry_and_route_blocks(
-            registry_path, route_blocked_families
+        registry, effective_route_blocked_families, route_block_observed_at = (
+            _review_registry_and_route_blocks(
+                registry_path, route_blocked_families, now_iso=now_iso
+            )
         )
     except review_team.PlatformCapabilityRegistryError as exc:
         return {
@@ -4022,8 +4045,16 @@ def review_pr(
             task_ids,
             now_iso=now_iso,
         )
+        for family in effective_route_blocked_families:
+            route_block_observed_at.setdefault(family, now_iso)
 
-    inputs = constitution_inputs(registry, effective_route_blocked_families, now_iso, apply=apply)
+    inputs = constitution_inputs(
+        registry,
+        effective_route_blocked_families,
+        now_iso,
+        apply=apply,
+        route_block_observed_at=route_block_observed_at,
+    )
     outage_witness = inputs.outage_witness
     outage_families = inputs.outage_families
 
@@ -4740,8 +4771,8 @@ def review_artifact(
     files = tuple(entry["path"] for entry in manifest)
 
     try:
-        registry, route_blocks = _review_registry_and_route_blocks(
-            registry_path, route_blocked_families
+        registry, route_blocks, route_block_observed_at = _review_registry_and_route_blocks(
+            registry_path, route_blocked_families, now_iso=now_iso
         )
     except review_team.PlatformCapabilityRegistryError as exc:
         return {
@@ -4753,7 +4784,15 @@ def review_artifact(
         route_blocks = _task_scoped_paid_review_route_blocked_families(
             registry, route_blocks, [task_id], now_iso=now_iso
         )
-    inputs = constitution_inputs(registry, route_blocks, now_iso, apply=apply)
+        for family in route_blocks:
+            route_block_observed_at.setdefault(family, now_iso)
+    inputs = constitution_inputs(
+        registry,
+        route_blocks,
+        now_iso,
+        apply=apply,
+        route_block_observed_at=route_block_observed_at,
+    )
     dossier_path = review_team.review_dossier_path(note_path, task_id)
 
     def side_effects(dossier: dict[str, Any]) -> dict[str, Any]:
