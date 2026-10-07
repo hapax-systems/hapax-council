@@ -70,13 +70,13 @@ def ack(message, content="acked: 2026-10-07T21:59:00Z handled\n"):
     return path
 
 
-def run_check(kind, root, *extra, env=None, explicit_root=True):
+def run_check(kind, root, *extra, env=None, explicit_root=True, observation=""):
     before = snapshot(root)
     cmd = [
         sys.executable,
         "-B",
         "-c",
-        AUDITED_RUN,
+        AUDITED_RUN.replace("sys.argv = sys.argv[1:]", observation + "\nsys.argv = sys.argv[1:]"),
         str(REPO / "scripts" / f"hapax-seat-{kind}-check"),
     ]
     if explicit_root:
@@ -93,6 +93,7 @@ def run_check(kind, root, *extra, env=None, explicit_root=True):
     assert snapshot(root) == before
     assert "AUDIT:" not in result.stderr
     assert "PRIVATE BODY" not in result.stdout + result.stderr
+    assert "PRIVATE METADATA" not in result.stdout + result.stderr
     rows = [json.loads(line) for line in result.stdout.splitlines()]
     return result, rows
 
@@ -328,3 +329,138 @@ def test_unreadable_message_is_explicit_and_other_files_continue(tmp_path, kind)
         assert json.loads(result.stderr)["findings"] == 1
     finally:
         denied.chmod(0o600)
+
+
+@pytest.mark.parametrize("delta", [-60.25, -60, 60, 60.25])
+def test_clock_strict_threshold_both_signs(tmp_path, delta):
+    mail(tmp_path, mtime=EPOCH - delta)
+    result, rows = run_check("clock", tmp_path)
+    beyond = abs(delta) > 60
+    assert result.returncode == int(beyond), result.stderr
+    assert [(row["kind"], row["delta_seconds"]) for row in rows] == (
+        [("mtime_discrepancy", delta)] if beyond else []
+    )
+    summary = json.loads(result.stderr)
+    assert summary["invalid"] == 0 and summary["findings"] == int(beyond)
+
+
+def assert_invalid_then_later_finding(result, rows, kind, detail):
+    assert result.returncode == 2, result.stderr
+    assert [(row["file"], row["kind"]) for row in rows] == [
+        ("bad.md", "invalid_evidence"),
+        ("later.md", "mtime_discrepancy" if kind == "clock" else "missing_read_ack"),
+    ]
+    assert rows[0]["box"] == "seat" and rows[0]["detail"] == detail
+    assert rows[0]["delta_seconds"] is None
+    assert rows[1]["delta_seconds"] == (-120 if kind == "clock" else 120)
+    summary = json.loads(result.stderr)
+    assert summary["messages"] == 2
+    assert summary["invalid"] == 1 and summary["findings"] == 1
+    assert summary["acknowledged"] == 0
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+def test_nested_yaml_is_invalid_and_scan_continues(tmp_path, kind):
+    message = mail(tmp_path, "bad.md")
+    message.write_text(
+        f"---\ncreated_at: {NOW}\nother: " + "[" * 1000 + "0" + "]" * 1000 + "\n---\nPRIVATE BODY\n"
+    )
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    result, rows = run_check(kind, tmp_path)
+    assert_invalid_then_later_finding(result, rows, kind, "RecursionError")
+
+
+@pytest.mark.parametrize("kind,receipt", [("clock", False), ("inbox", False), ("inbox", True)])
+@pytest.mark.parametrize("detail", ["metadata_too_large", "invalid_utf8"])
+def test_bounded_metadata_errors_continue(tmp_path, kind, receipt, detail):
+    message = mail(tmp_path, "bad.md")
+    target = ack(message) if receipt else message
+    if detail == "metadata_too_large":
+        prefix = b"acked: " if receipt else f"---\ncreated_at: {NOW}\nother: ".encode()
+        target.write_bytes(prefix + b"x" * 65537 + b"\n---\nPRIVATE BODY\n")
+    else:
+        prefix = b"acked: " if receipt else b"---\ncreated_at: "
+        target.write_bytes(prefix + b"\xff PRIVATE METADATA\n---\nPRIVATE BODY\n")
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    result, rows = run_check(kind, tmp_path)
+    assert_invalid_then_later_finding(result, rows, kind, detail)
+
+
+@pytest.mark.parametrize("kind,receipt", [("clock", False), ("inbox", False), ("inbox", True)])
+@pytest.mark.parametrize("phase", ["open_descriptor", "path_replaced"])
+def test_changed_metadata_observations_continue(tmp_path, kind, receipt, phase):
+    message = mail(tmp_path, "bad.md")
+    target = ack(message) if receipt else message
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    # Inject only a stat observation, after the process audit is installed. The
+    # real fixture remains byte/mode/mtime identical; no timed writer or race.
+    observation = f"""
+from types import SimpleNamespace
+target = {str(target)!r}
+phase = {phase!r}
+real_fstat, real_stat = os.fstat, os.stat
+seen = 0
+def changed(info, field):
+    fields = {{key: getattr(info, key) for key in dir(info) if key.startswith('st_')}}
+    fields[field] += 1
+    return SimpleNamespace(**fields)
+def observed_fstat(fd):
+    global seen
+    info = real_fstat(fd)
+    if phase == 'open_descriptor' and os.readlink('/proc/self/fd/' + str(fd)) == target:
+        seen += 1
+        if seen == 2:
+            return changed(info, 'st_mtime_ns')
+    return info
+def observed_stat(path, *args, **kwargs):
+    info = real_stat(path, *args, **kwargs)
+    parent = kwargs.get('dir_fd')
+    if parent is not None and path == 'bad.md':
+        if os.readlink('/proc/self/fd/' + str(parent)) + '/' + path == target:
+            if phase == 'path_replaced':
+                return changed(info, 'st_ino')
+            if seen == 2:
+                return changed(info, 'st_mtime_ns')
+    return info
+os.fstat, os.stat = observed_fstat, observed_stat
+"""
+    result, rows = run_check(kind, tmp_path, observation=observation)
+    assert_invalid_then_later_finding(result, rows, kind, "changed_during_read")
+    assert rows[0]["next_action"] == (
+        "Rerun when the message or receipt is stable; this scan cannot establish its state."
+    )
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize("category", ["unavailable", "malformed"])
+def test_invalid_evidence_has_bounded_next_action(tmp_path, kind, category):
+    if category == "unavailable":
+        result, rows = run_check(kind, tmp_path, "--root", str(tmp_path / "absent"))
+        expected = "Check the declared root, path type and read permissions; rerun when available."
+    else:
+        mail(tmp_path).write_text('---\ncreated_at: "PRIVATE METADATA\n---\nPRIVATE BODY\n')
+        result, rows = run_check(kind, tmp_path)
+        expected = (
+            "Inspect the message header or read-ack format locally; "
+            "rerun after an authorized correction."
+        )
+    assert result.returncode == 2
+    assert len(rows) == 1 and rows[0]["kind"] == "invalid_evidence"
+    assert rows[0]["next_action"] == expected
+    assert json.loads(result.stderr)["invalid"] == 1
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+def test_parser_exception_text_is_never_emitted(tmp_path, kind):
+    mail(tmp_path, "bad.md")
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    observation = """
+import yaml
+real_compose = yaml.compose
+def observed_compose(*args, **kwargs):
+    yaml.compose = real_compose
+    raise yaml.YAMLError('PRIVATE METADATA in parser exception')
+yaml.compose = observed_compose
+"""
+    result, rows = run_check(kind, tmp_path, observation=observation)
+    assert_invalid_then_later_finding(result, rows, kind, "YAMLError")

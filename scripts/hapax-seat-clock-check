@@ -200,20 +200,49 @@ def main(kind="clock"):
         "read_evidence": "ack_presence_not_semantic_read",
     }
 
-    def finding(box, file, reason, delta=None, detail=None):
+    def finding(box, file, reason, delta=None, detail=None, next_action=None):
         counter = "invalid" if reason == "invalid_evidence" else "findings"
         summary[counter] += 1
         row = {"box": box, "file": file, "kind": reason, "delta_seconds": delta}
         if detail:
             row["detail"] = detail
+        if next_action:
+            row["next_action"] = next_action
         print(json.dumps(row, sort_keys=True))
 
     def invalid(box, file, exc):
         # Never print exception text from YAML: it may contain private content.
         detail = str(exc) if isinstance(exc, InvalidEvidence) else type(exc).__name__
-        finding(box, file, "invalid_evidence", detail=detail)
+        if detail == "changed_during_read":
+            action = (
+                "Rerun when the message or receipt is stable; this scan cannot establish its state."
+            )
+        elif isinstance(exc, OSError) or detail in {
+            "symlink_box",
+            "not_regular_file",
+            "invalid_read_directory",
+        }:
+            action = (
+                "Check the declared root, path type and read permissions; rerun when available."
+            )
+        else:
+            action = (
+                "Inspect the message header or read-ack format locally; "
+                "rerun after an authorized correction."
+            )
+        finding(box, file, "invalid_evidence", detail=detail, next_action=action)
 
-    errors = (OSError, InvalidEvidence, yaml.YAMLError, ValueError, TypeError, OverflowError)
+    # Bounded YAML can still exhaust parser recursion; keep it invalid and
+    # continue at the same per-message boundary as other metadata failures.
+    errors = (
+        OSError,
+        InvalidEvidence,
+        yaml.YAMLError,
+        ValueError,
+        TypeError,
+        OverflowError,
+        RecursionError,
+    )
     try:
         with directory(root) as root_fd:
             for box in sorted(os.listdir(root_fd)):
