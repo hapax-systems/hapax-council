@@ -477,6 +477,7 @@ PYEOF
 
 prove_local_codex_exec_auth() {
   local codex_bin="$1" output_file="" error_file="" rc=0 timeout_s="" auth_output="" auth_error=""
+  codex_bin="$(resolve_governed_codex_bin)" || exit 78
   timeout_s="${HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS:-30}"
   if ! python3 - "$timeout_s" <<'PYEOF' >/dev/null 2>&1
 import math
@@ -511,7 +512,7 @@ PYEOF
     PATH="$PATH" \
     REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" \
     SSL_CERT_FILE="${SSL_CERT_FILE:-}" \
-    "$codex_bin" exec "${CODEX_EXECUTION_ARGS[@]}" \
+    "$codex_bin" exec "${CODEX_EXECUTION_ARGS[@]}" -c check_for_update_on_startup=false \
       --ephemeral \
       --skip-git-repo-check \
       --ignore-rules \
@@ -634,22 +635,6 @@ REMOTE_PREFLIGHT_PY='import base64,json,math,os,shutil,subprocess,sys; p=json.lo
 missing_dirs=[path for path in p.get("required_dirs",()) if not os.path.isdir(path)]
 missing_exec=[path for path in p.get("executables",()) if not (os.path.isfile(path) and os.access(path, os.X_OK))]
 missing_bins=[binary for binary in p.get("binaries",()) if binary!="codex" and not shutil.which(binary)]
-def _resolve_path(binary):
-    path=os.path.expanduser(binary)
-    if os.path.isabs(path) or os.sep in path:
-        return os.path.abspath(path) if os.path.isfile(path) and os.access(path,os.X_OK) else None
-    return shutil.which(binary)
-def _resolve_codex_bin():
-    codex_bin=shutil.which("codex")
-    if codex_bin:
-        return codex_bin,""
-    npm_prefix=(p.get("npm_config_prefix") or os.environ.get("NPM_CONFIG_PREFIX","")).rstrip("/")
-    for candidate in ((p.get("codex_bin_path") or os.environ.get("HAPAX_CODEX_BIN_PATH") or "").strip(),os.path.expanduser("~/.npm-global/bin/codex"),(npm_prefix+"/bin/codex") if npm_prefix else "",os.path.expanduser("~/.local/share/npm/bin/codex"),"/usr/local/bin/codex"):
-        if candidate:
-            resolved=_resolve_path(candidate)
-            if resolved:
-                return resolved,""
-    return None,"codex_binary_missing"
 def _assistant_content_text(content):
     if isinstance(content,str):
         return content
@@ -703,7 +688,7 @@ def _auth_error(output, default):
         return "codex_saved_auth_login_required"
     return default
 auth_error=""
-codex_bin,codex_resolution_error=_resolve_codex_bin()
+codex_bin,codex_resolution_error=_resolve_codex_bin(p.get("codex_bin_path") or os.environ.get("HAPAX_CODEX_BIN_PATH", ""))
 if codex_bin is None:
     auth_error=codex_resolution_error
 else:
@@ -721,7 +706,7 @@ else:
     if not math.isfinite(timeout_s) or timeout_s <= 0:
         timeout_s=30.0
     try:
-        result=subprocess.run([codex_bin,"exec",*p["execution_args"],"--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=timeout_s,env=env)
+        result=subprocess.run([codex_bin,"exec",*p["execution_args"],"-c","check_for_update_on_startup=false","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=timeout_s,env=env)
     except subprocess.TimeoutExpired:
         auth_error="codex_saved_auth_exec_timeout"
     except OSError as exc:
@@ -741,23 +726,7 @@ try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
     pass
-def _resolve_path(binary):
-    path=os.path.expanduser(binary)
-    if os.path.isabs(path) or os.sep in path:
-        return os.path.abspath(path) if os.path.isfile(path) and os.access(path,os.X_OK) else None
-    return shutil.which(binary)
-def _resolve_codex_bin():
-    codex_bin=shutil.which("codex")
-    if codex_bin:
-        return codex_bin,""
-    npm_prefix=(p.get("npm_config_prefix") or os.environ.get("NPM_CONFIG_PREFIX","")).rstrip("/")
-    for candidate in ((p.get("codex_bin_path") or os.environ.get("HAPAX_CODEX_BIN_PATH") or "").strip(),os.path.expanduser("~/.npm-global/bin/codex"),(npm_prefix+"/bin/codex") if npm_prefix else "",os.path.expanduser("~/.local/share/npm/bin/codex"),"/usr/local/bin/codex"):
-        if candidate:
-            resolved=_resolve_path(candidate)
-            if resolved:
-                return resolved,""
-    return None,"codex_binary_missing"
-codex_bin,codex_resolution_error=_resolve_codex_bin()
+codex_bin,codex_resolution_error=_resolve_codex_bin(p.get("codex_bin_path") or os.environ.get("HAPAX_CODEX_BIN_PATH", ""))
 if codex_bin is None:
     print("hapax-codex: remote Codex binary is unavailable: "+codex_resolution_error+"; next action: repair PATH on the dispatch host or set HAPAX_CODEX_BIN_PATH to the executable before retrying", file=sys.stderr)
     sys.exit(78)
@@ -1042,6 +1011,8 @@ fi
 # shellcheck source=scripts/capability-execution.sh
 EXECUTION_SOURCE_ROOT="$(cd -- "$EXECUTION_SOURCE_ROOT" && pwd -P)" || exit 9
 . "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh"
+REMOTE_PREFLIGHT_PY="$CODEX_PIN_PY"$'\n'"$REMOTE_PREFLIGHT_PY"
+REMOTE_EXEC_PY="$CODEX_PIN_PY"$'\n'"$REMOTE_EXEC_PY"
 bind_codex_execution || exit 9
 
 if [ -z "$SESSION" ]; then
@@ -1155,29 +1126,7 @@ COCKPIT_BASE_URL="${COCKPIT_BASE_URL:-$LOGOS_BASE_URL}"
 
 CODEX_BIN=""
 if [ -z "$DISPATCH_HOST" ]; then
-  CODEX_BIN="$(command -v codex || true)"
-  if [ -z "$CODEX_BIN" ]; then
-    # PATH lookup missed codex. A common cause is a thin systemd-unit PATH (e.g.
-    # hapax-lane-supervisor) that omits ~/.npm-global/bin, where `npm i -g
-    # @openai/codex` installs the launcher — the rc=4 "codex not found" respawn-loop
-    # root cause. Fall back to the usual npm-global install locations so any
-    # thin-PATH caller can still resolve codex.
-    for _cand in \
-      "${HAPAX_CODEX_BIN_PATH:-}" \
-      "$HOME/.npm-global/bin/codex" \
-      "${NPM_CONFIG_PREFIX:+$NPM_CONFIG_PREFIX/bin/codex}" \
-      "$HOME/.local/share/npm/bin/codex" \
-      "/usr/local/bin/codex"; do
-      if [ -n "$_cand" ] && [ -f "$_cand" ] && [ -x "$_cand" ]; then
-        CODEX_BIN="$_cand"
-        break
-      fi
-    done
-  fi
-  if [ -z "$CODEX_BIN" ]; then
-    echo "hapax-codex: codex not found in PATH; next action: install the Codex CLI, repair PATH, or set HAPAX_CODEX_BIN_PATH to the executable before retrying" >&2
-    exit 4
-  fi
+  CODEX_BIN="$(resolve_governed_codex_bin)" || exit 78
 else
   CODEX_BIN="codex"
 fi
@@ -1465,6 +1414,7 @@ if [ "$TERMINAL" = "none" ]; then
   if [ -n "$DISPATCH_FALLBACK_REASON" ]; then
     write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "1" "$DISPATCH_FALLBACK_REASON"
   fi
+  CODEX_BIN="$(resolve_governed_codex_bin)" || exit 78
   exec "$CODEX_BIN" "${CODEX_ARGS[@]}"
 fi
 
