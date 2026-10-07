@@ -48,7 +48,10 @@ def timestamp(value):
         raise InvalidEvidence("missing_or_invalid_timestamp")
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise InvalidEvidence("timestamp_requires_timezone")
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:
+        raise InvalidEvidence("timestamp_out_of_utc_range") from None
 
 
 def iso(moment):
@@ -136,12 +139,16 @@ def has_ack(box_fd, name, now):
 
 
 def threshold(raw):
+    guidance = (
+        "threshold must be finite and nonnegative; "
+        "next: supply --threshold with a finite number of seconds >= 0"
+    )
     try:
         value = float(raw)
     except ValueError:
-        raise argparse.ArgumentTypeError("threshold must be finite and nonnegative") from None
+        raise argparse.ArgumentTypeError(guidance) from None
     if not math.isfinite(value) or value < 0:
-        raise argparse.ArgumentTypeError("threshold must be finite and nonnegative")
+        raise argparse.ArgumentTypeError(guidance)
     return value
 
 
@@ -179,7 +186,10 @@ def main(kind="clock"):
             else (_personal_vault() / "30-areas" / "hapax" / "lanebus")
         )
     except (InvalidEvidence, CcTaskRootUnavailable, RuntimeError) as exc:
-        parser.error(f"invalid root/now binding: {exc}; next: supply --root and aware --now")
+        parser.error(
+            f"invalid root/now binding: {exc}; "
+            "next: supply --root and aware --now within UTC years 0001..9999"
+        )
     root = Path(os.path.abspath(root))
     summary = {
         "checker": kind,

@@ -7,7 +7,7 @@ import os
 import stat
 import subprocess
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -70,7 +70,9 @@ def ack(message, content="acked: 2026-10-07T21:59:00Z handled\n"):
     return path
 
 
-def run_check(kind, root, *extra, env=None, explicit_root=True, observation=""):
+def run_check(
+    kind, root, *extra, env=None, explicit_root=True, observation="", now=NOW, threshold="60"
+):
     before = snapshot(root)
     cmd = [
         sys.executable,
@@ -81,7 +83,11 @@ def run_check(kind, root, *extra, env=None, explicit_root=True, observation=""):
     ]
     if explicit_root:
         cmd += ["--root", str(root)]
-    cmd += ["--now", NOW, "--threshold", "60", *extra]
+    if now is not None:
+        cmd += ["--now", now]
+    if threshold is not None:
+        cmd += ["--threshold", threshold]
+    cmd += extra
     result = subprocess.run(
         cmd,
         capture_output=True,
@@ -246,11 +252,113 @@ def test_default_uses_declared_personal_vault(tmp_path, kind):
     assert json.loads(result.stderr)["root"] == str(root)
 
 
-@pytest.mark.parametrize("value", ["-1", "nan", "inf"])
-def test_invalid_threshold_rejected(tmp_path, value):
-    result, rows = run_check("clock", tmp_path, "--threshold", value)
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize("value", ["-1", "nan", "inf", "PRIVATE METADATA"])
+def test_invalid_threshold_rejected(tmp_path, kind, value):
+    result, rows = run_check(kind, tmp_path, threshold=value)
     assert result.returncode == 2
     assert not rows
+    assert "threshold must be finite and nonnegative" in result.stderr
+    assert "next: supply --threshold with a finite number of seconds >= 0" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize("now", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"])
+def test_now_utc_normalization_overflow_is_actionable(tmp_path, kind, now):
+    result, rows = run_check(kind, tmp_path, now=now)
+    assert result.returncode == 2, result.stderr
+    assert not rows
+    assert "timestamp_out_of_utc_range" in result.stderr
+    assert "next: supply --root and aware --now within UTC years 0001..9999" in result.stderr
+    assert "Traceback" not in result.stderr and "OverflowError" not in result.stderr
+    assert len(result.stderr) < 600
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize(
+    "now,expected",
+    [
+        ("0001-01-01T01:00:00+01:00", "0001-01-01T00:00:00Z"),
+        ("9999-12-31T22:59:59.999999-01:00", "9999-12-31T23:59:59.999999Z"),
+    ],
+)
+def test_now_utc_normalization_representable_boundaries(tmp_path, kind, now, expected):
+    result, rows = run_check(kind, tmp_path, now=now)
+    assert result.returncode == 0, result.stderr
+    assert not rows
+    summary = json.loads(result.stderr)
+    assert summary["now"] == expected
+    assert summary["clock_source"] == "injected"
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+def test_now_overflow_exception_text_is_redacted(tmp_path, kind):
+    observation = """
+import datetime
+class OverflowClock(datetime.datetime):
+    def astimezone(self, tz=None):
+        raise OverflowError('PRIVATE METADATA in normalization exception')
+datetime.datetime = OverflowClock
+"""
+    result, rows = run_check(kind, tmp_path, observation=observation)
+    assert result.returncode == 2, result.stderr
+    assert not rows
+    assert "timestamp_out_of_utc_range" in result.stderr
+    assert "next:" in result.stderr and "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+def test_system_utc_observation_is_bounded_by_invocation(tmp_path, kind):
+    before = datetime.now(UTC)
+    result, rows = run_check(kind, tmp_path, now=None, threshold=None)
+    after = datetime.now(UTC)
+    assert result.returncode == 0, result.stderr
+    assert not rows
+    summary = json.loads(result.stderr)
+    observed = datetime.fromisoformat(summary["observed_at"])
+    finished = datetime.fromisoformat(summary["finished_at"])
+    assert before <= observed <= finished <= after
+    assert summary["now"] == summary["observed_at"]
+    assert summary["clock_source"] == "system_utc"
+    assert summary["threshold_seconds"] == (60 if kind == "clock" else 2700)
+
+
+@pytest.mark.parametrize(
+    "kind,delta",
+    [("clock", delta) for delta in [-60.25, -60, -59.75, 59.75, 60, 60.25]]
+    + [("inbox", delta) for delta in [2699.75, 2700, 2700.25]],
+)
+def test_cli_default_thresholds_with_controlled_system_clock(tmp_path, kind, delta):
+    # Freeze the clock observation, not the CLI branch or comparison. No sleeps
+    # or simultaneous writer: quarter-second boundaries stay deterministic.
+    fixed = datetime(2026, 10, 9, 12, tzinfo=UTC)
+    observation = f"""
+import datetime
+class FixedClock(datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        assert tz is datetime.UTC
+        return cls.fromisoformat({fixed.isoformat()!r})
+datetime.datetime = FixedClock
+"""
+    stamp = fixed if kind == "clock" else fixed - timedelta(seconds=delta)
+    mtime = fixed.timestamp() - delta
+    mail(tmp_path, stamp=stamp.isoformat(), mtime=mtime)
+    result, rows = run_check(kind, tmp_path, now=None, threshold=None, observation=observation)
+    bound = 60 if kind == "clock" else 2700
+    beyond = abs(delta) > bound
+    assert result.returncode == int(beyond), result.stderr
+    reason = "mtime_discrepancy" if kind == "clock" else "missing_read_ack"
+    assert [(row["kind"], row["delta_seconds"]) for row in rows] == (
+        [(reason, delta)] if beyond else []
+    )
+    summary = json.loads(result.stderr)
+    assert summary["threshold_seconds"] == bound
+    assert summary["clock_source"] == "system_utc"
+    assert summary["now"] == summary["observed_at"] == fixed.isoformat().replace("+00:00", "Z")
+    assert summary["messages"] == 1 and summary["invalid"] == 0
+    assert summary["findings"] == int(beyond)
 
 
 def test_observed_clock_is_separate_from_injected_now(tmp_path):
