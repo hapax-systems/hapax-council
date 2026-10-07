@@ -179,7 +179,7 @@ def main(kind="clock"):
     args = parser.parse_args()
     observed = datetime.now(UTC)
     try:
-        now = timestamp(args.now) if args.now else observed
+        now = timestamp(args.now) if args.now is not None else observed
         root = (
             args.root.expanduser()
             if args.root is not None
@@ -197,7 +197,7 @@ def main(kind="clock"):
         "scope": "ROOT/<box>/*.md",
         "now": iso(now),
         "observed_at": iso(observed),
-        "clock_source": "injected" if args.now else "system_utc",
+        "clock_source": "injected" if args.now is not None else "system_utc",
         "threshold_seconds": args.threshold,
         "boxes": 0,
         "messages": 0,

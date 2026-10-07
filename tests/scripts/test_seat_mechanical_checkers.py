@@ -162,7 +162,6 @@ def test_supported_aware_timestamp_shapes(tmp_path, stamp):
         "---\nother: value\n---\n",
         "---\ncreated_at: [bad\n---\n",
         "---\ncreated_at: 2026-10-07T22:00:00Z\n",
-        "---\ncreated_at: 2026-10-07T22:00:00Z\ncreated_at: bad\n---\n",
     ],
 )
 def test_invalid_metadata_is_not_zero_findings(tmp_path, kind, content):
@@ -173,6 +172,23 @@ def test_invalid_metadata_is_not_zero_findings(tmp_path, kind, content):
     assert rows[0]["kind"] == "invalid_evidence"
     assert rows[0]["delta_seconds"] is None
     assert json.loads(result.stderr)["invalid"] == 1
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+def test_duplicate_valid_created_at_is_rejected(tmp_path, kind):
+    message = mail(tmp_path)
+    message.write_text(
+        "---\ncreated_at: 2026-10-07T21:59:30Z\ncreated_at: 2026-10-07T22:00:00Z\n---\n"
+    )
+    os.utime(message, (EPOCH, EPOCH))
+    result, rows = run_check(kind, tmp_path)
+    assert result.returncode == 2, result.stderr
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "invalid_evidence"
+    assert rows[0]["detail"] == "missing_or_duplicate_created_at"
+    assert rows[0]["delta_seconds"] is None
+    summary = json.loads(result.stderr)
+    assert summary["invalid"] == 1 and summary["findings"] == 0
 
 
 @pytest.mark.parametrize(
@@ -261,6 +277,18 @@ def test_invalid_threshold_rejected(tmp_path, kind, value):
     assert "threshold must be finite and nonnegative" in result.stderr
     assert "next: supply --threshold with a finite number of seconds >= 0" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize("now", ["", "PRIVATE METADATA"])
+def test_invalid_supplied_now_is_actionable(tmp_path, kind, now):
+    result, rows = run_check(kind, tmp_path, now=now)
+    assert result.returncode == 2, result.stderr
+    assert not rows
+    assert "invalid_timestamp" in result.stderr
+    assert "next: supply --root and aware --now within UTC years 0001..9999" in result.stderr
+    assert "Traceback" not in result.stderr and "ValueError" not in result.stderr
+    assert len(result.stderr) < 600
 
 
 @pytest.mark.parametrize("kind", ["clock", "inbox"])
