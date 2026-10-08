@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -327,8 +329,12 @@ def test_class_downgrade_is_held(case, declared):
     assert "class_violation" in result["reasons"]
 
 
-def test_unknown_surface_is_held_without_invented_binding(case):
-    case[2].surfaces_targeted = ["osf-preprint"]
+@pytest.mark.parametrize("form", ["post", "artifact"])
+def test_unknown_surface_is_held_without_invented_binding(case, form):
+    # A known short target removes an unrelated length hold, so this test
+    # actually detects a fabricated policy binding for the unknown target.
+    case[2].surfaces_targeted = ["osf-preprint", "bluesky-post"]
+    intent(case[2])["content_form"] = form
     case[1].surface_policy.allowed_surfaces.append("zenodo")
     assert run(case)["status"] == "held"
 
@@ -362,7 +368,8 @@ def test_concurrent_create_has_one_winner_and_complete_bytes(case):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         statuses = list(pool.map(lambda _: run(case)["status"], range(4)))
-    assert sorted(statuses) == ["created", "replay", "replay", "replay"]
+    assert statuses.count("created") == 1
+    assert statuses.count("replay") == 3
     path = case[2].draft_path(state_root=case[0])
     assert PreprintArtifact.model_validate_json(path.read_bytes()).slug == case[2].slug
     assert list(path.parent.iterdir()) == [path]
@@ -450,3 +457,222 @@ def test_reactive_duties_retained_for_long_reply(case):
     ]
     assert receipt["register"]["observation"] == "supplied_local_snapshot_only"
     assert receipt["register"]["snapshot_path"] == str(case[3])
+
+
+@pytest.mark.parametrize(
+    "surface", ["omg-weblog", "oudepode-omg-weblog", "zenodo-doi", "zenodo-refusal-deposit"]
+)
+@pytest.mark.parametrize("with_short_surface", [False, True])
+def test_durable_aliases_retain_class_a(case, surface, with_short_surface):
+    case[1].surface_policy.allowed_surfaces.append("zenodo")
+    case[2].surfaces_targeted = [surface] + (["bluesky-post"] if with_short_surface else [])
+    intent(case[2]).update(manual_dispatch=True, external_utterance_refs=["fixture:reply"])
+    result = run(case)
+    assert result["status"] == "created"
+    receipt = intent(PreprintArtifact.model_validate_json(Path(result["path"]).read_bytes()))
+    assert receipt["content_class"] == "A"
+    assert receipt["applicable_classes"] == ["A", "C"]
+    assert receipt["non_author_admission_required"] is True
+    assert "retro" in receipt["feedback_obligations"]
+    assert receipt["reactive_obligations"]
+    assert receipt["manual_obligations"]
+    # A short-form declaration cannot weaken the canonical durable target.
+    intent(case[2])["content_class"] = "B"
+    assert "class_violation" in run(case)["reasons"]
+
+
+@pytest.mark.parametrize(
+    "field", ["freshness_ref", "evidence_refs", "attribution_refs", "optional_attribution"]
+)
+@pytest.mark.parametrize("blank", ["", " ", "\t\n"])
+def test_blank_reference_elements_cannot_produce(case, field, blank):
+    data = case[1].model_dump(mode="json")
+    if field == "freshness_ref":
+        data["source"][field] = blank
+    elif field == "evidence_refs":
+        data["provenance"][field] = ["fixture:valid", blank]
+    else:
+        data.update(attribution_refs=["fixture:valid", blank])
+        if field == "attribution_refs":
+            data["rights_class"] = "third_party_attributed"
+    event = ResearchVehiclePublicEvent.model_validate(data)
+    result = run((case[0], event, *case[2:]))
+    assert result["status"] == "held"
+    assert ("attribution_missing" if "attribution" in field else "provenance_incomplete") in result[
+        "reasons"
+    ]
+    assert not case[2].draft_path(state_root=case[0]).exists()
+
+
+def test_installed_draft_fsync_failure_and_recovery(case, monkeypatch):
+    original_fsync = os.fsync
+    directory_calls = []
+
+    def fail_directory(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            directory_calls.append(fd)
+            raise OSError(5, "PRIVATE ERROR BODY")
+        original_fsync(fd)
+
+    monkeypatch.setattr(selector.os, "fsync", fail_directory)
+    first = run(case)
+    path = case[2].draft_path(state_root=case[0])
+    assert directory_calls and path.is_file()
+    before = (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ino)
+    assert first["status"] == "held"
+    assert first.get("path") == str(path)
+    assert first["installed"] is True
+    assert first["durability"] == "unconfirmed"
+    assert "PRIVATE ERROR BODY" not in json.dumps(first)
+    assert first["diagnostics"][0]["next_action"]
+    retry = run(case)
+    assert len(directory_calls) == 2
+    assert retry["status"] == "held"
+    assert retry["path"] == str(path)
+    assert retry["durability"] == "unconfirmed"
+    monkeypatch.setattr(selector.os, "fsync", original_fsync)
+    recovered = run(case)
+    assert recovered["status"] == "replay"
+    assert recovered["durability"] == "confirmed"
+    assert (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ino) == before
+    assert list(path.parent.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("edge", ["body_html", "no_surfaces", "dotdot", "missing_draft", "fifo"])
+def test_reported_error_branches(case, edge):
+    state, event, artifact, register = case
+    if edge == "body_html":
+        artifact.body_html = "<p>unexamined</p>"
+    elif edge == "no_surfaces":
+        artifact.surfaces_targeted = []
+    elif edge == "dotdot":
+        state = state / ".." / "state"
+    elif edge == "missing_draft":
+        (state / "publish/draft").rmdir()
+    else:
+        os.mkfifo(artifact.draft_path(state_root=state))
+    result = run((state, event, artifact, register))
+    assert result["status"] == ("conflict" if edge == "fifo" else "held")
+    expected = {
+        "body_html": "empty_or_unexamined_content",
+        "no_surfaces": "no_target_surface",
+        "dotdot": "unsafe_state_root",
+        "missing_draft": "draft_write_refused:2",
+        "fifo": "draft_conflict",
+    }
+    assert expected[edge] in result["reasons"]
+    assert result["diagnostics"] and all(d["next_action"] for d in result["diagnostics"])
+    if edge == "fifo":
+        assert stat.S_ISFIFO(artifact.draft_path(state_root=state).stat().st_mode)
+    else:
+        assert list(case[0].rglob("*.json")) == []
+
+
+@pytest.mark.parametrize("input_name", ["event", "artifact"])
+@pytest.mark.parametrize("failure", ["missing", "invalid_json", "invalid_field"])
+def test_cli_input_errors_are_actionable_and_private(case, tmp_path, capsys, input_name, failure):
+    paths = {"event": tmp_path / "event.json", "artifact": tmp_path / "artifact.json"}
+    paths["event"].write_text(case[1].model_dump_json())
+    paths["artifact"].write_text(case[2].model_dump_json())
+    bad_path = paths[input_name]
+    field = "salience" if input_name == "event" else "surfaces_targeted"
+    if failure == "missing":
+        bad_path.unlink()
+    elif failure == "invalid_json":
+        bad_path.write_text("PRIVATE INPUT BODY")
+    else:
+        data = json.loads(bad_path.read_text())
+        data[field] = "PRIVATE INPUT BODY"
+        bad_path.write_text(json.dumps(data))
+    args = ["--register", str(case[3]), "--state-root", str(case[0])]
+    for name, path in paths.items():
+        args.extend([f"--{name}", str(path)])
+    assert selector.main(args) == 2
+    captured = capsys.readouterr()
+    assert "PRIVATE INPUT BODY" not in captured.out + captured.err
+    result = json.loads(captured.out)
+    assert result["status"] == "held"
+    diagnostic = result["diagnostics"][0]
+    assert diagnostic["input"] == input_name
+    assert diagnostic["path"] == str(bad_path)
+    assert diagnostic["next_action"]
+    if failure == "invalid_field":
+        assert field in json.dumps(diagnostic["fields"])
+    assert list(case[0].rglob("*.json")) == []
+
+
+@pytest.mark.parametrize("failure", ["unsafe_slug", "register", "class", "write", "durability"])
+def test_cli_selection_refusals_have_safe_repair_guidance(
+    case, tmp_path, capsys, monkeypatch, failure
+):
+    if failure == "unsafe_slug":
+        case[2].slug = "../PRIVATE INPUT BODY"
+    elif failure == "register":
+        case[3].write_text("PRIVATE INPUT BODY")
+    elif failure == "class":
+        intent(case[2]).update(content_form="artifact", content_class="B")
+    elif failure == "write":
+        (case[0] / "publish/draft").rmdir()
+    else:
+        original_fsync = os.fsync
+
+        def fail_directory(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(5, "PRIVATE INPUT BODY")
+            original_fsync(fd)
+
+        monkeypatch.setattr(selector.os, "fsync", fail_directory)
+    event_path, artifact_path = tmp_path / "event.json", tmp_path / "artifact.json"
+    event_path.write_text(case[1].model_dump_json())
+    artifact_path.write_text(case[2].model_dump_json())
+    args = [
+        "--event",
+        str(event_path),
+        "--artifact",
+        str(artifact_path),
+        "--register",
+        str(case[3]),
+        "--state-root",
+        str(case[0]),
+    ]
+    for _ in range(2 if failure == "durability" else 1):
+        assert selector.main(args) == 2
+        captured = capsys.readouterr()
+        assert "PRIVATE INPUT BODY" not in captured.out + captured.err
+        result = json.loads(captured.out)
+        assert result["status"] == "held"
+        assert result["diagnostics"] and all(d["next_action"] for d in result["diagnostics"])
+        if failure == "register":
+            assert result["diagnostics"][0]["path"] == str(case[3])
+        if failure == "durability":
+            assert result["path"] == str(case[2].draft_path(state_root=case[0]))
+            assert result["installed"] is True
+            assert result["durability"] == "unconfirmed"
+        else:
+            assert list(case[0].rglob("*.json")) == []
+
+
+def test_replay_rechecks_existing_file_durability(case, monkeypatch):
+    first = run(case)
+    path = Path(first["path"])
+    before = (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ino)
+    original_fsync = os.fsync
+    failures = []
+
+    def fail_existing_file(fd):
+        if os.fstat(fd).st_ino == before[2]:
+            failures.append(fd)
+            raise OSError(5, "PRIVATE ERROR BODY")
+        original_fsync(fd)
+
+    monkeypatch.setattr(selector.os, "fsync", fail_existing_file)
+    result = run(case)
+    assert failures
+    assert result["status"] == "held"
+    assert result["path"] == str(path)
+    assert result["installed"] is True
+    assert result["durability"] == "unconfirmed"
+    assert "PRIVATE ERROR BODY" not in json.dumps(result)
+    monkeypatch.setattr(selector.os, "fsync", original_fsync)
+    assert run(case)["status"] == "replay"
+    assert (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ino) == before

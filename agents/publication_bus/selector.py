@@ -36,6 +36,8 @@ import uuid
 from hashlib import sha256
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from agents.cross_surface.bluesky_post import BLUESKY_TEXT_LIMIT
 from agents.cross_surface.mastodon_post import MASTODON_TEXT_LIMIT
 from shared.preprint_artifact import DRAFT_DIR_NAME, ApprovalState, PreprintArtifact
@@ -46,7 +48,8 @@ log = logging.getLogger(__name__)
 REGISTER_URL = "https://hapaxresearch.com/register/latest/register.json"
 # Existing adapter text contracts (cross_surface/{bluesky,mastodon}_post.py).
 SHORT_LIMITS = {"bluesky-post": BLUESKY_TEXT_LIMIT, "mastodon-post": MASTODON_TEXT_LIMIT}
-DURABLE_SURFACES = {"omg-weblog", "osf-preprint", "zenodo-doi", "philarchive"}
+# Canonical event surface identities; aliases resolve through the existing adapter.
+DURABLE_SURFACES = {"omg_weblog", "zenodo"}
 CHECKS = (
     "hieh_bounds",
     "chanc_fairness",
@@ -129,12 +132,15 @@ def _selection(event: ResearchVehiclePublicEvent, artifact: PreprintArtifact, re
         hygiene.append("rights_unresolved")
     if not (
         event.source.evidence_ref.strip()
-        and event.source.freshness_ref
+        and _nonempty(event.source.freshness_ref)
         and event.provenance.evidence_refs
+        and all(_nonempty(ref) for ref in event.provenance.evidence_refs)
         and event.provenance.rights_basis.strip()
     ):
         hygiene.append("provenance_incomplete")
-    if event.rights_class == "third_party_attributed" and not event.attribution_refs:
+    if (event.rights_class == "third_party_attributed" and not event.attribution_refs) or any(
+        not _nonempty(ref) for ref in event.attribution_refs
+    ):
         hygiene.append("attribution_missing")
     policy = event.surface_policy
     for surface in artifact.surfaces_targeted:
@@ -180,7 +186,7 @@ def _selection(event: ResearchVehiclePublicEvent, artifact: PreprintArtifact, re
         reasons.append("authority_provenance_missing")
     # Unknown short-form bounds stay fuzzy; no invented cross-platform threshold.
     limits = [SHORT_LIMITS[s] for s in artifact.surfaces_targeted if s in SHORT_LIMITS]
-    durable = bool(set(artifact.surfaces_targeted) & DURABLE_SURFACES)
+    durable = any(SURFACE_BINDINGS.get(s) in DURABLE_SURFACES for s in artifact.surfaces_targeted)
     if form == "post" and not limits and not durable:
         fuzzy.append("short_form_bound_unresolved")
     content_characters = len(artifact.title + artifact.abstract + artifact.body_md)
@@ -220,6 +226,10 @@ def _open_draft(state_root: Path) -> int:
         raise
 
 
+class _DraftDurabilityError(OSError):
+    """The matching draft is installed, but its durability is unconfirmed."""
+
+
 def _create(fd: int, name: str, payload: bytes) -> str:
     """Install complete bytes exclusively, including concurrent callers and replays."""
     temporary = f".selector-{uuid.uuid4().hex}.tmp"
@@ -233,19 +243,77 @@ def _create(fd: int, name: str, payload: bytes) -> str:
             os.fsync(stream.fileno())
         try:
             os.link(temporary, name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+            status = "created"
         except FileExistsError:
             existing = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
             with os.fdopen(existing, "rb") as stream:
                 if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                     return "conflict"
-                return "replay" if stream.read(len(payload) + 1) == payload else "conflict"
-        os.fsync(fd)
-        return "created"
+                if stream.read(len(payload) + 1) != payload:
+                    return "conflict"
+                try:
+                    os.fsync(stream.fileno())
+                except OSError as exc:
+                    raise _DraftDurabilityError(exc.errno, "existing_draft_fsync_failed") from exc
+            status = "replay"
+        # A previous installation may have failed here. Byte equality alone is
+        # insufficient for replay success: retry the durability boundary every time.
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise _DraftDurabilityError(exc.errno, "draft_directory_fsync_failed") from exc
+        return status
     finally:
         try:
             os.unlink(temporary, dir_fd=fd)
         except FileNotFoundError:
             pass
+
+
+def _diagnostic(reason: str, register_path: Path, state_root: Path) -> dict[str, str]:
+    """Static repair guidance: never render exception bodies or candidate content."""
+    if reason == "register_unreadable_or_invalid":
+        return {
+            "reason": reason,
+            "input": "register",
+            "path": str(register_path),
+            "next_action": "Supply a readable schema-1.0 register snapshot with valid records; retry.",
+        }
+    if reason.startswith("draft_") or reason == "unsafe_state_root":
+        action = (
+            "Preserve the installed draft; repair filesystem sync support and retry identical inputs "
+            "until durability is confirmed. Do not dispatch or create another intent."
+            if reason.startswith("draft_durability_unconfirmed")
+            else "Check the existing publish/draft directory, permissions and storage; use an "
+            "absolute state root without symlinks or parent traversal, then retry identical inputs."
+        )
+        if reason == "draft_conflict":
+            action = "Inspect the existing draft without overwriting it; reconcile the candidate with its owner."
+        return {
+            "reason": reason,
+            "input": "state-root",
+            "path": str(state_root),
+            "next_action": action,
+        }
+    guidance = {
+        "unsafe_slug": "Use a slug of 1–120 lowercase letters, digits, dots, underscores or hyphens, starting with a letter or digit.",
+        "class_violation": "Correct the declared content class to the computed strictest class; retain all applicable duties.",
+        "input_not_draft": "Supply an unapproved draft candidate through the composition path.",
+        "authority_provenance_missing": "Supply the existing authority case and parent spec in publication_gate_context.",
+        "provenance_incomplete": "Supply nonblank source, freshness, evidence and rights references, including every list element.",
+        "attribution_missing": "Supply nonblank attribution references for every third-party source.",
+        "register_duplicate": "Reconcile this candidate with its existing register entry; do not create a duplicate publication.",
+        "publication_lifecycle_event": "Use an originating research event; do not recirculate publication lifecycle events.",
+    }
+    return {
+        "reason": reason,
+        "next_action": guidance.get(
+            reason,
+            "Resolve the named selection or hygiene condition using source evidence and the existing "
+            "admission process, update the candidate declarations or source policy, then rerun selection. "
+            "Unresolved judgment must remain held.",
+        ),
+    }
 
 
 def produce(
@@ -300,6 +368,17 @@ def produce(
             fd = _open_draft(state_root)
             status = _create(fd, f"{draft.slug}.json", _bytes(draft.model_dump(mode="json")))
             result.update(status=status, path=str(draft.draft_path(state_root=state_root)))
+            if status in {"created", "replay"}:
+                result.update(installed=True, durability="confirmed")
+            else:
+                result["reasons"] = ["draft_conflict"]
+        except _DraftDurabilityError as exc:
+            result.update(
+                path=str(draft.draft_path(state_root=state_root)),
+                installed=True,
+                durability="unconfirmed",
+                reasons=[f"draft_durability_unconfirmed:{exc.errno}"],
+            )
         except OSError as exc:
             result["reasons"] = [f"draft_write_refused:{exc.errno}"]
             # A final symlink is an existing intent conflict, never a replay or overwrite.
@@ -310,6 +389,9 @@ def produce(
         finally:
             if fd is not None:
                 os.close(fd)
+    result["diagnostics"] = [
+        _diagnostic(reason, register_path, state_root) for reason in result["reasons"]
+    ]
     log.info(
         "publication selector status=%s judgment=%s reasons=%s",
         result["status"],
@@ -324,12 +406,36 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("event", "artifact", "register", "state-root"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     args = parser.parse_args(argv)
-    try:
-        event = ResearchVehiclePublicEvent.model_validate_json(args.event.read_bytes())
-        artifact = PreprintArtifact.model_validate_json(args.artifact.read_bytes())
+    inputs = {}
+    for name, model in (("event", ResearchVehiclePublicEvent), ("artifact", PreprintArtifact)):
+        path = getattr(args, name)
+        try:
+            inputs[name] = model.model_validate_json(path.read_bytes())
+        except (OSError, ValueError) as exc:
+            diagnostic = {
+                "input": name,
+                "path": str(path),
+                "next_action": "Supply a readable JSON file conforming to the named input model, repair the reported fields, and retry.",
+            }
+            if isinstance(exc, ValidationError):
+                diagnostic["fields"] = [
+                    {"location": error["loc"], "type": error["type"]}
+                    for error in exc.errors(
+                        include_input=False, include_context=False, include_url=False
+                    )
+                ]
+            elif isinstance(exc, OSError):
+                diagnostic["errno"] = exc.errno
+            result = {
+                "status": "held",
+                "judgment": "not_invoked",
+                "reasons": [type(exc).__name__],
+                "diagnostics": [diagnostic],
+            }
+            break
+    else:
+        event, artifact = inputs["event"], inputs["artifact"]
         result = produce(event, artifact, register_path=args.register, state_root=args.state_root)
-    except (OSError, ValueError) as exc:
-        result = {"status": "held", "judgment": "not_invoked", "reasons": [type(exc).__name__]}
     print(json.dumps(result, sort_keys=True))
     return 0 if result["status"] in {"created", "replay"} else 2
 
