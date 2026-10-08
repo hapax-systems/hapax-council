@@ -272,15 +272,17 @@ def _render_public_work(
         )
         for text, colour in lines
     ]
-    sizes = [measure_text(cr, style) for style in styles]
-    if (
-        any(len(style.text) > MAX_PANGO_TEXT_CHARS for style in styles)
-        or sum(h + 4 for _, h in sizes) > height - 16
-    ):
-        # Suppress the claim if any qualification would be clipped or text-capped.
+    text_supported = all(
+        style.text.isprintable() and len(style.text) <= MAX_PANGO_TEXT_CHARS for style in styles
+    )
+    # Pango's NUL-terminated text API can silently discard a scope suffix.
+    # Check complete strings before measurement as well as before drawing.
+    sizes = [measure_text(cr, style) for style in styles] if text_supported else []
+    if not text_supported or sum(h + 4 for _, h in sizes) > height - 16:
+        # Suppress the claim if any qualification is unsupported, clipped or text-capped.
         styles = [
             TextStyle(
-                text="[public work · evidence] (content does not fit)",
+                text="[public work · evidence] (content does not fit; shorten text or remove controls)",
                 font_description=font,
                 color_rgba=muted,
                 max_width_px=max(1, width - 16),
