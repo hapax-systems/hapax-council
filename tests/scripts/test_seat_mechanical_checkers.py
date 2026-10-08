@@ -131,6 +131,7 @@ def test_valid_ack_recent_and_threshold_boundary_are_clear(tmp_path, kind):
     summary = json.loads(result.stderr)
     assert summary["messages"] == 3
     assert summary["invalid"] == 0
+    assert summary["acknowledged"] == (1 if kind == "inbox" else 0)
     assert summary["now"] == NOW
 
 
@@ -670,3 +671,142 @@ yaml.compose = observed_compose
 """
     result, rows = run_check(kind, tmp_path, observation=observation)
     assert_invalid_then_later_finding(result, rows, kind, "yaml_error")
+
+
+@pytest.mark.parametrize("kind,receipt", [("clock", False), ("inbox", False), ("inbox", True)])
+@pytest.mark.parametrize("failure", ["directory", "fdopen", "fstat", "readline"])
+def test_descriptor_cleanup_preserves_later_observations(tmp_path, kind, receipt, failure):
+    for index in range(64):
+        message = mail(tmp_path, f"bad-{index:02}.md")
+        target = ack(message) if receipt else message
+        if failure == "directory":
+            target.unlink()
+            target.mkdir()
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    # Real os.open under a small fd budget. Directory inputs exercise the actual
+    # fdopen exception; injected exceptions cover adjacent regular-file paths.
+    observation = f"""
+import resource
+resource.setrlimit(resource.RLIMIT_NOFILE, (48, 48))
+real_fdopen, real_fstat, real_run_path = os.fdopen, os.fstat, runpy.run_path
+failure, receipt = {failure!r}, {receipt!r}
+def targeted(fd):
+    path = os.readlink('/proc/self/fd/' + str(fd))
+    return '/bad-' in path and ('/read/' in path) == receipt
+def observed_fdopen(fd, *args, **kwargs):
+    if failure == 'fdopen' and targeted(fd):
+        raise OSError('PRIVATE METADATA in fdopen failure')
+    handle = real_fdopen(fd, *args, **kwargs)
+    if failure == 'readline' and targeted(fd):
+        def failed_read(*args):
+            raise OSError('PRIVATE METADATA in readline failure')
+        handle.readline = failed_read
+    return handle
+def observed_fstat(fd):
+    if failure == 'fstat' and targeted(fd):
+        raise OSError('PRIVATE METADATA in fstat failure')
+    return real_fstat(fd)
+def observed_run_path(*args, **kwargs):
+    if kwargs.get('run_name') != '__main__':
+        return real_run_path(*args, **kwargs)
+    before = set(os.listdir('/proc/self/fd'))
+    try:
+        return real_run_path(*args, **kwargs)
+    finally:
+        assert set(os.listdir('/proc/self/fd')) == before, 'descriptor leak'
+os.fdopen, os.fstat, runpy.run_path = observed_fdopen, observed_fstat, observed_run_path
+"""
+    result, rows = run_check(kind, tmp_path, observation=observation)
+    assert result.returncode == 2, result.stderr
+    assert len(rows) == 65
+    assert all(row["kind"] == "invalid_evidence" for row in rows[:-1])
+    assert all(
+        row["detail"] == ("IsADirectoryError" if failure == "directory" else "OSError")
+        for row in rows[:-1]
+    )
+    assert all(
+        row["next_action"]
+        == ("Check the declared root, path type and read permissions; rerun when available.")
+        for row in rows[:-1]
+    )
+    assert rows[-1] == {
+        "box": "seat",
+        "file": "later.md",
+        "kind": "mtime_discrepancy" if kind == "clock" else "missing_read_ack",
+        "delta_seconds": -120 if kind == "clock" else 120,
+    }
+    summary = json.loads(result.stderr)
+    assert summary["messages"] == 65
+    assert summary["invalid"] == 64 and summary["findings"] == 1
+    assert summary["acknowledged"] == 0
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize(
+    "metadata,detail",
+    [
+        ("", "missing_or_invalid_timestamp"),
+        ("PRIVATE METADATA", "not_mapping"),
+        ("[PRIVATE METADATA]", "not_mapping"),
+    ],
+)
+def test_yaml_root_errors_continue(tmp_path, kind, metadata, detail):
+    mail(tmp_path, "bad.md").write_text(f"---\n{metadata}\n---\nPRIVATE BODY\n")
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    result, rows = run_check(kind, tmp_path)
+    assert_invalid_then_later_finding(result, rows, kind, detail)
+    assert rows[0]["next_action"] == (
+        "Inspect the message header or read-ack format locally; "
+        "rerun after an authorized correction."
+    )
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "created_at: 2026-10-07T21:58:00Z",
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\n<<: *base",
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\n<<: [*base]",
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\nmid: &mid {<<: *base}\n<<: *mid",
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\nother: &other {v: 1}\n<<: [*other, *base]",
+        "base: &base {v: 1}\n<<: *base\ncreated_at: 2026-10-07T21:58:00Z",
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\n'<<': *base\ncreated_at: 2026-10-07T21:58:00Z",
+        "stamp: &stamp 2026-10-07T21:58:00Z\ncreated_at: *stamp",
+    ],
+)
+def test_unambiguous_timestamp_forms_are_observed(tmp_path, kind, metadata):
+    message = mail(tmp_path)
+    message.write_text(f"---\n{metadata}\n---\nPRIVATE BODY\n")
+    os.utime(message, (EPOCH, EPOCH))
+    result, rows = run_check(kind, tmp_path)
+    assert result.returncode == 1, result.stderr
+    assert rows == [
+        {
+            "box": "seat",
+            "file": "note.md",
+            "kind": "mtime_discrepancy" if kind == "clock" else "missing_read_ack",
+            "delta_seconds": -120 if kind == "clock" else 120,
+        }
+    ]
+    summary = json.loads(result.stderr)
+    assert summary["invalid"] == 0 and summary["findings"] == 1
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\n<<: *base\ncreated_at: 2026-10-07T22:00:00Z",
+        "a: &a {created_at: 2026-10-07T21:58:00Z}\nb: &b {created_at: 2026-10-07T22:00:00Z}\n<<: [*a, *b]",
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\n<<: [*base, *base]",
+        "base: &base {created_at: 2026-10-07T21:58:00Z, created_at: 2026-10-07T22:00:00Z}\n<<: *base",
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\nmid: &mid {<<: *base, created_at: 2026-10-07T22:00:00Z}\n<<: *mid",
+        "base: &base {created_at: 2026-10-07T21:58:00Z}\n<<: *base\n<<: *base",
+    ],
+)
+def test_ambiguous_merged_timestamps_are_rejected(tmp_path, kind, metadata):
+    mail(tmp_path, "bad.md").write_text(f"---\n{metadata}\n---\nPRIVATE BODY\n")
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    result, rows = run_check(kind, tmp_path)
+    assert_invalid_then_later_finding(result, rows, kind, "missing_or_duplicate_created_at")

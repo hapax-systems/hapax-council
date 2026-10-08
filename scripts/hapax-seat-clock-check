@@ -71,37 +71,41 @@ def directory(path, parent=None):
 def read_metadata(parent, name, *, receipt=False):
     """Read a bounded header, refusing symlinks/devices and concurrent edits."""
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
-    with os.fdopen(fd, "rb") as handle:
-        before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode):
-            raise InvalidEvidence("not_regular_file")
-        lines = []
-        remaining = MAX_METADATA_BYTES
-        while remaining > 0:
-            line = handle.readline(remaining + 1)
-            if not line:
-                break
-            remaining -= len(line)
-            if remaining < 0:
-                raise InvalidEvidence("metadata_too_large")
-            lines.append(line)
-            if receipt or line.strip() != b"---" and len(lines) == 1:
-                break
-            if len(lines) > 1 and line.strip() == b"---":
-                break
-        after = os.fstat(fd)
-        current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    # Keep ownership here: fdopen can fail before its context manager exists.
+    try:
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode):
+                raise InvalidEvidence("not_regular_file")
+            lines = []
+            remaining = MAX_METADATA_BYTES
+            while remaining > 0:
+                line = handle.readline(remaining + 1)
+                if not line:
+                    break
+                remaining -= len(line)
+                if remaining < 0:
+                    raise InvalidEvidence("metadata_too_large")
+                lines.append(line)
+                if receipt or line.strip() != b"---" and len(lines) == 1:
+                    break
+                if len(lines) > 1 and line.strip() == b"---":
+                    break
+            after = os.fstat(fd)
+            current = os.stat(name, dir_fd=parent, follow_symlinks=False)
 
-        def signature(s):
-            return s.st_dev, s.st_ino, s.st_mode, s.st_size, s.st_mtime_ns
+            def signature(s):
+                return s.st_dev, s.st_ino, s.st_mode, s.st_size, s.st_mtime_ns
 
-        if signature(before) != signature(after) or signature(after) != signature(current):
-            raise InvalidEvidence("changed_during_read")
-        try:
-            text = b"".join(lines).decode("utf-8")
-        except UnicodeDecodeError:
-            raise InvalidEvidence("invalid_utf8") from None
-        return text, before
+            if signature(before) != signature(after) or signature(after) != signature(current):
+                raise InvalidEvidence("changed_during_read")
+            try:
+                text = b"".join(lines).decode("utf-8")
+            except UnicodeDecodeError:
+                raise InvalidEvidence("invalid_utf8") from None
+            return text, before
+    finally:
+        os.close(fd)
 
 
 def bound_yaml_merges(node):
@@ -167,12 +171,27 @@ def created_at(header):
     parsed = parse_frontmatter_with_diagnostics(header)
     if not parsed.ok:
         raise InvalidEvidence(parsed.error_kind)
-    # The canonical parser accepts duplicate YAML keys. Do not let an ambiguous
-    # created_at silently become one chosen timestamp in an observation.
-    if isinstance(node, yaml.MappingNode):
-        count = sum(key.value == "created_at" for key, _ in node.value)
-        if count != 1:
-            raise InvalidEvidence("missing_or_duplicate_created_at")
+    # Count timestamp contributions through merge edges, before canonical
+    # precedence could conceal duplicates. Ordinary nested mappings/aliases do
+    # not contribute. The graph's merge types, cycles and expansion were bounded
+    # above; memoization keeps repeated aliases from expanding work again.
+    counts = {}
+
+    def contributions(mapping):
+        identity = id(mapping)
+        if identity not in counts:
+            count = 0
+            for key, value in mapping.value:
+                if key.tag == "tag:yaml.org,2002:merge":
+                    sources = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                    count += sum(contributions(source) for source in sources)
+                elif key.value == "created_at":
+                    count += 1
+            counts[identity] = count
+        return counts[identity]
+
+    if isinstance(node, yaml.MappingNode) and contributions(node) != 1:
+        raise InvalidEvidence("missing_or_duplicate_created_at")
     return timestamp(parsed.frontmatter.get("created_at"))
 
 
