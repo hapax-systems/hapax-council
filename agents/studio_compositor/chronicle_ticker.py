@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from agents.studio_compositor.homage import get_active_package
@@ -205,6 +205,79 @@ def _collect_rows(now: float) -> list[str]:
     return [_fmt_row(event) for event in kept[:_MAX_ROWS]]
 
 
+def _collect_public_work(now: float) -> list[ChronicleEvent]:
+    from agents.studio_compositor.public_work_projection import APERTURE, SOURCE, read_public_work
+
+    try:
+        events = query(
+            since=now - _WINDOW_SECONDS,
+            until=now,
+            path=CHRONICLE_FILE,
+            limit=200,
+            public_scope="public",
+            aperture_ref=APERTURE,
+            source=SOURCE,
+            evidence_class="public_event",
+        )
+        kept = [item for event in events if (item := read_public_work(event, now=now)) is not None]
+        kept = [event for event in kept if _is_lore_worthy(event)]
+        kept.sort(key=lambda event: (-event.payload["salience"], -event.effective_valid_time))
+        return kept[:_MAX_ROWS]
+    except Exception:
+        log.debug("public work projection unavailable", exc_info=True)
+        return []
+
+
+def _render_public_work(
+    cr: cairo.Context, width: int, height: int, events: list[ChronicleEvent]
+) -> None:
+    from agents.studio_compositor.text_render import TextStyle, measure_text, render_text
+
+    pkg = get_active_package() or _fallback_package()
+    font = _bitchx_font_description(pkg, 12)
+    content = _resolve(pkg, pkg.grammar.content_colour_role)
+    muted = _resolve(pkg, "muted")
+    lines = [("[public work · evidence]", muted)]
+    if events:
+        event = events[0]
+        public = event.payload["public_event"]
+        claim = event.payload["grounding_gate_result"]["claim"]
+        when = datetime.fromtimestamp(event.effective_valid_time, tz=UTC).strftime(
+            "%Y-%m-%d %H:%M:%S UTC"
+        )
+        lines += [
+            (f"Occurred {when}", muted),
+            (claim["claim_text"], content),
+            (f"Uncertainty: {claim['uncertainty']}", muted),
+            (f"Evidence: {public['public_url']}", content),
+            (f"Correction: {claim['refusal_correction_path']['correction_event_ref']}", content),
+        ]
+    else:
+        lines.append(("(quiet)", muted))
+    styles = [
+        TextStyle(
+            text=text, font_description=font, color_rgba=colour, max_width_px=max(1, width - 16)
+        )
+        for text, colour in lines
+    ]
+    sizes = [measure_text(cr, style) for style in styles]
+    if sum(h + 4 for _, h in sizes) > height - 16:
+        # Never truncate away uncertainty or a correction while retaining the claim.
+        styles = [
+            TextStyle(
+                text="[public work · evidence] (content does not fit)",
+                font_description=font,
+                color_rgba=muted,
+                max_width_px=max(1, width - 16),
+            )
+        ]
+        sizes = [measure_text(cr, styles[0])]
+    y = 8.0
+    for style, (_, h) in zip(styles, sizes, strict=True):
+        render_text(cr, style, x=8.0, y=y)
+        y += h + 4
+
+
 def _fallback_package() -> HomagePackage:
     """Return the compiled-in BitchX package when registry resolution fails."""
     from agents.studio_compositor.homage.bitchx import BITCHX_PACKAGE
@@ -244,8 +317,9 @@ class ChronicleTickerCairoSource(HomageTransitionalSource):
 
     source_id: str = "chronicle_ticker"
 
-    def __init__(self) -> None:
+    def __init__(self, *, public_work_only: bool = False) -> None:
         super().__init__(source_id=self.source_id)
+        self._public_work_only = public_work_only
         self._cached_rows: list[str] = []
         self._last_refresh_ts: float = 0.0
 
@@ -266,6 +340,10 @@ class ChronicleTickerCairoSource(HomageTransitionalSource):
             return
 
         now = time.time()
+        if self._public_work_only:
+            # Revalidate each rendered frame: cached pixels/text do not extend admission.
+            _render_public_work(cr, canvas_w, canvas_h, _collect_public_work(now))
+            return
         self._maybe_refresh(now)
 
         # Late-imported to keep the module importable in CI harnesses

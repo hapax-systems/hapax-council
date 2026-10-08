@@ -685,20 +685,12 @@ def test_selected_chronicle_renders_real_cairo_and_expires_to_quiet(tmp_path, mo
     monkeypatch.setattr(degraded_mode, "DEGRADED_FLAG_PATH", tmp_path / "degraded.flag")
     monkeypatch.setenv(ct._FEATURE_FLAG_ENV, "1")
     monkeypatch.setenv("HAPAX_HOMAGE_ACTIVE", "0")
-    now = 1_800_000_000.0
+    from tests.studio_compositor.test_public_work_projection import NOW, project
+
+    now = NOW
     monkeypatch.setattr(ct.time, "time", lambda: now)
-    public = ChronicleEvent(
-        ts=now - 1,
-        trace_id="1" * 32,
-        span_id="2" * 16,
-        parent_span_id=None,
-        source="synthetic_work",
-        event_type="admitted_fixture",
-        payload={"salience": 0.8},
-        public_scope="public",
-        evidence_class="public_event",
-        evidence_refs=["fixture:offline-only-no-live-admission"],
-    )
+    public = project()
+    assert public is not None
     private = ChronicleEvent(
         ts=now,
         trace_id="1" * 32,
@@ -735,6 +727,13 @@ def test_selected_chronicle_renders_real_cairo_and_expires_to_quiet(tmp_path, mo
     runner = backends["chronicle_ticker"]._backends["chronicle_ticker"]
     artifact_dir = Path(os.environ.get("HAPAX_HOMAGE_TEST_ARTIFACTS", str(tmp_path / "render")))
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "synthetic-projection.json").write_text(public.to_json() + "\n")
+    (artifact_dir / "synthetic-source.json").write_text(
+        json.dumps(public.payload["public_event"], indent=2) + "\n"
+    )
+    (artifact_dir / "synthetic-grounding.json").write_text(
+        json.dumps(public.payload["grounding_gate_result"], indent=2) + "\n"
+    )
     for frame, label in enumerate(("admitted", "stale", "missing", "unreadable"), start=1):
         if label == "stale":
             now += ct._WINDOW_SECONDS + 2
@@ -749,18 +748,18 @@ def test_selected_chronicle_renders_real_cairo_and_expires_to_quiet(tmp_path, mo
             output=output,
             meta=meta,
             layout_path=atlas.DEFAULT_LAYOUT,
-            width=1680,
-            height=1260,
+            width=2048,
+            height=2304,
             columns=4,
-            cell_width=420,
-            cell_height=140,
+            cell_width=512,
+            cell_height=256,
             frame_id=frame,
             backends=backends,
             errors=errors,
             software_sources=("chronicle_ticker",),
         )
         data = bytearray(output.read_bytes())
-        cairo.ImageSurface.create_for_data(data, cairo.FORMAT_ARGB32, 1680, 1260).write_to_png(
+        cairo.ImageSurface.create_for_data(data, cairo.FORMAT_ARGB32, 2048, 2304).write_to_png(
             str(artifact_dir / f"{label}-atlas.png")
         )
         runner.get_current_surface().write_to_png(str(artifact_dir / f"{label}-ward.png"))
@@ -771,11 +770,11 @@ def test_selected_chronicle_renders_real_cairo_and_expires_to_quiet(tmp_path, mo
         assert runner._thread is None
         assert "synthetic_private.withheld_fixture" not in texts
         if label == "admitted":
-            assert "synthetic_work.admitted_fixture" in texts
-            assert "  (quiet)" not in texts
+            assert "Fixture outcome undetermined." in texts
+            assert "(quiet)" not in texts
         else:
-            assert "synthetic_work.admitted_fixture" not in texts
-            assert "  (quiet)" in texts
+            assert "Fixture outcome undetermined." not in texts
+            assert "(quiet)" in texts
     assert (tmp_path / "source-protocol" / "chronicle_ticker" / "manifest.json").exists()
 
 

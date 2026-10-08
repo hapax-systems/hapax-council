@@ -71,6 +71,7 @@ type PrivacyClass = Literal[
 ]
 
 type Surface = Literal[
+    "composed_livestream_frame",
     "youtube_description",
     "youtube_cuepoints",
     "youtube_chapters",

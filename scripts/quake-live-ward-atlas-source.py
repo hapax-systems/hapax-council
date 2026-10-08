@@ -219,6 +219,18 @@ def _construct_backends(
                 or schema.params.get("class_name") != SOFTWARE_SOURCE_CLASSES[ward_id]
             ):
                 raise ValueError("layout backend does not match permitted software source")
+            if software_sources is not None and ward_id == "chronicle_ticker":
+                # Explicit selection consumes qualified public work, never raw tokens.
+                schema = schema.model_copy(
+                    update={
+                        "params": {
+                            **schema.params,
+                            "public_work_only": True,
+                            "natural_w": 512,
+                            "natural_h": 256,
+                        }
+                    }
+                )
             registry.register(ward_id, registry.construct_backend(schema))
         except Exception as exc:  # noqa: BLE001 - visible fallback per cell
             errors[ward_id] = f"{type(exc).__name__}: {exc}"
