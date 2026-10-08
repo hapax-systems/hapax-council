@@ -58,6 +58,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import review_team  # noqa: E402
+from github_call_observation import run_gh_observed  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     REST_INDETERMINATE_CHECK_NAME,
@@ -713,14 +714,7 @@ def _gh_api_get_json(
         path,
     ]
     try:
-        proc = runner(
-            cmd,
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
+        proc = run_gh_observed(runner, cmd, repo_root=repo_root, timeout=60)
     except subprocess.TimeoutExpired:
         return False, None, "gh_api_timeout:TimeoutExpired"
     except OSError as exc:

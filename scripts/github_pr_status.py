@@ -26,6 +26,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from github_call_observation import (
+    observe_cache_hit,
+    reading_validity,
+    run_gh_observed,
+    summarize_log,
+)
+
 DEFAULT_REPO = "hapax-systems/hapax-council"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "hapax" / "pr-status"
 DEFAULT_CACHE_TTL_SECONDS = 60
@@ -215,14 +222,7 @@ def _run(
     repo_root: Path,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess:
-    return runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
+    return run_gh_observed(runner, cmd, repo_root=repo_root, timeout=timeout)
 
 
 def _json_from_proc(proc: subprocess.CompletedProcess) -> Any | None:
@@ -502,6 +502,7 @@ def fetch_status_check_rollup_rest(
     if use_cache:
         cached = _read_cached_rollup(repo, ref)
         if cached is not None:
+            observe_cache_hit()
             return cached
 
     raw_runs = _rest_get_json_object_array_pages_or_none(
@@ -2040,19 +2041,52 @@ def main(argv: list[str] | None = None) -> int:
     )
     rate_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
 
+    usage_parser = subparsers.add_parser(
+        "usage",
+        help="Summarize a finite journal/log interval from stdin; no GitHub calls.",
+    )
+    usage_parser.add_argument("--since", type=float, required=True, help="Inclusive Unix epoch.")
+    usage_parser.add_argument("--until", type=float, required=True, help="Exclusive Unix epoch.")
+
     args = parser.parse_args(argv)
+    if args.command == "usage":
+        if not (0 <= args.since < args.until <= time.time()):
+            parser.error("usage requires 0 <= --since < --until <= now (Unix epochs)")
+        json.dump(
+            summarize_log(sys.stdin, since=args.since, until=args.until, now=time.time()),
+            sys.stdout,
+            indent=2,
+            sort_keys=True,
+        )
+        sys.stdout.write("\n")
+        return 0
     if args.command == "rate":
         # The diagnostic that would have made 2026-08-29 instant: `gh auth status` said the
         # token was invalid (it was not — the pool was empty) and `gh api rate_limit`
         # reported core headroom that a real call contradicted. This prints what actually
         # governs, per pool, with provenance.
         snapshot = rate_snapshot(repo_root=args.repo_root)
+        observed_at = time.time()
         transport, reason = choose_transport(repo_root=args.repo_root, snapshot=snapshot)
         payload = {
             "core": asdict(snapshot.core) if snapshot.core else None,
             "graphql": asdict(snapshot.graphql) if snapshot.graphql else None,
             "transport": transport,
             "reason": reason,
+            "observations": {
+                name: {
+                    "source": pool.source,
+                    "auth_identity": None,
+                    "auth_identity_source": "unobserved",
+                    "evidence_ref": "github_pr_status.py rate: current probe",
+                    "validity": reading_validity(
+                        observed_at=observed_at, reset_epoch=pool.reset_epoch, now=time.time()
+                    ),
+                }
+                if pool
+                else None
+                for name, pool in (("core", snapshot.core), ("graphql", snapshot.graphql))
+            },
         }
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")

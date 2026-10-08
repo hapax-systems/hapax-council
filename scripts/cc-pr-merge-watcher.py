@@ -66,6 +66,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+from github_call_observation import run_gh_observed  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     PrListingUnavailable,
@@ -138,14 +139,7 @@ def _run_gh_api_json(
     ]
     for key, value in (fields or {}).items():
         cmd.extend(["-f", f"{key}={value}"])
-    proc = runner(
-        cmd,
-        cwd=str(repo_root),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
+    proc = run_gh_observed(runner, cmd, repo_root=repo_root, timeout=timeout)
     if proc.returncode != 0:
         return None
     try:
