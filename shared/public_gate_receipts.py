@@ -865,6 +865,20 @@ def _evidence_file_is_independent(
     )
 
 
+class PublicGateReviewRegistryError(ValueError):
+    """Trusted substitute eligibility is unavailable; callers must refuse at use."""
+
+
+def _review_registry_error(reason: str) -> PublicGateReviewRegistryError:
+    # Never include parser errors or registry values: they can contain private payloads.
+    error = PublicGateReviewRegistryError(
+        f"{reason}; registry={PUBLIC_GATE_REVIEW_REGISTRY_PATH}; next action: restore the "
+        "trusted review-lenses registry and its measured Muse capacity/citation, then retry"
+    )
+    log.warning("Public-gate review eligibility refused: %s", error)
+    return error
+
+
 def public_gate_known_review_families(dossier: Mapping[str, Any]) -> frozenset[str]:
     """Known families for an already authenticated dossier, never arbitrary registry labels.
 
@@ -884,15 +898,21 @@ def public_gate_known_review_families(dossier: Mapping[str, Any]) -> frozenset[s
             return known
     try:
         registry = yaml.safe_load(PUBLIC_GATE_REVIEW_REGISTRY_PATH.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError):
-        return known
+    except FileNotFoundError:
+        raise _review_registry_error("missing") from None
+    except OSError:
+        raise _review_registry_error("read_error") from None
+    except UnicodeError:
+        raise _review_registry_error("decode_error") from None
+    except yaml.YAMLError:
+        raise _review_registry_error("yaml_error") from None
     if (
         not isinstance(registry, Mapping)
         or registry.get("registry_schema") != 1
         or registry.get("registry_id") != "review-lenses"
         or not isinstance(registry.get("families"), list)
     ):
-        return known
+        raise _review_registry_error("invalid_registry")
     entries = [
         row
         for row in registry["families"]
@@ -903,12 +923,18 @@ def public_gate_known_review_families(dossier: Mapping[str, Any]) -> frozenset[s
         or entries[0].get("substitute") is not True
         or entries[0].get("reviewer_command") != ["scripts/hapax-muse-reviewer"]
     ):
-        return known
-    capacity = registry.get("diff_capacity")
-    seats = capacity.get("seats") if isinstance(capacity, Mapping) else None
-    muse = seats.get("muse-1") if isinstance(seats, Mapping) else None
-    if not isinstance(muse, Mapping) or muse.get("status") != "measured":
-        return known
+        raise _review_registry_error("invalid_muse_declaration")
+    # Use the merged dispatcher's inherited seat/default contract, including citation
+    # and strict positive integer limits. Status alone is not measured grounding.
+    from scripts.review_team import DiffCapacityConfigError, seat_diff_capacity
+
+    try:
+        muse = seat_diff_capacity("muse-1", registry)
+    except (DiffCapacityConfigError, TypeError):
+        # An unhashable status in malformed YAML also fails the validator's enum check.
+        raise _review_registry_error("invalid_capacity") from None
+    if muse["status"] != "measured":
+        raise _review_registry_error("invalid_capacity")
     return known | {"muse"}
 
 
@@ -952,7 +978,11 @@ def _review_dossier_evidence_allows(
     reviewers = data.get("reviewers")
     if not isinstance(reviewers, list):
         return False
-    known_families = public_gate_known_review_families(data)
+    try:
+        known_families = public_gate_known_review_families(data)
+    except PublicGateReviewRegistryError:
+        # The helper logged the safe classification, registry path and repair action.
+        return False
     writer = _direct_text_value(data, "writer_family").casefold()
     if writer not in known_families:
         return False
