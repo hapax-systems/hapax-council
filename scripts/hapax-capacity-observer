@@ -89,6 +89,7 @@ rec["fleet_memory"] = fleet
 
 # local serving endpoints: alive flag + loaded model ids (the WHY join reads these)
 endpoints = {}
+http_statuses = {}
 loaded = {}
 metadata = {}
 
@@ -100,10 +101,32 @@ def scalar(value):
 
 
 for p in ENDPOINTS:
-    body = sh(f"curl --fail -s -m 4 http://localhost:{p}/v1/models 2>/dev/null", 8)
+    # Keep HTTP refusal distinct from transport failure. Never retain error bodies or stderr.
+    # A completed 2xx transfer still needs a valid model listing before it is called alive.
+    status = None
+    body = ""
+    complete = False
+    endpoints[str(p)] = None
+    try:
+        response = subprocess.run(
+            ["curl", "--silent", "--max-time", "4", "--write-out", "\n%{http_code}",
+             f"http://localhost:{p}/v1/models"],
+            capture_output=True, text=True, timeout=8,
+        )
+        body, _, code = response.stdout.rpartition("\n")
+        status = int(code) if code.isdigit() and 100 <= int(code) <= 599 else None
+        complete = response.returncode == 0 and status is not None and 200 <= status < 300
+        if response.returncode != 0 and status is None:
+            endpoints[str(p)] = False
+    except subprocess.TimeoutExpired:
+        endpoints[str(p)] = False
+    except OSError:
+        pass  # unavailable local probe is unknown, not evidence of a dead endpoint
+    http_statuses[str(p)] = status
     observed_at = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
-    endpoints[str(p)] = False if not body else None
     loaded[str(p)] = []
+    if not complete:
+        continue
     try:
         payload = json.loads(body) if body else None
         data = payload.get("data") if isinstance(payload, dict) else None
@@ -131,6 +154,7 @@ for p in ENDPOINTS:
     except (ValueError, TypeError):
         pass
 rec["local_endpoints"] = endpoints
+rec["endpoint_http_status"] = http_statuses
 rec["loaded_models"] = loaded
 rec["model_metadata"] = metadata
 

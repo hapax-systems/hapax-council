@@ -368,16 +368,23 @@ def test_governed_parity_compares_full_projection(monkeypatch) -> None:
         test_vendored_reins_matches_governed_full_projection()
 
 
-def _observer_fixture(tmp_path: Path, body: dict) -> dict:
+def _observer_fixture(
+    tmp_path: Path, body: dict | str, *, http_status: int = 200, curl_exit: int = 0
+) -> dict:
     """Run the shipped shell/Python script with every external probe replaced by a local fixture."""
     probes = tmp_path / "bin"
     probes.mkdir()
     response = tmp_path / "models.json"
-    response.write_text(json.dumps(body))
+    response.write_text(body if isinstance(body, str) else json.dumps(body))
     for name in ("ssh", "timeout", "tmux", "pgrep", "nvidia-smi", "hostname", "curl"):
         path = probes / name
         command = (
-            'cat "$MODEL_RESPONSE"'
+            # Model curl's --fail and --write-out behavior, so a denied response cannot
+            # accidentally pass by serving the fixture as a successful model listing.
+            'case " $* " in *" --fail "*) [ "$HTTP_STATUS" -lt 400 ] || exit 22;; esac\n'
+            'cat "$MODEL_RESPONSE"\n'
+            'case " $* " in *" --write-out "*) printf "\\n%03d" "$HTTP_STATUS";; esac\n'
+            'exit "$CURL_EXIT"'
             if name == "curl"
             else ("echo fixture-host" if name == "hostname" else "exit 0")
         )
@@ -390,6 +397,8 @@ def _observer_fixture(tmp_path: Path, body: dict) -> dict:
             "PATH": str(probes) + os.pathsep + os.environ["PATH"],
             "HOME": str(tmp_path),
             "MODEL_RESPONSE": str(response),
+            "HTTP_STATUS": str(http_status),
+            "CURL_EXIT": str(curl_exit),
             "HAPAX_CAPACITY_OBS": str(obs),
         },
     )
@@ -397,22 +406,7 @@ def _observer_fixture(tmp_path: Path, body: dict) -> dict:
     return json.loads(obs.read_text())
 
 
-def test_observer_metadata_reaches_the_real_reader_projection(tmp_path: Path) -> None:
-    rec = _observer_fixture(
-        tmp_path,
-        {
-            "data": [
-                {
-                    "id": "embedding",
-                    "owned_by": "llamacpp",
-                    "meta": {"n_ctx": 1024, "n_ctx_train": 2048, "ftype": "F16"},
-                    "private_unrelated_field": "MUST-NOT-CARRY",
-                }
-            ]
-        },
-    )
-    assert "MUST-NOT-CARRY" not in json.dumps(rec)
-    assert rec["model_metadata"]["8000"]["data"][0]["meta"]["n_ctx"] == 1024
+def _reader_projection(tmp_path: Path) -> dict:
     run = _run(
         [sys.executable, str(REPO / "scripts/hapax-resources"), "--json"],
         {
@@ -424,22 +418,166 @@ def test_observer_metadata_reaches_the_real_reader_projection(tmp_path: Path) ->
     )
     assert run.returncode == 0, run.stderr
     projection = json.loads(run.stdout)
-    context = next(
-        f
-        for f in projection["facts"]
-        if f["subject_ref"] == "host:fixture-host:8000/embedding/field:context_tokens"
-    )
-    assert context["value"]["value"] == 1024
-    assert context["state"]["value_state"] == "lit"
-    assert context["provenance"]["observed_at"] == rec["model_metadata"]["8000"]["observed_at"]
     assert projection["audience"] == "operator_private"
+    return projection
 
 
-@pytest.mark.parametrize("body", [{"error": "not a model list"}, {"data": "bad"}])
+@pytest.mark.parametrize("context_key", ["n_ctx", "max_model_len"])
+def test_observer_metadata_reaches_the_real_reader_projection(tmp_path: Path, context_key) -> None:
+    model = {
+        "id": "embedding",
+        "owned_by": "llamacpp",
+        "meta": {
+            "n_ctx_train": 2048,
+            "ftype": "F16",
+            "n_embd": 768,
+            "n_params": 137000000,
+            "size": 274000000,
+        },
+        "private_unrelated_field": "MUST-NOT-CARRY",
+    }
+    if context_key == "n_ctx":
+        model["meta"]["n_ctx"] = 1024
+    else:
+        model["max_model_len"] = 1024
+    rec = _observer_fixture(tmp_path, {"data": [model]})
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    projection = _reader_projection(tmp_path)
+    fields = {
+        f["value"]["field"]: f
+        for f in projection["facts"]
+        if f["subject_ref"].startswith("host:fixture-host:8000/embedding/field:")
+    }
+    expected = {
+        "context_tokens": 1024,
+        "training_context_tokens": 2048,
+        "quantization": "F16",
+        "serving_owner": "llamacpp",
+        "embedding_dimensions": 768,
+        "parameter_count": 137000000,
+        "model_bytes": 274000000,
+    }
+    assert fields.keys() == expected.keys()
+    for field, value in expected.items():
+        fact = fields[field]
+        assert fact["value"]["value"] == value, field
+        assert fact["state"]["value_state"] == "lit", field
+        assert fact["freshness_state"] == "fresh", field
+        assert fact["provenance"]["observed_at"] == rec["model_metadata"]["8000"]["observed_at"]
+
+
+@pytest.mark.parametrize(
+    ("status", "curl_exit", "body", "alive", "state", "reason"),
+    [
+        (401, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (403, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (404, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (500, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (
+            403,
+            0,
+            '{"data":[{"id":"not-a-loaded-model"}]}',
+            None,
+            "refused",
+            "endpoint_http_refused",
+        ),
+        (200, 0, "", None, "refused", "unsupported_endpoint_response"),
+        (200, 18, '{"data":[]}', None, "refused", "unsupported_endpoint_response"),
+        (0, 7, "", False, "absent", "LOST"),
+        (0, 28, "", False, "absent", "LOST"),
+    ],
+)
+def test_observer_http_refusal_is_distinct_from_transport_failure(
+    tmp_path: Path, status, curl_exit, body, alive, state, reason
+) -> None:
+    rec = _observer_fixture(tmp_path, body, http_status=status, curl_exit=curl_exit)
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    assert all(value is alive for value in rec["local_endpoints"].values())
+    assert all(value == (status or None) for value in rec["endpoint_http_status"].values())
+    assert all(ids == [] for ids in rec["loaded_models"].values())
+    assert rec["model_metadata"] == {}
+    projection = _reader_projection(tmp_path)
+    endpoints = [f for f in projection["facts"] if f["fact_type"] == "declared_endpoint"]
+    assert len(endpoints) == 2
+    for fact in endpoints:
+        assert fact["value"]["alive"] is alive
+        assert fact["value"]["http_status"] == (status or None)
+        assert fact["state"]["value_state"] == state
+        assert reason in fact["state"]["reason_codes"]
+        assert ("LOST" in fact["state"]["reason_codes"]) is (alive is False)
+
+
+@pytest.mark.parametrize("body", [{"error": "not a model list"}, {"data": "bad"}, "{invalid"])
 def test_observer_unsupported_model_listing_cannot_be_alive(tmp_path: Path, body) -> None:
     rec = _observer_fixture(tmp_path, body)
-    assert not any(rec["local_endpoints"].values())
+    assert rec["local_endpoints"]
+    assert all(value is None for value in rec["local_endpoints"].values())
     assert all(not ids for ids in rec["loaded_models"].values())
+    endpoints = rsp.build_bundle(observation=rec)["facts"]["declared_endpoint"]
+    assert len(endpoints) == 2
+    for fact in endpoints:
+        assert fact["state"]["value_state"] == "refused"
+        assert "unsupported_endpoint_response" in fact["state"]["reason_codes"]
+        assert "LOST" not in fact["state"]["reason_codes"]
+
+
+def test_observer_loaded_ids_are_deduplicated_without_truncating_metadata(tmp_path: Path) -> None:
+    ids = [f"m{i}" for i in range(12)]
+    data = [{"id": model, "meta": {"n_ctx": 1024}} for model in ids]
+    data.append({"id": "m0", "meta": {"n_ctx": 2048}})
+    rec = _observer_fixture(tmp_path, {"data": data})
+    assert all(value is True for value in rec["local_endpoints"].values())
+    assert all(models == ids for models in rec["loaded_models"].values())
+    assert rec["model_metadata"]["8000"]["data"] == data
+    projection = _reader_projection(tmp_path)
+    contexts = {
+        f["value"]["model"]: f
+        for f in projection["facts"]
+        if f["subject_ref"].startswith("host:fixture-host:8000/")
+        and f["value"].get("field") == "context_tokens"
+    }
+    assert contexts.keys() == set(ids)
+    assert contexts["m0"]["state"]["value_state"] == "hold"
+    assert "conflicting_model_metadata" in contexts["m0"]["state"]["reason_codes"]
+    assert contexts["m11"]["value"]["value"] == 1024
+
+
+@pytest.mark.parametrize("meta", ["MUST-NOT-CARRY", ["MUST-NOT-CARRY"]])
+def test_observer_non_dict_metadata_is_refused_without_carrying_bodies(
+    tmp_path: Path, meta
+) -> None:
+    rec = _observer_fixture(tmp_path, {"data": [{"id": "m", "owned_by": "llamacpp", "meta": meta}]})
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    assert rec["model_metadata"]["8000"]["data"][0]["meta"] == []
+    projection = _reader_projection(tmp_path)
+    fields = {
+        f["value"]["field"]: f
+        for f in projection["facts"]
+        if f["subject_ref"].startswith("host:fixture-host:8000/m/field:")
+    }
+    for field in (
+        "context_tokens",
+        "training_context_tokens",
+        "quantization",
+        "embedding_dimensions",
+        "parameter_count",
+        "model_bytes",
+    ):
+        assert fields[field]["state"]["value_state"] == "refused"
+        assert "unsupported_model_metadata" in fields[field]["state"]["reason_codes"]
+    assert fields["serving_owner"]["value"]["value"] == "llamacpp"
+    assert fields["serving_owner"]["state"]["value_state"] == "lit"
+
+
+def test_observer_empty_success_is_a_live_listing(tmp_path: Path) -> None:
+    rec = _observer_fixture(tmp_path, {"data": []})
+    assert all(value is True for value in rec["local_endpoints"].values())
+    assert all(ids == [] for ids in rec["loaded_models"].values())
+    endpoints = [
+        f for f in _reader_projection(tmp_path)["facts"] if f["fact_type"] == "declared_endpoint"
+    ]
+    assert len(endpoints) == 2
+    assert all(f["state"]["value_state"] == "lit" for f in endpoints)
 
 
 def test_observer_composite_metadata_is_refused_without_carrying_bodies(tmp_path: Path) -> None:

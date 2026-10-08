@@ -339,11 +339,14 @@ def build_bundle(
     for port, alive in (observation.get("local_endpoints") or {}).items():
         if str(port) not in DECLARED_PORTS:
             continue  # probed-but-not-declared: feeds loaded_model, not a declared_endpoint/LOST claim
-        if not isinstance(alive, bool):
+        http_status = (observation.get("endpoint_http_status") or {}).get(port)
+        if type(http_status) is int and 300 <= http_status <= 599:
+            vs, reasons = "refused", ["endpoint_http_refused"]
+        elif not isinstance(alive, bool):
             vs, reasons = "refused", ["unsupported_endpoint_response"]
         else:
             vs, reasons = classify_declared_endpoint(declared=True, alive=bool(alive))
-        value: dict[str, Any] = {"port": port, "alive": alive}
+        value: dict[str, Any] = {"port": port, "alive": alive, "http_status": http_status}
         if appendix_backing:
             value["backing"] = appendix_backing
         facts["declared_endpoint"].append(
