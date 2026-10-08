@@ -30,6 +30,7 @@ from shared.cc_task_root import CcTaskRootUnavailable, _personal_vault  # noqa: 
 from shared.frontmatter import parse_frontmatter_with_diagnostics  # noqa: E402
 
 MAX_METADATA_BYTES = 65536
+MAX_YAML_MERGED_ENTRIES = 65536
 
 
 class InvalidEvidence(ValueError):
@@ -103,13 +104,71 @@ def read_metadata(parent, name, *, receipt=False):
         return text, before
 
 
+def bound_yaml_merges(node):
+    """Cap total flattened mapping entries before safe_load constructs anything.
+
+    compose retains aliases as graph references. Count merge expansion with
+    memoization rather than expanding it; ordinary aliases (even cycles) stay
+    compatible. All mappings count, including ones nested in unused metadata.
+    """
+    pending, seen, mappings = [node], set(), []
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, yaml.MappingNode):
+            mappings.append(current)
+            pending.extend(child for pair in current.value for child in pair)
+        elif isinstance(current, yaml.SequenceNode):
+            pending.extend(current.value)
+
+    sizes, active = {}, set()
+    total = 0
+
+    def size(mapping):
+        nonlocal total
+        identity = id(mapping)
+        if identity in active:
+            raise InvalidEvidence("yaml_merge_cycle")
+        if identity in sizes:
+            return sizes[identity]
+        active.add(identity)
+        entries = 0
+        for key, value in mapping.value:
+            if key.tag == "tag:yaml.org,2002:merge":
+                sources = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                for source in sources:
+                    if not isinstance(source, yaml.MappingNode):
+                        raise InvalidEvidence("yaml_error")
+                    entries += size(source)
+            else:
+                entries += 1
+        total += entries
+        if total > MAX_YAML_MERGED_ENTRIES:
+            raise InvalidEvidence("yaml_merge_expansion_limit")
+        active.remove(identity)
+        sizes[identity] = entries
+        return entries
+
+    for mapping in mappings:
+        size(mapping)
+
+
 def created_at(header):
+    node = None
+    end = header.find("\n---", 3)
+    if header.startswith("---") and end != -1:
+        try:
+            node = yaml.compose(header[3:end].strip(), Loader=yaml.SafeLoader)
+        except yaml.YAMLError:
+            raise InvalidEvidence("yaml_error") from None
+        bound_yaml_merges(node)
     parsed = parse_frontmatter_with_diagnostics(header)
     if not parsed.ok:
         raise InvalidEvidence(parsed.error_kind)
     # The canonical parser accepts duplicate YAML keys. Do not let an ambiguous
     # created_at silently become one chosen timestamp in an observation.
-    node = yaml.compose(header.split("\n---", 1)[0][3:])
     if isinstance(node, yaml.MappingNode):
         count = sum(key.value == "created_at" for key, _ in node.value)
         if count != 1:

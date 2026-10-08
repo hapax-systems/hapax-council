@@ -506,6 +506,76 @@ def test_nested_yaml_is_invalid_and_scan_continues(tmp_path, kind):
     assert_invalid_then_later_finding(result, rows, kind, "RecursionError")
 
 
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize("shape", ["sequence", "mapping", "nested", "cycle", "aggregate"])
+def test_yaml_merge_resources_are_bounded_before_construction(tmp_path, kind, shape):
+    lines = [f"created_at: {NOW}", "a0: &a0 {v: 1}"]
+    for index in range(1, 25):
+        alias = f"*a{index - 1}"
+        merges = f"<<: [{alias}, {alias}]" if shape != "mapping" else f"<<: {alias}, <<: {alias}"
+        lines.append(f"a{index}: &a{index} {{{merges}}}")
+    if shape == "nested":
+        lines = [lines[0], "other:", "  - nested:"] + ["      " + line for line in lines[1:]]
+    elif shape == "cycle":
+        lines = [lines[0], "other: &loop {<<: *loop}"]
+    elif shape == "aggregate":
+        # Each chain fits on its own; their combined flattened mappings do not.
+        chain = lines[1:16]
+        lines = [lines[0], *chain, *(line.replace("a", "b") for line in chain)]
+    message = mail(tmp_path, "bad.md")
+    message.write_text("---\n" + "\n".join(lines) + "\n---\nPRIVATE BODY\n")
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    result, rows = run_check(
+        kind,
+        tmp_path,
+        observation="import resource\nresource.setrlimit(resource.RLIMIT_AS, (128 << 20, 128 << 20))",
+    )
+    assert_invalid_then_later_finding(
+        result,
+        rows,
+        kind,
+        "yaml_merge_cycle" if shape == "cycle" else "yaml_merge_expansion_limit",
+    )
+    assert rows[0]["next_action"] == (
+        "Inspect the message header or read-ack format locally; "
+        "rerun after an authorized correction."
+    )
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "base: &base {v: 1}\nother: {<<: *base, own: 2}",
+        "base: &base {v: 1}\nother: {<<: [*base, *base]}",
+        "base: &base {v: 1}\nother: [*base, *base]",
+        "other: &loop [*loop]",
+        "other: {'<<': normal-string-key}",
+        "\n".join(
+            ["a0: &a0 {v: 1}"]
+            + [f"a{i}: &a{i} {{<<: [*a{i - 1}, *a{i - 1}]}}" for i in range(1, 15)]
+        ),
+    ],
+)
+def test_bounded_yaml_metadata_remains_compatible(tmp_path, kind, metadata):
+    message = mail(tmp_path)
+    message.write_text(f"---\ncreated_at: {NOW}\n{metadata}\n---\nPRIVATE BODY\n")
+    os.utime(message, (EPOCH, EPOCH))
+    result, rows = run_check(kind, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert rows == []
+    assert json.loads(result.stderr)["invalid"] == 0
+
+
+@pytest.mark.parametrize("kind", ["clock", "inbox"])
+@pytest.mark.parametrize("merge", ["<<: 42", "<<: [42]", "<<: [broken"])
+def test_malformed_yaml_merge_keeps_diagnostics(tmp_path, kind, merge):
+    mail(tmp_path, "bad.md").write_text(f"---\ncreated_at: {NOW}\nother: {{{merge}}}\n---\n")
+    mail(tmp_path, "later.md", "2026-10-07T21:58:00Z")
+    result, rows = run_check(kind, tmp_path)
+    assert_invalid_then_later_finding(result, rows, kind, "yaml_error")
+
+
 @pytest.mark.parametrize("kind,receipt", [("clock", False), ("inbox", False), ("inbox", True)])
 @pytest.mark.parametrize("detail", ["metadata_too_large", "invalid_utf8"])
 def test_bounded_metadata_errors_continue(tmp_path, kind, receipt, detail):
@@ -599,4 +669,4 @@ def observed_compose(*args, **kwargs):
 yaml.compose = observed_compose
 """
     result, rows = run_check(kind, tmp_path, observation=observation)
-    assert_invalid_then_later_finding(result, rows, kind, "YAMLError")
+    assert_invalid_then_later_finding(result, rows, kind, "yaml_error")
