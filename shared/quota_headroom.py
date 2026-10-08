@@ -233,6 +233,18 @@ def read_codex_token_count(
         used = number(data.get("used_percent"))
         if used is None:
             continue
+        if name == "primary":
+            # High-water mark within the current reset window: concurrent rollouts
+            # can report a lower *newer* percent, but the wall persists until the
+            # window resets. Keyed on resets_at, so a new window's reading still
+            # wins (reset detection) — a percent under a prior resets_at is excluded.
+            window_used = [
+                sample_used
+                for (_at, sample_used, reset_raw, _minutes, _path) in window_samples
+                if reset_raw == data.get("resets_at") and sample_used is not None
+            ]
+            if window_used:
+                used = max(used, *window_used)
         minutes = number(data.get("window_minutes"))
         suffix = "weekly" if minutes == 10080 else name
         rows.append(

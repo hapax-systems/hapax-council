@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import hashlib
 import json
 import logging
 import os
@@ -95,6 +96,144 @@ LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 
 #: Dossier filename suffix; the dossier lives beside the task note.
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
+
+#: Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): any outbound line carrying
+#: a registered principal token (from the LOCAL registry at runtime, via the pre-push guard's own
+#: matcher, never literals) is replaced by this marker, so a privacy scrub can be reviewed without
+#: re-sending what it removes.
+_PACKET_REDACTION_MARKER = "[REDACTED: registered token; line sha256 {digest}]"
+#: The matcher script (hyphenated → loaded by path); registry_names()/matches() are reused, never
+#: re-implemented.
+_PRINCIPAL_MATCHER_PATH = REPO_ROOT / "scripts" / "check-principal-names-diff.py"
+_PRINCIPAL_MATCHER: Any = None
+
+
+class PacketRedactionError(RuntimeError):
+    """The principal-name registry could not be read, so redaction cannot be guaranteed.
+
+    Privacy-critical and fail-CLOSED: a packet is never sent unredacted on a registry read
+    failure (the same stance as the pre-push guard, which refuses the push)."""
+
+
+class EmptyPrincipalRegistryError(PacketRedactionError):
+    """The registry loaded cleanly but has NO names — distinct from unreadable so the operator can
+    tell a misconfigured/empty registry from a broken one. Still fail-closed (a subclass): both
+    refuse to let a packet leave."""
+
+
+def _principal_matcher() -> Any:
+    """Load the pre-push principal-name matcher once (registry_names, matches)."""
+    global _PRINCIPAL_MATCHER
+    if _PRINCIPAL_MATCHER is None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "check_principal_names_diff", _PRINCIPAL_MATCHER_PATH
+        )
+        if spec is None or spec.loader is None:  # pragma: no cover - import plumbing
+            raise PacketRedactionError(
+                f"cannot load principal-name matcher: {_PRINCIPAL_MATCHER_PATH}"
+            )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _PRINCIPAL_MATCHER = module
+    return _PRINCIPAL_MATCHER
+
+
+def load_principal_tokens(repo_root: Path | None = None) -> list[str]:
+    """Registered tokens from the local registry via the matcher's own reader. Fail CLOSED: an
+    unreadable/invalid registry raises, and a loaded-but-EMPTY one raises EmptyPrincipalRegistryError
+    (seat ruling (e)) — an empty name set can't be told from a misconfig that disables the redactor.
+    There is NO bypass."""
+    matcher = _principal_matcher()
+    names, error = matcher.registry_names(repo_root or REPO_ROOT)
+    if error:
+        raise PacketRedactionError(f"principal-name registry unreadable: {error}")
+    if not names:
+        raise EmptyPrincipalRegistryError(
+            "principal-name registry is empty; refusing (fail-closed)"
+        )
+    return names
+
+
+#: Unified-diff STRUCTURE lines (file/hunk headers): not added/deleted content, and redacting them
+#: would corrupt the diff. Left intact; only content and prose lines are redacted.
+_DIFF_HEADER_PREFIXES = (
+    "@@",
+    "diff --git",
+    "index ",
+    "--- ",
+    "+++ ",
+    "new file mode",
+    "deleted file mode",
+    "old mode",
+    "new mode",
+    "rename ",
+    "copy ",
+    "similarity ",
+    "dissimilarity ",
+    "Binary files",
+)
+
+
+def _redact_line(line: str, marker: str) -> str:
+    """Replace a matching line with the marker while PRESERVING unified-diff validity: a content
+    line keeps its single ``+``/``-``/`` `` prefix; a prose line (PR body, task note, prior
+    criticals) has none. Structural headers are handled by the caller and never reach here."""
+    if line[:1] in ("+", "-", " "):
+        return line[0] + marker
+    return marker
+
+
+def redact_registered_tokens(text: str, names: Sequence[str]) -> tuple[str, int]:
+    """Replace every line carrying a registered token with an opaque sha256-keyed marker, preserving
+    any unified-diff prefix; structural headers and token-free lines pass through. Returns
+    (text, count). Pure (caller supplies ``names``), so it is testable with synthetic tokens.
+
+    The matcher anchors on an intact token, so redaction must run on the FULL text BEFORE truncation
+    (truncating first can sever a line mid-token and leave a fragment) — the dispatcher orders it so."""
+    if not text or not names:
+        return text, 0
+    matcher = _principal_matcher()
+    name_list = list(names)
+    out: list[str] = []
+    count = 0
+    for line in text.split("\n"):
+        if line.startswith(_DIFF_HEADER_PREFIXES):
+            out.append(line)  # structure: never content; redacting it corrupts the diff
+            continue
+        if matcher.matches(line, name_list):
+            digest = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            out.append(_redact_line(line, _PACKET_REDACTION_MARKER.format(digest=digest)))
+            count += 1
+        else:
+            out.append(line)
+    return "\n".join(out), count
+
+
+def redact_structure(obj: Any, names: Sequence[str]) -> tuple[Any, int]:
+    """Redact registered tokens in every string leaf of a nested structure — e.g. prior_criticals
+    (a list of finding dicts a prior round produced, rendered into the packet), whose detail can
+    quote a diff line carrying a token. Returns (redacted_obj, count)."""
+    if isinstance(obj, str):
+        return redact_registered_tokens(obj, names)
+    if isinstance(obj, Mapping):
+        out: dict[Any, Any] = {}
+        total = 0
+        for key, value in obj.items():
+            out[key], n = redact_structure(value, names)
+            total += n
+        return out, total
+    if isinstance(obj, (list, tuple)):
+        items = []
+        total = 0
+        for value in obj:
+            red, n = redact_structure(value, names)
+            items.append(red)
+            total += n
+        return (tuple(items) if isinstance(obj, tuple) else items), total
+    return obj, 0
+
 
 #: The only dossier verdict that admits a PR, except under the seat's T2 rule below.
 QUORUM_ACCEPT = "quorum-accept"
@@ -194,7 +333,9 @@ _QUOTA_WALL_MAX_CHARS = 600
 #: wall produces NO review output).
 _QUOTA_WALL_LINE_RE = re.compile(
     r"\A(?:ERROR:\s*)?"
-    r"You(?:'ve| have) hit your (?:weekly|usage|session|5-hour) (?:limit|cap)"
+    # Accept the straight (U+0027) and curly (U+2019) apostrophe: codex 0.160's
+    # TUI prints "You’ve hit your usage limit" with the curly form.
+    r"You(?:['’]ve| have) hit your (?:weekly|usage|session|5-hour) (?:limit|cap)"
     rf"(?:(?:\s+·\s+resets\s+{_RESET_TIME_SHAPE})"
     r"|(?:\.\s+Visit\s+\S+.*(?:purchase more credits|upgrade your plan|try again).*))?"
     r"\Z",
@@ -2028,6 +2169,7 @@ def synthesize_dossier(
     changed_files: Sequence[str] | None = None,
     changed_file_count: int | None = None,
     repo_root: Path | None = None,
+    packet_redactions: int = 0,
 ) -> dict[str, Any]:
     """Reconcile blind reviews into a dossier (the synthesizer, spec §3/§5).
 
@@ -2202,6 +2344,7 @@ def synthesize_dossier(
         "constitution_writer_family": constitution_writer_family or writer_family,
         "changed_file_count": changed_file_count,
         "changed_files": scoped_files,
+        "packet_redactions": int(packet_redactions),
         "constitution_notes": list(constitution_notes),
         "degraded_family_outage": degraded_outage,
         "degraded_family_route_blocked": degraded_route_blocked,

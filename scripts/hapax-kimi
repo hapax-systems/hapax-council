@@ -11,6 +11,12 @@
 #   hapax-kimi <role>              new session for <role> (tmux hapax-kimi-<role>)
 #   hapax-kimi <role> --continue   replay the last session for this cwd (kimi -c)
 #   hapax-kimi <role> --terminal none   run in the current terminal instead of tmux
+#
+# Per-role turn bounds are parameters, not code changes. The default record is
+# ${XDG_CONFIG_HOME:-$HOME/.config}/hapax/kimi-turn-bounds.conf with one
+# "<role> <max_steps_per_turn>" entry per line; override the record path with
+# HAPAX_KIMI_TURN_BOUNDS_FILE. A missing record uses the launcher defaults
+# below, and 0 means unlimited.
 set -euo pipefail
 
 ROLE="${1:?usage: hapax-kimi <role> [--continue] [--terminal none]}"
@@ -32,6 +38,45 @@ SESSION="hapax-kimi-$ROLE"
 SESSION_UUID="$(cat /proc/sys/kernel/random/uuid)"
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
 WORKDIR="${HAPAX_KIMI_WORKDIR:-$HOME}"
+
+TURN_BOUNDS_FILE="${HAPAX_KIMI_TURN_BOUNDS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/hapax/kimi-turn-bounds.conf}"
+TURN_BOUND=""
+if [ -e "$TURN_BOUNDS_FILE" ]; then
+  if [ ! -r "$TURN_BOUNDS_FILE" ]; then
+    echo "hapax-kimi: turn-bound record is not readable: $TURN_BOUNDS_FILE" >&2
+    exit 2
+  fi
+  TURN_BOUND_MATCHES=0
+  while IFS= read -r TURN_BOUNDS_LINE || [ -n "$TURN_BOUNDS_LINE" ]; do
+    case "$TURN_BOUNDS_LINE" in
+      ""|"#"*) continue ;;
+    esac
+    read -r TURN_BOUND_ROLE TURN_BOUND_VALUE TURN_BOUND_EXTRA <<<"$TURN_BOUNDS_LINE"
+    if [[ -z "$TURN_BOUND_VALUE" || -n "$TURN_BOUND_EXTRA" || ! "$TURN_BOUND_VALUE" =~ ^[0-9]+$ ]]; then
+      echo "hapax-kimi: invalid max_steps_per_turn record: $TURN_BOUNDS_FILE" >&2
+      exit 2
+    fi
+    if [ "$TURN_BOUND_ROLE" = "$ROLE" ]; then
+      TURN_BOUND_MATCHES=$((TURN_BOUND_MATCHES + 1))
+      if [ "$TURN_BOUND_MATCHES" -gt 1 ]; then
+        echo "hapax-kimi: duplicate role in turn-bound record: $ROLE" >&2
+        exit 2
+      fi
+      TURN_BOUND="$TURN_BOUND_VALUE"
+    fi
+  done <"$TURN_BOUNDS_FILE"
+fi
+if [ -z "$TURN_BOUND" ]; then
+  case "$ROLE" in
+    kimi-seat|glm-steward) TURN_BOUND=30 ;;
+    *) TURN_BOUND=0 ;;
+  esac
+fi
+if ! [[ "$TURN_BOUND" =~ ^[0-9]+$ ]]; then
+  echo "hapax-kimi: invalid max_steps_per_turn: $TURN_BOUND" >&2
+  exit 2
+fi
+export KIMI_LOOP_MAX_STEPS_PER_TURN="$TURN_BOUND"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
   echo "hapax-kimi: session $SESSION already exists — attach with: tmux attach -t $SESSION" >&2
@@ -65,6 +110,7 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export HAPAX_AGENT_INTERFACE=kimi\n'
   printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+  printf 'export KIMI_LOOP_MAX_STEPS_PER_TURN=%q\n' "$TURN_BOUND"
   printf 'exec %q' "$KIMI_BIN"
   for arg in "${KIMI_ARGS[@]}"; do
     printf ' %q' "$arg"

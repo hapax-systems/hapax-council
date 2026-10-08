@@ -58,7 +58,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1630,6 +1630,15 @@ class PRInfo:
     changed_file_count: int | None
     is_draft: bool
     files: tuple[str, ...]
+
+
+def _packet_redaction_block_status(exc: Exception) -> str:
+    """The dispatch status when packet redaction cannot run. Both fail closed (send nothing), but
+    an empty-but-readable registry gets a DISTINCT code from an unreadable one so the operator can
+    tell a misconfiguration (no names) from a broken registry."""
+    if isinstance(exc, review_team.EmptyPrincipalRegistryError):
+        return "packet_redaction_registry_empty"
+    return "packet_redaction_registry_unreadable"
 
 
 def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120) -> str:
@@ -4282,24 +4291,64 @@ def _apply_review(
         route=route,
         allow_local=apply,
     )
-    diff = truncate_diff(pr_diff)
+    # Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): redact every registered
+    # principal token from EVERY outbound component below — diff, task note, source excerpts, PR
+    # body/title, prior criticals — so a privacy scrub is reviewable without re-sending what it
+    # removes. Fail CLOSED, NO off switch (seat ruling): an unreadable or empty registry sends
+    # NOTHING.
+    try:
+        _principal_tokens = review_team.load_principal_tokens(repo_root)
+    except review_team.PacketRedactionError as exc:
+        return {
+            "status": _packet_redaction_block_status(exc),
+            "pr": pr_number,
+            "reason": str(exc),
+            "next_action": (
+                "repair the local principal-name registry and retry; no packet was sent"
+            ),
+        }
+    # Redact the FULL diff BEFORE truncation: truncate_diff cuts spans at character budgets and can
+    # sever a line mid-token, leaving a fragment the matcher no longer flags. Redaction preserves
+    # the unified-diff prefixes/headers, so truncation still operates on a valid diff.
+    redacted_full_diff, _rc_diff = review_team.redact_registered_tokens(
+        str(pr_diff), _principal_tokens
+    )
+    diff = truncate_diff(redacted_full_diff)
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
     )
+    task_note_text, _rc_note = review_team.redact_registered_tokens(
+        task_note_text, _principal_tokens
+    )
+    reviewer_source_excerpts, _rc_exc = review_team.redact_registered_tokens(
+        reviewer_source_excerpts, _principal_tokens
+    )
+    # pr_info is outbound too: the prompt emits pr_info.title, so redact title+body on a copy.
+    redacted_title, _rc_title = review_team.redact_registered_tokens(
+        pr_info.title or "", _principal_tokens
+    )
+    redacted_pr_body, _rc_body = review_team.redact_registered_tokens(
+        pr_info.body or "", _principal_tokens
+    )
+    redacted_pr_info = replace(pr_info, title=redacted_title, body=redacted_pr_body)
+    redacted_prior_criticals, _rc_prior = review_team.redact_structure(
+        prior_criticals, _principal_tokens
+    )
+    packet_redactions = _rc_diff + _rc_note + _rc_exc + _rc_title + _rc_body + _rc_prior
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
     prompt_inputs = {
-        "pr_info": pr_info,
+        "pr_info": redacted_pr_info,
         "diff_source": pr_diff.source,
         "comparison_base": pr_diff.comparison_base,
         "task_id": task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
         "team_class": team_class,
         "lenses": lenses,
         "charters": charters,
-        "pr_body": pr_info.body,
+        "pr_body": redacted_pr_body,
         "task_note_text": task_note_text,
         "diff": diff,
-        "prior_criticals": prior_criticals,
+        "prior_criticals": redacted_prior_criticals,
     }
     if reviewer_source_excerpts:
         try:
@@ -4402,6 +4451,7 @@ def _apply_review(
             changed_files=pr_info.files,
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
+            packet_redactions=packet_redactions,
         )
         dossier["family_substitution"] = substitution
         dossier["diff_source"] = pr_diff.source
@@ -4805,6 +4855,27 @@ def review_artifact(
         encoding="utf-8"
     )
     charters = "\n\n".join(review_team.charter_text(lens) for lens in lenses)
+    # Packet redaction governs the vault-only path too (#5030 (d)): contents, task note, manifest
+    # and lineage all leave to reviewers. Fail CLOSED, no off switch — if it can't be redacted, send
+    # nothing.
+    try:
+        _artifact_tokens = review_team.load_principal_tokens()
+    except review_team.PacketRedactionError as exc:
+        return {
+            "status": _packet_redaction_block_status(exc),
+            "task_id": task_id,
+            "reason": str(exc),
+            "next_action": "repair the local principal-name registry and retry; no packet was sent",
+        }
+    artifact_redactions = 0
+    task_note_text, _n = review_team.redact_registered_tokens(task_note_text, _artifact_tokens)
+    artifact_redactions += _n
+    contents, _n = review_team.redact_structure(contents, _artifact_tokens)
+    artifact_redactions += _n
+    manifest, _n = review_team.redact_structure(manifest, _artifact_tokens)
+    artifact_redactions += _n
+    lineage, _n = review_team.redact_structure(lineage, _artifact_tokens)
+    artifact_redactions += _n
     prompts = [
         render_artifact_reviewer_prompt(
             seat=seat,
@@ -4849,6 +4920,7 @@ def review_artifact(
         changed_files=files,
         changed_file_count=len(files),
         repo_root=None,  # no checkout to refute a phantom critical against: criticals stand
+        packet_redactions=artifact_redactions,
     )
     dossier["pr"] = None
     dossier["artifact_review"] = {

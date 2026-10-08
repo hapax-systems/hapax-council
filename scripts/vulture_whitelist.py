@@ -5460,3 +5460,80 @@ _ = (_billing_post_image_blob, _billing_regenerated_added_lines)
 from shared.capability_envelope.sentinel import OpenWatch as _EnvelopeOpenWatch  # noqa: E402
 
 _EnvelopeOpenWatch.overflowed
+
+# resource_state_producer (estate-resource-state-determinative-projection-20261004): the extensionless
+# scripts/hapax-resources reader calls build_bundle + resource_summary_for_boundary (vulture scans
+# Python suffixes only and cannot see that caller), and claim_cites_fresh_resource_fact is the
+# D-011/OFP enforcement predicate wired at dispatch + the fresh-challenge in the consumer slice.
+from shared.resource_state_producer import (  # noqa: E402
+    build_bundle as _rsp_build_bundle,
+)
+from shared.resource_state_producer import (
+    claim_cites_fresh_resource_fact as _rsp_claim_cites_fresh_resource_fact,
+)
+from shared.resource_state_producer import (
+    resource_summary_for_boundary as _rsp_resource_summary_for_boundary,
+)
+
+_ = (_rsp_build_bundle, _rsp_resource_summary_for_boundary, _rsp_claim_cites_fresh_resource_fact)
+
+# c1-chanc-build1-20261004: the CHANC core (shared/chanc.py) is slice 1; its callers are the
+# sequenced build-1 wiring slices — component 1 (receipt emission in han_mail_pull) and component 3
+# (the withdrawal reply path). Component 1 lands the discipline but injects its two terminal effects
+# (the keeper-signed create-once record and the SMTP send); its production caller is slice B, which
+# wires ``main()``. Until then ``emit_receipts`` has no source caller. Remove when the slices land.
+from scripts.han_mail_pull import (  # noqa: E402
+    emit_receipts as _hmp_emit_receipts,
+)
+from shared.chanc import (  # noqa: E402
+    classify_withdrawal as _chanc_classify_withdrawal,
+)
+from shared.chanc import (
+    generate_handle as _chanc_generate_handle,
+)
+from shared.chanc import (
+    keyed_digest as _chanc_keyed_digest,
+)
+from shared.chanc import (
+    verify_commitment as _chanc_verify_commitment,
+)
+
+_ = (
+    _chanc_classify_withdrawal,
+    _chanc_generate_handle,
+    _chanc_keyed_digest,
+    _chanc_verify_commitment,
+    _hmp_emit_receipts,
+)
+
+# split-A-of-5036: the static consumer is scripts/mint_public_gate_receipts.py, which lands in the
+# stacked PR B of the same split, so this half has no call site for it yet. The union of A and B is
+# byte-identical to 53106f8cb plus this line, where the minter calls it. Removable once PR B merges.
+from shared.public_gate_receipts import (  # noqa: E402
+    public_gate_authority_evidence_signed as _public_gate_authority_evidence_signed,
+)
+
+_ = _public_gate_authority_evidence_signed
+
+# The stacked delivery and Streamable-HTTP MCP pieces consume these queue and
+# content-screening entrypoints. This base PR is independently mergeable, so
+# those production callers are absent from this diff.
+from shared.research_desk import (  # noqa: E402
+    ResearchDeskConfig as _ResearchDeskConfig,
+)
+from shared.research_desk import (  # noqa: E402
+    get_request as _research_desk_get_request,
+)
+from shared.research_desk import (  # noqa: E402
+    list_open_requests as _research_desk_list_open_requests,
+)
+from shared.research_desk import (  # noqa: E402
+    neutralize_markdown as _research_desk_neutralize_markdown,
+)
+
+_ = (
+    _ResearchDeskConfig.lanebus_dir,
+    _research_desk_get_request,
+    _research_desk_list_open_requests,
+    _research_desk_neutralize_markdown,
+)

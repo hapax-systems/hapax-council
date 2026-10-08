@@ -150,7 +150,7 @@ class TestBashMutationFalsePositives:
             home=tmp_path,
         )
         assert result.returncode == 0, f"stderr={result.stderr}"
-        assert "cannot verify mutation_scope_refs" not in result.stderr
+        assert "does not verify shell source mutations" not in result.stderr
 
     def test_piped_read_only_sed_grep_not_scope_blocked(self, tmp_path: Path) -> None:
         # The `-iE` belongs to grep, across a pipe — the tightened sed pattern
@@ -165,7 +165,7 @@ class TestBashMutationFalsePositives:
             home=tmp_path,
         )
         assert result.returncode == 0, f"stderr={result.stderr}"
-        assert "cannot verify mutation_scope_refs" not in result.stderr
+        assert "does not verify shell source mutations" not in result.stderr
 
     def test_real_in_place_sed_still_blocked(self, tmp_path: Path) -> None:
         # A genuine `sed -i` source edit with no path stays blocked (preserved).
@@ -176,7 +176,7 @@ class TestBashMutationFalsePositives:
             home=tmp_path,
         )
         assert result.returncode == 2
-        assert "cannot verify mutation_scope_refs" in result.stderr
+        assert "does not verify shell source mutations" in result.stderr
 
     def test_systemctl_in_payload_not_scope_blocked(self, tmp_path: Path) -> None:
         # `systemctl` inside a quoted payload must not be treated as a source-scope
@@ -191,7 +191,7 @@ class TestBashMutationFalsePositives:
             },
             home=tmp_path,
         )
-        assert "cannot verify mutation_scope_refs" not in result.stderr
+        assert "does not verify shell source mutations" not in result.stderr
         assert result.returncode == 0, f"stderr={result.stderr}"
 
 

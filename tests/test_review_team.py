@@ -3179,6 +3179,23 @@ class TestFamilyOutageDegradation:
         assert rt.is_quota_wall(self.WALL_2026_06_12, process_failed=True)
         assert rt.is_quota_wall("HTTP 429 Too Many Requests", process_failed=True, model_stdout="")
 
+    def test_codex_v0160_curly_apostrophe_wall_detected(self) -> None:
+        """codex 0.160 TUI (2026-10-03) uses a curly apostrophe U+2019 in "You’ve"."""
+        rt = _load_review_team_module()
+        # Exact text the codex 0.160 TUI printed on 2026-10-03 (curly apostrophe).
+        curly = (
+            "You’ve hit your usage limit. Visit "
+            "https://chatgpt.com/codex/settings/usage to purchase more credits or "
+            "try again at Oct 9th, 2026 11:33 PM."
+        )
+        assert rt.is_quota_wall(curly, process_failed=True, model_stdout="")
+        assert rt.is_quota_wall("ERROR: " + curly, process_failed=True, model_stdout="")
+        # Anti-forge anchors stay: active model stdout, or no process failure, is not a wall.
+        assert not rt.is_quota_wall(
+            curly, process_failed=True, model_stdout="```review\nverdict: block\n```"
+        )
+        assert not rt.is_quota_wall(curly, process_failed=False, model_stdout="")
+
     def test_t1_degrades_on_evidenced_outage(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()
