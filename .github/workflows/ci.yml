@@ -993,6 +993,7 @@ jobs:
             --confcutdir=tests \
             tests/ci/test_self_hosted_runner_experiment.py \
             tests/ci/test_python_test_throughput_policy.py \
+            tests/ci/test_publication_witness_fixture.py \
             tests/test_ci_required_coverage_claims.py \
             tests/shared/test_ci_discovery.py \
             tests/scripts/test_screwm_aggregate_port_owner_gate.py \
