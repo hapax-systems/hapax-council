@@ -2,7 +2,7 @@
 
 ytb-LORE-MVP sub-task A (delta, 2026-04-24). Surfaces Hapax's chronicle
 — the unified observability event store — as a viewer-legible ward.
-Reads the last N high-salience events in a bounded time window and
+Reads public-scope high-salience events in a bounded time window and
 renders them in BitchX grammar as a three-line ticker:
 
     »»» [chronicle]
@@ -27,7 +27,8 @@ of the flag.
 Read source: ``shared.chronicle.query()`` over
 ``/dev/shm/hapax-chronicle/events.jsonl``. 10-minute window by default,
 salience threshold 0.7, up to 3 rows. All reads are wrapped; a missing
-file or malformed content renders the empty state (transparent surface).
+file or malformed content renders the quiet state. Public scope is a query
+selector, not permission to stream: producer and surface admission are separate.
 """
 
 from __future__ import annotations
@@ -180,7 +181,8 @@ def _event_rank_key(event: ChronicleEvent) -> tuple[float, float]:
 def _collect_rows(now: float) -> list[str]:
     """Read the chronicle and return up to ``_MAX_ROWS`` formatted lines.
 
-    Lore-worthy events are ranked by ``(salience desc, ts desc)`` before
+    Public scope is selected by the existing query before its result limit.
+    Lore-worthy events are then ranked by ``(salience desc, ts desc)`` before
     truncation — so a critical stance transition that landed 30s ago
     outranks a 5s-old routine event of the same source. Events without
     salience get a 0.7 floor for ranking; they only displace newer
@@ -190,6 +192,7 @@ def _collect_rows(now: float) -> list[str]:
         events = query(
             since=now - _WINDOW_SECONDS,
             until=now,
+            public_scope="public",
             limit=200,
             path=CHRONICLE_FILE,
         )

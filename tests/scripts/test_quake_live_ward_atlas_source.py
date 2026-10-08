@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 
 import cairo
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "quake-live-ward-atlas-source.py"
@@ -514,3 +515,324 @@ def test_ward_atlas_reserves_brio_ir_wards_for_direct_textures(tmp_path: Path) -
         assert observed[ward_id]["reason"] == "direct live texture owns this ward"
         assert observed[ward_id]["visibility_classification"] == "direct-texture-owned"
         assert observed[ward_id]["visibility_reasons"] == ["owned_by_direct_live_texture"]
+
+
+@pytest.mark.parametrize("selection", [("chronicle_ticker",), ()])
+def test_software_selection_precedes_every_constructor(tmp_path, monkeypatch, selection):
+    from agents.studio_compositor.source_registry import SourceRegistry
+
+    atlas = _load_atlas()
+    calls = []
+
+    def construct(_registry, schema):
+        calls.append(schema.id)
+        assert schema.id in selection, "excluded constructor ran"
+        return _Backend()
+
+    monkeypatch.setattr(SourceRegistry, "construct_backend", construct)
+    backends, errors = atlas._construct_backends(atlas.DEFAULT_LAYOUT, software_sources=selection)
+    assert calls == list(selection)
+    assert list(backends) == list(selection)
+    assert errors == {}
+
+
+@pytest.mark.parametrize("selection", [("brio-operator-ir",), ("durf",), ("unknown",)])
+def test_software_selection_rejects_unpermitted_source_before_layout(monkeypatch, selection):
+    atlas = _load_atlas()
+
+    def forbidden(*_args):
+        pytest.fail("invalid selection reached layout/construction")
+
+    monkeypatch.setattr(atlas, "_load_layout", forbidden)
+    with pytest.raises(ValueError, match="software source"):
+        atlas._construct_backends(Path("unused"), software_sources=selection)
+
+
+@pytest.mark.parametrize(
+    "backend,class_name", [("v4l2", "ChronicleTickerCairoSource"), ("cairo", "CodingSessionReveal")]
+)
+def test_selected_id_cannot_construct_a_different_backend(
+    tmp_path, monkeypatch, backend, class_name
+):
+    from agents.studio_compositor.source_registry import SourceRegistry
+
+    atlas = _load_atlas()
+    layout = tmp_path / "layout.json"
+    layout.write_text(
+        json.dumps(
+            {
+                "sources": [
+                    {
+                        "id": "chronicle_ticker",
+                        "kind": "cairo",
+                        "backend": backend,
+                        "params": {"class_name": class_name},
+                    }
+                ]
+            }
+        )
+    )
+    calls = []
+    monkeypatch.setattr(SourceRegistry, "construct_backend", lambda *a: calls.append(a))
+    backends, errors = atlas._construct_backends(layout, software_sources=("chronicle_ticker",))
+    assert calls == []
+    assert backends == {}
+    assert "software source" in errors["chronicle_ticker"]
+
+
+@pytest.mark.parametrize("gpu", [False, True])
+def test_software_selection_limits_polling_pixels_and_metadata(tmp_path, gpu):
+    atlas = _load_atlas()
+    selected = "chronicle_ticker"
+    excluded = "token_pole"
+    calls = []
+
+    class Selected(_Backend):
+        def tick_once(self):
+            calls.append(selected)
+
+    class Excluded(_Backend):
+        def tick_once(self):
+            pytest.fail("excluded poller ran")
+
+    width, height, cell_w, cell_h = 256, 288, 64, 32
+    raw = tmp_path / "atlas.raw.bgra" if gpu else None
+    observed, errors = atlas.render_atlas(
+        output=tmp_path / "atlas.bgra",
+        meta=tmp_path / "atlas.json",
+        layout_path=Path("unused"),
+        width=width,
+        height=height,
+        columns=4,
+        cell_width=cell_w,
+        cell_height=cell_h,
+        frame_id=1,
+        backends={
+            selected: _Registry(selected, _checker_surface(64, 32), Selected()),
+            excluded: _Registry(excluded, _solid_surface(64, 32, (1, 0, 0)), Excluded()),
+        },
+        errors={excluded: "WITHHELD"},
+        software_sources=(selected,),
+        gpu_drift_raw_output=raw,
+    )
+    assert calls == [selected]
+    assert list(observed) == [selected]
+    assert errors == {}
+    metadata = json.loads(
+        (raw.with_suffix(".json") if gpu else tmp_path / "atlas.json").read_text()
+    )
+    assert metadata["ward_count"] == 1
+    assert metadata["audit_readback"]["ward_ids"] == [selected]
+    assert list(metadata["wards"]) == [selected]
+    assert "WITHHELD" not in json.dumps(metadata)
+    data = (raw or tmp_path / "atlas.bgra").read_bytes()
+    # Selection retains the established atlas slot; unselected cells stay background.
+    assert _pixel_bgra(data, width, 4, 4) != (0, 0, 255, 255)
+    assert _pixel_bgra(data, width, 130, 194) != _pixel_bgra(data, width, 4, 4)
+
+
+def test_main_carries_software_selection_to_constructor_and_frames(tmp_path, monkeypatch):
+    atlas = _load_atlas()
+    calls = []
+
+    def construct(layout, *, software_sources=None):
+        calls.append(("construct", software_sources))
+        return {}, {}
+
+    def render(**kwargs):
+        calls.append(("render", kwargs.get("software_sources")))
+        return {}, {}
+
+    monkeypatch.setattr(atlas, "_construct_backends", construct)
+    monkeypatch.setattr(atlas, "render_atlas", render)
+    monkeypatch.setattr(atlas.signal, "signal", lambda *_a: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--software-source",
+            "chronicle_ticker",
+            "--once",
+            "--drift",
+            "off",
+            "--drift-game-data",
+            str(tmp_path),
+        ],
+    )
+    assert atlas.main() == 0
+    assert calls == [("construct", ("chronicle_ticker",)), ("render", ("chronicle_ticker",))]
+
+
+def test_selected_chronicle_renders_real_cairo_and_expires_to_quiet(tmp_path, monkeypatch):
+    """Offline typed input -> real registry/runner -> real atlas pixels, with isolated sinks."""
+    from agents.reverie import content_injector
+    from agents.studio_compositor import chronicle_ticker as ct
+    from agents.studio_compositor import degraded_mode, homage, text_render, ward_properties
+    from agents.studio_compositor.homage.bitchx import BITCHX_PACKAGE
+    from agents.studio_compositor.source_registry import SourceRegistry
+    from shared.chronicle import ChronicleEvent
+
+    atlas = _load_atlas()
+    events = tmp_path / "events.jsonl"
+    monkeypatch.setattr(ct, "CHRONICLE_FILE", events)
+    monkeypatch.setattr(ct, "get_active_package", lambda: BITCHX_PACKAGE)
+    monkeypatch.setattr(homage, "_ACTIVE_FILE", tmp_path / "homage.json")
+    monkeypatch.setattr(content_injector, "SOURCES_DIR", tmp_path / "source-protocol")
+    monkeypatch.setattr(ward_properties, "WARD_PROPERTIES_PATH", tmp_path / "wards.json")
+    monkeypatch.setattr(ward_properties, "_cache", None)
+    monkeypatch.setattr(degraded_mode, "DEGRADED_MODE_PATH", tmp_path / "degraded.json")
+    monkeypatch.setattr(degraded_mode, "DEGRADED_FLAG_PATH", tmp_path / "degraded.flag")
+    monkeypatch.setenv(ct._FEATURE_FLAG_ENV, "1")
+    monkeypatch.setenv("HAPAX_HOMAGE_ACTIVE", "0")
+    now = 1_800_000_000.0
+    monkeypatch.setattr(ct.time, "time", lambda: now)
+    public = ChronicleEvent(
+        ts=now - 1,
+        trace_id="1" * 32,
+        span_id="2" * 16,
+        parent_span_id=None,
+        source="synthetic_work",
+        event_type="admitted_fixture",
+        payload={"salience": 0.8},
+        public_scope="public",
+        evidence_class="public_event",
+        evidence_refs=["fixture:offline-only-no-live-admission"],
+    )
+    private = ChronicleEvent(
+        ts=now,
+        trace_id="1" * 32,
+        span_id="3" * 16,
+        parent_span_id=None,
+        source="synthetic_private",
+        event_type="withheld_fixture",
+        payload={"salience": 1.0},
+        public_scope="private",
+    )
+    events.write_text(public.to_json() + "\n" + private.to_json() + "\n")
+    calls = []
+    real_construct = SourceRegistry.construct_backend
+
+    def construct(registry, schema):
+        calls.append(schema.id)
+        assert schema.id == "chronicle_ticker", "excluded constructor ran"
+        return real_construct(registry, schema)
+
+    monkeypatch.setattr(SourceRegistry, "construct_backend", construct)
+    texts = []
+    real_text = text_render.render_text
+
+    def draw(cr, style, x=0.0, y=0.0):
+        texts.append(style.text)
+        return real_text(cr, style, x, y)
+
+    monkeypatch.setattr(text_render, "render_text", draw)
+    backends, errors = atlas._construct_backends(
+        atlas.DEFAULT_LAYOUT, software_sources=("chronicle_ticker",)
+    )
+    assert calls == ["chronicle_ticker"]
+    assert errors == {}
+    runner = backends["chronicle_ticker"]._backends["chronicle_ticker"]
+    artifact_dir = Path(os.environ.get("HAPAX_HOMAGE_TEST_ARTIFACTS", str(tmp_path / "render")))
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    for frame, label in enumerate(("admitted", "stale", "missing", "unreadable"), start=1):
+        if label == "stale":
+            now += ct._WINDOW_SECONDS + 2
+        elif label == "missing":
+            events.unlink()
+        elif label == "unreadable":
+            events.mkdir()  # read_text raises IsADirectoryError at the actual I/O seam.
+        now += 2
+        texts.clear()
+        output, meta = artifact_dir / f"{label}.bgra", artifact_dir / f"{label}.json"
+        observed, errors = atlas.render_atlas(
+            output=output,
+            meta=meta,
+            layout_path=atlas.DEFAULT_LAYOUT,
+            width=1680,
+            height=1260,
+            columns=4,
+            cell_width=420,
+            cell_height=140,
+            frame_id=frame,
+            backends=backends,
+            errors=errors,
+            software_sources=("chronicle_ticker",),
+        )
+        data = bytearray(output.read_bytes())
+        cairo.ImageSurface.create_for_data(data, cairo.FORMAT_ARGB32, 1680, 1260).write_to_png(
+            str(artifact_dir / f"{label}-atlas.png")
+        )
+        runner.get_current_surface().write_to_png(str(artifact_dir / f"{label}-ward.png"))
+        (artifact_dir / f"{label}-texts.json").write_text(json.dumps(texts, indent=2))
+        assert list(observed) == ["chronicle_ticker"]
+        assert observed["chronicle_ticker"]["status"] == "rendered"
+        assert errors == {}
+        assert runner._thread is None
+        assert "synthetic_private.withheld_fixture" not in texts
+        if label == "admitted":
+            assert "synthetic_work.admitted_fixture" in texts
+            assert "  (quiet)" not in texts
+        else:
+            assert "synthetic_work.admitted_fixture" not in texts
+            assert "  (quiet)" in texts
+    assert (tmp_path / "source-protocol" / "chronicle_ticker" / "manifest.json").exists()
+
+
+def test_render_constructs_only_selected_software_source(tmp_path, monkeypatch):
+    from agents.studio_compositor.source_registry import SourceRegistry
+
+    atlas = _load_atlas()
+    calls = []
+
+    class Backend(_Backend):
+        def get_current_surface(self):
+            return _checker_surface(64, 32)
+
+    def construct(registry, schema):
+        calls.append(schema.id)
+        assert schema.id == "chronicle_ticker", "excluded constructor ran"
+        return Backend()
+
+    monkeypatch.setattr(SourceRegistry, "construct_backend", construct)
+    observed, errors = atlas.render_atlas(
+        output=tmp_path / "atlas.bgra",
+        meta=tmp_path / "atlas.json",
+        layout_path=atlas.DEFAULT_LAYOUT,
+        width=256,
+        height=288,
+        columns=4,
+        cell_width=64,
+        cell_height=32,
+        frame_id=1,
+        software_sources=("chronicle_ticker",),
+    )
+    assert calls == ["chronicle_ticker"]
+    assert list(observed) == ["chronicle_ticker"]
+    assert errors == {}
+
+
+def test_selected_missing_layout_source_stays_empty(tmp_path):
+    atlas = _load_atlas()
+    layout = tmp_path / "layout.json"
+    layout.write_text('{"sources": []}')
+    backends, errors = atlas._construct_backends(layout, software_sources=("chronicle_ticker",))
+    assert backends == {}
+    assert errors == {"chronicle_ticker": "missing layout source"}
+    observed, errors = atlas.render_atlas(
+        output=tmp_path / "atlas.bgra",
+        meta=tmp_path / "atlas.json",
+        layout_path=layout,
+        width=256,
+        height=288,
+        columns=4,
+        cell_width=64,
+        cell_height=32,
+        frame_id=1,
+        backends=backends,
+        errors=errors,
+        software_sources=("chronicle_ticker",),
+    )
+    assert list(observed) == ["chronicle_ticker"]
+    assert observed["chronicle_ticker"]["status"] == "fallback"
+    assert observed["chronicle_ticker"]["reason"] == "missing layout source"
