@@ -734,9 +734,11 @@ def test_claim_sweep_holds_before_reading_unlocked_state(
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("cleanup without a supported exclusion must not inspect or mutate state")
 
-    for method in ("glob", "stat", "read_text", "read_bytes", "unlink"):
-        monkeypatch.setattr(Path, method, forbidden)
-    held = module.sweep_stale_claims(tmp_path / "claims", tmp_path / "active")
+    # Restore shared pathlib methods before pytest formats any regression failure.
+    with monkeypatch.context() as scoped:
+        for method in ("glob", "stat", "read_text", "read_bytes", "unlink"):
+            scoped.setattr(Path, method, forbidden)
+        held = module.sweep_stale_claims(tmp_path / "claims", tmp_path / "active")
     assert isinstance(held, module.ClaimSweepHold)
     assert held.reason_code == "cross_role_claim_cleanup_unavailable"
     assert "same-claim" in held.next_action
