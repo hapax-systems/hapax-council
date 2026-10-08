@@ -295,6 +295,9 @@ PUBLIC_GATE_INDEPENDENT_REVIEW_FAMILIES = frozenset(
         "glm",
     }
 )
+PUBLIC_GATE_REVIEW_REGISTRY_PATH = (
+    Path(__file__).resolve().parents[1] / "config/review-lenses/registry.yaml"
+)
 PUBLIC_GATE_EVIDENCE_REF_PREFIXES = (
     "acceptance-receipt:",
     "claim-review:",
@@ -862,6 +865,53 @@ def _evidence_file_is_independent(
     )
 
 
+def public_gate_known_review_families(dossier: Mapping[str, Any]) -> frozenset[str]:
+    """Known families for an already authenticated dossier, never arbitrary registry labels.
+
+    Muse's static substitute admission is the merged #4733 option (a) contract,
+    review-constitution-walled-family-substitution-20260924. Its bounded measurement
+    is pinned in review-lenses.diff_capacity (measurement-final.json). Consume the
+    dispatcher's signed substitution provenance AND the trusted source declaration
+    at use. Local/Vibe and provider aliases do not acquire eligibility from a label.
+    """
+    known = PUBLIC_GATE_INDEPENDENT_REVIEW_FAMILIES
+    substitution = dossier.get("family_substitution")
+    if dossier.get("registry_id") != "review-lenses" or not isinstance(substitution, Mapping):
+        return known
+    for key in ("seated_families", "substitute_families_seated"):
+        families = substitution.get(key)
+        if not isinstance(families, list) or "muse" not in families:
+            return known
+    try:
+        registry = yaml.safe_load(PUBLIC_GATE_REVIEW_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return known
+    if (
+        not isinstance(registry, Mapping)
+        or registry.get("registry_schema") != 1
+        or registry.get("registry_id") != "review-lenses"
+        or not isinstance(registry.get("families"), list)
+    ):
+        return known
+    entries = [
+        row
+        for row in registry["families"]
+        if isinstance(row, Mapping) and row.get("family") == "muse"
+    ]
+    if (
+        len(entries) != 1
+        or entries[0].get("substitute") is not True
+        or entries[0].get("reviewer_command") != ["scripts/hapax-muse-reviewer"]
+    ):
+        return known
+    capacity = registry.get("diff_capacity")
+    seats = capacity.get("seats") if isinstance(capacity, Mapping) else None
+    muse = seats.get("muse-1") if isinstance(seats, Mapping) else None
+    if not isinstance(muse, Mapping) or muse.get("status") != "measured":
+        return known
+    return known | {"muse"}
+
+
 def _review_dossier_evidence_allows(
     data: Any,
     *,
@@ -902,6 +952,10 @@ def _review_dossier_evidence_allows(
     reviewers = data.get("reviewers")
     if not isinstance(reviewers, list):
         return False
+    known_families = public_gate_known_review_families(data)
+    writer = _direct_text_value(data, "writer_family").casefold()
+    if writer not in known_families:
+        return False
     accepted_families: set[str] = set()
     for reviewer in reviewers:
         if not isinstance(reviewer, Mapping):
@@ -910,7 +964,7 @@ def _review_dossier_evidence_allows(
         if verdict not in {"accept", "accept-with-findings"}:
             continue
         family = str(reviewer.get("family") or "").strip().casefold()
-        if family in PUBLIC_GATE_INDEPENDENT_REVIEW_FAMILIES:
+        if family in known_families and family != writer:
             accepted_families.add(family)
     return len(accepted_families) >= quorum_required
 

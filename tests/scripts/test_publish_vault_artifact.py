@@ -75,6 +75,7 @@ def _write_public_gate_review_evidence(
         f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
+        "writer_family: codex\n"
         "quorum_required: 1\n"
         "accept_count: 1\n"
         "required_gates:\n"

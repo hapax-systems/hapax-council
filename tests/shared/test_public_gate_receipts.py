@@ -55,6 +55,8 @@ def _write_review_evidence(
     quorum_required: int = 1,
     accept_count: int = 1,
     head_sha: str = "a" * 40,
+    writer_family: str = "glm",
+    **metadata: object,
 ) -> None:
     del root
     authority_root = public_gate_receipts._public_gate_authority_roots()[0]
@@ -66,6 +68,7 @@ def _write_review_evidence(
         "review_team_verdict": "quorum-accept",
         "quorum_required": quorum_required,
         "accept_count": accept_count,
+        "writer_family": writer_family,
         "gate_id": gate,
         "authorized_public_gate_receipts": [f"public-gate:{receipt_name}"],
         "artifact_slug": "demo",
@@ -80,6 +83,7 @@ def _write_review_evidence(
                 "verdict": "accept",
             }
         ],
+        **metadata,
     }
     payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
         payload,
@@ -130,6 +134,57 @@ def test_accepts_passed_yaml_receipt_with_extension_inferred(tmp_path: Path) -> 
         "public-gate:receipt-1",
         expected_gate=GATE,
         roots=(tmp_path,),
+    )
+
+
+@pytest.mark.parametrize(
+    ("writer", "families", "metadata", "allowed"),
+    [
+        (
+            "codex",
+            ["gemini", "codex", "muse"],
+            {
+                "registry_id": "review-lenses",
+                "family_substitution": {
+                    "seated_families": ["codex", "gemini", "muse"],
+                    "substitute_families_seated": ["muse"],
+                },
+            },
+            True,
+        ),
+        ("codex", ["codex", "gemini"], {}, False),
+        ("anthropic", ["claude", "gemini"], {}, False),
+        ("", ["claude", "gemini"], {}, False),
+        ("codex", ["gemini", "gemini"], {}, False),
+        ("codex", ["gemini", "muse"], {}, False),
+        ("codex", ["gemini", "bespoke-reviewer"], {}, False),
+        ("codex", ["gemini", "local"], {}, False),
+        ("codex", ["gemini", "vibe"], {}, False),
+        ("codex", ["gemini", "featherless"], {}, False),
+        ("codex", ["gemini", "glm"], {}, True),
+    ],
+)
+def test_dossier_counts_only_known_independent_families(
+    tmp_path: Path, writer: str, families: list[str], metadata: dict, allowed: bool
+) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        writer_family=writer,
+        reviewers=[
+            {"id": f"seat-{i}", "family": family, "verdict": "accept"}
+            for i, family in enumerate(families)
+        ],
+        quorum_required=2,
+        accept_count=len(families),
+        **metadata,
+    )
+    assert (
+        public_gate_receipt_value_present(
+            "public-gate:receipt-1.yaml", expected_gate=GATE, roots=(tmp_path,)
+        )
+        is allowed
     )
 
 

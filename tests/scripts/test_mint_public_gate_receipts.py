@@ -22,6 +22,18 @@ REF = {gate: f"public-gate:{SLUG}-{gate.replace('_', '-')}" for gate in GATES}
 CLAUDE = {"id": "claude-1", "family": "claude", "verdict": "accept"}
 GEMINI = {"id": "gemini-1", "family": "gemini", "verdict": "accept"}
 GLM = {"id": "glm-1", "family": "glm", "verdict": "accept"}
+CODEX = {"id": "codex-1", "family": "codex", "verdict": "accept"}
+MUSE = {"id": "muse-1", "family": "muse", "verdict": "accept"}
+
+# Redacted structural basis: frozen cor0004 R3 dossier a3c55eee413ab144... (2026-10-08).
+# All signatures and artifact bytes are created with the isolated test key, never copied.
+MUSE_PROVENANCE = {
+    "registry_id": "review-lenses",
+    "family_substitution": {
+        "seated_families": ["codex", "gemini", "muse"],
+        "substitute_families_seated": ["muse"],
+    },
+}
 
 
 def _argv(env) -> list[str]:
@@ -146,6 +158,88 @@ def test_mints_receipts_the_validator_accepts(env) -> None:
     # The writer may vote, but never counts: two distinct families still meet the quorum.
     _dossier(env, reviewers=[CLAUDE, GEMINI, GLM])
     assert {item["state"] for item in _mint(env)["receipts"].values()} == {"unchanged"}
+
+
+def test_signed_muse_substitution_mints_consumable_receipts(env) -> None:
+    _dossier(env, writer_family="codex", reviewers=[GEMINI, CODEX, MUSE], **MUSE_PROVENANCE)
+    _mint(env)
+    for gate, ref in env["declared"].items():
+        assert public_gate_receipts.public_gate_receipt_value_present(
+            ref,
+            expected_gate=gate,
+            roots=(env["receipts"],),
+            bindings=env["bindings"],
+            expected_head_sha=artifact_head_sha(env["manifest"]),
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"registry_id": "bespoke"},
+        {"family_substitution": {}},
+        {"family_substitution": {"seated_families": ["muse"]}},
+        {"family_substitution": {"substitute_families_seated": ["muse"]}},
+        {"family_substitution": "muse"},
+        {"reviewers": [CODEX, MUSE]},
+        {"reviewers": [MUSE, MUSE]},
+        {"reviewers": [GEMINI, {**MUSE, "family": "meta"}]},
+        {"reviewers": [GEMINI, {**MUSE, "family": "local"}]},
+        {"reviewers": [GEMINI, {**MUSE, "family": "vibe"}]},
+        {"reviewers": [GEMINI, {**MUSE, "family": "featherless"}]},
+    ],
+)
+def test_muse_cannot_supply_an_ungrounded_or_duplicate_vote(env, change) -> None:
+    _dossier(
+        env,
+        **{
+            "writer_family": "codex",
+            "reviewers": [GEMINI, MUSE],
+            **MUSE_PROVENANCE,
+            **change,
+        },
+    )
+    with pytest.raises(minter.MintError, match="mint_public_gate_quorum_not_independent"):
+        _mint(env)
+    assert not env["receipts"].exists()
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing", "unmeasured", "command", "substitute", "duplicate", "schema", "malformed"]
+)
+def test_muse_requires_the_trusted_registry_declaration(env, monkeypatch, damage) -> None:
+    registry = Path(__file__).resolve().parents[2] / "config/review-lenses/registry.yaml"
+    data = yaml.safe_load(registry.read_text())
+    if damage == "unmeasured":
+        data["diff_capacity"]["seats"]["muse-1"]["status"] = "unmeasured"
+    elif damage in {"command", "substitute"}:
+        row = next(r for r in data["families"] if r["family"] == "muse")
+        row["reviewer_command" if damage == "command" else "substitute"] = (
+            ["arbitrary-provider"] if damage == "command" else False
+        )
+    elif damage == "duplicate":
+        data["families"].append(next(r for r in data["families"] if r["family"] == "muse"))
+    elif damage == "schema":
+        data["registry_schema"] = 2
+    path = env["root"] / "registry.yaml"
+    if damage != "missing":
+        path.write_text("[broken" if damage == "malformed" else yaml.safe_dump(data))
+    _dossier(env, writer_family="codex", reviewers=[GEMINI, MUSE], **MUSE_PROVENANCE)
+    _mint(env)
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_REVIEW_REGISTRY_PATH", path)
+    # Eligibility must still hold when an already minted receipt is consumed.
+    for gate, ref in env["declared"].items():
+        assert not public_gate_receipts.public_gate_receipt_value_present(
+            ref,
+            expected_gate=gate,
+            roots=(env["receipts"],),
+            bindings=env["bindings"],
+            expected_head_sha=artifact_head_sha(env["manifest"]),
+        )
+    before = {p.name: p.read_bytes() for p in env["receipts"].iterdir()}
+    with pytest.raises(minter.MintError, match="mint_public_gate_quorum_not_independent"):
+        _mint(env)
+    assert {p.name: p.read_bytes() for p in env["receipts"].iterdir()} == before
 
 
 _AUTHORIZED = [gate for gate in GATES if gate != "claim_review_current"]
