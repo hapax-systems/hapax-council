@@ -50,7 +50,13 @@ def _caller() -> str:
 def _emit(event: dict[str, Any]) -> None:
     # Only locally constructed allowlisted fields reach this sink. No command, URL,
     # query, arbitrary header, response body, stderr or environment value is logged.
-    print(LOG_PREFIX + json.dumps(event, sort_keys=True), file=sys.stderr)
+    try:
+        print(LOG_PREFIX + json.dumps(event, sort_keys=True), file=sys.stderr)
+    except (OSError, ValueError):
+        # A broken/closed observation sink cannot turn received rate headers into
+        # a transport failure (and hence unknown headroom). Coverage remains a
+        # lower bound; do not retry the request or create an alternative store.
+        pass
 
 
 def _event(kind: str, transport: str) -> dict[str, Any]:
@@ -273,7 +279,12 @@ def summarize_log(
             if not isinstance(reading, dict):
                 continue
             resource, source = reading.get("resource"), reading.get("source")
-            if resource not in _RESOURCES or source not in {"header", "body"}:
+            if (
+                not isinstance(resource, str)
+                or not isinstance(source, str)
+                or resource not in _RESOURCES
+                or source not in {"header", "body"}
+            ):
                 continue
             rkey = (resource, source)
             previous = row["latest_readings"].get(rkey)

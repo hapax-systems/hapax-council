@@ -13,8 +13,9 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-import github_call_observation as observation
 import github_pr_status
+
+from shared import github_call_observation as observation
 
 
 def response(body='{"ok":true}', *, remaining=400, resource="core", status=200):
@@ -378,3 +379,83 @@ def test_malformed_observation_is_ignored_without_printing_input(bad):
     )
     assert result["observation_state"] == "unobserved"
     assert result["ignored_lines"] == 1
+
+
+@pytest.mark.parametrize("failure", [BrokenPipeError("sink closed"), ValueError("closed stderr")])
+def test_failed_observation_sink_preserves_result_and_both_low_hold(monkeypatch, tmp_path, failure):
+    class FailedSink:
+        def write(self, text):
+            raise failure
+
+    monkeypatch.setattr(sys, "stderr", FailedSink())
+    result = github_pr_status.get_pull_rest(
+        1,
+        repo_root=tmp_path,
+        runner=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, response(), ""),
+    )
+    assert result == {"ok": True}
+    body = '{"resources":{"graphql":{"remaining":0,"limit":5000,"reset":2000}}}'
+    snapshot = github_pr_status.rate_snapshot(
+        repo_root=tmp_path,
+        runner=lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 0, response(body, remaining=0), ""
+        ),
+    )
+    assert snapshot.core.remaining == 0 and snapshot.graphql.remaining == 0
+    transport, reason = github_pr_status.choose_transport(repo_root=tmp_path, snapshot=snapshot)
+    assert transport is None
+    assert reason.startswith("github_both_pools_below_floor:")
+
+
+@pytest.mark.parametrize(
+    "bad_reading", [{"resource": [], "source": "header"}, {"resource": "core", "source": {}}]
+)
+def test_usage_cli_preserves_valid_readings_beside_malformed_nested_fields(
+    monkeypatch, capsys, bad_reading
+):
+    reading = {
+        "resource": "core",
+        "source": "header",
+        "remaining": 10,
+        "limit": 5000,
+        "reset_epoch": 2000,
+        "used": 4990,
+    }
+    event = {
+        "schema": observation.SCHEMA,
+        "observed_at_epoch": 1000,
+        "caller": "unknown",
+        "transport": "rest",
+        "pool": "core",
+        "auth_identity": None,
+        "command_started": True,
+        "http_responses_observed": 1,
+        "readings": [bad_reading, reading],
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(observation.LOG_PREFIX + json.dumps(event)))
+    assert github_pr_status.main(["usage", "--since", "990", "--until", "1010"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["observation_state"] == "observed"
+    assert result["callers"][0]["latest_readings"][0]["remaining"] == 10
+    assert len(result["callers"][0]["latest_readings"]) == 1
+
+
+def test_usage_cli_loads_its_own_shared_observer_from_another_working_directory(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "github_pr_status.py"),
+            "usage",
+            "--since",
+            "1",
+            "--until",
+            "2",
+        ],
+        cwd=tmp_path,
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["observation_state"] == "unobserved"

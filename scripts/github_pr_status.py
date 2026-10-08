@@ -26,7 +26,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from github_call_observation import (
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.github_call_observation import (  # noqa: E402
     observe_cache_hit,
     reading_validity,
     run_gh_observed,
