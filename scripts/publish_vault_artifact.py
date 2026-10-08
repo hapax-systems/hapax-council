@@ -56,6 +56,16 @@ Any explicit clearance field (including false) or embedded receipt map is
 refused in this mode; the legacy true-clearance path remains available.
 No map or signed acceptance alone can enqueue an artifact.
 
+Read-only recheck after receipt minting (substitute the accepted paths and task):
+
+  uv run python -m scripts.publish_vault_artifact /absolute/vault/draft.md \\
+    --surfaces bluesky-post --review-task REVIEW_TASK \\
+    --receipt-map /absolute/receipt-map.yaml --dry-run
+
+Exit 0 verifies the signed root, current manifest head, projection bindings and
+every signed-required and policy-required receipt without writing the inbox.
+On HOLD, follow the named repair action and preserve predecessor receipts.
+
 ## Approval semantics (legacy embedded-clearance mode)
 
 This script marks the artifact ``APPROVED`` directly only when frontmatter
@@ -538,8 +548,9 @@ def _assert_publication_gate_receipts(
     *,
     bindings: Mapping[str, object] | None = None,
     expected_head_sha: str | None = None,
+    signed_required: Iterable[str] = (),
 ) -> None:
-    required = _required_publication_gate_receipts(surfaces)
+    required = set(_required_publication_gate_receipts(surfaces)) | set(signed_required)
     receipts = _publication_gate_receipts(frontmatter)
     missing = sorted(
         gate
@@ -628,7 +639,7 @@ def _assert_external_clearance_source(frontmatter: dict) -> None:
         "publication_gate_receipts",
         "publication-gate-receipts",
     } or "publication_gate_receipts" in (
-        _optional_mapping(frontmatter.get("publication_gate_context")) or {}
+        _optional_mapping(_frontmatter_value(frontmatter, "publication_gate_context")) or {}
     ):
         raise PublicationGateError(
             "publication_external_mixed_clearance; next action: prepare a new immutable "
@@ -640,8 +651,11 @@ def _read_receipt_map(path: Path) -> dict[str, str]:
     """Read only a gate-to-ref declaration. A map is not proof that receipts exist."""
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise PublicationGateError("receipt map unreadable; next action: repair the map") from exc
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise PublicationGateError(
+            f"receipt map unreadable: {path}; next action: restore readable UTF-8 YAML "
+            "with the signed dossier's gate-to-ref mapping"
+        ) from exc
     if (
         not isinstance(data, dict)
         or not data
@@ -650,7 +664,9 @@ def _read_receipt_map(path: Path) -> dict[str, str]:
             for k, v in data.items()
         )
     ):
-        raise PublicationGateError("receipt map malformed; next action: supply gate-to-ref strings")
+        raise PublicationGateError(
+            f"receipt map malformed: {path}; next action: supply non-empty gate-to-ref strings"
+        )
     return data
 
 
@@ -665,10 +681,13 @@ def _build_artifact(
     receipt_refs: Mapping[str, str] | None = None,
 ) -> PreprintArtifact:
     external = review_task is not None or receipt_refs is not None
+    signed_required: tuple[str, ...] = ()
     if external:
         if not review_task or receipt_refs is None or source_path is None:
             raise PublicationGateError(
-                "external clearance requires review task, receipt map and vault source path"
+                "external clearance requires review task, receipt map and vault source path; "
+                "next action: supply --review-task and --receipt-map together for the "
+                "exact reviewed vault file"
             )
         _assert_external_clearance_source(frontmatter)
     elif not _publication_allowed(frontmatter):
@@ -698,12 +717,17 @@ def _build_artifact(
         observed["target_surfaces"] = list(observed["target_surfaces"])
         if observed != signed_bindings:
             raise PublicationGateError(
-                "external publication projection differs from signed subject"
+                "external publication projection differs from signed subject; next action: "
+                "use the accepted projection or obtain fresh exact-subject acceptance "
+                "before retrying; preserve existing receipts"
             )
+        # validate_artifact_acceptance requires declared keys to equal signed required_gates.
+        signed_required = tuple(sorted(declared))
         frontmatter = {**frontmatter, "publication_gate_receipts": declared}
         artifact.publication_gate_context = {
             **(artifact.publication_gate_context or {}),
             "publication_gate_receipts": declared,
+            "required_publication_gate_receipts": list(signed_required),
         }
     expected_head = _expected_public_gate_head(source_path)
     if expected_head is None:
@@ -717,6 +741,7 @@ def _build_artifact(
         surfaces,
         bindings=_publication_gate_receipt_bindings(artifact),
         expected_head_sha=expected_head,
+        signed_required=signed_required,
     )
     artifact.mark_approved(by_referent=approver)
     return artifact

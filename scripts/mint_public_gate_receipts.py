@@ -39,7 +39,7 @@ ACCEPTING_VERDICTS = frozenset({"accept", "accept-with-findings"})
 
 
 class MintError(RuntimeError):
-    """The receipts cannot be minted; the message is a stable reason code."""
+    """The receipts cannot be minted; messages retain reason codes and repair guidance."""
 
 
 def _texts(data: Mapping, key: str) -> list[str]:
@@ -123,6 +123,20 @@ def _validate(dossier: Mapping, secret: str, artifact_root: Path) -> tuple[str, 
         raise MintError("mint_public_gate_head_not_an_artifact_head")
     if not isinstance(manifest, list) or not manifest:
         raise MintError("mint_public_gate_manifest_missing")
+    signed_root = review.get("artifact_root")
+    try:
+        if not isinstance(signed_root, str) or not Path(signed_root).is_absolute():
+            raise ValueError("signed root must be an absolute path")
+        reviewed_root = Path(signed_root).resolve(strict=True)
+        caller_root = artifact_root.expanduser().resolve(strict=True)
+        if not reviewed_root.is_dir() or reviewed_root != caller_root:
+            raise ValueError("caller root differs from signed root")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise MintError(
+            f"mint_public_gate_artifact_root_mismatch:{artifact_root}; next action: use the "
+            "signed artifact_review.artifact_root and reviewed path, or obtain fresh "
+            "exact-root acceptance; preserve existing receipts"
+        ) from exc
     if artifact_head_sha(manifest) != head:
         raise MintError("mint_public_gate_head_manifest_mismatch")
     changed = changed_manifest_paths(manifest, artifact_root)
@@ -169,7 +183,10 @@ def validate_artifact_acceptance(
 ) -> tuple[dict, str, dict, dict[str, str]]:
     """Read and check existing authority; never mint, approve, or mutate the subject."""
     if not task_id or Path(task_id).name != task_id or task_id in {".", ".."}:
-        raise MintError("mint_public_gate_task_malformed")
+        raise MintError(
+            "mint_public_gate_task_malformed; next action: provide the review task identifier "
+            "without a directory or traversal components"
+        )
     dossier_path = None
     for root in authority_roots or public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS:
         candidate = Path(root).expanduser() / f"{task_id}{DOSSIER_SUFFIX}"
@@ -180,8 +197,11 @@ def validate_artifact_acceptance(
         raise MintError("mint_public_gate_acceptance_missing")
     try:
         dossier = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise MintError(f"mint_public_gate_unreadable:{dossier_path.name}") from exc
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise MintError(
+            f"mint_public_gate_unreadable:{dossier_path.name}; next action: restore the "
+            "readable UTF-8 signed dossier from its authority source; do not edit receipts"
+        ) from exc
     if not isinstance(dossier, dict):
         raise MintError(f"mint_public_gate_malformed:{dossier_path.name}")
     if str(dossier.get("task_id") or "").strip() != task_id:
@@ -201,7 +221,11 @@ def validate_artifact_acceptance(
 
     current_head = public_gate_receipts.vault_artifact_expected_head_sha(artifact, artifact_root)
     if current_head != head:
-        raise MintError("mint_public_gate_subject_head_mismatch")
+        raise MintError(
+            f"mint_public_gate_subject_head_mismatch:{artifact}; next action: select the "
+            "accepted path under the signed artifact root or obtain fresh exact-subject "
+            "acceptance; preserve existing receipts"
+        )
     frontmatter, body = publish._parse_publication_markdown(artifact)
     if receipt_refs is not None:
         try:
@@ -213,8 +237,14 @@ def validate_artifact_acceptance(
         declared = publish._publication_gate_receipts(frontmatter)
     if not declared:
         raise MintError("mint_public_gate_receipts_missing")
-    if any(not isinstance(g, str) or not isinstance(r, str) for g, r in declared.items()):
-        raise MintError("mint_public_gate_receipt_map_malformed")
+    if any(
+        not isinstance(g, str) or not g.strip() or not isinstance(r, str) or not r.strip()
+        for g, r in declared.items()
+    ):
+        raise MintError(
+            "mint_public_gate_receipt_map_malformed; next action: supply a UTF-8 YAML "
+            "mapping of gate ids to receipt-ref strings authorized by the signed dossier"
+        )
     if surfaces is not None and not surfaces:
         raise MintError("mint_public_gate_surfaces_empty")
     targets = surfaces or _texts(frontmatter, "surfaces_targeted") or list(publish.DEFAULT_SURFACES)
@@ -226,7 +256,11 @@ def validate_artifact_acceptance(
     observed = publish._publication_gate_receipt_bindings(prepared)
     observed["target_surfaces"] = list(observed["target_surfaces"])
     if observed != bindings:
-        raise MintError("mint_public_gate_subject_bindings_mismatch")
+        raise MintError(
+            f"mint_public_gate_subject_bindings_mismatch:{artifact}; next action: use the "
+            "accepted slug, fingerprint and target surfaces or obtain fresh exact-subject "
+            "acceptance; preserve existing receipts"
+        )
     return dossier, head, bindings, declared
 
 

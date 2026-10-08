@@ -1,7 +1,7 @@
 """Isolated preparation-to-admission cases. All authority is synthetic fixture data."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import yaml
@@ -87,14 +87,16 @@ def signed_dossier(env, **overrides):
 
 def mint(env, **overrides):
     return minter.mint(
-        **dict(
-            task_id=TASK,
-            artifact=env["source"],
-            artifact_root=env["root"],
-            authority_case=CASE,
-            receipt_root=env["receipts"],
-            receipt_refs=REFS,
-            **overrides,
+        **(
+            dict(
+                task_id=TASK,
+                artifact=env["source"],
+                artifact_root=env["root"],
+                authority_case=CASE,
+                receipt_root=env["receipts"],
+                receipt_refs=REFS,
+            )
+            | overrides
         )
     )
 
@@ -102,15 +104,17 @@ def mint(env, **overrides):
 def build(env, **overrides):
     fm, body = draft(env)
     return publish._build_artifact(
-        **dict(
-            body_md=body,
-            frontmatter=fm,
-            surfaces=["bluesky-post"],
-            approver="Oudepode",
-            source_path=env["source"],
-            review_task=TASK,
-            receipt_refs=REFS,
-            **overrides,
+        **(
+            dict(
+                body_md=body,
+                frontmatter=fm,
+                surfaces=["bluesky-post"],
+                approver="Oudepode",
+                source_path=env["source"],
+                review_task=TASK,
+                receipt_refs=REFS,
+            )
+            | overrides
         )
     )
 
@@ -415,4 +419,283 @@ def test_real_cor0004_body_and_attribution_survive_preparation_without_clearance
     before = env["source"].read_bytes()
     mint(env)
     assert _compose_artifact_text(build(env)) == rendered
+    assert env["source"].read_bytes() == before
+
+
+def test_signed_root_blocks_identical_relative_path_replay(env, monkeypatch):
+    signed_dossier(env)
+    mint(env)
+    original = env["source"].read_bytes()
+    other_root = env["tmp"] / "other-vault"
+    other_root.mkdir()
+    other = other_root / env["source"].name
+    other.write_bytes(original)
+    assert receipts.vault_artifact_expected_head_sha(other, other_root) == (
+        receipts.vault_artifact_expected_head_sha(env["source"], env["root"])
+    )
+    with pytest.raises(minter.MintError, match="artifact_root.*next action"):
+        mint(env, artifact=other, artifact_root=other_root, receipt_root=env["tmp"] / "replay")
+    monkeypatch.setattr(publish, "VAULT_ARTIFACT_ROOT", other_root)
+    env["source"] = other
+    with pytest.raises(publish.PublicationGateError, match="artifact_root.*next action"):
+        build(env)
+    assert not (env["tmp"] / "replay").exists()
+    assert other.read_bytes() == original
+
+
+@pytest.mark.parametrize("signed_root", [None, "relative-root", 42])
+def test_signed_root_must_be_absolute_and_present(env, signed_root):
+    data = signed_dossier(env)
+    signed_dossier(env, artifact_review={**data["artifact_review"], "artifact_root": signed_root})
+    with pytest.raises(minter.MintError, match="artifact_root.*next action"):
+        mint(env)
+    assert not env["receipts"].exists()
+
+
+def test_signed_root_accepts_equivalent_canonical_path(env):
+    signed_dossier(env)
+    alias = env["tmp"] / "vault-alias"
+    alias.symlink_to(env["root"], target_is_directory=True)
+    mint(env, artifact_root=alias)
+    assert build(env).is_approved()
+
+
+EXTRA_GATE = "fanout_loop_prevention_present"
+EXTRA_REFS = {**REFS, EXTRA_GATE: "public-gate:preparation-loop-prevention"}
+
+
+def extra_gate_acceptance(env):
+    signed_dossier(
+        env,
+        required_gates=list(EXTRA_REFS),
+        authorized_public_gate_receipts=list(EXTRA_REFS.values()),
+    )
+    mint(env, receipt_refs=EXTRA_REFS)
+    return env["receipts"] / "preparation-loop-prevention.yaml"
+
+
+@pytest.mark.parametrize("damage", ["missing", "invalid"])
+def test_every_signed_required_gate_is_checked_before_approval(env, damage):
+    extra = extra_gate_acceptance(env)
+    if damage == "missing":
+        extra.unlink()
+    else:
+        extra.write_text("invalid receipt\n")
+    before = env["source"].read_bytes()
+    with pytest.raises(publish.PublicationGateError, match=EXTRA_GATE):
+        build(env, receipt_refs=EXTRA_REFS)
+    assert env["source"].read_bytes() == before
+    assert not (env["tmp"] / "state").exists()
+
+
+@pytest.mark.parametrize("damage", ["missing_file", "missing_ref"])
+def test_signed_requirements_survive_serialization_and_dispatch(env, monkeypatch, damage):
+    from prometheus_client import CollectorRegistry
+
+    from agents.publish_orchestrator import orchestrator
+    from shared.preprint_artifact import PreprintArtifact
+
+    extra = extra_gate_acceptance(env)
+    artifact = PreprintArtifact.model_validate_json(
+        build(env, receipt_refs=EXTRA_REFS).model_dump_json()
+    )
+    monkeypatch.setattr(orchestrator, "PUBLICATION_SOURCE_PATH_ROOTS", (env["root"],))
+    orch = orchestrator.Orchestrator(
+        state_root=env["tmp"] / "dispatch-state",
+        public_gate_receipt_roots=(env["receipts"],),
+        publication_allowed_surfaces={"bluesky-post"},
+        registry=CollectorRegistry(),
+    )
+    assert orch._public_gate_receipts_child(artifact).decision.value == "pass"
+    if damage == "missing_file":
+        extra.unlink()
+    else:
+        del artifact.publication_gate_context["publication_gate_receipts"][EXTRA_GATE]
+    pool = Mock()
+    orch._hardening_gate.evaluate = Mock(
+        side_effect=AssertionError("receipt gate must stop dispatch")
+    )
+    before = env["source"].read_bytes()
+    orch._dispatch(artifact, pool=pool)
+    pool.submit.assert_not_called()
+    assert artifact.publication_gate_result["decision"] == "hold"
+    assert EXTRA_GATE in str(artifact.publication_gate_result)
+    assert env["source"].read_bytes() == before
+
+
+@pytest.mark.parametrize("required", [None, "gate", [None], [""]])
+def test_dispatch_refuses_malformed_carried_requirements(env, monkeypatch, required):
+    from prometheus_client import CollectorRegistry
+
+    from agents.publish_orchestrator import orchestrator
+
+    signed_dossier(env)
+    mint(env)
+    artifact = build(env)
+    artifact.publication_gate_context["required_publication_gate_receipts"] = required
+    monkeypatch.setattr(orchestrator, "PUBLICATION_SOURCE_PATH_ROOTS", (env["root"],))
+    orch = orchestrator.Orchestrator(
+        state_root=env["tmp"] / "malformed-state",
+        public_gate_receipt_roots=(env["receipts"],),
+        registry=CollectorRegistry(),
+    )
+    result = orch._public_gate_receipts_child(artifact)
+    assert result.decision.value == "hold"
+    assert "required_publication_gate_receipts malformed; next action:" in str(result.findings)
+
+
+@pytest.mark.parametrize("context_key", ["publication_gate_context", "Publication_Gate_Context"])
+def test_external_clearance_rejects_recognized_context_casing(env, context_key):
+    fm, body = draft(env)
+    env["source"].write_text(
+        "---\n"
+        + yaml.safe_dump({**fm, context_key: {"publication_gate_receipts": REFS}})
+        + "---\n"
+        + body
+    )
+    signed_dossier(env)
+    with pytest.raises(minter.MintError, match="mixed_clearance"):
+        mint(env)
+    with pytest.raises(publish.PublicationGateError, match="mixed_clearance"):
+        build(env)
+    assert not env["receipts"].exists()
+
+
+@pytest.mark.parametrize("contents", [None, b"\xff", b"[", b"[]", b"{}", b"gate: 7"])
+def test_bad_external_maps_hold_both_clis_without_writes(env, contents, capsys, caplog):
+    path = env["tmp"] / "bad-map.yaml"
+    if contents is not None:
+        path.write_bytes(contents)
+    before = env["source"].read_bytes()
+    assert (
+        minter.main(
+            [
+                "--task-id",
+                TASK,
+                "--artifact",
+                str(env["source"]),
+                "--artifact-root",
+                str(env["root"]),
+                "--authority-case",
+                CASE,
+                "--receipt-root",
+                str(env["receipts"]),
+                "--receipt-map",
+                str(path),
+            ]
+        )
+        == 1
+    )
+    assert "next action:" in capsys.readouterr().err
+    assert (
+        publish.main(
+            [
+                str(env["source"]),
+                "--surfaces",
+                "bluesky-post",
+                "--review-task",
+                TASK,
+                "--receipt-map",
+                str(path),
+                "--state-root",
+                str(env["tmp"] / "state"),
+            ]
+        )
+        == 1
+    )
+    assert "next action:" in caplog.text
+    assert str(path) in caplog.text
+    if contents == b"\xff":
+        assert "UTF-8" in caplog.text
+    assert not env["receipts"].exists()
+    assert not (env["tmp"] / "state").exists()
+    assert env["source"].read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"review_task": None},
+        {"receipt_refs": None},
+        {"source_path": None},
+        {"review_task": ""},
+    ],
+)
+def test_incomplete_external_arguments_refuse_actionably(env, overrides):
+    with pytest.raises(publish.PublicationGateError, match="external clearance.*next action"):
+        build(env, **overrides)
+    assert not env["receipts"].exists()
+
+
+@pytest.mark.parametrize(
+    "overrides,reason",
+    [
+        ({"task_id": "../other"}, "task_malformed"),
+        ({"receipt_refs": {"gate": 7}}, "receipt_map_malformed"),
+        ({"receipt_refs": {"": "public-gate:ref"}}, "receipt_map_malformed"),
+    ],
+)
+def test_minter_new_refusals_have_repair_actions(env, overrides, reason):
+    signed_dossier(env)
+    with pytest.raises(minter.MintError, match=reason + ".*next action"):
+        mint(env, **overrides)
+    assert not env["receipts"].exists()
+
+
+@pytest.mark.parametrize("change", ["path", "fingerprint"])
+def test_subject_mismatch_has_exact_repair_action(env, change):
+    signed_dossier(env, **({"artifact_fingerprint": "0" * 64} if change == "fingerprint" else {}))
+    if change == "path":
+        other = env["root"] / "different.md"
+        other.write_bytes(env["source"].read_bytes())
+        env["source"] = other
+    with pytest.raises(minter.MintError, match="subject_.*mismatch.*next action.*acceptance"):
+        mint(env)
+    assert not env["receipts"].exists()
+
+
+def test_projection_mismatch_has_repair_action(env):
+    signed_dossier(env)
+    mint(env)
+    fm, _ = draft(env)
+    with pytest.raises(publish.PublicationGateError, match="projection differs.*next action"):
+        build(env, frontmatter={**fm, "title": "Changed projection"})
+
+
+def test_invalid_utf8_dossier_refuses_before_any_receipt_write(env):
+    env["dossier"].write_bytes(b"\xff")
+    with pytest.raises(minter.MintError, match="unreadable.*next action.*UTF-8"):
+        mint(env)
+    assert not env["receipts"].exists()
+
+
+def test_unclassifiable_source_warns_preserves_and_prevents_dispatch(env, monkeypatch, caplog):
+    from prometheus_client import CollectorRegistry
+
+    from agents.publish_orchestrator import orchestrator
+
+    signed_dossier(env)
+    mint(env)
+    artifact = build(env)
+    before = env["source"].read_bytes()
+    orch = orchestrator.Orchestrator(
+        state_root=env["tmp"] / "unclassifiable-state", registry=CollectorRegistry()
+    )
+    with patch.object(
+        orchestrator,
+        "_vault_artifact_source",
+        side_effect=(
+            orchestrator.VaultArtifactHeadUnavailable(
+                "fixture", "source classification unavailable"
+            )
+        ),
+    ):
+        orch._attach_gate_frontmatter(artifact)
+        assert "unclassifiable" in caplog.text
+        assert "next action:" in caplog.text
+        pool = Mock()
+        orch._hardening_gate.evaluate = Mock(side_effect=AssertionError("must stop before review"))
+        orch._dispatch(artifact, pool=pool)
+    pool.submit.assert_not_called()
+    assert artifact.publication_gate_result["decision"] == "hold"
     assert env["source"].read_bytes() == before

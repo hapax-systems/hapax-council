@@ -786,6 +786,19 @@ class Orchestrator:
         receipts, error = _artifact_publication_gate_receipts(artifact)
         bindings = _publication_gate_receipt_bindings(artifact)
         findings = (error,) if error is not None else ()
+        signed_required = (artifact.publication_gate_context or {}).get(
+            "required_publication_gate_receipts", []
+        )
+        if not isinstance(signed_required, list) or any(
+            not isinstance(gate, str) or not gate.strip() for gate in signed_required
+        ):
+            findings = (
+                *findings,
+                "required_publication_gate_receipts malformed; next action: "
+                "rebuild the inbox artifact from its exact signed acceptance",
+            )
+        else:
+            required = tuple(sorted(set(required) | set(signed_required)))
         if policy_error is not None:
             findings = (*findings, policy_error)
         expected_head, head_reason = self._expected_public_gate_head(artifact)
@@ -934,8 +947,13 @@ class Orchestrator:
         try:
             if _vault_artifact_source(artifact) is not None:
                 return
-        except VaultArtifactHeadUnavailable:
-            log.warning("gate metadata source unclassifiable; preserving source bytes")
+        except VaultArtifactHeadUnavailable as exc:
+            log.warning(
+                "gate metadata source unclassifiable for %s; preserving source bytes: %s; "
+                "next action: restore the readable reviewed source path and recheck admission",
+                artifact.slug,
+                exc,
+            )
             return
         if not artifact.source_path:
             return
