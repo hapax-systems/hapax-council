@@ -369,13 +369,16 @@ def test_governed_parity_compares_full_projection(monkeypatch) -> None:
 
 
 def _observer_fixture(
-    tmp_path: Path, body: dict | str, *, http_status: int = 200, curl_exit: int = 0
+    tmp_path: Path, body: dict | str | bytes, *, http_status: int = 200, curl_exit: int = 0
 ) -> dict:
     """Run the shipped shell/Python script with every external probe replaced by a local fixture."""
     probes = tmp_path / "bin"
     probes.mkdir()
     response = tmp_path / "models.json"
-    response.write_text(body if isinstance(body, str) else json.dumps(body))
+    if isinstance(body, bytes):
+        response.write_bytes(body)
+    else:
+        response.write_text(body if isinstance(body, str) else json.dumps(body))
     for name in ("ssh", "timeout", "tmux", "pgrep", "nvidia-smi", "hostname", "curl"):
         path = probes / name
         command = (
@@ -507,7 +510,9 @@ def test_observer_http_refusal_is_distinct_from_transport_failure(
         assert ("LOST" in fact["state"]["reason_codes"]) is (alive is False)
 
 
-@pytest.mark.parametrize("body", [{"error": "not a model list"}, {"data": "bad"}, "{invalid"])
+@pytest.mark.parametrize(
+    "body", [{"error": "not a model list"}, {"data": "bad"}, "{invalid", b"\xff"]
+)
 def test_observer_unsupported_model_listing_cannot_be_alive(tmp_path: Path, body) -> None:
     rec = _observer_fixture(tmp_path, body)
     assert rec["local_endpoints"]

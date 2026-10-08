@@ -111,9 +111,10 @@ for p in ENDPOINTS:
         response = subprocess.run(
             ["curl", "--silent", "--max-time", "4", "--write-out", "\n%{http_code}",
              f"http://localhost:{p}/v1/models"],
-            capture_output=True, text=True, timeout=8,
+            capture_output=True, timeout=8,
         )
-        body, _, code = response.stdout.rpartition("\n")
+        # Decode only inside JSON validation below, so invalid encoding is a refused listing.
+        body, _, code = response.stdout.rpartition(b"\n")
         status = int(code) if code.isdigit() and 100 <= int(code) <= 599 else None
         complete = response.returncode == 0 and status is not None and 200 <= status < 300
         if response.returncode != 0 and status is None:
