@@ -16,7 +16,15 @@ UNIT = {"memory_high": 64, "memory_max": 128, "memory_swap_max": 0, "runtime_max
 
 
 def declaration(**overrides):
-    return EnvelopeDeclaration(harness="claude", argv=("/usr/bin/true",), unit=UNIT, **overrides)
+    return EnvelopeDeclaration(
+        **{
+            "harness": "claude",
+            "argv": ("/usr/bin/true",),
+            "unit": UNIT,
+            "billing_surface": "api",
+            **overrides,
+        }
+    )
 
 
 def decision(allowed=True):
@@ -133,7 +141,10 @@ def test_unimplemented_unit_oci_execution_refuses_before_mq(tmp_path, boundaries
         oci_launcher_uid=1000,
         oci_launcher_gid=1000,
     )
-    with pytest.raises(CoordDispatchError, match="runner_unavailable"):
+    with pytest.raises(
+        CoordDispatchError,
+        match="runner_unavailable.*next action:.*independent acceptance.*executor admission",
+    ):
         CodexAdapter().launch(decision(), req, Mock(), rendered_envelope=rendered)
     for boundary in boundaries:
         boundary.assert_not_called()
@@ -171,7 +182,10 @@ def test_replay_cannot_accept_a_different_envelope_identity(tmp_path, boundaries
     rendered = render(req.envelope, run_root=tmp_path / "run")
     CodexAdapter().launch(decision(), req, Mock(), rendered_envelope=rendered)
     req.event_log.events[-1].payload["envelope_sha256"] = "wrong"
-    with pytest.raises(CoordDispatchError, match="envelope_identity_mismatch"):
+    with pytest.raises(
+        CoordDispatchError,
+        match="envelope_identity_mismatch.*next action:.*original declaration.*new launch",
+    ):
         coord_dispatch.replay_terminal_result(req, idempotency_key=req.effective_idempotency_key)
 
 
@@ -196,8 +210,110 @@ def test_rendered_envelope_without_a_declaration_is_not_legacy_compatibility(tmp
 
 def test_rendered_identity_must_match_launch_declaration(tmp_path, boundaries):
     req = request(tmp_path, declaration())
-    rendered = render(declaration(billing_surface="api"), run_root=tmp_path / "run")
+    rendered = render(declaration(env={"DECLARED": "different"}), run_root=tmp_path / "run")
     with pytest.raises(CoordDispatchError, match="envelope_identity_mismatch"):
         CodexAdapter().launch(decision(), req, Mock(), rendered_envelope=rendered)
     for boundary in boundaries:
         boundary.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "carrier,element",
+    [
+        (carrier, flag)
+        for carrier in ("t1", "t2")
+        for flag in (
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-net",
+            "--unshare-uts",
+            "--unshare-cgroup-try",
+            "--die-with-parent",
+            "--new-session",
+            "--clearenv",
+        )
+    ]
+    + [
+        ("t3", namespace)
+        for namespace in ("pid", "ipc", "uts", "mount", "user", "network", "cgroup")
+    ],
+)
+@pytest.mark.parametrize("change", ["remove", "duplicate"])
+def test_isolation_refuses_before_dispatch(tmp_path, boundaries, carrier, element, change):
+    import copy
+
+    req = request(tmp_path, declaration())
+    result = render(
+        req.envelope,
+        run_root=tmp_path / "run",
+        carrier=carrier,
+        oci_uid=100000,
+        oci_gid=100000,
+        oci_launcher_uid=1000,
+        oci_launcher_gid=1000,
+    )
+    if carrier == "t3":
+        spec = copy.deepcopy(result.oci_spec)
+        parts = spec["linux"]["namespaces"]
+        entry = {"type": element}
+        if change == "remove":
+            parts.remove(entry)
+        else:
+            parts.append(entry)
+        result = result.model_copy(update={"oci_spec": spec})
+    else:
+        argv = list(result.argv)
+        if change == "remove":
+            argv.remove(element)
+        else:
+            argv.insert(argv.index(element), element)
+        result = result.model_copy(update={"argv": tuple(argv)})
+    legacy = Mock()
+    with pytest.raises(ValueError, match="conformance"):
+        CodexAdapter().launch(decision(), req, legacy, rendered_envelope=result)
+    legacy.assert_not_called()
+    for boundary in boundaries:
+        boundary.assert_not_called()
+    assert req.event_log.events == []
+
+
+@pytest.mark.parametrize("carrier", ["t1", "t2", "t3"])
+@pytest.mark.parametrize("entry", ["file", "directory", "symlink"])
+def test_home_injection_refuses_before_dispatch(tmp_path, boundaries, carrier, entry):
+    req = request(tmp_path, declaration())
+    result = render(
+        req.envelope,
+        run_root=tmp_path / "run",
+        carrier=carrier,
+        oci_uid=100000,
+        oci_gid=100000,
+        oci_launcher_uid=1000,
+        oci_launcher_gid=1000,
+    )
+    path = result.run_root / "home" / "CLAUDE.md"
+    if entry == "file":
+        path.write_text("undeclared")
+    elif entry == "directory":
+        path.mkdir()
+    else:
+        path.symlink_to(tmp_path / "missing")
+    legacy = Mock()
+    with pytest.raises(ValueError, match="conformance"):
+        CodexAdapter().launch(decision(), req, legacy, rendered_envelope=result)
+    legacy.assert_not_called()
+    for boundary in boundaries:
+        boundary.assert_not_called()
+    assert req.event_log.events == []
+
+
+def test_subscription_qualification_refuses_before_dispatch(tmp_path, boundaries):
+    req = request(tmp_path, declaration(billing_surface="subscription"))
+    result = render(declaration(), run_root=tmp_path / "run")
+    result.facts["declaration_sha256"] = req.envelope_sha256
+    legacy = Mock()
+    with pytest.raises(ValueError, match="billing qualification"):
+        CodexAdapter().launch(decision(), req, legacy, rendered_envelope=result)
+    legacy.assert_not_called()
+    for boundary in boundaries:
+        boundary.assert_not_called()
+    assert req.event_log.events == []

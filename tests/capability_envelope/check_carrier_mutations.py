@@ -22,18 +22,78 @@ SOURCE = ROOT / "shared/capability_envelope"
 
 def mutations():
     yield (
-        "environment-clear",
+        "complete-bwrap-isolation",
         "carriers.py",
-        "if not cleared:",
+        "if any(seen.get(flag) != 1 for flag in required):",
         "if False:",
-        "readback_requires_environment_clear",
+        "complete_bwrap_isolation and not clearenv",
     )
     yield (
-        "generated-config",
+        "complete-oci-isolation",
         "carriers.py",
-        "if config != expected_config:",
+        'if namespaces != [\n        {"type": name} for name in ("pid", "ipc", "uts", "mount", "user", "network", "cgroup")\n    ]:',
         "if False:",
-        "generated_config and settings",
+        "complete_oci_isolation",
+    )
+    yield (
+        "generated-home-check",
+        "carriers.py",
+        "_check_generated_home(decl, rendered.run_root)",
+        "pass",
+        "exact_generated_home_inventory or generated_home_race",
+    )
+    yield (
+        "generated-home-bytes",
+        "carriers.py",
+        "if os.read(fd, len(content) + 1) != content:",
+        "if False:",
+        "generated_home_exact_contents_and_types and extra-file-content",
+    )
+    yield (
+        "generated-home-race",
+        "carriers.py",
+        "if signature(os.fstat(fd)) != signature(before) or signature(\n                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)\n            ) != signature(before):",
+        "if False:",
+        "generated_home_race",
+    )
+    for name, before, selector in (
+        ("unit-order", "if decl.unit.memory_high > decl.unit.memory_max:", "high-over-max"),
+        (
+            "unix-source",
+            'if channel.kind == "unix" and not channel.source.is_socket():',
+            "non-socket",
+        ),
+        (
+            "root-channel",
+            'if channel.source.resolve() in (Path("/"), Path.home()):',
+            "root-channel or home-channel",
+        ),
+    ):
+        yield name, "render.py", before, "if False:", "declaration_refusal and (" + selector + ")"
+    for name, before, after in (
+        ("channel-unique", "channel.name in names or ", ""),
+        ("channel-source", "channel.source is None or ", ""),
+        ("channel-endpoint", "channel.endpoint is not None", "False"),
+    ):
+        selector = {
+            "channel-unique": "duplicate-channel",
+            "channel-source": "missing-source",
+            "channel-endpoint": "channel-endpoint",
+        }[name]
+        yield name, "render.py", before, after, "declaration_refusal and " + selector
+    yield (
+        "reserved-config-env",
+        "render.py",
+        "} or key in dict(profile.config_env):",
+        "}:",
+        "declaration_refusal and config-env",
+    )
+    yield (
+        "reserved-home-env",
+        "render.py",
+        '            "HOME",',
+        '            "UNUSED_HOME",',
+        "declaration_refusal and home-env",
     )
     yield (
         "binding-no-fallback",
@@ -138,9 +198,23 @@ def mutations():
     yield (
         "billing",
         "render.py",
-        'and decl.billing_surface != "api"',
-        "and False",
+        'if decl.billing_surface != "api":',
+        "if False:",
         "billing_flags",
+    )
+    yield (
+        "billing-shape",
+        "render.py",
+        'if decl.billing_surface != "api":',
+        'if decl.billing_surface != "api" and "--bare" in decl.argv:',
+        "unqualified_subscription_shape",
+    )
+    yield (
+        "duplicate-remount",
+        "carriers.py",
+        ' or mounts[-1]["access"] == "ro"',
+        "",
+        "duplicate_readonly_remount",
     )
     yield (
         "import-masks",
@@ -164,20 +238,6 @@ def mutations():
         "render_invokes_conformance or actual_rendered_mount_mismatch",
     )
     yield (
-        "bwrap-network",
-        "carriers.py",
-        'if not parts["network"]:',
-        "if False:",
-        "conformance_reads_actual_carrier_not_facts and network and not t3",
-    )
-    yield (
-        "oci-network",
-        "carriers.py",
-        'if {"type": "network"} not in namespaces or any(n.get("path") for n in namespaces):',
-        "if False:",
-        "conformance_reads_actual_carrier_not_facts and network and t3",
-    )
-    yield (
         "oci-id-range",
         "render.py",
         "0 < value < 2**32 - 1",
@@ -186,7 +246,11 @@ def mutations():
     )
     for name, message, selector in (
         ("oci-root", "OCI root or imports changed", "oci_cannot_add_imports and (root or hook)"),
-        ("oci-user", "OCI privilege differs", "oci_cannot_add_imports and user"),
+        (
+            "oci-user",
+            "OCI privilege differs",
+            "(oci_cannot_add_imports and user) or oci_process_isolation_scaffold",
+        ),
         ("oci-mapping", "OCI identity binding differs", "oci_cannot_add_imports and mapping"),
         ("oci-files", "undeclared OCI rootfs import", "oci_cannot_add_imports and file"),
         ("oci-mount-fields", "extra mount bindings", "mount_cannot_smuggle"),
@@ -219,6 +283,8 @@ def run(evidence: Path, label: str, selector: str) -> dict:
         str(ROOT / "tests/capability_envelope/run_source_checks.py"),
         "tests/capability_envelope/test_launch_binding.py"
         if label.startswith("binding-")
+        else "tests/capability_envelope/test_billing_shape.py"
+        if label.startswith("billing-shape")
         else "tests/capability_envelope/test_carriers.py",
         "-q",
         "--tb=short",

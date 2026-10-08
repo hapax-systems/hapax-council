@@ -17,9 +17,9 @@ Isolation is by construction, not by trusting harness flags:
 - **The environment is cleared.** Only a fixed base, the harness config variables and the
   declared variables are set.
 
-Harness flags are a second layer and never the only one. ``--bare`` is refused unless the
-declaration names API billing: Claude's bare mode does not read ``CLAUDE_CODE_OAUTH_TOKEN``, so it
-changes the billing surface, which must never happen implicitly.
+Subscription execution refuses until the complete invocation has an admitted billing
+qualification. No flag blacklist, executable name or route label establishes that
+qualification. API declarations permit source rendering, never implicit spend authority.
 
 Network namespaces are private. Declared Unix endpoints are mounted explicitly;
 network egress requires the separately governed R9 gate and otherwise refuses.
@@ -146,16 +146,6 @@ class RenderedEnvelope(BaseModel):
 
 def _refuse(decl: EnvelopeDeclaration) -> None:
     profile = _PROFILES[decl.harness]
-    billing_flags = {"--bare", "--api-key", "--api-key-file", "--api-key-helper"}
-    if (
-        any(arg.split("=", 1)[0] in billing_flags for arg in decl.argv)
-        and decl.billing_surface != "api"
-    ):
-        raise EnvelopeRefusal(
-            "--bare needs declared API billing: Claude's bare mode does not read "
-            "CLAUDE_CODE_OAUTH_TOKEN, so it switches the billing surface; next action: set "
-            "billing_surface='api' in the declaration, or drop --bare and rely on the envelope"
-        )
     if decl.unit is None:
         raise EnvelopeRefusal("unit limits are required; next action: declare the unit section")
     if decl.unit.memory_high > decl.unit.memory_max:
@@ -201,6 +191,16 @@ def _refuse(decl: EnvelopeDeclaration) -> None:
         raise EnvelopeRefusal(
             f"no MCP renderer for harness {decl.harness}; next action: drop the MCP servers or "
             "add the harness's MCP config format to the envelope renderer with its tests"
+        )
+    # Route auth_surface and model/effort receipts do not qualify the full
+    # argv/config/env/credential shape. Keep subscription execution held until
+    # existing onboarding/admission supplies that binding; no basename exemption.
+    if decl.billing_surface != "api":
+        raise EnvelopeRefusal(
+            "billing qualification unavailable for subscription execution (including --bare "
+            "and unknown flags); next action: have the existing harness onboarding owner "
+            "qualify the complete argv/config/env/credential shape through execution admission; "
+            "do not substitute API billing. An API declaration is not spend authority"
         )
 
 

@@ -31,13 +31,19 @@ def render(*args, **kwargs):
 
 def declaration(**overrides):
     return EnvelopeDeclaration.model_validate(
-        {"harness": "claude", "argv": ["/usr/bin/true"], "unit": UNIT, **overrides}
+        {
+            "harness": "claude",
+            "argv": ["/usr/bin/true"],
+            "unit": UNIT,
+            "billing_surface": "api",
+            **overrides,
+        }
     )
 
 
 @pytest.mark.parametrize("carrier", ["t1", "t2", "t3"])
 def test_missing_unit_refuses_before_writing(tmp_path, carrier):
-    decl = EnvelopeDeclaration(harness="claude", argv=("/usr/bin/true",))
+    decl = EnvelopeDeclaration(harness="claude", argv=("/usr/bin/true",), billing_surface="api")
     with pytest.raises(EnvelopeRefusal, match="unit"):
         render(decl, run_root=tmp_path / "run", carrier=carrier)
     assert not (tmp_path / "run").exists()
@@ -132,7 +138,7 @@ def test_t3_is_rootless_and_carries_same_masks_as_t2(tmp_path):
 @pytest.mark.parametrize("carrier", ["t1", "t2", "t3"])
 @pytest.mark.parametrize("flag", ["--bare", "--bare=true", "--api-key-file=/synthetic/key"])
 def test_billing_flags_need_explicit_api_declaration(tmp_path, carrier, flag):
-    decl = declaration(argv=["claude", flag])
+    decl = declaration(argv=["claude", flag], billing_surface="subscription")
     with pytest.raises(EnvelopeRefusal, match="billing"):
         render(decl, run_root=tmp_path / "refused", carrier=carrier)
     render(
@@ -356,3 +362,262 @@ def test_generated_config_cannot_add_undeclared_endpoints_or_hooks(tmp_path, con
     path.write_text(json.dumps(value))
     with pytest.raises(EnvelopeRefusal, match="conformance"):
         check_conformance(decl, result)
+
+
+BWRAP_ISOLATION = (
+    "--unshare-pid",
+    "--unshare-ipc",
+    "--unshare-net",
+    "--unshare-uts",
+    "--unshare-cgroup-try",
+    "--die-with-parent",
+    "--new-session",
+    "--clearenv",
+)
+OCI_NAMESPACES = ("pid", "ipc", "uts", "mount", "user", "network", "cgroup")
+
+
+@pytest.mark.parametrize("carrier", ["t1", "t2"])
+@pytest.mark.parametrize("flag", BWRAP_ISOLATION)
+@pytest.mark.parametrize("change", ["remove", "duplicate"])
+def test_complete_bwrap_isolation(tmp_path, carrier, flag, change):
+    from shared.capability_envelope import check_conformance
+
+    decl = declaration()
+    result = render(decl, run_root=tmp_path / "run", carrier=carrier)
+    argv = list(result.argv)
+    index = argv.index(flag)
+    if change == "remove":
+        argv.pop(index)
+    else:
+        argv.insert(index, flag)
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result.model_copy(update={"argv": tuple(argv)}))
+
+
+@pytest.mark.parametrize("namespace", OCI_NAMESPACES)
+@pytest.mark.parametrize("change", ["remove", "duplicate", "host-path", "extra-key"])
+def test_complete_oci_isolation(tmp_path, namespace, change):
+    from shared.capability_envelope import check_conformance
+
+    decl = declaration()
+    result = render(decl, run_root=tmp_path / "run", carrier="t3")
+    spec = copy.deepcopy(result.oci_spec)
+    namespaces = spec["linux"]["namespaces"]
+    entry = next(n for n in namespaces if n["type"] == namespace)
+    if change == "remove":
+        namespaces.remove(entry)
+    elif change == "duplicate":
+        namespaces.append(dict(entry))
+    else:
+        entry["path" if change == "host-path" else "unexpected"] = "/proc/1/ns/" + namespace
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result.model_copy(update={"oci_spec": spec}))
+
+
+@pytest.mark.parametrize("carrier", ["t1", "t2"])
+@pytest.mark.parametrize(
+    "change", ["hostname", "duplicate-hostname", "duplicate-chdir", "share-net", "clear-late"]
+)
+def test_bwrap_contradictory_scaffold(tmp_path, carrier, change):
+    from shared.capability_envelope import check_conformance
+
+    decl = declaration()
+    result = render(decl, run_root=tmp_path / "run", carrier=carrier)
+    argv = list(result.argv)
+    index = len(argv) - len(decl.argv) - 1
+    if change == "hostname":
+        argv[argv.index("--hostname") + 1] = "host"
+    else:
+        extra = {
+            "duplicate-hostname": ["--hostname", "job"],
+            "duplicate-chdir": ["--chdir", "/home/job"],
+            "share-net": ["--share-net"],
+            "clear-late": ["--clearenv"],
+        }[change]
+        argv[index:index] = extra
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result.model_copy(update={"argv": tuple(argv)}))
+
+
+@pytest.mark.parametrize("carrier", ["t1", "t2", "t3"])
+@pytest.mark.parametrize("harness", ["claude", "codex", "vibe"])
+@pytest.mark.parametrize("entry", ["file", "symlink", "directory", "nested", "home-symlink"])
+def test_exact_generated_home_inventory(tmp_path, carrier, harness, entry):
+    from shared.capability_envelope import check_conformance
+
+    decl = declaration(harness=harness)
+    result = render(decl, run_root=tmp_path / "run", carrier=carrier)
+    home = result.run_root / "home"
+    if entry == "file":
+        (home / "CLAUDE.md").write_text("undeclared")
+    elif entry == "symlink":
+        (home / "AGENTS.md").symlink_to(tmp_path / "absent")
+    elif entry == "directory":
+        (home / "instructions").mkdir()
+    elif entry == "nested":
+        path = home / (
+            ".claude" if harness == "claude" else ".codex" if harness == "codex" else "private"
+        )
+        path.mkdir(exist_ok=True)
+        (path / "AGENTS.md").write_text("undeclared")
+    else:
+        home.rename(result.run_root / "old-home")
+        home.symlink_to(result.run_root / "old-home", target_is_directory=True)
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result)
+
+
+@pytest.mark.parametrize("carrier", ["t1", "t2", "t3"])
+def test_generated_home_keeps_exact_declared_placeholders(tmp_path, carrier):
+    from shared.capability_envelope import check_conformance
+
+    source = tmp_path / "instructions"
+    source.write_text("declared")
+    credentials = tmp_path / "credentials"
+    credentials.mkdir()
+    decl = declaration(
+        home_files=[{"source": source, "target": "declared/AGENTS.md"}],
+        credentials=[{"source": credentials, "target": "auth"}],
+    )
+    result = render(decl, run_root=tmp_path / "run", carrier=carrier)
+    check_conformance(decl, result)
+    (result.run_root / "home/auth/private").write_text("undeclared placeholder data")
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result)
+
+
+@pytest.mark.parametrize("carrier", ["t1", "t2", "t3"])
+@pytest.mark.parametrize("change", ["add", "replace-file", "replace-directory"])
+def test_generated_home_race_refuses(tmp_path, monkeypatch, carrier, change):
+    import os
+
+    from shared.capability_envelope import check_conformance
+
+    decl = declaration()
+    result = render(decl, run_root=tmp_path / "run", carrier=carrier)
+    home = result.run_root / "home"
+    original = os.open
+    raced = False
+
+    def race(path, *args, **kwargs):
+        nonlocal raced
+        fd = original(path, *args, **kwargs)
+        if str(path) == "settings.json" and not raced:
+            raced = True
+            if change == "add":
+                (home / "CLAUDE.md").write_text("raced")
+            elif change == "replace-file":
+                target = home / ".claude/settings.json"
+                target.unlink()
+                target.write_text("{}")
+            else:
+                (home / ".claude").rename(home / "old-config")
+                (home / ".claude").mkdir()
+                (home / ".claude/settings.json").write_text("{}")
+        return fd
+
+    monkeypatch.setattr(os, "open", race)
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result)
+    assert raced
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "high-over-max",
+        "home-env",
+        "config-env",
+        "duplicate-channel",
+        "missing-source",
+        "channel-endpoint",
+        "non-socket",
+        "root-channel",
+        "home-channel",
+    ],
+)
+def test_declaration_refusal_before_artifacts(tmp_path, case):
+    from pathlib import Path
+
+    source = tmp_path / "source"
+    source.write_text("ordinary file")
+    channel = {"name": "input", "kind": "mount", "source": source}
+    updates = {
+        "high-over-max": {"unit": {**UNIT, "memory_high": UNIT["memory_max"] + 1}},
+        "home-env": {"env": {"HOME": "/private"}},
+        "config-env": {"env": {"CLAUDE_CONFIG_DIR": "/private"}},
+        "duplicate-channel": {"channels": [channel, channel]},
+        "missing-source": {"channels": [{"name": "input", "kind": "mount"}]},
+        "channel-endpoint": {"channels": [{**channel, "endpoint": "undeclared"}]},
+        "non-socket": {"channels": [{**channel, "kind": "unix"}]},
+        "root-channel": {"channels": [{**channel, "source": Path("/")}]},
+        "home-channel": {"channels": [{**channel, "source": Path.home()}]},
+    }[case]
+    with pytest.raises(EnvelopeRefusal, match="next action"):
+        render(declaration(**updates), run_root=tmp_path / "run")
+    assert not (tmp_path / "run").exists()
+
+
+@pytest.mark.parametrize("carrier", ["t1", "t2", "t3"])
+@pytest.mark.parametrize(
+    "change", ["missing", "same-content-symlink", "missing-directory", "extra-file-content"]
+)
+def test_generated_home_exact_contents_and_types(tmp_path, carrier, change):
+    from shared.capability_envelope import check_conformance
+
+    decl = declaration()
+    result = render(decl, run_root=tmp_path / "run", carrier=carrier)
+    config = result.run_root / "home/.claude/settings.json"
+    if change == "missing":
+        config.unlink()
+    elif change == "same-content-symlink":
+        source = tmp_path / "same-bytes"
+        source.write_bytes(config.read_bytes())
+        config.unlink()
+        config.symlink_to(source)
+    elif change == "missing-directory":
+        import shutil
+
+        shutil.rmtree(config.parent)
+    else:
+        config.write_text(config.read_text() + " ")
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result)
+
+
+def test_duplicate_readonly_remount_refuses(tmp_path):
+    from shared.capability_envelope import check_conformance
+
+    work = tmp_path / "checkout"
+    (work / ".claude").mkdir(parents=True)
+    decl = declaration(workdir=work)
+    result = render(decl, run_root=tmp_path / "run")
+    argv = list(result.argv)
+    index = argv.index("--remount-ro")
+    argv[index:index] = argv[index : index + 2]
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result.model_copy(update={"argv": tuple(argv)}))
+
+
+@pytest.mark.parametrize(
+    "field", ["version", "hostname", "terminal", "process-extra", "capability-extra"]
+)
+def test_oci_process_isolation_scaffold(tmp_path, field):
+    from shared.capability_envelope import check_conformance
+
+    decl = declaration()
+    result = render(decl, run_root=tmp_path / "run", carrier="t3")
+    spec = copy.deepcopy(result.oci_spec)
+    if field == "version":
+        spec["ociVersion"] = "unsupported"
+    elif field == "hostname":
+        spec["hostname"] = "host"
+    elif field == "terminal":
+        spec["process"]["terminal"] = True
+    elif field == "process-extra":
+        spec["process"]["selinuxLabel"] = "undeclared"
+    else:
+        spec["process"]["capabilities"]["extra"] = []
+    with pytest.raises(EnvelopeRefusal, match="conformance"):
+        check_conformance(decl, result.model_copy(update={"oci_spec": spec}))

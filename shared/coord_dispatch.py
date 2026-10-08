@@ -178,7 +178,8 @@ def run_atomic_dispatch_launch(
         check_conformance(envelope, rendered_envelope)
         if rendered_envelope.carrier != "t2":
             raise CoordDispatchError(
-                "envelope_runner_unavailable: unit/OCI activation remains held"
+                "envelope_runner_unavailable: unit/OCI activation remains held; next action: "
+                "obtain independent acceptance and governed executor admission before launch"
             )
 
     key = request.effective_idempotency_key
@@ -302,7 +303,9 @@ def replay_terminal_result(
             raise CoordDispatchError("idempotency_key_message_id_mismatch")
         if event.payload.get("envelope_sha256") != request.envelope_sha256:
             raise CoordDispatchError(
-                "envelope_identity_mismatch: replay belongs to a different envelope"
+                "envelope_identity_mismatch: replay belongs to a different envelope; next action: "
+                "restore the original declaration and replay identity, or obtain a new launch "
+                "decision with a new message and idempotency key"
             )
         returncode = int(event.payload.get("returncode", 0))
         outcome = str(event.payload.get("outcome", ""))

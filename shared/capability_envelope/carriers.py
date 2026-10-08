@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -118,6 +119,7 @@ def _bwrap_parts(argv: tuple[str, ...]) -> dict[str, Any]:
     mounts, links, env = [], [], []
     network = False
     cleared = False
+    seen: dict[str, int] = {}
     cwd = None
     i = 0
     flags = {
@@ -127,10 +129,17 @@ def _bwrap_parts(argv: tuple[str, ...]) -> dict[str, Any]:
         "--unshare-cgroup-try",
         "--die-with-parent",
         "--new-session",
+        "--unshare-net",
+        "--clearenv",
     }
+    required = flags | {"--hostname", "--chdir"}
     while i < len(a):
         op = a[i]
         if op == "--":
+            if any(seen.get(flag) != 1 for flag in required):
+                raise EnvelopeRefusal(
+                    "conformance: incomplete isolation scaffold; next action: re-render"
+                )
             if not cleared:
                 raise EnvelopeRefusal(
                     "conformance: environment not cleared; next action: re-render"
@@ -143,6 +152,8 @@ def _bwrap_parts(argv: tuple[str, ...]) -> dict[str, Any]:
                 "args": a[i + 1 :],
                 "network": network,
             }
+        if op in required:
+            seen[op] = seen.get(op, 0) + 1
         if op in ("--ro-bind", "--bind"):
             mounts.append(_mount("bind", a[i + 1], a[i + 2], "ro" if op == "--ro-bind" else "rw"))
             i += 3
@@ -150,7 +161,7 @@ def _bwrap_parts(argv: tuple[str, ...]) -> dict[str, Any]:
             mounts.append(_mount(op[2:], op[2:], a[i + 1], "rw"))
             i += 2
         elif op == "--remount-ro":
-            if not mounts or mounts[-1]["target"] != a[i + 1]:
+            if not mounts or mounts[-1]["target"] != a[i + 1] or mounts[-1]["access"] == "ro":
                 raise EnvelopeRefusal("conformance: unexpected remount; next action: re-render")
             mounts[-1]["access"] = "ro"
             i += 2
@@ -161,6 +172,8 @@ def _bwrap_parts(argv: tuple[str, ...]) -> dict[str, Any]:
             env.append(f"{a[i + 1]}={a[i + 2]}")
             i += 3
         elif op in ("--hostname", "--chdir"):
+            if op == "--hostname" and a[i + 1] != "job":
+                raise EnvelopeRefusal("conformance: hostname differs; next action: re-render")
             if op == "--chdir":
                 cwd = a[i + 1]
             i += 2
@@ -251,7 +264,14 @@ def _oci_surface(rendered: RenderedEnvelope) -> dict[str, Any]:
     ] != {"path": "rootfs", "readonly": True}:
         raise EnvelopeRefusal("conformance: OCI root or imports changed; next action: re-render")
     if (
-        spec["process"]["user"] != {"uid": 1, "gid": 1}
+        spec["ociVersion"] != "1.2.1"
+        or spec["hostname"] != "job"
+        or set(spec["process"])
+        != {"terminal", "user", "args", "env", "cwd", "noNewPrivileges", "capabilities"}
+        or spec["process"]["terminal"] is not False
+        or set(spec["process"]["capabilities"])
+        != {"bounding", "effective", "inheritable", "permitted", "ambient"}
+        or spec["process"]["user"] != {"uid": 1, "gid": 1}
         or spec["process"]["noNewPrivileges"] is not True
         or any(spec["process"]["capabilities"].values())
     ):
@@ -268,10 +288,10 @@ def _oci_surface(rendered: RenderedEnvelope) -> dict[str, Any]:
                 "conformance: OCI identity binding differs; next action: re-render"
             )
     namespaces = spec["linux"]["namespaces"]
-    if {"type": "network"} not in namespaces or any(n.get("path") for n in namespaces):
-        raise EnvelopeRefusal(
-            "conformance: network namespace is not private; next action: re-render"
-        )
+    if namespaces != [
+        {"type": name} for name in ("pid", "ipc", "uts", "mount", "user", "network", "cgroup")
+    ]:
+        raise EnvelopeRefusal("conformance: OCI isolation scaffold differs; next action: re-render")
     mounts = []
     for mount in spec["mounts"]:
         if set(mount) != {"destination", "type", "source", "options"}:
@@ -302,6 +322,109 @@ def _oci_surface(rendered: RenderedEnvelope) -> dict[str, Any]:
         raise EnvelopeRefusal("conformance: undeclared OCI rootfs import; next action: re-render")
     links = [[os.readlink(p), "/" + p.name] for p in rootfs.iterdir() if p.is_symlink()]
     return {"mounts": mounts, "links": sorted(links), "egress": []}
+
+
+def _home_inventory(decl: EnvelopeDeclaration) -> dict[str, bytes | None]:
+    """Exact generated files and empty mountpoints, derived from admitted imports."""
+    from shared.capability_envelope.render import _PROFILES, _claude_config
+
+    expected: dict[str, bytes | None] = {}
+
+    def add(relative: str, content: bytes | None) -> None:
+        path = Path(relative)
+        for parent in path.parents:
+            if parent != Path("."):
+                expected.setdefault(str(parent), None)
+        expected.setdefault(str(path), content)
+
+    for _, relative in _PROFILES[decl.harness].config_env:
+        add(relative, None)
+    if decl.harness == "claude":
+        settings, state = _claude_config(decl)
+        for relative, value in (
+            (".claude/settings.json", settings),
+            (".claude.json", state),
+            (".claude/.claude.json", state),
+        ):
+            add(relative, json.dumps(value, indent=1).encode())
+    for item in decl.home_files:
+        add(item.target, b"")
+    for credential in decl.credentials:
+        add(credential.target, None if credential.source.is_dir() else b"")
+    return expected
+
+
+def _check_generated_home(decl: EnvelopeDeclaration, root: Path) -> None:
+    """Anchored, no-follow readback; reject concurrent entry/content/identity changes.
+
+    This observes the pre-dispatch filesystem. It does not claim host files remain
+    immutable after return; carrier activation still needs custody of the bundle.
+    No unadmitted file is opened and no symlink is followed, including directories.
+    """
+    from shared.capability_envelope.render import EnvelopeRefusal
+
+    expected = _home_inventory(decl)
+    observed: set[str] = set()
+
+    def refuse() -> None:
+        raise EnvelopeRefusal(
+            "conformance: generated home inventory or contents changed; next action: "
+            "render a fresh home from the declaration and retain exclusive bundle custody"
+        )
+
+    def signature(info: os.stat_result) -> tuple[int, ...]:
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_nlink,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+
+    def visit(parent_fd: int, name: str, relative: str, *, directory: bool) -> None:
+        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not (stat.S_ISDIR(before.st_mode) if directory else stat.S_ISREG(before.st_mode)):
+            refuse()
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        if directory:
+            flags |= os.O_DIRECTORY
+        fd = os.open(name, flags, dir_fd=parent_fd)
+        try:
+            if signature(os.fstat(fd)) != signature(before):
+                refuse()
+            if directory:
+                for child in sorted(os.listdir(fd)):
+                    rel = f"{relative}/{child}" if relative else child
+                    if rel not in expected:
+                        refuse()
+                    observed.add(rel)
+                    visit(fd, child, rel, directory=expected[rel] is None)
+            else:
+                content = expected[relative]
+                # Bounded read detects appended data without importing private contents.
+                if os.read(fd, len(content) + 1) != content:
+                    refuse()
+            if signature(os.fstat(fd)) != signature(before) or signature(
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            ) != signature(before):
+                refuse()
+        finally:
+            os.close(fd)
+
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        root_before = os.fstat(root_fd)
+        visit(root_fd, "home", "", directory=True)
+        if observed != set(expected):
+            refuse()
+        if signature(os.fstat(root_fd)) != signature(root_before) or signature(
+            root.lstat()
+        ) != signature(root_before):
+            refuse()
+    finally:
+        os.close(root_fd)
 
 
 def _bytes(surface: dict[str, Any]) -> bytes:
@@ -360,23 +483,12 @@ def check_surface(decl: EnvelopeDeclaration, rendered: RenderedEnvelope) -> byte
             for m in actual["mounts"]
             if m["kind"] == "bind" and Path(m["source"]).is_socket()
         ]
+        _check_generated_home(decl, rendered.run_root)
         if decl.harness == "claude":
-            settings, state = _claude_config(decl)
-            home = rendered.run_root / "home"
-            for relative, expected_config in (
-                (".claude/settings.json", settings),
-                (".claude.json", state),
-                (".claude/.claude.json", state),
-            ):
-                config = json.loads((home / relative).read_text())
-                if config != expected_config:
-                    raise EnvelopeRefusal(
-                        "conformance: generated imports differ; next action: re-render"
-                    )
-            observed = json.loads((home / ".claude.json").read_text())["mcpServers"]
+            _, state = _claude_config(decl)
             actual["endpoints"].extend(
                 {"stdio": name, "command": [value["command"], *value["args"]]}
-                for name, value in observed.items()
+                for name, value in state["mcpServers"].items()
             )
         if _bytes(actual) != _bytes(expected):
             raise EnvelopeRefusal(

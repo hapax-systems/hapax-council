@@ -30,15 +30,25 @@ enforceable binding. No annotation is treated as a network filter.
 including the fixed Linux scaffold, and reads the emitted carrier's mounts, access
 modes, namespace and endpoint bindings. It compares normalized JSON **bytes**;
 `channel_bytes` and its hash are derived evidence, never a second input declaration.
-T3 also rejects added rootfs files, hooks, root replacement and identity changes.
+Every required isolation flag and namespace is checked, including uniqueness and
+private namespace bindings. T3 also rejects added rootfs files, hooks, root replacement
+and identity changes. The generated home is inventoried exactly against generated
+config and admitted empty mountpoints. Descriptor-relative no-follow reads reject
+extra files/directories, symlinks, missing entries and byte changes, and detect entry
+or content replacement during readback. These checks observe render/pre-dispatch
+state; exclusive bundle custody after the check remains an activation obligation.
 Config is published only after this check. The emitted argv/config hashes describe
 the final carrier, not its intermediate bubblewrap representation.
 
-The API-billing check recognizes `--bare`, `--api-key`, `--api-key-file`, and
-`--api-key-helper`, including `=value` forms. These require `billing_surface="api"`.
-It does not claim to infer billing from arbitrary executable code or unknown harness
-flags; per-harness qualification remains required. Credential values still belong in
-file bindings, never environment or renderer evidence.
+The renderer refuses every unqualified subscription execution shape before artifact
+creation, including `--bare`, unknown flags, config-based overrides, shell wrappers
+and a trivial executable path. Route `auth_surface` and model/effort identity receipts
+do not qualify the complete argv/config/env/credential shape. The existing harness
+onboarding owner must supply that qualification through execution admission before
+subscription launch can be supported. API declarations permit source rendering only;
+they do not authorize spend or a fallback. No subscription declaration is rewritten.
+Synthetic source/runtime fixtures declare API explicitly and never call a provider.
+Credential values remain file bindings, never environment or renderer evidence.
 
 Source checks: `uv run python tests/capability_envelope/run_source_checks.py`.
 This deliberately does not run containment, cgroup, provider or real-harness probes.

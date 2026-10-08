@@ -69,7 +69,9 @@ def _bwrap_usable() -> bool:
         return False
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            decl = EnvelopeDeclaration(unit=UNIT, harness="claude", argv=("/usr/bin/true",))
+            decl = EnvelopeDeclaration(
+                unit=UNIT, billing_surface="api", harness="claude", argv=("/usr/bin/true",)
+            )
             rendered = render(decl, run_root=Path(tmp) / "run")
             return execute(rendered, timeout=30).returncode == 0
         except (EnvelopeCarrierError, OSError, subprocess.TimeoutExpired):
@@ -198,6 +200,7 @@ class World:
     def declaration(self, **overrides) -> EnvelopeDeclaration:
         fields = {
             "harness": "claude",
+            "billing_surface": "api",  # Synthetic probes; no provider or spend.
             "unit": UNIT,
             "argv": self.probe_argv("/spool/report.json"),
             "binaries": (PROBE,),
@@ -357,7 +360,11 @@ def test_declared_checkout_instruction_file_is_readable_and_the_rest_stay_masked
 
 def _sh(script: str, **fields) -> EnvelopeDeclaration:
     return EnvelopeDeclaration(
-        unit=UNIT, harness="claude", argv=("/usr/bin/sh", "-c", script), **fields
+        unit=UNIT,
+        billing_surface="api",
+        harness="claude",
+        argv=("/usr/bin/sh", "-c", script),
+        **fields,
     )
 
 
@@ -616,7 +623,11 @@ def test_a_declared_file_stays_readable_through_its_symlink(tmp_path: Path):
         lambda p: CredentialBind(source=p, target="/etc/passwd"),
         lambda p: DeclaredFile(source=p, target="../escape.md"),
         lambda p: EnvelopeDeclaration(
-            unit=UNIT, harness="claude", argv=("x",), declared_work_files=("",)
+            unit=UNIT,
+            billing_surface="api",
+            harness="claude",
+            argv=("x",),
+            declared_work_files=("",),
         ),
     ],
     ids=["hook-name", "mcp-name", "absolute-target", "dotdot-target", "empty-work-file"],
@@ -772,7 +783,7 @@ def test_missing_bubblewrap_is_a_carrier_error_and_nothing_runs(
 def test_a_bubblewrap_failure_is_a_carrier_error(tmp_path: Path):
     """The declared binary is not inside the job, so bubblewrap cannot exec it."""
     decl = EnvelopeDeclaration(
-        unit=UNIT, harness="claude", argv=(str(tmp_path / "missing-binary"),)
+        unit=UNIT, billing_surface="api", harness="claude", argv=(str(tmp_path / "missing-binary"),)
     )
     rendered = render(decl, run_root=tmp_path / "run")
     with pytest.raises(EnvelopeCarrierError, match="carrier failed"):
@@ -791,7 +802,9 @@ def test_bare_needs_declared_api_billing(tmp_path: Path):
 
 @pytest.mark.parametrize("key", ["ANTHROPIC_API_KEY", "GH_TOKEN", "SOME_SECRET", "DB_PASSWORD"])
 def test_secret_shaped_env_is_refused(tmp_path: Path, key: str):
-    decl = EnvelopeDeclaration(unit=UNIT, harness="claude", argv=("claude",), env={key: "x"})
+    decl = EnvelopeDeclaration(
+        unit=UNIT, billing_surface="api", harness="claude", argv=("claude",), env={key: "x"}
+    )
     with pytest.raises(EnvelopeRefusal, match="credential"):
         render(decl, run_root=tmp_path / "run")
 
@@ -800,13 +813,21 @@ def test_hooks_or_mcp_for_a_harness_without_a_renderer_are_refused(world: World,
     hook = DeclaredHook(name="gate", event="PreToolUse", script=world.declared_hook)
     with pytest.raises(EnvelopeRefusal, match="no hook renderer for harness codex"):
         render(
-            EnvelopeDeclaration(unit=UNIT, harness="codex", argv=("codex",), hooks=(hook,)),
+            EnvelopeDeclaration(
+                unit=UNIT, billing_surface="api", harness="codex", argv=("codex",), hooks=(hook,)
+            ),
             run_root=tmp_path / "run",
         )
     server = DeclaredMcpServer(name="declared", command=(str(world.declared_server),))
     with pytest.raises(EnvelopeRefusal, match="no MCP renderer for harness codex"):
         render(
-            EnvelopeDeclaration(unit=UNIT, harness="codex", argv=("codex",), mcp_servers=(server,)),
+            EnvelopeDeclaration(
+                unit=UNIT,
+                billing_surface="api",
+                harness="codex",
+                argv=("codex",),
+                mcp_servers=(server,),
+            ),
             run_root=tmp_path / "run-mcp",
         )
 
