@@ -131,6 +131,38 @@ def _response_observation(stdout: str, *, rate_probe: bool, ok: bool) -> tuple[s
     return body, readings
 
 
+def _api_endpoint(args: list[str]) -> str | None:
+    """Find gh api's positional endpoint without treating option values as paths."""
+    value_flags = {
+        "--cache",
+        "--field",
+        "--header",
+        "--hostname",
+        "--input",
+        "--jq",
+        "--method",
+        "--preview",
+        "--raw-field",
+        "--template",
+    }
+    tokens = iter(args)
+    for token in tokens:
+        if token == "--":
+            return next(tokens, None)
+        if token.startswith("--"):
+            if token in value_flags:
+                next(tokens, None)
+        elif token.startswith("-"):
+            for index, flag in enumerate(token[1:], start=1):
+                if flag in "FHqXpft":
+                    if index == len(token) - 1:
+                        next(tokens, None)
+                    break
+        else:
+            return token
+    return None
+
+
 def run_gh_observed(
     runner: Any,
     cmd: list[str],
@@ -145,11 +177,16 @@ def run_gh_observed(
     remain unchanged and their internal request count is explicitly unobserved.
     """
     api = cmd[:2] == ["gh", "api"]
-    graphql = api and len(cmd) > 2 and cmd[2] == "graphql"
+    endpoint = _api_endpoint(cmd[2:]) if api else None
+    graphql = endpoint == "graphql"
     event = _event("command", "graphql" if graphql else "rest" if api else "cli")
     excluded = {"--paginate", "--slurp", "--jq", "-q", "--template", "-t", "--cache", "--silent"}
     filtered = any(
-        arg.split("=", 1)[0] in excluded or arg.startswith(("-q", "-t")) for arg in cmd[2:]
+        arg.split("=", 1)[0] in excluded
+        or arg.startswith(("-q", "-t", "--include="))
+        or (arg.startswith("-i") and arg != "-i")
+        or arg == "--"
+        for arg in cmd[2:]
     )
     explicit = "-i" in cmd or "--include" in cmd
     inject = api and not filtered and not explicit
@@ -172,7 +209,7 @@ def run_gh_observed(
     body, readings = (
         _response_observation(
             stdout,
-            rate_probe=api and "rate_limit" in cmd,
+            rate_probe=endpoint == "rate_limit",
             ok=proc.returncode == 0,
         )
         if api and not filtered and (inject or explicit)

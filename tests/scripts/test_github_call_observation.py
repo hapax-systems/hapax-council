@@ -116,6 +116,9 @@ def test_failure_observation_never_logs_credentials_payload_or_arbitrary_caller(
         ["gh", "api", "repos/owner/repo/pulls", "--jq", ".[0]"],
         ["gh", "api", "-i", "--cache", "1h", "rate_limit"],
         ["gh", "api", "repos/owner/repo/pulls", "-q.[0]"],
+        ["gh", "api", "--", "graphql"],
+        ["gh", "api", "-iXPOST", "graphql"],
+        ["gh", "api", "--include=true", "graphql"],
     ],
 )
 def test_compound_or_filtered_cli_is_not_counted_as_one_http_response(cmd, capsys, tmp_path):
@@ -502,3 +505,77 @@ def test_usage_cli_selects_newest_reading_without_renewing_expiry(
     assert reading["validity"]["observed_at_epoch"] == 1020
     assert reading["validity"]["valid_until_epoch"] == 1080
     assert reading["validity"]["freshness"] == "stale"
+
+
+@pytest.mark.parametrize(
+    "args,transport",
+    [
+        (["graphql", "-f", "query=example"], "graphql"),
+        (["--include", "graphql", "-f", "query=example"], "graphql"),
+        (["-i", "graphql", "-f", "query=example"], "graphql"),
+        (["-X", "POST", "graphql"], "graphql"),
+        (["--method=POST", "graphql"], "graphql"),
+        (["-XPOST", "graphql"], "graphql"),
+        (["--input", "graphql", "repos/owner/repo/pulls"], "rest"),
+        (["--input", "rate_limit", "graphql"], "graphql"),
+    ],
+)
+def test_transport_uses_endpoint_independent_of_flag_positions(args, transport, capsys, tmp_path):
+    cmd = ["gh", "api", *args]
+    calls = []
+    resource = "graphql" if transport == "graphql" else "core"
+
+    def runner(actual, **kwargs):
+        calls.append(actual)
+        return subprocess.CompletedProcess(actual, 0, response(resource=resource), "")
+
+    observation.run_gh_observed(runner, cmd, repo_root=tmp_path)
+    assert len(calls) == 1
+    event = record(capsys)
+    assert event["transport"] == transport
+    report = observation.summarize_log(
+        [observation.LOG_PREFIX + json.dumps(event)],
+        since=event["observed_at_epoch"] - 1,
+        until=event["observed_at_epoch"] + 1,
+        now=event["observed_at_epoch"],
+    )
+    assert report["callers"][0]["transport"] == transport
+
+
+@pytest.mark.parametrize(
+    "since,until",
+    [
+        ("-1", "10"),
+        ("10", "10"),
+        ("20", "10"),
+        ("1", "1001"),
+        ("nan", "10"),
+        ("1", "nan"),
+        ("inf", "10"),
+        ("1", "inf"),
+        ("-inf", "10"),
+    ],
+)
+def test_usage_cli_rejects_invalid_intervals_before_work(since, until, monkeypatch, capsys):
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid interval reached report or GitHub execution")
+
+    monkeypatch.setattr(observation.time, "time", lambda: 1000)
+    monkeypatch.setattr(github_pr_status, "summarize_log", forbidden)
+    monkeypatch.setattr(github_pr_status.subprocess, "run", forbidden)
+    with pytest.raises(SystemExit) as caught:
+        github_pr_status.main(["usage", f"--since={since}", f"--until={until}"])
+    assert caught.value.code == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "usage requires 0 <= --since < --until <= now" in output.err
+
+
+def test_rate_probe_is_endpoint_not_an_option_value(capsys, tmp_path):
+    raw = response('{"resources":{"graphql":{"remaining":4990,"reset":2000}}}')
+    observation.run_gh_observed(
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, raw, ""),
+        ["gh", "api", "--input", "rate_limit", "repos/owner/repo/pulls"],
+        repo_root=tmp_path,
+    )
+    assert [reading["source"] for reading in record(capsys)["readings"]] == ["header"]
