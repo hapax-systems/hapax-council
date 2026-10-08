@@ -459,3 +459,46 @@ def test_usage_cli_loads_its_own_shared_observer_from_another_working_directory(
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["observation_state"] == "unobserved"
+
+
+@pytest.mark.parametrize("newest_first", [False, True])
+def test_usage_cli_selects_newest_reading_without_renewing_expiry(
+    monkeypatch, capsys, newest_first
+):
+    lines = []
+    for observed_at, remaining, reset in [(1000, 400, 1050), (1020, 10, 1130)]:
+        event = {
+            "schema": observation.SCHEMA,
+            "observed_at_epoch": observed_at,
+            "caller": "hapax-pr-admission",
+            "transport": "rest",
+            "pool": "core",
+            "auth_identity": None,
+            "command_started": True,
+            "http_responses_observed": 1,
+            "readings": [
+                {
+                    "resource": "core",
+                    "source": "header",
+                    "remaining": remaining,
+                    "reset_epoch": reset,
+                }
+            ],
+        }
+        lines.append(observation.LOG_PREFIX + json.dumps(event))
+    if newest_first:
+        lines.reverse()
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n".join(lines)))
+    monkeypatch.setattr(observation.time, "time", lambda: 1081)
+    assert github_pr_status.main(["usage", "--since", "990", "--until", "1030"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert len(result["callers"]) == 1
+    row = result["callers"][0]
+    assert row["http_responses_observed"] == 2
+    assert len(row["latest_readings"]) == 1
+    reading = row["latest_readings"][0]
+    assert reading["remaining"] == 10
+    assert reading["reset_epoch"] == 1130
+    assert reading["validity"]["observed_at_epoch"] == 1020
+    assert reading["validity"]["valid_until_epoch"] == 1080
+    assert reading["validity"]["freshness"] == "stale"
