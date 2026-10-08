@@ -127,8 +127,8 @@ class ReviewPass:
 
         Admission failures raise PublicationAdmissionError before completion.
         Transport and parsing failures become low-confidence editorial reports.
-        An injected completion remains a trusted execution dependency; this
-        consumer does not certify its served identity or account for its spend.
+        The explicit executor checks qualification and same-call accounting
+        before editorial content is parsed. Raw completion callbacks are refused.
         """
 
         require_publication_admission("review", review_model=self.model)
@@ -168,8 +168,12 @@ class ReviewPass:
         return report
 
     def _completion(self) -> CompletionFn:
-        if self.completion is not None:
+        from shared.publication_hardening.execution import AdmittedPublicationCompletion
+
+        if type(self.completion) is AdmittedPublicationCompletion:
             return self.completion
+        if self.completion is not None:
+            raise PublicationAdmissionError(publication_hold("review_executor_unqualified"))
         # The legacy gateway alias does not establish served identity or billing.
         # Preserve the review requirement until a qualified executor is bound.
         raise PublicationAdmissionError(publication_hold("review_execution_binding_absent"))
