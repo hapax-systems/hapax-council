@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from shared import resource_state_producer as rsp
 
@@ -197,29 +198,20 @@ def _drift_probe_bundle() -> dict:
 
 
 def test_vendored_reins_matches_governed_full_projection() -> None:
-    """Drift guard (seat #5029 round): when the governed reins is importable (HAPAX_REINS_ROOT), the
-    governed and vendored FULL per-audience projections must be deep-equal — every surviving fact's
-    fields, redaction, reason codes, sealed fields and affordances, not just fact_count — AND the governed
-    file must still hash to the pinned sha. This guard runs ONLY when the governed tree is present; in CI
-    it SKIPS (below). It does not by itself prevent silent drift in CI: the pin + the parent row carry
-    governed parity there."""
+    """Require the declared governed carrier and compare its exact file and full projections.
+
+    Missing/unreadable bindings fail: vendored AIR tests alone are not governed parity.
+    Import the hashed path directly so sys.path or a cached module cannot replace it.
+    """
     root = os.environ.get("HAPAX_REINS_ROOT", "").strip()
     if not root:
-        pytest.skip(
-            "HAPAX_REINS_ROOT unset: the governed reins tree is absent (e.g. CI), so this guard cannot "
-            "run. The CI AIR contract is witnessed against the vendored carrier "
-            "tests/fixtures/reins_context_vendored.py, pinned to reins commit "
-            f"{_PINNED_REINS_COMMIT} (sha {_PINNED_REINS_SHA256}); governed parity is carried by the "
-            "parent row estate-resource-state-determinative-projection-20261004. This is a SKIP, not a pass."
-        )
-    root_path = Path(root).expanduser()
-    if str(root_path) not in sys.path:
-        sys.path.insert(0, str(root_path))
-    try:
-        import reins_context as governed  # noqa: PLC0415
-    except ImportError:
-        pytest.skip(f"governed reins_context not importable at HAPAX_REINS_ROOT={root}")
+        pytest.fail("HAPAX_REINS_ROOT required: bind the governed reins api directory for parity")
+    root_path = Path(root).expanduser().resolve()
     governed_file = root_path / "reins_context.py"
+    if not governed_file.is_file():
+        pytest.fail(
+            f"governed reins_context.py unavailable at {root_path}; repair the declared binding"
+        )
     actual_sha = hashlib.sha256(governed_file.read_bytes()).hexdigest()
     assert actual_sha == _PINNED_REINS_SHA256, (
         f"governed reins_context.py has drifted from the pin: {actual_sha} != {_PINNED_REINS_SHA256}. "
@@ -264,6 +256,7 @@ def test_vendored_reins_matches_governed_full_projection() -> None:
             f"reins_context.py at pinned commit {_PINNED_REINS_COMMIT} hashes {blob_sha}, not the pinned "
             f"{_PINNED_REINS_SHA256}"
         )
+    governed = _load_module(governed_file, "resource_parity_governed_reins")
     b = _drift_probe_bundle()
     for aud in VENDORED_REINS.AUDIENCES:
         assert governed.project(b, aud) == VENDORED_REINS.project(b, aud), (
@@ -330,16 +323,151 @@ def test_script_hapax_resources_json_projects_through_governed_reins(tmp_path: P
 
 
 def test_script_hapax_capacity_observer_appends_valid_json(tmp_path: Path) -> None:
-    """The observer runs read-only and appends one valid JSON observation with the producer's input
-    keys, even where probes find nothing (no GPU/ssh/tmux in CI)."""
-    obs = tmp_path / "cap.jsonl"
-    r = _run(
-        ["bash", str(REPO / "scripts" / "hapax-capacity-observer")],
-        {"HAPAX_CAPACITY_OBS": str(obs)},
-    )
-    assert r.returncode == 0, r.stderr
-    lines = [line for line in obs.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) == 1
-    rec = json.loads(lines[0])
+    """Exercise the real observer with empty, isolated probe responses; no estate scan."""
+    rec = _observer_fixture(tmp_path, {"data": []})
     for key in ("ts", "loaded_models", "local_endpoints", "serving_procs", "fleet_memory", "gpus"):
         assert key in rec
+
+
+@pytest.mark.parametrize("root", ["", "/nonexistent/resource-parity-root"])
+def test_governed_parity_missing_binding_fails_instead_of_skipping(monkeypatch, root) -> None:
+    monkeypatch.setenv("HAPAX_REINS_ROOT", root)
+    try:
+        with pytest.raises(pytest.fail.Exception):
+            test_vendored_reins_matches_governed_full_projection()
+    except pytest.skip.Exception:
+        pytest.fail("missing governed binding was skipped instead of failed")
+
+
+def test_governed_parity_loads_the_hashed_file_not_a_cached_module(monkeypatch) -> None:
+    import types
+
+    monkeypatch.setitem(sys.modules, "reins_context", types.SimpleNamespace(project=lambda *_: {}))
+    test_vendored_reins_matches_governed_full_projection()
+
+
+def test_governed_parity_rejects_hash_drift_before_import(tmp_path, monkeypatch) -> None:
+    (tmp_path / "reins_context.py").write_text(
+        "raise RuntimeError('must not import drifted file')\n"
+    )
+    monkeypatch.setenv("HAPAX_REINS_ROOT", str(tmp_path))
+    with pytest.raises(AssertionError, match="has drifted from the pin"):
+        test_vendored_reins_matches_governed_full_projection()
+
+
+def test_governed_parity_compares_full_projection(monkeypatch) -> None:
+    original = VENDORED_REINS.project
+
+    def changed_reason(*args):
+        result = original(*args)
+        result["changed_reason"] = "fixture drift beyond counts"
+        return result
+
+    monkeypatch.setattr(VENDORED_REINS, "project", changed_reason)
+    with pytest.raises(AssertionError, match="FULL projection drift"):
+        test_vendored_reins_matches_governed_full_projection()
+
+
+def _observer_fixture(tmp_path: Path, body: dict) -> dict:
+    """Run the shipped shell/Python script with every external probe replaced by a local fixture."""
+    probes = tmp_path / "bin"
+    probes.mkdir()
+    response = tmp_path / "models.json"
+    response.write_text(json.dumps(body))
+    for name in ("ssh", "timeout", "tmux", "pgrep", "nvidia-smi", "hostname", "curl"):
+        path = probes / name
+        command = (
+            'cat "$MODEL_RESPONSE"'
+            if name == "curl"
+            else ("echo fixture-host" if name == "hostname" else "exit 0")
+        )
+        path.write_text("#!/bin/sh\n" + command + "\n")
+        path.chmod(0o755)
+    obs = tmp_path / "cap.jsonl"
+    run = _run(
+        ["bash", str(REPO / "scripts/hapax-capacity-observer")],
+        {
+            "PATH": str(probes) + os.pathsep + os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "MODEL_RESPONSE": str(response),
+            "HAPAX_CAPACITY_OBS": str(obs),
+        },
+    )
+    assert run.returncode == 0, run.stderr
+    return json.loads(obs.read_text())
+
+
+def test_observer_metadata_reaches_the_real_reader_projection(tmp_path: Path) -> None:
+    rec = _observer_fixture(
+        tmp_path,
+        {
+            "data": [
+                {
+                    "id": "embedding",
+                    "owned_by": "llamacpp",
+                    "meta": {"n_ctx": 1024, "n_ctx_train": 2048, "ftype": "F16"},
+                    "private_unrelated_field": "MUST-NOT-CARRY",
+                }
+            ]
+        },
+    )
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    assert rec["model_metadata"]["8000"]["data"][0]["meta"]["n_ctx"] == 1024
+    run = _run(
+        [sys.executable, str(REPO / "scripts/hapax-resources"), "--json"],
+        {
+            "HAPAX_CAPACITY_OBS": str(tmp_path / "cap.jsonl"),
+            "HAPAX_REINS_ROOT": os.environ["HAPAX_REINS_ROOT"],
+            "HAPAX_ENTITLEMENT_SURFACE": str(tmp_path / "absent"),
+            "HAPAX_KIMI_BENCH_LEDGER": str(tmp_path / "absent"),
+        },
+    )
+    assert run.returncode == 0, run.stderr
+    projection = json.loads(run.stdout)
+    context = next(
+        f
+        for f in projection["facts"]
+        if f["subject_ref"] == "host:fixture-host:8000/embedding/field:context_tokens"
+    )
+    assert context["value"]["value"] == 1024
+    assert context["state"]["value_state"] == "lit"
+    assert context["provenance"]["observed_at"] == rec["model_metadata"]["8000"]["observed_at"]
+    assert projection["audience"] == "operator_private"
+
+
+@pytest.mark.parametrize("body", [{"error": "not a model list"}, {"data": "bad"}])
+def test_observer_unsupported_model_listing_cannot_be_alive(tmp_path: Path, body) -> None:
+    rec = _observer_fixture(tmp_path, body)
+    assert not any(rec["local_endpoints"].values())
+    assert all(not ids for ids in rec["loaded_models"].values())
+
+
+def test_observer_composite_metadata_is_refused_without_carrying_bodies(tmp_path: Path) -> None:
+    rec = _observer_fixture(
+        tmp_path, {"data": [{"id": "m", "meta": {"n_ctx": {"private": "MUST-NOT-CARRY"}}}]}
+    )
+    assert "MUST-NOT-CARRY" not in json.dumps(rec)
+    bundle = rsp.build_bundle(observation=rec)
+    context = next(
+        f for f in bundle["facts"]["loaded_model"] if f["value"].get("field") == "context_tokens"
+    )
+    assert context["state"]["value_state"] == "refused"
+
+
+@pytest.mark.parametrize("job_name", ["test", "test-full-shard"])
+def test_ci_materializes_the_governed_parity_binding_in_both_pytest_jobs(job_name) -> None:
+    workflow = yaml.safe_load((REPO / ".github/workflows/ci.yml").read_text())
+    job = workflow["jobs"][job_name]
+    assert job.get("env", {}).get("HAPAX_REINS_ROOT") == "${{ github.workspace }}/.ci-reins/api"
+    steps = job["steps"]
+    checkout = next(s for s in steps if s.get("uses", "").startswith("actions/checkout@"))
+    governed = next(s for s in steps if s.get("name") == "Check out governed Reins parity source")
+    assert governed["uses"] == checkout["uses"]
+    assert governed.get("if") == checkout.get("if")
+    assert governed["with"] == {
+        "repository": "hapax-systems/reins",
+        "ref": _PINNED_REINS_COMMIT,
+        "path": ".ci-reins",
+        "persist-credentials": False,
+    }
+    assert steps.index(checkout) < steps.index(governed)
