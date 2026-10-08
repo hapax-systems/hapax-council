@@ -13,6 +13,9 @@ from agents.omg_weblog_publisher.publisher import (
     derive_entry_slug,
     parse_draft,
 )
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 
 def _grounding_gate() -> dict:

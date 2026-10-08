@@ -43,6 +43,9 @@ from shared.publication_hardening.gate import (
     PublicationGateResult,
 )
 from shared.publication_hardening.review import ReviewReport
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 TASK_ID = "cc-task-public-gate-test"
 AUTHORITY_SECRET = "test-public-gate-authority-secret"

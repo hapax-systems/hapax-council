@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from shared.governance.omg_referent import ENV_OPERATOR_LEGAL_NAME
 from shared.operator_referent import REFERENTS
 from shared.preprint_artifact import PreprintArtifact
+from shared.publication_hardening.admission import PublicationAdmissionError, admission_report
 from shared.publication_hardening.codebase import (
     CodebaseDecision,
     CodebaseVerificationReport,
@@ -75,6 +76,7 @@ class PublicationGateChildResult(PublicationGateModel):
         "review",
         "public_gate_receipts",
         "artifact_envelope",
+        "route_resource",
     ]
     decision: PublicationGateDecision
     findings: tuple[str, ...] = Field(default_factory=tuple)
@@ -150,7 +152,7 @@ class PublicationHardeningGate:
             review_report_fm: dict[str, object] | None = None
         else:
             review_child, review_report = self._review_child(text, artifact, lint_child)
-            review_report_fm = review_report.to_frontmatter()
+            review_report_fm = review_report.to_frontmatter() if review_report is not None else None
 
         child_results = (
             lint_child,
@@ -166,7 +168,11 @@ class PublicationHardeningGate:
         if override_error:
             flagged = (*flagged, override_error)
 
-        if decision == PublicationGateDecision.HOLD and override is not None:
+        route_held = any(
+            child.name == "route_resource" and child.decision != PublicationGateDecision.PASS
+            for child in child_results
+        )
+        if decision == PublicationGateDecision.HOLD and override is not None and not route_held:
             decision = PublicationGateDecision.OPERATOR_OVERRIDDEN_HOLD
         elif decision == PublicationGateDecision.REJECT and override is not None:
             flagged = (*flagged, "operator_override_ignored_for_reject")
@@ -310,18 +316,27 @@ class PublicationHardeningGate:
         text: str,
         artifact: PreprintArtifact,
         lint_child: PublicationGateChildResult,
-    ) -> tuple[PublicationGateChildResult, ReviewReport]:
-        report = self.review_pass.review_text(
-            text,
-            author_model=_artifact_author_model(artifact),
-            lint_report="\n".join(lint_child.findings) or None,
-            metadata={
-                "slug": artifact.slug,
-                "title": artifact.title,
-                "source_path": artifact.source_path,
-                "surfaces_targeted": artifact.surfaces_targeted,
-            },
-        )
+    ) -> tuple[PublicationGateChildResult, ReviewReport | None]:
+        try:
+            report = self.review_pass.review_text(
+                text,
+                author_model=_artifact_author_model(artifact),
+                lint_report="\n".join(lint_child.findings) or None,
+                metadata={
+                    "slug": artifact.slug,
+                    "title": artifact.title,
+                    "source_path": artifact.source_path,
+                    "surfaces_targeted": artifact.surfaces_targeted,
+                },
+            )
+        except PublicationAdmissionError as exc:
+            return PublicationGateChildResult(
+                name="route_resource",
+                decision=PublicationGateDecision.HOLD,
+                findings=(exc.result.message,),
+                evidence_refs=exc.result.evidence_refs,
+                report=admission_report(exc.result),
+            ), None
         threshold = getattr(self.review_pass, "threshold", DEFAULT_REVIEW_THRESHOLD)
         decision = (
             PublicationGateDecision.PASS

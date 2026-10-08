@@ -80,6 +80,7 @@ from shared.publication_artifact_public_event import (
     PublicationArtifactEventStage,
     build_publication_artifact_public_event,
 )
+from shared.publication_hardening.admission import admission_report, evaluate_publication_admission
 from shared.publication_hardening.egress_safety import (
     EgressDecision,
     EgressSafetyEnvelope,
@@ -180,7 +181,7 @@ _TERMINAL_RESULTS = frozenset(
 states move the artifact to ``failed/``, never ``published/``.
 """
 
-_RETRYABLE_RESULTS = frozenset({"deferred", "rate_limited"})
+_RETRYABLE_RESULTS = frozenset({"deferred", "rate_limited", "route_resource_hold"})
 """Known non-terminal surface states that may be retried."""
 
 _KNOWN_SURFACE_RESULTS = _TERMINAL_RESULTS | _RETRYABLE_RESULTS
@@ -471,7 +472,14 @@ class Orchestrator:
             self._withhold_for_gate(artifact, receipt_gate_result)
             return
 
+        route_child = self._route_resource_child(deduped_surfaces)
+        if route_child.decision != PublicationGateDecision.PASS:
+            self._withhold_for_gate(artifact, self._route_resource_result(route_child))
+            return
         gate_result = self._hardening_gate.evaluate(artifact)
+        gate_result = gate_result.model_copy(
+            update={"child_results": (*gate_result.child_results, route_child)}
+        )
         gate_result = self._with_public_gate_receipts_child(
             artifact,
             gate_result,
@@ -659,6 +667,15 @@ class Orchestrator:
 
     def _dispatch_one(self, artifact: PreprintArtifact, surface: str) -> str:
         """Resolve + invoke the publisher entry-point for ``surface``."""
+        route_child = self._route_resource_child([surface])
+        if route_child.decision != PublicationGateDecision.PASS:
+            log.warning(
+                "publication route/resource hold at egress for %s/%s: %s",
+                artifact.slug,
+                surface,
+                "; ".join(route_child.findings),
+            )
+            return "route_resource_hold"
         entry = self._resolve_entry_point(surface)
         if entry is None:
             return "surface_unwired"
@@ -667,6 +684,25 @@ class Orchestrator:
         except Exception:  # noqa: BLE001
             log.exception("publisher %s raised for artifact %s", surface, artifact.slug)
             return "error"
+
+    def _route_resource_child(self, surfaces: list[str]) -> PublicationGateChildResult:
+        results = {surface: evaluate_publication_admission(surface) for surface in surfaces}
+        held = [result for result in results.values() if not result.allowed]
+        return PublicationGateChildResult(
+            name="route_resource",
+            decision=PublicationGateDecision.HOLD if held else PublicationGateDecision.PASS,
+            findings=tuple(result.message for result in held),
+            evidence_refs=tuple(ref for result in results.values() for ref in result.evidence_refs),
+            report={surface: admission_report(result) for surface, result in results.items()},
+        )
+
+    def _route_resource_result(self, child: PublicationGateChildResult) -> PublicationGateResult:
+        return PublicationGateResult(
+            decision=PublicationGateDecision.HOLD,
+            generated_at=datetime.now(UTC).isoformat(),
+            child_results=(child,),
+            flagged_issues=child.findings,
+        )
 
     def _record_corrupt_prior_surface_log(
         self,
@@ -895,10 +931,16 @@ class Orchestrator:
             inbox.unlink()
         except FileNotFoundError:
             pass
-        self._record_gate_result(artifact, gate_result, result="operator_hold")
-        self.dispatches_total.labels(
-            surface="publication-hardening-gate", result="operator_hold"
-        ).inc()
+        hold_result = (
+            "route_resource_hold"
+            if any(
+                child.name == "route_resource" and child.decision == PublicationGateDecision.HOLD
+                for child in gate_result.child_results
+            )
+            else "operator_hold"
+        )
+        self._record_gate_result(artifact, gate_result, result=hold_result)
+        self.dispatches_total.labels(surface="publication-hardening-gate", result=hold_result).inc()
         log.warning(
             "publication hardening gate held %s: %s",
             artifact.slug,
@@ -1042,6 +1084,12 @@ class Orchestrator:
             "publication_gate_fingerprint": publication_gate_fingerprint(gate_result),
             "flagged_issues": list(gate_result.flagged_issues),
             "child_results": [child.model_dump(mode="json") for child in gate_result.child_results],
+            "route_resource_admission": [
+                child.report
+                for child in gate_result.child_results
+                if child.name == "route_resource"
+            ],
+            "editorial_review_performed": gate_result.review_report is not None,
             # Register carriage warnings do not hold publication; they are kept here, with their
             # rule/level/text in the lint child above, so a human dispositions them per edition.
             "register_carriage_dispositions": [
@@ -1328,6 +1376,12 @@ class Orchestrator:
             "publication_gate_fingerprint": publication_gate_fingerprint(gate_result),
             "flagged_issues": list(gate_result.flagged_issues),
             "child_results": [child.model_dump(mode="json") for child in gate_result.child_results],
+            "route_resource_admission": [
+                child.report
+                for child in gate_result.child_results
+                if child.name == "route_resource"
+            ],
+            "editorial_review_performed": gate_result.review_report is not None,
         }
         log_path.write_text(json.dumps(record, sort_keys=True))
 

@@ -37,6 +37,7 @@ from agents.publication_bus.publisher_kit.allowlist import (
     AllowlistGate,
     load_allowlist,
 )
+from shared.publication_hardening.admission import evaluate_publication_admission
 
 try:
     import requests
@@ -107,6 +108,10 @@ def mint_or_version(
     if requests is None:
         graph_publisher_total.labels(outcome="mint-error").inc()
         raise GraphPublisherError("requests library not available")
+
+    admission = evaluate_publication_admission(GRAPH_PUBLISHER_SURFACE)
+    if not admission.allowed:
+        raise GraphPublisherError(admission.message)
 
     concept_doi_path = graph_dir / "concept-doi.txt"
     last_deposit_id_path = graph_dir / "last-deposit-id.txt"

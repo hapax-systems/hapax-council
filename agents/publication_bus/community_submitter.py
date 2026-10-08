@@ -35,6 +35,8 @@ from typing import Final
 
 from prometheus_client import Counter
 
+from shared.publication_hardening.admission import evaluate_publication_admission
+
 try:
     import requests
 except ImportError:  # pragma: no cover
@@ -186,6 +188,20 @@ class ZenodoCommunitySubmitter:
                 community=community,
                 ok=False,
                 detail="requests library not available",
+            )
+
+        if community not in HAPAX_COMMUNITY_SLUGS:
+            return SubmissionOutcome(
+                deposit_id=deposit_id,
+                community=community,
+                ok=False,
+                detail="community is outside HAPAX_COMMUNITY_SLUGS",
+            )
+        admission = evaluate_publication_admission("zenodo-community")
+        if not admission.allowed:
+            submissions_total.labels(community=community, result="route_resource_hold").inc()
+            return SubmissionOutcome(
+                deposit_id=deposit_id, community=community, ok=False, detail=admission.message
             )
 
         url = ZENODO_API_BASE + ZENODO_COMMUNITY_SUBMIT_PATH_TEMPLATE.format(deposit_id=deposit_id)

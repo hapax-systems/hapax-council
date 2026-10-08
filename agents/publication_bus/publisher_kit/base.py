@@ -50,6 +50,7 @@ from agents.publication_bus.publisher_kit.legal_name_guard import (
     assert_no_leak,
 )
 from agents.publication_bus.witness_log import append_publication_witness
+from shared.publication_hardening.admission import admission_report, evaluate_publication_admission
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ class PublisherResult:
     refused: bool = False
     error: bool = False
     detail: str = ""
+    route_resource_admission: dict[str, object] | None = None
 
 
 class Publisher(ABC):
@@ -236,6 +238,17 @@ class Publisher(ABC):
                     refused=True,
                     detail="legal-name leak detected",
                 )
+
+        admission = evaluate_publication_admission(self.surface_name)
+        if not admission.allowed:
+            log.warning("publication_bus: route/resource hold: %s", admission.reason_code)
+            if counter is not None:
+                counter.labels(surface=self.surface_name, result="route_resource_hold").inc()
+            return PublisherResult(
+                refused=True,
+                detail=admission.message,
+                route_resource_admission=admission_report(admission),
+            )
 
         # 3. Emit (subclass-specific transport)
         try:
