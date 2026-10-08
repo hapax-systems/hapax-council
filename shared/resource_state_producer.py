@@ -15,6 +15,7 @@ not a separate alarm system.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -504,13 +505,18 @@ def claim_cites_fresh_resource_fact(
     claim_text: str, bundle: dict[str, Any], *, now: datetime | None = None, window_s: int = 300
 ) -> bool:
     """First enforced obligation (D-011/OFP): a capacity/host/routing claim must cite a resource
-    ``fact_id`` that is present in the bundle and fresher than ``window_s``. Mechanically decidable."""
+    ``fact_id`` as a complete whitespace-delimited or backticked token. A citation uses that fact's
+    own observation time and cannot extend its declared freshness window. Mechanically decidable."""
     now = now or datetime.now(UTC)
     by_id = {f["fact_id"]: f for lst in (bundle.get("facts") or {}).values() for f in lst}
-    for fid, f in by_id.items():
-        if fid in claim_text:
-            return freshness_state(f["provenance"].get("observed_at"), now, window_s) in (
-                "fresh",
-                "aging",
-            )
+    for token in re.findall(r"[^\s`<>\[\](){};,!?\"']+", claim_text):
+        f = by_id.get(token)
+        if f is None:
+            continue
+        observed = _parse_iso(f["provenance"].get("observed_at"))
+        if observed is None or observed.tzinfo is None:
+            continue
+        window = min(window_s, FRESHNESS_WINDOWS_S.get(f["fact_type"], 300))
+        if 0 <= (now - observed).total_seconds() <= window:
+            return True
     return False

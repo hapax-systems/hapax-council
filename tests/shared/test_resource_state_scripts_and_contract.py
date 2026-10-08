@@ -474,6 +474,7 @@ def test_observer_metadata_reaches_the_real_reader_projection(tmp_path: Path, co
     [
         (401, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
         (403, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
+        (403, 0, b"\xff", None, "refused", "endpoint_http_refused"),
         (404, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
         (500, 0, '{"error":"MUST-NOT-CARRY"}', None, "refused", "endpoint_http_refused"),
         (
@@ -583,6 +584,29 @@ def test_observer_empty_success_is_a_live_listing(tmp_path: Path) -> None:
     ]
     assert len(endpoints) == 2
     assert all(f["state"]["value_state"] == "lit" for f in endpoints)
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError(), subprocess.TimeoutExpired("curl", 8)])
+def test_observer_subprocess_exceptions_preserve_snapshot(tmp_path, monkeypatch, failure) -> None:
+    def probe(command, **kwargs):
+        if isinstance(command, list):
+            raise failure
+        return subprocess.CompletedProcess(command, 0, stdout="")
+
+    obs = tmp_path / "cap.jsonl"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["observer", str(obs)])
+    monkeypatch.setattr(subprocess, "run", probe)
+    source = (REPO / "scripts/hapax-capacity-observer").read_text().split("<<'PY'\n", 1)[1]
+    exec(compile(source.rsplit("\nPY", 1)[0], "observer", "exec"), {})
+    rec = json.loads(obs.read_text())
+    timed_out = isinstance(failure, subprocess.TimeoutExpired)
+    assert all(value is (False if timed_out else None) for value in rec["local_endpoints"].values())
+    facts = rsp.build_bundle(observation=rec)["facts"]["declared_endpoint"]
+    assert len(facts) == 2
+    for fact in facts:
+        assert fact["state"]["value_state"] == ("absent" if timed_out else "refused")
+        assert ("LOST" in fact["state"]["reason_codes"]) is timed_out
 
 
 def test_observer_composite_metadata_is_refused_without_carrying_bodies(tmp_path: Path) -> None:

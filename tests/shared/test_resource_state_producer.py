@@ -238,6 +238,22 @@ def _metadata_facts(obs: dict) -> dict:
     }
 
 
+@pytest.mark.parametrize("age", [0, 300, 301, 901, -1])
+@pytest.mark.parametrize("suffix", ["", "/unknown"])
+def test_metadata_citation_uses_exact_field_and_own_window(age, suffix) -> None:
+    obs = _metadata_observation()
+    obs["model_metadata"]["11434"]["observed_at"] = _iso(NOW - timedelta(seconds=age))
+    bundle = rsp.build_bundle(observation=obs, now=NOW)
+    field = next(
+        f for f in bundle["facts"]["loaded_model"] if f["value"].get("field") == "context_tokens"
+    )
+    # The enclosing model is fresh: it cannot stand in for this field or an unknown child.
+    claim = f"Context from `{field['fact_id']}{suffix}`"
+    assert rsp.claim_cites_fresh_resource_fact(claim, bundle, now=NOW, window_s=600) is (
+        not suffix and 0 <= age <= 300
+    )
+
+
 def test_model_metadata_preserves_effective_context_and_quant_without_process_inference() -> None:
     facts = _metadata_facts(_metadata_observation())
     expected = {
