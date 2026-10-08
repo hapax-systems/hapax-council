@@ -98,6 +98,12 @@ class TestMuseReviewer:
         assert REPO_ROOT not in workspace.parents and workspace != REPO_ROOT
         assert "REVIEW THIS DIFF" in seen["body"]
         assert "exactly one fenced yaml code block" in seen["body"]
+        from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+        measured = reviewer_prompt_measurement(
+            ["scripts/hapax-muse-reviewer"], "REVIEW THIS DIFF", repo_root=REPO_ROOT
+        )
+        assert measured["max_prompt_bytes"] == len(seen["body"].encode())
 
     def test_prompt_above_the_measured_ceiling_is_a_route_outage(self, tmp_path: Path) -> None:
         fake, record = _fake_cli(tmp_path, "muse")
@@ -172,6 +178,12 @@ class TestVibeReviewer:
         assert argv[argv.index("--enabled-tools") + 1] == "re:^$"
         assert argv[argv.index("--max-turns") + 1] == "1"
         assert "REVIEW" in argv[argv.index("-p") + 1]
+        from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+        measured = reviewer_prompt_measurement(
+            ["scripts/hapax-vibe-reviewer"], "REVIEW", repo_root=REPO_ROOT
+        )
+        assert measured["max_prompt_bytes"] == len(argv[argv.index("-p") + 1].encode())
 
     @pytest.mark.parametrize(
         "case",
@@ -264,6 +276,14 @@ class TestLocalReviewer:
         assert request["body"]["temperature"] == 0
         assert "tools" not in request["body"]
         assert request["body"]["messages"][1]["content"] == "REVIEW"
+        from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+        measured = reviewer_prompt_measurement(
+            ["scripts/hapax-local-reviewer"], "REVIEW", repo_root=REPO_ROOT
+        )
+        assert measured["max_prompt_bytes"] == sum(
+            len(m["content"].encode()) for m in request["body"]["messages"]
+        )
         assert "exactly one fenced yaml code block" in request["body"]["messages"][0]["content"]
 
     def test_truncated_reply_is_a_route_outage_not_a_review(self, completions_server) -> None:

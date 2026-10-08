@@ -1,0 +1,70 @@
+# Vendored diff-capacity receipt: the measured ceilings behind diff_capacity in
+# registry.yaml, in repo-readable form. Artifact dispatch explicitly loads and validates this receipt;
+# PR evidence shaping remains a separate held integration; the
+# load_lens_registry function alone only parses YAML. Receipt data and this
+# configuration component do not implement standalone enforcement.
+# Over-capacity refusal is diff_capacity_config_invalid: lower configured
+# limits to the measured ceiling or perform governed remeasurement and ship
+# a new receipt together with the registry. Never inflate a cap or bypass it.
+#
+# Canonical evidence lives in the vault at 30-areas/hapax/lanebus/review-capacity/
+# (MEASUREMENT-FINAL.md is the method); this receipt pins the four source
+# artifacts by sha256. Remeasurement writes a new receipt and updates registry.yaml
+# together. Prompt limits are the rendered prompt bytes at each seat's measured
+# diff limit on the PR #4733 fixture (three repeats per size).
+receipt_schema: 1
+receipt_id: diff-capacity-receipt
+measured_at: "2026-09-28T07:58:38Z"
+source_pr: 4733
+source_merge_commit: e69b5fbb117fb46d3f0e401a45236870695ec6d1  # pragma: allowlist secret
+sources:
+  measurement_final:
+    file: 30-areas/hapax/lanebus/review-capacity/measurement-final.json
+    sha256: fdf13ffcb457c8d0ee6414e0310e4244adac63aea10d47c8b217da69c782fd8d  # pragma: allowlist secret
+  prompt_manifest:
+    file: 30-areas/hapax/lanebus/review-capacity/prompt-manifest.json
+    sha256: e1fc7a39ef9b527a9e6804d55e5b42f912607b65024907f5a90e0ae545ef17ca  # pragma: allowlist secret
+  prompt_manifest_supplement:
+    file: 30-areas/hapax/lanebus/review-capacity/prompt-manifest-supplement.json
+    sha256: 27ddc394f2789c133ed32d4c8dd9f561d7b2c6ba936585b456dded1219367ebe  # pragma: allowlist secret
+  muse_ceiling_ground_truth:
+    file: 30-areas/hapax/lanebus/review-capacity/ground-truth-muse-ceiling.json
+    sha256: a877b5eb450c616fa358752c27c7bae9de9bec2496b17b3ffa0d9a57d7184f9f  # pragma: allowlist secret
+seats:
+  claude-1:
+    limit_bytes: 319965
+    prompt_limit_bytes: 391347
+    status: measured
+    prompt_file: 30-areas/hapax/lanebus/review-capacity/prompt-320kb-claude.txt
+  codex-1:
+    limit_bytes: 319965
+    prompt_limit_bytes: 391345
+    status: measured
+    prompt_file: 30-areas/hapax/lanebus/review-capacity/prompt-320kb-codex.txt
+  gemini-1:
+    limit_bytes: 39974
+    prompt_limit_bytes: 70205
+    status: measured
+    prompt_file: 30-areas/hapax/lanebus/review-capacity/prompt-40kb-gemini.txt
+  glm-1:
+    limit_bytes: 39974
+    prompt_limit_bytes: 70199
+    status: measured
+    prompt_file: 30-areas/hapax/lanebus/review-capacity/prompt-40kb-glm.txt
+  muse-1:
+    limit_bytes: 61494
+    prompt_limit_bytes: 95534
+    status: measured
+    prompt_file: 30-areas/hapax/lanebus/review-capacity/prompt-65kb-muse.txt
+    note: >-
+      Meta Muse wrapper ceiling 96000 bytes; 95534 is the rendered prompt at the
+      61494-byte diff limit. Larger registered packets were refused pre-inference
+      (ground-truth-muse-ceiling.json).
+  vibe-1:
+    limit_bytes: 80000
+    prompt_limit_bytes: 22000
+    status: unmeasured
+    note: >-
+      Wrapper refusal ceiling, not a successful-run measurement: the wrapper
+      refused even the 40 KB fixture's wrapped prompt (70644 bytes) before
+      inference. 80000 is the required unmeasured fallback limit.

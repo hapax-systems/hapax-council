@@ -94,6 +94,15 @@ printf '```yaml\\nverdict: accept\\nfindings: []\\n```\\n'
     assert "--print" in args
     assert "Read ./review-dossier.md" in args
     assert "diff --git a/x b/x" not in args
+    from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+    measured = reviewer_prompt_measurement(
+        [str(WRAPPER)], "diff --git a/x b/x\n+change\n", repo_root=REPO_ROOT
+    )
+    args_list = args.split("\0")
+    assert measured["wrapped_prompt_bytes"] == len(prompt_copy.read_bytes()) + len(
+        args_list[args_list.index("--print") + 1].encode()
+    )
     prompt = prompt_copy.read_text(encoding="utf-8")
     assert "UNIFIED DIFF" in prompt
     assert "no repository access" in prompt

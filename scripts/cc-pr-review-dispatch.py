@@ -2329,7 +2329,7 @@ def render_artifact_reviewer_prompt(
         render_untrusted_block(
             f"Artifact file {entry['path']}",
             contents[entry["path"]],
-            limit=MAX_ARTIFACT_CHARS + 500,
+            limit=len(contents[entry["path"]]) + 1,
         )
         for entry in manifest
     )
@@ -2349,11 +2349,11 @@ Missing evidence is a finding, not an implied waiver. Apply every other lens unc
 
 {render_untrusted_block("Declared review scope", scope_text, limit=len(scope_text) + 1)}
 
-{render_untrusted_block("Artifact metadata", metadata, limit=20_000)}
+{render_untrusted_block("Artifact metadata", metadata, limit=len(metadata) + 1)}
 
 Apply EVERY lens charter below. Address every checklist item explicitly (pass / finding / NA).
 
-{render_untrusted_block("Linked cc-task note", task_note_text)}
+{render_untrusted_block("Linked cc-task note", task_note_text, limit=len(task_note_text) + 1)}
 
 # Lens charters ({", ".join(lenses)})
 
@@ -4762,6 +4762,7 @@ def review_artifact(
     wake_dir: Path = DEFAULT_WAKE_DIR,
     send_runner: Any = None,
     registry_path: Path | None = None,
+    diff_capacity_receipt_path: Path | None = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
@@ -4810,6 +4811,17 @@ def review_artifact(
             "task_id": task_id,
             "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
         }
+    try:
+        review_team.validate_diff_capacity_receipt(
+            registry, review_team.load_diff_capacity_receipt(diff_capacity_receipt_path)
+        )
+    except review_team.DiffCapacityConfigError as exc:
+        return {
+            "status": "diff_capacity_config_invalid",
+            "task_id": task_id,
+            "reason": str(exc),
+            "next_action": "repair configured capacity against its measured receipt and retry",
+        }
     if route_blocked_families is None:
         route_blocks = _task_scoped_paid_review_route_blocked_families(
             registry, route_blocks, [task_id], now_iso=now_iso
@@ -4834,32 +4846,6 @@ def review_artifact(
             outage_witness=inputs.outage_witness,
             route_blocked_families=route_blocks,
         )
-
-    if not force:
-        try:
-            existing = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
-            existing = None
-        if isinstance(existing, dict) and existing.get("review_scope") == review_scope:
-            # Validity pins the dossier to these bytes (stale head blocks), so it alone decides.
-            blockers = review_team.review_dossier_validity_blockers(
-                frontmatter,
-                note_path,
-                pr_head_sha=head_sha,
-                changed_files=files,
-                changed_file_count=len(files),
-                registry=registry,
-                outage_state_path=FAMILY_OUTAGE_STATE,
-                route_blocked_families=route_blocks,
-            )
-            if not blockers:
-                return {
-                    "status": "skipped_fresh",
-                    "task_id": task_id,
-                    "dossier_path": str(dossier_path),
-                    "review_team_verdict": existing.get("review_team_verdict"),
-                    "side_effects": side_effects(existing) if apply else {},
-                }
 
     lenses = review_team.lenses_for_files(files, registry)
     team_class = artifact_team_class(frontmatter, files, registry)
@@ -4894,16 +4880,6 @@ def review_artifact(
     plan["quorum_required"] = constitution.quorum_required
     plan["seats"] = [{"id": seat.id, "family": seat.family} for seat in constitution.seats]
     plan["constitution_notes"] = list(constitution.notes)
-    if not apply:
-        return {"status": "planned", "plan": plan}
-
-    # These bytes are being reviewed now. A review-team receipt for other bytes must not stay
-    # in place to close the row: a vault-only row has no merged-head check behind the receipt.
-    receipt_path = acceptance_receipt_path(note_path, task_id)
-    if receipt_path.exists():
-        archive_stale_review_team_receipt(
-            receipt_path, task_id, head_sha, current_scope=review_scope
-        )
     try:
         source_frontmatter, hash_task_id, hash_note = review_task_hash_frontmatter_source(
             note_path, frontmatter
@@ -4957,6 +4933,79 @@ def review_artifact(
     # build_artifact_manifest refuses an oversize set rather than truncating it, so the
     # delivered review payload is whole by construction (full == delivered).
     artifact_payload_bytes = sum(len(text.encode("utf-8")) for text in contents.values())
+    # Measure the complete common evidence at the actual wrapper text boundary before
+    # spending or changing any acceptance evidence. A non-fit narrows to refusal.
+    from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+    family_cfgs = {entry["family"]: entry for entry in review_team.review_family_entries(registry)}
+    admission = {}
+    try:
+        for seat, prompt in zip(constitution.seats, prompts, strict=True):
+            capacity = review_team.seat_diff_capacity(seat.id, registry)
+            measured = reviewer_prompt_measurement(
+                list(family_cfgs[seat.family]["reviewer_command"]), prompt, repo_root=REPO_ROOT
+            )
+            admission[seat.id] = {
+                **measured,
+                "prompt_limit_bytes": capacity["prompt_limit_bytes"],
+                "fits": measured["max_prompt_bytes"] <= capacity["prompt_limit_bytes"],
+            }
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return {
+            "status": "diff_capacity_config_invalid",
+            "task_id": task_id,
+            "reason": str(exc),
+            "next_action": "repair the declared wrapper prompt measurement and retry",
+        }
+    plan["artifact_payload_bytes"] = artifact_payload_bytes
+    plan["prompt_admission"] = admission
+    plan["binding_prompt_limit_bytes"] = min(
+        row["prompt_limit_bytes"] for row in admission.values()
+    )
+    if not all(row["fits"] for row in admission.values()):
+        return {
+            "status": "prompt_capacity_exceeded",
+            "task_id": task_id,
+            "plan": plan,
+            "next_action": "provide a complete fitting artifact or an admitted equivalent composition; no review was sent",
+        }
+    if not apply:
+        return {"status": "planned", "plan": plan}
+
+    if not force:
+        try:
+            existing = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            existing = None
+        if isinstance(existing, dict) and existing.get("review_scope") == review_scope:
+            # Validity pins the dossier to these bytes (stale head blocks), so it alone decides.
+            blockers = review_team.review_dossier_validity_blockers(
+                frontmatter,
+                note_path,
+                pr_head_sha=head_sha,
+                changed_files=files,
+                changed_file_count=len(files),
+                registry=registry,
+                outage_state_path=FAMILY_OUTAGE_STATE,
+                route_blocked_families=route_blocks,
+            )
+            if not blockers:
+                return {
+                    "status": "skipped_fresh",
+                    "plan": plan,
+                    "task_id": task_id,
+                    "dossier_path": str(dossier_path),
+                    "review_team_verdict": existing.get("review_team_verdict"),
+                    "side_effects": side_effects(existing) if apply else {},
+                }
+
+    # These bytes are being reviewed now. A review-team receipt for other bytes must not stay
+    # in place to close the row: a vault-only row has no merged-head check behind the receipt.
+    receipt_path = acceptance_receipt_path(note_path, task_id)
+    if receipt_path.exists():
+        archive_stale_review_team_receipt(
+            receipt_path, task_id, head_sha, current_scope=review_scope
+        )
     reviews = dispatch_reviews(
         constitution,
         prompts,
@@ -4992,6 +5041,7 @@ def review_artifact(
         "manifest": manifest,
         "lineage": lineage,
     }
+    dossier["prompt_admission"] = admission
     dossier["family_substitution"] = substitution
     dossier["review_task_hash"] = task_hash
     dossier["review_task_hash_source_task_id"] = hash_task_id

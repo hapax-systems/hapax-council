@@ -6984,6 +6984,180 @@ def _review_artifact(
     return result, kwargs["reviewer_runner"], note, files
 
 
+class TestArtifactPromptCapacity:
+    @pytest.mark.parametrize("offset", [-1, 0])
+    def test_final_wrapper_boundary_and_plan_apply_agree(self, tmp_path: Path, offset: int) -> None:
+        from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+        root, vault, note, files = _artifact_setup(tmp_path)
+        registry = dispatch.review_team.load_lens_registry()
+        registry["families"] = [
+            r for r in registry["families"] if r["family"] in {"gemini", "codex", "muse"}
+        ]
+        registry["route_backed_review_families"] = []
+        config = tmp_path / "registry.yaml"
+        config.write_text(yaml.safe_dump(registry))
+        kwargs = _artifact_kwargs(tmp_path, vault, root, registry_path=config, apply=False)
+        first = dispatch.review_artifact("vault-row", files, **kwargs)
+        measured = first["plan"]["prompt_admission"]["gemini-1"]
+        assert measured["wrapped_prompt_bytes"] > measured["rendered_prompt_bytes"]
+        assert measured["max_prompt_bytes"] == measured["wrapped_prompt_bytes"]
+        limit = measured["max_prompt_bytes"] + offset
+        registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = limit
+        config.write_text(yaml.safe_dump(registry))
+        plan = dispatch.review_artifact("vault-row", files, **kwargs)
+        runner = RecordingReviewers()
+        applied = dispatch.review_artifact(
+            "vault-row", files, **{**kwargs, "apply": True, "reviewer_runner": runner}
+        )
+        if offset < 0:
+            assert plan["status"] == applied["status"] == "prompt_capacity_exceeded"
+            assert runner.invocations == []
+            assert not note.with_suffix(".acceptance.yaml").exists()
+        else:
+            assert plan["status"] == "planned" and applied["status"] == "dispatched"
+            admission = applied["dossier"]["prompt_admission"]
+            assert admission == plan["plan"]["prompt_admission"]
+            assert admission["gemini-1"]["max_prompt_bytes"] == limit
+            for seat_id, family, prompt in runner.invocations:
+                cfg = next(row for row in registry["families"] if row["family"] == family)
+                actual = reviewer_prompt_measurement(
+                    list(cfg["reviewer_command"]), prompt, repo_root=REPO_ROOT
+                )
+                assert all(admission[seat_id][key] == value for key, value in actual.items())
+                for path in files:
+                    assert all(line in prompt for line in path.read_text().splitlines())
+
+    @pytest.mark.parametrize(
+        "fault", ["missing", "schema", "ceiling", "citation", "seat", "wrapper"]
+    )
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_missing_or_drifted_capacity_proof_refuses(
+        self, tmp_path: Path, fault: str, apply: bool
+    ) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        registry = dispatch.review_team.load_lens_registry()
+        receipt = dispatch.review_team.load_diff_capacity_receipt()
+        if fault == "schema":
+            receipt["receipt_schema"] = 2
+        elif fault == "ceiling":
+            registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] += 1
+        elif fault == "citation":
+            registry["diff_capacity"]["default"]["measurement_sha256"] = "0" * 64
+        elif fault == "seat":
+            del receipt["seats"]["gemini-1"]
+        elif fault == "wrapper":
+            for row in registry["families"]:
+                row["reviewer_command"] = ["unsupported-reviewer"]
+            registry["route_backed_review_families"] = []
+        config = tmp_path / "registry.yaml"
+        proof = tmp_path / "receipt.yaml"
+        config.write_text(yaml.safe_dump(registry))
+        if fault != "missing":
+            proof.write_text(yaml.safe_dump(receipt))
+        runner = RecordingReviewers()
+        before = {p.name: p.read_bytes() for p in note.parent.iterdir()}
+        result = dispatch.review_artifact(
+            "vault-row",
+            files,
+            **_artifact_kwargs(
+                tmp_path,
+                vault,
+                root,
+                apply=apply,
+                registry_path=config,
+                diff_capacity_receipt_path=proof,
+                reviewer_runner=runner,
+            ),
+        )
+        assert result["status"] == "diff_capacity_config_invalid"
+        assert runner.invocations == []
+        assert before == {p.name: p.read_bytes() for p in note.parent.iterdir()}
+
+    def test_whole_note_metadata_and_exclusions_are_common_evidence(self, tmp_path: Path) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _declare_artifact_scope(note, root, files, kind="bounded_unit")
+        note.write_text(note.read_text() + "N" * 65_000 + "NOTE-END")
+        fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+        manifest, contents = dispatch.build_artifact_manifest(files, root)
+        lineage = {"long": "L" * 22_000 + "METADATA-END"}
+        scope = dispatch.review_artifact_manifest.build_review_scope(fm, manifest)
+        common = []
+        for family in ("gemini", "codex", "muse"):
+            prompt = dispatch.render_artifact_reviewer_prompt(
+                seat=dispatch.review_team.Seat(f"{family}-1", family),
+                task_id="vault-row",
+                head_sha=dispatch.artifact_head_sha(manifest),
+                team_class="t2_standard",
+                lenses=(),
+                charters="all-charters",
+                task_note_text=note.read_text(),
+                manifest=manifest,
+                lineage=lineage,
+                contents=contents,
+                review_scope=scope,
+            )
+            assert "NOTE-END" in prompt and "METADATA-END" in prompt
+            assert "Remaining source units and whole-source composition" in prompt
+            common.append(prompt.split("\n", 1)[1])
+        assert len(set(common)) == 1
+
+    def test_fresh_receipt_replay_rechecks_capacity(self, tmp_path: Path) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        before = {p.name: p.read_bytes() for p in note.parent.iterdir()}
+        registry = dispatch.review_team.load_lens_registry()
+        for row in registry["diff_capacity"]["seats"].values():
+            row["prompt_limit_bytes"] = 1
+        config = tmp_path / "registry.yaml"
+        config.write_text(yaml.safe_dump(registry))
+        runner = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "vault-row",
+            files,
+            **_artifact_kwargs(
+                tmp_path,
+                vault,
+                root,
+                registry_path=config,
+                reviewer_runner=runner,
+            ),
+        )
+        assert result["status"] == "prompt_capacity_exceeded"
+        assert runner.invocations == []
+        assert before == {p.name: p.read_bytes() for p in note.parent.iterdir()}
+
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_under_generic_cap_over_final_seat_cap_refuses_without_mutation(
+        self, tmp_path: Path, apply: bool
+    ) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        files[0].write_text("é" * 40_000)
+        assert sum(len(p.read_text()) for p in files) < dispatch.MAX_ARTIFACT_CHARS
+        before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in note.parent.iterdir()}
+        runner = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "vault-row",
+            files,
+            **_artifact_kwargs(
+                tmp_path,
+                vault,
+                root,
+                apply=apply,
+                reviewer_runner=runner,
+                route_blocked_families={
+                    f: ("unavailable",) for f in ("claude", "codex", "local", "vibe")
+                },
+            ),
+        )
+        assert result["status"] == "prompt_capacity_exceeded"
+        assert runner.invocations == []
+        assert before == {
+            p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in note.parent.iterdir()
+        }
+
+
 class TestArtifactReviewScope:
     def test_missing_declaration_never_dispatches(self, tmp_path: Path) -> None:
         root, vault, note, files = _artifact_setup(tmp_path)
