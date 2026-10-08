@@ -52,6 +52,7 @@ from agents.publication_bus.publisher_kit.allowlist import (
     AllowlistGate,
     load_allowlist,
 )
+from agents.publication_bus.publisher_kit.base import local_preparation
 from shared.stripe_payment_link_receive_only_rail import (
     PaymentEvent,
     PaymentEventKind,
@@ -113,6 +114,7 @@ class StripePaymentLinkPublisher(Publisher):
         ]
         return "\n".join(lines)
 
+    @local_preparation
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
         result = write_manifest_entry(self.output_dir, payload, log=log)
         if result.ok and payload.target == PaymentEventKind.CUSTOMER_SUBSCRIPTION_DELETED.value:

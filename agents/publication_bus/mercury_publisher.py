@@ -51,6 +51,7 @@ from agents.publication_bus.publisher_kit.allowlist import (
     AllowlistGate,
     load_allowlist,
 )
+from agents.publication_bus.publisher_kit.base import local_preparation
 from shared.mercury_receive_only_rail import (
     MercuryEventKind,
     MercuryTransactionEvent,
@@ -108,6 +109,7 @@ class MercuryPublisher(Publisher):
         ]
         return "\n".join(lines)
 
+    @local_preparation
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
         return write_manifest_entry(self.output_dir, payload, log=log)
 

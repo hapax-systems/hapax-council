@@ -43,6 +43,7 @@ from agents.publication_bus.publisher_kit.allowlist import (
     AllowlistGate,
     load_allowlist,
 )
+from agents.publication_bus.publisher_kit.base import local_preparation
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class RefusalAnnexPublisher(Publisher):
     def __init__(self, *, output_dir: Path = DEFAULT_ANNEX_OUTPUT_DIR) -> None:
         self.output_dir = output_dir
 
+    @local_preparation
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
         """Write the annex markdown to the per-slug output path."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
