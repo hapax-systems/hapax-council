@@ -649,3 +649,63 @@ def test_usage_cli_mixed_event_totals_and_dominant_response_order(monkeypatch, c
     assert latest["validity"]["observed_at_epoch"] == 1002
     assert latest["validity"]["valid_until_epoch"] == 1062
     assert latest["validity"]["freshness"] == "stale"
+
+
+def test_emitted_outcomes_and_transports_reach_usage_counters(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sys, "argv", ["cc-pr-autoqueue.py"])
+    monkeypatch.setattr(observation.time, "time", lambda: 1000)
+    for cmd, code, output in [
+        (["gh", "api", "repos/owner/repo/pulls"], 0, response()),
+        (["gh", "api", "graphql"], 1, response(resource="graphql", status=403)),
+        (["gh", "pr", "list", "--json", "number"], 0, "[]"),
+    ]:
+        observation.run_gh_observed(
+            lambda actual, **kw: subprocess.CompletedProcess(actual, code, output, ""),
+            cmd,
+            repo_root=tmp_path,
+        )
+    for failure in [FileNotFoundError("missing gh"), subprocess.TimeoutExpired(["gh"], 1)]:
+
+        def failing_runner(*args, **kwargs):
+            raise failure
+
+        with pytest.raises(type(failure)):
+            observation.run_gh_observed(
+                failing_runner, ["gh", "api", "rate_limit"], repo_root=tmp_path
+            )
+    observation.observe_cache_hit()
+    emitted = capsys.readouterr().err
+    events = [
+        json.loads(line.removeprefix(observation.LOG_PREFIX)) for line in emitted.splitlines()
+    ]
+    assert [event.get("outcome") for event in events] == [
+        "success",
+        "failed",
+        "success",
+        "launch_failed",
+        "timeout",
+        None,
+    ]
+    assert [event["transport"] for event in events] == [
+        "rest",
+        "graphql",
+        "cli",
+        "rest",
+        "rest",
+        "rest",
+    ]
+    assert [event["kind"] for event in events] == ["command"] * 5 + ["cache_hit"]
+    assert [event["command_started"] for event in events] == [True, True, True, False, True, False]
+    assert [event["http_responses_observed"] for event in events] == [1, 1, 0, 0, 0, 0]
+    assert all(event["request_count_exact"] is False for event in events)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(emitted))
+    monkeypatch.setattr(observation.time, "time", lambda: 1100)
+    assert github_pr_status.main(["usage", "--since", "990", "--until", "1010"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["ignored_lines"] == 0
+    fields = ("commands_started", "http_responses_observed", "cache_hits", "launch_failures")
+    assert tuple(sum(row[field] for row in report["callers"]) for field in fields) == (4, 2, 1, 1)
+    failures = next(
+        row for row in report["callers"] if row["transport"] == "rest" and row["pool"] is None
+    )
+    assert tuple(failures[field] for field in fields) == (1, 0, 1, 1)
