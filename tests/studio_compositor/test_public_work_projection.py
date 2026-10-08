@@ -357,6 +357,103 @@ def test_fully_qualified_synthetic_gate_matches_existing_schema():
     )
 
 
+@pytest.fixture
+def render_scoped_claim(monkeypatch):
+    """Observe actual draw calls and pixels for schema-valid, separately scoped claims."""
+    import cairo
+
+    from agents.studio_compositor import text_render
+    from agents.studio_compositor.homage.bitchx import BITCHX_PACKAGE
+    from agents.studio_compositor.public_work_projection import read_public_work
+
+    assert text_render._HAS_PANGO, "Scope preservation requires actual Pango rendering"
+    monkeypatch.setattr(ct, "get_active_package", lambda: BITCHX_PACKAGE)
+    texts = []
+    real = text_render.render_text
+
+    def draw(cr, style, x=0, y=0):
+        texts.append(style.text)
+        return real(cr, style, x, y)
+
+    monkeypatch.setattr(text_render, "render_text", draw)
+
+    def render(scope, permitted_scope, *, height=400):
+        source, gate = fixture_input()
+        gate["claim"].update(
+            claim_text="Observed all checks passing.",
+            uncertainty="Measurement error is possible.",
+            scope_limit=scope,
+        )
+        gate["permitted_claim_shape"]["scope_limit"] = permitted_scope
+        record = project(source, gate)
+        assert record is not None
+        assert read_public_work(record, now=NOW) is not None
+        texts.clear()
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 512, height)
+        ct._render_public_work(cairo.Context(surface), 512, height, [record])
+        surface.flush()
+        return list(texts), bytes(surface.get_data())
+
+    return render
+
+
+@pytest.mark.parametrize("changed_scope", ["claim", "permitted"])
+def test_material_scope_changes_drawn_text_and_pixels(render_scoped_claim, changed_scope):
+    narrow = "One constructed example only; no deployed behavior or real users examined."
+    broader = "Ten constructed examples only; no deployed behavior or real users examined."
+    fixed = "Only synthetic checks; no conclusion about production readiness."
+    first = (narrow, fixed) if changed_scope == "claim" else (fixed, narrow)
+    second = (broader, fixed) if changed_scope == "claim" else (fixed, broader)
+    texts, pixels = render_scoped_claim(*first)
+    other_texts, other_pixels = render_scoped_claim(*second)
+    assert "Observed all checks passing." in texts
+    assert f"Scope: {first[0]}" in texts
+    assert f"Permitted scope: {first[1]}" in texts
+    assert f"Scope: {second[0]}" in other_texts
+    assert f"Permitted scope: {second[1]}" in other_texts
+    assert texts != other_texts
+    assert pixels != other_pixels
+
+
+def test_identical_scopes_are_drawn_once(render_scoped_claim):
+    scope = "One constructed example only; no deployed behavior or real users examined."
+    texts, _ = render_scoped_claim(scope, scope, height=256)
+    assert "Observed all checks passing." in texts
+    assert texts.count(f"Scope: {scope}") == 1
+    assert sum(scope in text for text in texts) == 1
+
+
+def test_distinct_scope_qualification_is_not_deduplicated_by_prefix(render_scoped_claim):
+    scope = "Synthetic checks only."
+    permitted = f"{scope} No conclusion about production readiness."
+    texts, _ = render_scoped_claim(scope, permitted)
+    assert f"Scope: {scope}" in texts
+    assert f"Permitted scope: {permitted}" in texts
+
+
+@pytest.mark.parametrize("oversize_scope", ["claim", "permitted"])
+def test_oversize_qualified_content_suppresses_claim(render_scoped_claim, oversize_scope):
+    short = "Synthetic checks only."
+    long = "No deployed behavior or real users examined. " * 80
+    scopes = (long, short) if oversize_scope == "claim" else (short, long)
+    texts, _ = render_scoped_claim(*scopes, height=256)
+    assert len(texts) == 1 and "content does not fit" in texts[0]
+    assert "Observed all checks passing." not in texts
+
+
+@pytest.mark.parametrize("oversize_scope", ["claim", "permitted"])
+def test_renderer_text_cap_cannot_discard_material_scope(render_scoped_claim, oversize_scope):
+    from agents.studio_compositor.text_render import MAX_PANGO_TEXT_CHARS
+
+    short = "Synthetic checks only."
+    # Invisible prefixes consume the renderer's character budget without height.
+    long = "\u200b" * MAX_PANGO_TEXT_CHARS + "No deployed behavior or real users examined."
+    scopes = (long, short) if oversize_scope == "claim" else (short, long)
+    texts, _ = render_scoped_claim(*scopes)
+    assert len(texts) == 1 and "content does not fit" in texts[0]
+    assert "Observed all checks passing." not in texts
+
+
 def test_renderer_keeps_uncertainty_and_correction_or_suppresses_claim(monkeypatch):
     import cairo
 

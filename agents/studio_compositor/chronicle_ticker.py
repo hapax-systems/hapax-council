@@ -231,7 +231,12 @@ def _collect_public_work(now: float) -> list[ChronicleEvent]:
 def _render_public_work(
     cr: cairo.Context, width: int, height: int, events: list[ChronicleEvent]
 ) -> None:
-    from agents.studio_compositor.text_render import TextStyle, measure_text, render_text
+    from agents.studio_compositor.text_render import (
+        MAX_PANGO_TEXT_CHARS,
+        TextStyle,
+        measure_text,
+        render_text,
+    )
 
     pkg = get_active_package() or _fallback_package()
     font = _bitchx_font_description(pkg, 12)
@@ -241,13 +246,20 @@ def _render_public_work(
     if events:
         event = events[0]
         public = event.payload["public_event"]
-        claim = event.payload["grounding_gate_result"]["claim"]
+        grounding = event.payload["grounding_gate_result"]
+        claim = grounding["claim"]
+        permitted_scope = grounding["permitted_claim_shape"]["scope_limit"]
         when = datetime.fromtimestamp(event.effective_valid_time, tz=UTC).strftime(
             "%Y-%m-%d %H:%M:%S UTC"
         )
         lines += [
             (f"Occurred {when}", muted),
             (claim["claim_text"], content),
+            (f"Scope: {claim['scope_limit']}", content),
+        ]
+        if permitted_scope != claim["scope_limit"]:
+            lines.append((f"Permitted scope: {permitted_scope}", content))
+        lines += [
             (f"Uncertainty: {claim['uncertainty']}", muted),
             (f"Evidence: {public['public_url']}", content),
             (f"Correction: {claim['refusal_correction_path']['correction_event_ref']}", content),
@@ -261,8 +273,11 @@ def _render_public_work(
         for text, colour in lines
     ]
     sizes = [measure_text(cr, style) for style in styles]
-    if sum(h + 4 for _, h in sizes) > height - 16:
-        # Never truncate away uncertainty or a correction while retaining the claim.
+    if (
+        any(len(style.text) > MAX_PANGO_TEXT_CHARS for style in styles)
+        or sum(h + 4 for _, h in sizes) > height - 16
+    ):
+        # Suppress the claim if any qualification would be clipped or text-capped.
         styles = [
             TextStyle(
                 text="[public work · evidence] (content does not fit)",
