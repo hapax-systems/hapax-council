@@ -2355,6 +2355,7 @@ def _receipt_measures_capability_scores(
     unmeasured_score_blockers = {
         "capability_scores_asserted_not_measured",
         "capabilityio_measurement_absent",
+        "gpt61_quality_measurement_absent",
     }
     return not (capability_blockers | top_blockers) & unmeasured_score_blockers
 

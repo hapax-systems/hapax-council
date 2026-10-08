@@ -47,8 +47,8 @@ try:
         raise ValueError("missing concrete identity arguments")
     if not isinstance(descriptor, dict) or descriptor.get("model_id") != values["model"] or descriptor.get("effort") != values["model_reasoning_effort"]:
         raise ValueError("descriptor and invocation disagree")
-except (ValueError, TypeError, KeyError):
-    sys.exit("refusing malformed descriptor arguments; next action: restore the selected release resolver and retry")
+except (ValueError, TypeError, KeyError) as exc:
+    sys.exit(f"refusing malformed descriptor arguments ({exc}); next action: restore the selected release resolver and retry")
 print(json.dumps(args))
 print(json.dumps(descriptor))
 print("\n".join(args))

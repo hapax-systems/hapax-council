@@ -146,6 +146,10 @@ def test_gpt61_shadow_generic_receipts_never_clear_measurement_holds(evidence) -
     candidate = PlatformCapabilityRoute.model_validate(route)
     assert holds <= set(candidate.blocked_reasons)
     assert candidate.route_state == "blocked"
+    for score in candidate.capability_scores.model_dump().values():
+        assert score["score"] == score["confidence"] == 0
+        assert score["observed_at"] is None
+        assert score["evidence_refs"] == []
     payload = registry.model_dump(mode="json")
     payload["routes"] = [
         route if r["route_id"] == route["route_id"] else r for r in payload["routes"]

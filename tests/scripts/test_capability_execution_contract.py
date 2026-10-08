@@ -149,6 +149,10 @@ def test_gpt61_shadow_shell_neutralizes_inherited_fast(tmp_path, extra):
         'model_provider="other"',
         'profile="trial"',
         'model_providers={openai={base_url="http://127.0.0.1:1"}}',
+        'openai_base_url="http://127.0.0.1:1"',
+        'chatgpt_base_url="http://127.0.0.1:1"',
+        '"openai_base_url"="http://127.0.0.1:1"',
+        "'chatgpt_base_url'='http://127.0.0.1:1'",
     ],
 )
 def test_gpt61_shadow_config_forms_refuse_before_endpoint(tmp_path, form, setting):
@@ -184,7 +188,12 @@ def test_gpt61_shadow_feature_flag_refused(tmp_path, extra):
 
 
 def test_gpt61_shadow_guard_preserves_other_routes_fast_semantics():
-    for extra in (["-c", 'service_tier="fast"'], ["--enable", "fast_mode"]):
+    for extra in (
+        ["-c", 'service_tier="fast"'],
+        ["--enable", "fast_mode"],
+        ["-c", 'openai_base_url="http://127.0.0.1:1"'],
+        ["-c", 'chatgpt_base_url="http://127.0.0.1:1"'],
+    ):
         reject_codex_identity_overrides(extra, route_id="codex.headless.full")
 
 
@@ -230,6 +239,11 @@ def test_gpt61_shadow_shell_rejects_corrupt_binding(tmp_path, monkeypatch, capsy
     assert result.returncode == 9, result.stdout + result.stderr
     assert not result.stdout
     assert not (tmp_path / "fake-native.called").exists()
+    assert "next action: restore the selected release resolver and retry" in result.stderr
+    if defect == "json_duplicate":
+        assert "duplicate key" in result.stderr
+    elif defect not in {"extra", "missing"}:
+        assert "target descriptor and invocation disagree" in result.stderr
 
 
 @pytest.mark.parametrize(

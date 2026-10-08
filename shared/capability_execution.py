@@ -98,7 +98,14 @@ def reject_codex_identity_overrides(args: list[str], *, route_id: str = "") -> N
             protected = {"model", "model_reasoning_effort", "model_provider", "profile"}
             if target:
                 # Parent table assignments can replace any bound child setting.
-                protected |= {"service_tier", "features", "profiles", "model_providers"}
+                protected |= {
+                    "service_tier",
+                    "features",
+                    "profiles",
+                    "model_providers",
+                    "openai_base_url",
+                    "chatgpt_base_url",
+                }
             if any(part in protected for part in key.split(".")):
                 raise ExecutionIdentityError(
                     "refusing execution identity config override; remedy: edit the governed "
