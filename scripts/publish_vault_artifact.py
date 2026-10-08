@@ -3,13 +3,13 @@
 
 Operator-facing CLI for the FULL_AUTO publish path. Reads a markdown file
 with YAML frontmatter from the Obsidian vault, constructs a
-``PreprintArtifact`` from it, enforces ``Publication-Allowed`` frontmatter,
+``PreprintArtifact`` from it, verifies artifact-bound clearance and gate receipts,
 marks allowed artifacts ``APPROVED``, and writes the JSON to
 ``$HAPAX_STATE/publish/inbox/{slug}.json``. The publish_orchestrator service
 picks it up on the next 30s tick and fans out through the operator-supplied
 ``--surfaces`` list, or the CLI default, after policy allowlist validation.
 
-## Frontmatter contract
+## Legacy embedded-clearance frontmatter contract
 
 The publication gate requires explicit clearance and durable gate receipts:
 
@@ -41,7 +41,22 @@ Optional:
   author_model:      str        # reviewer author-model hint
   doi:               str        # for cross-citation
 
-## Approval semantics
+## Immutable preparation and external clearance
+
+A newly prepared immutable draft may omit both Publication-Allowed and
+publication_gate_receipts. Obtain signed independent review of its exact full
+file/path, with the existing task public_gate_authority fields binding its
+projection, target surfaces, required gates and authorized receipt refs. Keep
+the gate-to-ref declaration in a separate YAML map; it is a mint destination
+plan, not a claim of existing receipts. Use the minter's --receipt-map option
+only after acceptance, then this CLI's --review-task and --receipt-map options.
+The source bytes never change. External mode verifies the current signed
+independent acceptance AND every real same-head gate receipt before approval.
+Any explicit clearance field (including false) or embedded receipt map is
+refused in this mode; the legacy true-clearance path remains available.
+No map or signed acceptance alone can enqueue an artifact.
+
+## Approval semantics (legacy embedded-clearance mode)
 
 This script marks the artifact ``APPROVED`` directly only when frontmatter
 explicitly allows publication. The vault is the operator's editing surface;
@@ -546,19 +561,14 @@ def _assert_publication_gate_receipts(
         )
 
 
-def _build_artifact(
+def _prepare_artifact(
     *,
     body_md: str,
     frontmatter: dict,
     surfaces: list[str],
-    approver: str,
     source_path: Path | None = None,
 ) -> PreprintArtifact:
-    if not _publication_allowed(frontmatter):
-        raise PublicationGateError(
-            "Publication-Allowed must be explicitly true; next action: hold the draft until "
-            "Claim Verification Council clearance is recorded"
-        )
+    """Construct the existing DRAFT representation, without claiming clearance or writing it."""
     _assert_target_surfaces_allowed(surfaces)
 
     title = _optional_string(_frontmatter_value(frontmatter, "title"))
@@ -605,8 +615,96 @@ def _build_artifact(
     if publication_gate_override is not None:
         kwargs["publication_gate_override"] = publication_gate_override
 
-    artifact = PreprintArtifact(**kwargs)
-    artifact.mark_approved(by_referent=approver)
+    return PreprintArtifact(**kwargs)
+
+
+def _assert_external_clearance_source(frontmatter: dict) -> None:
+    # Absence is eligible for external review; false/withheld is an explicit veto.
+    # Reject every spelling, including null and malformed values, and mixed receipt sources.
+    keys = {str(key).casefold() for key in frontmatter}
+    if keys & {
+        "publication-allowed",
+        "publication_allowed",
+        "publication_gate_receipts",
+        "publication-gate-receipts",
+    } or "publication_gate_receipts" in (
+        _optional_mapping(frontmatter.get("publication_gate_context")) or {}
+    ):
+        raise PublicationGateError(
+            "publication_external_mixed_clearance; next action: prepare a new immutable "
+            "draft without clearance or receipt claims and obtain exact-byte review"
+        )
+
+
+def _read_receipt_map(path: Path) -> dict[str, str]:
+    """Read only a gate-to-ref declaration. A map is not proof that receipts exist."""
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise PublicationGateError("receipt map unreadable; next action: repair the map") from exc
+    if (
+        not isinstance(data, dict)
+        or not data
+        or any(
+            not isinstance(k, str) or not k.strip() or not isinstance(v, str) or not v.strip()
+            for k, v in data.items()
+        )
+    ):
+        raise PublicationGateError("receipt map malformed; next action: supply gate-to-ref strings")
+    return data
+
+
+def _build_artifact(
+    *,
+    body_md: str,
+    frontmatter: dict,
+    surfaces: list[str],
+    approver: str,
+    source_path: Path | None = None,
+    review_task: str | None = None,
+    receipt_refs: Mapping[str, str] | None = None,
+) -> PreprintArtifact:
+    external = review_task is not None or receipt_refs is not None
+    if external:
+        if not review_task or receipt_refs is None or source_path is None:
+            raise PublicationGateError(
+                "external clearance requires review task, receipt map and vault source path"
+            )
+        _assert_external_clearance_source(frontmatter)
+    elif not _publication_allowed(frontmatter):
+        raise PublicationGateError(
+            "Publication-Allowed must be explicitly true; next action: hold the draft until "
+            "Claim Verification Council clearance is recorded"
+        )
+    artifact = _prepare_artifact(
+        body_md=body_md, frontmatter=frontmatter, surfaces=surfaces, source_path=source_path
+    )
+    if external:
+        # Reuse the minter's signed exact-subject, independent-quorum and authorization
+        # checks. Import at use because its CLI also uses this module's pure parser.
+        from scripts.mint_public_gate_receipts import MintError, validate_artifact_acceptance
+
+        try:
+            _, _, signed_bindings, declared = validate_artifact_acceptance(
+                task_id=review_task,
+                artifact=source_path,
+                artifact_root=VAULT_ARTIFACT_ROOT,
+                surfaces=surfaces,
+                receipt_refs=receipt_refs,
+            )
+        except (MintError, PublicationGateError) as exc:
+            raise PublicationGateError(f"external publication clearance refused: {exc}") from exc
+        observed = _publication_gate_receipt_bindings(artifact)
+        observed["target_surfaces"] = list(observed["target_surfaces"])
+        if observed != signed_bindings:
+            raise PublicationGateError(
+                "external publication projection differs from signed subject"
+            )
+        frontmatter = {**frontmatter, "publication_gate_receipts": declared}
+        artifact.publication_gate_context = {
+            **(artifact.publication_gate_context or {}),
+            "publication_gate_receipts": declared,
+        }
     expected_head = _expected_public_gate_head(source_path)
     if expected_head is None:
         raise PublicationGateError(
@@ -620,6 +718,7 @@ def _build_artifact(
         bindings=_publication_gate_receipt_bindings(artifact),
         expected_head_sha=expected_head,
     )
+    artifact.mark_approved(by_referent=approver)
     return artifact
 
 
@@ -790,6 +889,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print artifact JSON to stdout without writing to inbox",
     )
+    parser.add_argument(
+        "--review-task", help="Exact signed review dossier task for external clearance"
+    )
+    parser.add_argument(
+        "--receipt-map", type=Path, help="External gate-to-ref YAML map; requires --review-task"
+    )
     args = parser.parse_args(argv)
 
     if not args.path.exists():
@@ -818,12 +923,13 @@ def main(argv: list[str] | None = None) -> int:
             surfaces=surfaces,
             approver=args.approver,
             source_path=args.path.expanduser().resolve(),
+            review_task=args.review_task,
+            receipt_refs=_read_receipt_map(args.receipt_map) if args.receipt_map else None,
         )
     except PublicationGateError as exc:
         log.error(
-            "publication not allowed for %s: %s; next action: rewrite and clear "
-            "Publication-Allowed plus target surfaces through Claim Verification "
-            "Council review",
+            "publication not allowed for %s: %s; next action: hold until current exact-subject "
+            "Claim Verification Council acceptance and durable gate receipts validate",
             args.path,
             exc,
         )

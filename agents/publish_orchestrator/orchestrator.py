@@ -929,6 +929,14 @@ class Orchestrator:
         )
 
     def _attach_gate_frontmatter(self, artifact: PreprintArtifact) -> None:
+        # Vault receipts bind every source byte, including metadata. Gate results
+        # already persist in the bus artifact and gate log; never rewrite the subject.
+        try:
+            if _vault_artifact_source(artifact) is not None:
+                return
+        except VaultArtifactHeadUnavailable:
+            log.warning("gate metadata source unclassifiable; preserving source bytes")
+            return
         if not artifact.source_path:
             return
         source_path = Path(artifact.source_path).expanduser()
