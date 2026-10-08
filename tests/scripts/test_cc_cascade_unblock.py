@@ -107,6 +107,52 @@ def test_parse_depends_reads_yaml_frontmatter_shapes() -> None:
         assert module._parse_depends(text) == expected
 
 
+def test_cascade_requires_whole_receipt_even_for_closed_review_dependency(tmp_path: Path) -> None:
+    import yaml
+
+    from shared.review_artifact_manifest import artifact_head_sha, build_artifact_manifest
+
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    note = _write_task(
+        vault,
+        "closed",
+        "unit",
+        status="done",
+        quality_floor="frontier_review_required",
+        authority_level="support_non_authoritative",
+    )
+    note.write_text(
+        note.read_text().replace(
+            "route_metadata_schema: 1\n",
+            "route_metadata_schema: 1\nreview_requirement:\n  support_artifact_allowed: true\n"
+            "  independent_review_required: true\n  authoritative_acceptor_profile: frontier_full\n",
+        )
+    )
+    artifact = tmp_path / "unit.md"
+    artifact.write_text("Only one unit; remaining source NOT REVIEWED.\n")
+    manifest, _ = build_artifact_manifest([artifact], tmp_path, max_chars=1000)
+    note.with_suffix(".acceptance.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "acceptor": "review-team:codex,gemini",
+                "verdict": "accepted",
+                "timestamp": "2026-10-08T01:00:00Z",
+                "artifact": str(artifact),
+                "head_sha": artifact_head_sha(manifest),
+                "artifact_review": {"manifest": manifest, "artifact_root": str(tmp_path)},
+            }
+        )
+    )
+    child = _write_task(vault, "active", "child", status="blocked", depends_on=["unit"])
+    assert module._dependency_validity({"unit"}) == (
+        set(),
+        {"unit": ("acceptance_receipt_scope_missing",)},
+    )
+    assert module.cascade_unblock("unit") == 0
+    assert "status: blocked" in child.read_text()
+
+
 def test_cascade_unblocks_only_when_dependency_closure_is_valid(tmp_path: Path) -> None:
     module = _load_module()
     vault = _make_vault(tmp_path, module)

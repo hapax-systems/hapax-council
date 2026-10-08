@@ -328,7 +328,9 @@ def acceptance_receipt_path(note_path: Path, task_id: str) -> Path:
     return note_path.parent / f"{task_id}{ACCEPTANCE_RECEIPT_SUFFIX}"
 
 
-def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]:
+def _acceptance_receipt_validity_blockers(
+    receipt_path: Path, frontmatter: Mapping[str, Any]
+) -> tuple[str, ...]:
     if not receipt_path.is_file():
         return ("missing_acceptance_receipt",)
     try:
@@ -348,9 +350,10 @@ def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]
         blockers.append(f"acceptance_receipt_verdict_not_accepted:{verdict.lower()}")
     # A vault-only acceptance covers exactly the bytes its manifest records; with no merged
     # head behind it, the receipt stops counting the moment those bytes change.
-    from shared.review_artifact_manifest import artifact_receipt_blockers
+    from shared.review_artifact_manifest import artifact_receipt_blockers, review_scope_blockers
 
     blockers.extend(artifact_receipt_blockers(loaded))
+    blockers.extend(review_scope_blockers(loaded, frontmatter))
     return tuple(blockers)
 
 
@@ -367,7 +370,9 @@ def acceptance_receipt_blockers(frontmatter: Mapping[str, Any], note_path: Path)
     task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
     if not task_id:
         return ("missing_acceptance_receipt",)
-    return _acceptance_receipt_validity_blockers(acceptance_receipt_path(note_path, task_id))
+    return _acceptance_receipt_validity_blockers(
+        acceptance_receipt_path(note_path, task_id), frontmatter
+    )
 
 
 def _frontmatter_pr_number(frontmatter: Mapping[str, Any]) -> str | None:
@@ -411,7 +416,9 @@ def _accepted_before_close(
     task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
     if not task_id:
         return False
-    return not _acceptance_receipt_validity_blockers(acceptance_receipt_path(note_path, task_id))
+    return not _acceptance_receipt_validity_blockers(
+        acceptance_receipt_path(note_path, task_id), frontmatter
+    )
 
 
 def task_closure_validity(
@@ -448,6 +455,8 @@ def task_closure_validity(
         blockers.append(f"status_not_fulfilling:{status or 'missing'}")
 
     ac_state = acceptance_criteria_state(text)
+    if status in TASK_FULFILLING_CLOSED_STATUSES and note_path is not None:
+        blockers.extend(acceptance_receipt_blockers(frontmatter, note_path))
     blockers.extend(f"unchecked_acceptance_criteria:{item}" for item in ac_state.unchecked_items)
 
     pr_number = _frontmatter_pr_number(frontmatter)
