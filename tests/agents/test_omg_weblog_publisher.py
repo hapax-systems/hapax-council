@@ -265,6 +265,93 @@ class _FakeArtifact:
 
 
 class TestPublishArtifact:
+    @pytest.mark.parametrize(
+        ("slug", "title", "body"),
+        [
+            (
+                "att0011-cor0003-weblog-20261008",
+                "Correction to the lab's notebook-entry attestation",
+                "Zero completed attribution checks did not establish that there were no entries. "
+                "The commitment's outcome is undetermined.",
+            ),
+            (
+                "notebook-after-the-window",
+                "After the window closed, the result remained undetermined",
+                "The earlier attestations remain available as historical records.",
+            ),
+            (
+                "refusal-brief",
+                "A historical distribution decision",
+                "The earlier refusal is a historical record, not a current promise.",
+            ),
+        ],
+    )
+    def test_compose_does_not_invent_distribution_policy(
+        self, slug: str, title: str, body: str
+    ) -> None:
+        from datetime import datetime
+
+        from agents.omg_weblog_publisher.publisher import _compose_artifact_content
+        from shared.preprint_artifact import PreprintArtifact
+
+        attribution = "Prepared by GPT; independent review remains pending."
+        abstract = "A dated account of the evidence inspected."
+        artifact = PreprintArtifact(
+            slug=slug,
+            title=title,
+            attribution_block=attribution,
+            abstract=abstract,
+            body_md=f"# {title}\n\n{body}",
+        )
+
+        date, rendered = _compose_artifact_content(artifact).split("\n\n", 1)
+
+        datetime.strptime(date, "Date: %Y-%m-%d %H:%M UTC")
+        assert rendered == f"# {title}\n\n{attribution}\n\n{abstract}\n\n{body}"
+
+    @pytest.mark.parametrize("location", ["attribution_block", "body_md"])
+    def test_compose_preserves_explicit_distribution_posture(self, location: str) -> None:
+        from agents.omg_weblog_publisher.publisher import _compose_artifact_content
+        from shared.attribution_block import NON_ENGAGEMENT_CLAUSE_LONG
+        from shared.preprint_artifact import PreprintArtifact
+
+        # Historical refusal content remains renderable when the artifact actually carries it.
+        text = f"Historical distribution statement:\n\n{NON_ENGAGEMENT_CLAUSE_LONG}"
+        artifact = PreprintArtifact(
+            slug="historical-note", title="Historical note", **{location: text}
+        )
+
+        _, rendered = _compose_artifact_content(artifact).split("\n\n", 1)
+
+        assert rendered == f"# Historical note\n\n{text}"
+
+    def test_publish_artifact_transports_admitted_copy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+        from shared.preprint_artifact import PreprintArtifact
+
+        client = MagicMock()
+        client.enabled = True
+        client.set_entry.return_value = {"ok": True}
+        monkeypatch.setattr("shared.omg_lol_client.OmgLolClient", lambda **_: client)
+        artifact = PreprintArtifact(
+            slug="correction-notice",
+            title="Correction notice",
+            attribution_block="Machine-assisted draft; reviewed attribution supplied by the artifact.",
+            body_md="The correction preserves the original record and explains what was unsupported.",
+            grounding_gate_result=_grounding_gate(),
+        )
+
+        assert publish_artifact(artifact) == "ok"
+
+        client.set_entry.assert_called_once()
+        assert client.set_entry.call_args.args == ("hapax", artifact.slug)
+        _, rendered = client.set_entry.call_args.kwargs["content"].split("\n\n", 1)
+        assert rendered == (
+            f"# {artifact.title}\n\n{artifact.attribution_block}\n\n{artifact.body_md}"
+        )
+
     def test_disabled_client_returns_no_credentials(self) -> None:
         from unittest.mock import patch
 
