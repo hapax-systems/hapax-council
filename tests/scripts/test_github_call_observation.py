@@ -579,3 +579,73 @@ def test_rate_probe_is_endpoint_not_an_option_value(capsys, tmp_path):
         repo_root=tmp_path,
     )
     assert [reading["source"] for reading in record(capsys)["readings"]] == ["header"]
+
+
+def test_usage_cli_mixed_event_totals_and_dominant_response_order(monkeypatch, capsys):
+    def forbidden(*args, **kwargs):
+        pytest.fail("usage report issued a GitHub call")
+
+    base = {
+        "schema": observation.SCHEMA,
+        "observed_at_epoch": 1000,
+        "caller": "hapax-pr-admission",
+        "transport": "rest",
+        "pool": None,
+        "auth_identity": None,
+        "kind": "command",
+        "http_responses_observed": 0,
+        "readings": [],
+    }
+    events = [
+        {**base, "command_started": True, "outcome": "success"},
+        {**base, "command_started": True, "outcome": "timeout"},
+        {**base, "command_started": False, "outcome": "launch_failed"},
+        {**base, "command_started": False, "kind": "cache_hit"},
+    ]
+    for stamp, remaining in [(1001, 400), (1002, 399)]:
+        events.append(
+            {
+                **base,
+                "observed_at_epoch": stamp,
+                "caller": "cc-pr-autoqueue.py",
+                "pool": "core",
+                "command_started": True,
+                "outcome": "success",
+                "http_responses_observed": 1,
+                "readings": [
+                    {
+                        "resource": "core",
+                        "source": "header",
+                        "remaining": remaining,
+                        "reset_epoch": 2000,
+                    }
+                ],
+            }
+        )
+    events.append({**events[0], "observed_at_epoch": 900})
+    lines = [observation.LOG_PREFIX + json.dumps(event) for event in events]
+    lines.append("ordinary journal message")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n".join(lines)))
+    monkeypatch.setattr(observation.time, "time", lambda: 1100)
+    monkeypatch.setattr(github_pr_status.subprocess, "run", forbidden)
+    assert github_pr_status.main(["usage", "--since", "990", "--until", "1010"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["since_epoch"] == 990 and report["until_epoch"] == 1010
+    assert report["generated_at_epoch"] == 1100
+    assert report["ignored_lines"] == 2
+    assert report["request_count_exact"] is False
+    assert report["observation_state"] == "observed"
+    assert [row["caller"] for row in report["callers"]] == [
+        "cc-pr-autoqueue.py",
+        "hapax-pr-admission",
+    ]
+    fields = ("commands_started", "http_responses_observed", "cache_hits", "launch_failures")
+    assert [tuple(row[field] for field in fields) for row in report["callers"]] == [
+        (2, 2, 0, 0),
+        (2, 0, 1, 1),
+    ]
+    latest = report["callers"][0]["latest_readings"][0]
+    assert latest["remaining"] == 399
+    assert latest["validity"]["observed_at_epoch"] == 1002
+    assert latest["validity"]["valid_until_epoch"] == 1062
+    assert latest["validity"]["freshness"] == "stale"
