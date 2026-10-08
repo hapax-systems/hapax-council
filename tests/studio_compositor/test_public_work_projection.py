@@ -219,6 +219,8 @@ def test_explicit_composed_surface_is_schema_supported():
         ("rights_class", "third_party_attributed"),
         ("provenance.token", None),
         ("provenance.evidence_refs", []),
+        ("provenance.rights_basis", ""),
+        ("source.evidence_ref", ""),
         ("provenance.generated_at", "garbage"),
         ("provenance.generated_at", "2026-10-08T01:16:00Z"),
         ("occurred_at", "2026-10-08T01:04:59Z"),
@@ -253,11 +255,19 @@ def test_unadmitted_or_stale_source_is_excluded(path, value):
         ("gate_result.may_publish_live", False),
         ("gate_result.may_emit_claim", False),
         ("gate_result.blockers", ["held"]),
+        ("gate_result.unavailable_reasons", ["evidence unavailable"]),
+        ("gate_result.must_emit_refusal_artifact", True),
+        ("gate_result.must_emit_correction_artifact", True),
         ("infractions", ["unsupported_claim"]),
         ("claim.evidence_refs", ["ResearchVehiclePublicEvent:other", APERTURE]),
         ("claim.provenance.source_refs", ["ResearchVehiclePublicEvent:synthetic:work:001"]),
         ("claim.freshness.status", "stale"),
         ("claim.freshness.ttl_s", 10),
+        ("claim.freshness.ttl_s", True),
+        ("claim.freshness.ttl_s", False),
+        ("claim.freshness.ttl_s", float("nan")),
+        ("claim.freshness.ttl_s", float("inf")),
+        ("claim.freshness.ttl_s", float("-inf")),
         ("claim.freshness.checked_at", "2026-10-08T01:16:00Z"),
         ("claim.confidence.label", "none"),
         ("claim.uncertainty", ""),
@@ -277,6 +287,48 @@ def test_unbound_or_held_grounding_is_excluded(path, value):
         target = target[key]
     target[keys[-1]] = value
     assert project(event, gate) is None
+
+
+@pytest.mark.parametrize("observed", [True, False, float("nan"), float("inf"), float("-inf")])
+def test_invalid_observation_clock_is_rejected_before_source_validation(monkeypatch, observed):
+    from agents.studio_compositor import public_work_projection as projection
+
+    validated = []
+    real_validator = projection._validator
+
+    def track_validation(filename):
+        validated.append(filename)
+        return real_validator(filename)
+
+    monkeypatch.setattr(projection, "_validator", track_validation)
+    assert project(now=observed) is None
+    assert validated == []
+
+
+def test_aperture_kind_mismatch_cannot_admit_public_work(monkeypatch):
+    from types import SimpleNamespace
+
+    from agents.studio_compositor import public_work_projection as projection
+
+    assert project() is not None
+    requested = []
+
+    def require(aperture):
+        requested.append(aperture)
+        return SimpleNamespace(kind=SimpleNamespace(value="public_event"))
+
+    monkeypatch.setattr(projection, "aperture_registry", lambda: SimpleNamespace(require=require))
+    assert project() is None
+    assert requested == [APERTURE]
+
+
+def test_timestamp_error_gives_timezone_repair():
+    from agents.studio_compositor.public_work_projection import _timestamp
+
+    with pytest.raises(ValueError, match="append Z or an explicit UTC offset"):
+        _timestamp("2026-10-08T01:15:00")
+    assert _timestamp("2026-10-08T01:15:00Z") == NOW
+    assert _timestamp("2026-10-07T20:15:00-05:00") == NOW
 
 
 def test_relabelled_observation_cannot_refresh_old_occurrence():

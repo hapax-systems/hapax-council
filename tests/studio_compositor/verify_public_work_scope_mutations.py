@@ -3,6 +3,7 @@
 From the repo root: uv run --no-sync python
 tests/studio_compositor/verify_public_work_scope_mutations.py /tmp/fresh-evidence-dir
 The output directory must not exist. No service, live input or provider is used.
+Optional trailing mutation names select individual legs; omit them to replay all.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pathlib import Path
 
 TICKER = Path("agents/studio_compositor/chronicle_ticker.py")
 PROJECTION = Path("agents/studio_compositor/public_work_projection.py")
+ATLAS = Path("scripts/quake-live-ward-atlas-source.py")
 TEST = "tests/studio_compositor/test_public_work_projection.py"
 
 
@@ -90,13 +92,93 @@ def main() -> None:
             "raising_query",
         )
     )
+    mutations.extend(
+        [
+            (
+                "observation-clock",
+                PROJECTION,
+                "if isinstance(observed_at, bool) or not math.isfinite(observed_at):",
+                "if False:",
+                "invalid_observation_clock",
+            ),
+            (
+                "aperture-kind",
+                PROJECTION,
+                "if aperture_registry().require(APERTURE).kind.value != SURFACE:",
+                "if False:",
+                "aperture_kind_mismatch",
+            ),
+            (
+                "finite-ttl",
+                PROJECTION,
+                "            or not math.isfinite(ttl)\n",
+                "",
+                "unbound_or_held_grounding",
+            ),
+        ]
+    )
+    for field in (
+        "unavailable_reasons",
+        "must_emit_refusal_artifact",
+        "must_emit_correction_artifact",
+    ):
+        mutations.append(
+            (
+                field,
+                PROJECTION,
+                f'            or result["{field}"]\n',
+                "",
+                f"unbound_or_held_grounding and {field}",
+            )
+        )
+    mutations.extend(
+        [
+            (
+                "timezone-repair",
+                PROJECTION,
+                "; append Z or an explicit UTC offset",
+                "",
+                "timestamp_error",
+            ),
+            (
+                "selection-repair",
+                ATLAS,
+                "f\"select only from: {', '.join(sorted(SOFTWARE_SOURCE_CLASSES))}\"",
+                '""',
+                "rejects_unpermitted_source",
+            ),
+            (
+                "backend-repair",
+                ATLAS,
+                'f"in {layout_path}; configure backend=cairo "',
+                'f"in {layout_path}; "',
+                "different_backend",
+            ),
+            (
+                "missing-source-repair",
+                ATLAS,
+                'f"missing layout source {ward_id!r} in {layout_path}; {repair}"',
+                '"missing layout source"',
+                "missing_selected_layout",
+            ),
+        ]
+    )
+    if len(sys.argv) > 2:
+        requested = set(sys.argv[2:])
+        unknown = requested - {entry[0] for entry in mutations}
+        if unknown:
+            raise ValueError(f"unknown mutations {sorted(unknown)}; select names from this helper")
+        mutations = [entry for entry in mutations if entry[0] in requested]
 
     for name, source, old, new, selection in mutations:
         original, metadata = source.read_bytes(), source.stat()
         before = hashlib.sha256(original).hexdigest()
         if original.count(old.encode()) != 1:
             raise RuntimeError(f"{name}: mutation target is not unique")
-        command = [sys.executable, "-m", "pytest", TEST, "-q", "-k", selection]
+        test_file = (
+            "tests/scripts/test_quake_live_ward_atlas_source.py" if source == ATLAS else TEST
+        )
+        command = [sys.executable, "-m", "pytest", test_file, "-q", "-k", selection]
         try:
             source.write_bytes(original.replace(old.encode(), new.encode(), 1))
             red = subprocess.run(command, capture_output=True, check=False)

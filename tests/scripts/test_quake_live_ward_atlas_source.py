@@ -544,8 +544,9 @@ def test_software_selection_rejects_unpermitted_source_before_layout(monkeypatch
         pytest.fail("invalid selection reached layout/construction")
 
     monkeypatch.setattr(atlas, "_load_layout", forbidden)
-    with pytest.raises(ValueError, match="software source"):
+    with pytest.raises(ValueError, match="software source") as exc:
         atlas._construct_backends(Path("unused"), software_sources=selection)
+    assert "select only from: chronicle_ticker" in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -578,6 +579,29 @@ def test_selected_id_cannot_construct_a_different_backend(
     assert calls == []
     assert backends == {}
     assert "software source" in errors["chronicle_ticker"]
+    assert str(layout) in errors["chronicle_ticker"]
+    assert "chronicle_ticker" in errors["chronicle_ticker"]
+    assert (
+        "configure backend=cairo with class_name=ChronicleTickerCairoSource"
+        in errors["chronicle_ticker"]
+    )
+
+
+def test_missing_selected_layout_source_gives_repair(tmp_path, monkeypatch):
+    from agents.studio_compositor.source_registry import SourceRegistry
+
+    atlas = _load_atlas()
+    layout = tmp_path / "missing-source.json"
+    layout.write_text('{"sources": []}')
+    calls = []
+    monkeypatch.setattr(SourceRegistry, "construct_backend", lambda *a: calls.append(a))
+    backends, errors = atlas._construct_backends(layout, software_sources=("chronicle_ticker",))
+    assert calls == []
+    assert backends == {}
+    message = errors["chronicle_ticker"]
+    assert str(layout) in message and "chronicle_ticker" in message
+    assert "add the source entry" in message
+    assert "backend=cairo with class_name=ChronicleTickerCairoSource" in message
 
 
 @pytest.mark.parametrize("gpu", [False, True])
@@ -817,7 +841,9 @@ def test_selected_missing_layout_source_stays_empty(tmp_path):
     layout.write_text('{"sources": []}')
     backends, errors = atlas._construct_backends(layout, software_sources=("chronicle_ticker",))
     assert backends == {}
-    assert errors == {"chronicle_ticker": "missing layout source"}
+    assert list(errors) == ["chronicle_ticker"]
+    message = errors["chronicle_ticker"]
+    assert "missing layout source" in message and "add the source entry" in message
     observed, errors = atlas.render_atlas(
         output=tmp_path / "atlas.bgra",
         meta=tmp_path / "atlas.json",
@@ -834,4 +860,4 @@ def test_selected_missing_layout_source_stays_empty(tmp_path):
     )
     assert list(observed) == ["chronicle_ticker"]
     assert observed["chronicle_ticker"]["status"] == "fallback"
-    assert observed["chronicle_ticker"]["reason"] == "missing layout source"
+    assert observed["chronicle_ticker"]["reason"] == message

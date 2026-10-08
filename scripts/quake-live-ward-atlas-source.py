@@ -187,7 +187,10 @@ def _selected_ward_ids(software_sources: tuple[str, ...] | None) -> tuple[str, .
         return tuple(WARD_IDS)
     unknown = set(software_sources) - SOFTWARE_SOURCE_CLASSES.keys()
     if unknown:
-        raise ValueError(f"unpermitted software source selection: {sorted(unknown)}")
+        raise ValueError(
+            f"unpermitted software source selection: {sorted(unknown)}; "
+            f"select only from: {', '.join(sorted(SOFTWARE_SOURCE_CLASSES))}"
+        )
     return tuple(ward_id for ward_id in WARD_IDS if ward_id in software_sources)
 
 
@@ -210,7 +213,10 @@ def _construct_backends(
     for ward_id in ward_ids:
         source_data = sources.get(ward_id)
         if source_data is None:
-            errors[ward_id] = "missing layout source"
+            repair = "add the source entry"
+            if software_sources is not None:
+                repair += f" and configure backend=cairo with class_name={SOFTWARE_SOURCE_CLASSES[ward_id]}"
+            errors[ward_id] = f"missing layout source {ward_id!r} in {layout_path}; {repair}"
             continue
         try:
             schema = SourceSchema.model_validate(source_data)
@@ -218,7 +224,11 @@ def _construct_backends(
                 schema.backend != "cairo"
                 or schema.params.get("class_name") != SOFTWARE_SOURCE_CLASSES[ward_id]
             ):
-                raise ValueError("layout backend does not match permitted software source")
+                raise ValueError(
+                    f"layout backend does not match permitted software source {ward_id!r} "
+                    f"in {layout_path}; configure backend=cairo "
+                    f"with class_name={SOFTWARE_SOURCE_CLASSES[ward_id]}"
+                )
             if software_sources is not None and ward_id == "chronicle_ticker":
                 # Explicit selection consumes qualified public work, never raw tokens.
                 schema = schema.model_copy(

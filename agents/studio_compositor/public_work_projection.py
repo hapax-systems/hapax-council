@@ -42,7 +42,7 @@ def _validator(filename: str) -> Draft202012Validator:
 def _timestamp(value: str) -> float:
     parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        raise ValueError("explicit timezone required")
+        raise ValueError("explicit timezone required; append Z or an explicit UTC offset")
     return parsed.timestamp()
 
 
