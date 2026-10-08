@@ -231,7 +231,10 @@ def test_replay_is_byte_and_mtime_preserving(case):
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
 
 
-@pytest.mark.parametrize("kind", ["identical", "similar", "malformed", "missing"])
+@pytest.mark.parametrize(
+    "kind",
+    ["identical", "event_id", "evidence_ref", "similar", "unmatched", "malformed", "missing"],
+)
 def test_register_novelty_never_falls_open(case, kind):
     register = case[3]
     if kind == "missing":
@@ -246,7 +249,13 @@ def test_register_novelty_never_falls_open(case, kind):
                     "snapshot": "fixture",
                     "records": [
                         {
-                            "record": {"id": "clm-2026-0001", "title": case[2].title},
+                            "record": {
+                                "id": {
+                                    "event_id": case[1].event_id,
+                                    "evidence_ref": case[1].source.evidence_ref,
+                                }.get(kind, "clm-2026-0001"),
+                                "title": case[2].title if kind == "similar" else "Different title",
+                            },
                             "body": case[2].body_md if kind == "identical" else "different",
                             "sha256": "0" * 64,
                         }
@@ -255,8 +264,19 @@ def test_register_novelty_never_falls_open(case, kind):
             )
         )
     result = run(case)
-    assert result["status"] == "held"
-    assert list(case[0].rglob("*.json")) == []
+    assert result["status"] == ("created" if kind == "unmatched" else "held")
+    assert result["judgment"] == ("unresolved" if kind == "similar" else "not_invoked")
+    if kind in {"identical", "event_id", "evidence_ref"}:
+        assert result["features"]["register"]["novelty"] == "duplicate"
+        assert result["reasons"] == ["register_duplicate"]
+    elif kind in {"similar", "unmatched"}:
+        assert result["features"]["register"]["novelty"] == (
+            "judgment_required" if kind == "similar" else "unmatched_in_snapshot"
+        )
+        assert result["reasons"] == (["register_similarity"] if kind == "similar" else [])
+    else:
+        assert result["reasons"] == ["register_unreadable_or_invalid"]
+    assert bool(list(case[0].rglob("*.json"))) == (kind == "unmatched")
 
 
 def test_cli_to_actual_orchestrator_draft_loader_without_dispatch(case, tmp_path, monkeypatch):
@@ -676,3 +696,188 @@ def test_replay_rechecks_existing_file_durability(case, monkeypatch):
     monkeypatch.setattr(selector.os, "fsync", original_fsync)
     assert run(case)["status"] == "replay"
     assert (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ino) == before
+
+
+@pytest.mark.parametrize(
+    "edge",
+    ["created", "replay", "directory_sync", "existing_sync", "file_sync", "link", "conflict"],
+)
+def test_cleanup_failure_preserves_primary_effect(case, monkeypatch, capsys, tmp_path, edge):
+    path = case[2].draft_path(state_root=case[0])
+    if edge in {"replay", "existing_sync"}:
+        assert run(case)["status"] == "created"
+    elif edge == "conflict":
+        path.write_bytes(b"predecessor")
+    before = (
+        (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) if path.exists() else None
+    )
+    original_fsync, original_link = os.fsync, os.link
+    failures = []
+
+    def fail_unlink(name, *, dir_fd):
+        assert name.startswith(".selector-") and name.endswith(".tmp")
+        failures.append("cleanup")
+        raise OSError(13, "PRIVATE CLEANUP BODY")
+
+    def fail_sync(fd):
+        mode = os.fstat(fd).st_mode
+        if (
+            (edge == "directory_sync" and stat.S_ISDIR(mode))
+            or (edge == "file_sync" and stat.S_ISREG(mode))
+            or (edge == "existing_sync" and os.fstat(fd).st_ino == before[1])
+        ):
+            failures.append("sync")
+            raise OSError(5, "PRIVATE SYNC BODY")
+        original_fsync(fd)
+
+    def fail_link(*args, **kwargs):
+        if edge == "link":
+            failures.append("link")
+            raise OSError(28, "PRIVATE LINK BODY")
+        return original_link(*args, **kwargs)
+
+    event_path, artifact_path = tmp_path / "event.json", tmp_path / "artifact.json"
+    event_path.write_text(case[1].model_dump_json())
+    artifact_path.write_text(case[2].model_dump_json())
+    with monkeypatch.context() as patch:
+        patch.setattr(selector.os, "unlink", fail_unlink)
+        patch.setattr(selector.os, "fsync", fail_sync)
+        patch.setattr(selector.os, "link", fail_link)
+        assert (
+            selector.main(
+                [
+                    "--event",
+                    str(event_path),
+                    "--artifact",
+                    str(artifact_path),
+                    "--register",
+                    str(case[3]),
+                    "--state-root",
+                    str(case[0]),
+                ]
+            )
+            == 2
+        )
+    captured = capsys.readouterr()
+    assert "PRIVATE" not in captured.out + captured.err
+    result = json.loads(captured.out)
+    assert failures.count("cleanup") == 1
+    assert result["status"] == ("conflict" if edge == "conflict" else "held")
+    primary = {
+        "directory_sync": ["draft_durability_unconfirmed:5"],
+        "existing_sync": ["draft_durability_unconfirmed:5"],
+        "file_sync": ["draft_write_refused:5"],
+        "link": ["draft_write_refused:28"],
+        "conflict": ["draft_conflict"],
+    }.get(edge, [])
+    assert result["reasons"] == primary + ["draft_cleanup_failed:13"]
+    assert all(d["next_action"] for d in result["diagnostics"])
+    assert [d["reason"] for d in result["diagnostics"]] == result["reasons"]
+    if edge in {"created", "replay", "directory_sync", "existing_sync"}:
+        assert result.get("path") == str(path)
+        assert result.get("installed") is True
+        assert result.get("durability") == (
+            "unconfirmed" if edge in {"directory_sync", "existing_sync"} else "confirmed"
+        )
+        assert (
+            PreprintArtifact.model_validate_json(path.read_bytes()).approval == ApprovalState.DRAFT
+        )
+        installed = (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+        recovery = run(case)
+        assert recovery["status"] == "replay"
+        assert recovery["durability"] == "confirmed"
+        assert (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) == installed
+    else:
+        assert "installed" not in result and "durability" not in result
+        assert path.exists() == (edge == "conflict")
+    if before:
+        assert (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) == before
+    assert len(list(path.parent.glob(".selector-*.tmp"))) == 1
+    assert len(list(path.parent.glob("*.json"))) == int(path.exists())
+    assert failures.count("sync") == int(edge in {"directory_sync", "existing_sync", "file_sync"})
+    assert failures.count("link") == int(edge == "link")
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "content_form",
+        "external_utterance_refs",
+        "manual_dispatch",
+        "expected_effect",
+        "cancel_predicate",
+        "judgment_required",
+        "content_class",
+    ],
+)
+@pytest.mark.parametrize("shape", ["mapping", "list", "mixed_list"])
+def test_cli_malformed_declarations_never_echo_payload(case, tmp_path, field, shape):
+    sentinel = "PRIVATE DECLARATION BODY"
+    value = {
+        "mapping": {"body": sentinel},
+        "list": [{"body": sentinel}],
+        "mixed_list": [sentinel, None],
+    }[shape]
+    intent(case[2])[field] = value
+    event_path, artifact_path = tmp_path / "event.json", tmp_path / "artifact.json"
+    event_path.write_text(case[1].model_dump_json())
+    artifact_path.write_text(case[2].model_dump_json())
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agents.publication_bus",
+            "select",
+            "--event",
+            str(event_path),
+            "--artifact",
+            str(artifact_path),
+            "--register",
+            str(case[3]),
+            "--state-root",
+            str(case[0]),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert process.returncode == 2, process.stderr
+    assert sentinel not in process.stdout + process.stderr
+    result = json.loads(process.stdout)
+    assert result["status"] == "held"
+    assert result["diagnostics"] and all(d["next_action"] for d in result["diagnostics"])
+    if field in {"content_form", "external_utterance_refs"}:
+        assert result["features"][field] == {"valid": False, "type": type(value).__name__}
+        assert result["judgment"] == "unresolved"
+    assert list((case[0] / "publish/draft").iterdir()) == []
+
+
+@pytest.mark.parametrize("field", ["content_form", "external_utterance_refs"])
+@pytest.mark.parametrize("value", ["PRIVATE DECLARATION BODY", None, 42, False])
+def test_cli_invalid_scalar_declarations_are_summarized(case, tmp_path, capsys, field, value):
+    intent(case[2])[field] = value
+    event_path, artifact_path = tmp_path / "event.json", tmp_path / "artifact.json"
+    event_path.write_text(case[1].model_dump_json())
+    artifact_path.write_text(case[2].model_dump_json())
+    assert (
+        selector.main(
+            [
+                "--event",
+                str(event_path),
+                "--artifact",
+                str(artifact_path),
+                "--register",
+                str(case[3]),
+                "--state-root",
+                str(case[0]),
+            ]
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert "PRIVATE DECLARATION BODY" not in captured.out + captured.err
+    result = json.loads(captured.out)
+    assert result["features"][field] == {"valid": False, "type": type(value).__name__}
+    assert result["judgment"] == "unresolved"
+    assert list((case[0] / "publish/draft").iterdir()) == []

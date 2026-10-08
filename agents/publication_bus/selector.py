@@ -171,9 +171,11 @@ def _selection(event: ResearchVehiclePublicEvent, artifact: PreprintArtifact, re
         reasons.append("register_unreadable_or_invalid")
     form = meta.get("content_form")
     refs = meta.get("external_utterance_refs")
-    if form not in ("artifact", "post"):
+    form_valid = form in ("artifact", "post")
+    refs_valid = isinstance(refs, list) and all(_nonempty(x) for x in refs)
+    if not form_valid:
         fuzzy.append("content_form_unresolved")
-    if not isinstance(refs, list) or any(not _nonempty(x) for x in refs):
+    if not refs_valid:
         fuzzy.append("reactivity_unresolved")
     if type(meta.get("manual_dispatch")) is not bool:
         fuzzy.append("transport_unresolved")
@@ -201,8 +203,10 @@ def _selection(event: ResearchVehiclePublicEvent, artifact: PreprintArtifact, re
     features.update(
         body_characters=len(artifact.body_md),
         content_characters=content_characters,
-        content_form=form,
-        external_utterance_refs=refs,
+        content_form=form if form_valid else {"valid": False, "type": type(form).__name__},
+        external_utterance_refs=refs
+        if refs_valid
+        else {"valid": False, "type": type(refs).__name__},
         applicable_classes=classes,
         content_class=strictest,
     )
@@ -230,7 +234,7 @@ class _DraftDurabilityError(OSError):
     """The matching draft is installed, but its durability is unconfirmed."""
 
 
-def _create(fd: int, name: str, payload: bytes) -> str:
+def _create(fd: int, name: str, payload: bytes, cleanup_errors: list[int | None]) -> str:
     """Install complete bytes exclusively, including concurrent callers and replays."""
     temporary = f".selector-{uuid.uuid4().hex}.tmp"
     try:
@@ -268,6 +272,10 @@ def _create(fd: int, name: str, payload: bytes) -> str:
             os.unlink(temporary, dir_fd=fd)
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            # Secondary cleanup must not erase the install result or the primary
+            # failure. The caller retains both and holds even a durable install.
+            cleanup_errors.append(exc.errno)
 
 
 def _diagnostic(reason: str, register_path: Path, state_root: Path) -> dict[str, str]:
@@ -289,6 +297,12 @@ def _diagnostic(reason: str, register_path: Path, state_root: Path) -> dict[str,
         )
         if reason == "draft_conflict":
             action = "Inspect the existing draft without overwriting it; reconcile the candidate with its owner."
+        if reason.startswith("draft_cleanup_failed"):
+            action = (
+                "Preserve any installed draft and its reported durability; inspect leftover "
+                ".selector-*.tmp files and repair directory cleanup permissions or storage. "
+                "Retry identical inputs; do not dispatch or create another intent."
+            )
         return {
             "reason": reason,
             "input": "state-root",
@@ -364,9 +378,12 @@ def produce(
         # Bind content, expected effect, class, transport, provenance and outstanding duties.
         receipt["intent_sha256"] = sha256(_bytes(draft.model_dump(mode="json"))).hexdigest()
         fd = None
+        cleanup_errors: list[int | None] = []
         try:
             fd = _open_draft(state_root)
-            status = _create(fd, f"{draft.slug}.json", _bytes(draft.model_dump(mode="json")))
+            status = _create(
+                fd, f"{draft.slug}.json", _bytes(draft.model_dump(mode="json")), cleanup_errors
+            )
             result.update(status=status, path=str(draft.draft_path(state_root=state_root)))
             if status in {"created", "replay"}:
                 result.update(installed=True, durability="confirmed")
@@ -389,6 +406,10 @@ def produce(
         finally:
             if fd is not None:
                 os.close(fd)
+        if cleanup_errors:
+            result["reasons"].extend(f"draft_cleanup_failed:{code}" for code in cleanup_errors)
+            if result["status"] in {"created", "replay"}:
+                result["status"] = "held"
     result["diagnostics"] = [
         _diagnostic(reason, register_path, state_root) for reason in result["reasons"]
     ]
