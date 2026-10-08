@@ -43,6 +43,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.hapax_review_family_inflation import (  # noqa: E402
+    HTTP_SUBSTITUTE_FAMILIES,
+    effective_review_family,
+)
+from scripts.hapax_review_family_inflation import (
+    observed_served_model as observed_served_model,
+)
 from shared.cc_task_pr_link import is_nullish, same_repo  # noqa: E402
 from shared.failure_classification import (  # noqa: E402
     STRUCTURED_PROVIDER_OUTAGE_ACTIONS,
@@ -199,6 +206,12 @@ _QUOTA_WALL_HTTP_RE = re.compile(
     r"RESOURCE_EXHAUSTED)",
     re.IGNORECASE | re.DOTALL,
 )
+# Subscription/prepaid wrappers normalize a confirmed non-429 wall with the existing
+# FailureCode name while retaining its actual HTTP status. Auth-only 403s never emit this.
+_SUBSTITUTE_QUOTA_WALL_RE = re.compile(
+    r"\Ahapax-(?:kimi|featherless|verboo)-reviewer: api error: "
+    r"HTTP (?:402|403) quota_exhaustion(?:;[^\r\n]*)?\Z"
+)
 _STRUCTURED_ZAI_ENVELOPE_RE = re.compile(
     r"\A\s*hapax-glmcp-reviewer:\s+api error:\s+HTTP\s+\d{3}\b",
     re.IGNORECASE,
@@ -308,6 +321,8 @@ def is_quota_wall(
         )
     # Fast path: short, bare wall phrase (the 2026-06-12 claude shape)
     if len(stripped) <= _QUOTA_WALL_MAX_CHARS and _QUOTA_WALL_SHAPE_RE.fullmatch(stripped):
+        return True
+    if len(stripped) <= _QUOTA_WALL_MAX_CHARS and _SUBSTITUTE_QUOTA_WALL_RE.fullmatch(stripped):
         return True
     if len(stripped) <= _PROVIDER_OUTAGE_MAX_CHARS:
         structured_match = _structured_zai_error_match_state(
@@ -1822,7 +1837,25 @@ def _reviews_for_quorum(
 
 
 def _accepting(reviews: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    return [r for r in reviews if str(r.get("verdict", "")).lower() in ACCEPT_VERDICTS]
+    return [
+        r
+        for r in reviews
+        if str(r.get("verdict", "")).lower() in ACCEPT_VERDICTS
+        and review_voting_family(r) is not None
+    ]
+
+
+def review_voting_family(review: Mapping[str, Any]) -> str | None:
+    """Recompute ancestry for HTTP substitutes at synthesis AND admission.
+
+    Keep ``family`` as the route identity for outage latching and registry lookup. Only
+    process-observed ``served_model`` can give these seats independence credit; a model
+    pin or a cached effective-family label is never evidence.
+    """
+    family = str(review.get("family") or "")
+    if family in HTTP_SUBSTITUTE_FAMILIES:
+        return effective_review_family(family, review.get("served_model"))
+    return family or None
 
 
 def _review_checklist_blockers(
@@ -2042,7 +2075,7 @@ def synthesize_dossier(
     accepts, partial_accepts = _split_partial_coverage_accepts(
         _checklist_complete_accepts(quorum_reviews, lenses)
     )
-    accept_families = {str(r.get("family")) for r in accepts}
+    accept_families = {review_voting_family(r) for r in accepts}
     scoped_files = None if changed_files is None else [str(f) for f in changed_files]
     if changed_files is not None and changed_file_count is None:
         changed_file_count = len(scoped_files)
@@ -2194,12 +2227,13 @@ def _family_floor(reviews: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     a partial-coverage BLOCK still votes — partial evidence may stop a merge.
     """
 
-    seated = [str(r.get("family")) for r in reviews]
+    seated = [review_voting_family(r) for r in reviews]
     voting = sorted(
         {
-            str(r.get("family"))
+            family
             for r in reviews
             if str(r.get("verdict") or "").lower() in VOTING_VERDICTS
+            and (family := review_voting_family(r)) is not None
             and not (
                 str(r.get("verdict") or "").lower() in ACCEPT_VERDICTS
                 and seat_partial_diff_coverage(r) is not None
@@ -2207,9 +2241,11 @@ def _family_floor(reviews: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         }
     )
     return {
-        "seated_families": sorted(set(seated)),
+        "seated_families": sorted({f for f in seated if f is not None}),
         "voting_families": voting,
-        "met": bool(seated) and len(set(seated)) == len(seated) == len(voting),
+        "met": bool(seated)
+        and None not in seated
+        and len(set(seated)) == len(seated) == len(voting),
     }
 
 
@@ -2245,10 +2281,21 @@ def t2_family_floor_release(
         for field in ("writer_family", "constitution_writer_family")
     } | {row_writer}
     writer_families.discard("")
-    distinct = [r for r in accepts if str(r.get("family")) not in writer_families]
+    reviews = [r for r in dossier.get("reviewers") or [] if isinstance(r, Mapping)]
+    families = [review_voting_family(r) for r in reviews]
+    known = [f for f in families if f is not None]
+    if len(known) != len(set(known)) or any(
+        review_voting_family(r) is None and str(r.get("verdict") or "").lower() in VOTING_VERDICTS
+        for r in reviews
+    ):
+        return None
+    distinct = [
+        r
+        for r in accepts
+        if review_voting_family(r) is not None and review_voting_family(r) not in writer_families
+    ]
     if len(accepts) < quorum or not distinct:
         return None
-    reviews = [r for r in dossier.get("reviewers") or [] if isinstance(r, Mapping)]
     floor = _family_floor(reviews)
     return {
         "rule": T2_FAMILY_FLOOR_RELEASE_RULE,
@@ -2258,7 +2305,7 @@ def t2_family_floor_release(
         "quorum_required": quorum,
         "accept_count": len(accepts),
         "distinct_family_accepts": [
-            {"id": str(r.get("id")), "family": str(r.get("family"))} for r in distinct
+            {"id": str(r.get("id")), "family": review_voting_family(r)} for r in distinct
         ],
         "seated_families": floor["seated_families"],
         "voting_families": floor["voting_families"],
@@ -2765,8 +2812,16 @@ def _dossier_validity_blockers(
         blockers.append(f"review_dossier_team_undersized:{len(reviews)}/{required_size}")
     # The distinct-family floor binds merge admission too, so a dossier written before the
     # rule (a reseated family, or a seat that never voted) cannot admit a merge.
-    seated_families = [str(r.get("family") or "missing") for r in reviews]
-    reseated = sorted({f for f in seated_families if seated_families.count(f) > 1})
+    seated_families = [review_voting_family(r) for r in reviews]
+    for review in reviews:
+        if (
+            review_voting_family(review) is None
+            and str(review.get("verdict") or "").lower() in VOTING_VERDICTS
+        ):
+            blockers.append(f"review_dossier_model_identity_unknown:{review.get('id')}")
+    reseated = sorted(
+        {f for f in seated_families if f is not None and seated_families.count(f) > 1}
+    )
     if reseated:
         blockers.append("review_dossier_same_family_reseat:" + ",".join(reseated))
     floor = _family_floor(reviews)
@@ -2857,7 +2912,7 @@ def _dossier_validity_blockers(
         blockers.append(f"review_dossier_quorum_mismatch:{recorded_quorum}!={required_quorum}")
     if len(accepts) < required_quorum:
         blockers.append(f"review_dossier_quorum_not_met:{len(accepts)}/{required_quorum}")
-    accept_families = {str(r.get("family")) for r in accepts}
+    accept_families = {review_voting_family(r) for r in accepts}
     min_families = _int_field(sizing.get("min_families", 1), "sizing.min_families", blockers)
     if min_families is not None and len(accept_families) < min_families:
         blockers.append(
@@ -2865,7 +2920,7 @@ def _dossier_validity_blockers(
         )
     if sizing.get("require_all_families"):
         missing_families = (roster - substitute_families(registry) - set(_note_size_replaced)) - {
-            str(r.get("family")) for r in accepts
+            review_voting_family(r) for r in accepts
         }
         if missing_families:
             blockers.append(
@@ -2874,7 +2929,7 @@ def _dossier_validity_blockers(
             )
     if frontmatter is not None and accepts:
         writer_family = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
-        writer_accepts = sum(1 for r in accepts if str(r.get("family")) == writer_family)
+        writer_accepts = sum(1 for r in accepts if review_voting_family(r) == writer_family)
         if writer_accepts > len(accepts) // 2:
             blockers.append(
                 f"review_dossier_writer_family_majority:{writer_family}:{writer_accepts}/{len(accepts)}"

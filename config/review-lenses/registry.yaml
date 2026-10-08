@@ -217,7 +217,7 @@ families:
     substitute: true
     pinned_model: kimi-for-coding
   - family: featherless
-    # Featherless prepaid $200/mo flat (FileStore featherless-api-key), OpenAI /chat/completions.
+    # Featherless prepaid balance (FileStore featherless-api-key), OpenAI /chat/completions.
     # Pins DeepSeek-V4-Pro (distinct deepseek family); its 32k context is a known mismatch for
     # long packets, so the wrapper refuses oversized prompts and the constitution substitutes.
     reviewer_command: ["scripts/hapax-featherless-reviewer"]

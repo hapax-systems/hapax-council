@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.hapax_review_http_seat import (  # noqa: E402
+    SEAT_PREAMBLE,
     USER_AGENT,
     http_failure,
     over_ceiling,
@@ -63,22 +64,27 @@ def valid_coding_base(base_url: str) -> bool:
 
 def request_body(prompt: str, model: str) -> dict:
     # Anthropic Messages shape: the blind-seat preamble is the system prompt.
-    text = seat_text(prompt)
-    system, _, user = text.partition("\n\n")
     return {
         "model": model,
         "max_tokens": MAX_OUTPUT_TOKENS,
         "temperature": 0,
-        "system": system,
-        "messages": [{"role": "user", "content": user or text}],
+        "system": SEAT_PREAMBLE,
+        "messages": [{"role": "user", "content": prompt}],
     }
 
 
 def extract_text(payload: dict) -> str | None:
+    if not isinstance(payload, dict):
+        return None
     blocks = payload.get("content")
     if not isinstance(blocks, list):
         return None
-    parts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+    if any(
+        not isinstance(b, dict) or (b.get("type") == "text" and not isinstance(b.get("text"), str))
+        for b in blocks
+    ):
+        return None
+    parts = [b["text"] for b in blocks if b.get("type") == "text"]
     return "".join(parts) if parts else None
 
 
@@ -122,12 +128,18 @@ def main() -> int:
         except Exception:  # noqa: BLE001 — a body read failure must not mask the status
             detail = ""
         return http_failure(WRAPPER, exc.code, detail, key)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except (ValueError, UnicodeError):
+        return refuse(WRAPPER, "kimi returned malformed JSON payload; not a review")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return refuse(WRAPPER, f"kimi endpoint {base_url} unreachable ({type(exc).__name__})")
+    if not isinstance(payload, dict):
+        return refuse(WRAPPER, "kimi returned malformed payload; not a review")
     if payload.get("stop_reason") == "max_tokens":
         return refuse(WRAPPER, f"reply truncated at {MAX_OUTPUT_TOKENS} tokens; not a review")
+    if payload.get("stop_reason") != "end_turn":
+        return refuse(WRAPPER, "kimi reply did not complete the turn; not a review")
     content = extract_text(payload)
-    if not content:
+    if not content or not content.strip():
         return refuse(WRAPPER, "kimi returned no text content; check the model id")
     record_served_model(WRAPPER, payload.get("model"), model)
     sys.stdout.write(content)

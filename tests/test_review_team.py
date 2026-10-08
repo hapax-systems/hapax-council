@@ -831,6 +831,75 @@ class TestDistinctFamilyFloor:
 
     SUBSTITUTES = {"muse", "vibe", "local", "kimi", "featherless", "verboo"}
 
+    @pytest.mark.parametrize(
+        "models",
+        [
+            {"featherless": "glm-5.3", "verboo": "glm-5.3"},
+            {"featherless": "deepseek-ai/DeepSeek-V4-Pro", "verboo": "deepseek-v4"},
+            {"featherless": "deepseek-ai/DeepSeek-V4-Pro", "verboo": "verboo-coder"},
+            {"featherless": "deepseek-ai/DeepSeek-V4-Pro", "verboo": None},
+        ],
+    )
+    def test_observed_duplicates_or_unknowns_cannot_certify_even_under_t2_release(self, models):
+        rt = _load_review_team_module()
+        reviews = [_review(f"{f}-1", f, "accept") for f in ("gemini", "featherless", "verboo")]
+        for review in reviews:
+            if review["family"] in models:
+                review["served_model"] = models[review["family"]]
+                review["effective_family"] = review["family"]  # never trust a cached claim
+        dossier = _synth(rt, reviews)
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"]["met"] is False
+        dossier["review_team_verdict"] = "quorum-accept"  # admission must recompute
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=rt.load_lens_registry(),
+            frontmatter={"risk_tier": "T2", "assigned_to": "beta"},
+            route_blocked_families={},
+        )
+        assert any("same_family_reseat" in b or "model_identity_unknown" in b for b in blockers)
+        assert (
+            rt.t2_family_floor_release(
+                dossier,
+                frontmatter={"risk_tier": "T2", "assigned_to": "beta"},
+                registry=rt.load_lens_registry(),
+                accepts=reviews,
+            )
+            is None
+        )
+
+    def test_three_observed_distinct_substitutes_meet_the_floor(self):
+        rt = _load_review_team_module()
+        reviews = []
+        for family, model in (
+            ("kimi", "kimi-for-coding"),
+            ("featherless", "deepseek-v4"),
+            ("verboo", "minimax-m3"),
+        ):
+            reviews.append({**_review(f"{family}-1", family, "accept"), "served_model": model})
+        assert _synth(rt, reviews)["review_team_verdict"] == "quorum-accept"
+
+    def test_substitute_serving_writer_family_is_not_an_independent_t2_accept(self):
+        rt = _load_review_team_module()
+        reviews = [
+            {
+                **_review("featherless-1", "featherless", "accept"),
+                "served_model": "claude-sonnet-4",
+            },
+            _review("claude-1", "claude", "accept"),
+            _review("gemini-1", "gemini", "reviewer-route-unavailable"),
+        ]
+        dossier = _synth(rt, reviews)
+        blockers = rt._dossier_validity_blockers(
+            dossier,
+            pr_head_sha="a" * 40,
+            registry=rt.load_lens_registry(),
+            frontmatter={"risk_tier": "T2", "assigned_to": "beta"},
+            route_blocked_families={},
+        )
+        assert any("writer_family_majority:claude:2/2" in b for b in blockers)
+
     def test_registry_declares_the_granted_substitute_families(self) -> None:
         rt = _load_review_team_module()
         entries = {e["family"]: e for e in rt.review_family_entries(rt.load_lens_registry())}

@@ -63,26 +63,47 @@ def _iter_sse_data(response) -> tuple[list[str], str | None, str | None]:
     parts: list[str] = []
     finish_reason: str | None = None
     served_model: str | None = None
+    done = False
     for raw in response:
         line = raw.decode("utf-8", "replace").strip()
         if not line or not line.startswith("data:"):
             continue
         data = line[len("data:") :].strip()
         if data == "[DONE]":
+            done = True
             break
         chunk = json.loads(data)
-        if served_model is None and isinstance(chunk.get("model"), str):
+        if not isinstance(chunk, dict) or "error" in chunk:
+            raise ValueError("malformed or error SSE payload")
+        if "model" in chunk:
+            if not isinstance(chunk["model"], str) or (
+                served_model is not None and chunk["model"] != served_model
+            ):
+                raise ValueError("inconsistent served model")
             served_model = chunk["model"]
         choices = chunk.get("choices")
-        if not isinstance(choices, list) or not choices:
+        if not isinstance(choices, list):
+            raise ValueError("malformed choices")
+        if not choices:
             continue
         first = choices[0]
-        if isinstance(first, dict):
-            delta = first.get("delta")
-            if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                parts.append(delta["content"])
-            if first.get("finish_reason"):
-                finish_reason = first["finish_reason"]
+        if (
+            len(choices) != 1
+            or not isinstance(first, dict)
+            or not isinstance(first.get("delta"), dict)
+        ):
+            raise ValueError("malformed choice delta")
+        delta = first["delta"]
+        if delta.get("content") is not None:
+            if not isinstance(delta["content"], str) or finish_reason is not None:
+                raise ValueError("malformed or post-completion content")
+            parts.append(delta["content"])
+        if first.get("finish_reason"):
+            if finish_reason is not None:
+                raise ValueError("multiple completion markers")
+            finish_reason = first["finish_reason"]
+    if not done:
+        raise ValueError("stream ended without completion marker")
     return parts, finish_reason, served_model
 
 
@@ -119,11 +140,15 @@ def main() -> int:
         except Exception:  # noqa: BLE001 — a body read failure must not mask the status
             detail = ""
         return http_failure(WRAPPER, exc.code, detail, key)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except (ValueError, UnicodeError):
+        return refuse(WRAPPER, "verboo returned malformed or incomplete SSE payload; not a review")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
         # retry-free: one attempt, then classify as a route outage.
         return refuse(WRAPPER, f"verboo stream {base_url} failed ({type(exc).__name__})")
     if finish_reason == "length":
         return refuse(WRAPPER, f"reply truncated at {MAX_OUTPUT_TOKENS} tokens; not a review")
+    if finish_reason != "stop":
+        return refuse(WRAPPER, "verboo stream did not complete; not a review")
     content = "".join(parts)
     if not content.strip():
         return refuse(WRAPPER, "verboo stream returned no content; check the model id")

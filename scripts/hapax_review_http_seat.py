@@ -2,7 +2,7 @@
 
 Follows scripts/hapax-muse-reviewer and scripts/hapax-local-reviewer: a blind prompt on
 stdin, tools off, the bare-fence output contract (``SEAT_PREAMBLE``), a prompt-size ceiling
-that refuses above the measured fit, and the served model recorded on stderr. The API key is
+that refuses above its configured bound, and the served model recorded on stderr. The API key is
 read from the FileStore through ``shared.secrets.get_secret`` (operator ruling 2026-09-16) —
 never a PAYG key.
 
@@ -22,6 +22,7 @@ signal must be a process failure with empty stdout. These wrappers honor that.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -75,18 +76,18 @@ def read_prompt() -> str:
 
 def seat_text(prompt: str) -> str:
     """Prefix the blind-seat preamble (tools off, bare-fence contract) to the prompt."""
-    return f"{SEAT_PREAMBLE}\n\n{prompt.strip()}\n"
+    return f"{SEAT_PREAMBLE}\n\n{prompt}\n"
 
 
 def over_ceiling(wrapper: str, text: str, max_bytes: int) -> int | None:
-    """Refuse (route-unavailable) a prompt above the measured fit; the constitution
+    """Refuse (route-unavailable) a prompt above the configured bound; the constitution
     substitutes another family rather than risk a partial review. Returns the refusal exit
     code when over the ceiling, else None."""
     size = len(text.encode("utf-8"))
     if size > max_bytes:
         return refuse(
             wrapper,
-            f"prompt of {size} bytes exceeds the measured {wrapper} ceiling of {max_bytes}; "
+            f"prompt of {size} bytes exceeds the configured {wrapper} ceiling of {max_bytes}; "
             "the constitution substitutes another family",
         )
     return None
@@ -119,9 +120,10 @@ def read_api_key(
 
 
 def quota_wall(wrapper: str, status: int, detail: str = "", secret: str | None = None) -> int:
-    """Signal a provider usage/rate/balance wall (HTTP 429). review_team.is_quota_wall reads
+    """Signal a confirmed provider usage/rate/balance wall. review_team.is_quota_wall reads
     this stderr line and latches the family-outage witness; it is never read as a review."""
-    line = f"{wrapper}: api error: HTTP {status} Too Many Requests"
+    signal = "Too Many Requests" if status == 429 else "quota_exhaustion"
+    line = f"{wrapper}: api error: HTTP {status} {signal}"
     extra = _one_line(detail, secret, _MAX_WALL_CHARS - len(line) - 2)
     if extra:
         line = f"{line}; {extra}"
@@ -142,7 +144,9 @@ def provider_outage(wrapper: str, status: int, detail: str = "", secret: str | N
 
 def http_failure(wrapper: str, status: int, detail: str = "", secret: str | None = None) -> int:
     """Map an HTTP error status to the existing outage verdicts."""
-    if status == 429:
+    if status in (402, 429) or (
+        status == 403 and re.search(r"(?:weekly|daily|monthly).*usage limit", detail, re.IGNORECASE)
+    ):
         return quota_wall(wrapper, status, detail, secret)
     if 500 <= status < 600:
         return provider_outage(wrapper, status, detail, secret)
@@ -157,4 +161,13 @@ def http_failure(wrapper: str, status: int, detail: str = "", secret: str | None
 def record_served_model(wrapper: str, served: str | None, pinned: str) -> None:
     """Record the served model on stderr for the dossier's served-model identity. A reviewer
     SUCCESS keeps stdout for the review alone, so this goes to stderr."""
-    print(f"{wrapper}: served_model={served or 'unknown'} pinned_model={pinned}", file=sys.stderr)
+
+    # Provider strings are untrusted: never let whitespace forge a second diagnostic line.
+    def safe(value: str | None) -> str:
+        return (
+            value
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}", value)
+            else "unknown"
+        )
+
+    print(f"{wrapper}: served_model={safe(served)} pinned_model={safe(pinned)}", file=sys.stderr)

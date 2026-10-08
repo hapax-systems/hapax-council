@@ -3,6 +3,5 @@
   "scripts/check-new-module-consumers.py",
   "shared.sdlc_close",
   "shared.methodology_dispatch_carrier",
-  "scripts.hapax_review_http_seat",
-  "scripts.hapax_review_family_inflation"
+  "scripts.hapax_review_http_seat"
 ]

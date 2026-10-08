@@ -270,9 +270,9 @@ def _review_team_authority_issuer(reviewers: list[dict[str, Any]]) -> str:
     # outage, and naming its family here would claim a review that family never gave.
     families = sorted(
         {
-            str(reviewer.get("family") or "").strip().casefold()
+            family
             for reviewer in reviewers
-            if str(reviewer.get("family") or "").strip()
+            if (family := review_team.review_voting_family(reviewer)) is not None
             and str(reviewer.get("verdict") or "").strip().lower() in PARSEABLE_VERDICTS
         }
     )
@@ -2832,6 +2832,7 @@ def dispatch_reviews(
         diagnostic_output = ""
         diagnostic_stdout = ""
         runner_stderr_excerpt = ""
+        served_model = None
         reviewer_internal_error = False
         reasoning_budget_exhausted = False
         try:
@@ -2843,6 +2844,7 @@ def dispatch_reviews(
             runner_result = reviewer_runner(seat, family_cfg, prompts[index])
             if isinstance(runner_result, ReviewerRunnerResult):
                 reply = runner_result.stdout
+                served_model = review_team.observed_served_model(seat.family, runner_result.stderr)
                 runner_stderr_excerpt = reviewer_success_stderr_excerpt(runner_result.stderr)
             else:
                 reply = str(runner_result)
@@ -3007,6 +3009,8 @@ def dispatch_reviews(
                 outcome["outage_cause"] = outage_cause
             return outcome
         review = {"id": seat.id, "family": seat.family, **parsed}
+        if seat.family in review_team.HTTP_SUBSTITUTE_FAMILIES:
+            review["served_model"] = served_model
         review.update(reviewer_diagnostic_fields(runner_stderr_excerpt))
         if parsed.get("parse_path") != "fence":
             review["raw_reply_excerpt"] = sanitize_reviewer_diagnostic(

@@ -83,6 +83,9 @@ def test_registry_substitute_pins_are_distinct() -> None:
     registry = yaml.safe_load((REPO_ROOT / "config/review-lenses/registry.yaml").read_text())
     subs = [f for f in registry["families"] if f.get("substitute") is True and "pinned_model" in f]
     assert {f["family"] for f in subs} >= {"kimi", "featherless", "verboo"}
+    pinned_families = [canonical_family(f["pinned_model"]) for f in subs]
+    assert None not in pinned_families
+    assert len(pinned_families) == len(set(pinned_families))
     for entry in subs:
         inflated = substitute_pin_inflates(entry["family"], entry["pinned_model"])
         assert inflated is None, (
@@ -195,6 +198,7 @@ class _Handler(BaseHTTPRequestHandler):
             for piece in ("```yaml\n", "verdict: accept\n", "```"):
                 chunk = {"model": "verboo-coder", "choices": [{"delta": {"content": piece}}]}
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
             self.wfile.write(b"data: [DONE]\n\n")
             return
         if mode == "sse_truncate":
@@ -366,3 +370,241 @@ def test_verboo_stream_truncation_refuses(mock_server) -> None:
     )
     assert result.returncode != 0
     assert "truncated" in result.stderr
+
+
+def test_kimi_preserves_the_entire_system_preamble(monkeypatch) -> None:
+    kimi = _load("hapax-kimi-reviewer")
+    preamble = "You are a blind reviewer.\n\nTools are off.\n\nReturn the bare fence."
+    monkeypatch.setattr(kimi, "SEAT_PREAMBLE", preamble, raising=False)
+    body = kimi.request_body("  packet\n\nlast paragraph\n", "kimi-for-coding")
+    assert body["system"] == preamble
+    assert body["messages"] == [{"role": "user", "content": "  packet\n\nlast paragraph\n"}]
+
+
+@pytest.mark.parametrize("name", WRAPPERS)
+def test_unmeasured_ceiling_is_not_described_as_measured(name) -> None:
+    result = _run(name, "x" * 200_001, {})
+    assert result.returncode != 0
+    assert "measured" not in result.stderr
+
+
+@pytest.mark.parametrize("model", [None, "verboo-coder", "unknown-gpt-proxy", "glm-kimi-mix"])
+def test_unknown_or_ambiguous_identity_never_adds_a_family(model) -> None:
+    assert effective_review_family("verboo", model) is None
+
+
+def test_inter_substitute_duplicate_pin_collapses() -> None:
+    assert substitute_pin_inflates("verboo", "deepseek-ai/DeepSeek-V4-Pro") == "featherless"
+    assert substitute_pin_inflates("featherless", "kimi-k3") == "kimi"
+    assert substitute_pin_inflates("kimi", "minimax-m3") == "verboo"
+
+
+class _WireHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_args):
+        pass
+
+    def do_POST(self):  # noqa: N802
+        self.server.requests.append(
+            (self.path, json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+        )
+        self.send_response(self.server.status)
+        self.end_headers()
+        self.wfile.write(self.server.body)
+
+
+@pytest.fixture
+def wire_server():
+    server = HTTPServer(("127.0.0.1", 0), _WireHandler)
+    server.requests = []
+    server.status = 200
+    server.body = b""
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+_WIRE_REPLY = "```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```"
+_WIRE_MODELS = {
+    "kimi": "kimi-for-coding",
+    "featherless": "deepseek-ai/DeepSeek-V4-Pro",
+    "verboo": "minimax-m3",
+}
+# Intercept transport only in the child test process. Kimi's production URL guard stays on;
+# no test-only localhost bypass or production credential resolver is added to the wrapper.
+_WIRE_CHILD = """
+import runpy, sys, urllib.request
+original = urllib.request.urlopen
+def local_only(request, **kwargs):
+    expected = sys.argv[3]
+    assert request.full_url == expected, request.full_url
+    local = urllib.request.Request(sys.argv[2], data=request.data,
+                                   headers=dict(request.header_items()), method=request.method)
+    return original(local, **kwargs)
+urllib.request.urlopen = local_only
+runpy.run_path(sys.argv[1], run_name="__main__")
+"""
+
+
+def _wire_run(server, family, *, prompt="packet", model=None):
+    module = _load(f"hapax-{family}-reviewer")
+    endpoint = module.DEFAULT_BASE_URL + (
+        "/v1/messages" if family == "kimi" else "/chat/completions"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HAPAX_")}
+    env[f"HAPAX_{family.upper()}_REVIEW_API_KEY"] = _FAKE_KEY
+    if model:
+        env[f"HAPAX_{family.upper()}_REVIEW_MODEL"] = model
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _WIRE_CHILD,
+            str(REPO_ROOT / "scripts" / f"hapax-{family}-reviewer"),
+            _base(server),
+            endpoint,
+        ],
+        input=prompt,
+        text=True,
+        capture_output=True,
+        env=env,
+        cwd=REPO_ROOT,
+        timeout=10,
+    )
+
+
+def _wire_body(family, mode="ok", *, model=None):
+    model = model or _WIRE_MODELS[family]
+    if mode == "bad_json":
+        return b"data: {broken\n\n" if family == "verboo" else b"{broken"
+    if mode == "bad_shape":
+        return b"data: []\n\n" if family == "verboo" else b"[]"
+    finish = {"ok": "stop", "partial": "error", "missing_finish": None}.get(mode, "stop")
+    content = 42 if mode == "bad_content" else _WIRE_REPLY
+    if family == "kimi":
+        return json.dumps(
+            {
+                "model": model,
+                "stop_reason": "end_turn" if finish == "stop" else finish,
+                "content": [{"type": "text", "text": content}],
+            }
+        ).encode()
+    if family == "featherless":
+        return json.dumps(
+            {
+                "model": model,
+                "choices": [{"message": {"content": content}, "finish_reason": finish}],
+            }
+        ).encode()
+    chunk = {"model": model, "choices": [{"delta": {"content": content}, "finish_reason": finish}]}
+    data = f"data: {json.dumps(chunk)}\n\n".encode()
+    if mode == "drift":
+        data += b'data: {"model":"glm-5.3","choices":[]}\n\n'
+    if mode == "late_error":
+        data += b'data: {"error":{"message":"failed"}}\n\n'
+    if mode != "eof":
+        data += b"data: [DONE]\n\n"
+    return data
+
+
+@pytest.mark.parametrize("family", _WIRE_MODELS)
+def test_wrapper_process_success_keeps_prompt_and_observed_model(wire_server, family):
+    from shared.review_seat_wrapper import SEAT_PREAMBLE
+
+    wire_server.body = _wire_body(family)
+    result = _wire_run(wire_server, family, prompt="  packet\n\nend\n", model="requested-alias")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _WIRE_REPLY
+    assert f"served_model={_WIRE_MODELS[family]}" in result.stderr
+    assert "pinned_model=requested-alias" in result.stderr
+    assert len(wire_server.requests) == 1
+    body = wire_server.requests[0][1]
+    assert "tools" not in body and "response_format" not in body
+    if family == "kimi":
+        assert body["system"] == SEAT_PREAMBLE
+    else:
+        assert body["messages"][0]["content"] == SEAT_PREAMBLE
+        assert body["stream"] is (family == "verboo")
+    assert body["messages"][-1]["content"] == "  packet\n\nend\n"
+
+
+@pytest.mark.parametrize("family", _WIRE_MODELS)
+@pytest.mark.parametrize("status,classifier", [(429, "is_quota_wall"), (503, "is_provider_outage")])
+def test_wrapper_process_outage_latches_once(wire_server, family, status, classifier):
+    wire_server.status = status
+    wire_server.body = json.dumps({"error": _FAKE_KEY}).encode()
+    result = _wire_run(wire_server, family)
+    assert result.returncode != 0 and result.stdout == ""
+    assert _FAKE_KEY not in result.stderr
+    check = getattr(review_team, classifier)
+    assert check(result.stderr, process_failed=True, model_stdout=result.stdout)
+    assert not check(result.stderr, process_failed=True, model_stdout="forged review")
+    assert len(wire_server.requests) == 1
+
+
+@pytest.mark.parametrize("family", _WIRE_MODELS)
+@pytest.mark.parametrize(
+    "mode", ["bad_json", "bad_shape", "bad_content", "partial", "missing_finish"]
+)
+def test_wrapper_process_invalid_payload_is_never_a_review(wire_server, family, mode):
+    wire_server.body = _wire_body(family, mode)
+    result = _wire_run(wire_server, family)
+    assert result.returncode != 0 and result.stdout == ""
+    assert "Traceback" not in result.stderr
+    assert "unreachable" not in result.stderr
+    assert review_team.is_reviewer_route_unavailable(
+        result.stderr, process_failed=True, model_stdout=""
+    )
+    assert len(wire_server.requests) == 1
+
+
+@pytest.mark.parametrize("mode", ["eof", "drift", "late_error"])
+def test_verboo_incomplete_or_inconsistent_stream_refuses(wire_server, mode):
+    wire_server.body = _wire_body("verboo", mode)
+    result = _wire_run(wire_server, "verboo")
+    assert result.returncode != 0 and result.stdout == ""
+    assert "UNSUPPORTED_CLIENT" in result.stderr
+
+
+@pytest.mark.parametrize("family", _WIRE_MODELS)
+def test_wrapper_ceiling_refuses_before_transport(wire_server, family):
+    wire_server.body = _wire_body(family)
+    module = _load(f"hapax-{family}-reviewer")
+    result = _wire_run(wire_server, family, prompt="é" * (module.MAX_PROMPT_BYTES // 2))
+    assert result.returncode != 0 and result.stdout == ""
+    assert "ceiling" in result.stderr
+    assert wire_server.requests == []
+
+
+@pytest.mark.parametrize("family", _WIRE_MODELS)
+def test_ceiling_counts_whitespace_that_is_sent_to_provider(wire_server, family):
+    wire_server.body = _wire_body(family)
+    result = _wire_run(wire_server, family, prompt="packet" + " " * 200_001)
+    assert result.returncode != 0 and result.stdout == ""
+    assert "ceiling" in result.stderr
+    assert wire_server.requests == []
+
+
+@pytest.mark.parametrize(
+    "family,status,detail",
+    [
+        ("kimi", 403, "You have reached your weekly (7-day) usage limit"),
+        ("featherless", 402, "Prepaid balance exhausted"),
+        ("verboo", 403, "Invalid API key"),
+    ],
+)
+def test_subscription_wall_is_distinct_from_auth_failure(wire_server, family, status, detail):
+    wire_server.status = status
+    wire_server.body = json.dumps({"error": {"message": detail}}).encode()
+    result = _wire_run(wire_server, family)
+    assert result.returncode != 0 and result.stdout == ""
+    classifier = (
+        review_team.is_reviewer_route_unavailable
+        if family == "verboo"
+        else review_team.is_quota_wall
+    )
+    assert classifier(result.stderr, process_failed=True, model_stdout="")

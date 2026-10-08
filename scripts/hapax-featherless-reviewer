@@ -5,9 +5,9 @@ Sends the dispatcher's blind prompt to Featherless's OpenAI-compatible chat comp
 endpoint (``https://api.featherless.ai/v1``) as one non-streaming completion, no tools.
 Follows scripts/hapax-muse-reviewer and scripts/hapax-local-reviewer.
 
-Billing: the Featherless key is a $200/month prepaid flat plan (FileStore ``featherless-api-key``),
-never a PAYG key. The pinned model is a §B2 shape match. DeepSeek-V4-Pro's 32k context is a
-known mismatch for long review packets, so the wrapper refuses prompts above its measured fit
+Billing: the Featherless key uses the prepaid balance (FileStore ``featherless-api-key``),
+never a PAYG key. The pin is a §B2 review candidate; fit remains unmeasured. Its 32k context is a
+known mismatch for long review packets, so the wrapper refuses prompts above its configured bound
 and the constitution substitutes another family. Anti-inflation: a Featherless seat counts as
 its served model's family (scripts/hapax_review_family_inflation.py), so pin a model whose
 family is NOT a core or already-seated family (not GLM, not the local Qwen, not Kimi).
@@ -42,7 +42,7 @@ WRAPPER = "hapax-featherless-reviewer"
 DEFAULT_BASE_URL = "https://api.featherless.ai/v1"
 DEFAULT_MODEL = "deepseek-ai/DeepSeek-V4-Pro"
 SECRET_ENTRY = "featherless-api-key"  # pragma: allowlist secret
-# DeepSeek-V4-Pro is a 32k-context model; reserve the output budget and refuse longer packets.
+# Unmeasured byte bound, not proof of tokenizer/context fit; a capacity canary is still owed.
 MAX_PROMPT_BYTES = 80_000
 MAX_OUTPUT_TOKENS = 8192
 TIMEOUT_SECONDS = 900
@@ -93,18 +93,22 @@ def main() -> int:
         except Exception:  # noqa: BLE001 — a body read failure must not mask the status
             detail = ""
         return http_failure(WRAPPER, exc.code, detail, key)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except (ValueError, UnicodeError):
+        return refuse(WRAPPER, "featherless returned malformed JSON payload; not a review")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
         return refuse(
             WRAPPER, f"featherless endpoint {base_url} unreachable ({type(exc).__name__})"
         )
     try:
         choice = payload["choices"][0]
-        content = choice["message"]["content"] or ""
+        content = choice["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return refuse(WRAPPER, "featherless returned no choices; check the model id")
     if choice.get("finish_reason") == "length":
         return refuse(WRAPPER, f"reply truncated at {MAX_OUTPUT_TOKENS} tokens; not a review")
-    if not content.strip():
+    if choice.get("finish_reason") != "stop":
+        return refuse(WRAPPER, "featherless reply did not complete; not a review")
+    if not isinstance(content, str) or not content.strip():
         return refuse(WRAPPER, "featherless returned empty content; not a review")
     record_served_model(WRAPPER, payload.get("model"), model)
     sys.stdout.write(content)

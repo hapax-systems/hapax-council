@@ -14,15 +14,21 @@ model family a core/seated family already occupies ("pin non-duplicate models").
 
 from __future__ import annotations
 
+import re
+
 __all__ = [
     "canonical_family",
     "REVIEW_FAMILY_MODEL_FAMILY",
     "effective_review_family",
     "substitute_pin_inflates",
+    "HTTP_SUBSTITUTE_FAMILIES",
+    "observed_served_model",
 ]
 
-# Served-model id substring -> model family. Ordered: the first substring that appears in the
-# lowercased model id wins (so "deepseek-v4" resolves before a bare vendor prefix).
+HTTP_SUBSTITUTE_FAMILIES = frozenset({"kimi", "featherless", "verboo"})
+
+# Recognized model-name prefixes and family tokens. Conflicting families remain unknown;
+# these labels do not establish measured error independence or capability admission.
 _MODEL_FAMILY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("glm", "glm"),
     ("claude", "claude"),
@@ -52,37 +58,65 @@ REVIEW_FAMILY_MODEL_FAMILY: dict[str, str] = {
     "glm": "glm",
     "local": "qwen",  # scripts/hapax-local-reviewer serves qwen3.8-flash-next
     "vibe": "mistral",  # scripts/hapax-vibe-reviewer serves Mistral Medium 3.5
+    "kimi": "kimi",
+    "featherless": "deepseek",
+    "verboo": "minimax",
 }
 
 
 def canonical_family(served_model: str | None) -> str | None:
     """Resolve a served model id to its model family, or None when unknown."""
-    if not served_model:
+    if not isinstance(served_model, str) or not served_model:
         return None
-    lowered = served_model.lower()
-    for needle, family in _MODEL_FAMILY_PATTERNS:
-        if needle in lowered:
-            return family
-    return None
+    model = served_model.lower().rsplit("/", 1)[-1]
+    matches = {
+        family
+        for needle, family in _MODEL_FAMILY_PATTERNS
+        if re.search(rf"(?:^|[-_.]){needle}(?=$|[-_.\d])", model)
+    }
+    # Opaque gateway aliases and ambiguous/distilled names are not ancestry evidence.
+    if len(matches) != 1 or not any(
+        re.match(rf"^{needle}(?=$|[-_.\d])", model) for needle, _ in _MODEL_FAMILY_PATTERNS
+    ):
+        return None
+    return matches.pop()
 
 
-def effective_review_family(declared_family: str, served_model: str | None) -> str:
+def effective_review_family(declared_family: str, served_model: str | None) -> str | None:
     """The family a substitute seat counts as for independence.
 
     When the served model's family is one a core/seated review family already occupies, the
-    seat counts as that review family (anti-inflation). Otherwise it keeps its declared
-    substitute family.
+    seat counts as that review family (anti-inflation). Other known ancestry uses its
+    canonical name; unknown ancestry receives no voting-family credit. Never use the pin
+    as a substitute for the observed response model.
     """
     model_family = canonical_family(served_model)
     if model_family is not None:
         for review_family, occupied in REVIEW_FAMILY_MODEL_FAMILY.items():
-            if occupied == model_family and review_family != declared_family:
+            if occupied == model_family:
                 return review_family
-    return declared_family
+    return model_family
 
 
 def substitute_pin_inflates(declared_family: str, pinned_model: str | None) -> str | None:
     """Return the core/seated review family a substitute pin would collapse into, or None when
     the pin is a genuinely distinct family. A test uses this to refuse a duplicate pin."""
     effective = effective_review_family(declared_family, pinned_model)
-    return effective if effective != declared_family else None
+    return (effective or "unknown") if effective != declared_family else None
+
+
+def observed_served_model(declared_family: str, stderr: str) -> str | None:
+    """Read exactly one wrapper identity line from process stderr, never review text.
+
+    The caller supplies the actual dispatched route. Foreign/duplicate/malformed lines
+    cannot supply identity. The pin is diagnostic only, even if the provider omits model.
+    """
+    if declared_family not in HTTP_SUBSTITUTE_FAMILIES:
+        return None
+    prefix = f"hapax-{declared_family}-reviewer: served_model="
+    lines = [line for line in stderr.splitlines() if line.startswith(prefix)]
+    if len(lines) != 1:
+        return None
+    token = r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}"
+    match = re.fullmatch(re.escape(prefix) + rf"({token}) pinned_model={token}", lines[0])
+    return match[1] if match and match[1] != "unknown" else None
