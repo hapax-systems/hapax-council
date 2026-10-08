@@ -83,6 +83,7 @@ from shared.platform_capability_registry import (
 )
 
 if TYPE_CHECKING:
+    from shared.capability_envelope import RenderedEnvelope
     from shared.content_address import ContentAddress
 
 __all__ = [
@@ -301,6 +302,7 @@ class WorkerAdapter(CapabilityAdapter):
         launch_callable: Callable[[], int],
         *,
         collect_result_ref: Callable[[], ContentAddress | None] | None = None,
+        rendered_envelope: RenderedEnvelope | None = None,
     ) -> DispatchLaunchResult:
         """Assert authority FIRST (the sole re-check point — coord_dispatch does not re-check),
         then delegate the atomic spawn. Overrides MUST preserve the authority assert (call
@@ -308,6 +310,13 @@ class WorkerAdapter(CapabilityAdapter):
         """
 
         _require_launch_authority(decision, op="launch")
+        if rendered_envelope is not None:
+            return run_atomic_dispatch_launch(
+                request,
+                launch_callable,
+                collect_result_ref=collect_result_ref,
+                rendered_envelope=rendered_envelope,
+            )
         return run_atomic_dispatch_launch(
             request, launch_callable, collect_result_ref=collect_result_ref
         )
