@@ -754,7 +754,10 @@ def test_claim_sweep_preserves_concurrent_marker_replacement(tmp_path: Path) -> 
     claims, family = _sweep_claim_family(tmp_path)
     marker = claims / "cc-active-task-gamma"
     started = Event()
+    replacement_ready = Event()
+    first_sweep_completed = Event()
     finished = Event()
+    sweep_count = 0
 
     def publish() -> None:
         started.wait(timeout=5)
@@ -765,15 +768,23 @@ def test_claim_sweep_preserves_concurrent_marker_replacement(tmp_path: Path) -> 
                 os.utime(replacement, (1000, 1000))
                 replacement.replace(marker)
                 assert marker.read_bytes() == task
+                # Keep the publication interval open across a real sweep even
+                # when the publisher would otherwise finish before the reader.
+                replacement_ready.set()
+                assert first_sweep_completed.wait(timeout=5)
         finally:
             finished.set()
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         publisher = pool.submit(publish)
         started.set()
+        assert replacement_ready.wait(timeout=5)
         while not finished.is_set():
             held = module.sweep_stale_claims(claims, tmp_path / "active", now=14 * 86400)
             assert isinstance(held, module.ClaimSweepHold)
+            sweep_count += 1
+            first_sweep_completed.set()
+        assert sweep_count > 0
         publisher.result(timeout=5)
     family[marker] = b"successor\n"
     assert {path: path.read_bytes() for path in family} == family
