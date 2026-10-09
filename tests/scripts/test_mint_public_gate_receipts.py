@@ -361,6 +361,44 @@ def test_invalid_inherited_capacity_refuses_at_use(
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
+@pytest.mark.parametrize("boundary", ["mint", "cli"])
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "declared_at: 2026-99-99\n",
+        "declared_at: 2026-01-01T25:00:00Z\n",
+        "private: !!int private-registry-payload\n",
+    ],
+)
+def test_registry_constructor_error_holds_mint(
+    env, monkeypatch, caplog, capsys, boundary, malformed
+) -> None:
+    _dossier(env, writer_family="codex", reviewers=[GEMINI, MUSE], **MUSE_PROVENANCE)
+    path = env["root"] / "registry.yaml"
+    path.write_text(malformed, encoding="utf-8")
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_REVIEW_REGISTRY_PATH", path)
+    if boundary == "mint":
+        with pytest.raises(
+            minter.MintError, match="mint_public_gate_review_registry_invalid"
+        ) as exc:
+            _mint(env)
+        message = str(exc.value)
+    else:
+        assert minter.main(_argv(env)) == 1
+        captured = capsys.readouterr()
+        assert not captured.out
+        assert "HOLD" in captured.err
+        message = captured.err
+    assert not env["receipts"].exists()
+    for diagnostic in (message, caplog.text):
+        assert "yaml_error" in diagnostic
+        assert str(path) in diagnostic
+        assert "next action:" in diagnostic
+        assert "private-registry-payload" not in diagnostic
+        assert "2026-99-99" not in diagnostic
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
 def test_muse_capacity_inherits_valid_default_fields(env, monkeypatch) -> None:
     data = yaml.safe_load(public_gate_receipts.PUBLIC_GATE_REVIEW_REGISTRY_PATH.read_text())
     capacity = data["diff_capacity"]

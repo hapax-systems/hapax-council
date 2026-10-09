@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,51 @@ def test_dossier_counts_only_known_independent_families(
         )
         is allowed
     )
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "declared_at: 2026-99-99\n",
+        "declared_at: 2026-01-01T25:00:00Z\n",
+        "private: !!int private-registry-payload\n",
+    ],
+)
+def test_registry_constructor_error_refuses_consumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog, malformed: str
+) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        writer_family="codex",
+        reviewers=[
+            {"id": f"{family}-1", "family": family, "verdict": "accept"}
+            for family in ("gemini", "muse")
+        ],
+        quorum_required=2,
+        accept_count=2,
+        registry_id="review-lenses",
+        family_substitution={
+            "seated_families": ["codex", "gemini", "muse"],
+            "substitute_families_seated": ["muse"],
+        },
+    )
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml", expected_gate=GATE, roots=(tmp_path,)
+    )
+    registry = tmp_path / "registry.yaml"
+    registry.write_text(malformed, encoding="utf-8")
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_REVIEW_REGISTRY_PATH", registry)
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml", expected_gate=GATE, roots=(tmp_path,)
+    )
+    assert "yaml_error" in caplog.text
+    assert str(registry) in caplog.text
+    assert "next action:" in caplog.text
+    assert "private-registry-payload" not in caplog.text
+    assert "2026-99-99" not in caplog.text
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
 def test_rejects_self_minted_receipt_without_delegated_authority(tmp_path: Path) -> None:

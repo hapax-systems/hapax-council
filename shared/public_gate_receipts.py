@@ -904,7 +904,8 @@ def public_gate_known_review_families(dossier: Mapping[str, Any]) -> frozenset[s
         raise _review_registry_error("read_error") from None
     except UnicodeError:
         raise _review_registry_error("decode_error") from None
-    except yaml.YAMLError:
+    except (yaml.YAMLError, ValueError):
+        # SafeLoader constructors can raise ValueError (for example, invalid timestamps).
         raise _review_registry_error("yaml_error") from None
     if (
         not isinstance(registry, Mapping)
