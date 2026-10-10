@@ -697,6 +697,24 @@ class TestCredentials:
 
 
 class TestEnvCredentials:
+    @pytest.fixture(autouse=True)
+    def _no_did(self, monkeypatch):
+        monkeypatch.delenv("HAPAX_BLUESKY_DID", raising=False)
+
+    def test_the_did_is_preferred_as_the_login_identifier(self, monkeypatch):
+        # 2026-10-10: the configured handle no longer resolved and its login was refused (401),
+        # while the same app password opened a session by DID. A DID does not change.
+        monkeypatch.setenv("HAPAX_BLUESKY_DID", "did:plc:example")
+        monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "stale.bsky.social")
+        monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
+        assert _credentials_from_env() == ("did:plc:example", "abcd-1234")
+
+    def test_a_blank_did_falls_back_to_the_handle(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_BLUESKY_DID", "  ")
+        monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
+        monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
+        assert _credentials_from_env() == ("h.bsky.social", "abcd-1234")
+
     def test_reads_both(self, monkeypatch):
         monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
         monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")

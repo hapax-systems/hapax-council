@@ -15,6 +15,9 @@ via hapax-secrets:
   HAPAX_BLUESKY_HANDLE          # e.g. ``hapax.bsky.social``
   HAPAX_BLUESKY_APP_PASSWORD    # 19-char app-password from Bluesky
 
+``HAPAX_BLUESKY_DID``, when set, is the login identifier in place of the handle: a handle can
+change and a DID cannot.
+
 Without either, daemon idles + logs ``no_credentials`` per event.
 
 ## Composition
@@ -661,9 +664,19 @@ def _dedupe(values: list[str | None]) -> list[str]:
 
 
 def _credentials_from_env() -> tuple[str | None, str | None]:
-    handle = os.environ.get("HAPAX_BLUESKY_HANDLE", "").strip() or None
+    """The login identifier and app password.
+
+    The account's DID is preferred: a handle can change and a DID cannot. On 2026-10-10 the
+    configured handle no longer resolved and its login was refused, while the same app password
+    opened a session by DID.
+    """
+    identifier = (
+        os.environ.get("HAPAX_BLUESKY_DID", "").strip()
+        or os.environ.get("HAPAX_BLUESKY_HANDLE", "").strip()
+        or None
+    )
     pw = os.environ.get("HAPAX_BLUESKY_APP_PASSWORD", "").strip() or None
-    return handle, pw
+    return identifier, pw
 
 
 # ── Orchestrator entry-point (PUB-P1-A foundation) ───────────────────
