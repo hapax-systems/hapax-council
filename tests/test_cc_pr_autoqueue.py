@@ -494,6 +494,7 @@ def _pr(
         "body": body,
         "headRefName": branch or f"feat/{number}",
         "baseRefName": base,
+        "baseRepoDefaultBranch": "main",
         "headRefOid": f"sha-{number}",
         "changedFiles": len(file_list) if changed_files_count is None else changed_files_count,
         "files": [{"path": path} for path in file_list],
@@ -512,6 +513,226 @@ def _pr(
             _check("vscode-build"),
         ],
     }
+
+
+class TestStackedPrIsNeverArmed:
+    """A stacked PR's base is another PR's branch, not the default branch.
+
+    `gh pr merge --auto` on such a PR does not queue it: it folds the PR into its
+    base PR's branch, with no merge queue, no merge-group CI shards and no ordering
+    between the halves. Witnessed 2026-09-28T05:54Z on #4839, armed on a quorum
+    accept, base #4835's branch: it merged into that branch with a codex major open.
+    """
+
+    def _classify(self, vault: Path, payload: dict[str, Any]):
+        pr = autoqueue._parse_pr(payload)
+        assert pr is not None
+        return autoqueue.classify_pr(
+            pr,
+            tasks=autoqueue.load_task_notes(vault),
+            queued_prs=set(),
+            expected_auto_merge_method="SQUASH",
+            expected_auto_merge_method_source="test",
+        )
+
+    def _quorum_accepted_vault(self, tmp_path: Path) -> Path:
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42)
+        _write_review_dossier(vault, "task-a", head_sha="sha-42")
+        return vault
+
+    @staticmethod
+    def _listed(pr_payload: dict[str, Any], *, default_branch: str = "main") -> dict[str, Any]:
+        # The listing carries the repository default branch beside the PR's base
+        # (graphql defaultBranchRef, REST base.repo.default_branch).
+        pr_payload["baseRepoDefaultBranch"] = default_branch
+        return pr_payload
+
+    def test_a_stacked_pr_with_quorum_accept_is_not_queued(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+
+        decision = self._classify(vault, self._listed(_pr(42, base="fix/other-branch")))
+
+        assert decision.action not in {
+            "queue",
+            "enable_auto_merge",
+            "already_queued",
+            "already_auto_merge_enabled",
+        }, decision.reasons
+        assert decision.action == "blocked", decision.reasons
+        assert any("fix/other-branch" in reason for reason in decision.reasons)
+        # The auto-arm writes `release_authorized: true`; a non-release action is
+        # never the auto-arm subject.
+        assert decision.auto_arm is False
+
+    def test_the_same_pr_retargeted_to_the_default_branch_queues(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+
+        decision = self._classify(vault, self._listed(_pr(42, base="main")))
+
+        assert decision.action == "queue", decision.reasons
+
+    def test_the_skip_lands_on_the_existing_reporting_surfaces(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No new surface: the base name travels in the decision reasons the
+        # reconciler report already carries, and in the required-check description
+        # the autoqueue already posts.
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+        decision = self._classify(vault, self._listed(_pr(42, base="fix/other-branch")))
+
+        assert "base_branch_not_default:fix/other-branch:default=main" in decision.reasons
+        assert "Retarget the PR" in decision.as_dict()["next_action"]
+        admission = autoqueue._admission_status_for(decision)
+        assert admission is not None
+        state, description = admission
+        assert state == "failure"
+        assert "base_branch_not_default:fix/other-branch" in description
+
+    def test_an_unknown_default_branch_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Without the default branch the queue destination cannot be established.
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+
+        payload = _pr(42, base="main")
+        payload.pop("baseRepoDefaultBranch")
+        decision = self._classify(vault, payload)
+
+        assert decision.action == "blocked", decision.reasons
+        assert decision.reasons == ("base_branch_unverified",)
+        assert decision.auto_arm is False
+
+    def test_an_unknown_base_branch_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+        decision = self._classify(vault, self._listed(_pr(42, base="main")))
+        assert decision.action == "queue"
+        payload = self._listed(_pr(42, base="main"))
+        payload.pop("baseRefName")
+        decision = self._classify(vault, payload)
+        assert decision.action == "blocked"
+        assert decision.reasons == ("base_branch_unverified",)
+
+    @pytest.mark.parametrize("current_base", ["release", None])
+    def test_retarget_or_missing_live_base_refuses_merge_arm(
+        self, tmp_path: Path, current_base: str | None
+    ) -> None:
+        pr = autoqueue._parse_pr(self._listed(_pr(42, base="main")))
+        assert pr is not None
+        runner = _FakeRunner()
+        runner.open_prs = [self._listed(_pr(42, base="main"))]
+        original = runner._rest_pull_for_number
+
+        def changed_base(number: int) -> dict[str, Any] | None:
+            payload = original(number)
+            assert payload is not None
+            payload["base"]["ref"] = current_base
+            return payload
+
+        runner._rest_pull_for_number = changed_base
+        ok, message = autoqueue.merge_pr(
+            autoqueue.Decision(pr=pr, action="queue", expected_auto_merge_method="SQUASH"),
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert not ok
+        assert message.startswith("current_base_branch_")
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+    def test_rest_blocked_route_does_not_spend_rest_to_arm(self, tmp_path: Path) -> None:
+        pr = autoqueue._parse_pr(self._listed(_pr(42, base="main")))
+        assert pr is not None
+        calls: list[list[str]] = []
+        ok, message = autoqueue.merge_pr(
+            autoqueue.Decision(pr=pr, action="queue", expected_auto_merge_method="SQUASH"),
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=_graphql_only_runner(calls),
+            route=_graphql_route(rest_blocked=True),
+        )
+        assert not ok
+        assert message == "current_base_branch_unverified:rest_unavailable"
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in calls)
+        assert not any("repos/owner/repo/pulls/42" in part for call in calls for part in call)
+
+    @pytest.mark.parametrize(
+        ("fault", "reason"),
+        [
+            ("unreadable", "current_base_branch_unverified:pr_unreadable"),
+            ("head_changed", "current_base_branch_unverified:head_changed"),
+            ("base_missing", "current_base_branch_unverified:base_or_default_missing"),
+            ("default_missing", "current_base_branch_unverified:base_or_default_missing"),
+        ],
+    )
+    def test_live_branch_evidence_errors_refuse_merge_arm(
+        self, tmp_path: Path, fault: str, reason: str
+    ) -> None:
+        pr = autoqueue._parse_pr(self._listed(_pr(42, base="main")))
+        assert pr is not None
+        runner = _FakeRunner()
+        runner.open_prs = [self._listed(_pr(42, base="main"))]
+        original = runner._rest_pull_for_number
+
+        def broken_read(number: int) -> dict[str, Any] | None:
+            if fault == "unreadable":
+                return None
+            payload = original(number)
+            assert payload is not None
+            if fault == "head_changed":
+                payload["head"]["sha"] = "new-head"
+            elif fault == "base_missing":
+                payload["base"]["ref"] = None
+            else:
+                payload["base"]["repo"]["default_branch"] = None
+            return payload
+
+        runner._rest_pull_for_number = broken_read
+        ok, message = autoqueue.merge_pr(
+            autoqueue.Decision(pr=pr, action="queue", expected_auto_merge_method="SQUASH"),
+            repo="owner/repo",
+            repo_root=tmp_path,
+            runner=runner,
+        )
+        assert not ok
+        assert message == reason
+        assert not any(call[:3] == ["gh", "pr", "merge"] for call in runner.calls)
+
+    def test_an_armed_stacked_pr_is_left_alone_not_disarmed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # This rule refuses to arm or queue; it does not reach into GitHub to
+        # dequeue or disarm what is already there (the hold-label and
+        # override-only refusals behave the same way).
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = self._quorum_accepted_vault(tmp_path)
+
+        decision = self._classify(
+            vault, self._listed(_pr(42, base="fix/other-branch", auto_merge=True))
+        )
+
+        assert decision.action not in {
+            "queue",
+            "enable_auto_merge",
+            "already_queued",
+            "already_auto_merge_enabled",
+            "disable_auto_merge",
+            "dequeue",
+        }, decision.reasons
+        assert decision.action == "blocked", decision.reasons
+        assert any("fix/other-branch" in reason for reason in decision.reasons)
+        assert decision.auto_arm is False
 
 
 class _FakeRunner:
@@ -1650,7 +1871,11 @@ def test_run_reconciler_adapter_only_preserves_all_decisions(
         {
             42: "hold",
             43: "hold",
-            44: "already_auto_merge_enabled",
+            # 44 is based on `release`, a non-default branch: refused before any
+            # positive admission (row autoqueue-never-arms-stacked-prs-20260928).
+            # With an override the other way it carries a method-mismatch reason and
+            # is disarmed instead — the pre-existing arm hygiene still applies.
+            44: "blocked",
             45: "blocked",
         }
         if override == "MERGE"
@@ -3796,11 +4021,13 @@ def test_merge_method_override_respects_governance(
     report = _method_override_report(tmp_path, state=state, override=override)
     decision = report["decisions"][0]
     if state == "ordinary":
-        assert decision["action"] == (
-            "already_auto_merge_enabled" if override == "MERGE" else "disable_auto_merge"
-        )
+        # `ordinary` is based on `release`, a non-default branch, so it is refused
+        # before any positive admission (row autoqueue-never-arms-stacked-prs-20260928).
+        # Where the armed method also mismatches, that pre-existing refusal wins and
+        # disarms; the base fact alone (override=contradictory) blocks instead.
+        assert decision["action"] == ("blocked" if override == "MERGE" else "disable_auto_merge")
         assert decision.get("reasons", []) == (
-            []
+            ["base_branch_not_default:release:default=main"]
             if override == "MERGE"
             else ["auto_merge_method_mismatch:armed=MERGE:expected=SQUASH"]
         )
@@ -4154,6 +4381,9 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="wrong-method-armed", pr=4584)
     runner = _FakeRunner()
+    # base="release" is load-bearing for the first pass: the expected method then
+    # comes from the default method, not from the base's queue, which is what makes
+    # the armed MERGE a mismatch to disarm.
     runner.open_prs = [_pr(4584, base="release", auto_merge=True, auto_merge_method="MERGE")]
 
     first_report = autoqueue.run_reconciler(
@@ -4177,7 +4407,13 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
         runner=runner,
     )
 
-    assert second_report["counts"]["queue"] == 1
+    # The second pass no longer re-arms: `release` is not the default branch, so the
+    # PR never reaches a positive admission (row autoqueue-never-arms-stacked-prs-20260928).
+    assert second_report["counts"]["queue"] == 0
+    assert second_report["decisions"][0]["action"] == "blocked"
+    assert second_report["decisions"][0]["reasons"] == [
+        "base_branch_not_default:release:default=main"
+    ]
     assert [
         "gh",
         "pr",
@@ -4187,7 +4423,7 @@ def test_mismatched_auto_merge_method_converges_after_disable_next_pass(
         "owner/repo",
         "--auto",
         "--squash",
-    ] in runner.calls
+    ] not in runner.calls
 
 
 def test_already_auto_merge_enabled_reports_unsupported_armed_method(
@@ -4681,9 +4917,13 @@ def test_run_reconciler_expected_method_override_is_reported_and_used(
     assert report["merge_queue_merge_method"]["method"] == "REBASE"
     assert report["merge_queue_merge_method"]["source"] == "override:test"
     assert report["merge_queue_merge_method"]["indeterminate"] is False
-    assert report["decisions"][0]["action"] == "queue"
     assert report["decisions"][0]["expected_auto_merge_method"] == "REBASE"
+    # base="release" is deliberate here: it is what keeps the ruleset out of the
+    # governance method. It is also a non-default base, so the PR is refused before
+    # any positive admission (row autoqueue-never-arms-stacked-prs-20260928).
     assert report["decisions"][0]["merge_queue_governance"]["method"] is None
+    assert report["decisions"][0]["action"] == "blocked"
+    assert report["decisions"][0]["reasons"] == ["base_branch_not_default:release:default=main"]
     assert not any(
         call[:5] == ["gh", "api", "--method", "GET", "-H"]
         and call[6] == "repos/owner/repo/rulesets"
@@ -4853,6 +5093,9 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
     vault = _make_vault(tmp_path)
     _write_task(vault, task_id="armed-method-missing", pr=83)
     runner = _FakeRunner()
+    # base="release" is load-bearing for the first pass: it is what keeps the base's
+    # queue out of the expected method, making the unreadable armed method the only
+    # blocker to disarm on.
     runner.open_prs = [_pr(83, base="release", auto_merge=True, auto_merge_method=None)]
 
     report = autoqueue.run_reconciler(
@@ -4887,8 +5130,16 @@ def test_already_auto_merge_enabled_without_armed_method_is_rearmed_next_pass(
         runner=runner,
     )
 
-    assert second_report["counts"]["queue"] == 1
-    assert ["gh", "pr", "merge", "83", "--repo", "owner/repo", "--auto", "--squash"] in runner.calls
+    # No re-arm: `release` is not the default branch, so the PR is refused before a
+    # positive admission (row autoqueue-never-arms-stacked-prs-20260928).
+    assert second_report["counts"]["queue"] == 0
+    assert second_report["decisions"][0]["action"] == "blocked"
+    assert second_report["decisions"][0]["reasons"] == [
+        "base_branch_not_default:release:default=main"
+    ]
+    assert ["gh", "pr", "merge", "83", "--repo", "owner/repo", "--auto", "--squash"] not in (
+        runner.calls
+    )
 
 
 def test_merge_pr_rejects_missing_expected_merge_method(tmp_path: Path) -> None:
@@ -6392,6 +6643,59 @@ def test_auto_arms_release_unauthorized_pr_open_task(tmp_path: Path) -> None:
     assert record["planned_autoqueue_admission_head_sha"] == "sha-701"
     assert record["autoqueue_admission_proof_state"] == "pending_status_write"
     assert "autoqueue_admission_head_sha" not in record
+
+
+def test_base_retarget_before_auto_arm_leaves_note_unarmed(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="retarget-before-arm",
+        status="pr_open",
+        pr=701,
+        extra_frontmatter=_eligible_arm_extra(),
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(701)]
+    original = runner._rest_pull_for_number
+    reads = 0
+
+    def retarget(number: int) -> dict[str, Any] | None:
+        nonlocal reads
+        reads += 1
+        payload = original(number)
+        assert payload is not None
+        if reads >= 3:
+            payload["base"]["ref"] = "release"
+        return payload
+
+    runner._rest_pull_for_number = retarget
+    ledger = tmp_path / "ledger.jsonl"
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+        auto_arm_ledger_path=ledger,
+    )
+
+    assert reads >= 3
+    assert report["decisions"][0]["action"] == "queue"
+    assert "release_authorized: true" not in note.read_text(encoding="utf-8")
+    assert not ledger.exists()
+    assert not any(call[:4] == ["gh", "pr", "merge", "701"] for call in runner.calls)
+    assert any(
+        call[:4] == ["gh", "api", "-X", "POST"]
+        and "repos/owner/repo/statuses/sha-701" in call
+        and "state=failure" in call
+        for call in runner.calls
+    )
+    assert any(
+        item["action"] == "base_branch_revalidation"
+        and item["message"].startswith("current_base_branch_not_default:release")
+        and item["admission_status"][0] is True
+        for item in report["mutations"]
+    )
 
 
 def test_holds_governance_sensitive_task_without_mitigation_evidence(tmp_path: Path) -> None:
@@ -8348,10 +8652,15 @@ def test_governance_auto_arm_missing_head_sha_blocks_before_note_write(
     assert not any(call[:4] == ["gh", "pr", "merge", "745"] for call in runner.calls)
     assert any(
         item["pr"] == 745
-        and item["action"] == "release_auto_arm"
+        and item["action"] == "base_branch_revalidation"
         and item["ok"] is False
-        and item["message"]
-        == "release auto-arm failed: current_pr_head_unverifiable:missing_expected_head_sha"
+        and item["message"] == "current_base_branch_unverified:head_missing"
+        and item["admission_status"] == (False, "missing_head_sha")
+        for item in report["mutations"]
+    )
+    assert not any(call[:4] == ["gh", "api", "-X", "POST"] for call in runner.calls)
+    assert not any(
+        item.get("action") == "release_auto_arm" and item.get("pr") == 745
         for item in report["mutations"]
     )
 
@@ -10997,6 +11306,8 @@ _GRAPHQL_ROW = {
     "updatedAt": "2026-08-30T00:00:00Z",
     "mergedAt": None,
     "headRefName": "feat/x",
+    "baseRefName": "main",
+    "baseRepoDefaultBranch": "main",
     "headRefOid": "deadbeef",
     "changedFiles": 1,
     "files": [{"path": "scripts/example.py"}],

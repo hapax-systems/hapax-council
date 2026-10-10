@@ -548,6 +548,24 @@ def get_pull_rest(
     return payload if isinstance(payload, dict) else None
 
 
+def get_pull_rest_routed(
+    pr_number: int | str,
+    *,
+    route: ListingRoute | None,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path,
+    runner: Any = subprocess.run,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Read a current PR only when this cycle has REST headroom.
+
+    The eligibility bit distinguishes an unreadable PR from a pool the cycle
+    has already ruled out. Callers must refuse a positive write in either case.
+    """
+    if route is not None and route.rest_blocked:
+        return False, None
+    return True, get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+
+
 def rest_merge_state_status(payload: dict[str, Any] | None) -> str:
     if not isinstance(payload, dict):
         return "UNKNOWN"

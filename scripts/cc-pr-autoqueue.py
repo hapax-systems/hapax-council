@@ -71,6 +71,7 @@ from github_pr_status import (  # noqa: E402
     fetch_status_check_rollup_rest,
     get_pr_status_graphql,
     get_pull_rest,
+    get_pull_rest_routed,
     graphql_pool_blocked,
     list_open_pr_statuses,
     listing_unavailable_detail,
@@ -544,6 +545,12 @@ def _merge_method_operator_next_action(
 
 
 def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
+    if any(reason.startswith(BASE_BRANCH_NOT_DEFAULT_PREFIX) for reason in reasons):
+        return "Retarget the PR to the repository default branch, then retry admission."
+    if BASE_BRANCH_UNVERIFIED in reasons:
+        return (
+            "Restore readable PR base and repository default branch evidence, then retry admission."
+        )
     if _transient_transport_refusal_only(list(reasons)):
         return (
             "The merge-queue ruleset fetch hit a transient transport window (rate limit or "
@@ -3227,6 +3234,70 @@ def _missing_cc_task_link_only(reasons: list[str]) -> bool:
     return bool(reasons) and all(_is_missing_cc_task_link_reason(reason) for reason in reasons)
 
 
+BASE_BRANCH_NOT_DEFAULT_PREFIX = "base_branch_not_default:"
+BASE_BRANCH_UNVERIFIED = "base_branch_unverified"
+
+
+def _base_branch_not_default_reason(pr: PullRequest) -> str | None:
+    """The reason a PR must not be queued, armed or released: its base is not the
+    repository default branch.
+
+    ``gh pr merge --auto`` on such a PR does not queue it. It folds the PR into its
+    base PR's branch: no merge queue, no merge-group CI shards, and no ordering
+    between the halves. Witnessed 2026-09-28T05:54Z — #4839 was armed on a quorum
+    accept while its base was #4835's branch, and merged into that branch with a
+    codex major open, pushing #4835 past the review cap.
+
+    Missing branch evidence cannot establish that the PR is eligible for the
+    default branch's merge queue.
+    """
+    base_ref = read_ref_name(pr.base_ref)
+    default_branch = read_ref_name(pr.default_branch)
+    if not base_ref or not default_branch:
+        return BASE_BRANCH_UNVERIFIED
+    if base_ref == default_branch:
+        return None
+    return f"{BASE_BRANCH_NOT_DEFAULT_PREFIX}{base_ref}:default={default_branch}"
+
+
+def _current_base_branch_blocker(
+    pr: PullRequest,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    route: ListingRoute | None,
+) -> str | None:
+    """Read the PR base again immediately before a positive write.
+
+    REST supplies the PR base and its repository's default branch in one response.
+    When the cycle has ruled REST out, hold the write until that evidence is
+    available; a stale listing cannot justify an arm.
+    """
+    rest_eligible, payload = get_pull_rest_routed(
+        pr.number, route=route, repo=repo, repo_root=repo_root, runner=runner
+    )
+    if not rest_eligible:
+        return "current_base_branch_unverified:rest_unavailable"
+    if not isinstance(payload, dict):
+        return "current_base_branch_unverified:pr_unreadable"
+    head = payload.get("head")
+    current_head = _scalar(head.get("sha")) if isinstance(head, dict) else None
+    if not current_head or current_head != pr.head_sha:
+        return "current_base_branch_unverified:head_changed"
+    base = payload.get("base")
+    base_ref = read_ref_name(base.get("ref")) if isinstance(base, dict) else None
+    base_repo = base.get("repo") if isinstance(base, dict) else None
+    default = (
+        read_ref_name(base_repo.get("default_branch")) if isinstance(base_repo, dict) else None
+    )
+    if not base_ref or not default:
+        return "current_base_branch_unverified:base_or_default_missing"
+    if base_ref != default:
+        return f"current_{BASE_BRANCH_NOT_DEFAULT_PREFIX}{base_ref}:default={default}:retarget the PR to the default branch and retry"
+    return None
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -3443,6 +3514,23 @@ def classify_pr(
             expected_auto_merge_method=expected_auto_merge_method,
             notes=tuple(notes),
         )
+    stacked_reason = _base_branch_not_default_reason(pr)
+    if stacked_reason:
+        # A stacked PR's base is another PR's branch, so there is no merge queue for
+        # it: `--auto` folds it into its base PR's branch, skipping the queue, the
+        # merge-group shards and any ordering between the halves (#4839, 2026-09-28).
+        # Refuse the positive admissions — queue, arm, and the auto-arm that writes
+        # `release_authorized: true`. What is already on GitHub is left where it is;
+        # this rule does not dequeue or disarm.
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action="blocked",
+            reasons=(stacked_reason,),
+            expected_auto_merge_method=expected_auto_merge_method,
+            notes=tuple(notes),
+        )
     if queued:
         return Decision(
             pr=pr,
@@ -3544,6 +3632,17 @@ def merge_pr(
                 f"{decision.expected_auto_merge_method}:next_action="
                 f"{_merge_method_operator_next_action()}",
             )
+        if _decision_requires_head_guard(decision) and not decision.pr.head_sha:
+            return False, "missing_head_sha_for_head_guard"
+        branch_blocker = _current_base_branch_blocker(
+            decision.pr,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            route=route,
+        )
+        if branch_blocker:
+            return False, branch_blocker
         cmd.extend(["--auto", merge_flag])
         if _decision_requires_head_guard(decision):
             boundary_blocker = _release_head_boundary_blocker(
@@ -5461,6 +5560,42 @@ def run_reconciler(
                     "already_auto_merge_enabled",
                 }
                 if release_head_subject:
+                    branch_blocker = (
+                        _current_base_branch_blocker(
+                            decision.pr,
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                            route=listing_route,
+                        )
+                        if decision.pr.head_sha
+                        else "current_base_branch_unverified:head_missing"
+                    )
+                    if branch_blocker:
+                        blocked_decision = replace(
+                            decision,
+                            action="blocked",
+                            reasons=(branch_blocker,),
+                            auto_arm=False,
+                        )
+                        blocked_status = set_autoqueue_admission_status(
+                            blocked_decision,
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                            now=now,
+                            route=listing_route,
+                        )
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "base_branch_revalidation",
+                                "ok": False,
+                                "message": branch_blocker,
+                                "admission_status": blocked_status,
+                            }
+                        )
+                        continue
                     if decision.auto_arm and decision.task is not None:
                         armed_ok, armed_message = arm_release_for_task(
                             decision.task,
