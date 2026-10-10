@@ -24,6 +24,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
 
@@ -222,6 +224,136 @@ class TestParkedUnits:
         assert result.returncode == 0, result.stderr
         assert state.read_text(encoding="utf-8").strip() == "disabled inactive success"
         assert "parked: hapax-live-cuepoints.service" in result.stdout
+
+    def test_retired_novelty_timer_stays_parked_on_existing_and_first_install(
+        self, tmp_path: Path
+    ) -> None:
+        timer = "hapax-novelty-shift-emitter.timer"
+        timer_source = REPO_ROOT / "systemd" / "units" / timer
+        assert "# Hapax-Parked: true" in timer_source.read_text(encoding="utf-8")
+
+        for already_linked in (True, False):
+            root = tmp_path / ("existing" if already_linked else "first-install")
+            bin_dir = root / "bin"
+            bin_dir.mkdir(parents=True)
+            calls = root / "systemctl-calls.txt"
+            systemctl = bin_dir / "systemctl"
+            systemctl.write_text(
+                f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> '{calls}'\nexit 0\n",
+                encoding="utf-8",
+            )
+            systemctl.chmod(0o755)
+            uv = bin_dir / "uv"
+            uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            uv.chmod(0o755)
+
+            home = root / "home"
+            dest = home / ".config" / "systemd" / "user"
+            dest.mkdir(parents=True)
+            if already_linked:
+                (dest / timer).symlink_to(timer_source)
+
+            env = os.environ.copy()
+            env["ALLOW_NONSTANDARD_REPO"] = "1"
+            env["HOME"] = str(home)
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env.pop("SKIP_TIMER_ENABLE", None)
+            result = subprocess.run(
+                ["bash", str(INSTALL_SCRIPT)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            assert result.returncode == 0, result.stderr
+            issued = calls.read_text(encoding="utf-8").splitlines()
+            assert f"--user disable --now {timer}" in issued
+            assert not any(
+                call.startswith("--user enable ") and call.endswith(f" {timer}") for call in issued
+            )
+            assert any(
+                call.startswith("--user enable ") and call.endswith(" hapax-s4-arm.timer")
+                for call in issued
+            )
+
+    @pytest.mark.parametrize(
+        ("machine_id", "held"),
+        [
+            ("ffc36d1a0ca64320a3f1c9f1060292af", True),  # pragma: allowlist secret
+            ("15c4e584aac74d048bcbe90fc35e6da3", True),  # pragma: allowlist secret
+            ("00000000000000000000000000000000", False),
+        ],
+    )
+    def test_idle_watchdog_timer_skip_is_host_scoped_in_both_paths(
+        self, tmp_path: Path, machine_id: str, held: bool
+    ) -> None:
+        timer = "hapax-lane-idle-watchdog.timer"
+        timer_source = REPO_ROOT / "systemd" / "units" / timer
+        registry = (REPO_ROOT / "config" / "estate-store-registry.yaml").read_text(encoding="utf-8")
+        if held:
+            assert f"machine_id: {machine_id}" in registry
+        assert "# Hapax-Parked: true" not in timer_source.read_text(encoding="utf-8")
+
+        for already_linked in (True, False):
+            root = tmp_path / ("existing" if already_linked else "first-install")
+            bin_dir = root / "bin"
+            bin_dir.mkdir(parents=True)
+            calls = root / "systemctl-calls.txt"
+            systemctl = bin_dir / "systemctl"
+            systemctl.write_text(
+                f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> '{calls}'\nexit 0\n",
+                encoding="utf-8",
+            )
+            systemctl.chmod(0o755)
+            cat = bin_dir / "cat"
+            cat.write_text(
+                "#!/usr/bin/env bash\n"
+                f"if [ \"$1\" = /etc/machine-id ]; then printf '%s\\n' '{machine_id}'; "
+                'else exec /usr/bin/cat "$@"; fi\n',
+                encoding="utf-8",
+            )
+            cat.chmod(0o755)
+            uv = bin_dir / "uv"
+            uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            uv.chmod(0o755)
+
+            home = root / "home"
+            dest = home / ".config" / "systemd" / "user"
+            dest.mkdir(parents=True)
+            if already_linked:
+                (dest / timer).symlink_to(timer_source)
+
+            env = os.environ.copy()
+            env["ALLOW_NONSTANDARD_REPO"] = "1"
+            env["HOME"] = str(home)
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            env.pop("SKIP_TIMER_ENABLE", None)
+            result = subprocess.run(
+                ["bash", str(INSTALL_SCRIPT)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            assert result.returncode == 0, result.stderr
+            issued = calls.read_text(encoding="utf-8").splitlines()
+            timer_enables = [
+                call
+                for call in issued
+                if call.startswith("--user enable ") and call.endswith(f" {timer}")
+            ]
+            if held:
+                assert timer_enables == []
+            elif already_linked:
+                assert timer_enables == [f"--user enable {timer}"]
+            else:
+                assert timer_enables == [
+                    f"--user enable {timer}",
+                    f"--user enable --now {timer}",
+                ]
+            assert any(call.endswith(" hapax-s4-arm.timer") for call in issued)
 
 
 class TestServiceDropInInstall:
