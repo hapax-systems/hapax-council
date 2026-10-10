@@ -789,6 +789,19 @@ class Orchestrator:
         receipts, error = _artifact_publication_gate_receipts(artifact)
         bindings = _publication_gate_receipt_bindings(artifact)
         findings = (error,) if error is not None else ()
+        signed_required = (artifact.publication_gate_context or {}).get(
+            "required_publication_gate_receipts", []
+        )
+        if not isinstance(signed_required, list) or any(
+            not isinstance(gate, str) or not gate.strip() for gate in signed_required
+        ):
+            findings = (
+                *findings,
+                "required_publication_gate_receipts malformed; next action: "
+                "rebuild the inbox artifact from its exact signed acceptance",
+            )
+        else:
+            required = tuple(sorted(set(required) | set(signed_required)))
         if policy_error is not None:
             findings = (*findings, policy_error)
         expected_head, head_reason = self._expected_public_gate_head(artifact)
