@@ -88,12 +88,21 @@ def publish(
     ``OmgLolClient`` only when ``dry_run=False``.
     """
     if page not in PAGES:
-        log.error("publisher pre-flight failed: unknown page %r (expected one of %s)", page, PAGES)
+        log.error(
+            "publisher pre-flight failed: unknown page %r (expected one of %s); "
+            "next action: re-run with --page web or --page now",
+            page,
+            PAGES,
+        )
         return 1
     try:
         content = read_html(html_path if page == "web" else now_path)
     except (FileNotFoundError, ValueError) as exc:
-        log.error("publisher pre-flight failed: %s", exc)
+        log.error(
+            "publisher pre-flight failed: %s; next action: restore a non-empty page file "
+            "(agents/omg_web_builder/static/) and re-run",
+            exc,
+        )
         return 1
 
     if dry_run:
@@ -112,7 +121,11 @@ def publish(
     try:
         content = safe_render(content, segment_id=f"{page}-{address}")
     except OperatorNameLeak:
-        log.error("omg-%s: legal-name leak detected — DROPPING publish", page)
+        log.error(
+            "omg-%s: legal-name leak detected — DROPPING publish; next action: remove the name "
+            "from the page source, then re-run (nothing was published)",
+            page,
+        )
         return 1
 
     if page == "web":
@@ -123,7 +136,12 @@ def publish(
         metadata = {"listed": True}
     result = publisher.publish(PublisherPayload(target=address, text=content, metadata=metadata))
     if not result.ok:
-        log.error("omg %s publication-bus publish failed: %s", page, result.detail)
+        log.error(
+            "omg %s publication-bus publish failed: %s; next action: check omg.lol reachability "
+            "and `hapax-secret --where omg-lol/api-key`, then re-run",
+            page,
+            result.detail,
+        )
         return 1
     log.info(
         "omg %s publish OK through publication bus for %s (bytes=%d)", page, address, len(content)

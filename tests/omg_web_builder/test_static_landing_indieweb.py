@@ -31,6 +31,15 @@ def test_landing_page_names_the_lab_and_links_its_site_rel_me() -> None:
     assert '<h1 class="p-name">Hapax Research Lab</h1>' in html
 
 
+def test_site_nav_links_are_separated_by_spaced_slashes() -> None:
+    """Every gap between nav links renders as " / " (a lost space shipped once, 2026-10-10)."""
+    html = LANDING.read_text(encoding="utf-8")
+    nav = html.split('<p class="site-nav">', 1)[1].split("</p>", 1)[0]
+
+    separators = re.findall(r"</a>(.*?)<a\b", nav)
+    assert separators and all(sep == " / " for sep in separators), separators
+
+
 def test_landing_page_has_no_obsidian_publish_link() -> None:
     html = LANDING.read_text(encoding="utf-8")
 
