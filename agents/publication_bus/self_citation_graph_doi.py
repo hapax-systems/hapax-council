@@ -53,7 +53,7 @@ self_citation_graph_doi_total = Counter(
   ``HAPAX_ZENODO_TOKEN``; cred-blocked.
 - ``commit-attempted`` — ``--commit`` invoked with token, mint
   delegated to graph_publisher (which records its own outcome).
-- ``commit-failed`` — graph_publisher raised an error.
+- ``commit-failed`` — publisher admission, mint or state persistence failed.
 - ``dry-run-ok`` — dry-run path completed without committing.
 """
 
@@ -235,12 +235,7 @@ def _run_commit(
     metadata: dict | None,
     graph_dir: Path,
 ) -> int:
-    """Phase 2 commit path: mint via graph_publisher + persist state."""
-    if not has_change:
-        self_citation_graph_doi_total.labels(outcome="no-change").inc()
-        sys.stdout.write("(no material change since last deposit; skipping mint)\n")
-        return 0
-
+    """Admit mint/version and state persistence through the existing publisher."""
     token = os.environ.get("HAPAX_ZENODO_TOKEN", "").strip()
     if not token:
         self_citation_graph_doi_total.labels(outcome="commit-skipped-no-token").inc()
@@ -251,35 +246,37 @@ def _run_commit(
         return 0
 
     from agents.publication_bus.graph_publisher import (
-        GraphPublisherError,
-        mint_or_version,
-        persist_graph_state,
+        GRAPH_PUBLISHER_SURFACE,
+        GraphPublisher,
     )
+    from agents.publication_bus.publisher_kit import PublisherPayload
 
-    self_citation_graph_doi_total.labels(outcome="commit-attempted").inc()
-    try:
-        concept_doi, version_doi, deposit_id = mint_or_version(
-            zenodo_token=token,
-            graph_dir=graph_dir,
-            snapshot_path=snapshot,
-            fingerprint=fingerprint,
-            metadata=dict(metadata or {}),
+    if has_change:
+        self_citation_graph_doi_total.labels(outcome="commit-attempted").inc()
+    result = GraphPublisher(zenodo_token=token, graph_dir=graph_dir).publish(
+        PublisherPayload(
+            target=GRAPH_PUBLISHER_SURFACE,
+            text=json.dumps(metadata or {}, sort_keys=True),
+            metadata={
+                "snapshot_path": str(snapshot),
+                "fingerprint": fingerprint,
+                "deposit_metadata": dict(metadata or {}),
+            },
         )
-    except GraphPublisherError as exc:
+    )
+    if not result.ok:
         self_citation_graph_doi_total.labels(outcome="commit-failed").inc()
-        sys.stderr.write(f"# --commit: mint failed: {exc}\n")
+        sys.stderr.write(f"# --commit: publication failed: {result.detail}\n")
+        if result.refused:
+            sys.stderr.write(
+                "# Next action: review target admission and credentials under the active "
+                "publication authority before retry; do not bypass publisher admission.\n"
+            )
         return 1
 
-    persist_graph_state(
-        graph_dir=graph_dir,
-        concept_doi=concept_doi,
-        version_doi=version_doi,
-        fingerprint=fingerprint,
-        deposit_id=deposit_id,
-    )
-    sys.stdout.write(
-        f"minted concept-DOI={concept_doi} version-DOI={version_doi} (deposit_id={deposit_id})\n"
-    )
+    if not has_change:
+        self_citation_graph_doi_total.labels(outcome="no-change").inc()
+    sys.stdout.write(result.detail + "\n")
     return 0
 
 
@@ -300,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--commit",
         action="store_true",
-        help="EXPLICIT opt-in to mint Zenodo deposit (Phase 2 — not yet implemented)",
+        help="EXPLICIT opt-in to admit a Zenodo mint/version and persist graph state",
     )
     args = parser.parse_args(argv)
 
