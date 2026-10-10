@@ -5242,7 +5242,7 @@ def _resolve_governed_applied_release(
             archive_names = {path.name for path in archive.iterdir()}
         except OSError:
             continue
-        if lines != expected_lines or archive_names != {
+        if readme_bytes != ("\n".join(expected_lines) + "\n").encode("utf-8") or archive_names != {
             "README.md",
             *(item.path.name for item in archived_projections),
         }:

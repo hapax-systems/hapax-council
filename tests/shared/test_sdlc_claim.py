@@ -6066,6 +6066,37 @@ def test_recovery_holds_a_release_whose_archive_was_changed(tmp_path: Path, targ
     assert _tree_snapshot(tmp_path) == before
 
 
+@pytest.mark.parametrize("mutation", ["crlf", "no_final_newline", "bare_cr"])
+def test_recovery_refuses_release_readme_separator_byte_drift(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture, receipt, released = _governed_release_fixture(tmp_path)
+    readme = released.archive_dir / "README.md"
+    original = readme.read_bytes()
+    assert original.endswith(b"\n")
+    if mutation == "crlf":
+        changed = original.replace(b"\n", b"\r\n")
+    elif mutation == "no_final_newline":
+        changed = original[:-1]
+    else:
+        changed = original.replace(b"\n", b"\r")
+    assert changed != original
+    assert changed.decode("utf-8").splitlines() == original.decode("utf-8").splitlines()
+    readme.write_bytes(changed)
+    before = _tree_snapshot(tmp_path)
+
+    (result,) = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt.receipt_path.parent,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+
+    assert (result.state, result.reason_code) == ("hold", "claim_publication_postimage_drift")
+    assert _tree_snapshot(tmp_path) == before
+
+
 def test_recovery_keeps_a_predecessor_settled_after_its_successor_is_released(
     tmp_path: Path,
 ) -> None:
