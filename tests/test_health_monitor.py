@@ -1086,6 +1086,7 @@ class TestRegistry:
             "m8",
             "audio",
             "release",
+            "flow",
         }
         assert expected == set(CHECK_REGISTRY.keys())
 
