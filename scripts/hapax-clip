@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # hapax-clip <target> [FILE|-]
-# Push a paste-safe payload to a tailnet clipboard. See scripts/hapax_clip.py.
+# Deliver literal UTF-8 to an enrolled operator desktop. See operator-clipboard.md.
 set -euo pipefail
-here=$(cd "$(dirname "$0")" && pwd)
+here=$(dirname "$(readlink -f "$0")")
 exec python3 "$here/hapax_clip.py" "$@"
