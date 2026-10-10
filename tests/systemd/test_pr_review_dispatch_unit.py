@@ -39,11 +39,12 @@ def test_review_dispatch_wants_and_orders_secrets_producer() -> None:
         assert "network-online.target" in dependencies, directive
 
 
-def test_publish_orchestrator_loads_its_optional_environment_files() -> None:
+def test_publish_orchestrator_loads_its_environment_files() -> None:
+    # The legal-name guard file is required: the orchestrator must not run with the guard unarmed.
     assert _unit_values("hapax-publish-orchestrator.service", "Service", "EnvironmentFile") == [
         "-/run/user/1000/hapax-secrets.env",
         AUTHORITY_ENV_FILE,
-        "-/run/user/%U/hapax-publish-legal-name-guard.env",
+        "/run/user/%U/hapax-publish-legal-name-guard.env",
     ]
 
 
