@@ -19,9 +19,13 @@ import pytest
 from agents.health_monitor.checks import flow
 from agents.health_monitor.checks.flow import (
     FLOW_STOPPED_S,
+    OUTWARD_STALLED_CADENCES,
     REPORT_STALE_S,
     VALVE_FAILING_S,
+    check_mandated_units,
     check_merge_flow,
+    check_outward_flow,
+    last_published,
 )
 from agents.health_monitor.models import Status
 from agents.health_monitor.registry import CHECK_REGISTRY
@@ -302,3 +306,131 @@ def test_registry_call_with_defaults_reads_the_producer_paths(
     registered = CHECK_REGISTRY["flow"][0]
     results = asyncio.run(registered())
     assert results[0].status is expected
+
+
+# ── outward flow (NO-STALL-MOTION-20261010, unit U2) ─────────────────────────
+
+
+def _publish_log(
+    log_dir: Path, slug: str, surface: str, when: datetime, result: str = "ok"
+) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / f"{slug}.{surface}.json").write_text(
+        json.dumps(
+            {"slug": slug, "surface": surface, "result": result, "timestamp": when.isoformat()}
+        ),
+        encoding="utf-8",
+    )
+
+
+def _outward(log_dir: Path) -> list:
+    return asyncio.run(check_outward_flow(log_dir=log_dir, now=NOW))
+
+
+def test_outward_and_mandated_checks_registered_in_flow_group() -> None:
+    assert check_outward_flow in CHECK_REGISTRY["flow"]
+    assert check_mandated_units in CHECK_REGISTRY["flow"]
+    assert CHECK_REGISTRY["flow"][0] is check_merge_flow
+
+
+def test_missing_publish_log_dir_is_degraded_never_healthy(tmp_path: Path) -> None:
+    [result] = _outward(tmp_path / "absent")
+    assert result.status is Status.DEGRADED
+    assert "unknown" in result.message
+
+
+def test_no_successful_publication_is_degraded_never_healthy(tmp_path: Path) -> None:
+    log_dir = tmp_path / "log"
+    _publish_log(log_dir, "entry", "omg-weblog", NOW - timedelta(hours=1), result="error")
+    [result] = _outward(log_dir)
+    assert result.name == "flow.outward.notebook"
+    assert result.status is Status.DEGRADED
+    assert "no successful omg-weblog publication" in result.message
+
+
+def test_publication_within_cadence_is_healthy(tmp_path: Path) -> None:
+    log_dir = tmp_path / "log"
+    _publish_log(log_dir, "entry", "omg-weblog", NOW - timedelta(hours=2))
+    [result] = _outward(log_dir)
+    assert result.status is Status.HEALTHY
+    assert result.remediation is None
+
+
+def test_publication_past_cadence_is_late_and_degraded(tmp_path: Path) -> None:
+    log_dir = tmp_path / "log"
+    _publish_log(log_dir, "entry", "omg-weblog", NOW - timedelta(hours=30))
+    [result] = _outward(log_dir)
+    assert result.status is Status.DEGRADED
+    assert "late" in result.message
+    assert "re-routed" in (result.remediation or "")
+
+
+def test_silence_beyond_the_stall_bound_is_failed(tmp_path: Path) -> None:
+    log_dir = tmp_path / "log"
+    _publish_log(
+        log_dir, "entry", "omg-weblog", NOW - timedelta(hours=24 * OUTWARD_STALLED_CADENCES + 1)
+    )
+    [result] = _outward(log_dir)
+    assert result.status is Status.FAILED
+    assert "stalled" in result.message
+
+
+def test_last_published_reads_only_successful_records_of_its_surface(tmp_path: Path) -> None:
+    log_dir = tmp_path / "log"
+    _publish_log(log_dir, "kept", "omg-weblog", NOW - timedelta(hours=5))
+    _publish_log(log_dir, "failed", "omg-weblog", NOW - timedelta(hours=1), result="error")
+    _publish_log(log_dir, "other", "bluesky-post", NOW - timedelta(hours=1))
+    (log_dir / "kept.publication-hardening-gate.json").write_text(
+        json.dumps({"surface": "omg-weblog", "result": "ok", "timestamp": NOW.isoformat()}),
+        encoding="utf-8",
+    )
+    (log_dir / "garbage.omg-weblog.json").write_text("{not json", encoding="utf-8")
+    (log_dir / "naive.omg-weblog.json").write_text(
+        json.dumps({"surface": "omg-weblog", "result": "ok", "timestamp": "2026-10-10T08:59:00"}),
+        encoding="utf-8",
+    )
+    assert last_published(log_dir, "omg-weblog") == NOW - timedelta(hours=5)
+
+
+# ── mandated units ────────────────────────────────────────────────────────────
+
+
+def _mandated(rc: int, output: str):
+    [result] = asyncio.run(check_mandated_units(verify=lambda: (rc, output)))
+    return result
+
+
+def test_mandated_units_all_live_is_healthy() -> None:
+    result = _mandated(
+        0, "ok: a.timer enabled + active\nverify-auto-enable: all 1 marked unit(s) enabled/active\n"
+    )
+    assert result.name == "flow.mandated_units"
+    assert result.status is Status.HEALTHY
+
+
+def test_dormant_mandated_units_are_named_and_degraded() -> None:
+    result = _mandated(
+        1,
+        "FAIL: codex-claim-audit.timer is marked Hapax-Auto-Enable but is not enabled\n"
+        "FAIL: timer hapax-x.timer is marked Hapax-Auto-Enable but is not active\n"
+        "ok: hapax-y.service enabled\n",
+    )
+    assert result.status is Status.DEGRADED
+    assert "2 mandated unit(s) dormant" in result.message
+    assert "codex-claim-audit.timer (not enabled)" in result.message
+    assert "hapax-x.timer (not active)" in result.message
+
+
+def test_mandated_units_unrunnable_is_degraded_never_healthy() -> None:
+    def broken() -> tuple[int, str]:
+        raise subprocess.TimeoutExpired(cmd="hapax-post-merge-deploy", timeout=60)
+
+    [result] = asyncio.run(check_mandated_units(verify=broken))
+    assert result.status is Status.DEGRADED
+    assert "unknown" in result.message
+
+
+def test_mandated_units_nonzero_exit_without_names_is_degraded_never_healthy() -> None:
+    result = _mandated(2, "verify-auto-enable: /x/systemd/units not found\n")
+    assert result.status is Status.DEGRADED
+    assert "exited 2" in result.message
