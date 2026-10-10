@@ -6313,7 +6313,8 @@ def _transition_locks(
     ``cc-close`` (which locks both the name it unlinks and the name it installs — it is the only
     writer that *removes* a projected path), and claim publication, which takes this primitive
     inside ``shared/sdlc_claim._claim_publication_lock`` and so covers ``cc-claim`` and the
-    ``_apply_projections`` calls beneath it, plus ``cc-claim``'s documented
+    ``_apply_projections`` calls beneath it, plus ``research_desk``'s delivery stamp and
+    ``cc-claim``'s documented
     ``HAPAX_GATE0B_CLAIM_PUBLICATION_OFF`` fallback. None of them can land between this
     transition's preimage pin and its install.
 
