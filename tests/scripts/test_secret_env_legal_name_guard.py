@@ -149,18 +149,13 @@ def test_an_entry_not_shown_absent_refuses_and_keeps_every_file(store, tmp_path,
     assert guard.read_text(encoding="utf-8") == "HAPAX_OPERATOR_NAME=prior\n"
 
 
-def test_only_the_publishers_load_the_guard_file() -> None:
-    # Publishers scan for the name; nothing that renders a display name may load it.
+def test_only_the_publish_orchestrator_loads_the_guard_file() -> None:
     loaders = sorted(
         path.name
         for path in UNITS_DIR.iterdir()
         if path.is_file() and GUARD_FILE in path.read_text(encoding="utf-8", errors="replace")
     )
-    assert loaders == [
-        "hapax-bluesky-post.service",
-        "hapax-mastodon-post.service",
-        "hapax-publish-orchestrator.service",
-    ]
+    assert loaders == ["hapax-publish-orchestrator.service"]
 
 
 def test_the_orchestrator_loads_the_guard_file_and_the_compositor_does_not() -> None:
