@@ -2002,18 +2002,46 @@ def apply_platform_capability_receipts(
     """Overlay fresh local receipts onto inert registry rows."""
 
     receipts = load_platform_capability_receipts(receipt_dir, now=now)
-    if not receipts:
-        return registry
-
     payload = registry.model_dump(mode="json")
     for route_payload in payload["routes"]:
         receipt = receipts.get(route_payload["platform"])
-        if receipt is None:
-            continue
-        if route_payload["route_id"] not in receipt.routes:
+        if receipt is None or route_payload["route_id"] not in receipt.routes:
+            _apply_kimi_quota_admission_without_platform_receipt(route_payload, now=now)
             continue
         _apply_receipt_to_route_payload(route_payload, receipt, now=now)
     return PlatformCapabilityRegistry.model_validate(payload)
+
+
+def _apply_kimi_quota_admission_without_platform_receipt(
+    route_payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Consume Kimi's route-specific ledger receipt when no platform receipt exists.
+
+    The platform receipt producer does not cover Kimi. Only a fresh, validated
+    ledger admission may remove this quota blocker; other evidence and blockers
+    remain as declared in the registry.
+    """
+
+    if route_payload.get("route_id") != KIMI_INTERACTIVE_ROUTE_ID:
+        return
+    fresh, refs = _route_specific_quota_admission_fresh(route_payload, now=now)
+    if not fresh:
+        return
+    quota_evidence = route_payload["freshness"]["evidence"]["quota"]
+    quota_evidence["evidence_refs"] = list(dict.fromkeys([*quota_evidence["evidence_refs"], *refs]))
+    quota_evidence["blocked_reasons"] = [
+        reason
+        for reason in quota_evidence["blocked_reasons"]
+        if reason != KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER
+    ]
+    route_payload["blocked_reasons"] = [
+        reason
+        for reason in route_payload["blocked_reasons"]
+        if reason != KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER
+    ]
+    route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
 
 
 def _wrapper_reason_label(wrapper: WrapperEvidence) -> str:
