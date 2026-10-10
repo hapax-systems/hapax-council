@@ -5537,3 +5537,15 @@ _ = (
     _research_desk_list_open_requests,
     _research_desk_neutralize_markdown,
 )
+
+# FastMCP registers the delivery tool in the stacked server PR.
+from shared.research_desk import deliver_result as _research_desk_deliver_result  # noqa: E402
+
+_ = _research_desk_deliver_result
+
+# Lanes that fetch results outside deliver_result's receipt path render their drops
+# through this wrapper; those lane loops are stacked, so tests are its only static
+# callers here.
+from shared.research_desk import render_drop as _research_desk_render_drop  # noqa: E402
+
+_ = _research_desk_render_drop

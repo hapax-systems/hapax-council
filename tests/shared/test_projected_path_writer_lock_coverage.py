@@ -760,6 +760,10 @@ ANTI_CLOBBER_DRIVEN_ELSEWHERE = {
         "the scripts/cc-claim case: its admitted publication IS this module, and the change "
         "lands against _locked_preflight inside _claim_publication_lock"
     ),
+    "shared/research_desk.py": (
+        "tests/shared/test_research_desk.py::"
+        "test_stamp_waits_for_projection_lock_and_preserves_concurrent_edit"
+    ),
 }
 
 
@@ -1175,6 +1179,7 @@ UNDER_LOCK = (
     "scripts/cc-close",
     "scripts/cc-claim",
     "shared/sdlc_claim.py",
+    "shared/research_desk.py",
 )
 
 #: Files that name the vault and write, but are NOT task-note writers — each with the reason
@@ -1195,7 +1200,6 @@ NOT_A_TASK_NOTE_WRITER = {
     "shared/github_public_surface.py": "reads notes for the public surface",
     "shared/scheduler_readiness_reconciler.py": "reads notes; writes no note",
     "shared/sdlc_invariants.py": "read-only invariant monitor",
-    "shared/research_desk.py": "reads active request notes; writes no files in this queue slice",
     "shared/cc_task_root.py": "resolver only",
     "hooks/scripts/sense_reissue_capture.py": "writes its own capture JSONL",
     "hooks/scripts/cc-task-root.sh": "resolver only",
