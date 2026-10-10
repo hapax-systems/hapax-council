@@ -598,22 +598,27 @@ MUST_INCLUDE_STATE_NAME = "examined.json.must-include.json"
 def _seed_must_include_state(
     tmp_path: Path,
     *,
-    chronic: frozenset[int] = frozenset(),
+    proofless: frozenset[int] = frozenset(),
     healthy: frozenset[int] = frozenset(),
+    deferred: frozenset[int] = frozenset(),
 ) -> None:
-    # Pre-existing persisted counters: `chronic` rows have failed their status
-    # write for hundreds of consecutive ticks (permanently-blocked PRs), the
-    # #5045-shape backlog the demotion must break.
+    # Pre-existing persisted entries. `proofless` rows last refreshed to "no proof at
+    # this head" for hundreds of consecutive ticks (permanently-blocked PRs), the
+    # #5045-shape backlog the demotion must break. `deferred` rows are healthy rows the
+    # post cap kept deferring: their counter is just as high, but no refresh ever found
+    # their head proofless.
     now = datetime.now(UTC).isoformat()
-    entries = {
-        str(number): {
+    entries = {}
+    for number in sorted(proofless | healthy | deferred):
+        entry = {
             "head_sha": f"sha-{number}",
             "last_seen_at": now,
             "last_success_at": None,
-            "consecutive_failures": 237 if number in chronic else 0,
+            "consecutive_failures": 237 if number in proofless | deferred else 0,
         }
-        for number in sorted(chronic | healthy)
-    }
+        if number in proofless:
+            entry["proofless_head_sha"] = f"sha-{number}"
+        entries[str(number)] = entry
     (tmp_path / MUST_INCLUDE_STATE_NAME).write_text(
         json.dumps({"schema_version": 1, "repositories": {"owner/repo": entries}})
     )
@@ -857,11 +862,161 @@ def test_autoqueue_post_cap_rotation_serves_next_slice_next_tick(tmp_path: Path)
     assert covered == set(range(1, 13))  # No queued PR can starve behind the caps.
 
 
-def test_autoqueue_chronic_refresh_failures_yield_post_cap_to_healthy_pr(
+def test_autoqueue_deferral_count_never_demotes_a_healthy_row(tmp_path: Path) -> None:
+    # Unsafe case first. A healthy queued PR that the post cap kept deferring carries
+    # a failure counter as high as any permanently-blocked row's, but no refresh ever
+    # found its head proofless. A count threshold demotes it behind those rows and
+    # starves it further; it must keep its place and be refreshed this tick.
+    runner = RotationRunner(25)
+    runner.queued_prs = {1, 2, 3, 4, 5}
+    for number in range(1, 5):
+        runner.head_statuses[f"sha-{number}"] = [
+            _admission_status("failure", age_minutes=16, description="cc-pr-autoqueue blocked: x")
+        ]
+    runner.head_statuses["sha-5"] = [_admission_status("success", age_minutes=16)]
+    _seed_must_include_state(tmp_path, proofless=frozenset({1, 2, 3, 4}), deferred=frozenset({5}))
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["refreshed"] == [5]
+    assert _status_posts(runner, "sha-5")
+
+
+@pytest.mark.parametrize("shape", ["armed_without_status", "queued_with_failure_status"])
+def test_autoqueue_one_proofless_refresh_demotes_from_the_next_tick(
+    tmp_path: Path, shape: str
+) -> None:
+    # The first-onset window. One refresh that proves a head proofless is enough, so a
+    # newly arrived batch defers a healthy row for one post-cap slice, not for a count
+    # threshold of ticks (a threshold of 3 equals the 3-tick exhaustion trigger).
+    # The armed shape is 2026-10-10's: dependabot heads armed by a workflow, never
+    # examined, so no admission status exists at them.
+    runner = RotationRunner(25)
+    runner.queued_prs = {5}
+    for number in range(1, 5):
+        if shape == "armed_without_status":
+            runner.open_prs[25 - number]["autoMergeRequest"] = {"mergeMethod": "MERGE"}
+        else:
+            runner.queued_prs.add(number)
+            runner.head_statuses[f"sha-{number}"] = [
+                _admission_status(
+                    "failure", age_minutes=16, description="cc-pr-autoqueue blocked: x"
+                )
+            ]
+    runner.head_statuses["sha-5"] = [_admission_status("success", age_minutes=16)]
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["refreshed"] == []
+    assert report["must_include"]["deferred"]["5"] == "deferred_post_cap"
+    assert report["must_include"]["proofless"] == [1, 2, 3, 4]
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["refreshed"] == [5]
+    assert _status_posts(runner, "sha-5")
+
+
+def test_autoqueue_proofless_marker_is_per_head_and_cleared_by_proof(tmp_path: Path) -> None:
+    # The boundary and reset cases. A marker binds one head: a moved head is unknown
+    # again. A deferral or a transient read failure teaches nothing, so it neither sets
+    # nor clears the marker, and the R7 counter still counts it. A successful refresh,
+    # or a full exam that wrote a success status, clears it.
+    path = tmp_path / MUST_INCLUDE_STATE_NAME
+    now = datetime.now(UTC)
+
+    def record(state: dict, number: int, result: dict | None, **kwargs: Any) -> None:
+        autoqueue._record_must_include_outcomes(
+            state,
+            {number: {"pr": number, **result}} if result else {},
+            current_identities=((number, f"sha-{number}"),),
+            apply=True,
+            path=path,
+            repo="owner/repo",
+            now=now,
+            **kwargs,
+        )
+
+    state: dict[int, dict[str, Any]] = {7: {"head_sha": "sha-7", "consecutive_failures": 0}}
+    record(state, 7, {"ok": False, "message": "deferred_post_cap"})
+    assert "proofless_head_sha" not in state[7]
+    assert state[7]["consecutive_failures"] == 1
+    record(state, 7, {"ok": False, "message": "no_existing_admission_status"})
+    assert state[7]["proofless_head_sha"] == "sha-7"
+    assert autoqueue._is_proofless_head(7, "sha-7", state)
+    assert not autoqueue._is_proofless_head(7, "sha-7-moved", state)
+    for transient in ("deferred_post_cap", "admission_status_read_failed:rest_blocked"):
+        record(state, 7, {"ok": False, "message": transient})
+        assert state[7]["proofless_head_sha"] == "sha-7"
+    record(state, 7, {"ok": True, "message": "fresh", "posted": False})
+    assert "proofless_head_sha" not in state[7]
+    assert state[7]["consecutive_failures"] == 0
+
+    state = {8: {"head_sha": "sha-8", "consecutive_failures": 2, "proofless_head_sha": "sha-8"}}
+    record(state, 8, {"ok": False, "message": "existing_status_not_success:failure"})
+    assert state[8]["proofless_head_sha"] == "sha-8"
+    record(state, 8, None, proved_by_exam=frozenset({8}))
+    assert not autoqueue._is_proofless_head(8, "sha-8", state)
+
+
+def test_autoqueue_proofless_armed_rows_cannot_starve_a_fresh_evidence_seat(
     tmp_path: Path,
 ) -> None:
-    # Chronic demotion: a must-include PR whose refresh keeps failing (a
-    # permanently-blocked status is never re-stamped — R3) retains its
+    # 2026-10-10: eight armed dependabot heads with no admission status filled all
+    # eight must-include seats at --limit 5, so every fresh-evidence row overflowed
+    # (#5084 needed a manual one-off). Once their heads are known proofless, the
+    # fresh row takes a seat ahead of them.
+    armed = [
+        {
+            "number": number,
+            "headRefOid": f"sha-{number}",
+            "autoMergeRequest": {"mergeMethod": "MERGE"},
+        }
+        for number in range(1, 9)
+    ]
+    fresh_row = {"number": 50, "headRefOid": "sha-50", "autoMergeRequest": None}
+    rotation = [{"number": number, "headRefOid": f"sha-{number}"} for number in range(100, 110)]
+    state_path = tmp_path / "examined.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repositories": {
+                    "owner/repo": {"50": (datetime.now(UTC) - timedelta(minutes=30)).isoformat()}
+                },
+            }
+        )
+    )
+    ledger = {
+        number: {
+            "head_sha": f"sha-{number}",
+            "consecutive_failures": 1,
+            "proofless_head_sha": f"sha-{number}",
+        }
+        for number in range(1, 9)
+    }
+
+    def select(proof_ledger: dict | None) -> Any:
+        return autoqueue._select_pr_window(
+            [*armed, fresh_row, *rotation],
+            repo="owner/repo",
+            limit=5,
+            state_path=state_path,
+            persist=False,
+            fresh_evidence=lambda row, since: row["number"] == 50,
+            proof_ledger=proof_ledger,
+        )
+
+    selection = select(ledger)
+    assert selection.fresh_served == (50,)
+    assert selection.fresh_overflow == ()
+    # The guarantee is unchanged: the proofless rows keep their seats after the fresh one.
+    assert [number for number, _ in selection.must_refresh] == [1, 2, 3, 4, 5, 6, 7]
+    # Before their first refresh nothing is known about those heads, so this one tick
+    # still overflows the fresh row; that is the bounded first-onset window.
+    assert select(None).fresh_overflow == (50,)
+
+
+def test_autoqueue_proofless_refresh_failures_yield_post_cap_to_healthy_pr(
+    tmp_path: Path,
+) -> None:
+    # Proofless demotion: a must-include PR whose refresh finds no proof at its head
+    # (a permanently-blocked status is never re-stamped, R3) retains its
     # guarantee seat but no longer spends the per-tick POST cap ahead of a
     # healthy PR. Without the demotion, four permanently-blocked queued PRs
     # burn all four refresh slots every tick and the healthy queued PR is
@@ -873,24 +1028,24 @@ def test_autoqueue_chronic_refresh_failures_yield_post_cap_to_healthy_pr(
             _admission_status("failure", age_minutes=16, description="cc-pr-autoqueue blocked: x")
         ]
     runner.head_statuses["sha-5"] = [_admission_status("success", age_minutes=16)]
-    _seed_must_include_state(tmp_path, chronic=frozenset({1, 2, 3, 4}))
+    _seed_must_include_state(tmp_path, proofless=frozenset({1, 2, 3, 4}))
     for _ in range(3):
         runner.calls.clear()
         report = tick(tmp_path, runner)
         assert report["must_include"]["refreshed"] == [5]
         assert _status_posts(runner, "sha-5")
-        # The guarantee itself is unchanged: chronic rows still hold seats and
+        # The guarantee itself is unchanged: proofless rows still hold seats and
         # are still served — just after the healthy row.
         assert report["must_include"]["deferred"]["4"] == "deferred_post_cap"
 
 
-def test_autoqueue_chronic_refresh_failures_yield_window_seat_to_healthy_pr(
+def test_autoqueue_proofless_refresh_failures_yield_window_seat_to_healthy_pr(
     tmp_path: Path,
 ) -> None:
-    # Window-cap leg of the same starvation: with more chronic must-include PRs
+    # Window-cap leg of the same starvation: with more proofless must-include PRs
     # than MUST_INCLUDE_CAP, the healthy queued PR used to overflow unserved
     # every tick (the 14:13Z exhaustion shape) — failed refreshes never
-    # rotation-ack, so chronic rows keep the oldest stamps and sort first
+    # rotation-ack, so proofless rows keep the oldest stamps and sort first
     # forever. Demotion must seat the healthy PR on the cheap refresh path,
     # not leave it to a rotation full exam.
     runner = RotationRunner(25)
@@ -900,7 +1055,7 @@ def test_autoqueue_chronic_refresh_failures_yield_window_seat_to_healthy_pr(
             _admission_status("failure", age_minutes=16, description="cc-pr-autoqueue blocked: x")
         ]
     runner.head_statuses["sha-9"] = [_admission_status("success", age_minutes=16)]
-    _seed_must_include_state(tmp_path, chronic=frozenset(range(1, 9)))
+    _seed_must_include_state(tmp_path, proofless=frozenset(range(1, 9)))
     report = tick(tmp_path, runner)
     assert report["must_include"]["refreshed"] == [9]
     assert _status_posts(runner, "sha-9")
@@ -908,9 +1063,9 @@ def test_autoqueue_chronic_refresh_failures_yield_window_seat_to_healthy_pr(
     assert 9 not in report["must_include"]["overflow"]
 
 
-def test_autoqueue_indeterminate_refresh_demotes_chronic_entries(tmp_path: Path) -> None:
+def test_autoqueue_indeterminate_refresh_demotes_proofless_entries(tmp_path: Path) -> None:
     # R3 leg: with an indeterminate queue snapshot, the refresh-only pass
-    # serves the persisted set; chronic entries must not spend the POST cap
+    # serves the persisted set; proofless entries must not spend the POST cap
     # ahead of a healthy entry's stale proof.
     runner = RotationRunner(25)
     for number in range(1, 9):
@@ -918,7 +1073,7 @@ def test_autoqueue_indeterminate_refresh_demotes_chronic_entries(tmp_path: Path)
             _admission_status("failure", age_minutes=16, description="cc-pr-autoqueue blocked: x")
         ]
     runner.head_statuses["sha-9"] = [_admission_status("success", age_minutes=16)]
-    _seed_must_include_state(tmp_path, chronic=frozenset(range(1, 9)), healthy=frozenset({9}))
+    _seed_must_include_state(tmp_path, proofless=frozenset(range(1, 9)), healthy=frozenset({9}))
     runner.merge_queue_stdout = "not-json"
     report = tick(tmp_path, runner)
     assert report["skipped"] is True
