@@ -258,7 +258,9 @@ class _StaticGate:
     def __init__(self, decision: PublicationGateDecision) -> None:
         self.decision = decision
 
-    def evaluate(self, _artifact: PreprintArtifact) -> PublicationGateResult:
+    def evaluate(
+        self, _artifact: PreprintArtifact, *, signed_review_evidence: tuple[str, ...] = ()
+    ) -> PublicationGateResult:
         return PublicationGateResult(
             decision=self.decision,
             generated_at="2026-05-13T00:00:00+00:00",
@@ -321,7 +323,9 @@ class _LintGate:
         self._extra_children = extra_children
         self._raw_findings = raw_findings
 
-    def evaluate(self, _artifact: PreprintArtifact) -> PublicationGateResult:
+    def evaluate(
+        self, _artifact: PreprintArtifact, *, signed_review_evidence: tuple[str, ...] = ()
+    ) -> PublicationGateResult:
         lint_findings = tuple(
             LintFinding(
                 file="artifact:x",
@@ -2415,3 +2419,148 @@ def test_a_held_vault_draft_keeps_its_source_bytes_through_run_once(tmp_path, mo
     assert source.read_bytes() == before
     assert (tmp_path / "publish" / "draft" / "held-vault-draft.json").exists()
     fake_module.publish_artifact.assert_not_called()
+
+
+# ── The review step reuses a verified exact-artifact acceptance ─────────────
+
+
+class _RecordingFailingReviewPass:
+    """Records every call and fails like the stopped model route (``review_call_failed``)."""
+
+    threshold = 0.7
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def review_text(self, text: str, **kwargs) -> ReviewReport:  # type: ignore[no-untyped-def]
+        self.calls.append(text)
+        return ReviewReport(
+            reviewer_model="model-route",
+            author_model=kwargs.get("author_model"),
+            overall_confidence=0.0,
+            flagged_issues=("review_call_failed: InternalServerError",),
+        )
+
+
+def _rebind_review_dossier_head(head_sha: str) -> None:
+    dossier = public_gate_receipts.PUBLIC_GATE_AUTHORITY_ROOTS[0] / f"{TASK_ID}.review-dossier.yaml"
+    payload = yaml.safe_load(dossier.read_text(encoding="utf-8")) | {"head_sha": head_sha}
+    payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
+        {k: v for k, v in payload.items() if k != "authority_signature"}, AUTHORITY_SECRET
+    )
+    dossier.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def _orchestrator_with_real_gate(
+    state_root: Path, review_pass: _RecordingFailingReviewPass
+) -> Orchestrator:
+    gate = PublicationHardeningGate(
+        repo_root=state_root,
+        review_pass=review_pass,
+        lint_runner=lambda _text, _source_path: (),
+        entity_checker=lambda _text: (),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
+    )
+    return Orchestrator(
+        state_root=state_root,
+        surface_registry={"fake": "fake_publisher:publish_artifact"},
+        publication_allowed_surfaces={"fake"},
+        public_event_path=state_root / "public-events.jsonl",
+        hardening_gate=gate,
+        registry=CollectorRegistry(),
+    )
+
+
+def _fake_surface(monkeypatch) -> mock.Mock:
+    fake_module = mock.Mock()
+    fake_module.publish_artifact = mock.Mock(return_value="ok")
+    monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+    return fake_module
+
+
+def test_a_vault_artifact_whose_receipts_pass_is_reviewed_by_its_signed_acceptance(
+    tmp_path, monkeypatch
+):
+    """The receipts child verified a signed, writer-independent quorum-accept of the exact vault
+    head, so the review step cites it and no model is called."""
+
+    vault_root = tmp_path / "Personal"
+    source = vault_root / "frame" / "vault-draft.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Body.\n", encoding="utf-8")
+    monkeypatch.setattr(orchestrator_module, "PUBLICATION_SOURCE_PATH_ROOTS", (vault_root,))
+    fake_module = _fake_surface(monkeypatch)
+    _drop_artifact(tmp_path, slug="vault-draft", surfaces=["fake"], source_path=source)
+    _rebind_review_dossier_head(
+        public_gate_receipts.vault_artifact_expected_head_sha(source, vault_root)
+    )
+    review_pass = _RecordingFailingReviewPass()
+
+    _orchestrator_with_real_gate(tmp_path, review_pass).run_once()
+
+    assert review_pass.calls == []
+    fake_module.publish_artifact.assert_called_once()
+    gate_log = json.loads(
+        (tmp_path / "publish/log/vault-draft.publication-hardening-gate.json").read_text()
+    )
+    review = next(child for child in gate_log["child_results"] if child["name"] == "review")
+    assert review["decision"] == "pass"
+    assert review["evidence_refs"]
+    assert all(ref.startswith("public-gate:") for ref in review["evidence_refs"])
+
+
+def test_a_non_vault_artifact_still_takes_the_model_review(tmp_path, monkeypatch):
+    fake_module = _fake_surface(monkeypatch)
+    _drop_artifact(tmp_path, slug="repo-draft", surfaces=["fake"])
+    review_pass = _RecordingFailingReviewPass()
+
+    _orchestrator_with_real_gate(tmp_path, review_pass).run_once()
+
+    assert review_pass.calls
+    fake_module.publish_artifact.assert_not_called()
+
+
+def test_signed_review_evidence_is_only_for_a_located_vault_artifact_whose_receipts_pass(
+    tmp_path, monkeypatch
+):
+    vault_root = tmp_path / "Personal"
+    vault_root.mkdir()
+    monkeypatch.setattr(orchestrator_module, "PUBLICATION_SOURCE_PATH_ROOTS", (vault_root,))
+    inside = PreprintArtifact(
+        slug="a",
+        title="A",
+        body_md="B.",
+        surfaces_targeted=["fake"],
+        source_path=str(vault_root / "a.md"),
+    )
+    outside = PreprintArtifact(
+        slug="b",
+        title="B",
+        body_md="B.",
+        surfaces_targeted=["fake"],
+        source_path=str(tmp_path / "b.md"),
+    )
+    passing = PublicationGateChildResult(
+        name="public_gate_receipts",
+        decision=PublicationGateDecision.PASS,
+        evidence_refs=("public-gate:r1",),
+    )
+    evidence = orchestrator_module._signed_review_evidence
+
+    assert evidence(inside, passing) == ("public-gate:r1",)
+    assert (
+        evidence(inside, passing.model_copy(update={"decision": PublicationGateDecision.HOLD}))
+        == ()
+    )
+    assert evidence(outside, passing) == ()
+    assert evidence(inside, passing.model_copy(update={"name": "lint"})) == ()
+
+    def _unclassifiable(_artifact: PreprintArtifact) -> None:
+        raise public_gate_receipts.VaultArtifactHeadUnavailable(
+            "a.md", "it could not be classified: test"
+        )
+
+    monkeypatch.setattr(orchestrator_module, "_vault_artifact_source", _unclassifiable)
+    assert evidence(inside, passing) == ()

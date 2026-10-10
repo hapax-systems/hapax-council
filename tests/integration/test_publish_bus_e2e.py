@@ -187,8 +187,10 @@ class _ApprovingReviewPass:
 
 
 class _PassingHardeningGate:
-    def evaluate(self, artifact: PreprintArtifact) -> PublicationGateResult:
-        del artifact
+    def evaluate(
+        self, artifact: PreprintArtifact, *, signed_review_evidence: tuple[str, ...] = ()
+    ) -> PublicationGateResult:
+        del artifact, signed_review_evidence
         report = ReviewReport(
             reviewer_model="test-reviewer",
             overall_confidence=0.99,

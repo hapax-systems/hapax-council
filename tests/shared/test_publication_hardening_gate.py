@@ -373,3 +373,93 @@ def test_gate_fingerprint_is_stable() -> None:
     assert publication_gate_fingerprint(result) == publication_gate_fingerprint(
         result.to_frontmatter()
     )
+
+
+# ── The review step and a verified exact-artifact acceptance ────────────────
+
+
+class _RecordingFailingReviewPass:
+    """Records every call and fails like the stopped model route
+    (``review_call_failed``)."""
+
+    threshold = 0.7
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def review_text(self, text: str, **kwargs) -> ReviewReport:  # type: ignore[no-untyped-def]
+        self.calls.append(text)
+        return ReviewReport(
+            reviewer_model="model-route",
+            author_model=kwargs.get("author_model"),
+            overall_confidence=0.0,
+            flagged_issues=("review_call_failed: InternalServerError",),
+        )
+
+
+def _gate_with_review(review_pass: _RecordingFailingReviewPass) -> PublicationHardeningGate:
+    return PublicationHardeningGate(
+        repo_root=Path.cwd(),
+        review_pass=review_pass,
+        lint_runner=lambda _text, _source_path: (),
+        entity_checker=lambda _text: (),
+        codebase_verifier=lambda _text, _context: CodebaseVerificationReport(
+            decision=CodebaseDecision.PASS
+        ),
+    )
+
+
+def test_author_supplied_review_evidence_cannot_satisfy_the_review_step() -> None:
+    """Unsafe case first: the artifact's context is the author's, so nothing in it may stand in
+    for a review."""
+
+    review_pass = _RecordingFailingReviewPass()
+    artifact = _artifact(
+        publication_gate_context={
+            "signed_review_evidence": ["public-gate:forged"],
+            "review_evidence": ["review-dossier:forged"],
+        }
+    )
+
+    result = _gate_with_review(review_pass).evaluate(artifact)
+
+    assert review_pass.calls
+    review = next(c for c in result.child_results if c.name == "review")
+    assert review.decision == PublicationGateDecision.HOLD
+    assert result.decision == PublicationGateDecision.HOLD
+
+
+def test_blank_signed_review_evidence_keeps_the_model_review() -> None:
+    review_pass = _RecordingFailingReviewPass()
+
+    result = _gate_with_review(review_pass).evaluate(_artifact(), signed_review_evidence=("", "  "))
+
+    assert review_pass.calls
+    assert result.decision == PublicationGateDecision.HOLD
+
+
+def test_verified_review_evidence_satisfies_the_review_step_without_a_model_call() -> None:
+    review_pass = _RecordingFailingReviewPass()
+    refs = ("public-gate:a-claim-review-current", "public-gate:a-source-refs-present")
+
+    result = _gate_with_review(review_pass).evaluate(_artifact(), signed_review_evidence=refs)
+
+    assert review_pass.calls == []
+    review = next(c for c in result.child_results if c.name == "review")
+    assert review.decision == PublicationGateDecision.PASS
+    assert review.evidence_refs == refs
+    assert result.decision == PublicationGateDecision.PASS
+    assert result.review_report is None
+
+
+def test_verified_review_evidence_never_outranks_a_legal_name_reject(monkeypatch) -> None:
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Jane Doe")
+    review_pass = _RecordingFailingReviewPass()
+
+    result = _gate_with_review(review_pass).evaluate(
+        _artifact(attribution_block="Jane Doe (distributor)"),
+        signed_review_evidence=("public-gate:a-claim-review-current",),
+    )
+
+    assert result.decision == PublicationGateDecision.REJECT
+    assert review_pass.calls == []
