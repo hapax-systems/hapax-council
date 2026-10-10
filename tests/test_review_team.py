@@ -550,6 +550,7 @@ class TestConstitution:
             reg,
             pr_number=7,
             route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
+            route_block_observed_at={"gemini": "2026-06-11T19:30:00+00:00"},
         )
         families = {seat.family for seat in team.seats}
         assert "gemini" not in families
@@ -560,7 +561,72 @@ class TestConstitution:
             "route_blocked_family_reason:gemini:agy.review.direct:"
             "route_specific_quota_receipt_absent"
         ) in team.notes
+        assert (
+            "route_blocked_family_reason_set:gemini:route_specific_quota_receipt_absent"
+        ) in team.notes
+        assert "route_blocked_family_observed_at:gemini:2026-06-11T19:30:00+00:00" in team.notes
         assert "post_route_receipt_rereview_required" in team.notes
+
+    def test_route_block_reason_set_is_normalized_sorted_and_prefix_stripped(self) -> None:
+        """The set note records the SAME normalized reasons as the per-route notes:
+        route-id prefixes stripped, sorted for determinism — so the dossier's two
+        reason representations can never disagree by construction."""
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t1_critical",
+            "codex",
+            reg,
+            pr_number=7,
+            route_blocked_families={
+                "gemini": (
+                    "agy.review.direct:route_state_stale",
+                    "route_specific_quota_receipt_absent",
+                )
+            },
+            route_block_observed_at={"gemini": "2026-06-11T19:30:00+00:00"},
+        )
+        assert (
+            "route_blocked_family_reason_set:gemini:route_specific_quota_receipt_absent;"
+            "route_state_stale" in team.notes
+        )
+
+    def test_route_block_observed_at_note_is_whole_second_utc(self) -> None:
+        """The map may carry datetimes or strings; the emitted note is always a
+        whole-second UTC ISO instant (fractional seconds floored, naive values
+        taken as UTC), matching the outage-witness timestamp convention."""
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t1_critical",
+            "codex",
+            reg,
+            pr_number=7,
+            route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
+            route_block_observed_at={
+                "gemini": datetime(2026, 6, 11, 19, 30, 15, 654321, tzinfo=UTC)
+            },
+        )
+        assert "route_blocked_family_observed_at:gemini:2026-06-11T19:30:15+00:00" in team.notes
+
+    def test_route_block_observed_at_note_omitted_when_family_absent_from_map(self) -> None:
+        """No map entry means no honest observation instant, so the producer omits
+        the note and the exam fail-closes loudly on the missing witness — omission is
+        visible, never a silently defaulted timestamp."""
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        team = rt.constitute_team(
+            "t1_critical",
+            "codex",
+            reg,
+            pr_number=7,
+            route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
+        )
+        assert (
+            "route_blocked_family_reason_set:gemini:route_specific_quota_receipt_absent"
+            in team.notes
+        )
+        assert not any(n.startswith("route_blocked_family_observed_at:") for n in team.notes)
 
     def test_admitted_extra_review_route_joins_roster_and_restores_quorum(self) -> None:
         rt = _load_review_team_module()
@@ -2209,11 +2275,18 @@ class TestVerdictBlockers:
         assert "review_dossier_blocked_route_family_seated:glm" not in blockers
         assert blockers == ()
 
-    def _route_blocked_degraded_dossier(self, rt) -> dict:
+    def _route_blocked_degraded_dossier(
+        self, rt, reason: str = "route_specific_quota_receipt_absent"
+    ) -> dict:
+        # Leg D constitution-time witness: the reason SET plus the observation
+        # instant, minted by the same load that computed the degradation. The
+        # default instant sits inside FAMILY_OUTAGE_TTL_S of the fixed
+        # constituted_at (2026-06-11T20:00:00+00:00).
         notes = (
             "degraded_family_route_blocked:gemini",
-            "route_blocked_family_reason:gemini:agy.review.direct:"
-            "route_specific_quota_receipt_absent",
+            f"route_blocked_family_reason:gemini:agy.review.direct:{reason}",
+            f"route_blocked_family_reason_set:gemini:{reason}",
+            "route_blocked_family_observed_at:gemini:2026-06-11T19:00:00+00:00",
             "degraded_to:t2_standard",
             "post_route_receipt_rereview_required",
         )
@@ -2264,6 +2337,10 @@ class TestVerdictBlockers:
             "task_scoped_paid_spend_gate:refused_exhausted_budget",
             "route_blocked_family_reason:glm:glmcp.review.direct:"
             "task_scoped_paid_spend_blocker:matching_transitionbudget_cap_exhausted",
+            "route_blocked_family_reason_set:glm:task_scoped_paid_spend_blocker:"
+            "matching_transitionbudget_cap_exhausted;task_scoped_paid_spend_gate:"
+            "refused_exhausted_budget",
+            "route_blocked_family_observed_at:glm:2026-06-11T19:00:00+00:00",
             "degraded_to:t2_standard",
             "post_route_receipt_rereview_required",
         )
@@ -2307,6 +2384,9 @@ class TestVerdictBlockers:
             "degraded_family_route_blocked:glm",
             "route_blocked_family_reason:glm:glmcp.review.direct:"
             "task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "route_blocked_family_reason_set:glm:task_scoped_paid_spend_gate:"
+            "refused_exhausted_budget",
+            "route_blocked_family_observed_at:glm:2026-06-11T19:00:00+00:00",
             "degraded_to:t2_standard",
             "post_route_receipt_rereview_required",
         )
@@ -2349,6 +2429,9 @@ class TestVerdictBlockers:
             "degraded_family_route_blocked:glm",
             "route_blocked_family_reason:glm:glmcp.review.direct:"
             "task_scoped_paid_spend_gate:refused_exhausted_budget",
+            "route_blocked_family_reason_set:glm:task_scoped_paid_spend_gate:"
+            "refused_exhausted_budget",
+            "route_blocked_family_observed_at:glm:2026-06-11T19:00:00+00:00",
             "degraded_to:t2_standard",
             "post_route_receipt_rereview_required",
         )
@@ -2425,18 +2508,374 @@ class TestVerdictBlockers:
 
         assert "review_dossier_route_block_degradation_reason_mismatch:glm" in blockers
 
-    def test_recovered_route_block_invalidates_pending_degraded_admission(
+    def test_recovered_route_block_does_not_invalidate_a_constituted_degradation(
         self, tmp_path: Path
     ) -> None:
+        """Row autoqueue-admission-witness-flap-tolerance-20261006, seat ruling
+        2026-10-06T21:46:05Z (Option A): a correctly-constituted route-block degradation is
+        witnessed by the dossier's OWN constitution-time evidence, so a receipt re-mint that
+        makes the family look admissible again at exam time does NOT invalidate it.
+
+        This inverts the former ``test_recovered_route_block_invalidates_pending_degraded_admission``,
+        which pinned the buggy behavior (manifestations 1, 2 and 4 of the row: degrade-and-recover
+        refused a dossier that was valid when it was constituted). The post-recovery obligation
+        rides ``post_route_receipt_rereview_required``, so the case is admissible-WITH-FLAG,
+        never admissible-silently.
+        """
+
         rt = _load_review_team_module()
-        note = _write_dossier(tmp_path, "task-x", self._route_blocked_degraded_dossier(rt))
+        dossier = self._route_blocked_degraded_dossier(rt)
+        note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(
             self._frontmatter(),
             note,
             pr_head_sha="a" * 40,
             route_blocked_families={},
         )
-        assert "review_dossier_route_block_degradation_unwitnessed:gemini" in blockers
+        assert blockers == ()
+        assert dossier["degraded_family_route_blocked"] == ["gemini"]
+        assert dossier["post_route_receipt_rereview_required"] is True
+
+    @pytest.mark.parametrize(
+        ("manifestation", "recorded_reason", "live_route_blocked"),
+        [
+            # 19:45Z self-mint ordering race: the dispatch's own mint leg re-validates the
+            # family after the dossier was constituted, so nothing is live-blocked at exam.
+            ("19:45Z self-mint ordering race", "route_specific_quota_receipt_absent", {}),
+            # 20:31:58Z environment re-mint: a telemetry wave rewrote the receipt between
+            # constitution and exam, so nothing is live-blocked at exam.
+            ("20:31:58Z environment re-mint", "route_state_stale", {}),
+            # 20:45:09Z receipt-TTL oscillation: the receipt re-minted minutes before the exam.
+            ("20:45:09Z receipt-TTL oscillation", "freshness_check:receipt_absent", {}),
+            # The orientation that already passed: live-blocked with the recorded reason.
+            (
+                "live-blocked with the recorded reason",
+                "route_specific_quota_receipt_absent",
+                {"gemini": ("route_specific_quota_receipt_absent",)},
+            ),
+        ],
+    )
+    def test_route_block_degradation_presence_manifestations_admit_with_the_rereview_flag(
+        self, tmp_path: Path, manifestation: str, recorded_reason: str, live_route_blocked: dict
+    ) -> None:
+        """Manifestations 1, 2 and 4 are one shape: the family is no longer live-blocked at exam
+        time because a receipt re-minted. A constitution-valid degradation is admissible WITH
+        the re-review flag set, never silently.
+
+        Each case carries its own recorded reason (glm-1 minor-1 on the 23:01:18Z dossier: the
+        three inputs were identical), so the parametrization exercises distinct constitution-time
+        evidence rather than the same dossier three times."""
+
+        rt = _load_review_team_module()
+        dossier = self._route_blocked_degraded_dossier(rt, reason=recorded_reason)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families=live_route_blocked,
+        )
+        assert blockers == (), manifestation
+        assert dossier["post_route_receipt_rereview_required"] is True, manifestation
+
+    def test_live_reason_replacement_while_still_blocked_still_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """The presence comparison is gone; the reason-subset forgery guard is not. A family that
+        is STILL live-blocked, but whose recorded reason is no longer live, still refuses — the
+        dossier may not claim a degradation the live evidence contradicts."""
+
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._route_blocked_degraded_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"gemini": ("route_state_stale",)},
+        )
+        assert "review_dossier_route_block_degradation_reason_mismatch:gemini" in blockers
+
+    def test_vanished_family_degradation_without_the_rereview_flag_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """Leg G (seat ruling 2026-10-06T23:06:16Z, PR #5049): a recovered/vanished-family
+        degradation is witnessed by the constitution-time record ONLY together with the re-review
+        obligation. A dossier that records the degradation but omits
+        ``post_route_receipt_rereview_required`` must not admit — otherwise the vanished path
+        would be admissible silently, with nothing owed on recovery."""
+
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "degraded_to:t2_standard",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        # _synth derives the flag from the recorded degradation; a hand-edited or buggy dispatch
+        # can record the degradation without it, which is the shape this leg must refuse.
+        dossier["post_route_receipt_rereview_required"] = False
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_degradation_flags_inconsistent" in blockers
+
+    @pytest.mark.parametrize(
+        ("notes", "why"),
+        [
+            (
+                (
+                    "degraded_family_route_blocked:gemini",
+                    "degraded_to:t2_standard",
+                    "post_route_receipt_rereview_required",
+                ),
+                "no recorded reason notes at all",
+            ),
+            (
+                (
+                    "degraded_family_route_blocked:gemini",
+                    "route_blocked_family_reason:gemini:some.other.route:reason",
+                    "degraded_to:t2_standard",
+                    "post_route_receipt_rereview_required",
+                ),
+                "the recorded route id is not the family's route",
+            ),
+            (
+                (
+                    "degraded_family_route_blocked:nosuchfamily",
+                    "route_blocked_family_reason:nosuchfamily:agy.review.direct:reason",
+                    "degraded_to:t2_standard",
+                    "post_route_receipt_rereview_required",
+                ),
+                "an unknown family name",
+            ),
+            (
+                (
+                    "degraded_family_route_blocked:gemini",
+                    "route_blocked_family_reason:gemini:agy.review.direct",
+                    "degraded_to:t2_standard",
+                    "post_route_receipt_rereview_required",
+                ),
+                "a malformed reason note (missing the reason field)",
+            ),
+        ],
+    )
+    def test_incoherent_degradation_records_still_refuse(
+        self, tmp_path: Path, notes: tuple[str, ...], why: str
+    ) -> None:
+        """Dropping the live-presence comparison must not make the degradation record
+        self-certifying: the forgery guards stay pinned red-able."""
+
+        rt = _load_review_team_module()
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert blockers, why
+
+    def _legd_dossier(self, rt, notes: tuple[str, ...]) -> dict:
+        return _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("claude-1", "claude", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+
+    def test_route_block_degradation_without_reason_set_note_refuses(self, tmp_path: Path) -> None:
+        """Leg D fail-closed: the constitution-time reason-set witness is REQUIRED, not
+        grandfathered. A degraded dossier that records the per-route reason and the
+        observation instant but omits ``route_blocked_family_reason_set:`` refuses —
+        there is no live-presence fallback anymore, so the record must carry its own
+        complete reason evidence."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "route_blocked_family_observed_at:gemini:2026-06-11T19:00:00+00:00",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        note = _write_dossier(tmp_path, "task-x", self._legd_dossier(rt, notes))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_route_block_reason_set_missing:gemini" in blockers
+
+    def test_route_block_degradation_without_observed_at_note_refuses(self, tmp_path: Path) -> None:
+        """Leg D fail-closed: the observation instant is REQUIRED. Without it the
+        bounded-recency window cannot be evaluated, and an unevaluable witness must
+        refuse rather than default to admission."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "route_blocked_family_reason_set:gemini:route_specific_quota_receipt_absent",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        note = _write_dossier(tmp_path, "task-x", self._legd_dossier(rt, notes))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_route_block_observed_at_missing:gemini" in blockers
+
+    def test_route_block_reason_set_omitting_a_recorded_reason_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """The set note and the per-route reason notes must cohere: every reason the
+        dossier records against the family's route must appear in the recorded set,
+        so a set note cannot quietly narrow what the degradation claimed."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "route_blocked_family_reason_set:gemini:other_state",
+            "route_blocked_family_observed_at:gemini:2026-06-11T19:00:00+00:00",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        note = _write_dossier(tmp_path, "task-x", self._legd_dossier(rt, notes))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_route_block_reason_set_mismatch:gemini" in blockers
+
+    def test_route_block_observation_older_than_ttl_refuses(self, tmp_path: Path) -> None:
+        """The recency window reuses FAMILY_OUTAGE_TTL_S: an observation more than two
+        hours before constitution is stale evidence and refuses."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "route_blocked_family_reason_set:gemini:route_specific_quota_receipt_absent",
+            "route_blocked_family_observed_at:gemini:2026-06-11T17:00:00+00:00",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        note = _write_dossier(tmp_path, "task-x", self._legd_dossier(rt, notes))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_route_block_observation_stale:gemini" in blockers
+
+    def test_route_block_observation_after_constitution_refuses(self, tmp_path: Path) -> None:
+        """The observation must not post-date the constitution: an observed_at in the
+        future (or after the dossier was constituted) is not evidence the constitution
+        used, so it refuses — the same anti-back-dating orientation as the outage
+        witness window."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "route_blocked_family_reason_set:gemini:route_specific_quota_receipt_absent",
+            "route_blocked_family_observed_at:gemini:2026-06-11T20:00:01+00:00",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        note = _write_dossier(tmp_path, "task-x", self._legd_dossier(rt, notes))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_route_block_observation_stale:gemini" in blockers
+
+    def test_route_block_reason_set_is_order_insensitive(self, tmp_path: Path) -> None:
+        """The set is recorded semicolon-separated but compared as a set: a multi-reason
+        degradation whose set note lists the reasons in a different order than the
+        per-route notes admits (the contract fixes order-insensitive comparison)."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "route_blocked_family_reason:gemini:agy.review.direct:route_state_stale",
+            "route_blocked_family_reason_set:gemini:route_state_stale;"
+            "route_specific_quota_receipt_absent",
+            "route_blocked_family_observed_at:gemini:2026-06-11T19:00:00+00:00",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = self._legd_dossier(rt, notes)
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert blockers == ()
+        assert dossier["post_route_receipt_rereview_required"] is True
+
+    def test_malformed_route_block_witness_notes_refuse(self, tmp_path: Path) -> None:
+        """A malformed Leg D witness note (empty set payload) feeds the existing
+        dossier-inconsistency refusal — the grammar is enforced, not guessed."""
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:gemini",
+            "route_blocked_family_reason:gemini:agy.review.direct:"
+            "route_specific_quota_receipt_absent",
+            "route_blocked_family_reason_set:gemini:",
+            "route_blocked_family_observed_at:gemini:2026-06-11T19:00:00+00:00",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        note = _write_dossier(tmp_path, "task-x", self._legd_dossier(rt, notes))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+        )
+        assert "review_dossier_degradation_flags_inconsistent" in blockers
 
     def test_no_quorum_dossier_blocks_with_recomputed_count(self, tmp_path: Path) -> None:
         rt = _load_review_team_module()
@@ -4754,3 +5193,68 @@ class TestDispatcherRepoThreading:
             tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
         )
         assert [fm["task_id"] for _, fm in found] == ["discovery"]
+
+
+class TestRouteBlockObservationThreading:
+    """The dispatch mints each blocked family's route-block observation instant
+    exactly once, from the same registry load the blocked set came from
+    (row autoqueue-admission-witness-flap-tolerance-20261006). Injected
+    families and unobservable ones get the snapshot instant — that is the
+    seat-settled fork, not a silent gap."""
+
+    NOW = "2026-10-06T12:00:00+00:00"
+
+    def test_injected_families_get_snapshot_instants(self, monkeypatch) -> None:
+        dispatch = _load_pr_review_dispatch_module()
+        rt = _load_review_team_module()
+
+        def refuse(**kwargs):
+            raise AssertionError("injected families must not read the platform registry")
+
+        monkeypatch.setattr(rt, "load_platform_capability_registry_for_dispatch", refuse)
+        _, effective, observed_at = dispatch._review_registry_and_route_blocks(
+            None, {"gemini": ("agy.review.direct:route_state_blocked",)}, now_iso=self.NOW
+        )
+        assert dict(effective) == {"gemini": ("agy.review.direct:route_state_blocked",)}
+        assert observed_at == {"gemini": self.NOW}
+
+    def test_live_blocked_route_uses_capability_checked_at(self, monkeypatch) -> None:
+        dispatch = _load_pr_review_dispatch_module()
+        rt = _load_review_team_module()
+        payload = _platform_registry_payload()
+        route = next(row for row in payload["routes"] if row["route_id"] == "agy.review.direct")
+        _review_safe_route(route)
+        route["route_state"] = "blocked"
+        route["blocked_reasons"] = ["test:blocked"]
+        route["freshness"]["capability_checked_at"] = "2026-05-09T20:55:00Z"
+        platform_registry = rt.PlatformCapabilityRegistry.model_validate(payload)
+        monkeypatch.setattr(
+            rt,
+            "load_platform_capability_registry_for_dispatch",
+            lambda **kwargs: (platform_registry, ()),
+        )
+        _, effective, observed_at = dispatch._review_registry_and_route_blocks(
+            None, None, now_iso=self.NOW
+        )
+        assert "gemini" in effective
+        assert observed_at["gemini"] == datetime(2026, 5, 9, 20, 55, tzinfo=UTC)
+
+    def test_route_missing_from_registry_gets_snapshot_instant(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        dispatch = _load_pr_review_dispatch_module()
+        rt = _load_review_team_module()
+        reg = _registry_with_extra_review_descriptor(route_id="claude.headless.nope")
+        reg_path = tmp_path / "registry.yaml"
+        reg_path.write_text(yaml.safe_dump(reg), encoding="utf-8")
+        platform_registry = _platform_registry_with_route("claude.headless.haiku", admitted=True)
+        monkeypatch.setattr(
+            rt,
+            "load_platform_capability_registry_for_dispatch",
+            lambda **kwargs: (platform_registry, ()),
+        )
+        _, effective, observed_at = dispatch._review_registry_and_route_blocks(
+            reg_path, None, now_iso=self.NOW
+        )
+        assert "haiku-review" in effective
+        assert observed_at["haiku-review"] == self.NOW
