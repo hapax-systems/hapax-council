@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import subprocess
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -703,9 +704,24 @@ def _expected_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
         or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST")
         or ""
     ).strip()
+    if dispatch_host.lower() in {"local", "localhost"}:
+        return _local_exec_auth_hosts()
     if dispatch_host:
         return _host_token_variants(dispatch_host)
     return _host_token_variants("appendix")
+
+
+def _local_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
+    """Resolve local transport to the physical short hostname used by the producer."""
+    try:
+        hostname = socket.gethostname().split(".", 1)[0].strip().lower()
+    except OSError:
+        return frozenset()
+    if hostname in {"local", "localhost"} or not re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", hostname
+    ):
+        return frozenset()
+    return _host_token_variants(hostname) - {("local",), ("localhost",)}
 
 
 def _host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
