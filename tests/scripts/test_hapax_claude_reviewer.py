@@ -119,6 +119,13 @@ def test_claude_reviewer_binds_declared_identity_and_disables_tools(
     assert "exactly one fenced yaml" in system_prompt
     assert "invalid-output" in system_prompt
     assert "Do all reasoning silently" in system_prompt
+    from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+    measured = reviewer_prompt_measurement([str(WRAPPER)], "review packet", repo_root=REPO_ROOT)
+    assert measured["wrapped_prompt_bytes"] == len(system_prompt.encode()) + len(
+        stdin_path.read_bytes()
+    )
+    assert measured["max_prompt_bytes"] > measured["wrapped_prompt_bytes"]
 
     # Join the actual subprocess arguments to the declared route. Blind review
     # deliberately excludes the ambient instructions used by worker sessions.
@@ -926,6 +933,14 @@ def test_a_reply_with_no_verdict_is_reasked_once_under_the_same_route(monkeypatc
     # the packet is replayed whole, followed by the correction; the first reply is not echoed
     assert calls[1]["prompt"].startswith("review packet")
     assert module.REASK_CORRECTION in calls[1]["prompt"]
+    from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+    measured = reviewer_prompt_measurement([str(WRAPPER)], "review packet", repo_root=REPO_ROOT)
+    argv = calls[1]["cmd"]
+    actual_system = argv[argv.index("--append-system-prompt") + 1]
+    assert measured["max_prompt_bytes"] == len(actual_system.encode()) + len(
+        calls[1]["prompt"].encode()
+    )
     assert TOOL_INTENT_REPLY not in calls[1]["prompt"]
     # one deadline for both calls: the first run spent 100 s of 600, so the re-ask gets 500
     assert calls[0]["timeout_seconds"] == 600

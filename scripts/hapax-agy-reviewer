@@ -81,6 +81,10 @@ Do not inspect any other files, directories, commands, or external context.
 Return exactly one fenced yaml code block and no prose."""
 
 
+def render_review_dossier(dossier: str) -> str:
+    return "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
+
+
 def _default_agy_bin() -> str:
     return os.environ.get("HAPAX_AGY_BIN") or os.environ.get("AGY_BIN") or DEFAULT_AGY_BIN
 
@@ -198,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     cli_model = PINNED_REVIEW_MODEL
 
     dossier = sys.stdin.read()
-    prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
+    prompt = render_review_dossier(dossier)
     with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
         workdir = Path(tmp)
         sandbox_home = workdir / "home"

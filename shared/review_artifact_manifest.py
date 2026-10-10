@@ -11,11 +11,153 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 ARTIFACT_HEAD_PREFIX = "artifact-sha256:"
+
+
+def build_review_scope(
+    frontmatter: Mapping[str, Any], manifest: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Bind a declared artifact inquiry to its parent obligations and exact evidence.
+
+    This is a review target, not proof of coverage. The blind panel must independently
+    establish the declared composition before accepting a whole task. A bounded unit
+    never supplies that authority, even when its own criterion is met.
+    """
+    declared = frontmatter.get("artifact_review_scope")
+    if not isinstance(declared, Mapping):
+        raise ArtifactSetError("scope_missing")
+    kind = declared.get("kind")
+    criterion = declared.get("criterion")
+    parent_exit = frontmatter.get("exit_predicate")
+    if (
+        kind not in ("bounded_unit", "whole_task")
+        or not isinstance(criterion, str)
+        or not criterion.strip()
+        or not isinstance(parent_exit, str)
+        or not parent_exit.strip()
+    ):
+        raise ArtifactSetError("scope_malformed")
+    if kind == "whole_task" and criterion != parent_exit:
+        raise ArtifactSetError("scope_whole_criterion_mismatch")
+    exclusions = declared.get("not_reviewed")
+    if (
+        not isinstance(exclusions, list)
+        or any(not isinstance(item, str) or not item.strip() for item in exclusions)
+        or (kind == "bounded_unit" and not exclusions)
+        or (kind == "whole_task" and exclusions)
+    ):
+        raise ArtifactSetError("scope_exclusions_invalid")
+    source_head = declared.get("source_head")
+    source_repo = declared.get("source_repository")
+    route_metadata = frontmatter.get("route_metadata")
+    source_task = frontmatter.get("mutation_surface") == "source" or (
+        isinstance(route_metadata, Mapping) and route_metadata.get("mutation_surface") == "source"
+    )
+    if source_task or source_head is not None or source_repo is not None:
+        if (
+            not isinstance(source_head, str)
+            or re.fullmatch(r"[0-9a-f]{40}", source_head) is None
+            or not isinstance(source_repo, str)
+            or not source_repo.strip()
+            or source_repo != frontmatter.get("pr_repo")
+        ):
+            raise ArtifactSetError("scope_source_identity_invalid")
+    evidence = declared.get("evidence")
+    required = {"unit"} if kind == "bounded_unit" else {"exit_predicate"}
+    if source_task and kind == "whole_task":
+        required |= {"source_union", "context", "tests", "findings", "integration_ci"}
+    paths = {entry["path"] for entry in manifest}
+    if not isinstance(evidence, Mapping) or not required <= evidence.keys():
+        raise ArtifactSetError("scope_evidence_incomplete")
+    covered: set[str] = set()
+    for obligation, refs in evidence.items():
+        if (
+            not isinstance(obligation, str)
+            or not obligation.strip()
+            or not isinstance(refs, list)
+            or not refs
+            or any(not isinstance(ref, str) or ref not in paths for ref in refs)
+        ):
+            raise ArtifactSetError("scope_evidence_invalid")
+        covered.update(refs)
+    if covered != paths:
+        raise ArtifactSetError("scope_evidence_incomplete")
+    identity = {
+        key: frontmatter.get(key)
+        for key in ("task_id", "authority_case", "parent_spec", "exit_predicate")
+    }
+    if any(not isinstance(value, str) or not value.strip() for value in identity.values()):
+        raise ArtifactSetError("scope_parent_identity_missing")
+    return {
+        **identity,
+        "kind": kind,
+        "criterion": criterion,
+        "head_sha": artifact_head_sha(manifest),
+        "source_repository": source_repo,
+        "source_head": source_head,
+        "evidence": dict(evidence),
+        "not_reviewed": list(exclusions),
+    }
+
+
+def review_scope_blockers(
+    receipt: Mapping[str, Any],
+    frontmatter: Mapping[str, Any],
+    *,
+    required_kind: str = "whole_task",
+) -> tuple[str, ...]:
+    """Validate the signed inquiry, separately from whether accepted bytes still exist.
+
+    Legacy PR/operator receipts retain their existing contract. Artifact receipts lacking
+    explicit scope are ambiguous and require a fresh scoped disposition, never an edit.
+    """
+    scope = receipt.get("review_scope")
+    artifact = receipt.get("artifact_review")
+    if (
+        scope is None
+        and artifact is None
+        and not str(receipt.get("head_sha") or "").startswith(ARTIFACT_HEAD_PREFIX)
+        and "artifact_review_scope" not in frontmatter
+    ):
+        return ()
+    if scope is None:
+        return ("acceptance_receipt_scope_missing",)
+    if not isinstance(scope, Mapping) or not isinstance(artifact, Mapping):
+        return ("acceptance_receipt_scope_malformed",)
+    manifest = artifact.get("manifest")
+    if (
+        not isinstance(manifest, list)
+        or not manifest
+        or any(
+            not isinstance(entry, Mapping) or not isinstance(entry.get("path"), str)
+            for entry in manifest
+        )
+    ):
+        return ("acceptance_receipt_scope_malformed",)
+    try:
+        expected = build_review_scope(frontmatter, manifest)
+    except ArtifactSetError as exc:
+        return (f"acceptance_receipt_{exc}",)
+    if scope != expected or receipt.get("head_sha") != expected["head_sha"]:
+        return ("acceptance_receipt_scope_binding_mismatch",)
+    from shared.public_gate_receipts import (
+        PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+        public_gate_authority_evidence_signed,
+    )
+
+    if not public_gate_authority_evidence_signed(
+        receipt, os.environ.get(PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+    ):
+        return ("acceptance_receipt_scope_signature_invalid",)
+    if scope["kind"] != required_kind:
+        return (f"acceptance_receipt_scope_not_{required_kind}",)
+    return ()
 
 
 class ArtifactSetError(ValueError):

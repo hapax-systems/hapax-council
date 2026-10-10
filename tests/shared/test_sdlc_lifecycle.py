@@ -963,6 +963,31 @@ class TestAcceptanceReceiptEnforcement:
         assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
 
 
+def test_ambiguous_unit_receipt_cannot_accept_parent(tmp_path: Path) -> None:
+    """Leg23 shape: exact artifact bytes plus accepted quorum do not cover the parent."""
+    import yaml
+
+    from shared.review_artifact_manifest import artifact_head_sha, build_artifact_manifest
+
+    artifact = tmp_path / "LEG23.md"
+    artifact.write_text("Bounded source unit; whole-source composition remains NOT REVIEWED.\n")
+    manifest, _ = build_artifact_manifest([artifact], tmp_path, max_chars=1000)
+    note = tmp_path / "parent.md"
+    note.write_text(
+        "---\ntask_id: parent\nstatus: claimed\nmutation_surface: source\n"
+        "quality_floor: frontier_review_required\nexit_predicate: Complete source and tests\n---\n"
+    )
+    receipt = yaml.safe_load(TestAcceptanceReceiptEnforcement.VALID_RECEIPT)
+    receipt.update(
+        head_sha=artifact_head_sha(manifest),
+        artifact_review={"artifact_root": str(tmp_path), "manifest": manifest},
+    )
+    (tmp_path / "parent.acceptance.yaml").write_text(yaml.safe_dump(receipt))
+    fm = frontmatter_from_text(note.read_text())
+    assert acceptance_receipt_blockers(fm, note) == ("acceptance_receipt_scope_missing",)
+    assert not task_closure_validity(note.read_text(), note_path=note).valid
+
+
 class TestDependencyFulfilledByAcceptance:
     """M102: a dependency that is accepted but not yet closed blocked its successor's claim
     with `status_not_fulfilling:in_progress` (E0 -> E1, dev16 2026-09-24). A valid acceptance
