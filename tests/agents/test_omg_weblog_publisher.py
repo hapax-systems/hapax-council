@@ -600,16 +600,77 @@ class TestInPlaceEntryUpdate:
         )
         client = self._client(monkeypatch, before, returned_location=location)
 
-        # With the slug pinned, a changed title can no longer move the entry.
         result = publish_artifact(
-            self._artifact(entry_id="entry-006-may-10-11", title="A new title")
+            self._artifact(entry_id="entry-006-may-10-11", title="Entry 006 — May 10-11, 2026")
         )
 
         assert result == "ok"
         assert client.set_entry.call_args.kwargs["content"] == (
             "---\nDate: 2026-05-11 23:53 UTC\nSlug: entry-006-may-10-11-2026\n---\n\n"
-            "# A new title\n\nNew body."
+            "# Entry 006 — May 10-11, 2026\n\nNew body."
         )
+
+    def test_an_unpinned_entry_refuses_a_changed_title(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        # Its URL came from its title; if omg.lol ignored the pinned slug, a new title would
+        # move it off the URL its successor links to. So the title must stay.
+        before = _entry_response(
+            entry_id="entry-006-may-10-11",
+            title="Entry 006 — May 10-11, 2026",
+            source=UNPINNED_SOURCE,
+            location="/2026/05/entry-006-may-10-11-2026",
+        )
+        client = self._client(monkeypatch, before)
+
+        result = publish_artifact(
+            self._artifact(entry_id="entry-006-may-10-11", title="A new title")
+        )
+
+        assert result == "denied"
+        client.set_entry.assert_not_called()
+
+    def test_an_unsafe_entry_id_is_refused_at_the_publisher(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, None)
+        artifact = _FakeArtifact(slug="x", title="T", body_md="B")
+        artifact.weblog_entry_update = "../another-entry"  # a caller that bypassed the model
+
+        assert publish_artifact(artifact) == "denied"
+        client.get_entry.assert_not_called()
+        client.set_entry.assert_not_called()
+
+    def test_a_read_that_raises_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, None)
+        client.get_entry.side_effect = RuntimeError("transport failed")
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "error"
+        client.set_entry.assert_not_called()
+        assert "next action" in caplog.text
+
+    def test_an_artifact_that_composes_no_body_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        before = _entry_response(entry_id="may-10-origin", title="Old title", source=PINNED_SOURCE)
+        client = self._client(monkeypatch, before)
+        artifact = _FakeArtifact(slug="may-10-origin")
+        artifact.weblog_entry_update = "may-10-origin"
+
+        assert publish_artifact(artifact) == "error"
+        client.set_entry.assert_not_called()
 
     def test_an_unfenced_date_line_as_this_publisher_writes_is_kept(
         self, monkeypatch: pytest.MonkeyPatch
@@ -632,7 +693,9 @@ class TestInPlaceEntryUpdate:
             "---\nDate: 2026-10-10 19:57 UTC\nSlug: notebook-x\n---\n\n# Notebook entry\n\nNew body."
         )
 
-    def test_an_unreadable_entry_writes_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_unreadable_entry_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
         from agents.omg_weblog_publisher.publisher import publish_artifact
 
         client = self._client(monkeypatch, None)
@@ -641,6 +704,7 @@ class TestInPlaceEntryUpdate:
 
         assert result == "error"
         client.set_entry.assert_not_called()
+        assert "next action" in caplog.text
 
     @pytest.mark.parametrize(
         ("source", "location"),

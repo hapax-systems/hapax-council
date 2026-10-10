@@ -44,6 +44,8 @@ _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]+")
 _METADATA_LINE_RE = re.compile(r"^[A-Z][A-Za-z-]*:\s*\S.*$")
 # A weblog entry's public location: /YYYY/MM/<slug>, the month taken from its Date.
 _LOCATION_RE = re.compile(r"^/(?P<year>\d{4})/(?P<month>\d{2})/(?P<slug>[a-z0-9-]+)$")
+# The same URL-safe shape PreprintArtifact.weblog_entry_update enforces, checked again at use.
+_ENTRY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,119}$")
 
 
 @dataclass(frozen=True)
@@ -273,35 +275,61 @@ def _compose_in_place_update(  # type: ignore[no-untyped-def]
 
     The entry keeps its metadata lines, and its current URL slug is pinned with a ``Slug:`` line
     when it has none. The publication bus then derives the same location from Date and Slug,
-    and checks the location omg.lol returns. Returns ``(content, "")``, or ``(None, outcome)``
-    when nothing may be written.
+    and checks the location omg.lol returns. An entry with no Slug line also keeps its title:
+    its URL was derived from that title, so the update stays put even if the pin were ignored.
+    Returns ``(content, "")``, or ``(None, outcome)`` when nothing may be written.
     """
-    existing = _weblog_entry(client.get_entry(address, entry_id))
+    if not _ENTRY_ID_RE.match(entry_id):
+        log.warning(
+            "omg-weblog[%s]: %r is not a URL-safe entry id; nothing written; next action: name "
+            "the entry by its omg.lol id (lowercase letters, digits and hyphens)",
+            address,
+            entry_id,
+        )
+        return None, "denied"
+    try:
+        existing = _weblog_entry(client.get_entry(address, entry_id))
+    except Exception:  # noqa: BLE001 — any failure to read is unknown, and unknown writes nothing
+        log.exception("omg-weblog[%s]: reading entry %s raised", address, entry_id)
+        existing = None
     if existing is None:
-        log.error("omg-weblog[%s]: entry %s could not be read; nothing written", address, entry_id)
+        log.error(
+            "omg-weblog[%s]: entry %s could not be read; nothing written; next action: check the "
+            "omg.lol API key and the entry id with get_entry, then drop the artifact again",
+            address,
+            entry_id,
+        )
         return None, "error"
     lines = _leading_metadata_lines(existing.get("source"))
     location = _LOCATION_RE.match(str(existing.get("location") or ""))
     date = _metadata_value(lines or [], "Date") or ""
     slug = _metadata_value(lines or [], "Slug")
+    title = (getattr(artifact, "title", "") or "").strip()
     if (
         lines is None
         or location is None
         or not date.startswith(f"{location['year']}-{location['month']}")
         or slug not in (None, location["slug"])
+        or (slug is None and title != existing.get("title"))
     ):
         log.warning(
-            "omg-weblog[%s]: entry %s has no Date, Slug and location that agree "
-            "(location %r); nothing written",
+            "omg-weblog[%s]: entry %s has no Date, Slug, title and location that agree "
+            "(location %r); nothing written; next action: read the entry with get_entry and "
+            "correct its metadata, or keep its current title when it has no Slug line",
             address,
             entry_id,
             existing.get("location"),
         )
         return None, "denied"
-    content = _compose_artifact_content(artifact)
-    if not content:
+    _, separator, body = _compose_artifact_content(artifact).partition("\n\n")
+    if not separator or not body:
+        log.error(
+            "omg-weblog[%s]: artifact %s composed no body; nothing written; next action: give "
+            "the artifact a title and body",
+            address,
+            entry_id,
+        )
         return None, "error"
-    body = content.split("\n\n", 1)[1]
     if slug is None:
         lines = [*lines, f"Slug: {location['slug']}"]
     return "---\n" + "\n".join(lines) + "\n---\n\n" + body, ""
