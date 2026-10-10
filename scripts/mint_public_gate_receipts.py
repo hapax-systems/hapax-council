@@ -104,7 +104,10 @@ def _validate(dossier: Mapping, secret: str, artifact_root: Path) -> tuple[str, 
     # typo or seat id must not count where the validator would not count it. The writer's family is
     # refused outright when it is outside the allowlist, so "the writer counts nowhere" cannot be
     # dodged by an alias.
-    allowlisted = public_gate_receipts.PUBLIC_GATE_INDEPENDENT_REVIEW_FAMILIES
+    try:
+        allowlisted = public_gate_receipts.public_gate_known_review_families(dossier)
+    except public_gate_receipts.PublicGateReviewRegistryError as exc:
+        raise MintError(f"mint_public_gate_review_registry_invalid:{exc}") from None
     if writer not in allowlisted:
         raise MintError(f"mint_public_gate_writer_family_not_allowlisted:{writer}")
     # A public-gate receipt must not let the writer's family contribute to quorum.
