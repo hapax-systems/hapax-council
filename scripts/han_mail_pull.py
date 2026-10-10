@@ -34,7 +34,8 @@ from urllib.parse import quote
 
 import httpx
 
-from shared import chanc
+from shared import chanc, chanc_evidence
+from shared.coord_event_log import CoordEventLog, default_event_log
 from shared.public_gate_receipts import public_gate_authority_signature
 
 MAX_BYTES = 256 * 1024
@@ -370,6 +371,7 @@ def emit_receipts(
     key: bytes,
     terms_digest: str,
     withdrawal_instructions: str,
+    event_log: CoordEventLog | None = None,
 ) -> int:
     """Issue at most one §5 intake receipt per quarantined message, as a side effect of the pull.
 
@@ -383,7 +385,13 @@ def emit_receipts(
     ``send_receipt`` and ``persist_intake`` are injected: the keeper-signed create-once receipt record
     and the SMTP send are the Worker's I/O, wired by the caller. ``key`` is the keeper key for the
     salted commitment (D4).
+
+    ``event_log`` arms the §4 evidence mirror (as does a truthy ``HAPAX_CHANC_EVIDENCE``). Armed, the
+    ``han.mail.intake`` event is part of the binding, because ``IntakeRecord.intake_event_id`` cites
+    it: no receipt is sent until that event is in the canonical log, and a pull that cannot record
+    it leaves the item for the next pull (fail closed).
     """
+    evidence = event_log is not None or chanc_evidence.evidence_armed()
     issued = 0
     for path in sorted(root.glob("*.json")):
         if not HASH.fullmatch(path.stem):
@@ -429,6 +437,22 @@ def emit_receipts(
             item["receipt_id"] = receipt["receipt_id"]
             item["receipt_issued_at"] = receipt["issued_at"]
             write_json(path, item)
+        # §4 evidence ref: recorded before the receipt that hands out the handle, and retried on
+        # every pull until it is (deterministic id, so a retry of a recorded event is a receipt).
+        if evidence and not item.get("intake_event_recorded"):
+            if (
+                chanc_evidence.emit_intake(
+                    keyed_digest=chanc.keyed_digest(content_digest, key=key),
+                    handle=item["handle"],
+                    terms_digest=terms_digest,
+                    issued_at=item["receipt_issued_at"],
+                    event_log=event_log,
+                )
+                is None
+            ):
+                continue  # Fail closed: no receipt citing an unrecorded event; next pull retries.
+            item["intake_event_recorded"] = True
+            write_json(path, item)
         receipt = chanc.build_intake_receipt(
             handle=item["handle"],
             content_digest=content_digest,
@@ -447,6 +471,13 @@ def emit_receipts(
             item["receipt_issued"] = True
             write_json(path, item)
             issued += 1
+            # §4 evidence mirror: the receipt actually went out. Deterministic event id, so a
+            # re-pull cannot double-emit. Off by default, best-effort, keyed digest only.
+            chanc_evidence.emit_receipt_issued(
+                keyed_digest=chanc.keyed_digest(content_digest, key=key),
+                receipt_id=receipt["receipt_id"],
+                event_log=event_log,
+            )
     return issued
 
 
@@ -679,6 +710,7 @@ def build_receipt_emitter(
     send: Callable[..., bool] | None = None,
     persist: Callable[..., None] | None = None,
     key_resolver: Callable[[], bytes | None] | None = None,
+    event_log: CoordEventLog | None = None,
 ) -> Callable[..., int] | None:
     """The §5 receipt emitter, or None when it must not run.
 
@@ -704,6 +736,7 @@ def build_receipt_emitter(
         key=key,
         terms_digest=terms_digest,
         withdrawal_instructions=withdrawal_instructions,
+        event_log=event_log,
     )
 
 
@@ -834,8 +867,13 @@ def _armed_emitter() -> Callable[..., int] | None:
             file=sys.stderr,
         )
         return None
+    # Arming receipts arms the §4 intake event with them: no second, dark switch can leave a sent
+    # receipt citing an event that was never recorded.
     return build_receipt_emitter(
-        QUARANTINE, terms_digest=terms[0], withdrawal_instructions=terms[1]
+        QUARANTINE,
+        terms_digest=terms[0],
+        withdrawal_instructions=terms[1],
+        event_log=default_event_log(),
     )
 
 
