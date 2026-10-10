@@ -224,6 +224,8 @@ class TestInSessionReassert:
 
 
 class TestStaleClaimSweeper:
+    """Claim age and mutable task notes cannot authorize cross-role cleanup."""
+
     @staticmethod
     def _dirs(tmp_path: Path) -> tuple[Path, Path]:
         claims = tmp_path / "claims"
@@ -239,65 +241,84 @@ class TestStaleClaimSweeper:
 
     _UUID = "12345678-1234-1234-1234-123456789abc"
 
-    def test_reaps_lease_expired_claim(self, tmp_path: Path) -> None:
+    def _family(self, claims: Path, role: str, task: str) -> list[Path]:
+        paths = []
+        for key in (role, f"{role}-{self._UUID}"):
+            for name, content in (
+                (f"cc-active-task-{key}", f"{task}\n"),
+                (f"cc-claim-epoch-{key}", f"1000 {task}\n"),
+                (f"cc-claim-dispatch-{key}.json", f'{{"task_id":"{task}"}}\n'),
+            ):
+                path = claims / name
+                path.write_text(content)
+                paths.append(path)
+        return paths
+
+    @staticmethod
+    def _assert_hold_preserves(mod: ModuleType, claims: Path, active: Path) -> None:
+        def snapshot() -> dict[Path, tuple[bytes, int, int, int]]:
+            result = {}
+            for directory in (claims, active):
+                for path in directory.iterdir():
+                    data = path.read_bytes()
+                    stat = path.stat()
+                    result[path] = (data, stat.st_ino, stat.st_mtime_ns, stat.st_mode)
+            return result
+
+        before = snapshot()
+        held = mod.sweep_stale_claims(claims, active, now=time.time())
+        assert snapshot() == before
+        assert isinstance(held, mod.ClaimSweepHold)
+        assert held.reason_code == "cross_role_claim_cleanup_unavailable"
+        assert "same-claim" in held.next_action
+
+    def test_holds_aged_live_claim_without_terminal_authority(self, tmp_path: Path) -> None:
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
-        # The task is still in active/, but the claim file is 14 days stale: a
-        # dead/abandoned lane (the real council-eqi-phase0-run test-probe case).
+        # Fourteen days of age is not proof of terminal ownership.
         (active / "council-eqi-phase0-run.md").write_text("---\nstatus: in_progress\n---\n")
-        cf = claims / "cc-active-task-test-probe"
-        cf.write_text("council-eqi-phase0-run\n")
-        self._age(cf, 14 * 86400)
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert not cf.exists()
-        assert any(
-            name == "cc-active-task-test-probe" and reason == "lease-expired"
-            for name, _task, reason in reaped
-        )
+        for path in self._family(claims, "test-probe", "council-eqi-phase0-run"):
+            self._age(path, 14 * 86400)
+        self._assert_hold_preserves(mod, claims, active)
 
     def test_keeps_fresh_live_claim(self, tmp_path: Path) -> None:
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
         (active / "t.md").write_text("---\nstatus: in_progress\n---\n")
-        cf = claims / f"cc-active-task-zeta-{self._UUID}"
-        cf.write_text("t\n")
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert cf.exists()
-        assert reaped == []
+        self._family(claims, "zeta", "t")
+        self._assert_hold_preserves(mod, claims, active)
 
-    def test_reaps_claim_for_terminal_or_missing_task(self, tmp_path: Path) -> None:
+    def test_holds_claim_for_missing_or_terminal_looking_task(self, tmp_path: Path) -> None:
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
-        # No note in active/ → task closed/withdrawn/missing → the slot is dead.
-        cf = claims / f"cc-active-task-eta-{self._UUID}"
-        cf.write_text("vanished-task\n")
-        self._age(cf, 3600)  # past the settle grace, but well within the lease TTL
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert not cf.exists()
-        assert any(reason == "terminal-or-missing" for _n, _t, reason in reaped)
+        for path in self._family(claims, "eta", "vanished-task"):
+            self._age(path, 3600)
+        self._assert_hold_preserves(mod, claims, active)
+        # A mutable terminal-looking note is still not same-claim release proof.
+        (active / "vanished-task.md").write_text("---\nstatus: done\n---\n")
+        self._assert_hold_preserves(mod, claims, active)
 
     def test_live_session_protects_its_roles_stale_legacy_file(self, tmp_path: Path) -> None:
-        # The gate refreshes only the session-keyed file, so a live role's LEGACY
-        # file ages out — it must not be reaped while a fresh sibling proves life.
+        # Neither an aged role marker nor a fresh session sibling is cleanup authority.
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
         (active / "t.md").write_text("---\nstatus: in_progress\n---\n")
-        legacy = claims / "cc-active-task-delta"
-        legacy.write_text("t\n")
-        self._age(legacy, 14 * 86400)
-        sk = claims / f"cc-active-task-delta-{self._UUID}"
-        sk.write_text("t\n")  # fresh → role delta is demonstrably live
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert legacy.exists(), "a live role's stale legacy claim must not be reaped"
-        assert reaped == []
+        self._family(claims, "delta", "t")
+        self._age(claims / "cc-active-task-delta", 14 * 86400)
+        self._assert_hold_preserves(mod, claims, active)
 
-    def test_does_not_reap_recently_touched_missing_task(self, tmp_path: Path) -> None:
-        # A just-written claim for a momentarily-absent note (mid cc-close race) is
-        # left to settle, not reaped.
+    def test_holds_recent_missing_task_across_identity_replacement(self, tmp_path: Path) -> None:
         mod = _load_dispatch()
         claims, active = self._dirs(tmp_path)
-        cf = claims / f"cc-active-task-theta-{self._UUID}"
-        cf.write_text("in-flight-task\n")  # fresh mtime, note absent
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert cf.exists()
-        assert reaped == []
+        family = self._family(claims, "theta", "in-flight-task")
+        self._assert_hold_preserves(mod, claims, active)
+        # Exercise both same-byte inode replacement and a changed task identity
+        # between calls. Preservation applies to each publication's actual bytes.
+        for successor in ("in-flight-task", "successor-task"):
+            for path in family:
+                replacement = claims / "publication.tmp"
+                replacement.write_bytes(
+                    path.read_bytes().replace(b"in-flight-task", successor.encode())
+                )
+                replacement.replace(path)
+                self._assert_hold_preserves(mod, claims, active)
