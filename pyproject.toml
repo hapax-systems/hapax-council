@@ -75,6 +75,9 @@ dependencies = [
     "mastodon-py>=2.2.1",
     "mcp>=1.28.1",
     "hapax-agentgov",
+    # Forge machine identity (O2): RS256 App JWTs. Already locked as a transitive
+    # constraint; direct because shared/forge_app_identity.py imports it.
+    "pyjwt[crypto]>=2.12.0",
 ]
 
 [project.optional-dependencies]
