@@ -8,12 +8,17 @@ import os
 import shlex
 import shutil
 import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
+from tests.scripts.test_capability_execution_contract import (
+    CODEX_BINDER,
+)
+from tests.scripts.test_capability_execution_contract import (
+    fleet_fixture_subprocess as subprocess,
+)
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
@@ -126,14 +131,19 @@ def _extract_remote_python(name: str) -> str:
     text = LAUNCHER.read_text(encoding="utf-8")
     start = text.index(prefix) + len(prefix)
     end = text.index("'\n", start)
-    return text[start:end]
+    code = text[start:end]
+    pin = CODEX_BINDER.read_text().split("CODEX_PIN_PY='", 1)[1].split("'\n", 1)[0]
+    return pin + "\n" + code
 
 
 def _extract_launcher_shell_function(name: str) -> str:
     text = LAUNCHER.read_text(encoding="utf-8")
     start = text.index(f"{name}() {{")
     end = text.index("\n}\n\n", start) + len("\n}\n")
-    return text[start:end]
+    code = text[start:end]
+    if name in {"resolve_local_codex_bin", "prove_local_codex_exec_auth"}:
+        code = CODEX_BINDER.read_text() + "\n" + code
+    return code
 
 
 def _remote_dispatch_host() -> str:
@@ -736,7 +746,7 @@ exit 0
         assert "codex_saved_auth_login_required" in result.stderr
 
 
-def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
+def test_launcher_refuses_directory_codex_hint(tmp_path: Path) -> None:
     env, args_file, _env_file = _env_with_fake_codex(tmp_path)
     council = tmp_path / "council"
     _write_descriptor_runtime(council)
@@ -776,8 +786,9 @@ def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
         timeout=5,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "mcp list" in args_file.read_text(encoding="utf-8")
+    assert result.returncode == 78
+    assert "codex_pin_not_executable" in result.stderr
+    assert not args_file.exists()
 
 
 def test_launcher_missing_codex_reports_next_action(tmp_path: Path) -> None:
@@ -811,9 +822,9 @@ def test_launcher_missing_codex_reports_next_action(tmp_path: Path) -> None:
         timeout=5,
     )
 
-    assert result.returncode == 4
-    assert "codex not found in PATH" in result.stderr
-    assert "next action: install the Codex CLI, repair PATH" in result.stderr
+    assert result.returncode == 78
+    assert "codex_pin_not_executable" in result.stderr
+    assert "next action: restore the provenance-qualified" in result.stderr
 
 
 def test_launcher_remote_exec_strips_ambient_codex_auth_env(
@@ -830,6 +841,9 @@ def test_launcher_remote_exec_strips_ambient_codex_auth_env(
     used_codex_home = tmp_path / "used-codex-home.txt"
     used_codex_api_key = tmp_path / "used-codex-api-key.txt"
     used_openai_api_key = tmp_path / "used-openai-api-key.txt"
+    fake_codex = tmp_path / "codex"
+    fake_codex.write_text("#!/bin/bash\n" + f'exec {shlex.quote(sys.executable)} "$@"\n')
+    fake_codex.chmod(0o755)
     payload = {
         "workdir": str(workdir),
         "env": {
@@ -839,9 +853,9 @@ def test_launcher_remote_exec_strips_ambient_codex_auth_env(
             "OPENAI_API_KEY": "ambient-openai-api-key-must-be-stripped",
         },
         "proof_file": "",
-        "codex_bin_path": sys.executable,
+        "codex_bin_path": str(fake_codex),
         "argv": [
-            sys.executable,
+            str(fake_codex),
             "-c",
             (
                 "import os,pathlib,sys;"
@@ -913,8 +927,8 @@ def test_launcher_remote_exec_reports_missing_codex_binary(tmp_path: Path) -> No
     )
 
     assert result.returncode == 78
-    assert "remote Codex binary is unavailable: codex_binary_missing" in result.stderr
-    assert "next action: repair PATH on the dispatch host" in result.stderr
+    assert "remote Codex binary is unavailable: codex_pin_unavailable" in result.stderr
+    assert "next action: restore the provenance-qualified" in result.stderr
     assert not proof.exists()
 
 
@@ -924,14 +938,17 @@ def test_launcher_remote_exec_ignores_obsolete_token_handoff_payload_fields(
     remote_exec_py = _extract_remote_python("REMOTE_EXEC_PY")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
+    fake_codex = tmp_path / "codex"
+    fake_codex.write_text("#!/bin/bash\n" + f'exec {shlex.quote(sys.executable)} "$@"\n')
+    fake_codex.chmod(0o755)
     payload = {
         "workdir": str(workdir),
         "env": {},
         "proof_file": "",
         "token_handoff_file": str(tmp_path / "missing-handoff"),
         "token_handoff_seal_key": "e" * 64,
-        "codex_bin_path": sys.executable,
-        "argv": [sys.executable, "-c", "raise SystemExit(0)"],
+        "codex_bin_path": str(fake_codex),
+        "argv": [str(fake_codex), "-c", "raise SystemExit(0)"],
     }
     env = os.environ.copy()
     env["HAPAX_REMOTE_PAYLOAD"] = base64.b64encode(json.dumps(payload).encode()).decode()
