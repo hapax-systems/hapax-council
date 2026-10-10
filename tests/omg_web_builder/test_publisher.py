@@ -212,6 +212,43 @@ class TestPublishNow:
     def test_unknown_page_is_refused_before_any_read(self, tmp_path):
         assert publish(page="statuses", now_path=tmp_path / "absent.md", dry_run=True) == 1
 
+    def test_missing_now_page_fails_preflight_with_a_next_action(self, tmp_path, caplog):
+        client = mock.Mock()
+        with caplog.at_level("ERROR"):
+            rc = publish(
+                page="now",
+                now_path=tmp_path / "absent.md",
+                dry_run=False,
+                client_factory=lambda: client,
+            )
+        assert rc == 1
+        assert any("next action" in r.getMessage() for r in caplog.records)
+        client.set_now.assert_not_called()
+
+    def test_empty_now_page_fails_preflight(self, tmp_path):
+        md = tmp_path / "now.md"
+        md.write_text("\n  \n", encoding="utf-8")
+        assert publish(page="now", now_path=md, dry_run=True) == 1
+
+    def test_now_publish_failure_returns_one_with_a_next_action(self, tmp_path, caplog):
+        md = tmp_path / "now.md"
+        md.write_text("# now\n", encoding="utf-8")
+        client = mock.Mock()
+        client.enabled = True
+        client.set_now.return_value = None
+
+        with caplog.at_level("ERROR"):
+            rc = publish(
+                page="now",
+                now_path=md,
+                address="hapax",
+                dry_run=False,
+                client_factory=lambda: client,
+            )
+        assert rc == 1
+        assert any("next action" in r.getMessage() for r in caplog.records)
+        client.set_web.assert_not_called()
+
 
 # ── CLI entry — main() ───────────────────────────────────────────────
 
