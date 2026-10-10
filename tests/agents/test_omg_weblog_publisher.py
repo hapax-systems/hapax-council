@@ -333,6 +333,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = {"ok": True}
         monkeypatch.setattr("shared.omg_lol_client.OmgLolClient", lambda **_: client)
         artifact = PreprintArtifact(
@@ -370,6 +371,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = {"ok": True}
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact(
@@ -422,6 +424,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = None
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact(title="t", body_md="b")
@@ -434,6 +437,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.side_effect = RuntimeError("network down")
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact(title="t", body_md="b")
@@ -446,6 +450,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact()  # all fields empty
             assert publish_artifact(artifact) == "error"
@@ -458,6 +463,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         deny = _MM()
         deny.decision = "deny"
         deny.reason = "test reason"
@@ -479,6 +485,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = {"ok": True}
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client) as mock_cls:
             artifact = _FakeArtifact(
@@ -506,11 +513,80 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = {"ok": True}
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact(slug="x", title="t", body_md="b")
             assert publish_artifact(artifact, address="custom-addr") == "ok"
         assert client.set_entry.call_args.args[0] == "custom-addr"
+        assert client.get_entry_status.call_args.args == ("custom-addr", "x")
+
+
+class TestNewEntryRefusesAnExistingId:
+    """A new entry is written only when its id is confirmed absent.
+
+    omg.lol's set endpoint creates or overwrites, so a new artifact whose slug is an existing
+    entry id would replace that entry with today's Date and move its URL. Only a 404 confirms
+    absence; every other answer is unknown, and unknown writes nothing.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, status: int | None) -> MagicMock:
+        client = MagicMock()
+        client.enabled = True
+        client.get_entry_status.return_value = (status, None)
+        client.set_entry.return_value = {"ok": True}
+        monkeypatch.setattr("shared.omg_lol_client.OmgLolClient", lambda **_: client)
+        return client
+
+    def _artifact(self):
+        from shared.preprint_artifact import PreprintArtifact
+
+        return PreprintArtifact(
+            slug="may-10-origin",
+            title="A new entry",
+            body_md="Body.",
+            grounding_gate_result=_grounding_gate(),
+        )
+
+    def test_an_existing_id_is_refused_and_nothing_is_written(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, 200)
+
+        assert publish_artifact(self._artifact()) == "denied"
+        client.get_entry_status.assert_called_once_with("hapax", "may-10-origin")
+        client.set_entry.assert_not_called()
+
+    def test_a_confirmed_absence_publishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, 404)
+
+        assert publish_artifact(self._artifact()) == "ok"
+        client.set_entry.assert_called_once()
+        assert client.set_entry.call_args.args == ("hapax", "may-10-origin")
+
+    @pytest.mark.parametrize("status", [None, 401, 403, 429, 500, 503])
+    def test_an_unknown_answer_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, status: int | None
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, status)
+
+        assert publish_artifact(self._artifact()) == "error"
+        client.set_entry.assert_not_called()
+
+    def test_a_read_that_raises_writes_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, 404)
+        client.get_entry_status.side_effect = RuntimeError("socket closed")
+
+        assert publish_artifact(self._artifact()) == "error"
+        client.set_entry.assert_not_called()
 
 
 def _entry_response(*, entry_id: str, title: str, source: str, location: str | None = None) -> dict:
