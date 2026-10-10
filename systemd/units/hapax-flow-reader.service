@@ -1,0 +1,12 @@
+# Hapax-Parked: true
+# Merging installs this disabled; enabling is a seat act. Reads the merge-flow verdict only:
+# it runs `agents.health_monitor --check flow --json` and never --apply, --fix or health-watchdog.
+[Unit]
+Description=Hapax flow reader — deliver the merge-flow verdict to the operator inbox
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-flow-reader
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+TimeoutStartSec=300
