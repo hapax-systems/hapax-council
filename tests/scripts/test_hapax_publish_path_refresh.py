@@ -51,6 +51,7 @@ class _Host:
         self.pid = 100
         self.diff, self.diff_rc = diff, diff_rc
         self.restart_rc = 0
+        self.show_rc = 0
         self.calls: list[list[str]] = []
         if running is not None:
             self._point(self.pid, running)
@@ -64,7 +65,8 @@ class _Host:
         self.calls.append(argv)
         if argv[:3] == ["systemctl", "--user", "show"]:
             pid = self.pid if (self.proc / str(self.pid)).exists() else 0
-            return subprocess.CompletedProcess(argv, 0, stdout=f"{pid}\n", stderr="")
+            stdout = f"{pid}\n" if self.show_rc == 0 else ""
+            return subprocess.CompletedProcess(argv, self.show_rc, stdout=stdout, stderr="")
         if argv[:3] == ["systemctl", "--user", "restart"]:
             if self.restart_rc == 0:
                 self.pid += 1
@@ -155,9 +157,72 @@ def test_a_unit_that_is_not_running_is_not_started(module, tmp_path) -> None:
 
     result = host.refresh(module, _unit(module, ORCH))
 
+    assert result["action"] == "not_running"
+    assert host.restarts() == []
+    assert module.exit_code([result]) == 0
+
+
+def test_a_broken_activation_link_is_unknown_and_fails_the_run(module, tmp_path) -> None:
+    host = _Host(tmp_path, running=OLD, diff="shared/x.py\n")
+    host.activation.unlink()
+    host.activation.symlink_to(tmp_path / "releases" / "missing-release")
+
+    result = host.refresh(module, _unit(module, ORCH))
+
     assert result["action"] == "unknown"
     assert result["next_action"]
     assert host.restarts() == []
+    assert module.exit_code([result]) == 1
+
+
+def test_systemctl_without_an_answer_is_unknown(module, tmp_path) -> None:
+    host = _Host(tmp_path, running=OLD, diff="shared/x.py\n")
+    host.show_rc = 1
+
+    result = host.refresh(module, _unit(module, ORCH))
+
+    assert result["action"] == "unknown"
+    assert host.restarts() == []
+
+
+def test_an_unreadable_inbox_defers_the_orchestrator(module, tmp_path, monkeypatch) -> None:
+    host = _Host(tmp_path, running=OLD, diff="shared/x.py\n")
+
+    def unreadable(self, pattern):  # noqa: ANN001, ANN202
+        raise PermissionError(f"cannot list {self}")
+
+    monkeypatch.setattr(Path, "glob", unreadable)
+
+    result = host.refresh(module, _unit(module, ORCH))
+
+    assert result["action"] == "deferred"
+    assert host.restarts() == []
+
+
+@pytest.mark.parametrize(
+    ("result", "code"),
+    [
+        ({"action": "current"}, 0),
+        ({"action": "unchanged"}, 0),
+        ({"action": "deferred"}, 0),
+        ({"action": "not_running"}, 0),
+        ({"action": "restarted", "verified": True}, 0),
+        ({"action": "restarted", "verified": False}, 1),
+        ({"action": "restart_failed"}, 1),
+        ({"action": "unknown"}, 1),
+    ],
+)
+def test_the_run_fails_only_when_a_person_is_needed(module, result, code) -> None:
+    assert module.exit_code([{"unit": "u", **result}]) == code
+
+
+def test_main_returns_the_exit_code_of_its_results(module, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        module, "refresh", lambda unit, **_: {"unit": unit.name, "action": "unknown"}
+    )
+
+    assert module.main() == 1
+    assert '"action": "unknown"' in capsys.readouterr().out
 
 
 def test_a_failed_diff_restarts_nothing(module, tmp_path) -> None:

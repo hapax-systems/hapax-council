@@ -8,7 +8,8 @@ cwd, a ``releases/<sha>`` directory) with the activated one, and restarts it onl
 two touches the unit's watched paths.
 
 Nothing here widens action on doubt: a unit that is not running is not started, and an unknown release or a
-failed diff restarts nothing and names its next action. The orchestrator restarts only with an empty inbox,
+failed diff restarts nothing, names its next action and fails the run, so OnFailure reaches a person. The
+orchestrator restarts only with an empty inbox,
 so no publish is interrupted; a deferred restart is retried on the next run. Only the two units below are
 ever restarted.
 """
@@ -70,13 +71,19 @@ def release_sha(path: Path | None) -> str | None:
     return name if len(name) == 40 and set(name) <= SHA_CHARS else None
 
 
-def running_release(unit: str, run: Runner, proc_root: Path) -> str | None:
+def main_pid(unit: str, run: Runner) -> int | None:
+    """The unit's MainPID (0 when it is not running), or None when systemctl gave no answer."""
     shown = run(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit])
+    if shown.returncode != 0:
+        return None
     try:
-        pid = int(shown.stdout.strip())
+        return max(int(shown.stdout.strip()), 0)
     except ValueError:
         return None
-    if pid <= 0:
+
+
+def pid_release(pid: int | None, proc_root: Path) -> str | None:
+    if not pid:
         return None
     try:
         return release_sha(Path(os.readlink(proc_root / str(pid) / "cwd")))
@@ -96,14 +103,20 @@ def refresh(
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"unit": unit.name}
     activated = activated_release(activation)
-    running = running_release(unit.name, run, proc_root)
+    pid = main_pid(unit.name, run)
+    if pid == 0:
+        # A stopped unit is not started here; there is nothing running to refresh.
+        result.update(action="not_running", running=None, activated=activated)
+        return result
+    running = pid_release(pid, proc_root)
     result.update(running=running, activated=activated)
     if activated is None or running is None:
         result.update(
             action="unknown",
             next_action=(
-                "nothing restarted: the unit is not running from a release, or the activation link "
-                "does not resolve to one; read `systemctl --user status` and the activation link"
+                "nothing restarted: systemctl gave no MainPID, the unit is not running from a "
+                "release, or the activation link does not resolve to one; read "
+                "`systemctl --user status` and the activation link"
             ),
         )
         return result
@@ -140,9 +153,22 @@ def refresh(
             next_action=f"read `journalctl --user -u {unit.name}`; the old release may still run",
         )
         return result
-    after = running_release(unit.name, run, proc_root)
+    after = pid_release(main_pid(unit.name, run), proc_root)
     result.update(action="restarted", running=after, verified=after == activated)
     return result
+
+
+def exit_code(results: list[dict[str, Any]]) -> int:
+    """1 when any unit needs a person: an unknown state, a failed or an unverified restart.
+
+    A stopped unit, a current or unchanged release and a deferral are not failures.
+    """
+    for result in results:
+        if result["action"] in ("unknown", "restart_failed"):
+            return 1
+        if result["action"] == "restarted" and not result["verified"]:
+            return 1
+    return 0
 
 
 def _run(argv: Sequence[str]) -> subprocess.CompletedProcess:
@@ -155,12 +181,7 @@ def main() -> int:
         for unit in UNITS
     ]
     print(json.dumps(results, sort_keys=True))
-    failed = [
-        r
-        for r in results
-        if r["action"] == "restart_failed" or (r["action"] == "restarted" and not r["verified"])
-    ]
-    return 1 if failed else 0
+    return exit_code(results)
 
 
 if __name__ == "__main__":
