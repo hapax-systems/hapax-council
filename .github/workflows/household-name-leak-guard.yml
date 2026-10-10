@@ -1,0 +1,49 @@
+name: Household-name leak guard
+
+# The BLOCKING enforcement of the household/legal-name --diff guard lives in the
+# pre-push hook (hooks/scripts/name-leak-pre-push.sh), which runs against the LOCAL
+# principal-name registry on every estate-lane push. Names are NEVER sent to a third
+# party, so there is deliberately NO name registry in GitHub Actions secrets
+# (seat ruling 2026-10-04, #5024 re-round). With no registry present, this CI step
+# SKIPS with an explicit reason rather than silently passing. The repo-wide --all
+# mode is an audit tool for the legacy-corpus scrub, not a push gate.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  name-leak-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+      - name: Household/legal-name leak guard (--diff, skip with reason if no registry)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          reg="${HAPAX_PRINCIPAL_NAME_MAP:-$HOME/.config/hapax/principal-name-map.yaml}"
+          if [ ! -e "$reg" ]; then
+            echo "SKIP: no principal-name registry is present in CI, and none is injected."
+            echo "Household names are never sent to a third party, so there is no name"
+            echo "registry in Actions secrets. The pre-push hook enforces the --diff guard"
+            echo "against the local registry on every estate-lane push; the repo-wide --all"
+            echo "mode is an audit tool for the legacy-corpus scrub (seat ruling 2026-10-04)."
+            exit 0
+          fi
+          base="${BASE_SHA:-$BEFORE_SHA}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+          fi
+          if [ -n "$base" ]; then
+            exec bash scripts/check-legal-name-leaks.sh --diff "${base}..HEAD"
+          fi
+          echo "SKIP: no comparable base ref to diff against."

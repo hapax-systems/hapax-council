@@ -3,5 +3,6 @@
   "scripts/check-new-module-consumers.py",
   "scripts/mint_public_gate_receipts.py",
   "shared.sdlc_close",
-  "shared.methodology_dispatch_carrier"
+  "shared.methodology_dispatch_carrier",
+  "scripts/render_principal_c1_demo.py"
 ]
