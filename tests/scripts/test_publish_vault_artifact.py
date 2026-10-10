@@ -253,6 +253,35 @@ class TestBuildArtifact:
         assert artifact.author_model == "codex"
         assert artifact.is_approved()
 
+    def test_carries_a_declared_weblog_entry_update(self) -> None:
+        artifact = publish_vault_artifact._build_artifact(
+            body_md="Body",
+            frontmatter=_allowed_frontmatter(weblog_entry_update="may-10-origin"),
+            surfaces=["omg-weblog"],
+            approver="Oudepode",
+        )
+
+        assert artifact.weblog_entry_update == "may-10-origin"
+
+    def test_without_the_field_an_artifact_updates_nothing(self) -> None:
+        artifact = publish_vault_artifact._build_artifact(
+            body_md="Body",
+            frontmatter=_allowed_frontmatter(),
+            surfaces=["omg-weblog"],
+            approver="Oudepode",
+        )
+
+        assert artifact.weblog_entry_update is None
+
+    def test_an_unsafe_weblog_entry_id_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="weblog_entry_update"):
+            publish_vault_artifact._build_artifact(
+                body_md="Body",
+                frontmatter=_allowed_frontmatter(weblog_entry_update="../another-entry"),
+                surfaces=["omg-weblog"],
+                approver="Oudepode",
+            )
+
     def test_resolves_existing_title_slug_frontmatter_casing(self) -> None:
         body_md = "# Body Heading\n\nBody"
         receipts = _write_bound_receipts_for_expected_artifact(

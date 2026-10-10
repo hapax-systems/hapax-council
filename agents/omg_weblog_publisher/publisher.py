@@ -40,6 +40,12 @@ except ImportError:
 
 _DATE_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:[-_]?(.*))?$")
 _SLUG_CLEAN_RE = re.compile(r"[^a-z0-9-]+")
+# omg.lol entry metadata: "Key: value" lines, fenced by "---" lines or as the first paragraph.
+_METADATA_LINE_RE = re.compile(r"^[A-Z][A-Za-z-]*:\s*\S.*$")
+# A weblog entry's public location: /YYYY/MM/<slug>, the month taken from its Date.
+_LOCATION_RE = re.compile(r"^/(?P<year>\d{4})/(?P<month>\d{2})/(?P<slug>[a-z0-9-]+)$")
+# The same URL-safe shape PreprintArtifact.weblog_entry_update enforces, checked again at use.
+_ENTRY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,119}$")
 
 
 @dataclass(frozen=True)
@@ -225,6 +231,110 @@ class WeblogPublisher:
 # ── Orchestrator entry-point (PUB-P2-C foundation) ───────────────────
 
 
+def _weblog_entry(response: Any) -> dict[str, Any] | None:
+    """The entry inside an omg.lol weblog GET envelope, or None when it is not that shape."""
+    if not isinstance(response, dict):
+        return None
+    inner = response.get("response")
+    entry = inner.get("entry") if isinstance(inner, dict) else None
+    return entry if isinstance(entry, dict) else None
+
+
+def _leading_metadata_lines(source: Any) -> list[str] | None:
+    """An entry's leading ``Key: value`` metadata lines, or None when there are none to keep.
+
+    omg.lol accepts the block fenced by ``---`` lines or as a first paragraph (this publisher
+    writes the latter).
+    """
+    if not isinstance(source, str):
+        return None
+    if source.startswith("---\n"):
+        end = source.find("\n---", 3)
+        if end < 0 or source[end + 4 : end + 5] not in ("", "\n"):
+            return None
+        lines = source[4:end].split("\n")
+    else:
+        lines = source.split("\n\n", 1)[0].split("\n")
+    if not lines or not all(_METADATA_LINE_RE.match(line) for line in lines):
+        return None
+    return lines
+
+
+def _metadata_value(lines: list[str], key: str) -> str | None:
+    for line in lines:
+        name, _, value = line.partition(":")
+        if name.lower() == key.lower():
+            return value.strip()
+    return None
+
+
+def _compose_in_place_update(  # type: ignore[no-untyped-def]
+    client: Any, address: str, entry_id: str, artifact
+) -> tuple[str | None, str]:
+    """Content that replaces an existing entry's body where it already lives.
+
+    The entry keeps its metadata lines, and its current URL slug is pinned with a ``Slug:`` line
+    when it has none. The publication bus then derives the same location from Date and Slug,
+    and checks the location omg.lol returns. An entry with no Slug line also keeps its title:
+    its URL was derived from that title, so the update stays put even if the pin were ignored.
+    Returns ``(content, "")``, or ``(None, outcome)`` when nothing may be written.
+    """
+    if not _ENTRY_ID_RE.match(entry_id):
+        log.warning(
+            "omg-weblog[%s]: %r is not a URL-safe entry id; nothing written; next action: name "
+            "the entry by its omg.lol id (lowercase letters, digits and hyphens)",
+            address,
+            entry_id,
+        )
+        return None, "denied"
+    try:
+        existing = _weblog_entry(client.get_entry(address, entry_id))
+    except Exception:  # noqa: BLE001 — any failure to read is unknown, and unknown writes nothing
+        log.exception("omg-weblog[%s]: reading entry %s raised", address, entry_id)
+        existing = None
+    if existing is None:
+        log.error(
+            "omg-weblog[%s]: entry %s could not be read; nothing written; next action: check the "
+            "omg.lol API key and the entry id with get_entry, then drop the artifact again",
+            address,
+            entry_id,
+        )
+        return None, "error"
+    lines = _leading_metadata_lines(existing.get("source"))
+    location = _LOCATION_RE.match(str(existing.get("location") or ""))
+    date = _metadata_value(lines or [], "Date") or ""
+    slug = _metadata_value(lines or [], "Slug")
+    title = (getattr(artifact, "title", "") or "").strip()
+    if (
+        lines is None
+        or location is None
+        or not date.startswith(f"{location['year']}-{location['month']}")
+        or slug not in (None, location["slug"])
+        or (slug is None and title != existing.get("title"))
+    ):
+        log.warning(
+            "omg-weblog[%s]: entry %s has no Date, Slug, title and location that agree "
+            "(location %r); nothing written; next action: read the entry with get_entry and "
+            "correct its metadata, or keep its current title when it has no Slug line",
+            address,
+            entry_id,
+            existing.get("location"),
+        )
+        return None, "denied"
+    _, separator, body = _compose_artifact_content(artifact).partition("\n\n")
+    if not separator or not body:
+        log.error(
+            "omg-weblog[%s]: artifact %s composed no body; nothing written; next action: give "
+            "the artifact a title and body",
+            address,
+            entry_id,
+        )
+        return None, "error"
+    if slug is None:
+        lines = [*lines, f"Slug: {location['slug']}"]
+    return "---\n" + "\n".join(lines) + "\n---\n\n" + body, ""
+
+
 def publish_artifact(  # type: ignore[no-untyped-def]
     artifact,
     *,
@@ -269,11 +379,19 @@ def publish_artifact(  # type: ignore[no-untyped-def]
         _record("no_credentials")
         return "no_credentials"
 
-    content = _compose_artifact_content(artifact)
-    if not content:
-        log.error("omg-weblog: empty content for artifact %s", artifact.slug)
-        _record("error")
-        return "error"
+    update_id = getattr(artifact, "weblog_entry_update", None)
+    target = update_id or artifact.slug
+    if update_id:
+        content, outcome = _compose_in_place_update(client, address, update_id, artifact)
+        if content is None:
+            _record(outcome)
+            return outcome
+    else:
+        content = _compose_artifact_content(artifact)
+        if not content:
+            log.error("omg-weblog: empty content for artifact %s", artifact.slug)
+            _record("error")
+            return "error"
 
     try:
         guarded = safe_render(content, segment_id=artifact.slug)
@@ -287,7 +405,7 @@ def publish_artifact(  # type: ignore[no-untyped-def]
         "weblog.entry",
         {
             "title": artifact.title,
-            "slug": artifact.slug,
+            "slug": target,
             "content": guarded,
             "grounding_gate_result": getattr(artifact, "grounding_gate_result", None),
         },
@@ -300,7 +418,7 @@ def publish_artifact(  # type: ignore[no-untyped-def]
     result = _publish_weblog_entry_through_bus(
         client=client,
         address=address,
-        slug=artifact.slug,
+        slug=target,
         content=guarded,
     )
     if result.refused:
