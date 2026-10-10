@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 from prometheus_client import CollectorRegistry
 
+from agents.cross_surface import bluesky_post
 from agents.cross_surface.bluesky_post import (
     ALLOWED_PUBLIC_EVENT_TYPES,
     BLUESKY_TEXT_LIMIT,
@@ -836,3 +837,67 @@ class TestPublishArtifact:
 
         artifact = PreprintArtifact(slug="x", title="T", abstract="A")
         assert bluesky_post.publish_artifact(artifact) == "error"
+
+
+class TestEventTypeNarrowing:
+    """HAPAX_CROSS_SURFACE_EVENT_TYPES narrows what the poster may post and can never widen it.
+
+    In May 2026 the account posted one gate-refusal message 24 times (correction cor-2026-0002);
+    the deployed poster is narrowed to reviewed weblog entries.
+    """
+
+    def _weblog(self) -> ResearchVehiclePublicEvent:
+        return _public_event(
+            event_id="rvpe:omg_weblog:narrow",
+            event_type="omg.weblog",
+            state_kind="public_post",
+            public_url="https://hapax.weblog.lol/2026/10/x",
+            chapter_ref=PublicEventChapterRef(
+                kind="chapter",
+                label="X",
+                timecode="00:00",
+                source_event_id="rvpe:omg_weblog:narrow",
+            ),
+            surface_policy=_surface_policy(
+                claim_live=False,
+                claim_archive=True,
+                requires_egress_public_claim=False,
+                requires_audio_safe=False,
+                rate_limit_key="omg.weblog:public_post",
+            ),
+        )
+
+    def test_narrowed_to_weblog_the_poster_posts_only_weblog(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HAPAX_CROSS_SURFACE_EVENT_TYPES", "omg.weblog")
+        bus = tmp_path / "events.jsonl"
+        _write_events(bus, [_public_event(), self._weblog()])
+        compose = mock.Mock(return_value="post")
+        poster, _ = _make_poster(
+            event_path=bus, cursor_path=tmp_path / "cursor.txt", compose_fn=compose
+        )
+
+        poster.run_once()
+
+        assert [call.args[0].event_type for call in compose.call_args_list] == ["omg.weblog"]
+
+    def test_a_type_outside_the_built_in_set_cannot_widen_it(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_CROSS_SURFACE_EVENT_TYPES", "publication.artifact, omg.weblog")
+
+        assert bluesky_post._allowed_event_types() == frozenset({"omg.weblog"})
+
+    def test_an_empty_narrowing_allows_nothing(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_CROSS_SURFACE_EVENT_TYPES", " , ")
+
+        assert bluesky_post._allowed_event_types() == frozenset()
+
+    def test_unset_keeps_the_built_in_set(self, monkeypatch):
+        monkeypatch.delenv("HAPAX_CROSS_SURFACE_EVENT_TYPES", raising=False)
+
+        assert bluesky_post._allowed_event_types() == ALLOWED_PUBLIC_EVENT_TYPES
+
+    def test_the_deployed_unit_is_narrowed_to_weblog_posts(self):
+        from pathlib import Path
+
+        unit = Path(__file__).resolve().parents[2] / "systemd/units/hapax-bluesky-post.service"
+        lines = unit.read_text(encoding="utf-8").splitlines()
+        assert "Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog" in lines

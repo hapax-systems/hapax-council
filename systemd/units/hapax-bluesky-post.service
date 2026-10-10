@@ -17,6 +17,9 @@ Environment=HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH=/dev/shm/hapax-public-event
 Environment=HAPAX_BLUESKY_CURSOR=%h/.cache/hapax/bluesky-post-cursor.txt
 Environment=HAPAX_BLUESKY_IDEMPOTENCY_PATH=%h/.cache/hapax/bluesky-post-event-ids.json
 Environment=HAPAX_LOG_LEVEL=INFO
+# Reviewed weblog entries only: in May 2026 this account posted one gate-refusal message 24 times
+# (correction cor-2026-0002). The variable can only narrow the poster's built-in event types.
+Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog
 # Operator must export from hapax-secrets:
 #   HAPAX_BLUESKY_HANDLE         (e.g. hapax.bsky.social)
 #   HAPAX_BLUESKY_APP_PASSWORD   (19-char from https://bsky.app/settings/app-passwords)

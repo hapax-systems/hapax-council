@@ -97,6 +97,20 @@ ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
         "velocity.digest",
     }
 )
+EVENT_TYPES_ENV = "HAPAX_CROSS_SURFACE_EVENT_TYPES"
+
+
+def _allowed_event_types() -> frozenset[str]:
+    """The types this poster may post: the built-in set, narrowed by EVENT_TYPES_ENV when set.
+
+    The variable is a comma-separated list. It can only narrow: a type outside the built-in set
+    is ignored, and a list naming none of them allows nothing.
+    """
+    raw = os.environ.get(EVENT_TYPES_ENV)
+    if raw is None:
+        return ALLOWED_PUBLIC_EVENT_TYPES
+    wanted = {part.strip() for part in raw.split(",") if part.strip()}
+    return ALLOWED_PUBLIC_EVENT_TYPES & wanted
 
 
 @dataclass(frozen=True)
@@ -142,6 +156,7 @@ class BlueskyPoster:
         self._idempotency_path = idempotency_path
         self._tick_s = max(1.0, tick_s)
         self._dry_run = dry_run
+        self._allowed_types = _allowed_event_types()
         self._stop_evt = threading.Event()
         self._processed_event_ids: set[str] | None = None
         self._post_receipts: dict[str, dict[str, Any]] | None = None
@@ -168,7 +183,7 @@ class BlueskyPoster:
                 self._write_cursor(record.byte_after)
                 continue
             event = record.event
-            if event.event_type not in ALLOWED_PUBLIC_EVENT_TYPES:
+            if event.event_type not in self._allowed_types:
                 self._write_cursor(record.byte_after)
                 continue
             if self._event_already_processed(event.event_id):
