@@ -6,7 +6,7 @@ import hashlib
 import logging
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -16,6 +16,7 @@ from shared.relay_lifecycle import lane_is_retired
 from shared.relay_mq import ensure_schema
 
 if TYPE_CHECKING:
+    from shared.capability_envelope import EnvelopeDeclaration, RenderedEnvelope
     from shared.content_address import ContentAddress
 
 _LOG = logging.getLogger(__name__)
@@ -51,6 +52,8 @@ class DispatchLaunchRequest:
     idempotency_key: str | None = None
     authority_item: str | None = None
     reactivate_retired: bool = False
+    envelope: EnvelopeDeclaration | None = None
+    _envelope_json: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         for name in ("task_id", "lane", "platform", "mode", "profile", "authority_case"):
@@ -58,6 +61,33 @@ class DispatchLaunchRequest:
                 raise ValueError(f"{name} is required")
         if not self.message_id.strip():
             raise CoordDispatchError("strict_mq_message_id_required")
+        if self.envelope is not None:
+            from shared.capability_envelope import EnvelopeDeclaration
+
+            value = self.envelope
+            if isinstance(value, EnvelopeDeclaration):
+                value = value.model_dump()
+            normalized = EnvelopeDeclaration.model_validate(value)
+            object.__setattr__(self, "envelope", normalized)
+            object.__setattr__(self, "_envelope_json", normalized.model_dump_json())
+
+    @property
+    def envelope_sha256(self) -> str | None:
+        if self._envelope_json is None:
+            return None
+        return hashlib.sha256(self._envelope_json.encode()).hexdigest()
+
+    def validated_envelope(self) -> EnvelopeDeclaration | None:
+        """Return a detached snapshot; mutation of nested model data never rebinds identity."""
+        from shared.capability_envelope import EnvelopeDeclaration
+
+        if self.envelope is None:
+            if self._envelope_json is not None:
+                raise CoordDispatchError("envelope_identity_changed: restore the declared envelope")
+            return None
+        if self.envelope.model_dump_json() != self._envelope_json:
+            raise CoordDispatchError("envelope_identity_changed: issue a new launch decision")
+        return EnvelopeDeclaration.model_validate_json(self._envelope_json)
 
     @property
     def normalized_lane(self) -> str:
@@ -122,6 +152,7 @@ def run_atomic_dispatch_launch(
     launch: Callable[[], int],
     *,
     collect_result_ref: Callable[[], ContentAddress | None] | None = None,
+    rendered_envelope: RenderedEnvelope | None = None,
 ) -> DispatchLaunchResult:
     """Bind, consume, launch, and record one dispatch as a single operation.
 
@@ -131,6 +162,25 @@ def run_atomic_dispatch_launch(
     cleanup state. This does not exclude concurrent or interrupted inflight
     launches. Receipt collection is optional evidence, never launch authority.
     """
+
+    envelope = request.validated_envelope()
+    if envelope is None:
+        if rendered_envelope is not None:
+            raise CoordDispatchError("undeclared_envelope: declare it in the launch request")
+    else:
+        from shared.capability_envelope import RenderedEnvelope, check_conformance
+
+        if rendered_envelope is None:
+            raise CoordDispatchError("rendered_envelope_required: render the declared envelope")
+        rendered_envelope = RenderedEnvelope.model_validate(rendered_envelope.model_dump())
+        if rendered_envelope.facts.get("declaration_sha256") != request.envelope_sha256:
+            raise CoordDispatchError("envelope_identity_mismatch: render this launch declaration")
+        check_conformance(envelope, rendered_envelope)
+        if rendered_envelope.carrier != "t2":
+            raise CoordDispatchError(
+                "envelope_runner_unavailable: unit/OCI activation remains held; next action: "
+                "obtain independent acceptance and governed executor admission before launch"
+            )
 
     key = request.effective_idempotency_key
     replayed = replay_terminal_result(request, idempotency_key=key)
@@ -159,7 +209,16 @@ def run_atomic_dispatch_launch(
         raise
 
     try:
-        returncode = int(launch())
+        if envelope is None:
+            returncode = int(launch())
+        else:
+            # Only the already existing T2 executor is callable. A declaration never
+            # falls through to the opaque, unenveloped legacy launch callback.
+            from shared.capability_envelope.render import execute
+
+            returncode = int(
+                execute(rendered_envelope, timeout=envelope.unit.runtime_max_sec).returncode
+            )
     except BaseException:
         _cleanup_dispatch_message(request, idempotency_key=key, state="deferred", returncode=70)
         _append_dispatch_event(request, idempotency_key=key, outcome="failed", returncode=70)
@@ -232,6 +291,7 @@ def replay_terminal_result(
 ) -> DispatchLaunchResult | None:
     """Replay a prior terminal launch result for ``idempotency_key``."""
 
+    request.validated_envelope()
     result = request.event_log.replay(fail_open=True)
     for event in reversed(result.events):
         if event.event_type not in TERMINAL_EVENT_TYPES:
@@ -241,6 +301,12 @@ def replay_terminal_result(
         event_message_id = str(event.payload.get("message_id", ""))
         if event_message_id != request.message_id:
             raise CoordDispatchError("idempotency_key_message_id_mismatch")
+        if event.payload.get("envelope_sha256") != request.envelope_sha256:
+            raise CoordDispatchError(
+                "envelope_identity_mismatch: replay belongs to a different envelope; next action: "
+                "restore the original declaration and replay identity, or obtain a new launch "
+                "decision with a new message and idempotency key"
+            )
         returncode = int(event.payload.get("returncode", 0))
         outcome = str(event.payload.get("outcome", ""))
         cleanup_state = "processed" if outcome == "succeeded" else "deferred"
@@ -424,6 +490,7 @@ def _append_dispatch_event(
             "outcome": outcome,
             "returncode": returncode,
             "result_ref": result_ref.model_dump(mode="json") if result_ref is not None else None,
+            "envelope_sha256": request.envelope_sha256,
         },
     )
     try:

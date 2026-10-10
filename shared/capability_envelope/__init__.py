@@ -6,10 +6,12 @@ boundary observation that canary C10 uses.
 
 from shared.capability_envelope.declaration import (
     CredentialBind,
+    DeclaredChannel,
     DeclaredFile,
     DeclaredHook,
     DeclaredMcpServer,
     EnvelopeDeclaration,
+    UnitSection,
 )
 from shared.capability_envelope.render import (
     JOB_HOME,
@@ -19,6 +21,7 @@ from shared.capability_envelope.render import (
     EnvelopeCarrierError,
     EnvelopeRefusal,
     RenderedEnvelope,
+    check_conformance,
     execute,
     render,
 )
@@ -30,6 +33,7 @@ __all__ = [
     "JOB_WORK",
     "MASKED_NAMES",
     "CredentialBind",
+    "DeclaredChannel",
     "DeclaredFile",
     "DeclaredHook",
     "DeclaredMcpServer",
@@ -38,6 +42,8 @@ __all__ = [
     "EnvelopeRefusal",
     "OpenWatch",
     "RenderedEnvelope",
+    "UnitSection",
+    "check_conformance",
     "execute",
     "find_tokens",
     "render",
