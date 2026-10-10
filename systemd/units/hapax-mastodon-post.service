@@ -9,6 +9,8 @@ PartOf=hapax.target
 Type=simple
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
+# The legal name, projected alone so the guard is armed here and nothing that renders sees it.
+EnvironmentFile=-/run/user/%U/hapax-publish-legal-name-guard.env
 Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HAPAX_MASTODON_METRICS_PORT=9502
