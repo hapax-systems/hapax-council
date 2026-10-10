@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
@@ -33,6 +34,10 @@ T0_GROUPS = {"docker", "gpu", "litellm", "langfuse", "qdrant", "postgres"}
 def process_report(
     report: dict,
     state_path: str | Path = "profiles/alert-state.json",
+    *,
+    min_duration_s_by_status: Mapping[str, float] | None = None,
+    dedup_window_s: float | None = DEDUP_WINDOW_S,
+    dedup_on_message: bool = False,
 ) -> list[dict]:
     """Process a health report and return a list of alert actions.
 
@@ -42,6 +47,12 @@ def process_report(
     Args:
         report: Parsed JSON health report with groups/checks structure.
         state_path: Path to the persistent state JSON file.
+        min_duration_s_by_status: Per status, how long a check must have held that status
+            before it alerts (``{"degraded": 7200}`` alerts only on degraded lasting 2 h).
+        dedup_window_s: Re-alert an unchanged check after this many seconds, or sooner on a
+            priority escalation. ``None`` re-alerts only when the status or (see below) the
+            message changes; an escalation alone does not.
+        dedup_on_message: Treat a changed check message as a new cause and alert again.
 
     Returns:
         List of alert action dicts to send as notifications.
@@ -54,7 +65,8 @@ def process_report(
     # Collect current check statuses
     current_checks: dict[str, dict] = {}
     for group in report.get("groups", []):
-        group_name = group.get("name", "unknown")
+        # The producer's GroupResult carries ``group``; ``name`` is the legacy shape.
+        group_name = group.get("group") or group.get("name") or "unknown"
         for check in group.get("checks", []):
             check_name = check.get("name", "unknown")
             check_status = check.get("status", "unknown")
@@ -103,26 +115,37 @@ def process_report(
         else:
             priority = "default"
 
+        since = prev.get("since", now) if prev.get("status") == status else now
+        message = check_info["message"]
+
         # Dedup: skip if same status was alerted within window
         should_alert = True
         if prev.get("alerted") and prev.get("alert_status") == status:
-            if (now - last_alert_time) < DEDUP_WINDOW_S:
+            same_cause = not dedup_on_message or prev.get("alert_message") == message
+            if dedup_window_s is None:
+                # Until the status or the cause changes; an escalation alone is not a change.
+                if same_cause:
+                    should_alert = False
+            elif (now - last_alert_time) < dedup_window_s:
                 # But still alert on escalation (priority change)
-                if priority == prev.get("alert_priority"):
+                if same_cause and priority == prev.get("alert_priority"):
                     should_alert = False
 
+        min_duration = (min_duration_s_by_status or {}).get(status)
+        if should_alert and min_duration is not None and (now - since) < min_duration:
+            should_alert = False
+
         if should_alert:
-            failed_by_group.setdefault(group, []).append(
-                f"{check_name}: {check_info['message'] or status}"
-            )
+            failed_by_group.setdefault(group, []).append(f"{check_name}: {message or status}")
 
         state[check_name] = {
             "status": status,
-            "since": prev.get("since", now) if prev.get("status") == status else now,
+            "since": since,
             "cycles": cycles,
             "alerted": should_alert or prev.get("alerted", False),
             "alert_status": status if should_alert else prev.get("alert_status"),
             "alert_priority": priority if should_alert else prev.get("alert_priority"),
+            "alert_message": message if should_alert else prev.get("alert_message"),
             "last_alert_time": now if should_alert else last_alert_time,
         }
 

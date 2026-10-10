@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""hapax-flow-reader — durable reader for the merge-flow verdict.
+
+Runs only ``agents.health_monitor --check flow --json``, feeds the report to
+``shared.alert_state.process_report`` with the flow policy, and delivers each resulting action
+through ``scripts/hapax-operator-message`` to the operator inbox. It never runs ``--apply`` or
+``--fix`` and never calls ``health-watchdog``: it reads a verdict and reports it.
+
+Policy:
+  * FAILED is delivered once per distinct (status, message); an unchanged FAILED is not
+    re-delivered. The message names the failing tests, so it is the cause.
+  * DEGRADED is delivered once, and only after it has lasted 2 h.
+  * Recovery is delivered once, as an advisory.
+  * An unread verdict (timeout, no JSON, no overall_status) delivers one "flow unread"
+    advisory, again only when the cause changes. It never feeds the alert state, so unknown
+    never becomes healthy.
+
+Delivery is at least once: when a send fails, the alert state is restored to its previous
+bytes and the run exits non-zero, so the next run delivers again.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import subprocess
+import sys
+import time
+from collections.abc import Callable, Sequence
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+from shared.alert_state import process_report  # noqa: E402
+
+log = logging.getLogger("hapax-flow-reader")
+
+TASK_ID = "flow-verdict-durable-reader-20261010"
+SENDER = "hapax-flow-reader"
+FLOW_COMMAND: tuple[str, ...] = (
+    sys.executable,
+    "-m",
+    "agents.health_monitor",
+    "--check",
+    "flow",
+    "--json",
+)
+FLOW_TIMEOUT_S = 240
+OPERATOR_MESSAGE = REPO_ROOT / "scripts" / "hapax-operator-message"
+STATE_DIR = Path.home() / ".cache" / "hapax" / "flow-reader"
+ALERT_STATE_PATH = STATE_DIR / "alert-state.json"
+UNREAD_STATE_PATH = STATE_DIR / "unread-state.json"
+FLOW_POLICY = {
+    "min_duration_s_by_status": {"degraded": 7200},
+    "dedup_window_s": None,
+    "dedup_on_message": True,
+}
+VERDICTS = frozenset({"healthy", "degraded", "failed"})
+
+Runner = Callable[..., subprocess.CompletedProcess]
+
+
+def read_flow_report(run: Runner = subprocess.run) -> tuple[dict | None, str | None]:
+    """``(report, None)`` for a readable verdict, else ``(None, cause)``."""
+
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONSAFEPATH"}
+    try:
+        result = run(
+            list(FLOW_COMMAND),
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=FLOW_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"the flow check timed out after {FLOW_TIMEOUT_S}s"
+    except OSError as exc:
+        return None, f"the flow check could not start ({type(exc).__name__})"
+    try:
+        report = json.loads(result.stdout or "")
+    except json.JSONDecodeError:
+        return None, f"the flow check printed no JSON (exit {result.returncode})"
+    if not isinstance(report, dict) or report.get("overall_status") not in VERDICTS:
+        return None, f"the flow report has no overall_status (exit {result.returncode})"
+    return report, None
+
+
+def _failed_groups(report: dict) -> frozenset[str]:
+    names: set[str] = set()
+    for group in report.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        name = group.get("group") or group.get("name") or "unknown"
+        if any(
+            isinstance(c, dict) and c.get("status") == "failed" for c in group.get("checks") or []
+        ):
+            names.add(str(name))
+    return frozenset(names)
+
+
+def _delivery(action: dict, failed_groups: frozenset[str]) -> tuple[str, str, str]:
+    """``(priority, subject, payload)``: FAILED goes at priority 1, everything else at 2."""
+
+    title = str(action.get("title") or "flow")
+    group = title.removeprefix("Health: ") if title.startswith("Health: ") else ""
+    priority = "1" if group and group in failed_groups else "2"
+    return priority, title, str(action.get("message") or "")
+
+
+def send(priority: str, subject: str, payload: str, run: Runner = subprocess.run) -> bool:
+    argv = [
+        sys.executable,
+        str(OPERATOR_MESSAGE),
+        "--type",
+        "advisory",
+        "--priority",
+        priority,
+        "--sender",
+        SENDER,
+        "--task-id",
+        TASK_ID,
+        "--subject",
+        subject,
+        "--payload",
+        payload,
+    ]
+    try:
+        result = run(argv, capture_output=True, text=True, timeout=60, check=False)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log.error("operator message failed to send: %s", type(exc).__name__)
+        return False
+    if result.returncode != 0:
+        log.error("operator message exited %s: %s", result.returncode, (result.stderr or "")[-300:])
+        return False
+    return True
+
+
+def _read_unread_state(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def handle_unread(cause: str, run: Runner = subprocess.run, now: float | None = None) -> int:
+    state = _read_unread_state(UNREAD_STATE_PATH)
+    if state.get("cause") == cause:
+        return 0
+    if not send("2", "flow unread", f"The merge-flow verdict could not be read: {cause}.", run):
+        return 1
+    _write_atomic(
+        UNREAD_STATE_PATH,
+        json.dumps({"cause": cause, "since": time.time() if now is None else now}),
+    )
+    return 0
+
+
+def handle_report(report: dict, run: Runner = subprocess.run) -> int:
+    UNREAD_STATE_PATH.unlink(missing_ok=True)  # a readable verdict ends the unread episode
+    previous = ALERT_STATE_PATH.read_bytes() if ALERT_STATE_PATH.exists() else None
+    actions = process_report(report, state_path=ALERT_STATE_PATH, **FLOW_POLICY)
+    failed_groups = _failed_groups(report)
+    for action in actions:
+        if not send(*_delivery(action, failed_groups), run=run):
+            if previous is None:
+                ALERT_STATE_PATH.unlink(missing_ok=True)
+            else:
+                ALERT_STATE_PATH.write_bytes(previous)
+            return 1
+    return 0
+
+
+def main(argv: Sequence[str] | None = None, run: Runner = subprocess.run) -> int:
+    del argv
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
+    report, cause = read_flow_report(run)
+    if report is None:
+        return handle_unread(str(cause), run)
+    return handle_report(report, run)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
