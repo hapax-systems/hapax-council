@@ -14,6 +14,7 @@ def test_hapax_fsm_smoke_is_tracked_isolated_and_executable(tmp_path: Path) -> N
         **os.environ,
         "HOME": str(tmp_path / "home"),
         "UV_LINK_MODE": "copy",
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={tmp_path}/no-session-bus",
     }
     result = subprocess.run(
         [str(script), "--mode", "both"],
@@ -33,8 +34,12 @@ def test_hapax_fsm_smoke_is_tracked_isolated_and_executable(tmp_path: Path) -> N
     assert "manual claim binding issued" in default_output
     assert "Gate-0B claim-publication root installed for first use" in default_output
     assert "admitted publication applied" in default_output
-    assert "[default] claim after close" in default_output
-    assert "archived terminal dispatch-only claim residue" in default_output
+    close = default_output.index("[default] close\n")
+    release = default_output.index("[default] release closed claim residue\n")
+    next_claim = default_output.index("[default] claim after close\n")
+    assert close < release < next_claim
+    assert "released" in default_output[release:next_claim]
+    assert "archived terminal dispatch-only claim residue" not in default_output
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" not in default_output
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in killswitch_output
     assert "admitted publication applied" not in killswitch_output
