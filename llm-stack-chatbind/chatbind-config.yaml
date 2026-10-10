@@ -1,0 +1,51 @@
+# chatbind — LiteLLM config for the Featherless + Verboo builder binding.
+# Task: chatbind-featherless-verboo-proxy-build-and-probes-20261004
+# Design: frame/second-source-family-20261003/CHAT-BINDING.md section 6.
+#
+# Builders behind the hooked harness, NEVER PAYG. Loopback only; the loopback boundary
+# IS the auth boundary (no master key). This file is the WHOLE configuration surface —
+# every line below is a chatbind config-guard invariant
+# (tests/test_chatbind_config_guard.py). Container start and the P1-P5 probes are later
+# SEAT runtime acts; nothing here starts or routes anything.
+#
+# The two model pins are a SEAT choice per routing-table section B2/B3 (NOT this build).
+# Defaults are candidates measured live 2026-10-03 (routing table :166); the seat
+# confirms or overrides each pin before admission. Constraints: not `jev-router`
+# (identity unprovable, LOG.md:12713); DeepSeek-V4-Pro's 32k ceiling is a long-packet
+# mismatch (PR #5020); Verboo serves 1M context on eleven of twelve models.
+model_list:
+  - model_name: featherless-builder
+    litellm_params:
+      # SEAT PIN (section B2): candidate zai-org/GLM-5.3 (Featherless, measured live 2026-10-03).
+      model: featherless_ai/zai-org/GLM-5.3
+      api_base: https://api.featherless.ai/v1
+      api_key: os.environ/FEATHERLESS_API_KEY  # pragma: allowlist secret - env-var reference, not a value
+      stream: true
+      extra_headers:
+        # Non-default User-Agent on the Featherless upstream (section 6).
+        User-Agent: hapax-chatbind/1
+  - model_name: verboo-builder
+    litellm_params:
+      # SEAT PIN (section B3): a 1M-context Verboo model, not jev-router (seat sets the id).
+      model: openai/verboo-SEAT-PIN
+      api_base: https://code.verboo.ai/router/v1
+      api_key: os.environ/VERBOO_API_KEY  # pragma: allowlist secret - env-var reference, not a value
+      stream: true
+      # Verboo concurrency cap (section 6): flat plan, per-minute rate limit.
+      max_parallel_requests: 2
+
+litellm_settings:
+  drop_params: true
+  modify_params: false
+  num_retries: 0
+  # No cache, no cache_params, no success_callback, no callbacks — so this proxy emits no
+  # per-call record of its own and keeps NO state. A LiteLLM per-call ledger would require a
+  # callback, which the config-guard forbids; spend/identity witnessing therefore stays with the
+  # calling harness and the headroom ledger (#4698), not here.
+
+# Deliberately empty: no master_key (loopback is the auth boundary), no database_url, no
+# store_model_in_db, no virtual_keys, no budgets.
+general_settings: {}
+
+# No router_settings block on purpose: no fallbacks, no default_fallbacks, no
+# model_group_alias, no wildcard routes, no tier-alias model names.
