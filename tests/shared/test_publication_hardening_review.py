@@ -7,7 +7,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
+
+from tests.publication_admission_fixtures import install_publication_admission
+
+
+@pytest.fixture(autouse=True)
+def publication_admission(monkeypatch, tmp_path):
+    return install_publication_admission(monkeypatch, tmp_path)
+
 
 from shared.publication_hardening.review import (
     DEFAULT_REVIEW_THRESHOLD,
@@ -21,7 +30,7 @@ from shared.publication_hardening.review import (
 
 def _completion_response(score: float, issues: list[str] | None = None) -> Callable[..., str]:
     def _complete(**kwargs: Any) -> str:
-        assert kwargs["model"] == "balanced"
+        assert kwargs["model"] == "claude-opus-4-8"
         return json.dumps(
             {
                 "claims": [
@@ -39,18 +48,28 @@ def _completion_response(score: float, issues: list[str] | None = None) -> Calla
     return _complete
 
 
+class _ReviewWithStub(ReviewPass):
+    """Editorial unit-test seam only; production qualification has separate tests."""
+
+    def _completion(self):
+        assert self.completion is not None
+        return self.completion
+
+
 class TestReviewPass:
     def test_returns_structured_report(self) -> None:
-        review = ReviewPass(completion=_completion_response(0.91))
+        review = _ReviewWithStub(model="claude-opus-4-8", completion=_completion_response(0.91))
         report = review.review_text("OpenAI's Codex is correctly attributed.")
 
         assert report.passes()
         assert report.overall_confidence == 0.91
-        assert report.reviewer_model == "balanced"
+        assert report.reviewer_model == "claude-opus-4-8"
         assert report.claims[0].confidence == 0.91
 
     def test_score_below_threshold_holds(self) -> None:
-        review = ReviewPass(completion=_completion_response(0.42, ["accuracy unclear"]))
+        review = _ReviewWithStub(
+            model="claude-opus-4-8", completion=_completion_response(0.42, ["accuracy unclear"])
+        )
         report = review.review_text("Unsupported draft.")
 
         assert not report.passes()
@@ -65,7 +84,7 @@ class TestReviewPass:
         assert report.flagged_issues[0].startswith("review_parse_failed")
 
     def test_known_entity_misattribution_clamps_score_below_threshold(self) -> None:
-        review = ReviewPass(completion=_completion_response(0.95))
+        review = _ReviewWithStub(model="claude-opus-4-8", completion=_completion_response(0.95))
         report = review.review_text("Anthropic's Codex wrote the draft.")
 
         assert not report.passes()
@@ -97,7 +116,9 @@ class TestReviewPass:
         path = tmp_path / "draft.md"
         path.write_text("---\ntitle: Draft\n---\n\nBody\n", encoding="utf-8")
 
-        report = ReviewPass(completion=_completion_response(0.88)).review_text("Body")
+        report = _ReviewWithStub(
+            model="claude-opus-4-8", completion=_completion_response(0.88)
+        ).review_text("Body")
         assert attach_review_report_to_frontmatter(path, report) is True
 
         frontmatter = yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1])

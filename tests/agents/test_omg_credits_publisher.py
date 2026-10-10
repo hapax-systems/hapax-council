@@ -27,6 +27,9 @@ from agents.omg_credits_publisher.publisher import (
     OmgCreditsPublisher,
     render_credits_html,
 )
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 
 @pytest.fixture

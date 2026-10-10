@@ -10,6 +10,9 @@ from agents.marketing.refusal_annex_publisher import (
 )
 from agents.publication_bus.publisher_kit import PublisherPayload
 from agents.publication_bus.publisher_kit.allowlist import load_allowlist
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 
 class TestSurfaceMetadata:

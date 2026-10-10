@@ -13,6 +13,9 @@ from agents.marketing.refusal_annex_renderer import (
     render_annex,
     render_index,
 )
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 
 def _write_log(path: Path, events: list[dict]) -> None:

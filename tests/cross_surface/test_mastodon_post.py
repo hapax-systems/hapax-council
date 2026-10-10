@@ -21,6 +21,9 @@ from shared.research_vehicle_public_event import (
     PublicEventSurfacePolicy,
     ResearchVehiclePublicEvent,
 )
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 
 def _public_event(**overrides) -> ResearchVehiclePublicEvent:

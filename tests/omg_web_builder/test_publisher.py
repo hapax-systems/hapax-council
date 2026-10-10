@@ -17,6 +17,9 @@ from agents.omg_web_builder.publisher import (
     read_html,
     render_dry_run_summary,
 )
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 # ── read_html ────────────────────────────────────────────────────────
 

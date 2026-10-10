@@ -12,6 +12,9 @@ from agents.omg_pastebin_publisher.publisher import (
     build_precedent_slug,
     read_precedents_from_dir,
 )
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 
 def _grounding_gate() -> dict:

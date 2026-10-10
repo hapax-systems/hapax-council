@@ -52,6 +52,7 @@ from agents.publication_bus.publisher_kit.allowlist import (
     AllowlistGate,
     load_allowlist,
 )
+from agents.publication_bus.publisher_kit.base import local_preparation
 from shared.patreon_receive_only_rail import (
     PledgeEvent,
     PledgeEventKind,
@@ -109,6 +110,7 @@ class PatreonPublisher(Publisher):
         ]
         return "\n".join(lines)
 
+    @local_preparation
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
         result = write_manifest_entry(self.output_dir, payload, log=log)
         if result.ok and payload.target == PledgeEventKind.MEMBERS_PLEDGE_DELETE.value:

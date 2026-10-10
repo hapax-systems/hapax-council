@@ -54,6 +54,7 @@ from agents.publication_bus.publisher_kit.allowlist import (
     AllowlistGate,
     load_allowlist,
 )
+from agents.publication_bus.publisher_kit.base import local_preparation
 from shared.github_sponsors_receive_only_rail import (
     SponsorshipEvent,
     SponsorshipEventKind,
@@ -141,6 +142,7 @@ class GitHubSponsorsPublisher(Publisher):
         ]
         return "\n".join(lines)
 
+    @local_preparation
     def _emit(self, payload: PublisherPayload) -> PublisherResult:
         """Write the aggregate manifest entry; auto-link on cancellation."""
         result = write_manifest_entry(self.output_dir, payload, log=log)

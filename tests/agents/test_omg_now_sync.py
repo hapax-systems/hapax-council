@@ -23,6 +23,9 @@ from agents.omg_now_sync.sync import (
     OmgNowSync,
     render_now_markdown,
 )
+from tests.publication_admission_fixtures import (
+    publication_transport_admission as publication_transport_admission,
+)
 
 
 class TestLoadWorkingMode:

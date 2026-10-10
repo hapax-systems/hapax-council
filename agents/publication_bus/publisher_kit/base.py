@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -50,6 +51,7 @@ from agents.publication_bus.publisher_kit.legal_name_guard import (
     assert_no_leak,
 )
 from agents.publication_bus.witness_log import append_publication_witness
+from shared.publication_hardening.admission import admission_report, evaluate_publication_admission
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +119,22 @@ class PublisherResult:
     refused: bool = False
     error: bool = False
     detail: str = ""
+    route_resource_admission: dict[str, object] | None = None
+
+
+_LOCAL_PREPARATION_WRITERS: set[Callable[..., PublisherResult]] = set()
+
+
+def local_preparation[Emit: Callable[..., PublisherResult]](emit: Emit) -> Emit:
+    """Declare a reviewed local writer's effect at its implementation.
+
+    Only local manifest/refusal preparation uses this declaration. It is not
+    an egress permission or an execution sandbox. Content gates still apply.
+    A replacement/overridden transport does not inherit the declaration;
+    surface names, output paths and payload metadata cannot select it.
+    """
+    _LOCAL_PREPARATION_WRITERS.add(emit)
+    return emit
 
 
 class Publisher(ABC):
@@ -237,9 +255,24 @@ class Publisher(ABC):
                     detail="legal-name leak detected",
                 )
 
+        # Bind the declaration to the callable actually used below. Unknown or
+        # replaced implementations keep the default outward-effect admission.
+        emit = self._emit
+        if getattr(emit, "__func__", None) not in _LOCAL_PREPARATION_WRITERS:
+            admission = evaluate_publication_admission(self.surface_name)
+            if not admission.allowed:
+                log.warning("publication_bus: route/resource hold: %s", admission.reason_code)
+                if counter is not None:
+                    counter.labels(surface=self.surface_name, result="route_resource_hold").inc()
+                return PublisherResult(
+                    refused=True,
+                    detail=admission.message,
+                    route_resource_admission=admission_report(admission),
+                )
+
         # 3. Emit (subclass-specific transport)
         try:
-            result = self._emit(payload)
+            result = emit(payload)
         except Exception:
             log.exception("publication_bus: error in subclass _emit")
             if counter is not None:

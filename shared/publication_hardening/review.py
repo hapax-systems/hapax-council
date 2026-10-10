@@ -6,13 +6,17 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import Literal, Protocol
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from shared.publication_hardening.admission import (
+    PublicationAdmissionError,
+    publication_hold,
+    require_publication_admission,
+)
 from shared.publication_hardening.entity_checker import check_attributions, load_registry
 
 DEFAULT_REVIEW_MODEL = "balanced"
@@ -121,10 +125,14 @@ class ReviewPass:
     ) -> ReviewReport:
         """Review publication text and return a structured confidence report.
 
-        Failures are represented as low-confidence reports so callers can
-        consistently hold for operator review instead of accidentally sending.
+        Admission failures raise PublicationAdmissionError before completion.
+        Transport and parsing failures become low-confidence editorial reports.
+        The explicit executor checks qualification and same-call accounting
+        before editorial content is parsed. Raw completion callbacks are refused.
         """
 
+        require_publication_admission("review", review_model=self.model)
+        completion = self._completion()
         deterministic_issues = self._deterministic_issues(text)
         messages = build_review_messages(
             text,
@@ -136,9 +144,9 @@ class ReviewPass:
             metadata=metadata,
         )
         try:
-            raw = self._completion()(
-                model=self.model, messages=messages, temperature=0.0, max_tokens=900
-            )
+            raw = completion(model=self.model, messages=messages, temperature=0.0, max_tokens=900)
+        except PublicationAdmissionError:
+            raise
         except Exception as exc:  # noqa: BLE001 - fail closed as a report
             return ReviewReport(
                 reviewer_model=self.model,
@@ -160,9 +168,15 @@ class ReviewPass:
         return report
 
     def _completion(self) -> CompletionFn:
-        if self.completion is not None:
+        from shared.publication_hardening.execution import AdmittedPublicationCompletion
+
+        if type(self.completion) is AdmittedPublicationCompletion:
             return self.completion
-        return partial(_call_litellm_gateway, timeout_s=self.timeout_s)
+        if self.completion is not None:
+            raise PublicationAdmissionError(publication_hold("review_executor_unqualified"))
+        # The legacy gateway alias does not establish served identity or billing.
+        # Preserve the review requirement until a qualified executor is bound.
+        raise PublicationAdmissionError(publication_hold("review_execution_binding_absent"))
 
     def _known_entities_summary(self) -> str:
         registry = load_registry(self.registry_path)
@@ -288,31 +302,6 @@ def attach_review_report_to_frontmatter(path: Path, report: ReviewReport) -> boo
     tmp.write_text(rendered, encoding="utf-8")
     tmp.replace(path)
     return True
-
-
-def _call_litellm_gateway(
-    *,
-    model: str,
-    messages: tuple[dict[str, str], ...],
-    temperature: float,
-    max_tokens: int,
-    timeout_s: float,
-) -> str:
-    from openai import OpenAI
-
-    from shared.config import LITELLM_BASE, LITELLM_KEY, MODELS
-
-    base = LITELLM_BASE.rstrip("/")
-    base_url = base if base.endswith("/v1") else f"{base}/v1"
-    client = OpenAI(base_url=base_url, api_key=LITELLM_KEY or "not-set", timeout=timeout_s)
-    model_id = MODELS.get(model, model)
-    response = client.chat.completions.create(
-        model=model_id,
-        messages=list(messages),
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content or ""
 
 
 def _extract_json_object(raw: str) -> str:
