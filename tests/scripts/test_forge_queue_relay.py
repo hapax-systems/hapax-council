@@ -725,3 +725,18 @@ def test_main_dry_run_prints_derived_events(
     printed = json.loads(lines[0])
     assert printed["event_type"] == "forge.queue.baseline"
     assert not (tmp_path / "state.json").exists()
+
+
+def test_relay_units_are_parked_and_never_auto_enabled() -> None:
+    """Merging must install nothing live. hapax-post-merge-deploy `enable --now`s a new timer
+    that carries `Hapax-Auto-Enable: true` (or no marker), which would start a two-minute relay
+    writing shadow queue events into the production coord log. Enabling stays the seat act of
+    forge-s2-merge-queue-shadow-live-20261010."""
+    import re
+
+    parked = re.compile(r"(?mi)^[#;][ \t]*Hapax-Parked:[ \t]*(?:true|yes|1)[ \t]*$")
+    auto_enable = re.compile(r"(?mi)^[#;][ \t]*Hapax-Auto-Enable:[ \t]*(?:true|yes|1)[ \t]*$")
+    for unit in ("forge-queue-relay.service", "forge-queue-relay.timer"):
+        text = (REPO_ROOT / "systemd" / "units" / unit).read_text(encoding="utf-8")
+        assert parked.search(text), unit
+        assert not auto_enable.search(text), unit

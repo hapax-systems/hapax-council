@@ -1,3 +1,4 @@
+# Hapax-Parked: true
 [Unit]
 Description=Forge queue relay (shunt merge-queue state -> coord event log)
 Wants=network-online.target

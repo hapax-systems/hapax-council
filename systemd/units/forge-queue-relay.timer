@@ -1,6 +1,8 @@
+# Hapax-Parked: true
+# Merging installs this disabled; enabling it is the seat act that starts the live shadow run
+# (forge-s2-merge-queue-shadow-live-20261010).
 [Unit]
 Description=Run the forge queue relay every 2 minutes
-# Hapax-Auto-Enable: true
 
 [Timer]
 OnCalendar=*-*-* *:0/2:00
