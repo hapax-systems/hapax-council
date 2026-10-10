@@ -335,6 +335,88 @@ def test_preamble_mode_shows_unread(tmp_path: Path) -> None:
     assert "REQ-004" in result.stdout
 
 
+def _listed_ids(stdout: str) -> list[str]:
+    return [
+        line.split("] ", 1)[1].split(" — ", 1)[0]
+        for line in stdout.splitlines()
+        if "UNREAD [" in line or "STALE [" in line
+    ]
+
+
+def test_preamble_lists_the_newest_request_first(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    # Filename order is oldest first here, as on 10-10 when 53 unread buried the newest.
+    # One created_at is single-quoted, as many vault notes are.
+    _write_request(
+        active / "REQ-20260611-a.md",
+        "REQ-20260611-a",
+        extra_frontmatter={"created_at": "2026-06-11T09:00:00Z"},
+    )
+    _write_request(
+        active / "REQ-20261010T1707-b.md",
+        "REQ-20261010T1707-b",
+        extra_frontmatter={"created_at": "'2026-10-10T17:07:26Z'"},
+    )
+    _write_request(
+        active / "REQ-REGISTER-SLIPPED-c.md",
+        "REQ-REGISTER-SLIPPED-c",
+        extra_frontmatter={"created_at": "2026-10-09T23:59:59Z"},
+    )
+
+    result = _run(tmp_path, "--session-preamble")
+
+    assert _listed_ids(result.stdout) == [
+        "REQ-20261010T1707-b",
+        "REQ-REGISTER-SLIPPED-c",
+        "REQ-20260611-a",
+    ]
+    assert "3 unread" in result.stdout
+
+
+def test_preamble_lists_a_standing_request_before_newer_ones(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    _write_request(
+        active / "REQ-A.md", "REQ-A", extra_frontmatter={"created_at": "2026-10-10T17:00:00Z"}
+    )
+    _write_request(
+        active / "REQ-B.md",
+        "REQ-B",
+        extra_frontmatter={"created_at": "2026-05-01T00:00:00Z", "standing": "true"},
+    )
+    _write_request(
+        active / "REQ-C.md",
+        "REQ-C",
+        extra_frontmatter={"created_at": "2026-06-01T00:00:00Z", "standing": "false"},
+    )
+
+    result = _run(tmp_path, "--session-preamble")
+
+    assert _listed_ids(result.stdout) == ["REQ-B", "REQ-A", "REQ-C"]
+
+
+def test_a_request_without_created_at_orders_by_updated_at(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    active.mkdir(parents=True)
+    # REQ-A has no created_at but was updated after REQ-B was created, so it leads only
+    # if the updated_at fallback is used; filename order alone would also put it first,
+    # so REQ-C (created between them) checks that dates, not names, decide.
+    _write_request(active / "REQ-A.md", "REQ-A", updated_at="2026-09-01T00:00:00Z")
+    _write_request(
+        active / "REQ-B.md", "REQ-B", extra_frontmatter={"created_at": "2026-06-01T00:00:00Z"}
+    )
+    _write_request(
+        active / "REQ-C.md", "REQ-C", extra_frontmatter={"created_at": "2026-07-01T00:00:00Z"}
+    )
+
+    preamble = _run(tmp_path, "--session-preamble")
+    listing = _run(tmp_path)
+
+    assert _listed_ids(preamble.stdout) == ["REQ-A", "REQ-C", "REQ-B"]
+    assert _listed_ids(listing.stdout) == ["REQ-A", "REQ-C", "REQ-B"]
+
+
 def test_non_request_files_ignored(tmp_path: Path) -> None:
     active = tmp_path / "requests" / "active"
     active.mkdir(parents=True)
