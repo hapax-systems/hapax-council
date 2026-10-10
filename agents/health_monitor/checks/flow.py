@@ -37,7 +37,7 @@ import os
 import re
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -352,8 +352,8 @@ async def check_outward_flow(
     now = now or datetime.now(UTC)
     cadences = OUTWARD_CADENCES if cadences is None else cadences
     remediation = (
-        "move the next item of this class (frame/OUTWARD-PRIORITY-BOARD-20261010.md); "
-        "a stalled loop is re-routed to capacity that can run it, not escalated to the operator"
+        "move the next item of this class (frame/OUTWARD-PRIORITY-BOARD-20261010.md) on "
+        "capacity that can run it now"
     )
     if not log_dir.is_dir():
         return [
@@ -413,20 +413,26 @@ async def check_outward_flow(
 _DORMANT_RE = re.compile(
     r"^FAIL: (?:timer )?(\S+) is marked Hapax-Auto-Enable but is not (enabled|active)$"
 )
-VerifyRunner = Callable[[], tuple[int, str]]
+VerifyRunner = Callable[[], Awaitable[tuple[int, str]]]
 
 
-def run_verify_auto_enable(repo_root: Path = REPO_ROOT) -> tuple[int, str]:
-    """The deploy's own witness: which marked units are not live (exit status, output)."""
-    completed = subprocess.run(
-        ["bash", str(repo_root / "scripts" / "hapax-post-merge-deploy"), "--verify-auto-enable"],
-        capture_output=True,
-        text=True,
+async def run_verify_auto_enable(repo_root: Path = REPO_ROOT) -> tuple[int, str]:
+    """The deploy's own witness: which marked units are not live (exit status, output).
+
+    Runs through the health monitor's async ``run_cmd``, so the event loop is never blocked. A
+    timeout comes back as a non-zero status naming no unit, which the check reads as unknown.
+    """
+    rc, stdout, stderr = await _u.run_cmd(
+        [
+            "env",
+            f"REPO={repo_root}",
+            "bash",
+            str(repo_root / "scripts" / "hapax-post-merge-deploy"),
+            "--verify-auto-enable",
+        ],
         timeout=MANDATED_VERIFY_TIMEOUT_S,
-        env={**os.environ, "REPO": str(repo_root)},
-        check=False,
     )
-    return completed.returncode, completed.stdout + completed.stderr
+    return rc, "\n".join(part for part in (stdout, stderr) if part)
 
 
 @check_group("flow")
@@ -436,7 +442,7 @@ async def check_mandated_units(verify: VerifyRunner | None = None) -> list[Check
     verify = verify or run_verify_auto_enable
     name = "flow.mandated_units"
     try:
-        rc, output = verify()
+        rc, output = await verify()
     except (OSError, subprocess.SubprocessError) as exc:
         return [
             _outward_result(

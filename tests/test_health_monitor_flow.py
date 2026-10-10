@@ -362,7 +362,8 @@ def test_publication_past_cadence_is_late_and_degraded(tmp_path: Path) -> None:
     [result] = _outward(log_dir)
     assert result.status is Status.DEGRADED
     assert "late" in result.message
-    assert "re-routed" in (result.remediation or "")
+    assert "capacity that can run it now" in (result.remediation or "")
+    assert "not escalated" not in (result.remediation or "")
 
 
 def test_silence_beyond_the_stall_bound_is_failed(tmp_path: Path) -> None:
@@ -385,6 +386,7 @@ def test_last_published_reads_only_successful_records_of_its_surface(tmp_path: P
         encoding="utf-8",
     )
     (log_dir / "garbage.omg-weblog.json").write_text("{not json", encoding="utf-8")
+    (log_dir / "list.omg-weblog.json").write_text(json.dumps([NOW.isoformat()]), encoding="utf-8")
     (log_dir / "naive.omg-weblog.json").write_text(
         json.dumps({"surface": "omg-weblog", "result": "ok", "timestamp": "2026-10-10T08:59:00"}),
         encoding="utf-8",
@@ -396,7 +398,10 @@ def test_last_published_reads_only_successful_records_of_its_surface(tmp_path: P
 
 
 def _mandated(rc: int, output: str):
-    [result] = asyncio.run(check_mandated_units(verify=lambda: (rc, output)))
+    async def fake() -> tuple[int, str]:
+        return rc, output
+
+    [result] = asyncio.run(check_mandated_units(verify=fake))
     return result
 
 
@@ -422,7 +427,7 @@ def test_dormant_mandated_units_are_named_and_degraded() -> None:
 
 
 def test_mandated_units_unrunnable_is_degraded_never_healthy() -> None:
-    def broken() -> tuple[int, str]:
+    async def broken() -> tuple[int, str]:
         raise subprocess.TimeoutExpired(cmd="hapax-post-merge-deploy", timeout=60)
 
     [result] = asyncio.run(check_mandated_units(verify=broken))
@@ -434,3 +439,78 @@ def test_mandated_units_nonzero_exit_without_names_is_degraded_never_healthy() -
     result = _mandated(2, "verify-auto-enable: /x/systemd/units not found\n")
     assert result.status is Status.DEGRADED
     assert "exited 2" in result.message
+
+
+# ── the real deploy-witness runner, against a stub deploy script ─────────────
+
+
+def _stub_repo(tmp_path: Path, body: str) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "scripts" / "hapax-post-merge-deploy").write_text(
+        "#!/usr/bin/env bash\n" + body, encoding="utf-8"
+    )
+    return repo
+
+
+def test_runner_passes_repo_and_merges_stdout_and_stderr(tmp_path: Path) -> None:
+    repo = _stub_repo(
+        tmp_path,
+        '[ "$1" = "--verify-auto-enable" ] || exit 9\n'
+        'echo "REPO=$REPO"\n'
+        'echo "FAIL: a.timer is marked Hapax-Auto-Enable but is not enabled" >&2\n'
+        "exit 1\n",
+    )
+    rc, output = asyncio.run(flow.run_verify_auto_enable(repo))
+    assert rc == 1
+    assert f"REPO={repo}" in output
+    assert "FAIL: a.timer is marked Hapax-Auto-Enable but is not enabled" in output
+
+
+def test_runner_does_not_block_the_event_loop(tmp_path: Path) -> None:
+    """Other checks keep running while the deploy witness runs (review critical, #5091)."""
+    repo = _stub_repo(tmp_path, "sleep 1\necho ok\n")
+    ticks = 0
+
+    async def ticker(stop: asyncio.Event) -> None:
+        nonlocal ticks
+        while not stop.is_set():
+            ticks += 1
+            await asyncio.sleep(0.05)
+
+    async def main() -> None:
+        stop = asyncio.Event()
+        task = asyncio.create_task(ticker(stop))
+        await asyncio.sleep(0)
+        await flow.run_verify_auto_enable(repo)
+        stop.set()
+        await task
+
+    asyncio.run(main())
+    assert ticks >= 10, f"the event loop was blocked: {ticks} ticks during a 1 s witness run"
+
+
+def test_runner_timeout_reads_as_unknown_never_healthy(tmp_path: Path, monkeypatch) -> None:
+    repo = _stub_repo(tmp_path, "sleep 5\n")
+    monkeypatch.setattr(flow, "MANDATED_VERIFY_TIMEOUT_S", 0.5)
+
+    async def runner() -> tuple[int, str]:
+        return await flow.run_verify_auto_enable(repo)
+
+    [result] = asyncio.run(check_mandated_units(verify=runner))
+    assert result.status is Status.DEGRADED
+    assert "unknown" in result.message
+
+
+def test_check_with_the_real_runner_names_the_dormant_unit(tmp_path: Path) -> None:
+    repo = _stub_repo(
+        tmp_path,
+        'echo "FAIL: timer b.timer is marked Hapax-Auto-Enable but is not active"\nexit 1\n',
+    )
+
+    async def runner() -> tuple[int, str]:
+        return await flow.run_verify_auto_enable(repo)
+
+    [result] = asyncio.run(check_mandated_units(verify=runner))
+    assert result.status is Status.DEGRADED
+    assert "b.timer (not active)" in result.message
