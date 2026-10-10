@@ -471,7 +471,10 @@ class Orchestrator:
             self._withhold_for_gate(artifact, receipt_gate_result)
             return
 
-        gate_result = self._hardening_gate.evaluate(artifact)
+        gate_result = self._hardening_gate.evaluate(
+            artifact,
+            signed_review_evidence=_signed_review_evidence(artifact, receipt_child),
+        )
         gate_result = self._with_public_gate_receipts_child(
             artifact,
             gate_result,
@@ -1878,6 +1881,31 @@ def _vault_artifact_source(artifact: PreprintArtifact) -> tuple[Path, Path] | No
             Path(raw).name, f"it could not be classified: {type(exc).__name__}"
         ) from exc
     return None
+
+
+def _signed_review_evidence(
+    artifact: PreprintArtifact,
+    receipt_child: PublicationGateChildResult,
+) -> tuple[str, ...]:
+    """The receipt refs that stand for a verified exact-artifact review, for a vault artifact.
+
+    The public-gate receipts child PASSES a vault artifact only after every required receipt's
+    signed evidence resolved to a quorum-accept review, independent of the writer family, of the
+    artifact's exact manifest head. That acceptance is the review the hardening gate's review step
+    asks for, so its refs are passed in place of a model call. Anything short of a PASS for a
+    located vault artifact returns no evidence and keeps the model review.
+    """
+
+    if receipt_child.name != "public_gate_receipts":
+        return ()
+    if receipt_child.decision != PublicationGateDecision.PASS:
+        return ()
+    try:
+        if _vault_artifact_source(artifact) is None:
+            return ()
+    except VaultArtifactHeadUnavailable:
+        return ()
+    return tuple(ref for ref in receipt_child.evidence_refs if ref)
 
 
 def _artifact_fingerprint(artifact: PreprintArtifact) -> str:
