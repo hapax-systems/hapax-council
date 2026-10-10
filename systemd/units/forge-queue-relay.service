@@ -1,0 +1,21 @@
+# Hapax-Parked: true
+[Unit]
+Description=Forge queue relay (shunt merge-queue state -> coord event log)
+Wants=network-online.target
+After=network-online.target
+# See: scripts/forge-queue-relay --once
+# Shipped NOT-ENABLED: live shadow activation is gated on the admission
+# stabilization hold (dev1-seat order); enable only after the hold lifts.
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+# Canonical-root: ExecStart uses the source-activation worktree, not a
+# mutable dev tree, so the coord-CLI subprocess (python -m
+# shared.coord_event_log) resolves the reviewed shared/ package.
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/forge-queue-relay --once
+Environment=SHUNT_URL=http://100.85.131.41:8901
+Environment=FORGE_URL=http://100.85.131.41:3000
+Environment=FORGE_QUEUE_REPO=forge-admin/shadow-ci-driver
+# The forge token is resolved at run time via the hapax-secret binding
+# (FORGE_TOKEN_CMD default); it is never written into the unit.
