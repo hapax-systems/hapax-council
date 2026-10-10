@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 import multiprocessing as mp
 import shutil
+import signal
 import subprocess
 import sys
+from multiprocessing.pool import Pool
 from pathlib import Path
 
 import pytest
@@ -39,6 +41,50 @@ def _concurrent_worker(args: tuple[str, int, int, int]) -> int:
             record["pad"] = "x" * 6000  # > PIPE_BUF: O_APPEND alone is NOT atomic here
         if append_jsonl(path, record, sort_keys=True):
             written += 1
+    return written
+
+
+#: The concurrency test's map normally finishes in a few seconds; a wedge fails the test here
+#: instead of running into the shard's wall.
+POOL_RESULT_TIMEOUT_S = 120
+
+
+def _restore_default_sigterm() -> None:
+    """Pool initializer: a worker ends on SIGTERM whatever disposition it inherited.
+
+    ``Pool.terminate()`` takes the inqueue lock and never releases it, then relies on SIGTERM
+    to end any worker still blocked on that lock. A forked worker inherits its parent's
+    SIGTERM disposition, and under xdist an earlier test in the same process can leave a
+    handler installed. A worker that survives SIGTERM makes ``terminate()`` join forever;
+    that hang ejected the merge groups of #5019 (2026-10-04) and #5088 (2026-10-10).
+    """
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+def _sigterm_disposition(_: object = None) -> str:
+    handler = signal.getsignal(signal.SIGTERM)
+    return "default" if handler is signal.SIG_DFL else repr(handler)
+
+
+def _writer_pool(processes: int) -> Pool:
+    return mp.get_context("fork").Pool(processes=processes, initializer=_restore_default_sigterm)
+
+
+def _run_concurrent_writers(path: str, workers: int, per_worker: int, pad_every: int) -> list[int]:
+    """Run the writers, then close() and join(): workers exit on their sentinels, so the
+    success path takes no lock and sends no signal. ``terminate()`` is the failure path only."""
+    pool = _writer_pool(workers)
+    try:
+        written = pool.map_async(
+            _concurrent_worker,
+            [(path, wid, per_worker, pad_every) for wid in range(workers)],
+        ).get(timeout=POOL_RESULT_TIMEOUT_S)
+    except BaseException:
+        pool.terminate()
+        pool.join()
+        raise
+    pool.close()
+    pool.join()
     return written
 
 
@@ -91,12 +137,7 @@ class TestConcurrencyNoInterleave:
     def test_sixteen_writers_two_hundred_records_no_corruption(self, tmp_path: Path) -> None:
         target = tmp_path / "authority-case-ledger.jsonl"
         workers, per_worker, pad_every = 16, 200, 10
-        ctx = mp.get_context("fork")
-        with ctx.Pool(processes=workers) as pool:
-            written = pool.map(
-                _concurrent_worker,
-                [(str(target), wid, per_worker, pad_every) for wid in range(workers)],
-            )
+        written = _run_concurrent_writers(str(target), workers, per_worker, pad_every)
         assert sum(written) == workers * per_worker
 
         lines = target.read_text(encoding="utf-8").splitlines()
@@ -106,6 +147,35 @@ class TestConcurrencyNoInterleave:
         seen = {(row["worker"], row["seq"]) for row in parsed}
         expected = {(w, s) for w in range(workers) for s in range(per_worker)}
         assert seen == expected, "interleaving dropped or duplicated records"
+
+
+class TestPoolTeardown:
+    def test_workers_end_on_sigterm_even_when_the_parent_handles_it(self, tmp_path: Path) -> None:
+        # The child interpreter stands in for an xdist worker that an earlier test left with
+        # a SIGTERM handler. Out of process, a regression fails on the timeout instead of
+        # hanging this shard.
+        code = "\n".join(
+            [
+                "import signal, sys",
+                f"sys.path[:0] = [{str(REPO_ROOT)!r}, {str(REPO_ROOT / 'tests')!r}]",
+                "signal.signal(signal.SIGTERM, lambda *_: None)",
+                "from test_jsonl_append import (",
+                "    _run_concurrent_writers, _sigterm_disposition, _writer_pool,",
+                ")",
+                "pool = _writer_pool(2)",
+                "try:",
+                "    print(pool.apply(_sigterm_disposition))",
+                "finally:",
+                "    pool.close()",
+                "    pool.join()",
+                f"print(sum(_run_concurrent_writers({str(tmp_path / 'ledger.jsonl')!r}, 4, 20, 10)))",
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=90, check=False
+        )
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert result.stdout.split() == ["default", "80"]
 
 
 class TestCrossLanguageLock:
