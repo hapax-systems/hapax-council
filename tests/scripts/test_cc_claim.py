@@ -179,7 +179,8 @@ def _claim(
     elif dispatch:
         env.update(_dispatch_env(task_id))
     if install_gate0b is None:
-        install_gate0b = not legacy and dispatch
+        # Emergency writers now require the execution host's installed exclusion root too.
+        install_gate0b = dispatch or legacy
     if install_gate0b:
         _install_gate0b_claim_publication_root(home)
     if extra_env:
@@ -315,6 +316,7 @@ def test_rehydrate_refusal_branches_leave_every_file_unchanged(
 
     home = tmp_path / "home"
     _write_task(home, "active", "unchanged-sentinel")
+    _install_gate0b_claim_publication_root(home)
     roots = default_claim_publication_roots(home=home)
     if task_id == "bounded":
         journals = Path(roots.claim_transaction_root)
@@ -875,6 +877,7 @@ def test_recover_claim_publications_subcommand_uses_live_gate0b_roots(
     home = tmp_path / "home"
     task_id = "recover-live-root"
     _write_task(home, "active", task_id)
+    _install_gate0b_claim_publication_root(home)
     transaction = (
         home
         / ".local"
@@ -1180,10 +1183,18 @@ def test_hapax_cc_tasks_root_wins_over_the_home_default(tmp_path: Path) -> None:
     decoy = _write_task(home, "active", "override-root")
     real = override / "active" / "override-root.md"
     real.write_text(decoy.read_text(encoding="utf-8"), encoding="utf-8")
+    install_claim_publication_composition(
+        roots=default_claim_publication_roots(home=home).model_copy(
+            update={"claim_vault_root": str(override)}
+        ),
+        installed_at=datetime(2026, 8, 9, tzinfo=UTC),
+        install_task_ref="explicit-vault-binding-fixture",
+    )
 
     result = _claim(
         home,
         "override-root",
+        install_gate0b=False,
         extra_env={"HAPAX_CC_TASKS_ROOT": str(override)},
     )
 
@@ -2884,6 +2895,7 @@ def test_a_claim_that_is_not_live_is_not_returned(tmp_path: Path) -> None:
 def test_a_role_without_a_claim_cannot_return_it(tmp_path: Path) -> None:
     home = tmp_path / "home"
     note = _write_task(home, "active", "unclaimed-row")
+    _install_gate0b_claim_publication_root(home)
     before = note.read_bytes()
 
     returned = _return(home, "unclaimed-row")
