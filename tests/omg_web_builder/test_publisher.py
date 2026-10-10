@@ -155,6 +155,64 @@ class TestPublishLive:
         assert rc == 1
 
 
+# ── publish — the /now page ──────────────────────────────────────────
+
+
+class TestPublishNow:
+    def test_live_now_calls_set_now_and_never_set_web(self, tmp_path):
+        md = tmp_path / "now.md"
+        md.write_text("# now\n\nWritten by hand on 2026-10-10.\n", encoding="utf-8")
+
+        client = mock.Mock()
+        client.enabled = True
+        client.set_now.return_value = {"response": {"message": "ok"}}
+
+        rc = publish(
+            page="now",
+            now_path=md,
+            address="hapax",
+            dry_run=False,
+            client_factory=lambda: client,
+        )
+        assert rc == 0
+        client.set_now.assert_called_once_with(
+            "hapax", content=md.read_text(encoding="utf-8"), listed=True
+        )
+        client.set_web.assert_not_called()
+
+    def test_now_dry_run_names_the_now_endpoint(self, tmp_path, capsys):
+        md = tmp_path / "now.md"
+        md.write_text("# now\n", encoding="utf-8")
+
+        rc = publish(page="now", now_path=md, address="hapax", dry_run=True)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "/address/hapax/now" in out
+        assert "type=Markdown" in out
+
+    def test_now_legal_name_leak_drops_the_publish(self, tmp_path, monkeypatch):
+        from shared.governance.omg_referent import OperatorNameLeak
+
+        md = tmp_path / "now.md"
+        md.write_text("# now\n", encoding="utf-8")
+        client = mock.Mock()
+        client.enabled = True
+
+        def leak(content, *, segment_id):
+            assert segment_id == "now-hapax"
+            raise OperatorNameLeak("synthetic")
+
+        monkeypatch.setattr("agents.omg_web_builder.publisher.safe_render", leak)
+        rc = publish(
+            page="now", now_path=md, address="hapax", dry_run=False, client_factory=lambda: client
+        )
+        assert rc == 1
+        client.set_now.assert_not_called()
+
+    def test_unknown_page_is_refused_before_any_read(self, tmp_path):
+        assert publish(page="statuses", now_path=tmp_path / "absent.md", dry_run=True) == 1
+
+
 # ── CLI entry — main() ───────────────────────────────────────────────
 
 
@@ -205,3 +263,26 @@ class TestMain:
         assert rc == 0
         captured = capsys.readouterr()
         assert "alt-addr" in captured.out
+
+    def test_page_now_flag_routes_to_set_now(self, tmp_path, monkeypatch):
+        md = tmp_path / "now.md"
+        md.write_text("# now\n", encoding="utf-8")
+        called = {}
+
+        class FakeClient:
+            enabled = True
+
+            def set_now(self, address, *, content, listed):
+                called.update(address=address, content=content, listed=listed)
+                return {"response": {"ok": True}}
+
+            def set_web(self, address, *, content, publish):
+                raise AssertionError("--page now must not touch the web page")
+
+        monkeypatch.setattr(
+            "agents.omg_web_builder.publisher._default_client_factory",
+            lambda: FakeClient(),
+        )
+        rc = main(["--publish", "--page", "now", "--now-path", str(md)])
+        assert rc == 0
+        assert called == {"address": "hapax", "content": "# now\n", "listed": True}

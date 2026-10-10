@@ -9,16 +9,26 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LANDING = REPO_ROOT / "agents" / "omg_web_builder" / "static" / "index.html"
+NOW_PAGE = REPO_ROOT / "agents" / "omg_web_builder" / "static" / "now.md"
 
 
 def test_landing_page_has_h_card_identity_anchor() -> None:
     html = LANDING.read_text(encoding="utf-8")
 
     assert '<header class="h-card">' in html
-    assert '<h1 class="p-name">hapax</h1>' in html
+    assert '<h1 class="p-name">Hapax Research Lab</h1>' in html
     assert 'class="subtitle p-note"' in html
     assert 'class="u-url u-uid" href="https://hapax.omg.lol"' in html
     assert 'rel="me" href="https://youtube.com/@legomena-live"' in html
+
+
+def test_landing_page_names_the_lab_and_links_its_site_rel_me() -> None:
+    """com-2026-0004: the property names Hapax Research Lab and links hapaxresearch.com (rel=me)."""
+    html = LANDING.read_text(encoding="utf-8")
+    nav = html.split('<p class="site-nav">', 1)[1].split("</p>", 1)[0]
+
+    assert '<a class="u-url" rel="me" href="https://hapaxresearch.com">hapaxresearch.com</a>' in nav
+    assert '<h1 class="p-name">Hapax Research Lab</h1>' in html
 
 
 def test_landing_page_has_no_obsidian_publish_link() -> None:
@@ -59,9 +69,12 @@ def test_current_copy_and_routes():
     routes = html.split("<h2>routes</h2>", 1)[1]
     assert '<a href="/weblog">/weblog</a>' in routes
     assert '<a href="https://github.com/hapax-systems">github.com/hapax-systems</a>' in routes
-    assert '<a href="mailto:hapax@omg.lol">hapax@omg.lol</a>' in routes
+    assert '<a href="mailto:hrl-han@hapaxresearch.com">hrl-han@hapaxresearch.com</a>' in routes
+    assert "hapax@omg.lol" not in html
     assert '<a href="https://hapax.weblog.lol">weblog</a>' in html
     assert '<a href="/now">/now</a>' in html
+    # /statuses has no statuslog behind it (it served a 404 on 2026-10-04 and 2026-10-10).
+    assert "/statuses" not in html
 
 
 def test_unrelated_bytes_and_routes_preserved():
@@ -69,13 +82,24 @@ def test_unrelated_bytes_and_routes_preserved():
     tail = html[html.index('<section id="vocabulary">') :]
     assert (
         hashlib.sha256(tail.encode()).hexdigest()
-        == "0c3ae514dd017270d82b77c049d0be12148c5eb5a17a8d5d64d9c7f684e9ae6f"  # pragma: allowlist secret (synthetic digest pin)
+        == "afe0d73ecdff6704d44c73e85f9788cad62e2621d1d21585536157fff146759c"  # pragma: allowlist secret (synthetic digest pin)
     )
     css = html[: html.index('<header class="h-card">')]
     assert (
         hashlib.sha256(css.encode()).hexdigest()
         == "731d517df062ca16206b81471e524566e88adef5d43aac33e41ccade913f2db6"  # pragma: allowlist secret (synthetic digest pin)
     )
+
+
+def test_now_page_is_dated_literal_and_makes_no_broadcast_claim():
+    """The hand-written /now carries the date it was written and claims nothing it cannot show."""
+    now = NOW_PAGE.read_text(encoding="utf-8")
+
+    assert re.search(r"Written by hand on \d{4}-\d{2}-\d{2}\.", now)
+    assert "[hapaxresearch.com](https://hapaxresearch.com)" in now
+    assert "(https://hapaxresearch.com/register/)" in now
+    for stale in ("broadcasting", "Sprint:", "ships soon", "/statuses", "Stimmung"):
+        assert stale not in now, stale
 
 
 def test_landing_html_structure_and_no_network_dependencies():
