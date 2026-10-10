@@ -2613,3 +2613,243 @@ def test_graphql_validates_all_rows_before_hydrating_any(tmp_path: Path, bad_row
             repo="owner/repo", repo_root=tmp_path, runner=runner
         )
     assert len(calls) == 1
+
+
+# ── Local-forge backend (Forgejo; PLAN §4 S2 "local PR refs") ─────────────────
+
+
+class FakeForgeFetch:
+    """Serves pulls/statuses fixtures for `api/v1` URLs; records every call."""
+
+    def __init__(
+        self,
+        *,
+        pulls: list[dict[str, Any]] | None = None,
+        pulls_pages: list[list[dict[str, Any]]] | None = None,
+        statuses_by_sha: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self.calls: list[tuple[str, dict[str, str]]] = []
+        self._pulls = pulls
+        self._pulls_pages = pulls_pages
+        self._statuses = statuses_by_sha or {}
+
+    def __call__(self, url: str, *, headers: dict[str, str], timeout: int) -> str:
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(url)
+        self.calls.append((url, dict(headers)))
+        if parsed.path.endswith("/pulls"):
+            if self._pulls_pages is not None:
+                page = int(parse_qs(parsed.query).get("page", ["1"])[0])
+                return json.dumps(self._pulls_pages[page - 1])
+            return json.dumps(self._pulls or [])
+        match = re.search(r"/commits/([^/]+)/statuses$", parsed.path)
+        if match:
+            return json.dumps(self._statuses.get(match.group(1), []))
+        raise AssertionError(f"unexpected forge URL: {url}")
+
+
+_FORGE_PULL = {
+    "number": 12,
+    "title": "forge PR",
+    "body": "body",
+    "state": "open",
+    "merged": False,
+    "draft": False,
+    "labels": [{"name": "agent-authored"}],
+    "html_url": "http://forge.test:3000/owner/repo/pulls/12",
+    "updated_at": "2026-10-06T12:00:00Z",
+    "head": {"ref": "feat/forge-branch", "sha": "abc123"},
+    "base": {"ref": "main", "sha": "def456", "repo": {"default_branch": "main"}},
+}
+
+
+def test_forge_rows_carry_spine_receipt_review_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S2 stance made machine-checkable: forge rows never claim review authority.
+
+    The forge PR is a container; review authority stays estate-side in spine
+    receipts. `reviewDecision` stays None and the row says where authority lives.
+    """
+    monkeypatch.setenv("FORGE_TOKEN", "unit-test-token")
+    fetch = FakeForgeFetch(
+        pulls=[_FORGE_PULL],
+        statuses_by_sha={
+            "abc123": [
+                {"id": 2, "context": "ci/lint", "status": "success"},
+                {"id": 1, "context": "ci/lint", "status": "pending"},
+                {"id": 3, "context": "ci/test", "status": "failure"},
+            ]
+        },
+    )
+
+    rows = github_pr_status.list_open_pr_statuses_forge(
+        repo="owner/repo", forge_url="http://forge.test:3000", fetch=fetch
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["number"] == 12
+    assert row["headRefName"] == "feat/forge-branch"
+    assert row["headRefOid"] == "abc123"
+    assert row["state"] == "OPEN"
+    assert row["baseRefName"] == "main"
+    assert row["reviewDecision"] is None
+    assert row["reviewAuthority"] == "spine-receipt"
+    assert row["transport"] == "forge"
+    assert {item["context"]: item["state"] for item in row["statusCheckRollup"]} == {
+        "ci/lint": "SUCCESS",
+        "ci/test": "FAILURE",
+    }
+    first_url, first_headers = fetch.calls[0]
+    assert first_url.startswith("http://forge.test:3000/api/v1/repos/owner/repo/pulls")
+    assert first_headers["Authorization"] == "token unit-test-token"
+    assert any("/commits/abc123/statuses" in url for url, _ in fetch.calls[1:])
+
+
+def test_forge_rollup_keeps_latest_status_per_context_and_pends_unknowns(
+    tmp_path: Path,
+) -> None:
+    fetch = FakeForgeFetch(
+        statuses_by_sha={
+            "sha-1": [
+                {"id": 1, "context": "ci/a", "status": "pending"},
+                {"id": 5, "context": "ci/a", "status": "success"},
+                {"id": 2, "context": "ci/b", "status": "error"},
+                {"id": 4, "context": "ci/c", "status": "who-knows"},
+            ]
+        }
+    )
+
+    rollup = github_pr_status.forge_status_rollup(
+        "sha-1", repo="owner/repo", forge_url="http://forge.test:3000", fetch=fetch
+    )
+
+    assert {item["context"]: item["state"] for item in rollup} == {
+        "ci/a": "SUCCESS",
+        "ci/b": "ERROR",
+        "ci/c": "PENDING",
+    }
+
+
+def test_forge_head_filter_is_client_side_over_a_full_enumeration(
+    tmp_path: Path,
+) -> None:
+    other = json.loads(json.dumps(_FORGE_PULL))
+    other["number"] = 13
+    other["head"] = {"ref": "feat/other-branch", "sha": "zzz999"}
+    fetch = FakeForgeFetch(pulls=[other, _FORGE_PULL])
+
+    rows = github_pr_status.list_open_pr_statuses_forge(
+        repo="owner/repo",
+        forge_url="http://forge.test:3000",
+        head="feat/forge-branch",
+        limit=5,
+        fetch=fetch,
+    )
+
+    assert [row["number"] for row in rows] == [12]
+
+
+def test_forge_listing_failure_refuses_instead_of_reading_as_empty(
+    tmp_path: Path,
+) -> None:
+    """A dead forge is "we did not look", never "no PRs need attention"."""
+
+    def failing_fetch(url: str, *, headers: dict[str, str], timeout: int) -> str:
+        raise github_pr_status.ForgeFetchError(f"URLError on GET {url}")
+
+    with pytest.raises(github_pr_status.ForgeListingFailed):
+        github_pr_status.list_open_pr_statuses_forge(
+            repo="owner/repo", forge_url="http://forge.test:3000", fetch=failing_fetch
+        )
+
+
+def test_forge_token_env_beats_token_cmd_and_failures_fail_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs: list[Any] = []
+    holder: dict[str, Any] = {"rc": 0, "stdout": "from-cmd\n"}
+
+    def fake_run(cmd: Any, **_k: Any) -> subprocess.CompletedProcess:
+        runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, holder["rc"], holder["stdout"], "")
+
+    monkeypatch.setattr(github_pr_status.subprocess, "run", fake_run)
+
+    monkeypatch.setenv("FORGE_TOKEN", "from-env")
+    assert github_pr_status._forge_token() == "from-env"
+    assert runs == []
+
+    monkeypatch.delenv("FORGE_TOKEN")
+    monkeypatch.setenv("FORGE_TOKEN_CMD", "printer from-cmd")
+    assert github_pr_status._forge_token() == "from-cmd"
+
+    holder["stdout"] = ""
+    assert github_pr_status._forge_token() is None
+
+    holder["rc"] = 3
+    assert github_pr_status._forge_token() is None
+
+
+def test_open_prs_cli_serves_forge_rows_when_forge_url_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    monkeypatch.setenv("FORGE_TOKEN", "unit-test-token")
+    fetch = FakeForgeFetch(
+        pulls=[_FORGE_PULL],
+        statuses_by_sha={"abc123": [{"id": 1, "context": "ci/lint", "status": "success"}]},
+    )
+    monkeypatch.setattr(github_pr_status, "_forge_request", fetch)
+
+    rc = github_pr_status.main(
+        [
+            "open-prs",
+            "--repo",
+            "owner/repo",
+            "--repo-root",
+            str(tmp_path),
+            "--forge-url",
+            "http://forge.test:3000",
+        ]
+    )
+
+    assert rc == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["reviewAuthority"] == "spine-receipt"
+    assert rows[0]["statusCheckRollup"][0]["state"] == "SUCCESS"
+
+
+def test_open_prs_cli_forge_failure_never_touches_gh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Forge mode must not fall back to (or even invoke) the GitHub transport."""
+    monkeypatch.setenv("FORGE_TOKEN", "unit-test-token")
+
+    def failing_fetch(url: str, *, headers: dict[str, str], timeout: int) -> str:
+        raise github_pr_status.ForgeFetchError(f"ConnectionRefused on GET {url}")
+
+    monkeypatch.setattr(github_pr_status, "_forge_request", failing_fetch)
+
+    def no_gh(*_a: Any, **_k: Any) -> subprocess.CompletedProcess:
+        raise AssertionError("gh must not run in forge mode")
+
+    monkeypatch.setattr(github_pr_status.subprocess, "run", no_gh)
+
+    rc = github_pr_status.main(
+        [
+            "open-prs",
+            "--repo",
+            "owner/repo",
+            "--repo-root",
+            str(tmp_path),
+            "--forge-url",
+            "http://forge.test:3000",
+        ]
+    )
+
+    assert rc == github_pr_status.GRAPHQL_BACKOFF_RC
+    stderr = capsys.readouterr().err
+    assert "forge" in stderr
+    assert "FORGE_TOKEN" in stderr

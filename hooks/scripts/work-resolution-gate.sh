@@ -9,6 +9,11 @@
 # Scoped by local branches: only blocks on PRs whose branch is checked out in
 # THIS worktree. One session's PR doesn't block the other session.
 # "Resolved" means: PR merged or closed, local branch deleted.
+#
+# Local-forge (Forgejo) origins are first-class: the PR-open requirement is
+# satisfied by an open PR on the local forge, not only on GitHub. The status
+# helper queries the forge API directly, so forge-backed checkouts need no gh
+# binary; GitHub origins keep using gh exactly as before.
 set -euo pipefail
 
 # --- 1. Read tool invocation from stdin ---
@@ -55,9 +60,6 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 0
 fi
 
-if ! command -v gh &>/dev/null; then
-  exit 0
-fi
 if ! command -v python3 &>/dev/null; then
   exit 0
 fi
@@ -104,8 +106,80 @@ github_repo_slug() {
   esac
 }
 
-repo_slug="$(github_repo_slug 2>/dev/null || true)"
+# Local-forge origin → "owner/name<TAB>api_base". http(s) origins carry their
+# own API base; ssh/scp origins take it from HAPAX_FORGE_URL, and only when the
+# origin's host matches that base — an env var set for the forge must never
+# claim an unrelated host's repo. Anything unparseable returns 1 and the gate
+# stays open, exactly as before local-forge support existed.
+forge_repo_info() {
+  local origin rest authority path slug api_url api_host origin_host
+  origin="$(git remote get-url origin 2>/dev/null || true)"
+  [[ -z "$origin" ]] && return 1
+  case "$origin" in
+    git@github.com:*|ssh://git@github.com/*|http://github.com/*|https://github.com/*)
+      return 1
+      ;;
+  esac
+  case "$origin" in
+    http://*|https://*)
+      rest="${origin#*://}"
+      authority="${rest%%/*}"
+      path="${rest#*/}"
+      api_url="${origin%%://*}://${authority#*@}"
+      ;;
+    ssh://*)
+      [[ -n "${HAPAX_FORGE_URL:-}" ]] || return 1
+      rest="${origin#ssh://}"
+      rest="${rest#*@}"
+      authority="${rest%%/*}"
+      path="${rest#*/}"
+      api_url="${HAPAX_FORGE_URL%/}"
+      ;;
+    *@*:*)
+      [[ -n "${HAPAX_FORGE_URL:-}" ]] || return 1
+      authority="${origin%%:*}"
+      authority="${authority#*@}"
+      path="${origin#*:}"
+      api_url="${HAPAX_FORGE_URL%/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  path="${path%.git}"
+  case "$path" in
+    */*) slug="$path" ;;
+    *) return 1 ;;
+  esac
+  api_host="${api_url#*://}"
+  api_host="${api_host%%/*}"
+  api_host="${api_host%%:*}"
+  origin_host="${authority%%:*}"
+  [[ "$origin_host" == "$api_host" ]] || return 1
+  printf '%s\t%s\n' "$slug" "$api_url"
+}
+
+forge_api_url=""
+forge_slug=""
+if forge_info="$(forge_repo_info 2>/dev/null)"; then
+  forge_slug="${forge_info%%$'\t'*}"
+  forge_api_url="${forge_info#*$'\t'}"
+fi
+if [[ -n "${HAPAX_CC_PR_REPO:-}" ]]; then
+  repo_slug="$HAPAX_CC_PR_REPO"
+else
+  repo_slug="$(github_repo_slug 2>/dev/null || true)"
+fi
+if [[ -z "$repo_slug" && -n "$forge_slug" ]]; then
+  repo_slug="$forge_slug"
+fi
 if [[ -z "$repo_slug" ]]; then
+  exit 0
+fi
+
+# gh serves the GitHub path only; the forge path queries the forge API straight
+# from the status helper.
+if [[ -z "$forge_api_url" ]] && ! command -v gh &>/dev/null; then
   exit 0
 fi
 
@@ -118,6 +192,9 @@ rest_pr_json() {
     --repo-root "$repo_root"
     --limit "$limit"
   )
+  if [[ -n "${forge_api_url:-}" ]]; then
+    args+=(--forge-url "$forge_api_url")
+  fi
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --head)
