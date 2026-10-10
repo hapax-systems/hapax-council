@@ -172,8 +172,9 @@ def test_a_failed_diff_restarts_nothing(module, tmp_path) -> None:
 
 def test_a_cwd_outside_the_releases_is_unknown(module, tmp_path) -> None:
     host = _Host(tmp_path, running=None)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
+    # A sha-shaped directory that is not under releases/ is still not a release.
+    elsewhere = tmp_path / "elsewhere" / OLD
+    elsewhere.mkdir(parents=True)
     (host.proc / str(host.pid)).mkdir(parents=True)
     (host.proc / str(host.pid) / "cwd").symlink_to(elsewhere)
     host.diff = "shared/x.py\n"
@@ -182,6 +183,20 @@ def test_a_cwd_outside_the_releases_is_unknown(module, tmp_path) -> None:
 
     assert result["action"] == "unknown"
     assert host.restarts() == []
+
+
+def test_a_restart_that_leaves_the_old_release_is_not_verified(module, tmp_path) -> None:
+    host = _Host(tmp_path, running=OLD, diff="shared/x.py\n")
+    original_point = host._point
+    host._point = lambda pid, _sha: original_point(
+        pid, OLD
+    )  # the new process starts on the old release
+
+    result = host.refresh(module, _unit(module, ORCH))
+
+    assert result["action"] == "restarted"
+    assert result["verified"] is False
+    assert result["running"] == OLD
 
 
 def test_a_failed_restart_is_reported(module, tmp_path) -> None:
