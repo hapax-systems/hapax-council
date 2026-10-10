@@ -111,13 +111,16 @@ APPLICABLE: dict[str, frozenset[str]] = {
 # test_waivers_name_real_absences and must be removed — forcing full consideration.
 # ----------------------------------------------------------------------------------
 # The 2026-09-30 expiry failed merge-group job 110214982638; retain that witness.
-# The 2026-10-04 re-bound (#4984) also lapsed before merging; this 2026-10-07 bound is a
-# second short, re-verified extension, not a bare date bump (see reason below).
+# The 2026-10-04 re-bound (#4984) also lapsed before merging; the 2026-10-07 bound (#5025)
+# was the second short, re-verified extension.
+# The 2026-10-07 expiry failed merge-group CI run 37848439089 (1 failed, 10902 passed);
+# retain that witness. This 2026-10-13 bound is the third, re-verified on main bc068207b,
+# not a bare date bump (see reason below).
 # This task's parent brief permits a short extension only for a genuine metering gap.
 # Less than 72 hours gives the coordinator a bounded reconciliation window, not a
 # new build horizon or permission to launch fast mode without observed metering.
-_EXP = "2026-10-07T00:00:00Z"
-_WAIVER_TASK = "capability-fast-mode-waiver-rebound-20261004"
+_EXP = "2026-10-13T05:45:00Z"
+_WAIVER_TASK = "capability-fast-mode-waiver-rebound-20261010"
 
 WAIVERS: tuple[dict[str, str], ...] = (
     # effort — NOW fully modeled: registry (ExecutionDescriptor.effort), dispatcher (effort_fit +
@@ -131,10 +134,10 @@ WAIVERS: tuple[dict[str, str], ...] = (
         "site": "quota_ledger",
         "expires_at": _EXP,
         "tracking_ref": _WAIVER_TASK,
-        "reviewed_at": "2026-10-04T05:58:40Z",
+        "reviewed_at": "2026-10-10T05:45:55Z",
         "owner": "dev1-seat",
         "reason": (
-            "2026-10-04 live source re-check (all 16 registry routes fast_mode=off; "
+            "2026-10-10 live source re-check (all 16 registry routes fast_mode=off; "
             "codex_execution_args and claude_execution_binding raise ExecutionIdentityError on any "
             "non-off descriptor; no SpendReceipt producer observes fast_mode). There is no governed "
             "path that incurs fast-mode spend, so there is no producer to meter yet: metering lands "
@@ -227,7 +230,7 @@ def test_fast_mode_extension_is_bounded_and_owned() -> None:
         assert timedelta(0) < expiry - reviewed <= timedelta(hours=72), (
             "fast-mode extension exceeds its 72-hour reconciliation window"
         )
-        assert w["tracking_ref"] == "capability-fast-mode-waiver-rebound-20261004"
+        assert w["tracking_ref"] == "capability-fast-mode-waiver-rebound-20261010"
         assert w["owner"] == "dev1-seat"
         assert w["reason"].strip()
         assert w["closure_criterion"].strip()
