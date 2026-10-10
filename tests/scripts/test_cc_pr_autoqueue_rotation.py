@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from tests.test_cc_pr_autoqueue import _FakeRunner, _pr, autoqueue
+from tests.test_cc_pr_autoqueue import _FakeRunner, _pr, _write_task, autoqueue
 
 
 class RotationRunner(_FakeRunner):
@@ -595,9 +596,330 @@ def _status_posts(runner: RotationRunner, sha: str) -> list[list[str]]:
 MUST_INCLUDE_STATE_NAME = "examined.json.must-include.json"
 
 
+def _cached_tasks(tmp_path: Path, *numbers: int) -> None:
+    vault = tmp_path / "tasks"
+    (vault / "active").mkdir(parents=True, exist_ok=True)
+    for number in numbers:
+        _write_task(vault, task_id=f"cached-{number}", pr=number)
+
+
+def _hold_cached_task(tmp_path: Path, number: int) -> None:
+    task = tmp_path / "tasks" / "active" / f"cached-{number}.md"
+    task.write_text(
+        task.read_text().replace(
+            "status: ready", f"status: ready\nrelease_seat_hold_head_sha: sha-{number}"
+        )
+    )
+
+
+def _hosted_failures(runner: RotationRunner, number: int) -> list[str]:
+    """Feed the actual emitted status into the unchanged hosted consumer."""
+    path = Path(autoqueue.__file__).with_name("queue-admission-proof-check.py")
+    spec = importlib.util.spec_from_file_location("private_hold_hosted_proof", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    posts = [] if runner.fail_status_posts else _status_posts(runner, f"sha-{number}")
+    fields = runner._fields(posts[-1]) if posts else runner.head_statuses[f"sha-{number}"][0]
+
+    def hosted(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:
+        assert cmd[:3] == ["gh", "api", "graphql"]
+        payload = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "headRefOid": f"sha-{number}",
+                        "commits": {
+                            "nodes": [
+                                {
+                                    "commit": {
+                                        "status": {
+                                            "contexts": [
+                                                {
+                                                    "context": autoqueue.AUTOQUEUE_ADMISSION_CONTEXT,
+                                                    "state": fields["state"].upper(),
+                                                    "description": fields["description"],
+                                                    "createdAt": datetime.now(UTC).isoformat(),
+                                                }
+                                            ]
+                                        }
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+
+    return module.validate_proofs(repo="owner/repo", prs=[number], ttl_seconds=1800, runner=hosted)
+
+
+@pytest.mark.parametrize("armed", [False, True])
+def test_private_hold_invalidates_cached_proof_next_tick(tmp_path: Path, armed: bool) -> None:
+    runner = RotationRunner(25)
+    number = 13
+    row = next(row for row in runner.open_prs if row["number"] == number)
+    if armed:
+        row["autoMergeRequest"] = {"mergeMethod": "SQUASH"}
+    else:
+        runner.queued_prs = {number}
+    vault = tmp_path / "tasks"
+    (vault / "active").mkdir(parents=True)
+    task = _write_task(vault, task_id="private-hold", pr=number)
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    assert tick(tmp_path, runner)["must_include"]["refreshed"] == [number]
+    assert _hosted_failures(runner, number) == []
+    task.write_text(
+        task.read_text().replace(
+            "status: ready", "status: ready\nrelease_seat_hold_head_sha: sha-13"
+        )
+    )
+    # A refresh acknowledgment newer than the note is not authority evidence.
+    os.utime(task, (1, 1))
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    posts = _status_posts(runner, "sha-13")
+    assert not any("state=success" in cmd for cmd in posts), report
+    assert any("state=failure" in cmd for cmd in posts), report
+    decision = next(row for row in report["decisions"] if row["pr"] == number)
+    assert "release_seat_hold:sha-13" in decision["reasons"]
+    assert decision["action"] == ("disable_auto_merge" if armed else "dequeue")
+    assert number not in report["must_include"]["ok"]
+    assert _hosted_failures(runner, number) == ["PR #13: admission status is failure"]
+    if armed:
+        assert any(
+            cmd[:4] == ["gh", "pr", "merge", "13"] and "--disable-auto" in cmd
+            for cmd in runner.calls
+        )
+    else:
+        assert any("dequeuePullRequest" in part for cmd in runner.calls for part in cmd)
+
+
+@pytest.mark.parametrize("hold", [None, "another-head"])
+@pytest.mark.parametrize("armed", [False, True])
+def test_private_hold_no_matching_hold_keeps_cheap_refresh(
+    tmp_path: Path, hold: str | None, armed: bool
+) -> None:
+    runner = RotationRunner(25)
+    _cached_tasks(tmp_path, 13)
+    if hold:
+        path = tmp_path / "tasks/active/cached-13.md"
+        path.write_text(
+            path.read_text().replace(
+                "status: ready", f"status: ready\nrelease_seat_hold_head_sha: {hold}"
+            )
+        )
+    if armed:
+        runner.open_prs[12]["autoMergeRequest"] = {"mergeMethod": "SQUASH"}
+    else:
+        runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    for _ in range(2):
+        runner.calls.clear()
+        report = tick(tmp_path, runner)
+        assert report["must_include"]["refreshed"] == [13]
+        assert 13 not in runner.hydrated_numbers()
+        assert _hosted_failures(runner, 13) == []
+
+
+@pytest.mark.parametrize(
+    "fault", ["queue", "hydration", "unreadable", "missing", "unreadable_link"]
+)
+def test_private_hold_uncertainty_never_renews_success(tmp_path: Path, fault: str) -> None:
+    runner = RotationRunner(25)
+    _cached_tasks(tmp_path, 13)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    _hold_cached_task(tmp_path, 13)
+    if fault == "unreadable_link":
+        # An unreadable PR-linked note must not disappear behind a readable
+        # branch-linked note when the matcher falls back to the branch.
+        _write_task(tmp_path / "tasks", task_id="branch-link", branch="feat/13")
+    if fault == "queue":
+        runner.merge_queue_stdout = "not-json"
+    elif fault == "hydration":
+        runner.fail_hydration = {13}
+    elif fault in {"unreadable", "unreadable_link"}:
+        (tmp_path / "tasks/active/cached-13.md").write_bytes(b"\xff")
+    else:
+        (tmp_path / "tasks/active/cached-13.md").unlink()
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert not any("state=success" in cmd for cmd in _status_posts(runner, "sha-13")), report
+    assert _hosted_failures(runner, 13)
+    if fault in {"queue", "hydration"}:
+        assert report["must_include"]["invalidated"]["13"][0] is True
+        assert not any("dequeuePullRequest" in arg for cmd in runner.calls for arg in cmd)
+    if fault == "queue":
+        assert report["reason"] == "merge_queue_state_indeterminate"
+        assert not runner.hydrated_numbers()
+
+
+def test_private_hold_overflow_preserves_caps_and_serves_refusals(tmp_path: Path) -> None:
+    runner = RotationRunner(40)
+    _cached_tasks(tmp_path, *range(1, 21))
+    runner.queued_prs = set(range(1, 21))
+    for number in runner.queued_prs:
+        runner.head_statuses[f"sha-{number}"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    for number in runner.queued_prs:
+        _hold_cached_task(tmp_path, number)
+    refused = set()
+    for _ in range(3):
+        runner.calls.clear()
+        report = tick(tmp_path, runner)
+        assert (
+            len(runner.hydrated_numbers())
+            <= autoqueue.MUST_INCLUDE_CAP + autoqueue.MUST_INCLUDE_RESERVE
+        )
+        assert len(report["must_include"]["invalidated"]) <= autoqueue.MUST_INCLUDE_REFRESH_POST_CAP
+        assert report["must_include"]["authority_revalidation"] == list(range(1, 21))
+        assert report["must_include"]["overflow"]
+        for number in runner.queued_prs:
+            posts = _status_posts(runner, f"sha-{number}")
+            assert not any("state=success" in cmd for cmd in posts), report
+            if any("state=failure" in cmd for cmd in posts):
+                refused.add(number)
+    assert refused == runner.queued_prs
+
+
+@pytest.mark.parametrize("change", ["head", "membership", "membership_unknown"])
+def test_private_hold_cancellation_revalidates_at_use(tmp_path: Path, change: str) -> None:
+    class ChangedRunner(RotationRunner):
+        def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            if (
+                cmd[:5] == ["gh", "api", "-X", "POST", "repos/owner/repo/statuses/sha-13"]
+                and "state=failure" in cmd
+            ):
+                if change == "head":
+                    self.open_prs[12]["headRefOid"] = "new-head"
+                elif change == "membership":
+                    self.queued_prs = set()
+                else:
+                    self.merge_queue_stdout = "not-json"
+            return super().__call__(cmd, **kwargs)
+
+    runner = ChangedRunner(25)
+    _cached_tasks(tmp_path, 13)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    _hold_cached_task(tmp_path, 13)
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert not any("dequeuePullRequest" in arg for cmd in runner.calls for arg in cmd)
+    outcome = next(
+        row for row in report["mutations"] if row["pr"] == 13 and row["action"] == "dequeue"
+    )
+    assert outcome["ok"] is False
+    assert "revalidation_failed" in outcome["message"]
+    assert not _status_posts(runner, "new-head")
+
+
+@pytest.mark.parametrize("boundary", ["selection", "refresh"])
+def test_private_hold_arrives_after_task_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    monkeypatch.setattr(autoqueue.review_team, "review_team_verdict_blockers", lambda *a, **k: [])
+    runner = RotationRunner(25)
+    _cached_tasks(tmp_path, 13)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    if boundary == "selection":
+        original = autoqueue._select_pr_window
+
+        def select(*args: Any, **kwargs: Any) -> Any:
+            _hold_cached_task(tmp_path, 13)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(autoqueue, "_select_pr_window", select)
+    else:
+        original = autoqueue._read_admission_status_for_refresh
+
+        def read(*args: Any, **kwargs: Any) -> Any:
+            result = original(*args, **kwargs)
+            _hold_cached_task(tmp_path, 13)
+            return result
+
+        monkeypatch.setattr(autoqueue, "_read_admission_status_for_refresh", read)
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert not any("state=success" in cmd for cmd in _status_posts(runner, "sha-13")), report
+    assert _hosted_failures(runner, 13)
+    if boundary == "selection":
+        decision = next(row for row in report["decisions"] if row["pr"] == 13)
+        assert any("release_seat_hold:sha-13" in reason for reason in decision["reasons"])
+
+
+@pytest.mark.parametrize("field", ["authority_case", "parent_spec", "implementation_authorized"])
+def test_private_hold_cache_also_rechecks_existing_authority_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    monkeypatch.setattr(autoqueue.review_team, "review_team_verdict_blockers", lambda *a, **k: [])
+    runner = RotationRunner(25)
+    _cached_tasks(tmp_path, 13)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    path = tmp_path / "tasks/active/cached-13.md"
+    if field == "implementation_authorized":
+        path.write_text(
+            path.read_text().replace(
+                "status: ready", "status: ready\nimplementation_authorized: false"
+            )
+        )
+    else:
+        path.write_text(re.sub(rf"(?m)^{field}:.*$", f"{field}: null", path.read_text()))
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert not any("state=success" in cmd for cmd in _status_posts(runner, "sha-13")), report
+    assert _hosted_failures(runner, 13)
+
+
+def test_private_hold_unreadable_inventory_recovers_next_tick(tmp_path: Path) -> None:
+    runner = RotationRunner(25)
+    _cached_tasks(tmp_path, 13)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    path = tmp_path / "tasks/active/cached-13.md"
+    original = path.read_bytes()
+    path.write_bytes(b"\xff")
+    tick(tmp_path, runner)
+    path.write_bytes(original)
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["refreshed"] == [13]
+
+
+def test_private_hold_failed_status_write_is_reported_without_claiming_refusal(
+    tmp_path: Path,
+) -> None:
+    runner = RotationRunner(25)
+    _cached_tasks(tmp_path, 13)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    _hold_cached_task(tmp_path, 13)
+    runner.merge_queue_stdout = "not-json"
+    runner.fail_status_posts = True
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["ok"] == report["must_include"]["refreshed"] == []
+    assert report["must_include"]["invalidated"]["13"][0] is False
+    assert not any("state=success" in cmd for cmd in _status_posts(runner, "sha-13"))
+    # Failed delivery cannot make the hosted consumer see the private hold.
+    assert _hosted_failures(runner, 13) == []
+
+
 def test_autoqueue_queued_pr_proof_refreshed_within_one_reconcile(tmp_path: Path) -> None:
     # R1 control-flow proof: a queued PR at proof age 16 min receives a status
     # POST inside ONE reconcile call, without full hydration.
+    _cached_tasks(tmp_path, 13)
     runner = RotationRunner(25)
     runner.queued_prs = {13}
     runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
@@ -614,6 +936,7 @@ def test_autoqueue_queued_pr_proof_refreshed_within_one_reconcile(tmp_path: Path
 
 def test_autoqueue_armed_pr_is_must_include(tmp_path: Path) -> None:
     # R2: auto-merge-armed PRs (pre-queue gap) refresh even when not queued.
+    _cached_tasks(tmp_path, 19)
     runner = RotationRunner(25)
     runner.open_prs[6]["autoMergeRequest"] = {"mergeMethod": "SQUASH"}  # PR #19
     runner.head_statuses["sha-19"] = [_admission_status("success", age_minutes=16)]
@@ -626,6 +949,7 @@ def test_autoqueue_armed_pr_is_must_include(tmp_path: Path) -> None:
 def test_autoqueue_fresh_must_include_proof_not_reposted(tmp_path: Path) -> None:
     # R4: the refresh margin is one tick, not TTL/2 — a 2-minute-old proof is
     # left alone, and no POST is spent on it.
+    _cached_tasks(tmp_path, 13)
     runner = RotationRunner(25)
     runner.queued_prs = {13}
     runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=2)]
@@ -639,6 +963,7 @@ def test_autoqueue_fresh_must_include_proof_not_reposted(tmp_path: Path) -> None
 def test_autoqueue_must_include_cap_overflow_and_post_cap(tmp_path: Path) -> None:
     # R5: cap, not dominance. 12 must-include PRs at limit 5: 8 served by the
     # guarantee, 4 POSTs per tick, 2 rotation slots preserved, overflow reported.
+    _cached_tasks(tmp_path, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
     runner = RotationRunner(25)
     runner.queued_prs = set(range(1, 13))
     for number in range(1, 13):
@@ -661,6 +986,7 @@ def test_autoqueue_indeterminate_queue_snapshot_refreshes_persisted_set(
 ) -> None:
     # R3: an indeterminate merge-queue probe runs a refresh-only pass for the
     # persisted last-known set, then skips the cycle as before.
+    _cached_tasks(tmp_path, 7)
     runner = RotationRunner(25)
     runner.queued_prs = {7}
     runner.head_statuses["sha-7"] = [_admission_status("success", age_minutes=16)]
@@ -681,8 +1007,53 @@ def test_autoqueue_indeterminate_queue_snapshot_refreshes_persisted_set(
     assert report["must_include"]["refreshed"] == [7]
 
 
+def test_autoqueue_indeterminate_branch_only_refuses_while_pr_linked_refreshes(
+    tmp_path: Path,
+) -> None:
+    # R3 (indeterminate queue) carries no head_ref. A PR-number-linked must-include
+    # note still matches by number and its unchanged proof REFRESHES; a branch-only
+    # note (no `pr:`) can no longer be re-identified, so its proof is REFUSED
+    # (missing_cc_task_link), never renewed, and the entry is RETAINED — fail-closed
+    # availability, not a dropped must-include item. The determinate tick, which
+    # carries head_ref, recovers the branch-only entry by branch.
+    vault = tmp_path / "tasks"
+    (vault / "active").mkdir(parents=True, exist_ok=True)
+    _write_task(vault, task_id="pr-linked-8", pr=8)  # control: PR-number-linked
+    _write_task(vault, task_id="branch-only-7", branch="feat/7")  # subject: branch-only
+    runner = RotationRunner(25)
+    runner.queued_prs = {7, 8}
+    runner.head_statuses["sha-7"] = [_admission_status("success", age_minutes=16)]
+    runner.head_statuses["sha-8"] = [_admission_status("success", age_minutes=16)]
+    # Determinate tick: head_ref present, so the branch-only note matches by branch
+    # and both proofs refresh and enter the persisted must-include set.
+    assert sorted(tick(tmp_path, runner)["must_include"]["refreshed"]) == [7, 8]
+    state_path = tmp_path / MUST_INCLUDE_STATE_NAME
+    persisted = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    assert {"7", "8"} <= set(persisted)
+    # Indeterminate tick: the queue snapshot (and head_ref) are unavailable.
+    runner.merge_queue_stdout = "not-json"
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert report["reason"] == "merge_queue_state_indeterminate"
+    # PR-number-linked control: unchanged authority still refreshes (success posted).
+    assert 8 in report["must_include"]["refreshed"]
+    assert any("state=success" in cmd for cmd in _status_posts(runner, "sha-8")), report
+    # Branch-only subject: refusal only — never renewed, flagged missing_cc_task_link.
+    assert 7 not in report["must_include"]["refreshed"]
+    assert 7 not in report["must_include"]["ok"]
+    assert "7" in report["must_include"]["invalidated"]
+    assert "missing_cc_task_link" in report["must_include"]["deferred"]["7"]
+    assert not any("state=success" in cmd for cmd in _status_posts(runner, "sha-7")), report
+    # Retained, not dropped: the branch-only must-include item survives with a
+    # failure counter that feeds the starvation alert on the next determinate tick.
+    persisted_after = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    assert "7" in persisted_after
+    assert persisted_after["7"]["consecutive_failures"] >= 1
+
+
 def test_autoqueue_expired_persisted_must_include_entry_is_dropped(tmp_path: Path) -> None:
     # R3: the persisted set lives no longer than the proof TTL it protects.
+    _cached_tasks(tmp_path, 7)
     runner = RotationRunner(25)
     runner.queued_prs = {7}
     runner.head_statuses["sha-7"] = [_admission_status("success", age_minutes=16)]
@@ -703,6 +1074,7 @@ def test_autoqueue_expired_persisted_must_include_entry_is_dropped(tmp_path: Pat
 def test_autoqueue_dequeued_pr_gets_one_shot_full_exam(tmp_path: Path) -> None:
     # R6: a PR that left the merge queue (still open) gets exactly one full
     # exam, not a permanent must-include seat.
+    _cached_tasks(tmp_path, 9)
     runner = RotationRunner(25)
     runner.queued_prs = {9}
     runner.head_statuses["sha-9"] = [_admission_status("success", age_minutes=16)]
@@ -724,6 +1096,7 @@ def test_autoqueue_armed_pr_persisted_keeps_refresh_not_repeated_full_exams(
     # R2 vs R6: an armed, never-queued PR that lands in the persisted
     # must-include set keeps the cheap refresh path — armed is not dequeued,
     # so the R6 one-shot must not re-fire on alternate ticks.
+    _cached_tasks(tmp_path, 19)
     runner = RotationRunner(25)
     runner.open_prs[6]["autoMergeRequest"] = {"mergeMethod": "SQUASH"}  # PR #19
     runner.head_statuses["sha-19"] = [_admission_status("success", age_minutes=16)]
@@ -743,6 +1116,7 @@ def test_autoqueue_dequeued_then_rearmed_pr_keeps_refresh_path(tmp_path: Path) -
     # A dequeued PR that re-arms (auto-merge request still on) is an R2
     # refresh seat until it re-queues; the R6 one-shot full exam belongs to
     # rows that left the queue unarmed.
+    _cached_tasks(tmp_path, 9)
     runner = RotationRunner(25)
     runner.queued_prs = {9}
     runner.head_statuses["sha-9"] = [_admission_status("success", age_minutes=16)]
@@ -759,6 +1133,7 @@ def test_autoqueue_dequeued_then_rearmed_pr_keeps_refresh_path(tmp_path: Path) -
 def test_autoqueue_starved_must_include_pr_alerts_after_two_ticks(tmp_path: Path) -> None:
     # R7: two consecutive ticks without a successful status write raise the
     # starved flag on the persisted counters.
+    _cached_tasks(tmp_path, 5)
     runner = RotationRunner(25)
     runner.queued_prs = {5}
     runner.head_statuses["sha-5"] = [_admission_status("success", age_minutes=16)]
@@ -773,6 +1148,7 @@ def test_autoqueue_starved_must_include_pr_alerts_after_two_ticks(tmp_path: Path
 
 def test_autoqueue_non_success_must_include_status_is_not_reposted(tmp_path: Path) -> None:
     # Only successful proofs are refreshed; anything else needs the full path.
+    _cached_tasks(tmp_path, 13)
     runner = RotationRunner(25)
     runner.queued_prs = {13}
     runner.head_statuses["sha-13"] = [
@@ -817,6 +1193,7 @@ def test_autoqueue_post_cap_rotation_serves_next_slice_next_tick(tmp_path: Path)
     # and rows overflowed entirely keep their head-of-queue priority, while the
     # rows that DID get their proof rotate to the tail. Tick 2 must therefore
     # serve exactly the deferred slice, not re-serve tick 1's posted rows.
+    _cached_tasks(tmp_path, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
     runner = RotationRunner(25)
     runner.queued_prs = set(range(1, 13))
     for number in range(1, 13):
@@ -837,6 +1214,7 @@ def test_autoqueue_dequeued_followup_overflow_stays_in_state(tmp_path: Path) -> 
     # A dequeued follow-up that overflows the window (no full exam this tick)
     # must stay in the persisted set for its one-shot exam on a later tick;
     # only a served exam retires it.
+    _cached_tasks(tmp_path, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
     runner = RotationRunner(25)
     runner.queued_prs = set(range(1, 11))  # 11 and 12 just left the queue.
     now = datetime.now(UTC)
@@ -887,6 +1265,7 @@ def test_autoqueue_must_include_killswitch_restores_plain_rotation(
 
 
 def test_autoqueue_must_include_without_head_sha_is_a_visible_failure(tmp_path: Path) -> None:
+    _cached_tasks(tmp_path, 13)
     runner = RotationRunner(25)
     runner.queued_prs = {13}
     runner.open_prs[12].pop("headRefOid")
@@ -900,6 +1279,7 @@ def test_autoqueue_must_include_without_head_sha_is_a_visible_failure(tmp_path: 
 def test_autoqueue_must_include_without_existing_status_is_a_visible_failure(
     tmp_path: Path,
 ) -> None:
+    _cached_tasks(tmp_path, 13)
     runner = RotationRunner(25)
     runner.queued_prs = {13}
     report = tick(tmp_path, runner)
@@ -921,6 +1301,7 @@ class _StatusReadFailsRunner(RotationRunner):
 
 
 def test_autoqueue_failed_status_read_counts_toward_starvation(tmp_path: Path) -> None:
+    _cached_tasks(tmp_path, 13)
     runner = _StatusReadFailsRunner(25)
     runner.queued_prs = {13}
     report = tick(tmp_path, runner)
@@ -933,6 +1314,7 @@ def test_autoqueue_failed_status_read_counts_toward_starvation(tmp_path: Path) -
 
 
 def test_autoqueue_refresh_defers_write_when_rest_pool_below_floor(tmp_path: Path) -> None:
+    _cached_tasks(tmp_path, 13)
     runner = RotationRunner(25)
     runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
     result = autoqueue._refresh_must_include_proof(
@@ -942,6 +1324,7 @@ def test_autoqueue_refresh_defers_write_when_rest_pool_below_floor(tmp_path: Pat
         repo_root=tmp_path,
         runner=runner,
         now=datetime.now(UTC),
+        tasks=autoqueue.load_task_notes(tmp_path / "tasks"),
         apply=True,
         route=autoqueue.ListingRoute(
             transport="rest", rest_blocked=True, reason="core_below_floor"
@@ -955,6 +1338,7 @@ def test_autoqueue_refresh_defers_write_when_rest_pool_below_floor(tmp_path: Pat
 
 
 def test_autoqueue_refresh_dry_run_previews_without_posting(tmp_path: Path) -> None:
+    _cached_tasks(tmp_path, 13)
     runner = RotationRunner(25)
     runner.queued_prs = {13}
     runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
@@ -972,6 +1356,7 @@ def test_autoqueue_refresh_dry_run_previews_without_posting(tmp_path: Path) -> N
         repo_root=tmp_path,
         runner=runner,
         now=datetime.now(UTC),
+        tasks=autoqueue.load_task_notes(tmp_path / "tasks"),
         apply=False,
         route=None,
     )
@@ -981,6 +1366,7 @@ def test_autoqueue_refresh_dry_run_previews_without_posting(tmp_path: Path) -> N
 def test_autoqueue_queued_number_absent_from_listing_is_ignored(tmp_path: Path) -> None:
     # A queued number with no listing row is silently out of the window: no
     # refresh, no failure counter, no crash — the listing is the liveness truth.
+    _cached_tasks(tmp_path, 13)
     runner = RotationRunner(25)
     runner.queued_prs = {13, 999}
     runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
