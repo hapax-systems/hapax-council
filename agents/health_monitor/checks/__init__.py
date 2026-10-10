@@ -16,6 +16,7 @@ from . import (  # noqa: F401
     edge,
     endpoints,
     exploration,
+    flow,
     gpu,
     latency,
     m8_firmware,
