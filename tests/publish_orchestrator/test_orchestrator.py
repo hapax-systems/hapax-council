@@ -2308,3 +2308,110 @@ class TestSurfaceRegistry:
         from agents.publish_orchestrator.orchestrator import SURFACE_REGISTRY
 
         assert "alphaxiv-comments" not in SURFACE_REGISTRY
+
+
+# ── A reviewed vault source is never rewritten by a gate result ─────────────
+
+
+def _write_draft_with_frontmatter(path: Path) -> bytes:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\ntitle: Draft\nPublication-Allowed: true\n---\nBody.\n", encoding="utf-8")
+    return path.read_bytes()
+
+
+def _artifact_with_held_gate_result(source: Path) -> PreprintArtifact:
+    artifact = PreprintArtifact(
+        slug="held-draft",
+        title="Draft",
+        abstract="Body.",
+        body_md="Body.",
+        surfaces_targeted=["fake"],
+        source_path=str(source),
+    )
+    artifact.publication_gate_result = {"decision": "hold", "flagged_issues": ["held for test"]}
+    return artifact
+
+
+def test_a_gate_result_never_rewrites_a_reviewed_vault_source(tmp_path, monkeypatch):
+    """A vault source is bound byte-for-byte by its review, so recording a gate result must not
+    touch it (2026-10-10: a hold grew a reviewed record from 7,146 B to 83,081 B)."""
+
+    vault_root = tmp_path / "Personal"
+    source = vault_root / "frame" / "reviewed.md"
+    before = _write_draft_with_frontmatter(source)
+    monkeypatch.setattr(orchestrator_module, "PUBLICATION_SOURCE_PATH_ROOTS", (vault_root,))
+    artifact = _artifact_with_held_gate_result(source)
+
+    Orchestrator(
+        state_root=tmp_path / "state", registry=CollectorRegistry()
+    )._attach_gate_frontmatter(artifact)
+
+    assert source.read_bytes() == before
+    assert artifact.publication_gate_result["decision"] == "hold"
+
+
+def test_an_unclassifiable_source_is_preserved_and_named(tmp_path, monkeypatch, caplog):
+    vault_root = tmp_path / "Personal"
+    source = vault_root / "frame" / "reviewed.md"
+    before = _write_draft_with_frontmatter(source)
+
+    def _unclassifiable(_artifact: PreprintArtifact) -> None:
+        raise public_gate_receipts.VaultArtifactHeadUnavailable(
+            source.name, "it could not be classified: test"
+        )
+
+    monkeypatch.setattr(orchestrator_module, "_vault_artifact_source", _unclassifiable)
+    orch = Orchestrator(state_root=tmp_path / "state", registry=CollectorRegistry())
+
+    with caplog.at_level("WARNING", logger=orchestrator_module.log.name):
+        orch._attach_gate_frontmatter(_artifact_with_held_gate_result(source))
+
+    assert source.read_bytes() == before
+    assert "preserving source bytes" in caplog.text
+
+
+def test_a_source_outside_every_vault_root_still_records_the_gate_result(tmp_path, monkeypatch):
+    """The guard is narrow: a draft outside every publication root keeps the frontmatter record."""
+
+    vault_root = tmp_path / "Personal"
+    vault_root.mkdir()
+    source = tmp_path / "drafts" / "legacy.md"
+    before = _write_draft_with_frontmatter(source)
+    monkeypatch.setattr(orchestrator_module, "PUBLICATION_SOURCE_PATH_ROOTS", (vault_root,))
+
+    Orchestrator(
+        state_root=tmp_path / "state", registry=CollectorRegistry()
+    )._attach_gate_frontmatter(_artifact_with_held_gate_result(source))
+
+    after = source.read_bytes()
+    assert after != before
+    recorded = yaml.safe_load(after.decode("utf-8").split("---\n")[1])
+    assert recorded["publication_gate_result"]["decision"] == "hold"
+
+
+def test_a_held_vault_draft_keeps_its_source_bytes_through_run_once(tmp_path, monkeypatch):
+    """End to end: a vault draft the receipts gate holds is moved to draft/ with its source intact."""
+
+    vault_root = tmp_path / "Personal"
+    source = vault_root / "frame" / "reviewed.md"
+    before = _write_draft_with_frontmatter(source)
+    monkeypatch.setattr(orchestrator_module, "PUBLICATION_SOURCE_PATH_ROOTS", (vault_root,))
+    fake_module = mock.Mock()
+    fake_module.publish_artifact = mock.Mock(return_value="ok")
+    monkeypatch.setitem(__import__("sys").modules, "fake_publisher", fake_module)
+    _drop_artifact(
+        tmp_path,
+        slug="held-vault-draft",
+        surfaces=["fake"],
+        source_path=source,
+        include_gate_receipts=False,
+    )
+    orch = _make_orchestrator(
+        tmp_path, surface_registry={"fake": "fake_publisher:publish_artifact"}
+    )
+
+    orch.run_once()
+
+    assert source.read_bytes() == before
+    assert (tmp_path / "publish" / "draft" / "held-vault-draft.json").exists()
+    fake_module.publish_artifact.assert_not_called()
