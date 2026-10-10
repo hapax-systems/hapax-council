@@ -118,13 +118,20 @@ def git_diff_lines(args: argparse.Namespace) -> dict[Path, set[int]]:
     return parse_changed_lines(result.stdout)
 
 
-def run_vulture(paths: Iterable[str], whitelist: Path, min_confidence: int) -> list[Finding]:
+def whitelist_paths(central: Path) -> list[Path]:
+    fragments = central.parent / f"{central.stem}.d"
+    return [central, *sorted(path for path in fragments.glob("*.py") if path.is_file())]
+
+
+def run_vulture(
+    paths: Iterable[str], whitelists: Iterable[Path], min_confidence: int
+) -> list[Finding]:
     command = [
         sys.executable,
         "-m",
         "vulture",
         *paths,
-        str(whitelist),
+        *(str(whitelist) for whitelist in whitelists),
         "--min-confidence",
         str(min_confidence),
     ]
@@ -181,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--whitelist",
         type=Path,
         default=DEFAULT_WHITELIST,
-        help="vulture whitelist module for justified dynamic entrypoints",
+        help="central vulture whitelist; sibling .d/*.py fragments are also loaded",
     )
     parser.add_argument(
         "paths",
@@ -203,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     if changed_lines == {}:
         return 0
 
-    findings = run_vulture(args.paths, args.whitelist, args.min_confidence)
+    findings = run_vulture(args.paths, whitelist_paths(args.whitelist), args.min_confidence)
     active_findings = findings_on_changed_lines(findings, changed_lines)
     if not active_findings:
         return 0
