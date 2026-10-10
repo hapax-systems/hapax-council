@@ -51,6 +51,10 @@ diff_capacity:
       limit_bytes: 80000
       prompt_limit_bytes: 22000  # Wrapper refusal ceiling; no successful 40 KB run.
       status: unmeasured
+    # The entitlement substitute seats (kimi-1, featherless-1, verboo-1) inherit the default
+    # unmeasured 80000/70199; each wrapper enforces its own prompt ceiling (featherless's
+    # DeepSeek-V4-Pro 32k is a known mismatch for long packets), and a real per-seat capacity
+    # sweep is a follow-up (review-substitute-families-kimi-featherless-verboo-20261003).
 
 # Always-on lenses are the floor, not the ceiling — every PR, every team.
 always_on_lenses:
@@ -196,6 +200,40 @@ families:
     reviewer_command: ["scripts/hapax-vibe-reviewer"]
     timeout_seconds: 1200
     substitute: true
+  # Entitlement substitute families (review-substitute-families-kimi-featherless-verboo-20261003;
+  # operator 2026-10-03 "stop relying purely on codex and claude code ... do not discount any
+  # entitlement access"). Each is a subscription/prepaid/flat seat read through the FileStore,
+  # never a PAYG key, with an HTTP wrapper following muse/local (blind stdin prompt, tools off,
+  # bare-fence contract, prompt ceiling, served model recorded, 429->quota / 5xx->provider-outage
+  # mapping). Anti-inflation: a substitute counts as its served model's family where that is a
+  # core/seated family (scripts/hapax_review_family_inflation.py), so each pins a distinct,
+  # non-duplicate model (not GLM, not the local Qwen, not Mistral; Kimi is its own family).
+  - family: kimi
+    # Kimi Code subscription, Anthropic /v1/messages at api.kimi.com/coding (FileStore
+    # kimi-api-key). The wrapper refuses any non-coding base so the call cannot bill the Moonshot
+    # booster/PAYG wallet.
+    reviewer_command: ["scripts/hapax-kimi-reviewer"]
+    timeout_seconds: 1200
+    substitute: true
+    pinned_model: kimi-for-coding
+  - family: featherless
+    # Featherless prepaid balance (FileStore featherless-api-key), OpenAI /chat/completions.
+    # Pins DeepSeek-V4-Pro (distinct deepseek family); its 32k context is a known mismatch for
+    # long packets, so the wrapper refuses oversized prompts and the constitution substitutes.
+    reviewer_command: ["scripts/hapax-featherless-reviewer"]
+    timeout_seconds: 1200
+    substitute: true
+    pinned_model: deepseek-ai/DeepSeek-V4-Pro
+  - family: verboo
+    # Verboo flat plan (FileStore verboo-api-key), OpenAI-compatible router at
+    # code.verboo.ai/router/v1, streamed only with retry-free failure classification. Verboo is a
+    # router (deepseek / glm / minimax / qwen / ...); pinned to minimax-m3 so it is a DISTINCT
+    # family from featherless (deepseek) and the core glm. The wrapper records the served model so
+    # the anti-inflation mapping verifies the family.
+    reviewer_command: ["scripts/hapax-verboo-reviewer"]
+    timeout_seconds: 1200
+    substitute: true
+    pinned_model: minimax-m3
 
 # Optional route-backed review-seat descriptors. These extend the roster only
 # when the named platform-capability route is admitted with fresh route,
