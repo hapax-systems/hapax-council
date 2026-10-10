@@ -1,0 +1,12 @@
+[Unit]
+Description=Record privilege escalation from the journal and container events (coord event log)
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/shared/escalation_recorder.py
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m shared.escalation_recorder
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+TimeoutStartSec=5min
+SyslogIdentifier=hapax-escalation-detector
