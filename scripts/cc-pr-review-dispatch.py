@@ -1314,6 +1314,99 @@ def review_family_wall_evidence(
     return walls, None
 
 
+def reconcile_quota_reset_outages(
+    readings: dict[str, list[Any]],
+    walls: dict[str, dict[str, Any]],
+    now_iso: str,
+    state_path: Path | None = None,
+) -> frozenset[str]:
+    """Admit a no-until quota family on a fresh, measured new window.
+
+    Keep the reset witness in the existing state file so a later stale trace
+    cannot re-latch the old wall. This admits only the family-outage predicate,
+    never a provider route or spend.
+    """
+
+    now = _parse_aware_datetime(now_iso)
+    state_path = state_path or FAMILY_OUTAGE_STATE
+    if now is None or not state_path.is_file():
+        return frozenset()
+    recovered: set[str] = set()
+    try:
+        lock_path = state_path.with_name(f"{state_path.name}.lock")
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                if not isinstance(state, dict):
+                    return frozenset()
+                for family, entry in state.items():
+                    if (
+                        family in walls
+                        or not isinstance(entry, dict)
+                        or entry.get("cause") != QUOTA_WALL_OUTAGE_CAUSE
+                        or "until" in entry
+                    ):
+                        continue
+                    wall = entry.get("wall_evidence")
+                    if not isinstance(wall, dict):
+                        continue
+                    wall_at = _parse_aware_datetime(str(wall.get("observed_at") or ""))
+                    wall_reset = _parse_aware_datetime(str(wall.get("resets_at") or ""))
+                    capacity_id = str(wall.get("capacity_id") or "")
+                    if wall_at is None or wall_reset is None or not capacity_id:
+                        continue
+                    candidates = [
+                        row
+                        for row in readings.get(family, [])
+                        if row.capacity_id == capacity_id
+                        and row.label == "observed"
+                        and row.unit == "percent_used"
+                        and row.quantity is not None
+                        and 0 <= row.quantity < 100
+                        and row.observed_at is not None
+                        and row.resets_at is not None
+                        and row.observed_at > wall_at
+                        and row.resets_at > wall_reset
+                        and row.measurement_is_fresh(now)
+                    ]
+                    if not candidates:
+                        continue
+                    observed = max(candidates, key=lambda row: row.observed_at)
+                    state[family] = {
+                        "post_outage_admission": {
+                            "basis": "quota_window_reset_observed",
+                            "scope": "family_outage_latch_only",
+                            "capacity_id": capacity_id,
+                            "observed_at": observed.observed_at.isoformat(),
+                            "resets_at": observed.resets_at.isoformat(),
+                            "source": observed.source,
+                            "prior_wall_observed_at": wall_at.isoformat(),
+                            "prior_wall_resets_at": wall_reset.isoformat(),
+                        }
+                    }
+                    recovered.add(family)
+                if not recovered:
+                    return frozenset()
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    encoding="utf-8",
+                    dir=state_path.parent,
+                    prefix=f"{state_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as tmp:
+                    tmp.write(json.dumps(state, indent=1))
+                    tmp_path = Path(tmp.name)
+                os.replace(tmp_path, state_path)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    except (OSError, ValueError) as exc:
+        LOG.warning("quota reset outage reconciliation held: %s", type(exc).__name__)
+        return frozenset()
+    return frozenset(recovered)
+
+
 def record_wall_outage(
     walls: dict[str, dict[str, Any]],
     now_iso: str,
@@ -1340,8 +1433,29 @@ def record_wall_outage(
                     state = {}
             except (OSError, json.JSONDecodeError):
                 state = {}
+            changed = False
             for family, evidence in walls.items():
                 existing = state.get(family)
+                admission = (
+                    existing.get("post_outage_admission") if isinstance(existing, dict) else None
+                )
+                if isinstance(admission, dict):
+                    if evidence.get("capacity_id") == admission.get("capacity_id"):
+                        admitted_at = _parse_aware_datetime(str(admission.get("observed_at") or ""))
+                        admitted_reset = _parse_aware_datetime(
+                            str(admission.get("resets_at") or "")
+                        )
+                        wall_at = _parse_aware_datetime(str(evidence.get("observed_at") or ""))
+                        wall_reset = _parse_aware_datetime(str(evidence.get("resets_at") or ""))
+                        if (
+                            admitted_at is None
+                            or admitted_reset is None
+                            or wall_at is None
+                            or wall_reset is None
+                            or wall_at <= admitted_at
+                            or wall_reset < admitted_reset
+                        ):
+                            continue
                 entry: dict[str, Any] = {
                     "observed_at": now_iso,
                     "outage_started_at": _outage_started_at(existing, now_iso),
@@ -1350,6 +1464,9 @@ def record_wall_outage(
                 }
                 _copy_until_note(existing, entry)
                 state[family] = entry
+                changed = True
+            if not changed:
+                return
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",
@@ -1404,6 +1521,15 @@ def constitution_inputs(
     admission gate's external witness matches the constitution.
     """
 
+    walls, wall_error = review_family_wall_evidence(registry, now_iso)
+    if apply and wall_error is None:
+        now = _parse_aware_datetime(now_iso)
+        if now is not None:
+            try:
+                readings = _wall_readings(WALL_TRACE_HOME, _relay_receipts_dir(), now)
+                reconcile_quota_reset_outages(readings, walls, now_iso)
+            except Exception as exc:  # noqa: BLE001 - no reset without a usable reader
+                LOG.warning("quota reset outage observation held: %s", type(exc).__name__)
     outage_witness = load_family_outage_witness(now_iso)
     if apply:
         outage_witness = clear_route_recovered_family_outage(
@@ -1412,7 +1538,6 @@ def constitution_inputs(
             route_blocked_families=route_blocked_families,
             now_iso=now_iso,
         )
-    walls, wall_error = review_family_wall_evidence(registry, now_iso)
     if walls:
         if apply:
             record_wall_outage(walls, now_iso)
