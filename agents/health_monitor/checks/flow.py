@@ -15,19 +15,18 @@ DEGRADED. When the valve is failing, the check names the failing tests: it reads
 failed run's log once (through the gh-shaped binary, ``HAPAX_GH_BIN``) and caches the
 ``FAILED <nodeid>`` lines by run id.
 
-Recheck from a shell (exit status 0 healthy, 1 degraded, 2 failed)::
+Recheck from a shell with the existing health-monitor CLI. The verdict is the
+report's ``overall_status``::
 
-    uv run python -m agents.health_monitor.checks.flow
+    uv run python -m agents.health_monitor --check flow --json
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
 import subprocess
-import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -289,25 +288,3 @@ async def check_merge_flow(
         t,
         detail=detail,
     )
-
-
-_EXIT_CODES = {Status.HEALTHY: 0, Status.DEGRADED: 1, Status.FAILED: 2}
-
-
-def main() -> int:
-    result = asyncio.run(check_merge_flow())[0]
-    print(
-        json.dumps(
-            {
-                "status": result.status.value,
-                "message": result.message,
-                "detail": result.detail,
-                "checked_at": datetime.now(UTC).isoformat(),
-            }
-        )
-    )
-    return _EXIT_CODES[result.status]
-
-
-if __name__ == "__main__":
-    sys.exit(main())

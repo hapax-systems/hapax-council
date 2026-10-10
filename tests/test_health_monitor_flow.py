@@ -274,16 +274,21 @@ def test_quiet_with_no_open_prs_is_healthy(tmp_path: Path) -> None:
     assert _run(tmp_path, cursor, report)[0].status is Status.HEALTHY
 
 
-# ── the recheck command ───────────────────────────────────────────────────────
+# ── the recheck command path (`python -m agents.health_monitor --check flow`) ──
 
 
 @pytest.mark.parametrize(
-    ("minutes_since_merge", "failed_runs", "expected_exit"),
-    [(20, [], 0), (13 * 60, [], 1), (3 * 60, [{"merge_group_run_id": 9}], 2)],
+    ("minutes_since_merge", "failed_runs", "expected"),
+    [
+        (20, [], Status.HEALTHY),
+        (13 * 60, [], Status.DEGRADED),
+        (3 * 60, [{"merge_group_run_id": 9}], Status.FAILED),
+    ],
 )
-def test_cli_exit_status_and_json(
-    tmp_path: Path, monkeypatch, capsys, minutes_since_merge, failed_runs, expected_exit
+def test_registry_call_with_defaults_reads_the_producer_paths(
+    tmp_path: Path, monkeypatch, minutes_since_merge, failed_runs, expected
 ) -> None:
+    # The runner behind the CLI calls each registered check with no arguments.
     now = datetime.now(UTC)
     cursor, report = _write(
         tmp_path,
@@ -294,7 +299,6 @@ def test_cli_exit_status_and_json(
     monkeypatch.setattr(flow, "AUTOQUEUE_REPORT_PATH", report)
     monkeypatch.setattr(flow, "FAILED_TESTS_CACHE_PATH", tmp_path / "failed-tests.json")
     monkeypatch.setattr(flow, "_fetch_failed_log", lambda run_id: FAILED_LOG)
-    assert flow.main() == expected_exit
-    printed = json.loads(capsys.readouterr().out)
-    assert printed["status"] in {"healthy", "degraded", "failed"}
-    assert printed["message"]
+    registered = CHECK_REGISTRY["flow"][0]
+    results = asyncio.run(registered())
+    assert results[0].status is expected
