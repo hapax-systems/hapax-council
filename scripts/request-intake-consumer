@@ -1034,8 +1034,9 @@ FEED
 }
 
 # Each listing line carries "<order key>\t" in front; print in key order, then drop the key.
+# LC_ALL=C: byte order, so the result does not depend on the caller's locale collation.
 print_ordered_lines() {
-  printf "%b" "$1" | sort -r -s -t $'\t' -k1,1 | cut -f2-
+  printf "%b" "$1" | LC_ALL=C sort -r -s -t $'\t' -k1,1 | cut -f2-
 }
 
 unread_count=0
