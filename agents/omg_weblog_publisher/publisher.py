@@ -360,6 +360,10 @@ def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
     If ``body_md`` already contains a leading ``# H1`` matching the
     artifact's title, the duplicate H1 is suppressed (avoids the omg.lol
     parser seeing two title candidates).
+
+    Attribution and distribution posture come from the admitted artifact's
+    text. Rendering must not infer them from a slug or a keyword, or append
+    a blanket policy statement to ordinary corrections and notebook entries.
     """
     from datetime import datetime  # noqa: I001 — local for testability
 
@@ -402,16 +406,6 @@ def _compose_artifact_content(artifact) -> str:  # type: ignore[no-untyped-def]
     body = "\n\n".join(parts)
     if not body:
         return ""
-
-    # Per the 2026-04-25 full-automation directive, append the Refusal
-    # Brief LONG clause unless the artifact IS the Refusal Brief or
-    # already cites it. omg.lol weblog has no enforced ceiling so the
-    # LONG form always fits.
-    slug = (getattr(artifact, "slug", "") or "").strip()
-    if slug != "refusal-brief" and "refusal" not in body.lower():
-        from shared.attribution_block import NON_ENGAGEMENT_CLAUSE_LONG
-
-        body = f"{body}\n\n{NON_ENGAGEMENT_CLAUSE_LONG}"
 
     # omg.lol weblog entry format: a single ``Date:`` line followed by
     # a blank line, then the markdown body. NOT YAML frontmatter (no
