@@ -4259,6 +4259,16 @@ from agents.health_monitor.checks.flow import check_merge_flow  # noqa: E402
 
 check_merge_flow
 
+# Outward-flow and mandated-unit checks, the same @check_group("flow") registry
+# dispatch (cc-task: no-stall-u2-outward-flow-observation-20261010).
+from agents.health_monitor.checks.flow import (  # noqa: E402
+    check_mandated_units,
+    check_outward_flow,
+)
+
+check_outward_flow
+check_mandated_units
+
 # Session identity functions — called by hapax-cc-claim/hapax-cc-close
 # (extensionless executables outside vulture's parse set) and by
 # platform session adapters (PR #4097).

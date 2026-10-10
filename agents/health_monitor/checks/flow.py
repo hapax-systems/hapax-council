@@ -1,4 +1,13 @@
-"""Merge-plane flow: is anything actually merging?
+"""Flow: is anything actually merging, publishing, and running?
+
+Three checks share the ``flow`` group:
+
+* ``flow.merge_plane`` — is anything merging (below);
+* ``flow.outward.<class>`` — is each outward loop publishing at its cadence, read from the
+  publish orchestrator's own per-surface logs (NO-STALL-MOTION-20261010, unit U2);
+* ``flow.mandated_units`` — are the units the repository marks ``Hapax-Auto-Enable`` actually
+  enabled and active, read through the deploy's own ``--verify-auto-enable``. On 2026-10-10
+  eight of ten were off, including the claim audit that frees work held by stopped workers.
 
 From 2026-10-06T14:43Z to 2026-10-10T07:40Z nothing merged to main. Every merge group
 failed on one expired test, and the coordinator noticed after about 46 hours, because
@@ -54,6 +63,16 @@ FLOW_STOPPED_S = 12 * 3600
 #: Failing tests named per failed run; the log fetch is bounded.
 MAX_TESTS_NAMED = 5
 LOG_FETCH_TIMEOUT_S = 30
+
+#: The publish orchestrator writes one ``<slug>.<surface>.json`` per published artifact and surface.
+PUBLISH_LOG_DIR = Path.home() / "hapax-state" / "publish" / "log"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+#: Outward item classes: the surface their publications land on, and their cadence in
+#: seconds (frame/OUTWARD-PRIORITY-BOARD-20261010.md, item 1c: one notebook entry a day).
+OUTWARD_CADENCES: dict[str, tuple[str, float]] = {"notebook": ("omg-weblog", 24 * 3600)}
+#: A loop silent for this many cadences has stalled, not merely slipped.
+OUTWARD_STALLED_CADENCES = 3
+MANDATED_VERIFY_TIMEOUT_S = 60
 
 _NAME = "flow.merge_plane"
 _GROUP = "flow"
@@ -288,3 +307,172 @@ async def check_merge_flow(
         t,
         detail=detail,
     )
+
+
+def last_published(log_dir: Path, surface: str) -> datetime | None:
+    """The newest successful publication on ``surface`` in the orchestrator's logs, else None."""
+    newest: datetime | None = None
+    for path in sorted(log_dir.glob(f"*.{surface}.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("surface") != surface or entry.get("result") != "ok":
+            continue
+        stamp = _parse_instant(entry.get("timestamp"))
+        if stamp is not None and (newest is None or stamp > newest):
+            newest = stamp
+    return newest
+
+
+def _outward_result(
+    name: str, status: Status, message: str, start: float, **extra: str
+) -> CheckResult:
+    return CheckResult(
+        name=name,
+        group=_GROUP,
+        status=status,
+        message=message,
+        duration_ms=_u._timed(start),
+        **extra,
+    )
+
+
+@check_group("flow")
+async def check_outward_flow(
+    log_dir: Path | None = None,
+    now: datetime | None = None,
+    cadences: dict[str, tuple[str, float]] | None = None,
+) -> list[CheckResult]:
+    """Is each outward loop publishing at its cadence? Unknown is never healthy."""
+    t = time.monotonic()
+    log_dir = log_dir or PUBLISH_LOG_DIR
+    now = now or datetime.now(UTC)
+    cadences = OUTWARD_CADENCES if cadences is None else cadences
+    remediation = (
+        "move the next item of this class (frame/OUTWARD-PRIORITY-BOARD-20261010.md); "
+        "a stalled loop is re-routed to capacity that can run it, not escalated to the operator"
+    )
+    if not log_dir.is_dir():
+        return [
+            _outward_result(
+                "flow.outward",
+                Status.DEGRADED,
+                f"outward flow unknown: no publish log directory at {log_dir}",
+                t,
+                remediation="check hapax-publish-orchestrator.service; it writes one log per published artifact and surface",
+            )
+        ]
+    results: list[CheckResult] = []
+    for item_class, (surface, cadence_s) in sorted(cadences.items()):
+        name = f"flow.outward.{item_class}"
+        last = last_published(log_dir, surface)
+        if last is None:
+            results.append(
+                _outward_result(
+                    name,
+                    Status.DEGRADED,
+                    f"{item_class}: no successful {surface} publication on record",
+                    t,
+                    remediation=remediation,
+                )
+            )
+            continue
+        age = (now - last).total_seconds()
+        detail = (
+            f"last {surface} publication {last.isoformat()} ({_hours(age)} ago); "
+            f"cadence {_hours(cadence_s)}"
+        )
+        if age <= cadence_s:
+            status, message = Status.HEALTHY, f"{item_class}: published {_hours(age)} ago"
+        elif age <= cadence_s * OUTWARD_STALLED_CADENCES:
+            status, message = (
+                Status.DEGRADED,
+                f"{item_class}: late, last published {_hours(age)} ago",
+            )
+        else:
+            status, message = (
+                Status.FAILED,
+                f"{item_class}: stalled, nothing published for {_hours(age)}",
+            )
+        results.append(
+            _outward_result(
+                name,
+                status,
+                message,
+                t,
+                detail=detail,
+                **({} if status == Status.HEALTHY else {"remediation": remediation}),
+            )
+        )
+    return results
+
+
+_DORMANT_RE = re.compile(
+    r"^FAIL: (?:timer )?(\S+) is marked Hapax-Auto-Enable but is not (enabled|active)$"
+)
+VerifyRunner = Callable[[], tuple[int, str]]
+
+
+def run_verify_auto_enable(repo_root: Path = REPO_ROOT) -> tuple[int, str]:
+    """The deploy's own witness: which marked units are not live (exit status, output)."""
+    completed = subprocess.run(
+        ["bash", str(repo_root / "scripts" / "hapax-post-merge-deploy"), "--verify-auto-enable"],
+        capture_output=True,
+        text=True,
+        timeout=MANDATED_VERIFY_TIMEOUT_S,
+        env={**os.environ, "REPO": str(repo_root)},
+        check=False,
+    )
+    return completed.returncode, completed.stdout + completed.stderr
+
+
+@check_group("flow")
+async def check_mandated_units(verify: VerifyRunner | None = None) -> list[CheckResult]:
+    """Is every unit marked Hapax-Auto-Enable enabled (and, for timers, active)?"""
+    t = time.monotonic()
+    verify = verify or run_verify_auto_enable
+    name = "flow.mandated_units"
+    try:
+        rc, output = verify()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [
+            _outward_result(
+                name,
+                Status.DEGRADED,
+                f"mandated units unknown: verify-auto-enable could not run ({type(exc).__name__})",
+                t,
+                remediation="run scripts/hapax-post-merge-deploy --verify-auto-enable from the activation worktree",
+            )
+        ]
+    dormant = [
+        f"{match.group(1)} (not {match.group(2)})"
+        for line in output.splitlines()
+        if (match := _DORMANT_RE.match(line.strip()))
+    ]
+    if dormant:
+        return [
+            _outward_result(
+                name,
+                Status.DEGRADED,
+                f"{len(dormant)} mandated unit(s) dormant: {', '.join(dormant)}",
+                t,
+                remediation=(
+                    "for each unit: enable it, or remove its Hapax-Auto-Enable marker in a reviewed "
+                    "change that states why it stays off"
+                ),
+            )
+        ]
+    if rc != 0:
+        return [
+            _outward_result(
+                name,
+                Status.DEGRADED,
+                f"mandated units unknown: verify-auto-enable exited {rc} without naming a unit",
+                t,
+                remediation="run scripts/hapax-post-merge-deploy --verify-auto-enable and read its output",
+            )
+        ]
+    return [_outward_result(name, Status.HEALTHY, "every marked unit is enabled and active", t)]
