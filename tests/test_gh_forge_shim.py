@@ -530,3 +530,129 @@ def test_sdlc_github_uses_hapax_gh_bin(monkeypatch):
     monkeypatch.setenv("HAPAX_GH_BIN", "/opt/gh-forge")
     gh._run_gh("issue", "view", "9")
     assert seen[1][0] == "/opt/gh-forge"
+
+
+# --- hardening carry-overs (slice 2, #5045 dossier majors) ---------------------
+
+
+def test_pr_comment_body_before_number_parity(shim):
+    # gemini-1 major: --body placed before the number positional was silently
+    # dropped (or the number mismapped) because _body_flag scanned
+    # positionals[2:] while flags like --title scanned the full argv
+    shim._fake_forge.responses = {
+        "/issues/9/comments": (201, {"html_url": "http://forge.test/c/1"}),
+    }
+    code_a, out_a, err_a, fake_a = run(shim, ["pr", "comment", "9", "--body", "after"])
+    assert code_a == 0, err_a
+    call_a = fake_a.calls[-1]  # snapshot before the second run shares the fake
+    code_b, out_b, err_b, fake_b = run(shim, ["pr", "comment", "--body", "before", "9"])
+    assert code_b == 0, err_b
+    assert json.loads(call_a.body) == {"body": "after"}
+    assert call_a.url.endswith("/repos/forge-admin/driver/issues/9/comments")
+    assert json.loads(fake_b.calls[-1].body) == {"body": "before"}
+    assert fake_b.calls[-1].url.endswith("/repos/forge-admin/driver/issues/9/comments")
+    assert out_a == out_b == "http://forge.test/c/1\n"
+
+
+def test_issue_comment_body_before_number_parity(shim):
+    shim._fake_forge.responses = {
+        "/issues/9/comments": (201, {"html_url": "http://forge.test/c/2"}),
+    }
+    code_a, _, err_a, fake_a = run(shim, ["issue", "comment", "9", "--body", "after"])
+    assert code_a == 0, err_a
+    call_a = fake_a.calls[-1]  # snapshot before the second run shares the fake
+    code_b, _, err_b, fake_b = run(shim, ["issue", "comment", "--body", "before", "9"])
+    assert code_b == 0, err_b
+    assert json.loads(call_a.body) == {"body": "after"}
+    assert call_a.url.endswith("/repos/forge-admin/driver/issues/9/comments")
+    assert json.loads(fake_b.calls[-1].body) == {"body": "before"}
+    assert fake_b.calls[-1].url.endswith("/repos/forge-admin/driver/issues/9/comments")
+
+
+def test_pr_create_body_before_other_flags_not_dropped(shim):
+    # every flag reader consumes the same tokenized argv, so flag order in
+    # pr create cannot drop or mismap --body/--title/--head/--base
+    shim._fake_forge.responses = {
+        "/repos/forge-admin/driver": (200, {"default_branch": "main"}),
+        "/repos/forge-admin/driver/pulls": (
+            201,
+            {"number": 31, "html_url": "http://forge.test/pulls/31"},
+        ),
+    }
+    code, _, err, fake = run(
+        shim,
+        ["pr", "create", "--body", "B first", "--title", "T", "--head", "h", "--base", "main"],
+    )
+    assert code == 0, err
+    create = next(c for c in fake.calls if c.method == "POST" and c.url.endswith("/pulls"))
+    assert json.loads(create.body) == {
+        "title": "T",
+        "body": "B first",
+        "head": "h",
+        "base": "main",
+    }
+
+
+def test_pr_comment_missing_body_fails_closed(shim):
+    # a dropped/empty body must fail closed with a next action, not post empty
+    code, _, err, fake = run(shim, ["pr", "comment", "9"])
+    assert code == 1
+    assert "Next action" in err
+    assert "--body" in err
+    assert fake.calls == []
+
+
+def test_pr_create_missing_body_fails_closed(shim):
+    # body guard must fire before any network call (head/base inference later)
+    code, _, err, fake = run(shim, ["pr", "create", "--title", "t", "--head", "h"])
+    assert code == 1
+    assert "Next action" in err
+    assert "--body" in err
+    assert fake.calls == []
+
+
+def test_api_malformed_field_value_fails_closed(shim):
+    # muse-1 major: -f value without '=' raised a raw ValueError traceback
+    # past the fail-closed/next-action contract
+    code, _, err, fake = run(
+        shim, ["api", "repos/{owner}/{repo}/pulls/10/reviews", "-X", "POST", "-f", "noequals"]
+    )
+    assert code == 1
+    assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_api_slugless_repo_override_fails_closed(shim, monkeypatch):
+    # muse-1 major: a GH_REPO slug without a slash raised IndexError in api()
+    monkeypatch.setattr(shim, "resolve_repo", lambda cwd=None, env=None: "noslash")
+    code, _, err, _ = run(shim, ["api", "repos/{owner}/{repo}/pulls/10/reviews"])
+    assert code == 1
+    assert "Next action" in err
+
+
+def test_issue_comment_posts_body_and_returns_html_url(shim):
+    # claude-1 major: the comment verbs shipped with no pytest coverage of the
+    # argv body parsing, the POST, and the html_url return
+    shim._fake_forge.responses = {
+        "/issues/9/comments": (201, {"html_url": "http://forge.test/issues/9"}),
+    }
+    code, out, err, fake = run(shim, ["issue", "comment", "9", "--body", "hello"])
+    assert code == 0, err
+    post = fake.calls[-1]
+    assert post.method == "POST"
+    assert post.url.endswith("/repos/forge-admin/driver/issues/9/comments")
+    assert json.loads(post.body) == {"body": "hello"}
+    assert out == "http://forge.test/issues/9\n"
+
+
+def test_pr_comment_posts_body_and_returns_html_url(shim):
+    shim._fake_forge.responses = {
+        "/issues/9/comments": (201, {"html_url": "http://forge.test/pulls/9#c1"}),
+    }
+    code, out, err, fake = run(shim, ["pr", "comment", "9", "--body", "hello"])
+    assert code == 0, err
+    post = fake.calls[-1]
+    assert post.method == "POST"
+    assert post.url.endswith("/repos/forge-admin/driver/issues/9/comments")
+    assert json.loads(post.body) == {"body": "hello"}
+    assert out == "http://forge.test/pulls/9#c1\n"
