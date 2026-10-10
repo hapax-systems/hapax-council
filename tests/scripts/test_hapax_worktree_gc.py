@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -20,7 +22,7 @@ PRESET = REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset"
 
 
 @pytest.fixture(autouse=True)
-def _force_legacy_inference_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+def _force_legacy_inference_sweep(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Force gc.sh's LEGACY pure-inference sweep (the explicit opt-out) for every case here.
 
     In production the registry-governed pre-pass is AUTHORITATIVE over the age+clean+merged
@@ -33,6 +35,41 @@ def _force_legacy_inference_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     case invokes gc.sh.
     """
     monkeypatch.setenv("HAPAX_WORKTREE_GC_REGISTRY", "0")
+    monkeypatch.setenv("HAPAX_WORKTREE_GC_REAP_ORPHANS", "0")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    private_home = tmp_path / "home"
+    private_home.mkdir()
+    monkeypatch.setenv("HOME", str(private_home))
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(private_home / "registry"))
+    monkeypatch.setenv("HAPAX_WORKTREE_GC_UNIT_DIRS", str(private_home / "units"))
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    monkeypatch.setenv("HAPAX_WORKTREE_GC_PROC_ROOT", str(proc_root))
+    monkeypatch.setenv(
+        "HAPAX_WORKTREE_GC_RELEASE_ROOTS", str(tmp_path / "cache/source-activation/releases")
+    )
+    # Actual source bytes; fake incident/reaper/registry peers.
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    monkeypatch.setenv("PATH", f"{scripts}:{os.environ['PATH']}")
+    copy = scripts / SCRIPT.name
+    shutil.copyfile(SCRIPT, copy)
+    for name in (
+        "curl",
+        "systemctl",
+        "hapax-alert",
+        "hapax-orphan-spawn-reaper.py",
+        "hapax-worktree-register",
+    ):
+        peer = scripts / name
+        peer.write_text(
+            "#!/bin/sh\nexit 0\n"
+            if name in ("curl", "systemctl", "hapax-alert")
+            else "#!/bin/sh\necho unexpected-peer >&2\nexit 99\n"
+        )
+        peer.chmod(0o755)
+    monkeypatch.setattr(sys.modules[__name__], "SCRIPT", copy)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -119,6 +156,8 @@ done
             "--no-fetch",
             "--now",
             str(now),
+            "--release-keep",
+            "0",
             "--ntfy-url",
             "http://ntfy.test/hapax-worktree-gc",
         ],
@@ -176,6 +215,8 @@ def _run_gc(repo: Path, now: int, env: dict[str, str]) -> subprocess.CompletedPr
             "--no-fetch",
             "--now",
             str(now),
+            "--release-keep",
+            "0",
         ],
         check=False,
         capture_output=True,
@@ -188,11 +229,14 @@ def _run_gc(repo: Path, now: int, env: dict[str, str]) -> subprocess.CompletedPr
 @contextmanager
 def _live_process(argv: list[str], cwd: Path) -> Iterator[subprocess.Popen[bytes]]:
     proc = subprocess.Popen(argv, cwd=cwd)
+    link = Path(os.environ["HAPAX_WORKTREE_GC_PROC_ROOT"]) / str(proc.pid)
+    link.symlink_to(Path("/proc") / str(proc.pid))
     try:
         yield proc
     finally:
         proc.kill()
         proc.wait(timeout=10)
+        link.unlink()
 
 
 def test_refuses_release_dir_with_live_pid_cwd(tmp_path: Path) -> None:
@@ -597,6 +641,8 @@ def _run_gc_args(
             "--no-fetch",
             "--now",
             str(now),
+            "--clean-age-seconds",
+            "0",
             # empty URL: send_ntfy_alert returns before curl AND before hapax-alert
             # --record-only, so refusal paths post nothing and record no incident
             "--ntfy-url",
@@ -704,7 +750,7 @@ def test_release_mode_only_diff_is_restored_then_removed_without_force(tmp_path:
     (release / "scripts" / "tool").chmod(0o755)
     _age_path(release, now=now, seconds_old=49 * 3600)
 
-    result = _run_gc_args(repo, now, _release_env(tmp_path))
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--release-keep", "0")
 
     assert result.returncode == 0, result.stderr
     assert not release.exists()
@@ -723,7 +769,7 @@ def test_release_content_diff_is_refused_never_forced(tmp_path: Path) -> None:
     tool.chmod(0o755)  # mode AND content: not the stray-mode class
     _age_path(release, now=now, seconds_old=49 * 3600)
 
-    result = _run_gc_args(repo, now, _release_env(tmp_path))
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--release-keep", "0")
 
     assert result.returncode == 0, result.stderr
     assert release.exists()
@@ -739,7 +785,7 @@ def test_release_untracked_file_is_refused(tmp_path: Path) -> None:
     (release / "notes.txt").write_text("someone's scratch\n", encoding="utf-8")
     _age_path(release, now=now, seconds_old=49 * 3600)
 
-    result = _run_gc_args(repo, now, _release_env(tmp_path))
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--release-keep", "0")
 
     assert result.returncode == 0, result.stderr
     assert release.exists()
@@ -755,7 +801,7 @@ def test_release_mode_only_dry_run_changes_nothing(tmp_path: Path) -> None:
     (release / "scripts" / "tool").chmod(0o755)
     _age_path(release, now=now, seconds_old=49 * 3600)
 
-    result = _run_gc_args(repo, now, _release_env(tmp_path), "--dry-run")
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--dry-run", "--release-keep", "0")
 
     assert result.returncode == 0, result.stderr
     assert release.exists()
@@ -788,10 +834,13 @@ def test_refuses_release_mapped_by_live_process(tmp_path: Path) -> None:
     proc = subprocess.Popen(
         ["python3", "-c", mapper, str(blob)], cwd=tmp_path, stdout=subprocess.PIPE
     )
+    (Path(os.environ["HAPAX_WORKTREE_GC_PROC_ROOT"]) / str(proc.pid)).symlink_to(
+        Path("/proc") / str(proc.pid)
+    )
     try:
         assert proc.stdout is not None
         assert proc.stdout.readline().strip() == b"mapped"
-        result = _run_gc_args(repo, now, _release_env(tmp_path))
+        result = _run_gc_args(repo, now, _release_env(tmp_path), "--release-keep", "0")
     finally:
         proc.kill()
         proc.wait(timeout=10)
@@ -820,7 +869,7 @@ def test_releases_only_mode_touches_nothing_but_releases(tmp_path: Path) -> None
     registry_dir = tmp_path / "registry"
     env["HAPAX_WORKTREE_REGISTRY_DIR"] = str(registry_dir)
 
-    result = _run_gc_args(repo, now, env, "--releases-only")
+    result = _run_gc_args(repo, now, env, "--releases-only", "--release-keep", "0")
 
     assert result.returncode == 0, result.stderr
     assert merged.exists(), "releases-only must not run the merged-worktree sweep"
@@ -858,9 +907,212 @@ def test_refuses_release_referenced_by_a_unit(tmp_path: Path) -> None:
     unit = Path(env["HAPAX_WORKTREE_GC_UNIT_DIRS"]) / "hapax-example.service"
     unit.write_text(f"[Service]\nExecStart={release}/scripts/run\n", encoding="utf-8")
 
-    result = _run_gc_args(repo, now, env)
+    result = _run_gc_args(repo, now, env, "--release-keep", "0")
 
     assert result.returncode == 0, result.stderr
     assert release.exists()
     assert "refuse unit-referenced release" in result.stdout
     assert "hapax-example.service" in result.stdout
+
+
+@pytest.mark.parametrize("count", [3, 7])
+def test_old_releases_keep_rollback_floor(tmp_path: Path, count: int) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    releases = _young_releases(tmp_path, repo, now, count)
+    for i, release in enumerate(releases):
+        _age_path(release, now=now, seconds_old=(count - i + 3) * 86400)
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--releases-only")
+    assert result.returncode == 0, result.stderr
+    assert [r.exists() for r in releases] == [False] * max(0, count - 5) + [True] * min(count, 5)
+
+
+def test_release_only_preserves_unrelated_prunable_admin(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    other = tmp_path / "missing-lane"
+    _git(repo, "worktree", "add", "--detach", str(other), "main")
+    shutil.rmtree(other)
+    admin = repo / ".git/worktrees/missing-lane"
+    before = {p.name: p.read_bytes() for p in admin.iterdir() if p.is_file()}
+    result = _run_gc_args(repo, int(time.time()), _release_env(tmp_path), "--releases-only")
+    assert result.returncode == 0, result.stderr
+    assert admin.exists()
+    assert before == {p.name: p.read_bytes() for p in admin.iterdir() if p.is_file()}
+
+
+def _fake_proc(pid: str = "999999") -> Path:
+    proc = Path(os.environ["HAPAX_WORKTREE_GC_PROC_ROOT"]) / pid
+    proc.mkdir()
+    (proc / "fd").mkdir()
+    (proc / "cwd").symlink_to("/elsewhere")
+    (proc / "exe").symlink_to("/bin/sleep")
+    (proc / "maps").write_text("")
+    return proc
+
+
+@pytest.mark.parametrize(
+    "kind", ["fd", "deleted-fd", "alias-fd", "permission", "exit", "fd-exit", "sibling"]
+)
+def test_release_process_visibility(tmp_path: Path, kind: str) -> None:
+    repo = _make_repo(tmp_path)
+    release = _make_release_worktree(tmp_path, repo, "deadbeefproc")
+    env = _release_env(tmp_path)
+    proc = _fake_proc()
+    target = release / "README.md"
+    if kind == "alias-fd":
+        alias = tmp_path / "alias"
+        alias.symlink_to(release)
+        target = alias / "README.md"
+    if kind == "sibling":
+        target = release.with_name(release.name + "-other") / "file"
+    (proc / "fd/5").symlink_to(str(target) + (" (deleted)" if kind == "deleted-fd" else ""))
+    if kind == "permission":
+        (proc / "fd").chmod(0)
+    elif kind == "exit":
+        shutil.rmtree(proc)
+        proc.symlink_to(tmp_path / "exited")  # listed PID disappears before stat
+    elif kind == "fd-exit":
+        wrapper = SCRIPT.parent / "python3"
+        wrapper.write_text(
+            f"#!{sys.executable}\nimport os,sys\noriginal=os.listdir\n"
+            "def listing(path):\n r=original(path)\n"
+            f" if str(path)=={str(proc / 'fd')!r}: os.unlink(str(path)+'/5')\n"
+            " return r\nos.listdir=listing\nsys.argv=sys.argv[1:]\n"
+            "exec(compile(sys.stdin.read(), '<stdin>', 'exec'))\n"
+        )
+        wrapper.chmod(0o755)
+    try:
+        result = _run_gc_args(repo, int(time.time()), env, "--releases-only", "--release-keep", "0")
+    finally:
+        if kind == "permission":
+            (proc / "fd").chmod(0o700)
+    assert result.returncode == 0, result.stderr
+    keep = kind not in {"exit", "fd-exit", "sibling"}
+    assert release.exists() == keep, result.stdout
+    assert (
+        "DETECTION-FAILED" if kind == "permission" else "(fd)" if keep else "removed release"
+    ) in result.stdout
+
+
+@pytest.mark.parametrize("registered", [True, False])
+def test_partial_release_is_reported_and_never_ranked(tmp_path: Path, registered: bool) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    healthy = _young_releases(tmp_path, repo, now, 5)
+    name = (
+        "8c0aaa53d436c2a973d745b1f767a27db2cb0b62"  # pragma: allowlist secret
+        if registered
+        else "3a2664d48fefce563e595e3eac0354988dfc0979"  # pragma: allowlist secret
+    )
+    partial = healthy[0].parent / name
+    if registered:
+        _git(repo, "worktree", "add", "--detach", str(partial), "main")
+        (partial / ".git").unlink()
+    else:
+        partial.mkdir()
+    payload = partial / "sole-data"
+    payload.write_bytes(b"preserve me")
+    _age_path(partial, now=now, seconds_old=0)
+    result = _run_gc_args(repo, now, _release_env(tmp_path), "--releases-only")
+    assert result.returncode == 0, result.stderr
+    assert all(r.exists() for r in healthy)
+    assert payload.read_bytes() == b"preserve me"
+    assert str(partial.resolve()) in result.stdout
+    assert ("partial" if registered else "unregistered") in result.stdout
+    assert "hold release" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "pin",
+        "claim",
+        "publication",
+        "unknown",
+        "ignored",
+        "unmerged",
+        "active",
+        "candidate",
+        "current-unknown",
+        "dropin",
+        "unit-unknown",
+    ],
+)
+def test_release_custody_holds(tmp_path: Path, kind: str) -> None:
+    repo = _make_repo(tmp_path)
+    release = _make_release_worktree(tmp_path, repo, "deadbeefhold")
+    env = _release_env(tmp_path)
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    cache.mkdir(parents=True)
+    if kind == "pin":
+        registry = Path(env["HAPAX_WORKTREE_REGISTRY_DIR"])
+        registry.mkdir()
+        (registry / "pin.json").write_text(json.dumps({"path": str(release), "pinned": True}))
+    elif kind in {"claim", "publication", "unknown"}:
+        parent = cache
+        if kind == "publication":
+            parent = (
+                Path(env["HOME"])
+                / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1/example"
+            )
+            parent.mkdir(parents=True)
+        (parent / "cc-claim-dispatch-example.json").write_text(
+            "{"
+            if kind == "unknown"
+            else json.dumps({"source_path": str(release), "state": "applied"})
+        )
+    elif kind == "ignored":
+        with (repo / ".git/info/exclude").open("a") as fh:
+            fh.write("sole-data\n")
+        (release / "sole-data").write_bytes(b"not regenerable")
+    elif kind == "unmerged":
+        _commit(release, "unmerged", "sole source\n", "unmerged source")
+    elif kind in {"active", "candidate", "current-unknown"}:
+        Path(env["HAPAX_SOURCE_ACTIVATION_CURRENT"]).write_text(
+            "{" if kind == "current-unknown" else json.dumps({kind + "_source_path": str(release)})
+        )
+    else:
+        unit = Path(env["HAPAX_WORKTREE_GC_UNIT_DIRS"]) / "example.service.d/override.conf"
+        unit.parent.mkdir()
+        unit.write_text(f"[Service]\nWorkingDirectory={release}\n")
+        if kind == "unit-unknown":
+            unit.chmod(0)
+    try:
+        result = _run_gc_args(repo, int(time.time()), env, "--releases-only", "--release-keep", "0")
+    finally:
+        if kind == "unit-unknown":
+            unit.chmod(0o600)
+    assert result.returncode == 0, result.stderr
+    assert release.exists(), result.stdout
+    assert "removed=0" in result.stdout
+    assert any(word in result.stdout for word in ("hold", "refuse", "retain")), result.stdout
+
+
+def test_scheduler_exact_release_only_argv() -> None:
+    import configparser
+    import shlex
+
+    unit = configparser.ConfigParser(interpolation=None, strict=False)
+    unit.read(SERVICE)
+    root = "%h/.cache/hapax/source-activation/worktree"
+    assert shlex.split(unit["Service"]["ExecStart"]) == [
+        root + "/scripts/hapax-worktree-gc.sh",
+        "--repo",
+        root,
+        "--releases-only",
+        "--no-fetch",
+        "--release-keep",
+        "5",
+    ]
+    assert unit["Service"]["WorkingDirectory"] == root
+
+
+def test_young_over_cap_releases_wait_for_age_threshold(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path)
+    now = int(time.time())
+    releases = _young_releases(tmp_path, repo, now, 7)
+    result = _run_gc_args(
+        repo, now, _release_env(tmp_path), "--releases-only", "--clean-age-seconds", "172800"
+    )
+    assert result.returncode == 0, result.stderr
+    assert all(p.exists() for p in releases), result.stdout
