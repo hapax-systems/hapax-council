@@ -268,6 +268,16 @@ def _metadata_value(lines: list[str], key: str) -> str | None:
     return None
 
 
+def _existing_entry_status(client: Any, address: str, entry_id: str) -> int | None:
+    """The HTTP status a GET of the entry ended with; None when it raised or no response came."""
+    try:
+        status, _ = client.get_entry_status(address, entry_id)
+    except Exception:  # noqa: BLE001 — a failed read is unknown, and unknown writes nothing
+        log.exception("omg-weblog[%s]: reading entry %s raised", address, entry_id)
+        return None
+    return status if isinstance(status, int) else None
+
+
 def _compose_in_place_update(  # type: ignore[no-untyped-def]
     client: Any, address: str, entry_id: str, artifact
 ) -> tuple[str | None, str]:
@@ -387,6 +397,31 @@ def publish_artifact(  # type: ignore[no-untyped-def]
             _record(outcome)
             return outcome
     else:
+        # omg.lol's set endpoint creates or overwrites. A new entry over an existing id would
+        # re-date that entry and move its URL, so only a confirmed absence (404) proceeds.
+        status = _existing_entry_status(client, address, artifact.slug)
+        if status != 404:
+            if status is not None and 200 <= status < 300:
+                log.warning(
+                    "omg-weblog[%s]: entry %s already exists; nothing written; next action: to "
+                    "change it where it lives, declare weblog_entry_update: %s; to publish a new "
+                    "entry, give the artifact a slug that no entry uses",
+                    address,
+                    artifact.slug,
+                    artifact.slug,
+                )
+                _record("denied")
+                return "denied"
+            log.error(
+                "omg-weblog[%s]: could not confirm that entry %s is absent (HTTP status %s); "
+                "nothing written; next action: check the omg.lol API key and reachability with "
+                "get_entry_status, then drop the artifact again",
+                address,
+                artifact.slug,
+                status,
+            )
+            _record("error")
+            return "error"
         content = _compose_artifact_content(artifact)
         if not content:
             log.error("omg-weblog: empty content for artifact %s", artifact.slug)
