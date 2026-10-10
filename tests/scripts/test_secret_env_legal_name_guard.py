@@ -125,6 +125,30 @@ def test_an_empty_entry_refuses_and_keeps_both_files(store, tmp_path) -> None:
     assert guard.read_text(encoding="utf-8") == "HAPAX_OPERATOR_NAME=prior\n"
 
 
+@pytest.mark.parametrize("shape", ["symlink-loop", "directory", "dangling-symlink"])
+def test_an_entry_not_shown_absent_refuses_and_keeps_every_file(store, tmp_path, shape) -> None:
+    # has() is Path.is_file(), which is False for each shape without the entry being absent;
+    # only FileNotFoundError on the entry's own path may remove the guard file.
+    shared = tmp_path / "hapax-secrets.env"
+    guard = tmp_path / GUARD_FILE
+    shared.write_text("PRIOR=1\n", encoding="utf-8")
+    guard.write_text("HAPAX_OPERATOR_NAME=prior\n", encoding="utf-8")
+    blob = store.root / f"{GUARD_ENTRY}.bin"
+    if shape == "symlink-loop":
+        blob.symlink_to(blob.name)
+    elif shape == "directory":
+        blob.mkdir()
+    else:
+        blob.symlink_to("missing-target.bin")
+
+    proc = _run(store, tmp_path)
+
+    assert proc.returncode == 2
+    assert f"FileStore entry {GUARD_ENTRY} could not be shown absent" in proc.stderr
+    assert shared.read_text(encoding="utf-8") == "PRIOR=1\n"
+    assert guard.read_text(encoding="utf-8") == "HAPAX_OPERATOR_NAME=prior\n"
+
+
 def test_only_the_publish_orchestrator_loads_the_guard_file() -> None:
     loaders = sorted(
         path.name
