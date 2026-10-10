@@ -58,15 +58,20 @@ def codex_execution_args(descriptor: ExecutionDescriptor) -> list[str]:
             "refusing unsupported Codex ExecutionDescriptor; remedy: add a governed "
             "invocation mapping for its declared axes before launching"
         )
-    return [
+    args = [
         "-c",
         f"model={json.dumps(descriptor.model_id)}",
         "-c",
         f"model_reasoning_effort={json.dumps(descriptor.effort)}",
     ]
+    if descriptor.model_id == ModelId.GPT_6_1_SOL:
+        # CLI 0.160.0: pin Standard despite inherited Fast configuration.
+        args += ["-c", 'service_tier="default"', "-c", "features.fast_mode=false"]
+    return args
 
 
-def reject_codex_identity_overrides(args: list[str]) -> None:
+def reject_codex_identity_overrides(args: list[str], *, route_id: str = "") -> None:
+    target = route_id == "codex.headless.gpt61_shadow"
     for index, arg in enumerate(args):
         # Both long/short CLI forms and quoted/dotted TOML keys can override identity.
         if arg in {"--model", "--profile", "--oss", "--local-provider"} or arg.startswith(
@@ -76,6 +81,11 @@ def reject_codex_identity_overrides(args: list[str]) -> None:
                 "refusing execution identity override; remedy: select --execution-route "
                 "with the required registry descriptor"
             )
+        if target and (
+            arg == "--enable=fast_mode"
+            or (arg == "--enable" and args[index + 1 : index + 2] == ["fast_mode"])
+        ):
+            raise ExecutionIdentityError("refusing Fast override; remedy: use the declared speed")
         config = None
         if arg in {"-c", "--config"} and index + 1 < len(args):
             config = args[index + 1]
@@ -85,10 +95,18 @@ def reject_codex_identity_overrides(args: list[str]) -> None:
             config = arg[2:].removeprefix("=")
         if config is not None:
             key = re.sub(r"[\s\"']", "", config.partition("=")[0])
-            if any(
-                part in {"model", "model_reasoning_effort", "model_provider", "profile"}
-                for part in key.split(".")
-            ):
+            protected = {"model", "model_reasoning_effort", "model_provider", "profile"}
+            if target:
+                # Parent table assignments can replace any bound child setting.
+                protected |= {
+                    "service_tier",
+                    "features",
+                    "profiles",
+                    "model_providers",
+                    "openai_base_url",
+                    "chatgpt_base_url",
+                }
+            if any(part in protected for part in key.split(".")):
                 raise ExecutionIdentityError(
                     "refusing execution identity config override; remedy: edit the governed "
                     "ExecutionDescriptor instead"
@@ -141,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not args.route.startswith("codex."):
             raise ExecutionIdentityError("refusing non-Codex route in Codex launcher")
-        reject_codex_identity_overrides(args.extra)
+        reject_codex_identity_overrides(args.extra, route_id=args.route)
         descriptor = resolve_execution_descriptor(args.route)
         argv = codex_execution_args(descriptor)
         print(

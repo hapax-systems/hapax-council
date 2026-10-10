@@ -11,6 +11,8 @@ and mapping the free-text ``model_or_engine`` onto the structured ``ModelId`` ca
 
 from __future__ import annotations
 
+import pytest
+
 from shared.platform_capability_registry import (
     ContextMode,
     DescriptorVariant,
@@ -28,6 +30,65 @@ from shared.platform_capability_registry import (
     materialize_descriptors,
     materialize_variant_leaf,
 )
+
+
+def test_gpt61_shadow_exact_descriptor_is_separate_from_ordinary_full() -> None:
+    registry = load_platform_capability_registry()
+    candidate = registry.require("codex.headless.gpt61_shadow")
+    assert candidate.execution_descriptor.model_dump(mode="json") == {
+        "model_id": "gpt-6.1-sol",
+        "effort": "high",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none",
+    }
+    assert candidate.descriptor_variants == []
+    ordinary = registry.require("codex.headless.full")
+    assert ordinary.execution_descriptor.model_id == "gpt-6-astra"
+    assert ordinary.execution_descriptor.effort == "xhigh"
+
+
+@pytest.mark.parametrize(
+    "axis,value",
+    [
+        ("model_id", "gpt-6-astra"),
+        ("model_id", "unknown"),
+        ("model_id", "unlisted-model"),
+        ("effort", "none"),
+        ("effort", "xhigh"),
+        ("effort", "ultra"),
+        ("fast_mode", "fast"),
+        ("context_mode", "extended_1m"),
+        ("quantization", "exl3_4_0bpw"),
+    ],
+)
+def test_gpt61_shadow_refuses_changed_descriptor(axis, value) -> None:
+    payload = (
+        load_platform_capability_registry()
+        .require("codex.headless.gpt61_shadow")
+        .model_dump(mode="json")
+    )
+    PlatformCapabilityRoute.model_validate(payload)  # otherwise-valid positive control
+    payload["execution_descriptor"][axis] = value
+    with pytest.raises(ValueError):
+        PlatformCapabilityRoute.model_validate(payload)
+
+
+def test_gpt61_shadow_refuses_inherited_variants() -> None:
+    payload = (
+        load_platform_capability_registry()
+        .require("codex.headless.gpt61_shadow")
+        .model_dump(mode="json")
+    )
+    payload["descriptor_variants"] = [
+        {
+            "variant_id": "astra",
+            "knobs_override": {"model_id": "gpt-6-astra"},
+            "scores_inherited_from": "codex.headless.full",
+        }
+    ]
+    with pytest.raises(ValueError, match="measurement descriptor"):
+        PlatformCapabilityRoute.model_validate(payload)
 
 
 def test_axis_enums_cover_the_operator_steered_values() -> None:
