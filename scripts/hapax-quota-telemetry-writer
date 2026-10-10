@@ -4042,7 +4042,16 @@ def main(argv: list[str] | None = None) -> int:
     # written, unenriched: a measurement failure narrows evidence, it never stalls admission.
     measurements = None
     try:
-        measurements = collect_measurements(args.trace_home, args.relay_receipt_dir, now=now)
+        measurements = collect_measurements(
+            args.trace_home,
+            args.relay_receipt_dir,
+            now=now,
+            trace_cache_path=(
+                args.trace_home / ".cache/hapax/orchestration/quota-trace-cache.json"
+                if not args.check
+                else None
+            ),
+        )
     except (TraceReadError, ValueError, OSError):
         print(
             "hapax-quota-telemetry-writer: local measurements unavailable; admission ledger "
