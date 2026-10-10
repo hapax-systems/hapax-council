@@ -507,9 +507,18 @@ def _event_intent(event: ResearchVehiclePublicEvent) -> str:
     return event.event_type
 
 
+def _weblog_post_text(event: ResearchVehiclePublicEvent) -> str:
+    """'Hapax weblog: <title>. <url>', naming the entry once (_event_intent starts 'weblog: ')."""
+    label = event.chapter_ref.label.strip() if event.chapter_ref is not None else ""
+    if not label:
+        return f"Hapax weblog post: {event.public_url}"
+    end = "" if label.endswith((".", "!", "?")) else "."
+    return f"Hapax weblog: {label}{end} {event.public_url}"
+
+
 def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
     if event.event_type == "omg.weblog" and event.public_url:
-        return f"Hapax weblog: {_event_intent(event)}. {event.public_url}"
+        return _weblog_post_text(event)
     if event.event_type in {"governance.enforcement", "velocity.digest"}:
         return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."

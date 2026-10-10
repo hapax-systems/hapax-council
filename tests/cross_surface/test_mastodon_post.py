@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest import mock
 
+import pytest
 from prometheus_client import CollectorRegistry
 
 from agents.cross_surface.mastodon_post import (
@@ -467,6 +468,41 @@ class TestEventFiltering:
         assert "Show HN: Mechanical Governance" in text
         assert "https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships" in text
         assert "metadata-public-claim-gate" not in text
+
+    @pytest.mark.parametrize(
+        ("label", "expected"),
+        [
+            ("Commitment Status", "Hapax weblog: Commitment Status. {url}"),
+            ("Is a record its own witness?", "Hapax weblog: Is a record its own witness? {url}"),
+            ("", "Hapax weblog post: {url}"),
+        ],
+    )
+    def test_default_compose_weblog_text_names_the_entry_once(self, label, expected):
+        # 2026-10-10: every weblog post read "Hapax weblog: weblog: <title>. <url>".
+        from agents.cross_surface import mastodon_post as mod
+
+        url = "https://hapax.weblog.lol/2026/10/commitment-status"
+        event = _public_event(
+            event_id="rvpe:omg_weblog:mastodon",
+            event_type="omg.weblog",
+            state_kind="public_post",
+            public_url=url,
+            chapter_ref=PublicEventChapterRef(
+                kind="chapter",
+                label=label,
+                timecode="00:00",
+                source_event_id="rvpe:omg_weblog:mastodon",
+            ),
+            surface_policy=_surface_policy(
+                claim_live=False,
+                claim_archive=True,
+                requires_egress_public_claim=False,
+                requires_audio_safe=False,
+                rate_limit_key="omg.weblog:public_post",
+            ),
+        )
+
+        assert mod._default_compose(event) == expected.format(url=url)
 
     def test_non_broadcast_events_post_without_live_egress_claim(self, tmp_path):
         for event_type, state_kind in (
