@@ -6,11 +6,12 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 EnvironmentFile=/run/user/1000/hapax-secrets.env
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.langfuse_sync --auto
-Environment=PATH=/home/hapax/.local/bin:/home/hapax/.cargo/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.langfuse_sync --auto
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
 MemoryMax=512M
 CPUQuota=50%
 StandardOutput=journal

@@ -1,11 +1,14 @@
 [Unit]
-Description=gdrive sync (daily)
+Description=gdrive sync (every minute)
 
 [Timer]
-# Daily background reconciliation only. Fast file movement now uses direct
-# KDE Connect/Tailscale/SSH paths instead of polling Drive as hot storage.
-OnCalendar=*-*-* 18:30:00
-RandomizedDelaySec=30min
+# Operator 2026-09-24: "sync is 15 min, but prolly should be 1". Each tick is
+# one Drive changes.list call against the stored changes token, so an idle
+# minute costs one API request. OnUnitInactiveSec counts from the end of the
+# previous run, so a long catch-up run never overlaps the next tick.
+OnBootSec=2min
+OnUnitInactiveSec=1min
+AccuracySec=5s
 
 [Install]
 WantedBy=timers.target

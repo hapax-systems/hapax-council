@@ -4945,3 +4945,85 @@ def test_check_symlink_drift_ignores_legacy_alias_to_nonmatching_script(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+_REAL_USER_UNIT = (
+    "[Unit]\nDescription=real user unit\n\n[Service]\nType=oneshot\nExecStart=/bin/true\n"
+)
+_HOST_VARIANT_UNIT = (
+    "[Unit]\nDescription=host variant\n\n[Service]\nType=oneshot\n"
+    "ExecStart=%h/projects/hapax-council/.venv-sync/bin/python -m agents.gdrive_sync --auto\n"
+)
+
+
+def _deploy_env(tmp_path: Path, home: Path, bin_dir: Path, repo: Path, calls: Path) -> dict:
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "REPO": str(repo),
+        "HAPAX_SYSTEMCTL_CALLS": str(calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "trace.jsonl"),
+    }
+
+
+@pytest.mark.parametrize(
+    "variant_path",
+    ["systemd/units-pi6/gdrive-sync.service", "systemd/overrides/rnd/digest.timer"],
+)
+def test_nested_host_variant_unit_never_installs_over_the_real_user_unit(
+    tmp_path: Path, variant_path: str
+) -> None:
+    """2026-09-17: #4680 changed units-pi6/gdrive-sync.service; the cross-slash
+    `systemd/*.service` arm installed it by basename over podium's live unit."""
+    base = variant_path.rsplit("/", 1)[1]
+    repo, sha = _repo_with_linear_commit(tmp_path, {variant_path: _HOST_VARIANT_UNIT})
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user" / base
+    installed.parent.mkdir(parents=True)
+    installed.write_text(_REAL_USER_UNIT, encoding="utf-8")
+    bin_dir, calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_deploy_env(tmp_path, home, bin_dir, repo, calls),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert installed.read_text(encoding="utf-8") == _REAL_USER_UNIT
+    assert f"'{variant_path}' ->" not in result.stdout
+
+
+def test_deleting_a_host_variant_unit_never_removes_the_real_user_unit(tmp_path: Path) -> None:
+    variant_path = "systemd/units-pi6/gmail-sync.service"
+    repo, _ = _repo_with_linear_commit(tmp_path, {variant_path: _HOST_VARIANT_UNIT})
+    _git(repo, "rm", "-q", variant_path)
+    _git(repo, "commit", "-q", "-m", "drop pi6 variant")
+    sha = _git(repo, "rev-parse", "HEAD")
+    home = tmp_path / "home"
+    installed = home / ".config/systemd/user/gmail-sync.service"
+    installed.parent.mkdir(parents=True)
+    installed.write_text(_REAL_USER_UNIT, encoding="utf-8")
+    bin_dir, calls = _fake_systemctl(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_deploy_env(tmp_path, home, bin_dir, repo, calls),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert installed.read_text(encoding="utf-8") == _REAL_USER_UNIT
+
+
+def test_unknown_nested_unit_tree_is_unclassified_not_installed() -> None:
+    result = _coverage(["systemd/units-pi6/gdrive-sync.service", "systemd/new-host/x.service"])
+
+    assert result.returncode != 0
+    assert "systemd/new-host/x.service" in result.stderr
+    assert "systemd/units-pi6/gdrive-sync.service" not in result.stderr

@@ -5,13 +5,14 @@ OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/hapax/projects/hapax-council
-ExecStartPre=/home/hapax/.local/bin/hapax-env-setup
-ExecStart=/home/hapax/.local/bin/uv run python -m agents.gcalendar_sync --auto
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStartPre=%h/.local/bin/hapax-env-setup
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.gcalendar_sync --auto
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=HOME=/home/hapax
-Environment=GNUPGHOME=/home/hapax/.gnupg
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=GNUPGHOME=%h/.gnupg
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=gcalendar-sync

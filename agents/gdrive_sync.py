@@ -45,6 +45,9 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 # Size threshold: files above this get metadata-only stubs
 SIZE_THRESHOLD = 25 * 1024 * 1024  # 25 MB
 
+# Longest an idle run may go without rewriting state.json (see run_auto)
+IDLE_SAVE_INTERVAL_S = 3600
+
 # Google-native export MIME mappings
 EXPORT_MIMES: dict[str, tuple[str, str]] = {
     "application/vnd.google-apps.document": (
@@ -903,6 +906,8 @@ def run_auto() -> None:
         run_full_scan()
         return
 
+    token_before = state.start_page_token
+    last_saved = state.last_sync
     try:
         changed_ids = _incremental_sync(service, state)
     except InvalidChangeTokenError:
@@ -923,8 +928,14 @@ def run_auto() -> None:
             log.error("Failed to sync %s: %s", f.name, exc)
             errors += 1
 
-    _save_state(state)
-    _write_profile_facts(state)
+    # An idle tick (token unmoved, nothing changed) leaves state as loaded, so
+    # skip rewriting it (~150 MB at 213k files, once a minute) unless the last
+    # save is older than IDLE_SAVE_INTERVAL_S, which keeps the health check's
+    # state.json mtime fresh.
+    idle = not changed_ids and state.start_page_token == token_before
+    if not idle or time.time() - last_saved >= IDLE_SAVE_INTERVAL_S:
+        _save_state(state)
+        _write_profile_facts(state)
 
     # Sensor protocol — write state + impingement on changes
     from agents._sensor_protocol import emit_sensor_impingement, write_sensor_state
