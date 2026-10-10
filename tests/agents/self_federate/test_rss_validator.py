@@ -95,6 +95,21 @@ class TestFetchRss:
         assert fetch_rss(DEFAULT_HAPAX_RSS_URL) is None
 
     @patch("agents.self_federate.rss_validator.requests")
+    def test_fetch_names_itself_to_the_weblog_host(self, mock_requests: MagicMock) -> None:
+        """The weblog host closes the connection on the library's default User-Agent.
+
+        Measured 2026-10-10: ``python-requests/2.34.2`` got RemoteDisconnected from
+        https://hapax.weblog.lol/rss.xml, while a named User-Agent got HTTP 200.
+        """
+        mock_requests.get.return_value = _mock_response(200, _VALID_RSS)
+        assert fetch_rss(DEFAULT_HAPAX_RSS_URL) is not None
+        headers = mock_requests.get.call_args.kwargs.get("headers")
+        assert isinstance(headers, dict)
+        user_agent = headers.get("User-Agent", "")
+        assert user_agent.startswith("hapax-")
+        assert "python-requests" not in user_agent
+
+    @patch("agents.self_federate.rss_validator.requests")
     def test_default_call_fetches_the_rss_document_not_the_weblog_page(
         self, mock_requests: MagicMock
     ) -> None:
@@ -108,7 +123,7 @@ class TestFetchRss:
         """
         weblog_html = "<!doctype html><html><head><title>Hapax weblog</title></head></html>"
 
-        def serve(url: str, timeout: float | None = None) -> MagicMock:
+        def serve(url: str, timeout: float | None = None, **_kwargs: object) -> MagicMock:
             if url.endswith("/rss.xml"):
                 return _mock_response(200, _VALID_RSS)
             if url.endswith("/rss"):
