@@ -10,6 +10,7 @@ import re
 import sys
 import threading
 import urllib.error
+from dataclasses import replace
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,6 +32,7 @@ ENV_KEYS = (
     "HAPAX_GLMCP_REVIEW_THINKING",
     "HAPAX_GLMCP_REVIEW_PAYG_FALLBACK",
     "HAPAX_GLMCP_REVIEW_PAYG_BASE_URL",
+    "HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP",
     "HAPAX_GLMCP_REVIEW_TASK_ID",
     "HAPAX_GLMCP_REVIEW_TASK_HASH",
     "HAPAX_GLMCP_REVIEW_ALLOW_NON_CODING_PLAN_MODEL",
@@ -3395,3 +3397,244 @@ def test_payg_reply_also_stops_at_its_closing_fence(
     reply = module.call_glm("review prompt", _payg_config(module), "test-secret-token")
 
     assert reply == FENCE
+
+
+@pytest.mark.parametrize("raw, expected", [(None, True), ("1", True), ("0", False)])
+def test_payg_server_stop_is_an_explicit_configuration(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: bool
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    if raw is not None:
+        monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP", raw)
+    assert module.load_config().payg_server_stop is expected
+
+
+def test_invalid_payg_server_stop_refuses_before_secret_or_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP", "sometimes")
+    monkeypatch.setattr(module, "read_secret", lambda *_: pytest.fail("credential read"))
+    monkeypatch.setattr(module, "open_no_redirect", lambda *_args, **_kw: pytest.fail("network"))
+    assert module.main([]) == 2
+
+
+@pytest.mark.parametrize("trailing_slash", [False, True])
+def test_payg_server_stop_comparison_changes_only_the_stop_field(
+    monkeypatch: pytest.MonkeyPatch,
+    trailing_slash: bool,
+) -> None:
+    module = _load_module()
+    bodies: list[dict] = []
+    _serve(module, monkeypatch, _payg_reply("glm-5.3", FENCE), bodies)
+    config = module._payg_thinking_config(_payg_config(module))
+    if trailing_slash:
+        config = replace(config, payg_base_url=config.payg_base_url + "/")
+    for enabled in (True, False):
+        module._call_glm_once_observed(
+            "same frozen prompt",
+            replace(config, payg_server_stop=enabled),
+            "test-secret-token",
+            base_url=module.DEFAULT_PAYG_BASE_URL,
+            provider_label="PAYG API",
+        )
+    on, off = bodies
+    assert on.pop("stop") == [module.CLOSING_FENCE_STOP]
+    assert "stop" not in off
+    assert on == off
+    assert off["model"] == config.model
+    assert off["thinking"] == {"type": "enabled"}
+    assert off["max_tokens"] == module.PAYG_THINKING_MIN_MAX_TOKENS
+
+
+def test_payg_server_stop_off_does_not_change_coding_plan_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    bodies: list[dict] = []
+    _serve(module, monkeypatch, _coding_plan_reply(FENCE), bodies)
+    config = replace(_coding_plan_config(module), payg_server_stop=False)
+    module.call_glm("review prompt", config, "test-secret-token")
+    assert bodies[0]["stop"] == [module.CLOSING_FENCE_STOP]
+
+
+def test_payg_server_stop_off_keeps_client_fence_handling_and_paid_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module,
+        "open_no_redirect",
+        _walled_then(_payg_reply("glm-5.3", FENCE + TRAILING_PROSE), seen_urls),
+    )
+    reply = module.call_glm(
+        "review prompt", replace(_payg_config(module), payg_server_stop=False), "test-secret-token"
+    )
+    assert reply == FENCE
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state.value == "reconciled"
+    assert receipt.model_or_engine == "glm-5.3"
+    assert receipt.actual_cost_usd is not None
+
+
+@pytest.mark.parametrize(
+    "content, finish, expected",
+    [
+        (FENCE, "length", "ReplyTruncated"),
+        ("", "stop", "ProviderReplyUnusable"),
+    ],
+)
+def test_payg_server_stop_off_cannot_accept_truncated_or_empty_content(
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+    finish: str,
+    expected: str,
+) -> None:
+    module = _load_module()
+    payload = _payg_reply("glm-5.3", content)
+    payload["choices"][0]["finish_reason"] = finish
+    payload["choices"][0]["message"]["reasoning_content"] = "bounded synthetic reasoning"
+    _serve(module, monkeypatch, payload)
+    config = replace(module._payg_thinking_config(_payg_config(module)), payg_server_stop=False)
+    with pytest.raises(getattr(module, expected)):
+        module._call_glm_once_observed(
+            "same frozen prompt",
+            config,
+            "test-secret-token",
+            base_url=module.DEFAULT_PAYG_BASE_URL,
+            provider_label="PAYG API",
+        )
+
+
+def test_payg_forced_thinking_translation_preserves_server_stop_setting() -> None:
+    module = _load_module()
+    config = replace(_payg_config(module), payg_server_stop=False)
+    translated = module._payg_thinking_config(config)
+    assert translated.payg_server_stop is False
+    assert translated.thinking == "enabled"
+    assert translated.max_tokens >= module.PAYG_THINKING_MIN_MAX_TOKENS
+
+
+@pytest.mark.parametrize(
+    "payg_url",
+    [
+        "https://api.z.ai/api/coding/paas/v4/chat/completions",
+        "https://api.z.ai/api/coding/paas/v4/",
+        "https://api.z.ai/api/paas/v4/../../coding/paas/v4",
+        "https://api.z.ai/api/paas/v4/%2e%2e/coding",
+        "https://api.z.ai/api/paas/v4?endpoint=coding",
+        "https://api.z.ai/api/paas/v4#coding",
+        "https://api.z.ai/api/paas/v4?",
+        "https://api.z.ai/api/paas/v4#",
+        "https://api.z.ai/unreviewed",
+    ],
+)
+def test_payg_stop_override_rejects_non_payg_path_before_credential_or_network(
+    monkeypatch: pytest.MonkeyPatch, payg_url: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE", "1")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_BASE_URL", payg_url)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP", "0")
+    monkeypatch.setattr(module, "read_secret", lambda *_: pytest.fail("credential read"))
+    monkeypatch.setattr(module, "open_no_redirect", lambda *_args, **_kw: pytest.fail("network"))
+    assert module.main([]) == 2
+    message = capsys.readouterr().err
+    assert "Next action: unset HAPAX_GLMCP_REVIEW_PAYG_BASE_URL" in message
+    assert module.DEFAULT_PAYG_BASE_URL in message
+
+
+@pytest.mark.parametrize("suffix", ["", "/", "/chat/completions", "-beta"])
+def test_reviewed_payg_path_override_retains_configuration(
+    monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_PAYG_BASE_URL_OVERRIDE", "1")
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_BASE_URL", module.DEFAULT_PAYG_BASE_URL + suffix)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP", "0")
+    assert module.load_config().payg_server_stop is False
+
+
+def test_stop_off_requires_payg_path_at_the_actual_request_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break the _valid_payg_base_url use predicate: this test must fail."""
+    module = _load_module()
+    bodies: list[dict] = []
+    _serve(module, monkeypatch, _coding_plan_reply(FENCE), bodies)
+    config = replace(
+        _coding_plan_config(module),
+        payg_base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        payg_server_stop=False,
+    )
+    module._call_glm_once_observed(
+        "frozen prompt",
+        config,
+        "synthetic-secret",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        provider_label="Coding Plan",
+    )
+    assert bodies[0]["stop"] == [module.CLOSING_FENCE_STOP]
+
+
+@pytest.mark.parametrize("enabled, label", [(True, "retained"), (False, "omitted")])
+def test_payg_stop_check_reports_requested_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], enabled: bool, label: str
+) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_SERVER_STOP", "1" if enabled else "0")
+    monkeypatch.setattr(module, "read_secret", lambda *_: "synthetic-secret")
+    assert module.main(["--check"]) == 0
+    assert "payg_server_stop=" + label in capsys.readouterr().out
+
+
+def test_empty_payg_guidance_does_not_recommend_rejected_thinking_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_module()
+    payload = _payg_reply("glm-5.3", "")
+    payload["choices"][0]["message"]["reasoning_content"] = "synthetic reasoning"
+    _serve(module, monkeypatch, payload)
+    config = replace(module._payg_thinking_config(_payg_config(module)), payg_server_stop=False)
+    with pytest.raises(module.ProviderReplyUnusable) as exc:
+        module._call_glm_once_observed(
+            "frozen prompt",
+            config,
+            "synthetic-secret",
+            base_url=module.DEFAULT_PAYG_BASE_URL,
+            provider_label="PAYG API",
+        )
+    assert "PAYG forced thinking remains enabled" in str(exc.value)
+    assert "reliability owner" in str(exc.value)
+    assert "THINKING=disabled" not in str(exc.value)
+    diagnostic = capsys.readouterr().err
+    assert "request_configuration server_stop=omitted" in diagnostic
+    assert "thinking=enabled" in diagnostic
+
+
+def test_payg_server_stop_off_still_refuses_and_freezes_unidentified_spend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module,
+        "open_no_redirect",
+        _walled_then(_payg_reply("unexpected-model", FENCE), seen_urls),
+    )
+    with pytest.raises(module.ApiError, match="differs from requested"):
+        module.call_glm(
+            "review prompt",
+            replace(_payg_config(module), payg_server_stop=False),
+            "test-secret-token",
+        )
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state.value == "frozen_refused"
