@@ -5,6 +5,23 @@ coordination ledger is one SQLite WAL database outside every worktree, with a
 JSONL mirror for grepability. Lanes are event actors, not ledger writers; only
 the daemon writes the canonical log. Daemon-down enforcement paths can write a
 spool file for later daemon ingestion.
+
+``coord_events.sequence`` is a total order from ONE writer on ONE host. It is
+NOT a cross-host fencing token: a replica's sequence rolls back whenever a
+mirror restores an older image, and a frozen writer pins it indefinitely (the
+appendix ledger sat at 3463 from 2026-07-31 while the mirror made any local
+append unwritable — row coord-ledger-appendix-mirror-destroys-local-appends-20260925,
+derogation D-1). Epoch designs must key on a witnessed external anchor, never
+on this column.
+
+Host topology: one host's daemon is the canonical writer; other hosts may have
+stale, noncanonical ``ledger.db`` copies. Their writers never append those
+local copies: they use ``spool_fail_open`` unconditionally and
+forward the spool to the canonical host, whose daemon ingests it
+(``ingest_spool`` — idempotent on ``event_id UNIQUE``, so a forwarding redelivery
+is a counted duplicate, never a second row). ``append(fail_open=True)`` is only
+for a canonical writer whose attempted append failed; a successful local
+append creates no forwarding intent.
 """
 
 from __future__ import annotations
@@ -386,7 +403,7 @@ class CoordEventLog:
         writer: CoordWriter,
         reason: str,
     ) -> AppendReceipt:
-        """Write a daemon-down fail-open event to the spool.
+        """Write a forwarding or daemon-down event to the spool.
 
         The shim may write spool files; lanes still may not write any ledger
         surface directly.
@@ -476,7 +493,13 @@ class CoordEventLog:
                     spool_path.unlink()
                     removed.append(spool_path.name)
                 except OSError as exc:
-                    errors.append(f"{spool_path.name}: unlink_failed:{type(exc).__name__}:{exc}")
+                    failed += 1
+                    errors.append(
+                        f"{spool_path.name}: unlink_failed:{type(exc).__name__}:{exc}; "
+                        "inspect spool directory permissions and retry ingest-spool"
+                    )
+                # Keep the stable flock inode. Unlinking it while a writer still
+                # holds the old inode lets a second writer lock a new sidecar.
 
         return SpoolIngestResult(
             ingested=ingested,
@@ -485,6 +508,30 @@ class CoordEventLog:
             removed=tuple(removed),
             errors=tuple(errors),
         )
+
+    def spooled_events(self, event_ids: tuple[str, ...]) -> tuple[CoordEvent, ...]:
+        """Read local forwarding intents by event id for dispatch replay.
+
+        A dispatcher can finish its MQ transition before the canonical host has
+        ingested its spool. The local intent is the durable replay evidence in
+        that interval. Malformed matching intents refuse replay rather than
+        letting a launch repeat.
+        """
+        events: list[CoordEvent] = []
+        if not self.spool_dir.is_dir():
+            return ()
+        for event_id in event_ids:
+            for path in sorted(self.spool_dir.glob(f"*-{_safe_filename(event_id)}-*.jsonl")):
+                try:
+                    event = self._read_spool_event(path)
+                except Exception as exc:
+                    raise CoordEventLogError(
+                        f"spool replay failed for {path.name}: {type(exc).__name__}: {exc}"
+                    ) from exc
+                if event.event_id != event_id:
+                    raise CoordEventLogError(f"spool event id mismatch for {path.name}")
+                events.append(event)
+        return tuple(events)
 
     def boot_reconcile(self, *, fail_open: bool = True) -> BootReconcileResult:
         """Replay the canonical log then ingest fail-open spool intents.
@@ -1030,6 +1077,32 @@ def _cli_append(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cli_ingest_spool(args: argparse.Namespace) -> int:
+    """Drain fail-open spool intents into the canonical log; print the counts.
+
+    The operator-run repair surface for spooled intents (e.g. a forwarded spool
+    from a replica host): idempotent on ``event_id UNIQUE``, consumed intents
+    removed, failed intents left in place. Exit 1 when any intent failed so a
+    partial drain is never read as complete.
+    """
+    log = _event_log_from_args(args)
+    result = log.ingest_spool()
+    print(
+        json.dumps(
+            {
+                "ingested": result.ingested,
+                "duplicates": result.duplicates,
+                "failed": result.failed,
+                "removed": list(result.removed),
+                "errors": list(result.errors),
+                "db_path": str(log.db_path),
+                "spool_dir": str(log.spool_dir),
+            }
+        )
+    )
+    return 1 if result.failed or result.errors else 0
+
+
 def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="coord_event_log",
@@ -1053,6 +1126,12 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     ap.add_argument("--db-path", default=None)
     ap.add_argument("--jsonl-path", default=None)
     ap.add_argument("--spool-dir", default=None)
+    isp = sub.add_parser(
+        "ingest-spool", help="drain fail-open spool intents into the canonical log"
+    )
+    isp.add_argument("--db-path", default=None)
+    isp.add_argument("--jsonl-path", default=None)
+    isp.add_argument("--spool-dir", default=None)
     return parser
 
 
@@ -1060,6 +1139,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_cli_parser().parse_args(argv)
     if args.command == "append":
         return _cli_append(args)
+    if args.command == "ingest-spool":
+        return _cli_ingest_spool(args)
     return 2
 
 

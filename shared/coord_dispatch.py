@@ -233,7 +233,12 @@ def replay_terminal_result(
     """Replay a prior terminal launch result for ``idempotency_key``."""
 
     result = request.event_log.replay(fail_open=True)
-    for event in reversed(result.events):
+    terminal_ids = tuple(_event_id(idempotency_key, outcome) for outcome in ("succeeded", "failed"))
+    try:
+        pending = request.event_log.spooled_events(terminal_ids)
+    except Exception as exc:
+        raise CoordDispatchError(f"coord_spool_replay_failed:{type(exc).__name__}:{exc}") from exc
+    for event in reversed((*result.events, *pending)):
         if event.event_type not in TERMINAL_EVENT_TYPES:
             continue
         if event.payload.get("idempotency_key") != idempotency_key:
@@ -427,10 +432,10 @@ def _append_dispatch_event(
         },
     )
     try:
-        request.event_log.append(
+        request.event_log.spool_fail_open(
             event,
-            writer=CoordWriter.daemon("hapax-methodology-dispatch"),
-            fail_open=True,
+            writer=CoordWriter.shim(name="hapax-methodology-dispatch"),
+            reason="forward_to_canonical_writer",
         )
     except DuplicateEventError:
         pass
