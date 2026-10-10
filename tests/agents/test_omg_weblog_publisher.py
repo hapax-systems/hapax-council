@@ -511,3 +511,173 @@ class TestPublishArtifact:
             artifact = _FakeArtifact(slug="x", title="t", body_md="b")
             assert publish_artifact(artifact, address="custom-addr") == "ok"
         assert client.set_entry.call_args.args[0] == "custom-addr"
+
+
+def _entry_response(*, entry_id: str, title: str, source: str, location: str | None = None) -> dict:
+    """The omg.lol weblog GET envelope, shaped as the live API returns it."""
+    return {
+        "request": {"status_code": 200, "success": True},
+        "response": {
+            "message": "Here is your weblog entry.",
+            "entry": {
+                "entry": entry_id,
+                "location": location or f"/2026/05/{entry_id}",
+                "title": title,
+                "date": 1778394600,
+                "type": "post",
+                "status": "live",
+                "source": source,
+            },
+        },
+    }
+
+
+# The two withdrawn May origins, as read on 2026-10-10. One pins its URL with a Slug line. The
+# other has only a Date line, and its entry id differs from its URL slug.
+PINNED_SOURCE = (
+    "---\nDate: 2026-05-10 06:30:00\nSlug: may-10-origin\n---\n\n# Old title\n\nOld body."
+)
+UNPINNED_SOURCE = "---\nDate: 2026-05-11 23:53 UTC\n---\n\n# Entry 006 — May 10-11, 2026\n\nOld."
+
+
+def _set_entry_response(location: str | None) -> dict:
+    entry = {"entry": "x"} if location is None else {"entry": "x", "location": location}
+    return {"response": {"entry": entry}}
+
+
+class TestInPlaceEntryUpdate:
+    """An artifact naming an existing entry replaces its body and keeps where it lives."""
+
+    def _client(
+        self, monkeypatch: pytest.MonkeyPatch, read, *, returned_location: str | None = None
+    ) -> MagicMock:
+        client = MagicMock()
+        client.enabled = True
+        client.get_entry.return_value = read
+        client.set_entry.return_value = _set_entry_response(returned_location)
+        monkeypatch.setattr("shared.omg_lol_client.OmgLolClient", lambda **_: client)
+        return client
+
+    def _artifact(self, *, entry_id: str, title: str, body: str = "New body."):
+        from shared.preprint_artifact import PreprintArtifact
+
+        return PreprintArtifact(
+            slug=entry_id,
+            title=title,
+            body_md=body,
+            weblog_entry_update=entry_id,
+            grounding_gate_result=_grounding_gate(),
+        )
+
+    def test_update_keeps_the_metadata_and_replaces_only_the_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        before = _entry_response(entry_id="may-10-origin", title="Old title", source=PINNED_SOURCE)
+        client = self._client(monkeypatch, before, returned_location="/2026/05/may-10-origin")
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "ok"
+        client.set_entry.assert_called_once()
+        assert client.set_entry.call_args.args == ("hapax", "may-10-origin")
+        assert client.set_entry.call_args.kwargs["content"] == (
+            "---\nDate: 2026-05-10 06:30:00\nSlug: may-10-origin\n---\n\n# New title\n\nNew body."
+        )
+
+    def test_an_unpinned_entry_gets_its_current_url_slug_not_its_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        location = "/2026/05/entry-006-may-10-11-2026"
+        before = _entry_response(
+            entry_id="entry-006-may-10-11",
+            title="Entry 006 — May 10-11, 2026",
+            source=UNPINNED_SOURCE,
+            location=location,
+        )
+        client = self._client(monkeypatch, before, returned_location=location)
+
+        # With the slug pinned, a changed title can no longer move the entry.
+        result = publish_artifact(
+            self._artifact(entry_id="entry-006-may-10-11", title="A new title")
+        )
+
+        assert result == "ok"
+        assert client.set_entry.call_args.kwargs["content"] == (
+            "---\nDate: 2026-05-11 23:53 UTC\nSlug: entry-006-may-10-11-2026\n---\n\n"
+            "# A new title\n\nNew body."
+        )
+
+    def test_an_unfenced_date_line_as_this_publisher_writes_is_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        source = "Date: 2026-10-10 19:57 UTC\n\n# Notebook entry\n\nOld."
+        before = _entry_response(
+            entry_id="notebook-x",
+            title="Notebook entry",
+            source=source,
+            location="/2026/10/notebook-x",
+        )
+        client = self._client(monkeypatch, before, returned_location="/2026/10/notebook-x")
+
+        result = publish_artifact(self._artifact(entry_id="notebook-x", title="Notebook entry"))
+
+        assert result == "ok"
+        assert client.set_entry.call_args.kwargs["content"] == (
+            "---\nDate: 2026-10-10 19:57 UTC\nSlug: notebook-x\n---\n\n# Notebook entry\n\nNew body."
+        )
+
+    def test_an_unreadable_entry_writes_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, None)
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "error"
+        client.set_entry.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("source", "location"),
+        [
+            ("# Old title\n\nNo metadata block at all.", None),
+            ("---\nSlug: may-10-origin\n---\n\n# Old title\n\nNo Date line.", None),
+            ("---\nDate: 2026-05-10 06:30:00\nSlug: may-10-origin\n\n# Never closes.", None),
+            (PINNED_SOURCE.replace("Slug: may-10-origin", "Slug: another-slug"), None),
+            (PINNED_SOURCE.replace("2026-05-10", "2026-06-10"), None),
+            (PINNED_SOURCE, "/weblog"),
+        ],
+        ids=["no-block", "no-date", "unclosed", "slug-disagrees", "month-disagrees", "location"],
+    )
+    def test_metadata_that_disagrees_with_the_location_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, source: str, location: str | None
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        before = _entry_response(
+            entry_id="may-10-origin", title="Old title", source=source, location=location
+        )
+        client = self._client(monkeypatch, before)
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "denied"
+        client.set_entry.assert_not_called()
+
+    def test_a_returned_location_that_moved_is_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        before = _entry_response(entry_id="may-10-origin", title="Old title", source=PINNED_SOURCE)
+        client = self._client(monkeypatch, before, returned_location="/2026/10/new-title")
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "error"
+        client.set_entry.assert_called_once()

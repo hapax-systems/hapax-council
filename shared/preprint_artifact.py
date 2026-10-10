@@ -132,6 +132,14 @@ class PreprintArtifact(BaseModel):
     """Optional hero image / OG card. Most surfaces (Bluesky, Mastodon,
     Are.na, omg.lol) consume; PDF surfaces (OSF, arXiv) ignore."""
 
+    weblog_entry_update: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,119}$")
+    """Optional id of an existing omg.lol weblog entry this artifact replaces in place.
+
+    The weblog publisher keeps that entry's metadata lines and pins its current URL slug, so
+    its public location and date do not move; it writes nothing when they disagree. A vault
+    artifact binds it to review through its source head; it is not part of the gate
+    fingerprint."""
+
     source_path: str | None = None
     """Optional source Markdown path for vault-originated drafts.
 

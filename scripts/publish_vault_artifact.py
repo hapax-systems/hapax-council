@@ -580,6 +580,7 @@ def _build_artifact(
     if publication_gate_receipts:
         publication_gate_context = dict(publication_gate_context or {})
         publication_gate_context["publication_gate_receipts"] = publication_gate_receipts
+    weblog_entry_update = _optional_string(_frontmatter_value(frontmatter, "weblog_entry_update"))
     publication_gate_override = _optional_mapping(
         _frontmatter_value(frontmatter, "publication_gate_override")
     )
@@ -600,6 +601,8 @@ def _build_artifact(
         kwargs["source_path"] = str(source_path)
     if author_model:
         kwargs["author_model"] = author_model
+    if weblog_entry_update:
+        kwargs["weblog_entry_update"] = weblog_entry_update
     if publication_gate_context is not None:
         kwargs["publication_gate_context"] = publication_gate_context
     if publication_gate_override is not None:
