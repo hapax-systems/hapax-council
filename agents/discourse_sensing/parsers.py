@@ -120,8 +120,22 @@ def _parse_atom(
     return items
 
 
+_DTD_MARKERS = (b"<!DOCTYPE", b"<!ENTITY")
+
+
 def parse_feed(body: bytes, source_id: str, feed_url: str) -> list[SensedItem]:
-    """Parse an RSS 2.0 or Atom feed into sensed items."""
+    """Parse an RSS 2.0 or Atom feed into sensed items.
+
+    DTD and entity declarations are refused before parsing, independent of the
+    runtime's expansion limits: an RSS or Atom feed needs neither, so a body
+    that carries one is reported as a parse failure rather than parsed.
+    """
+    for marker in _DTD_MARKERS:
+        if marker in body:
+            raise ValueError(
+                f"{feed_url}: feed carries {marker.decode()}; DTD and entity declarations "
+                "are refused before parsing — fix or replace the source feed"
+            )
     try:
         root = ElementTree.fromstring(body)
     except ElementTree.ParseError as exc:

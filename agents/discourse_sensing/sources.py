@@ -93,8 +93,9 @@ def load_sources(path: str | Path) -> list[SourceSpec]:
         missing = [field for field in _REQUIRED_FIELDS if not entry.get(field)]
         if missing:
             raise ValueError(
-                f"{path}: source #{index} ({entry.get('id', '?')}) lacks {missing}; every "
-                "source needs a terms note and a checked-at-source date"
+                f"{path}: source #{index} ({entry.get('id', '?')}) lacks {missing}; add the "
+                "missing fields to the vault-side source list — every source needs a terms "
+                "note and a checked-at-source date"
             )
         kind = entry["kind"]
         if kind not in VALID_KINDS:
@@ -114,7 +115,8 @@ def load_sources(path: str | Path) -> list[SourceSpec]:
         cadence = entry["cadence_minutes"]
         if not isinstance(cadence, int) or isinstance(cadence, bool) or cadence <= 0:
             raise ValueError(
-                f"{path}: source {entry['id']} needs a positive integer cadence_minutes"
+                f"{path}: source {entry['id']} needs a positive integer cadence_minutes; set "
+                "it to the poll interval in minutes in the vault-side source list"
             )
         specs.append(
             SourceSpec(
