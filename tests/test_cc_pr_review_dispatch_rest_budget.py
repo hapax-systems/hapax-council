@@ -8,10 +8,8 @@ fetches only what changed. Invariants under test (each mutation-verified):
   cached page on 304 (a 304 does not count against the budget);
 - ``--force`` bypasses the unchanged-head gate; dry-run plans never record
   heads; heads of closed PRs are pruned;
-- every failure of the conditional listing raises RuntimeError so the scan falls
-  back to the transport chooser; a 403 whose stderr carries "304" in a request
-  ID never reads as a 304;
-- a corrupt or wrong-schema scan state fails open to fresh.
+- conditional-listing failures raise (fallback to the chooser; a 403's request
+  ID containing "304" never reads as a 304); unusable scan state fails open.
 """
 
 from __future__ import annotations
@@ -396,7 +394,7 @@ def _pulls_proc(stdout: str, stderr: str = "", rc: int = 0) -> subprocess.Comple
 
 
 class TestConditionalListingFailures:
-    """Every failure of the conditional listing raises so the scan can fall back."""
+    """Listing failures raise; the scan falls back."""
 
     @pytest.mark.parametrize(
         ("proc", "match"),
@@ -484,7 +482,6 @@ class TestChooserFallback:
 
         assert [r["status"] for r in results] == ["dispatched"]
         assert "falling back to the transport chooser" in caplog.text
-        # The fallback warning carries an operator next action (gemini M4).
         assert "gh auth status" in caplog.text
 
 
