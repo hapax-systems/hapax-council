@@ -1467,7 +1467,7 @@ class TestCapabilityBlockedHolders:
         assert not keyed.exists()
 
     def test_a_short_wall_or_a_stale_witness_is_no_evidence(self, tmp_path: Path) -> None:
-        # A 5 h window wall ends inside the 6 h tolerance; a 3 h witness is past the 2 h TTL.
+        # A wall ending in 2 h is inside the 6 h tolerance; a 3 h old witness is past the 2 h TTL.
         for case, kwargs in (
             ("short", {"resets_in": timedelta(hours=2)}),
             ("stale", {"observed_ago": timedelta(hours=3)}),
@@ -1570,6 +1570,28 @@ class TestCapabilityBlockedHolders:
             ("clean", None),
         ):
             self._assert_local_work_holds(tmp_path / state, state, reason)
+
+    def test_a_failed_read_holds(self, tmp_path: Path) -> None:
+        for reason in ("worktrees_unreadable", "remote_unreadable", "worktree_status_unreadable"):
+            base = tmp_path / reason
+            vault, cache_dir = _make_vault(base), base / "cache"
+            _write_task_note(vault, "read-task", assigned_to="lane-r", branch="feat/item")
+            _write_claim_cache(cache_dir, "lane-r", "read-task")
+            _write_relay(base, "lane-r", "codex")
+            repo = None  # no repository at all: the worktree list cannot be read
+            if reason != "worktrees_unreadable":
+                repo = base / "repo"  # a repository with no origin: the remote cannot be read
+                repo.mkdir(parents=True)
+                _git(repo, "init", "-q", "-b", "main")
+                _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+            if reason == "worktree_status_unreadable":  # the branch's worktree is gone from disk
+                _git(repo, "worktree", "add", "-q", "-b", "feat/item", str(base / "tree"))
+                shutil.rmtree(base / "tree")
+
+            record = _write_family_outage(base)
+            result = _run_blocked_audit(base, vault, cache_dir, record, repo=repo)
+
+            assert f"HELD: {reason}; next action: repair the failed read" in result.stdout, reason
 
     def test_a_branch_this_audit_cannot_verify_is_held(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
