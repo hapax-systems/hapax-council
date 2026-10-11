@@ -4,8 +4,6 @@ REQ: the account's GitHub REST budget is shared by every lane, so the scan
 fetches only what changed. Invariants under test (each mutation-verified):
 
 - a PR whose head sha matches the last cycle's record makes no diff fetch;
-- a rate-limit 403 stops the scan, names the reset from X-RateLimit-Reset,
-  and never falls back to ``gh pr diff`` or a local git diff;
 - the open-PR list is fetched once per cycle with If-None-Match, reusing the
   cached page on 304 (a 304 does not count against the budget);
 - ``--force`` bypasses the unchanged-head gate; dry-run plans never record
@@ -17,7 +15,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -42,13 +39,6 @@ from test_cc_pr_review_dispatch import (  # noqa: E402
 )
 
 dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
-
-RESET_EPOCH = 1791707173
-RESET_AT = datetime.fromtimestamp(RESET_EPOCH, tz=UTC).isoformat(timespec="seconds")
-RATE_LIMIT_STDERR = (
-    "gh: API rate limit exceeded for user ID 418460. If you reach out to GitHub "
-    "Support for help, please include this request ID (HTTP 403)"
-)
 
 
 @pytest.fixture(autouse=True)
@@ -303,126 +293,6 @@ class TestUnchangedHeadGate:
 
         assert [r["status"] for r in results] == ["dispatched"]
         assert _read_state(state_path)["heads"] == {"41": head41}
-
-
-class TestRateLimitStop:
-    def test_rate_limit_403_stops_scan_and_names_reset(self, tmp_path: Path) -> None:
-        vault = _make_vault(tmp_path)
-        _write_task(vault, "task-41", pr=41)
-        _write_task(vault, "task-42", pr=42)
-        state_path = tmp_path / "scan-state.json"
-
-        class RateLimitedDiffGh(ScanGh):
-            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-                if (
-                    cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
-                    and len(cmd) > 6
-                    and "v3.diff" in cmd[5]
-                    and cmd[6] == "repos/owner/repo/pulls/41"
-                ):
-                    self.calls.append(list(cmd))
-                    headers = (
-                        "HTTP/1.1 403 Forbidden\r\n"
-                        f"X-RateLimit-Reset: {RESET_EPOCH}\r\n"
-                        "X-RateLimit-Remaining: 0\r\n"
-                        "\r\n"
-                    )
-                    return subprocess.CompletedProcess(cmd, 1, headers, RATE_LIMIT_STDERR)
-                return super().__call__(cmd, **kwargs)
-
-        reviewers = RecordingReviewers()
-        gh = RateLimitedDiffGh({41: "a" * 40, 42: "c" * 40})
-
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(
-                vault, tmp_path, gh, scan_state_path=state_path, reviewer_runner=reviewers
-            )
-        )
-
-        # The scan stops at PR 41: PR 42 is never attempted, no reviewers burn.
-        assert [r["status"] for r in results] == ["rate_limited"]
-        assert results[0]["pr"] == 41
-        assert results[0]["reset_epoch"] == RESET_EPOCH
-        assert results[0]["reset_at"] == RESET_AT
-        assert results[0]["next_action"]
-        assert reviewers.invocations == []
-        # No fallback diff of any shape after the 403.
-        assert not any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
-        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
-        # The rate-limited PR is not recorded as done; the next cycle retries it.
-        assert _read_state(state_path).get("heads", {}) == {}
-
-    def test_fetch_pr_diff_raises_typed_error_without_headers(self, tmp_path: Path) -> None:
-        head = "c" * 40
-        pr_info = dispatch.PRInfo(
-            number=42,
-            title="PR 42",
-            body="body",
-            base_ref="main",
-            base_sha="b" * 40,
-            head_ref="feat/42",
-            head_sha=head,
-            changed_file_count=1,
-            is_draft=False,
-            files=("shared/foo.py",),
-        )
-
-        class NoHeader403Gh(ScanGh):
-            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-                if (
-                    cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
-                    and len(cmd) > 6
-                    and "v3.diff" in cmd[5]
-                ):
-                    self.calls.append(list(cmd))
-                    return subprocess.CompletedProcess(cmd, 1, "", RATE_LIMIT_STDERR)
-                if cmd[:3] == ["gh", "pr", "diff"]:
-                    self.calls.append(list(cmd))
-                    pytest.fail("rate-limited diff must not fall back to gh pr diff")
-                if cmd[:2] == ["git", "diff"]:
-                    self.calls.append(list(cmd))
-                    pytest.fail("rate-limited diff must not fall back to a local git diff")
-                return super().__call__(cmd, **kwargs)
-
-        gh = NoHeader403Gh({42: head})
-        with pytest.raises(dispatch.RateLimitExceeded) as excinfo:
-            dispatch.fetch_pr_diff(pr_info, repo="owner/repo", repo_root=REPO_ROOT, runner=gh)
-        assert excinfo.value.reset_epoch is None
-        assert "next action" in str(excinfo.value).lower()
-        assert not any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
-
-    def test_non_rate_limit_diff_failure_keeps_existing_fallback_chain(
-        self, tmp_path: Path
-    ) -> None:
-        head = "c" * 40
-        pr_info = dispatch.PRInfo(
-            number=42,
-            title="PR 42",
-            body="body",
-            base_ref="main",
-            base_sha="b" * 40,
-            head_ref="feat/42",
-            head_sha=head,
-            changed_file_count=1,
-            is_draft=False,
-            files=("shared/foo.py",),
-        )
-
-        class PlainUnavailableGh(ScanGh):
-            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-                if (
-                    cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
-                    and len(cmd) > 6
-                    and "v3.diff" in cmd[5]
-                ):
-                    self.calls.append(list(cmd))
-                    return subprocess.CompletedProcess(cmd, 1, "", "connection reset by peer")
-                return super().__call__(cmd, **kwargs)
-
-        gh = PlainUnavailableGh({42: head})
-        diff = dispatch.fetch_pr_diff(pr_info, repo="owner/repo", repo_root=REPO_ROOT, runner=gh)
-        assert "diff --git" in diff
-        assert any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
 
 
 class TestConditionalList:

@@ -28,10 +28,9 @@ Default mode is a dry-run constitution plan. ``--apply`` dispatches reviewers
 and writes the dossier; ``--force`` re-reviews an already-reviewed head sha.
 
 The ``--all`` scan spends only what changed: the open-PR list is fetched once
-per cycle with conditional requests (a 304 is free), a PR's diff, files and
-dossier inputs are fetched only when its head sha differs from the last
-cycle's record, and a measured rate-limit 403 stops the scan — naming the
-reset from ``X-RateLimit-Reset`` — rather than falling back to a local diff.
+per cycle with conditional requests (a 304 is free), and a PR's diff, files
+and dossier inputs are fetched only when its head sha differs from the last
+cycle's record.
 
 A family with live wall evidence from ``shared.quota_headroom`` (a spent window
 before its reset, or a live wall) is never seated: the constitution substitutes
@@ -1648,49 +1647,7 @@ def _packet_redaction_block_status(exc: Exception) -> str:
     return "packet_redaction_registry_unreadable"
 
 
-class RateLimitExceeded(RuntimeError):
-    """A ``gh`` call was refused by a measured GitHub rate limit (HTTP 403).
-
-    The account's REST budget is shared by every lane, so the one response a rate
-    limit must never produce is a fallback onto different bytes. This subclasses
-    ``RuntimeError`` for handler compatibility, but every ``except RuntimeError``
-    between the raise and the scan boundary re-raises it explicitly before its
-    generic handling. ``reset_epoch``/``reset_at`` carry ``X-RateLimit-Reset``
-    when the response headers were captured (``gh api -i``); the message always
-    names the next action either way.
-    """
-
-    reset_epoch: int | None
-    reset_at: str | None
-
-    def __init__(self, message: str, *, reset_epoch: int | None = None) -> None:
-        super().__init__(message)
-        self.reset_epoch = reset_epoch
-        self.reset_at = (
-            datetime.fromtimestamp(reset_epoch, tz=UTC).isoformat(timespec="seconds")
-            if reset_epoch is not None
-            else None
-        )
-
-
 _HTTP_STATUS_LINE_RE = re.compile(r"\AHTTP/[\d.]+\s+(\d{3})\b")
-
-_RATE_LIMIT_NEXT_ACTION = (
-    "stop gh REST calls until the reset, then re-run the scan; do not fall back to a "
-    "local git diff — it reviews other bytes than the PR's"
-)
-
-
-def _is_rate_limit_text(*texts: str) -> bool:
-    """True only for the measured GitHub rate-limit refusal shape.
-
-    Both markers are required: a "403" status and "rate limit". Gh renders REST
-    refusals as ``... (HTTP 403)``, while unrelated stderr — a truncated
-    ``diff rate limited``, a transport reset — mentions at most one. Requiring
-    both keeps every other failure on its existing fallback chain.
-    """
-    combined = " ".join(texts)
-    return "403" in combined and "rate limit" in combined.lower()
 
 
 def _parse_gh_api_include_output(stdout: str) -> tuple[str | None, dict[str, str], str]:
@@ -1720,30 +1677,6 @@ def _parse_gh_api_include_output(stdout: str) -> tuple[str | None, dict[str, str
     return status, headers, body
 
 
-def _rate_limit_reset_epoch(headers: dict[str, str]) -> int | None:
-    raw = headers.get("x-ratelimit-reset")
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
-def _rate_limit_stop_message(what: str, reset_epoch: int | None) -> str:
-    if reset_epoch is not None:
-        reset_at = datetime.fromtimestamp(reset_epoch, tz=UTC).isoformat(timespec="seconds")
-        return (
-            f"{what} refused by the GitHub rate limit (HTTP 403). The window resets at "
-            f"{reset_at} (X-RateLimit-Reset {reset_epoch}). Next action: {_RATE_LIMIT_NEXT_ACTION}."
-        )
-    return (
-        f"{what} refused by the GitHub rate limit (HTTP 403); X-RateLimit-Reset was not in "
-        "the captured response headers. Next action: "
-        f"{_RATE_LIMIT_NEXT_ACTION} (the core window resets on the hour)."
-    )
-
-
 def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120) -> str:
     """Run a `gh` command, normalising EVERY failure to RuntimeError.
 
@@ -1764,13 +1697,6 @@ def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120)
     except (subprocess.SubprocessError, OSError) as exc:
         raise RuntimeError(f"{' '.join(cmd[:3])} could not run: {exc}") from exc
     if proc.returncode != 0:
-        if _is_rate_limit_text(proc.stderr, proc.stdout):
-            _, headers, _ = _parse_gh_api_include_output(proc.stdout)
-            reset_epoch = _rate_limit_reset_epoch(headers)
-            raise RateLimitExceeded(
-                _rate_limit_stop_message(f"{' '.join(cmd[:3])}", reset_epoch),
-                reset_epoch=reset_epoch,
-            )
         raise RuntimeError(
             f"{' '.join(cmd[:3])} failed (rc={proc.returncode}): {proc.stderr.strip()[:300]}"
         )
@@ -1873,8 +1799,6 @@ def fetch_pr(
                 len(pr_info.files),
                 pr_info.changed_file_count,
             )
-        except RateLimitExceeded:
-            raise
         except RuntimeError as exc:
             if route.rest_blocked:
                 # REST was MEASURED below its floor. Falling back to it would attempt more
@@ -1913,8 +1837,6 @@ def fetch_pr(
                 repo_root=repo_root,
                 runner=runner,
             )
-        except RateLimitExceeded:
-            raise
         except RuntimeError as exc:
             raise RuntimeError(
                 f"REST pull fetch failed for PR #{pr_number}; fallback `gh pr view` also "
@@ -2026,17 +1948,11 @@ def fetch_pr_diff(
                 "-H",
                 "Accept: application/vnd.github.v3.diff",
                 f"repos/{repo}/pulls/{pr_number}",
-                # Response headers on stdout: a rate-limit 403 must carry
-                # X-RateLimit-Reset so the stop can name the reset.
-                "-i",
             ],
             repo_root=repo_root,
             runner=runner,
         )
-        _, _, text = _parse_gh_api_include_output(text)
         return PrDiff(text, source="github-rest", comparison_base=_GITHUB_DIFF_BASE)
-    except RateLimitExceeded:
-        raise
     except RuntimeError as exc:
         LOG.warning(
             "REST diff fetch failed for PR #%d; falling back to `gh pr diff`: %s",
@@ -2050,8 +1966,6 @@ def fetch_pr_diff(
                 runner=runner,
             )
             return PrDiff(text, source="gh-pr-diff", comparison_base=_GITHUB_DIFF_BASE)
-        except RateLimitExceeded:
-            raise
         except RuntimeError as diff_exc:
             if not allow_local:
                 raise RuntimeError(
@@ -5269,10 +5183,9 @@ def _list_open_prs_conditional(
     ETag is retained in the scan state and echoed as ``If-None-Match`` next cycle.
     ``gh`` exits NONZERO on 304 (headers on stdout, ``gh: HTTP 304`` on stderr),
     so this runs the command directly rather than through ``_run_gh``, whose
-    nonzero path is an error boundary. A rate-limit 403 raises
-    ``RateLimitExceeded`` (the reset comes from the captured headers); any other
-    failure raises ``RuntimeError`` so the caller can fall back to the transport
-    chooser, which re-measures both pools before spending anything.
+    nonzero path is an error boundary. Any failure raises ``RuntimeError`` so
+    the caller can fall back to the transport chooser, which re-measures both
+    pools before spending anything.
     """
     pages_key = f"repos/{repo}/pulls|state=open"
     pages: dict[str, Any] = state["list_pages"].get(pages_key, {})
@@ -5313,13 +5226,6 @@ def _list_open_prs_conditional(
             )
         except (subprocess.SubprocessError, OSError) as exc:
             raise RuntimeError(f"gh api pulls could not run: {exc}") from exc
-        if _is_rate_limit_text(proc.stderr, proc.stdout):
-            _, headers, _ = _parse_gh_api_include_output(proc.stdout)
-            reset_epoch = _rate_limit_reset_epoch(headers)
-            raise RateLimitExceeded(
-                _rate_limit_stop_message("open-PR listing", reset_epoch),
-                reset_epoch=reset_epoch,
-            )
         status, headers, body = _parse_gh_api_include_output(proc.stdout)
         if status == "304" or (proc.returncode != 0 and "304" in proc.stderr):
             items = cached.get("items") if cached else None
@@ -5383,10 +5289,8 @@ def review_all_open_prs(
 
     ``scan_state_path=None`` keeps the exact legacy behavior: list via the transport
     chooser and review every PR every cycle. With a path, the listing goes through
-    conditional requests (a 304 is free), a PR whose head sha matches the last
-    cycle's recorded dispatch is skipped without any per-PR fetch, and a measured
-    rate-limit 403 stops the scan — heads of PRs completed before the stop keep
-    their records, so the next cycle resumes rather than restarts.
+    conditional requests (a 304 is free) and a PR whose head sha matches the last
+    cycle's recorded dispatch is skipped without any per-PR fetch.
     """
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
@@ -5426,17 +5330,6 @@ def review_all_open_prs(
                 state=state,
                 limit=100,
             )
-        except RateLimitExceeded as exc:
-            LOG.warning("review-team dispatch scan stopped before listing: %s", exc)
-            _write_scan_state(scan_state_path, state)
-            return [
-                {
-                    "status": "rate_limited",
-                    "reset_epoch": exc.reset_epoch,
-                    "reset_at": exc.reset_at,
-                    "next_action": _RATE_LIMIT_NEXT_ACTION,
-                }
-            ]
         except RuntimeError as exc:
             LOG.warning(
                 "conditional open-PR listing unavailable (%s); falling back to the "
@@ -5486,20 +5379,6 @@ def review_all_open_prs(
                 route_blocked_families=route_blocked_families,
                 route=route,
             )
-        except RateLimitExceeded as exc:
-            # Before the generic handler: a measured rate limit ends the cycle, it is not
-            # a per-PR error. Completed PRs keep their head records; this one is retried.
-            LOG.warning("review-team scan stopped at PR #%d: %s", pr_number, exc)
-            results.append(
-                {
-                    "status": "rate_limited",
-                    "pr": pr_number,
-                    "reset_epoch": exc.reset_epoch,
-                    "reset_at": exc.reset_at,
-                    "next_action": _RATE_LIMIT_NEXT_ACTION,
-                }
-            )
-            break
         except Exception as exc:  # noqa: BLE001 — one PR must not starve the scan
             LOG.warning("review-team scan failed for PR #%d: %s", pr_number, exc)
             results.append({"status": "error", "pr": pr_number, "error": str(exc)})
