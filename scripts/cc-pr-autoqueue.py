@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -1650,14 +1650,260 @@ def _release_stamp_newer_than(
     return since < mtime <= now
 
 
+#: Admission blockers that name a review-route flap: the exam compared the live route
+#: state with the dossier's, and they differed. Re-reviewing cannot fix a flap; the
+#: same dossier passes when the live state matches again.
+FLAP_BLOCKER_PREFIXES = {
+    "review_dossier_blocked_route_family_seated:": "seated",
+    "review_dossier_route_block_degradation_unwitnessed:": "unwitnessed",
+}
+EXAM_LEDGER_MAX_AGE_SECONDS = 7 * 24 * 3600
+
+
+def _flap_blocker_families(blockers: Iterable[str]) -> dict[str, frozenset[str]] | None:
+    """The families a flap-only blocker set names, by kind; None if any blocker is not a flap."""
+    kinds: dict[str, set[str]] = {"seated": set(), "unwitnessed": set()}
+    for blocker in blockers:
+        kind = next(
+            (kind for prefix, kind in FLAP_BLOCKER_PREFIXES.items() if blocker.startswith(prefix)),
+            None,
+        )
+        if kind is None:
+            return None
+        names = {name.strip() for name in blocker.split(":", 1)[1].split(",") if name.strip()}
+        if not names:
+            return None
+        kinds[kind] |= names
+    if not any(kinds.values()):
+        return None
+    return {kind: frozenset(names) for kind, names in kinds.items()}
+
+
+def _exam_ledger_reexam_due(
+    entry: Mapping[str, Any],
+    *,
+    head_sha: str | None,
+    task_status: str | None,
+    live_route_blocked: frozenset[str] | None,
+    since: datetime,
+) -> str | None:
+    """Why a PR's last recorded exam no longer stands, or None.
+
+    One-shot: an attempt after the recorded exam (``since`` past it) retires the
+    reason until the next completed exam records again. ``row_turned_ready``: the
+    linked row was not ready at the exam and is now, at any head (readiness is the
+    row's, and the exam reruns every check). ``route_flap_satisfied``: every
+    blocker was a route flap at this head, and the live route state has changed since
+    the exam into one that satisfies them all (a seated family admitted, an excluded
+    one blocked). An unknown route state, or a stamp without a timezone, grants
+    nothing; the exam itself decides. ``HAPAX_AUTOQUEUE_MUST_INCLUDE_OFF=1`` turns
+    every fresh-evidence seat off, these included. ``entry`` is one that
+    ``_load_exam_ledger`` admitted, so each field it reads has its type.
+    """
+    try:
+        examined_at = datetime.fromisoformat(str(entry.get("examined_at")))
+    except ValueError:
+        return None
+    if examined_at.tzinfo is None:
+        return None
+    if since > examined_at:
+        return None
+    if (
+        entry.get("task_status") not in ACTIVE_READY_STATUSES
+        and task_status in ACTIVE_READY_STATUSES
+    ):
+        return "row_turned_ready"
+    flaps = _flap_blocker_families(entry.get("blockers") or ())
+    recorded = entry.get("route_blocked")
+    if (
+        flaps is None
+        or live_route_blocked is None
+        or recorded is None
+        or not head_sha
+        or entry.get("head_sha") != head_sha
+        or frozenset(recorded) == live_route_blocked
+    ):
+        return None
+    if flaps["seated"] & live_route_blocked or not flaps["unwitnessed"] <= live_route_blocked:
+        return None
+    return "route_flap_satisfied"
+
+
+def _live_review_route_blocked_families() -> frozenset[str] | None:
+    """The review families whose route is blocked now; None when it cannot be read."""
+    try:
+        return frozenset(
+            review_team.review_route_blocked_families(review_team.load_lens_registry())
+        )
+    except Exception as exc:  # noqa: BLE001 — an unknown state grants no seat
+        LOG.warning(
+            "live review route state unreadable; no flap re-exam this tick: %s. Next action: "
+            "none if it clears next tick; if it repeats, read the platform capability "
+            "registry and its receipts",
+            exc,
+        )
+        return None
+
+
+def _once(read: Callable[[], frozenset[str] | None]) -> Callable[[], frozenset[str] | None]:
+    """Read the live route state at most once per tick, and only if a flap needs it."""
+    cache: list[frozenset[str] | None] = []
+
+    def call() -> frozenset[str] | None:
+        if not cache:
+            cache.append(read())
+        return cache[0]
+
+    return call
+
+
+def _exam_ledger_path(rotation_state_path: Path) -> Path:
+    return rotation_state_path.parent / (rotation_state_path.name + ".exam-ledger.json")
+
+
+def _exam_entry_well_typed(entry: object) -> bool:
+    """Whether a ledger entry has each field the re-exam reads, as the type it is read as.
+
+    ``_load_exam_ledger`` admits only these, so nothing past it type-checks a field.
+    """
+    if not isinstance(entry, Mapping):
+        return False
+    blockers, route_blocked = entry.get("blockers"), entry.get("route_blocked")
+    return (
+        isinstance(entry.get("examined_at"), str)
+        and isinstance(entry.get("head_sha"), str | None)
+        and isinstance(entry.get("task_status"), str | None)
+        and isinstance(blockers, list)
+        and all(isinstance(blocker, str) for blocker in blockers)
+        and (
+            route_blocked is None
+            or (
+                isinstance(route_blocked, list)
+                and all(isinstance(family, str) for family in route_blocked)
+            )
+        )
+    )
+
+
+def _load_exam_ledger(path: Path, *, repo: str, now: datetime) -> dict[int, dict[str, Any]]:
+    """Each PR's last recorded exam. Fail-open to empty: the ledger only adds seats.
+
+    An entry with a mistyped field is dropped, which loses only that PR's seat.
+    """
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        LOG.warning(
+            "exam ledger unreadable, starting empty: %s. Next action: none; the next "
+            "completed exam rewrites %s, and until then only re-exam seats are lost",
+            exc,
+            path,
+        )
+        return {}
+    if not isinstance(state, dict) or state.get("schema_version") != 1:
+        LOG.warning(
+            "exam ledger at %s has an unexpected schema, starting empty. Next action: none; "
+            "the next completed exam rewrites it",
+            path,
+        )
+        return {}
+    entries: dict[int, dict[str, Any]] = {}
+    repositories = state.get("repositories")
+    by_number = repositories.get(repo) if isinstance(repositories, dict) else None
+    if not isinstance(by_number, dict):
+        return entries
+    for number, entry in by_number.items():
+        if not _exam_entry_well_typed(entry):
+            continue
+        try:
+            examined_at = datetime.fromisoformat(entry["examined_at"])
+            if examined_at.tzinfo is None:
+                continue
+            if now - examined_at > timedelta(seconds=EXAM_LEDGER_MAX_AGE_SECONDS):
+                continue
+            entries[int(number)] = dict(entry)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return entries
+
+
+def _save_exam_ledger(path: Path, repo: str, entries: Mapping[int, Mapping[str, Any]]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state: dict[str, Any] = {"schema_version": 1, "repositories": {}}
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and existing.get("schema_version") == 1:
+                    state = existing
+            except (OSError, ValueError):
+                pass
+            if not isinstance(state.get("repositories"), dict):
+                state["repositories"] = {}
+            state["repositories"][repo] = {
+                str(number): dict(entry) for number, entry in sorted(entries.items())
+            }
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(path)
+    except OSError as exc:
+        LOG.warning(
+            "exam ledger write failed: %s. Next action: check %s's directory permissions and "
+            "free space; until it writes, no re-exam seats open (admission is unchanged)",
+            exc,
+            path,
+        )
+
+
+def _record_exam_ledger(
+    ledger: Mapping[int, Mapping[str, Any]],
+    decisions: Iterable[Decision],
+    *,
+    examined_stamps: Mapping[int, datetime],
+    live_route_blocked: Callable[[], frozenset[str] | None],
+) -> dict[int, dict[str, Any]]:
+    """Record each completed exam: its rotation stamp, head, blockers and the row's status.
+
+    A flap-only verdict also records the live route state it was judged against, so
+    a later change of that state can re-open the exam once.
+    """
+    entries = {number: dict(entry) for number, entry in ledger.items()}
+    for decision in decisions:
+        number = decision.pr.number
+        stamp = examined_stamps.get(number)
+        if stamp is None:
+            continue  # the pass did not complete; the last record stands
+        blockers = list(decision.reasons) if decision.action == "blocked" else []
+        route_blocked: list[str] | None = None
+        if _flap_blocker_families(blockers) is not None:
+            state = live_route_blocked()
+            route_blocked = sorted(state) if state is not None else None
+        entries[number] = {
+            "head_sha": decision.pr.head_sha,
+            "blockers": blockers,
+            "route_blocked": route_blocked,
+            "task_status": decision.task.status if decision.task is not None else None,
+            "examined_at": stamp.isoformat(),
+        }
+    return entries
+
+
 def _fresh_evidence_probe(
-    tasks: list[TaskNote], *, now: datetime
+    tasks: list[TaskNote],
+    *,
+    now: datetime,
+    exam_ledger: Mapping[int, Mapping[str, Any]] | None = None,
+    live_route_blocked: Callable[[], frozenset[str] | None] | None = None,
 ) -> Callable[[dict[str, Any], datetime], bool]:
     """Answer "did a linked receipt, dossier or current-head release stamp land after
-    ``since``?" for a listing row.
+    ``since``, or does the PR's last recorded exam no longer stand?" for a listing row.
 
     Rows link to tasks the way ``_matching_tasks`` links hydrated PRs: by
     ``pr`` first, else by head branch. Each task folder is listed at most once.
+    The exam ledger reasons are ``_exam_ledger_reexam_due``'s.
     """
     by_pr: dict[int, list[TaskNote]] = {}
     by_branch: dict[str, list[TaskNote]] = {}
@@ -1686,11 +1932,28 @@ def _fresh_evidence_probe(
     def probe(row: dict[str, Any], since: datetime) -> bool:
         matches = by_pr.get(row["number"]) or by_branch.get(_listing_head_ref(row) or "", [])
         head_sha = _listing_head_sha(row)
-        return any(
+        if any(
             _release_stamp_newer_than(task, head_sha, since, now=now)
             or any(_evidence_file_newer_than(path, since, now=now) for path in evidence_paths(task))
             for task in matches
+        ):
+            return True
+        entry = (exam_ledger or {}).get(row["number"])
+        if entry is None:
+            return False
+        statuses = [task.status for task in matches]
+        status = next((s for s in statuses if s in ACTIVE_READY_STATUSES), None)
+        if status is None and statuses:
+            status = statuses[0]
+        live = None
+        if live_route_blocked is not None and _flap_blocker_families(entry.get("blockers") or ()):
+            live = live_route_blocked()
+        reason = _exam_ledger_reexam_due(
+            entry, head_sha=head_sha, task_status=status, live_route_blocked=live, since=since
         )
+        if reason is not None:
+            LOG.info("fresh evidence for PR #%s: %s", row["number"], reason)
+        return reason is not None
 
     return probe
 
@@ -5319,6 +5582,15 @@ def run_reconciler(
         )
     hydration_failures: dict[int, dict[str, Any]] = {}
     window: _WindowSelection | None = None
+    exam_ledger_path = (
+        _exam_ledger_path(rotation_state_path) if rotation_state_path is not None else None
+    )
+    exam_ledger = (
+        _load_exam_ledger(exam_ledger_path, repo=repo, now=now)
+        if exam_ledger_path is not None
+        else {}
+    )
+    live_route_state = _once(lambda: _live_review_route_blocked_families())
     try:
         if rotation_state_path is not None:
             (
@@ -5336,7 +5608,12 @@ def run_reconciler(
                 runner=runner or subprocess.run,
                 must_include=queued_prs,
                 full_exam=dequeued_followup,
-                fresh_evidence=_fresh_evidence_probe(tasks, now=now),
+                fresh_evidence=_fresh_evidence_probe(
+                    tasks,
+                    now=now,
+                    exam_ledger=exam_ledger,
+                    live_route_blocked=live_route_state,
+                ),
                 armed_note_reconciliation=armed_note_reconciliation,
                 proof_ledger=dict(must_include_state),
             )
@@ -5779,6 +6056,31 @@ def run_reconciler(
                             route=listing_route,
                         )
                     )
+
+    if apply and exam_ledger_path is not None and rotation_state_path is not None:
+        try:
+            with _rotation_state(repo=repo, state_path=rotation_state_path, persist=False) as (
+                examined_stamps,
+                _failures,
+            ):
+                stamps = dict(examined_stamps)
+        except RestIndeterminateError as exc:
+            LOG.warning(
+                "exam ledger not recorded this tick: %s. Next action: none; the next tick "
+                "records it, and until then only re-exam seats are lost",
+                exc,
+            )
+        else:
+            _save_exam_ledger(
+                exam_ledger_path,
+                repo,
+                _record_exam_ledger(
+                    exam_ledger,
+                    decisions,
+                    examined_stamps=stamps,
+                    live_route_blocked=live_route_state,
+                ),
+            )
 
     starved: list[int] = []
     if must_include_state_path is not None:
