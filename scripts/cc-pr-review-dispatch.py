@@ -4963,6 +4963,105 @@ def review_artifact(
     }
 
 
+FROZEN_ROW_STATUSES = frozenset({"claimed", "in_progress"})
+
+
+def _vault_relative_file(artifact_root: Path, ref: Any) -> str | None:
+    """``ref`` as a vault-relative path to a file under ``artifact_root``, or None.
+
+    Absolute, home-relative, backslashed and ``..`` forms are never followed.
+    """
+    if not isinstance(ref, str):
+        return None
+    text = ref.strip()
+    if not text or text.startswith(("/", "~")) or "\\" in text:
+        return None
+    parts = [part for part in text.split("/") if part not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    rel = "/".join(parts)
+    return rel if (artifact_root / rel).is_file() else None
+
+
+def review_frozen_artifacts(
+    *,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    artifact_root: Path | None = None,
+    apply: bool = False,
+    force: bool = False,
+    fingerprint: Any = None,
+    review: Any = None,
+) -> list[dict[str, Any]]:
+    """Review every frozen publication artifact that an active row names.
+
+    A row is frozen when it is kind ``publication``, declares no PR, has status claimed or
+    in_progress, names its file in ``artifact`` (a path under ``artifact_root``), and the
+    publisher's own fingerprint of that file over the row's ``target_surfaces`` equals its
+    ``artifact_fingerprint``. Other publication rows are skipped with their reason; rows of other
+    kinds are not reported. review_artifact skips a dossier that is fresh for the bytes, so a
+    frozen row is reviewed once per head.
+    """
+    artifact_root = artifact_root or DEFAULT_ARTIFACT_ROOT
+    if fingerprint is None:
+        import publish_vault_artifact  # noqa: PLC0415 — scripts/ is on sys.path; only this scan needs it
+
+        fingerprint = publish_vault_artifact.frozen_fingerprint
+    review = review or review_artifact
+    results: list[dict[str, Any]] = []
+    for note_path in sorted((vault_root / "active").glob("*.md")):
+        frontmatter = review_team._note_frontmatter(note_path)
+        if not frontmatter or frontmatter.get("kind") != "publication":
+            continue
+        task_id = str(frontmatter.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        reason: str | None = None
+        rel = _vault_relative_file(artifact_root, frontmatter.get("artifact"))
+        surfaces = frontmatter.get("target_surfaces")
+        declared = frontmatter.get("artifact_fingerprint")
+        status = str(frontmatter.get("status") or "")
+        if _frontmatter_declares_pr(frontmatter):
+            reason = "pr_bound"
+        elif status not in FROZEN_ROW_STATUSES:
+            reason = f"status:{status}"
+        elif rel is None:
+            reason = "artifact_not_a_file"
+        elif not (
+            isinstance(surfaces, list)
+            and surfaces
+            and all(isinstance(surface, str) for surface in surfaces)
+        ):
+            reason = "no_target_surfaces"
+        elif not isinstance(declared, str) or not declared.strip():
+            reason = "no_artifact_fingerprint"
+        else:
+            try:
+                actual = fingerprint(artifact_root / rel, list(surfaces))
+            except Exception as exc:  # noqa: BLE001 — a draft that cannot be built is not frozen
+                reason = f"fingerprint_unavailable:{type(exc).__name__}"
+            else:
+                if actual != declared.strip():
+                    reason = "not_frozen"
+        if reason is not None:
+            results.append({"task_id": task_id, "status": "skipped", "reason": reason})
+            continue
+        try:
+            results.append(
+                review(
+                    task_id,
+                    [rel],
+                    vault_root=vault_root,
+                    artifact_root=artifact_root,
+                    apply=apply,
+                    force=force,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — one row must not starve the scan
+            LOG.warning("frozen-artifact review failed for %s: %s", task_id, exc)
+            results.append({"task_id": task_id, "status": "error", "error": str(exc)})
+    return results
+
+
 def review_all_open_prs(
     *,
     repo: str = DEFAULT_REPO,
@@ -5039,6 +5138,11 @@ def main(argv: list[str] | None = None) -> int:
         "--task",
         help="review a vault-only row (no PR) as an artifact; requires --artifact",
     )
+    target.add_argument(
+        "--frozen-artifacts",
+        action="store_true",
+        help="review every frozen publication artifact named by an active row",
+    )
     parser.add_argument(
         "--artifact",
         action="append",
@@ -5102,6 +5206,13 @@ def main(argv: list[str] | None = None) -> int:
         results: Any = review_artifact(
             args.task,
             list(args.artifact),
+            vault_root=args.vault_root,
+            artifact_root=args.artifact_root,
+            apply=args.apply,
+            force=args.force,
+        )
+    elif args.frozen_artifacts:
+        results = review_frozen_artifacts(
             vault_root=args.vault_root,
             artifact_root=args.artifact_root,
             apply=args.apply,

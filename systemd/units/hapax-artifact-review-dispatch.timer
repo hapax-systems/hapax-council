@@ -1,0 +1,17 @@
+# Hapax-Auto-Enable: true
+# hapax-post-merge-deploy `enable --now`s units carrying this marker, so frozen publication
+# artifacts are reviewed from merge on without a seat act. The marker requires [Install] below.
+[Unit]
+Description=Hapax frozen-artifact review dispatch cadence (no-stall U4a)
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/cc-pr-review-dispatch.py
+
+[Timer]
+OnBootSec=6min
+OnUnitActiveSec=10min
+RandomizedDelaySec=45s
+AccuracySec=1min
+Persistent=true
+Unit=hapax-artifact-review-dispatch.service
+
+[Install]
+WantedBy=timers.target
