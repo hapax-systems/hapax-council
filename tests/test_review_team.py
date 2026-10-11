@@ -7,6 +7,7 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -2126,6 +2127,160 @@ class TestVerdictBlockers:
             route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
         )
         assert "review_dossier_blocked_route_family_seated:gemini" in blockers
+
+    def _write_glmcp_admission_receipt(
+        self,
+        receipts_dir: Path,
+        *,
+        evidence_ref: str = "glmcp-reviewer-roundtrip-ok-test",
+        observed_at: str = "2026-06-11T21:00:00Z",
+        stale_after_seconds: int = 900,
+    ) -> str:
+        receipts_dir.mkdir(parents=True, exist_ok=True)
+        path = receipts_dir / "glmcp-quota-admission.yaml"
+        path.write_text(
+            "schema: hapax.glmcp_quota_admission.v1\n"
+            "status: quota_available\n"
+            "route_id: glmcp.review.direct\n"
+            f"observed_at: {observed_at}\n"
+            f"stale_after_seconds: {stale_after_seconds}\n"
+            f"evidence_ref: {evidence_ref}\n",
+            encoding="utf-8",
+        )
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def _glm_route_admission_basis(
+        self,
+        rt,
+        *,
+        receipt_sha256: str,
+        evidence_ref: str = "glmcp-reviewer-roundtrip-ok-test",
+        observed_at: str = "2026-06-11T21:00:00Z",
+        stale_after_seconds: int = 900,
+        completed_at: str = "2026-06-11T21:10:00Z",
+    ) -> dict:
+        return {
+            "state": "seated",
+            "roles": ["glm-1"],
+            "route_id": rt.GLMCP_PAYG_BUDGET_ROUTE_ID,
+            "evidence_ref": evidence_ref,
+            "observed_at": observed_at,
+            "stale_after_seconds": stale_after_seconds,
+            "completed_at": completed_at,
+            "receipt_sha256": receipt_sha256,
+        }
+
+    def test_seated_route_family_coherent_basis_admits_when_live_receipt_stale(
+        self, tmp_path: Path
+    ) -> None:
+        # The #5048 shape: glm's review ran while the seat admission receipt was
+        # fresh (observed 21:00, stale_after 900 s) and completed inside the
+        # window (21:10); at examination the live receipt is stale. The recorded
+        # basis — bound to the retained receipt file by sha256 — witnesses the
+        # seated family, so the live-check blocker does not fire.
+        rt = _load_review_team_module()
+        receipts_dir = tmp_path / "receipts"
+        receipt_sha256 = self._write_glmcp_admission_receipt(receipts_dir)
+        dossier = self._glm_seated_dossier(rt)
+        dossier["route_admission_basis"] = {
+            "glm": self._glm_route_admission_basis(rt, receipt_sha256=receipt_sha256)
+        }
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"glm": (rt.GLMCP_REVIEW_ADMISSION_BLOCKER,)},
+            admission_receipts_dir=receipts_dir,
+        )
+        assert blockers == ()
+
+    def test_seated_route_family_basis_completed_after_stale_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        receipts_dir = tmp_path / "receipts"
+        receipt_sha256 = self._write_glmcp_admission_receipt(receipts_dir)
+        dossier = self._glm_seated_dossier(rt)
+        dossier["route_admission_basis"] = {
+            # observed 21:00 + 900 s -> the window ends 21:15; completed 21:16
+            "glm": self._glm_route_admission_basis(
+                rt, receipt_sha256=receipt_sha256, completed_at="2026-06-11T21:16:00Z"
+            )
+        }
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"glm": (rt.GLMCP_REVIEW_ADMISSION_BLOCKER,)},
+            admission_receipts_dir=receipts_dir,
+        )
+        assert "review_dossier_blocked_route_family_seated:glm" in blockers
+
+    def test_seated_route_family_basis_without_retained_record_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The dossier asserts a basis, but no independently retained record backs
+        # it: the receipt file's sha256 differs and the ledger's retained route
+        # records do not carry the recorded evidence_ref. The dispatcher's own
+        # assertion is never enough.
+        rt = _load_review_team_module()
+        receipts_dir = tmp_path / "receipts"
+        self._write_glmcp_admission_receipt(receipts_dir)
+        resolved = SimpleNamespace(
+            source="live", live_error=None, ledger=SimpleNamespace(quota_snapshots=())
+        )
+        monkeypatch.setattr(rt, "load_quota_spend_ledger_resolved", lambda: resolved)
+        dossier = self._glm_seated_dossier(rt)
+        dossier["route_admission_basis"] = {
+            "glm": self._glm_route_admission_basis(rt, receipt_sha256="0" * 64)
+        }
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"glm": (rt.GLMCP_REVIEW_ADMISSION_BLOCKER,)},
+            admission_receipts_dir=receipts_dir,
+        )
+        assert "review_dossier_blocked_route_family_seated:glm" in blockers
+
+    def test_seated_route_family_newer_hold_receipt_blocks(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        receipts_dir = tmp_path / "receipts"
+        receipt_sha256 = self._write_glmcp_admission_receipt(receipts_dir)
+        (receipts_dir / "glmcp-quota-hold.yaml").write_text(
+            "schema: hapax.glmcp_quota_hold.v1\n"
+            "status: hold\n"
+            "route_id: glmcp.review.direct\n"
+            "observed_at: 2026-06-11T21:05:00Z\n"
+            "detected_at: 2026-06-11T21:05:00Z\n",
+            encoding="utf-8",
+        )
+        dossier = self._glm_seated_dossier(rt)
+        dossier["route_admission_basis"] = {
+            "glm": self._glm_route_admission_basis(rt, receipt_sha256=receipt_sha256)
+        }
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"glm": (rt.GLMCP_REVIEW_ADMISSION_BLOCKER,)},
+            admission_receipts_dir=receipts_dir,
+        )
+        assert "review_dossier_blocked_route_family_seated:glm" in blockers
+
+    def test_seated_route_family_without_basis_keeps_live_check(self, tmp_path: Path) -> None:
+        # No recorded basis: today's live examination check decides, unchanged.
+        rt = _load_review_team_module()
+        note = _write_dossier(tmp_path, "task-x", self._glm_seated_dossier(rt))
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"glm": ("glmcp_review_seat_receipt_admission_required",)},
+        )
+        assert "review_dossier_blocked_route_family_seated:glm" in blockers
 
     def test_task_scoped_paid_route_existing_spend_witness_passes(
         self, monkeypatch: pytest.MonkeyPatch
