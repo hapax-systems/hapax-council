@@ -5093,14 +5093,32 @@ RELEASE_BLOCKING_SEVERITIES = frozenset({"major", "critical"})
 
 
 def _release_hold_reason(dossier: dict[str, Any]) -> str | None:
-    """Why an accepted dossier still may not release without the seat, or None."""
-    for review in dossier.get("reviewers") or []:
-        for finding in (review.get("findings") or []) if isinstance(review, dict) else []:
+    """Why an accepted dossier still may not release without the seat, or None.
+
+    Fails closed: a reviewer or findings record that cannot be read could hide a major, so it
+    holds exactly as a major does.
+    """
+    reviewers = dossier.get("reviewers")
+    if not isinstance(reviewers, list) or not reviewers:
+        return "dossier_reviewers_unreadable"
+    for review in reviewers:
+        if not isinstance(review, dict):
+            return "dossier_reviewers_unreadable"
+        findings = review.get("findings")
+        if not isinstance(findings, list):
+            return "dossier_findings_unreadable"
+        for finding in findings:
             if not isinstance(finding, dict):
                 return "dossier_findings_unreadable"
             if str(finding.get("severity") or "").strip().lower() in RELEASE_BLOCKING_SEVERITIES:
                 return "major_findings_need_seat_release"
     return None
+
+
+def _held(task_id: str, reason: str, **extra: Any) -> dict[str, Any]:
+    """A release refused on an accepted row: an anomaly, so it is logged loudly as well as returned."""
+    LOG.warning("frozen-artifact release held for %s: %s", task_id, reason)
+    return {"task_id": task_id, "status": "held", "reason": reason, **extra}
 
 
 def release_accepted_artifacts(
@@ -5111,21 +5129,31 @@ def release_accepted_artifacts(
     state_root: Path | None = None,
     fingerprint: Any = None,
     pipeline_state: Any = None,
+    artifact_head: Any = None,
     mint: Any = None,
     drop: Any = None,
 ) -> list[dict[str, Any]]:
     """Release every frozen publication artifact whose exact-artifact review accepted it (U4b).
 
-    A frozen row (the review scan's own selection) is released when its review dossier is
-    quorum-accept, no reviewer raised a major or critical finding, and its slug is nowhere in the
-    publish pipeline (inbox, draft, published or failed). Release mints the public-gate receipts
-    from the signed acceptance, then drops the artifact to the inbox. The minter refuses an
-    unsigned, below-quorum, non-independent or stale acceptance, so bytes that changed after the
-    review never release, and a refused mint drops nothing. The orchestrator still runs the
-    hardening gate, the receipt check and the legal-name guard before anything is public. A major
-    or critical finding holds the row for the seat: a hold narrows, it never releases.
+    A frozen row (the review scan's own selection) is released when all of these hold:
+    - its review dossier is quorum-accept;
+    - the dossier's head is the head of the bytes now, as the review built it;
+    - every reviewer record reads, and none raised a major or critical finding;
+    - the artifact is nowhere in the publish pipeline: its slug is in no inbox, draft, published
+      or failed file, and no per-surface publication record holds its fingerprint.
+    Release mints the public-gate receipts from the signed acceptance (the minter checks the
+    signature, quorum, independence and the bytes again), then drops the artifact to the inbox.
+    A refused mint drops nothing. Every refusal on an accepted row holds and is logged; a hold
+    narrows, it never releases. The orchestrator still runs the hardening gate, the receipt check
+    and the legal-name guard before anything is public.
     """
     artifact_root = artifact_root or DEFAULT_ARTIFACT_ROOT
+    if artifact_head is None:
+
+        def artifact_head(rel: str) -> str:
+            manifest, _contents = build_artifact_manifest([rel], artifact_root)
+            return artifact_head_sha(manifest)
+
     if pipeline_state is None or drop is None or mint is None:
         import publish_vault_artifact  # noqa: PLC0415 — scripts/ is on sys.path; only these scans need it
 
@@ -5165,9 +5193,19 @@ def release_accepted_artifacts(
         if verdict != "quorum-accept":
             results.append({**skipped, "reason": f"verdict:{verdict}"})
             continue
+        head = str(dossier.get("head_sha") or "").strip()
+        try:
+            current_head = artifact_head(row.rel)
+        except Exception as exc:  # noqa: BLE001 — bytes that cannot be manifested are not released
+            results.append({**skipped, "reason": f"artifact_head_unavailable:{type(exc).__name__}"})
+            continue
+        if not head or current_head != head:
+            # The acceptance was for other bytes; the review scan re-reviews the new head.
+            results.append({**skipped, "reason": "review_dossier_stale_head"})
+            continue
         hold = _release_hold_reason(dossier)
         if hold is not None:
-            results.append({"task_id": task_id, "status": "held", "reason": hold})
+            results.append(_held(task_id, hold))
             continue
         artifact = artifact_root / row.rel
         surfaces = list(row.surfaces)
@@ -5181,7 +5219,6 @@ def release_accepted_artifacts(
         if state is not None:
             results.append({**skipped, "reason": f"already_{state}"})
             continue
-        head = str(dossier.get("head_sha") or "")
         if not apply:
             results.append({"task_id": task_id, "status": "would_release", "head_sha": head})
             continue
@@ -5193,8 +5230,14 @@ def release_accepted_artifacts(
                 authority_case=str(row.frontmatter.get("authority_case") or "").strip(),
             )
         except Exception as exc:  # noqa: BLE001 — any refusal to mint holds; nothing is dropped
-            results.append({"task_id": task_id, "status": "held", "reason": f"mint_hold:{exc}"})
+            results.append(_held(task_id, f"mint_hold:{exc}"))
             continue
+        receipts = minted.get("receipts") if isinstance(minted, dict) else None
+        minted_states = {
+            gate: value.get("state")
+            for gate, value in (receipts or {}).items()
+            if isinstance(value, dict)
+        }
         issuer = str(dossier.get("authority_issuer") or "").strip()
         try:
             inbox_path = drop(
@@ -5203,19 +5246,16 @@ def release_accepted_artifacts(
                 approver=f"{issuer} acceptance of {head}, released by the frozen-artifact scan",
             )
         except Exception as exc:  # noqa: BLE001 — a refused drop is held and named
-            results.append({"task_id": task_id, "status": "held", "reason": f"drop_refused:{exc}"})
+            # The receipts are already minted: say so, so the partial state is legible.
+            results.append(_held(task_id, f"drop_refused:{exc}", minted=minted_states))
             continue
-        receipts = minted.get("receipts") if isinstance(minted, dict) else None
+        LOG.info("frozen-artifact released %s at %s to %s", task_id, head, inbox_path)
         results.append(
             {
                 "task_id": task_id,
                 "status": "released",
                 "head_sha": head,
-                "receipts": {
-                    gate: (value or {}).get("state")
-                    for gate, value in (receipts or {}).items()
-                    if isinstance(value, dict)
-                },
+                "receipts": minted_states,
                 "inbox_path": str(inbox_path),
             }
         )

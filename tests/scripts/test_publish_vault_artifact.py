@@ -1041,6 +1041,72 @@ def test_pipeline_state_names_where_the_slug_already_is(tmp_path: Path, state: s
     )
 
 
+def _publication_log(state_root: Path, *, fingerprint: str, surface: str = "omg-weblog") -> Path:
+    log = state_root / "publish" / "log" / f"a-frozen-draft.{surface}.json"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        json.dumps(
+            {
+                "slug": "a-frozen-draft",
+                "surface": surface,
+                "result": "ok",
+                "artifact_fingerprint": fingerprint,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return log
+
+
+def test_pipeline_state_finds_a_publication_record_of_the_same_bytes(tmp_path: Path) -> None:
+    """The publication record outlives the pipeline files: the same bytes are never re-released."""
+    draft = _frozen_draft(tmp_path)
+    state_root = tmp_path / "state"
+    _publication_log(
+        state_root, fingerprint=publish_vault_artifact.frozen_fingerprint(draft, ["omg-weblog"])
+    )
+
+    assert (
+        publish_vault_artifact.pipeline_state(draft, ["omg-weblog"], state_root=state_root)
+        == "publication_record"
+    )
+
+
+def test_pipeline_state_lets_corrected_bytes_republish(tmp_path: Path) -> None:
+    """A record of other bytes (an earlier version) does not block a corrected republication."""
+    state_root = tmp_path / "state"
+    _publication_log(state_root, fingerprint="0" * 64)
+
+    assert (
+        publish_vault_artifact.pipeline_state(
+            _frozen_draft(tmp_path), ["omg-weblog"], state_root=state_root
+        )
+        is None
+    )
+
+
+def test_pipeline_state_holds_on_an_unreadable_publication_record(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    _publication_log(state_root, fingerprint="0" * 64).write_text("{not json", encoding="utf-8")
+
+    assert (
+        publish_vault_artifact.pipeline_state(
+            _frozen_draft(tmp_path), ["omg-weblog"], state_root=state_root
+        )
+        == "publication_record_unreadable"
+    )
+
+
+def test_drop_to_inbox_names_the_next_action_for_an_empty_body(tmp_path: Path) -> None:
+    draft = _frozen_draft(tmp_path)
+    draft.write_text(draft.read_text(encoding="utf-8").replace("The body of a frozen draft.\n", ""))
+
+    with pytest.raises(publish_vault_artifact.PublicationGateError, match="next action"):
+        publish_vault_artifact.drop_to_inbox(
+            draft, surfaces=["omg-weblog"], approver="x", state_root=tmp_path / "state"
+        )
+
+
 def test_pipeline_state_is_none_for_a_slug_nowhere_in_the_pipeline(tmp_path: Path) -> None:
     assert (
         publish_vault_artifact.pipeline_state(

@@ -251,10 +251,13 @@ def _release(
     apply: bool = True,
     fingerprint=None,
     state: str | None = None,
+    state_raises: Exception | None = None,
+    current_head: str = HEAD,
     mint_raises: Exception | None = None,
     drop_raises: Exception | None = None,
 ):
     order: list[str] = []
+    heads: list[str] = []
     mint = _Calls(
         order,
         "mint",
@@ -262,12 +265,23 @@ def _release(
         raises=mint_raises,
     )
     drop = _Calls(order, "drop", result=root / "inbox" / "entry.json", raises=drop_raises)
+
+    def pipeline_state(path: Path, surfaces: list[str]) -> str | None:
+        if state_raises is not None:
+            raise state_raises
+        return state
+
+    def artifact_head(rel: str) -> str:
+        heads.append(rel)
+        return current_head
+
     results = dispatch.release_accepted_artifacts(
         vault_root=vault,
         artifact_root=root,
         apply=apply,
         fingerprint=fingerprint or (lambda path, surfaces: FROZEN),
-        pipeline_state=lambda path, surfaces: state,
+        pipeline_state=pipeline_state,
+        artifact_head=artifact_head,
         mint=mint,
         drop=drop,
     )
@@ -340,7 +354,154 @@ def test_a_major_or_critical_finding_holds_the_row_for_the_seat(layout, severity
     assert mint.calls == [] and drop.calls == []
 
 
-@pytest.mark.parametrize("state", ["inbox", "draft", "published", "failed"])
+def test_a_dossier_for_other_bytes_releases_nothing(layout) -> None:
+    """The release layer binds the dossier's head to the bytes now, before anything is minted."""
+    root, vault = layout
+    _row(vault, "notebook-entry", authority_case=CASE)
+    _dossier(vault, "notebook-entry")
+    seen: list[str] = []
+
+    def artifact_head(rel: str) -> str:
+        seen.append(rel)
+        return "artifact-sha256:" + "b" * 64
+
+    results = dispatch.release_accepted_artifacts(
+        vault_root=vault,
+        artifact_root=root,
+        apply=True,
+        fingerprint=lambda path, surfaces: FROZEN,
+        pipeline_state=lambda path, surfaces: None,
+        artifact_head=artifact_head,
+        mint=lambda **kwargs: pytest.fail("a stale dossier reached the minter"),
+        drop=lambda *args, **kwargs: pytest.fail("a stale dossier reached the drop"),
+    )
+
+    assert results == [
+        {"task_id": "notebook-entry", "status": "skipped", "reason": "review_dossier_stale_head"}
+    ]
+    # The head is taken over the review's own spelling of the artifact set: the row's ref.
+    assert seen == [ARTIFACT]
+
+
+def test_the_default_head_is_the_reviews_manifest_head(layout) -> None:
+    root, vault = layout
+    _row(vault, "notebook-entry", authority_case=CASE)
+    manifest, _contents = dispatch.build_artifact_manifest([ARTIFACT], root)
+    _dossier(vault, "notebook-entry")
+    dossier_path = vault / "active" / "notebook-entry.review-dossier.yaml"
+    data = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+    data["head_sha"] = dispatch.artifact_head_sha(manifest)
+    dossier_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    results = dispatch.release_accepted_artifacts(
+        vault_root=vault,
+        artifact_root=root,
+        apply=False,
+        fingerprint=lambda path, surfaces: FROZEN,
+        pipeline_state=lambda path, surfaces: None,
+    )
+
+    assert results[0]["status"] == "would_release"
+    (root / ARTIFACT).write_text("---\ntitle: Entry\n---\nChanged body.\n", encoding="utf-8")
+    again = dispatch.release_accepted_artifacts(
+        vault_root=vault,
+        artifact_root=root,
+        apply=False,
+        fingerprint=lambda path, surfaces: FROZEN,
+        pipeline_state=lambda path, surfaces: None,
+    )
+    assert again[0]["reason"] == "review_dossier_stale_head"
+
+
+@pytest.mark.parametrize(
+    "reviewers",
+    [
+        "not-a-list",
+        [],
+        ["not-a-mapping"],
+        [{"id": "gemini-1", "verdict": "accept"}],
+        [{"id": "gemini-1", "verdict": "accept", "findings": "not-a-list"}],
+        [{"id": "gemini-1", "verdict": "accept", "findings": ["not-a-mapping"]}],
+    ],
+)
+def test_a_malformed_reviewer_record_holds_the_row(layout, reviewers) -> None:
+    """A record that cannot be read could hide a major; it holds, it never releases."""
+    root, vault = layout
+    _row(vault, "notebook-entry", authority_case=CASE)
+    _dossier(vault, "notebook-entry")
+    dossier_path = vault / "active" / "notebook-entry.review-dossier.yaml"
+    data = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+    data["reviewers"] = reviewers
+    dossier_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    results, mint, drop, _ = _release(root, vault)
+
+    assert results["notebook-entry"]["status"] == "held"
+    assert results["notebook-entry"]["reason"] in {
+        "dossier_reviewers_unreadable",
+        "dossier_findings_unreadable",
+    }
+    assert mint.calls == [] and drop.calls == []
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        # The YAML error class is the parser's own; only the reason's family is pinned.
+        ("reviewers: [unclosed\n", "review_dossier_unreadable:"),
+        ("- a list, not a mapping\n", "review_dossier_unreadable:not_a_mapping"),
+    ],
+)
+def test_an_unreadable_dossier_releases_nothing(layout, text, reason) -> None:
+    root, vault = layout
+    _row(vault, "notebook-entry", authority_case=CASE)
+    (vault / "active" / "notebook-entry.review-dossier.yaml").write_text(text, encoding="utf-8")
+
+    results, mint, drop, _ = _release(root, vault)
+
+    assert results["notebook-entry"]["status"] == "skipped"
+    assert results["notebook-entry"]["reason"].startswith(reason)
+    assert mint.calls == [] and drop.calls == []
+
+
+def test_a_pipeline_state_that_cannot_be_read_releases_nothing(layout) -> None:
+    root, vault = layout
+    _row(vault, "notebook-entry", authority_case=CASE)
+    _dossier(vault, "notebook-entry")
+
+    results, mint, drop, _ = _release(root, vault, state_raises=ValueError("unbuildable"))
+
+    assert results["notebook-entry"]["reason"] == "pipeline_state_unavailable:ValueError"
+    assert mint.calls == [] and drop.calls == []
+
+
+def test_a_held_release_is_logged_loudly(layout, caplog: pytest.LogCaptureFixture) -> None:
+    root, vault = layout
+    _row(vault, "notebook-entry", authority_case=CASE)
+    _dossier(vault, "notebook-entry")
+
+    with caplog.at_level("WARNING"):
+        _release(root, vault, mint_raises=RuntimeError("mint_public_gate_acceptance_unsigned"))
+
+    assert any(
+        record.levelname == "WARNING"
+        and "notebook-entry" in record.getMessage()
+        and "mint_public_gate_acceptance_unsigned" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "inbox",
+        "draft",
+        "published",
+        "failed",
+        "publication_record",
+        "publication_record_unreadable",
+    ],
+)
 def test_an_artifact_already_in_the_publish_pipeline_is_not_released_again(layout, state) -> None:
     root, vault = layout
     _row(vault, "notebook-entry", authority_case=CASE)
@@ -381,6 +542,8 @@ def test_a_drop_refusal_is_held_and_named(layout) -> None:
 
     assert results["notebook-entry"]["status"] == "held"
     assert results["notebook-entry"]["reason"] == "drop_refused:publication_gate_receipt_unbound"
+    # The partial state is legible: the receipts were minted, the drop was refused.
+    assert results["notebook-entry"]["minted"] == {"claim_review_current": "written"}
     assert len(mint.calls) == 1 and len(drop.calls) == 1
 
 
@@ -415,6 +578,12 @@ def test_the_defaults_are_the_publishers_own_check_mint_and_drop(
     root, vault = layout
     _row(vault, "notebook-entry", authority_case=CASE)
     _dossier(vault, "notebook-entry")
+    # The default head check builds the review's manifest of the real bytes; bind the dossier to it.
+    manifest, _contents = dispatch.build_artifact_manifest([ARTIFACT], root)
+    dossier_path = vault / "active" / "notebook-entry.review-dossier.yaml"
+    data = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+    data["head_sha"] = dispatch.artifact_head_sha(manifest)
+    dossier_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     state_root = tmp_path / "state"
     seen: dict[str, Any] = {}
 
@@ -463,7 +632,11 @@ def test_the_command_line_releases_accepted_artifacts(monkeypatch: pytest.Monkey
 
 def test_the_unit_releases_after_the_review_scan() -> None:
     service = (UNITS_DIR / "hapax-artifact-review-dispatch.service").read_text(encoding="utf-8")
-    starts = [line for line in service.splitlines() if line.startswith("ExecStart=")]
+    lines = [line for line in service.splitlines() if line and not line.startswith("#")]
+    starts = [line for line in lines if line.startswith("ExecStart=")]
+    # systemd runs several ExecStart= lines in order only for Type=oneshot; any other type with
+    # two of them fails to load, which would also stop the U4a review scan.
+    assert "Type=oneshot" in lines
     assert len(starts) == 2
     assert starts[0].endswith("--frozen-artifacts --apply")
     assert starts[1].endswith("--release-accepted --apply")

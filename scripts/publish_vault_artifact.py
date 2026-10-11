@@ -600,10 +600,15 @@ PIPELINE_STATES = ("inbox", "draft", "published", "failed")
 
 
 def pipeline_state(path: Path, surfaces: list[str], *, state_root: Path) -> str | None:
-    """Where the draft's slug already is in the publish pipeline, or None if nowhere.
+    """Where the draft already is in the publish pipeline, or None if nowhere.
 
-    The slug comes from the publisher's own construction, taken without asserting receipts.
-    Raises PublicationGateError or PublicationFrontmatterError when the draft cannot be built.
+    First by slug: an inbox, draft, published or failed file. Then by content: a per-surface
+    publication record that holds this draft's fingerprint ("publication_record"), so the same
+    bytes are never released twice even after the pipeline files are moved or cleaned. A record
+    of other bytes does not count, so a corrected version can republish. A record that cannot be
+    read is "publication_record_unreadable", which holds. The slug and fingerprint come from the
+    publisher's own construction, taken without asserting receipts. Raises PublicationGateError
+    or PublicationFrontmatterError when the draft cannot be built.
     """
     frontmatter, body = _parse_publication_markdown(path)
     artifact = _artifact_from_frontmatter(
@@ -619,7 +624,23 @@ def pipeline_state(path: Path, surfaces: list[str], *, state_root: Path) -> str 
         "published": artifact.published_path(state_root=state_root),
         "failed": artifact.failed_path(state_root=state_root),
     }
-    return next((state for state in PIPELINE_STATES if paths[state].exists()), None)
+    state = next((state for state in PIPELINE_STATES if paths[state].exists()), None)
+    if state is not None:
+        return state
+    fingerprint = _artifact_fingerprint_for_gate(artifact)
+    for surface in surfaces:
+        log_path = artifact.log_path(surface, state_root=state_root)
+        try:
+            record = json.loads(log_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return "publication_record_unreadable"
+        if not isinstance(record, dict):
+            return "publication_record_unreadable"
+        if record.get("artifact_fingerprint") == fingerprint:
+            return "publication_record"
+    return None
 
 
 def drop_to_inbox(path: Path, *, surfaces: list[str], approver: str, state_root: Path) -> Path:
@@ -632,7 +653,10 @@ def drop_to_inbox(path: Path, *, surfaces: list[str], approver: str, state_root:
     """
     frontmatter, body = _parse_publication_markdown(path)
     if not body.strip():
-        raise PublicationGateError(f"empty body in {path}")
+        raise PublicationGateError(
+            f"empty body in {path}; next action: restore the draft's body and freeze it again, "
+            "so its review covers the bytes that would publish"
+        )
     _assert_target_surfaces_allowed(surfaces)
     artifact = _build_artifact(
         body_md=body,
