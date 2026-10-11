@@ -10,6 +10,7 @@ MUST_INCLUDE_RESERVE, the refresh-POST cap or bypass storm mode.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -457,3 +458,146 @@ def test_a_seat_release_stamp_at_the_current_head_is_examined_next_tick(tmp_path
     report = tick(tmp_path, runner, vault)
     assert 13 not in examined(report)  # one-shot
     assert report["must_include"]["fresh_evidence"] == []
+
+
+# ── a route flap, or a row turning ready, after the exam ───────────────────
+# Row cc-pr-autoqueue-fresh-evidence-counts-a-row-turning-ready-20261011. A PR
+# blocked only by a review-route flap passes only when the live route state at
+# its exam matches the state at constitution; a row that turns pr_open is
+# neither a receipt nor a dossier. Both waited for the rotation (~4 h).
+
+SEATED_GLM = "review_dossier_blocked_route_family_seated:glm"
+UNWITNESSED_CLAUDE = "review_dossier_route_block_degradation_unwitnessed:claude"
+_EXAM = datetime(2026, 10, 11, 7, 46, 4, tzinfo=UTC)
+
+
+def _entry(
+    *,
+    blockers: tuple[str, ...] = (SEATED_GLM,),
+    route_blocked: list[str] | None = None,
+    task_status: str | None = "pr_open",
+) -> dict:
+    return {
+        "head_sha": "sha-13",
+        "blockers": list(blockers),
+        "route_blocked": ["glm"] if route_blocked is None else route_blocked,
+        "task_status": task_status,
+        "examined_at": _EXAM.isoformat(),
+    }
+
+
+def _due(
+    entry: dict,
+    *,
+    head: str = "sha-13",
+    status: str | None = "pr_open",
+    live: frozenset[str] | None = frozenset(),
+    since: datetime = _EXAM,
+) -> str | None:
+    return autoqueue._exam_ledger_reexam_due(
+        entry, head_sha=head, task_status=status, live_route_blocked=live, since=since
+    )
+
+
+def test_flap_blocker_families_reads_only_flap_only_blocker_sets() -> None:
+    families = autoqueue._flap_blocker_families
+    assert families([SEATED_GLM, UNWITNESSED_CLAUDE]) == {
+        "seated": frozenset({"glm"}),
+        "unwitnessed": frozenset({"claude"}),
+    }
+    both = families(["review_dossier_blocked_route_family_seated:glm,gemini"])
+    assert both is not None and both["seated"] == frozenset({"glm", "gemini"})
+    assert families([SEATED_GLM, "failed_checks:lint"]) is None  # any other blocker
+    assert families([]) is None
+    assert families(["review_dossier_blocked_route_family_seated:"]) is None  # no family
+
+
+def test_a_seated_flap_is_due_once_its_family_is_admitted_again() -> None:
+    # #5048 at 07:46:04Z: GLM's 900 s receipt went stale one second after constitution.
+    entry = _entry(blockers=(SEATED_GLM,), route_blocked=["glm"])
+    assert _due(entry, live=frozenset()) == "route_flap_satisfied"
+    assert _due(entry, live=frozenset({"glm"})) is None  # unchanged: the same verdict
+    assert _due(entry, live=frozenset({"glm", "codex"})) is None  # changed, glm still blocked
+
+
+def test_an_unwitnessed_degradation_is_due_once_its_family_is_blocked_again() -> None:
+    # #5104 and #5111 at 08:49:59Z: claude blocked at constitution, live at the exam.
+    entry = _entry(blockers=(UNWITNESSED_CLAUDE,), route_blocked=[])
+    assert _due(entry, live=frozenset({"claude"})) == "route_flap_satisfied"
+    assert _due(entry, live=frozenset()) is None
+    assert _due(entry, live=frozenset({"glm"})) is None
+
+
+def test_no_flap_reexam_for_a_moved_head_another_blocker_or_an_unknown_state() -> None:
+    assert _due(_entry(), head="sha-new") is None
+    assert _due(_entry(blockers=(SEATED_GLM, "hold_labels:hold"))) is None
+    assert _due(_entry(), live=None) is None
+    assert _due({**_entry(), "route_blocked": None}) is None
+
+
+def test_a_row_turning_ready_after_its_exam_is_due_and_only_then() -> None:
+    not_ready = _entry(
+        blockers=("active_task_status_not_ready:in_progress",), task_status="in_progress"
+    )
+    assert _due(not_ready, status="pr_open", live=frozenset({"glm"})) == "row_turned_ready"
+    assert _due(not_ready, status="in_progress", live=frozenset({"glm"})) is None
+    ready = _entry(blockers=(), task_status="pr_open")
+    assert _due(ready, status="pr_open", live=frozenset({"glm"})) is None
+    assert _due(ready, status="in_progress", live=frozenset({"glm"})) is None
+
+
+def test_the_reexam_is_one_shot_after_a_later_failed_attempt() -> None:
+    # A failed hydration after the recorded exam advances the attempt stamp.
+    assert _due(_entry(), since=_EXAM + timedelta(minutes=6)) is None
+
+
+def test_a_flap_blocked_pr_is_examined_on_the_first_tick_its_route_state_flips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = {"blocked": frozenset({"glm"})}
+    monkeypatch.setattr(autoqueue, "_live_review_route_blocked_families", lambda: live["blocked"])
+    real_classify = autoqueue.classify_pr
+
+    def classify(pr, **kwargs):  # type: ignore[no-untyped-def]
+        decision = real_classify(pr, **kwargs)
+        if pr.number != 13:
+            return decision
+        return dataclasses.replace(decision, action="blocked", reasons=(SEATED_GLM,))
+
+    monkeypatch.setattr(autoqueue, "classify_pr", classify)
+    runner, vault = _estate(tmp_path, count=25, linked=[13])
+    for _ in range(3):
+        tick(tmp_path, runner, vault)
+    _age_rotation_state(tmp_path, 120)
+    report = tick(tmp_path, runner, vault)  # glm is still blocked: the rotation goes on
+    assert examined(report) == [16, 17, 18, 19, 20]
+    assert report["must_include"]["fresh_evidence"] == []
+    live["blocked"] = frozenset()  # GLM's receipt is fresh again
+    report = tick(tmp_path, runner, vault)
+    assert 13 in examined(report)
+    assert report["must_include"]["fresh_evidence"] == [13]
+    report = tick(tmp_path, runner, vault)  # one-shot: that exam recorded the new state
+    assert 13 not in examined(report)
+    assert report["must_include"]["fresh_evidence"] == []
+
+
+def test_a_row_turning_pr_open_after_its_exam_is_examined_next_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #5047: examined at 06:04:46Z while its row read in_progress; the row turned
+    # pr_open at 07:15Z, and the rotation put its next exam hours away.
+    monkeypatch.setattr(autoqueue, "_live_review_route_blocked_families", lambda: frozenset())
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-13", pr=13, status="in_progress")
+    runner = RotationRunner(25)
+    for _ in range(3):
+        tick(tmp_path, runner, vault)
+    _age_rotation_state(tmp_path, 120)
+    report = tick(tmp_path, runner, vault)  # still in_progress: no seat
+    assert 13 not in examined(report)
+    _write_task(vault, task_id="task-13", pr=13, status="pr_open")
+    report = tick(tmp_path, runner, vault)
+    assert 13 in examined(report)
+    assert report["must_include"]["fresh_evidence"] == [13]
+    report = tick(tmp_path, runner, vault)  # one-shot
+    assert 13 not in examined(report)
