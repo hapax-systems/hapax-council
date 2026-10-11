@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -69,6 +70,14 @@ FORGE_TOKEN_ENV = "FORGE_TOKEN"
 FORGE_TOKEN_CMD_ENV = "FORGE_TOKEN_CMD"
 FORGE_DEFAULT_TOKEN_CMD = "hapax-secret forgejo-shadow/s2-review-chain"
 FORGE_TOKEN_CMD_TIMEOUT_SECONDS = 15
+# Token-command syntax that only a shell could interpret, checked on the
+# post-split argv so an operator cannot accidentally embed an operator inside a
+# quoted token (``token>x`` splits to one token and still matches ``>``).
+_FORGE_TOKEN_CMD_SHELL_MARKERS = ("|", "<", ">", ";", "&", "`", "$(", "${", "\n")
+_FORGE_TOKEN_CMD_NEXT_ACTION = (
+    "FORGE_TOKEN_CMD needs shell syntax (pipe/redirect/substitution) and no shell is used "
+    "here; next action: point the setting at an executable script."
+)
 FORGE_PAGE_SIZE = 50
 # The forge API has no server-side head filter, so a --head query enumerates the
 # open list and filters client-side; a page-limited fetch could miss the PR the
@@ -1673,11 +1682,33 @@ class ForgeListingFailed(PrListingUnavailable):
     """The local-forge listing could not be completed — "we did not look"."""
 
 
+def _forge_token_argv(command: str) -> list[str] | None:
+    """Split the configured token command into argv, refusing shell syntax.
+
+    Returns None — after a stderr line carrying the next action — when the
+    command needs a shell: it cannot work as literal argv, and running it
+    through one would reopen the injection class that dropping ``shell=True``
+    closes. The split itself is ``shlex``: quotes shape argv, nothing more.
+    """
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        print(_FORGE_TOKEN_CMD_NEXT_ACTION, file=sys.stderr)
+        return None
+    if any(marker in token for token in argv for marker in _FORGE_TOKEN_CMD_SHELL_MARKERS):
+        print(_FORGE_TOKEN_CMD_NEXT_ACTION, file=sys.stderr)
+        return None
+    return argv or None
+
+
 def _forge_token(env: dict[str, str] | None = None) -> str | None:
     """FORGE_TOKEN wins; otherwise the token command, mirroring the shim.
 
-    Returns None on any failure so the caller fails open rather than spending a
-    request that is guaranteed to be unauthenticated.
+    The command runs without a shell (``shlex.split`` argv, ``shell=False``),
+    so a configured command can only ever be an executable plus literal
+    arguments; one that needs shell syntax is refused with a next action
+    instead of being run. Returns None on any failure so the caller fails open
+    rather than spending a request that is guaranteed to be unauthenticated.
     """
     source = dict(os.environ) if env is None else dict(env)
     token = str(source.get(FORGE_TOKEN_ENV, "")).strip()
@@ -1686,10 +1717,13 @@ def _forge_token(env: dict[str, str] | None = None) -> str | None:
     command = str(source.get(FORGE_TOKEN_CMD_ENV, FORGE_DEFAULT_TOKEN_CMD)).strip()
     if not command:
         return None
+    argv = _forge_token_argv(command)
+    if argv is None:
+        return None
     try:
         proc = subprocess.run(
-            command,
-            shell=True,
+            argv,
+            shell=False,
             capture_output=True,
             text=True,
             check=False,

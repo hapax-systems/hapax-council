@@ -2793,6 +2793,57 @@ def test_forge_token_env_beats_token_cmd_and_failures_fail_open(
     assert github_pr_status._forge_token() is None
 
 
+def test_forge_token_cmd_runs_shell_free_with_literal_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B602 repair, pass-through half: the configured command runs as literal
+    argv without a shell, so shell metacharacters can only ever arrive as
+    arguments — a glob or a tilde is never expanded, quotes only group words.
+    """
+    seen: list[Any] = []
+
+    def fake_run(cmd: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+        seen.append((cmd, kwargs.get("shell")))
+        return subprocess.CompletedProcess(cmd, 0, "from-cmd\n", "")
+
+    monkeypatch.setattr(github_pr_status.subprocess, "run", fake_run)
+    monkeypatch.delenv(github_pr_status.FORGE_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(github_pr_status.FORGE_TOKEN_CMD_ENV, "printer 'from *.cfg' ~token")
+
+    assert github_pr_status._forge_token() == "from-cmd"
+    assert seen == [(["printer", "from *.cfg", "~token"], False)]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "hapax-secret show forge | tr -d x",
+        "hapax-secret show forge > /tmp/leak",
+        "hapax-secret show forge 2>> /tmp/leak",
+        "echo $(hapax-secret show forge)",
+        "echo `hapax-secret show forge`",
+        "hapax-secret show forge; tr -d x",
+        "printer 'unclosed",
+    ],
+)
+def test_forge_token_cmd_shell_syntax_is_refused_with_next_action(
+    command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """B602 repair, refusal half: a command that needs a shell is never run —
+    it could not work as literal argv, and running it through a shell would
+    reopen the injection class the repair closes."""
+    monkeypatch.setattr(
+        github_pr_status.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("a refused token command must not run"),
+    )
+    monkeypatch.delenv(github_pr_status.FORGE_TOKEN_ENV, raising=False)
+    monkeypatch.setenv(github_pr_status.FORGE_TOKEN_CMD_ENV, command)
+
+    assert github_pr_status._forge_token() is None
+    assert "point the setting at an executable script" in capsys.readouterr().err
+
+
 def test_open_prs_cli_serves_forge_rows_when_forge_url_is_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
