@@ -202,6 +202,33 @@ class TestEscapeGrant:
         assert "INV-3/4" in result.reason
 
 
+class TestEscapeGrantSelfCheckSession:
+    _SESSION_ENV_VARS = (
+        "HAPAX_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_SESSION",
+        "CODEX_THREAD_ID",
+        "CODEX_THREAD_NAME",
+    )
+
+    def test_selfcheck_roundtrip_mints_session_bound(self, tmp_path: Path, monkeypatch) -> None:
+        # escape-grants-bind-to-the-minting-session-20261011: the self-check mint
+        # must bind a session even when the lane session env chain is scrubbed —
+        # the minter refuses unbound mints, so the roundtrip would fail closed.
+        for var in self._SESSION_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        from shared.governance.coord_capabilities import load_or_create_key
+
+        coord = tmp_path / "coord"
+        (coord / "grants").mkdir(parents=True)
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(coord))
+        load_or_create_key(coord / "grant-key")
+        monkeypatch.setattr(mod, "LIVE_GATE", tmp_path / "no-live-gate")
+        obs = mod.gather_escape_grant()
+        assert obs.get("mint_rc", 0) == 0
+        assert obs["roundtrip_ok"] is True
+
+
 class TestCoordVerbs:
     def test_refine_plus_nonfallback_passes(self) -> None:
         assert mod.decide_coord_verbs(_all_good()["coord-verbs"]).ok

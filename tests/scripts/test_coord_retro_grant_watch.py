@@ -86,6 +86,8 @@ class TestRetroGrantWatch:
         obligations, grant_dir, key = self._setup(tmp_path)
         _write_obligation(obligations, gate="cc-task-gate", ts_s=1000, deadline_s=4600)
         # A retro-grant minted AFTER the obligation, covering the gate, still valid.
+        # Session-bound per escape-grants-bind-to-the-minting-session-20261011: the
+        # watch verifies each grant against its own minting session.
         grant = mint_escape_grant(
             grantor="operator",
             scope="cc-task-gate",
@@ -93,6 +95,7 @@ class TestRetroGrantWatch:
             ttl_s=100_000,
             key=KEY,
             now=2000.0,
+            session="retro-lane",
         )
         write_grant_file(grant, grant_dir / f"{grant.grant_id}.grant")
         r = _run(obligations, grant_dir, key, now=10_000)

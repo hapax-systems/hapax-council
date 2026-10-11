@@ -288,6 +288,73 @@ class TestEscapeGrantSignedBindingFields:
         assert loaded.paths == ("/srv/a",)
 
 
+# --- verify session/path plumbing (slice 2: consumers pass the session; the
+# verifier ACCEPTS and forwards it, enforcement itself is slice 3) -------------
+
+
+class TestVerifySessionPlumbing:
+    def test_verify_accepts_session_and_path_kwargs(self):
+        grant = mint_escape_grant(
+            grantor="operator",
+            scope="cc-task-gate",
+            reason="x",
+            ttl_s=3600,
+            key=KEY,
+            now=1000.0,
+            session="lane-a",
+            paths=("/srv/a",),
+        )
+        # The minting session and a narrowed path verify.
+        assert verify_escape_grant(
+            grant, key=KEY, now=1500.0, gate="cc-task-gate", session="lane-a", path="/srv/a"
+        )
+        # No session argument at all is accepted (pre-enforcement callers keep working).
+        assert verify_escape_grant(grant, key=KEY, now=1500.0, gate="cc-task-gate")
+
+    def test_cli_verify_grant_accepts_session_and_path_flags(self, tmp_path, capsys):
+        key_file = tmp_path / "key"
+        key_file.write_bytes(KEY)
+        out = tmp_path / "grant.json"
+        main(
+            [
+                "mint-grant",
+                "--scope",
+                "cc-task-gate",
+                "--reason",
+                "x",
+                "--ttl",
+                "3600",
+                "--session",
+                "lane-a",
+                "--path",
+                "/srv/a",
+                "--key-file",
+                str(key_file),
+                "--out",
+                str(out),
+            ]
+        )
+        capsys.readouterr()
+        rc = main(
+            [
+                "verify-grant",
+                "--file",
+                str(out),
+                "--gate",
+                "cc-task-gate",
+                "--session",
+                "lane-a",
+                "--path",
+                "/srv/a",
+                "--key-file",
+                str(key_file),
+            ]
+        )
+        captured = capsys.readouterr()
+        assert rc == 0, captured.stderr
+        assert json.loads(captured.out)["valid"] is True
+
+
 # --- CLI (the operator's daemon-independent grant tool) -----------------------
 
 

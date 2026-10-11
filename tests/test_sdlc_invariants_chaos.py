@@ -24,6 +24,7 @@ from shared.governance.coord_capabilities import (
 )
 from shared.sdlc_invariants import (
     AUTO_MINT_INVARIANTS,
+    ESCAPE_AUTO_MINT_SESSION,
     ESCAPE_GRANTOR,
     InvariantResult,
     Ladder,
@@ -57,9 +58,17 @@ class TestDecideWithEscape:
 
     def test_valid_grant_unblocks_irreversible_op(self):
         grant = mint_escape_grant(
-            grantor="operator", scope="*", reason="r", ttl_s=3600, key=_KEY, now=_NOW
+            grantor="operator",
+            scope="*",
+            reason="r",
+            ttl_s=3600,
+            key=_KEY,
+            now=_NOW,
+            session="chaos-lane",
         )
-        d = decide_with_escape("Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW)
+        d = decide_with_escape(
+            "Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW, session="chaos-lane"
+        )
         assert d.allowed
         assert d.gate == "escape:granted"
 
@@ -128,6 +137,37 @@ class TestMintEscapeForViolation:
             grant_file = tmp_path / f"{grant.grant_id}.grant"
             assert grant_file.exists()
             assert read_grant_file(grant_file) == grant
+
+    def test_auto_mint_binds_to_the_session_env_chain(self, tmp_path, monkeypatch):
+        # escape-grants-bind-to-the-minting-session-20261011, slice 2: the INV-3/4/5
+        # auto-mint call sites have a session source, so the auto-minted grant is
+        # session-BOUND, never unbound — without it, slice 3's enforcement would
+        # make every auto-minted grant unverifiable (fail closed).
+        monkeypatch.setenv("HAPAX_SESSION_ID", "chaos-lane")
+        grant = mint_escape_for_violation(
+            _violation("INV-4"), key=_KEY, grant_dir=tmp_path, now=_NOW
+        )
+        assert grant is not None
+        assert grant.session == "chaos-lane"
+
+    def test_auto_mint_without_env_binds_to_the_evaluator_identity(self, tmp_path, monkeypatch):
+        # The production evaluator (hapax-sdlc-invariants.service) runs with no
+        # session env at all; it must still mint a BOUND grant — the deterministic
+        # service identity — so the never-freeze response never produces a grant
+        # that enforcement would refuse for everyone.
+        for var in (
+            "HAPAX_SESSION_ID",
+            "CLAUDE_CODE_SESSION_ID",
+            "CODEX_SESSION",
+            "CODEX_THREAD_ID",
+            "CODEX_THREAD_NAME",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        grant = mint_escape_for_violation(
+            _violation("INV-4"), key=_KEY, grant_dir=tmp_path, now=_NOW
+        )
+        assert grant is not None
+        assert grant.session == ESCAPE_AUTO_MINT_SESSION
 
     def test_minted_grant_actually_unblocks_a_lane(self, tmp_path):
         grant = mint_escape_for_violation(
@@ -318,6 +358,7 @@ class TestDaemonKillChaos:
                 ttl_s=3600,
                 key=_KEY,
                 now=_NOW,
+                session="chaos-lane",
             )
             grant_file = tmp_path / "escape.grant"
             write_grant_file(grant, grant_file)
@@ -326,7 +367,9 @@ class TestDaemonKillChaos:
             #    and is unblocked. Escape never depended on the process it governs (INV-4).
             assert not _kernel_up(token)
             loaded = read_grant_file(grant_file)
-            allowed = decide_with_escape(**merge, grant=loaded, key=_KEY, now=_NOW)
+            allowed = decide_with_escape(
+                **merge, grant=loaded, key=_KEY, now=_NOW, session="chaos-lane"
+            )
             assert allowed.allowed, (
                 "a valid signed grant must unblock the lane with the daemon dead"
             )
