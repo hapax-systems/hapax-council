@@ -112,8 +112,9 @@ class TestCoordGrantMint:
         def verify(**kw: object) -> bool:
             return verify_escape_grant(grant, key=key, now=time.time(), **kw)
 
-        assert verify(gate="cc-task-gate")
-        assert not verify(gate="pr-release-gate")
+        assert verify(gate="cc-task-gate", session="test-lane")
+        assert not verify(gate="pr-release-gate", session="test-lane")
+        assert not verify(gate="cc-task-gate", session="other-lane")
 
     def test_reuses_existing_key(self, tmp_path: Path) -> None:
         key = tmp_path / "grant-key"

@@ -72,6 +72,21 @@ class TestDecideWithEscape:
         assert d.allowed
         assert d.gate == "escape:granted"
 
+    def test_grant_from_another_session_does_not_unblock(self):
+        grant = mint_escape_grant(
+            grantor="operator",
+            scope="*",
+            reason="r",
+            ttl_s=3600,
+            key=_KEY,
+            now=_NOW,
+            session="chaos-lane",
+        )
+        d = decide_with_escape(
+            "Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW, session="other-lane"
+        )
+        assert d.blocked
+
     def test_expired_grant_does_not_unblock(self):
         grant = mint_escape_grant(
             grantor="operator", scope="*", reason="r", ttl_s=10, key=_KEY, now=_NOW
@@ -169,11 +184,31 @@ class TestMintEscapeForViolation:
         assert grant is not None
         assert grant.session == ESCAPE_AUTO_MINT_SESSION
 
-    def test_minted_grant_actually_unblocks_a_lane(self, tmp_path):
+    def test_minted_grant_actually_unblocks_a_lane(self, tmp_path, monkeypatch):
+        # Scrub the ambient session env so the auto-mint falls to its last
+        # resolver (the deterministic evaluator identity), then prove the
+        # auto-minted grant actually releases that identity under enforcement.
+        for var in (
+            "HAPAX_SESSION_ID",
+            "CLAUDE_CODE_SESSION_ID",
+            "CODEX_SESSION",
+            "CODEX_THREAD_ID",
+            "CODEX_THREAD_NAME",
+        ):
+            monkeypatch.delenv(var, raising=False)
         grant = mint_escape_for_violation(
             _violation("INV-4"), key=_KEY, grant_dir=tmp_path, now=_NOW
         )
-        d = decide_with_escape("Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW)
+        assert grant is not None
+        assert grant.session == ESCAPE_AUTO_MINT_SESSION
+        d = decide_with_escape(
+            "Bash",
+            command="gh pr merge 1",
+            grant=grant,
+            key=_KEY,
+            now=_NOW,
+            session=ESCAPE_AUTO_MINT_SESSION,
+        )
         assert d.allowed
 
 

@@ -2,11 +2,13 @@
 # escape-grant.sh — daemon-independent escape-grant check (reform Phase 4, NEW-2/INV-4).
 #
 # Sourced by irreversible-harm shims. On a would-be BLOCK a shim calls
-#   escape_grant_allows <gate>
-# which scans the grant dir for a signed EscapeGrant covering <gate>, verifies it
-# via shared.governance.coord_capabilities (a PURE file read + HMAC check — no
-# daemon, no RPC), and on the first valid grant ledgers the use and returns 0
-# (allow). It returns non-zero otherwise so the shim fails closed normally.
+#   escape_grant_allows <gate> [path]
+# which scans the grant dir for a signed EscapeGrant covering <gate> that is
+# bound to THIS session (escape-grants-bind-to-the-minting-session-20261011),
+# verifies it via shared.governance.coord_capabilities (a PURE file read + HMAC
+# check — no daemon, no RPC), and on the first valid grant ledgers the use and
+# returns 0 (allow). It returns non-zero otherwise so the shim fails closed
+# normally.
 #
 # This is the audit's central safety correction (master design §4.4, NEW-2): the
 # escape is a signed FILE the shim reads directly, never an RPC to a wedgeable
@@ -102,29 +104,37 @@ _escape_grant_ledger() {
     >>"$HAPAX_METHODOLOGY_LEDGER" 2>/dev/null || true
 }
 
-# escape_grant_allows <gate> — returns 0 (allow) iff a valid signed grant covers
-# <gate>. A PURE file read: no network, no daemon, no RPC. Degrades CLOSED
-# (returns 1) when the grant dir, key, or python3 are unavailable — so a missing
-# substrate can never accidentally open the gate.
+# escape_grant_allows <gate> [path] — returns 0 (allow) iff a valid signed grant
+# covering <gate> is bound to THIS session (escape-grants-bind-to-the-minting-
+# session-20261011: a grant releases only the session that minted it; an unbound
+# legacy grant is refused). A PURE file read: no network, no daemon, no RPC.
+# Degrades CLOSED (returns 1) when the grant dir, key, python3, or a resolvable
+# session are unavailable — so a missing substrate can never accidentally open
+# the gate. The optional <path> honors path-narrowed grants (a grant with no
+# paths covers any path).
 #
 # Call it from inside an `if` (e.g. `if escape_grant_allows X; then`): bash then
 # ignores `set -e` for the whole function body, so a transient internal failure
 # fails closed rather than aborting the shim mid-decision.
 escape_grant_allows() {
-  local gate="${1:-*}"
+  local gate="${1:-*}" path="${2:-}"
   [[ -d "$HAPAX_COORD_GRANT_DIR" ]] || return 1
   [[ -f "$HAPAX_COORD_GRANT_KEY" ]] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
-  local root out f _ng found=1 session
+  local root out f _ng found=1 session vargs
   session="$(_escape_grant_session)"
+  [[ -n "$session" ]] || return 1
   root="$(_escape_grant_repo_root)"
   [[ -n "$root" ]] || return 1
   _ng="$(shopt -p nullglob 2>/dev/null || printf 'shopt -u nullglob')"
   shopt -s nullglob
   for f in "$HAPAX_COORD_GRANT_DIR"/*.grant; do
-    # verify-grant exits 0 iff the signature is valid, unexpired, AND covers gate.
-    if out="$(cd "$root" && python3 -m shared.governance.coord_capabilities \
-      verify-grant --file "$f" --gate "$gate" --key-file "$HAPAX_COORD_GRANT_KEY" 2>/dev/null)"; then
+    # verify-grant exits 0 iff the signature is valid, unexpired, covers the
+    # gate, AND the grant is bound to this session (and path).
+    vargs=(verify-grant --file "$f" --gate "$gate" --session "$session")
+    [[ -n "$path" ]] && vargs+=(--path "$path")
+    if out="$(cd "$root" && python3 -m shared.governance.coord_capabilities "${vargs[@]}" \
+      --key-file "$HAPAX_COORD_GRANT_KEY" 2>/dev/null)"; then
       _escape_grant_ledger "$gate" "$f" "$session" "$out"
       found=0
       break
