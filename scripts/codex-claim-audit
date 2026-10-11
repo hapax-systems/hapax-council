@@ -13,11 +13,7 @@
 #
 # Intended to run as a systemd timer (codex-claim-audit.timer) or ad-hoc.
 #
-# Version: 3
-# Changes in v3 (NO-STALL U1n, the operator's act REQ-20261011T0451): with
-#   --release-capability-blocked, a claim whose holder's route is blocked beyond tolerance
-#   is released when nothing can be lost or doubled, and its open PR is carried to the next
-#   holder (_capability_blocker_for, _release_blocked_holder_markers).
+# Version: 2 (2026-10-11: --release-capability-blocked, NO-STALL U1n; see _capability_blocker_for)
 # Postmortem: 2026-06-12 failure classes #4 (CLAIM-PLANE-HOST-FORK) and
 #   #5 (STATE-ERASING-AUDIT-ON-LIVE-LANES).
 # Changes in v2:
@@ -42,7 +38,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION=3
+SCRIPT_VERSION=2
 # Exit code for "audit completed; unresolved findings remain". DISTINCT from a
 # set -euo pipefail crash (which exits with the failing command's status, often
 # 1/2/127): the unit drop-in treats ONLY this code as success-with-warning, so a
@@ -595,21 +591,16 @@ _quota_evidence_for() {
   _receipt_quota_evidence_for "$role" || _dispatch_quota_evidence_for "$role" "$task_id"
 }
 
-# A capability blocker on the holder's route, beyond tolerance (NO-STALL U1n). The holder's
-# family comes from evidence of its executor, never from its lane name: a dispatched
-# claim-dispatch binding for this task, or the lane's relay record. A manual binding does not
-# count: cc-claim writes `platform: codex` into every manual binding (the Gate-0B carrier
-# route), whatever executes the claim. The blocker comes from the family-outage record, whose
-# witness must be fresher than the review team's TTL, and must end later than now + tolerance.
-# Missing, stale, conflicting or unparseable evidence prints nothing: today's hold stands.
-# With evidence it prints "RELEASE <evidence>" only when nothing could be lost or doubled:
-# the end is known, the branch is this repository's, no live process carries the holder's
-# session ids or lane string or sits in the branch's worktree, and every local commit of the
-# branch is pushed with its worktree clean. Otherwise "HOLD <reason> <evidence>".
+# NO-STALL U1n. Family evidence: a dispatched binding for the task or the lane's relay record,
+# never the lane name or a manual binding (cc-claim writes platform: codex into every one). The
+# blocker: the family-outage record, its witness inside the review team's TTL, ending beyond
+# tolerance. No evidence prints nothing (today's hold). Otherwise "RELEASE <evidence>" only if
+# nothing can be lost or doubled (hold_reason below), else "HOLD <reason> <evidence>".
 _capability_blocker_for() {
   local role="$1" task_id="$2" branch="$3" pr_repo="$4"
   command -v python3 >/dev/null 2>&1 || return 1
   [ -f "$FAMILY_OUTAGE_RECORD" ] || return 1
+  # GH_REPO_SLUG is set beside GH_CMD after the options are read (HAPAX_GH_REPO, GH_REPO or default).
   python3 - "$role" "$task_id" "$CLAIM_CACHE_DIR" "$FAMILY_OUTAGE_RECORD" \
     "$BLOCKER_TOLERANCE_HOURS" "$BLOCKER_WITNESS_TTL_SECONDS" "$RELAY_STATE_DIR" \
     "$branch" "$pr_repo" "$GH_REPO_SLUG" "$CLAIM_AUDIT_REPO" <<'PYEOF'
@@ -772,16 +763,17 @@ def hold_reason() -> str | None:
             return "worktree_status_unreadable"
         if status.stdout.strip():
             return "uncommitted_paths"
+    # The branch must be on the remote, and any local tip at or behind its head (tracking refs go stale).
+    remote = git("-C", repo_root, "ls-remote", "--heads", "origin", f"refs/heads/{branch}")
+    if remote.returncode != 0:
+        return "remote_unreadable"
+    heads = [line.split("\t", 1)[0] for line in remote.stdout.splitlines() if line.strip()]
+    if not heads:
+        return "branch_absent_from_remote"
     local = git("-C", repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
-    if local.returncode == 0:  # local commits must be on the remote branch (tracking refs go stale)
-        remote = git("-C", repo_root, "ls-remote", "--heads", "origin", f"refs/heads/{branch}")
-        if remote.returncode != 0:
-            return "remote_unreadable"
-        heads = [line.split("\t", 1)[0] for line in remote.stdout.splitlines() if line.strip()]
-        if not heads:
-            return "branch_absent_from_remote"
-        tip = local.stdout.strip()
-        if tip != heads[0] and git("-C", repo_root, "merge-base", "--is-ancestor", tip, heads[0]).returncode:
+    tip = local.stdout.strip()
+    if local.returncode == 0 and tip != heads[0]:
+        if git("-C", repo_root, "merge-base", "--is-ancestor", tip, heads[0]).returncode:
             return "unpushed_commits"
     return None
 
@@ -1122,7 +1114,15 @@ for note in "$VAULT_ROOT/active/"*.md; do
       blocker_evidence="${blocker_verdict#* }"
       capability_report="${capability_report}  CAPABILITY_BLOCKED: ${task_id} assigned=${assigned} status=${status} ${blocker_evidence} pr=${pr} branch=${branch}\n"
       if [ "${blocker_verdict%% *}" != "RELEASE" ]; then
-        capability_report="${capability_report}    -> HELD: ${blocker_evidence%% *}\n"
+        hold_reason="${blocker_evidence%% *}"
+        case "$hold_reason" in
+          blocker_end_unknown) next="wait for a stated end, or release by hand" ;;
+          live_executor_pid_*) next="leave it; U7 fences an executor first" ;;
+          uncommitted_paths|unpushed_commits|branch_absent_from_remote) next="preserve the work first (U7)" ;;
+          no_branch_to_verify|cross_repository_branch) next="read the branch, then release by hand" ;;
+          *) next="repair the failed read, then rerun" ;;
+        esac
+        capability_report="${capability_report}    -> HELD: ${hold_reason}; next action: ${next}\n"
       elif [ "$RELEASE" = true ] && [ "$RELEASE_CAPABILITY_BLOCKED" = true ]; then
         if _release_blocked_holder_markers "$assigned" "$task_id" "$pr"; then
           if [ "$DRY_RUN" = true ]; then
@@ -1130,11 +1130,12 @@ for note in "$VAULT_ROOT/active/"*.md; do
           else
             now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             safe_evidence="$(printf '%s' "$blocker_evidence" | sed 's/[&\\]/_/g')"
-            # First occurrence only: the frontmatter, never a body line that starts the same way.
-            sed -i "0,/^status:.*/s//status: offered/" "$note"
-            sed -i "0,/^assigned_to:.*/s//assigned_to: unassigned/" "$note"
-            sed -i "0,/^updated_at:.*/s//updated_at: $now_iso/" "$note"
-            sed -i "0,/^## Session log$/{/^## Session log$/a\\- $now_iso codex-claim-audit released a capability-blocked claim (${assigned}; ${safe_evidence}); pr and branch stay for the next holder
+            grep -q '^## Session log$' "$note" || printf '\n## Session log\n' >> "$note"
+            # One rewrite (sed -i renames a whole new file), first occurrences only: the frontmatter.
+            sed -i -e "0,/^status:.*/s/^status:.*/status: offered/" \
+              -e "0,/^assigned_to:.*/s/^assigned_to:.*/assigned_to: unassigned/" \
+              -e "0,/^updated_at:.*/s/^updated_at:.*/updated_at: $now_iso/" \
+              -e "0,/^## Session log$/{/^## Session log$/a\\- $now_iso codex-claim-audit released a capability-blocked claim (${assigned}; ${safe_evidence}); pr and branch stay for the next holder
 }" "$note"
             capability_report="${capability_report}    -> RELEASED back to offered for governed redispatch; pr and branch kept\n"
           fi
