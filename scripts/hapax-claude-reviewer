@@ -14,6 +14,13 @@ import time
 from pathlib import Path
 
 REVIEW_EXECUTION_ROUTE = "claude.review.opus"
+PROVIDER_ROUTE_ENV = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
 DEFAULT_TIMEOUT_SECONDS = 1140.0
 MAX_TIMEOUT_SECONDS = 1140.0
@@ -215,6 +222,11 @@ def _execution_binding() -> dict:
 
 def _review_env(execution_env: dict[str, str]) -> dict[str, str]:
     env = dict(os.environ)
+    # The route is declared as Claude subscription supply. An inherited key, token,
+    # base URL or cloud switch would move the child to another endpoint and billing
+    # surface while the dossier still names this route.
+    for name in PROVIDER_ROUTE_ENV:
+        env.pop(name, None)
     env.update(
         {
             "CI": "1",

@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from unittest import mock
 
+import pytest
 from prometheus_client import CollectorRegistry
 
+from agents.cross_surface import bluesky_post
 from agents.cross_surface.bluesky_post import (
     ALLOWED_PUBLIC_EVENT_TYPES,
     BLUESKY_TEXT_LIMIT,
@@ -214,6 +216,35 @@ class TestCursor:
         cursor.write_text("0", encoding="utf-8")
         assert poster.run_once() == 0
         factory.return_value.send_post.assert_called_once()
+
+    def test_a_stop_mid_post_records_that_post_and_leaves_the_rest_for_the_restart(self, tmp_path):
+        """A restart's SIGTERM only sets the stop event (run_forever), so the post in flight is
+        recorded and no later event starts; a restarted poster posts the rest, never the first again.
+        This bounds a stop to one event, inside systemd's stop timeout, so no kill lands between a
+        post and its record."""
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        first = _public_event(event_id="rvpe:broadcast_boundary:first")
+        second = _public_event(event_id="rvpe:broadcast_boundary:second")
+        _write_events(bus, [first, second])
+        first_line_bytes = len(bus.read_bytes().splitlines(keepends=True)[0])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        receipt = mock.Mock(uri="at://did:plc:example/app.bsky.feed.post/1")
+
+        def stopped_mid_post(*args, **kwargs):
+            poster.stop()
+            return receipt
+
+        factory.return_value.send_post.side_effect = stopped_mid_post
+
+        assert poster.run_once() == 1
+        factory.return_value.send_post.assert_called_once()
+        assert int(cursor.read_text(encoding="utf-8")) == first_line_bytes
+
+        restarted, restarted_factory = _make_poster(event_path=bus, cursor_path=cursor)
+        assert restarted.run_once() == 1
+        restarted_factory.return_value.send_post.assert_called_once()
+        assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
 
     def test_persists_post_uri_receipt_for_public_proof(self, tmp_path):
         bus = tmp_path / "events.jsonl"
@@ -463,6 +494,44 @@ class TestEventFiltering:
         assert "https://hapax.weblog.lol/2026/05/show-hn-governance-that-ships" in text
         assert "metadata-public-claim-gate" not in text
 
+    @pytest.mark.parametrize(
+        ("label", "expected"),
+        [
+            ("Commitment Status", "Hapax weblog: Commitment Status. {url}"),
+            ("Is a record its own witness?", "Hapax weblog: Is a record its own witness? {url}"),
+            ("A record, repaired.", "Hapax weblog: A record, repaired. {url}"),
+            ("It ships!", "Hapax weblog: It ships! {url}"),
+            ("", "Hapax weblog post: {url}"),
+            ("   ", "Hapax weblog post: {url}"),
+        ],
+    )
+    def test_default_compose_weblog_text_names_the_entry_once(self, label, expected):
+        # 2026-10-10: every weblog post read "Hapax weblog: weblog: <title>. <url>".
+        from agents.cross_surface import bluesky_post as mod
+
+        url = "https://hapax.weblog.lol/2026/10/commitment-status"
+        event = _public_event(
+            event_id="rvpe:omg_weblog:bsky",
+            event_type="omg.weblog",
+            state_kind="public_post",
+            public_url=url,
+            chapter_ref=PublicEventChapterRef(
+                kind="chapter",
+                label=label,
+                timecode="00:00",
+                source_event_id="rvpe:omg_weblog:bsky",
+            ),
+            surface_policy=_surface_policy(
+                claim_live=False,
+                claim_archive=True,
+                requires_egress_public_claim=False,
+                requires_audio_safe=False,
+                rate_limit_key="omg.weblog:public_post",
+            ),
+        )
+
+        assert mod._default_compose(event) == expected.format(url=url)
+
     def test_non_broadcast_events_post_without_live_egress_claim(self, tmp_path):
         for event_type, state_kind in (
             ("velocity.digest", "research_observation"),
@@ -660,6 +729,24 @@ class TestCredentials:
 
 
 class TestEnvCredentials:
+    @pytest.fixture(autouse=True)
+    def _no_did(self, monkeypatch):
+        monkeypatch.delenv("HAPAX_BLUESKY_DID", raising=False)
+
+    def test_the_did_is_preferred_as_the_login_identifier(self, monkeypatch):
+        # 2026-10-10: the configured handle no longer resolved and its login was refused (401),
+        # while the same app password opened a session by DID. A DID does not change.
+        monkeypatch.setenv("HAPAX_BLUESKY_DID", "did:plc:example")
+        monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "stale.bsky.social")
+        monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
+        assert _credentials_from_env() == ("did:plc:example", "abcd-1234")
+
+    def test_a_blank_did_falls_back_to_the_handle(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_BLUESKY_DID", "  ")
+        monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
+        monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
+        assert _credentials_from_env() == ("h.bsky.social", "abcd-1234")
+
     def test_reads_both(self, monkeypatch):
         monkeypatch.setenv("HAPAX_BLUESKY_HANDLE", "h.bsky.social")
         monkeypatch.setenv("HAPAX_BLUESKY_APP_PASSWORD", "abcd-1234")
@@ -800,3 +887,67 @@ class TestPublishArtifact:
 
         artifact = PreprintArtifact(slug="x", title="T", abstract="A")
         assert bluesky_post.publish_artifact(artifact) == "error"
+
+
+class TestEventTypeNarrowing:
+    """HAPAX_CROSS_SURFACE_EVENT_TYPES narrows what the poster may post and can never widen it.
+
+    In May 2026 the account posted one gate-refusal message 24 times (correction cor-2026-0002);
+    the deployed poster is narrowed to reviewed weblog entries.
+    """
+
+    def _weblog(self) -> ResearchVehiclePublicEvent:
+        return _public_event(
+            event_id="rvpe:omg_weblog:narrow",
+            event_type="omg.weblog",
+            state_kind="public_post",
+            public_url="https://hapax.weblog.lol/2026/10/x",
+            chapter_ref=PublicEventChapterRef(
+                kind="chapter",
+                label="X",
+                timecode="00:00",
+                source_event_id="rvpe:omg_weblog:narrow",
+            ),
+            surface_policy=_surface_policy(
+                claim_live=False,
+                claim_archive=True,
+                requires_egress_public_claim=False,
+                requires_audio_safe=False,
+                rate_limit_key="omg.weblog:public_post",
+            ),
+        )
+
+    def test_narrowed_to_weblog_the_poster_posts_only_weblog(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HAPAX_CROSS_SURFACE_EVENT_TYPES", "omg.weblog")
+        bus = tmp_path / "events.jsonl"
+        _write_events(bus, [_public_event(), self._weblog()])
+        compose = mock.Mock(return_value="post")
+        poster, _ = _make_poster(
+            event_path=bus, cursor_path=tmp_path / "cursor.txt", compose_fn=compose
+        )
+
+        poster.run_once()
+
+        assert [call.args[0].event_type for call in compose.call_args_list] == ["omg.weblog"]
+
+    def test_a_type_outside_the_built_in_set_cannot_widen_it(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_CROSS_SURFACE_EVENT_TYPES", "publication.artifact, omg.weblog")
+
+        assert bluesky_post._allowed_event_types() == frozenset({"omg.weblog"})
+
+    def test_an_empty_narrowing_allows_nothing(self, monkeypatch):
+        monkeypatch.setenv("HAPAX_CROSS_SURFACE_EVENT_TYPES", " , ")
+
+        assert bluesky_post._allowed_event_types() == frozenset()
+
+    def test_unset_keeps_the_built_in_set(self, monkeypatch):
+        monkeypatch.delenv("HAPAX_CROSS_SURFACE_EVENT_TYPES", raising=False)
+
+        assert bluesky_post._allowed_event_types() == ALLOWED_PUBLIC_EVENT_TYPES
+
+    def test_the_deployed_unit_is_narrowed_to_weblog_posts(self):
+        from pathlib import Path
+
+        unit = Path(__file__).resolve().parents[2] / "systemd/units/hapax-bluesky-post.service"
+        lines = unit.read_text(encoding="utf-8").splitlines()
+        assert "Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog" in lines

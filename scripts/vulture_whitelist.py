@@ -4251,6 +4251,24 @@ from agents.health_monitor.checks.release_ghost import check_release_ghost  # no
 
 check_release_ghost
 
+# Merge-plane flow check — registered via @check_group("flow") decorator and
+# dispatched dynamically through the group registry by health_monitor's runner;
+# same dynamic-registry pattern as check_release_ghost above
+# (cc-task: flow-as-a-produced-signal-20261010).
+from agents.health_monitor.checks.flow import check_merge_flow  # noqa: E402
+
+check_merge_flow
+
+# Outward-flow and mandated-unit checks, the same @check_group("flow") registry
+# dispatch (cc-task: no-stall-u2-outward-flow-observation-20261010).
+from agents.health_monitor.checks.flow import (  # noqa: E402
+    check_mandated_units,
+    check_outward_flow,
+)
+
+check_outward_flow
+check_mandated_units
+
 # Session identity functions — called by hapax-cc-claim/hapax-cc-close
 # (extensionless executables outside vulture's parse set) and by
 # platform session adapters (PR #4097).
@@ -5537,3 +5555,9 @@ _ = (
     _research_desk_list_open_requests,
     _research_desk_neutralize_markdown,
 )
+
+# U4b's release helpers in scripts/publish_vault_artifact.py land (split A) before
+# their caller, the release scan in scripts/cc-pr-review-dispatch.py (#5104), which
+# calls both as publish_vault_artifact.<name>; vulture cannot see that path yet.
+pipeline_state
+drop_to_inbox

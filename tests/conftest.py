@@ -18,14 +18,17 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_publication_witness_log(tmp_path, monkeypatch):
     """Keep publisher dispatch witnesses in per-test files, including children."""
-    from agents.publication_bus import witness_log
-
-    monkeypatch.setenv(
-        witness_log.PUBLICATION_LOG_PATH_ENV, str(tmp_path / "publication-log.jsonl")
-    )
-    witness_log.reset_idempotency_cache()
+    # Set the writer's environment binding even before a test imports it. Importing
+    # the package here pulls publisher dependencies into otherwise minimal suites.
+    monkeypatch.setenv("HAPAX_PUBLICATION_LOG_PATH", str(tmp_path / "publication-log.jsonl"))
+    witness_log = sys.modules.get("agents.publication_bus.witness_log")
+    if witness_log is not None:
+        witness_log.reset_idempotency_cache()
     yield
-    witness_log.reset_idempotency_cache()
+    # A test may have imported the writer after fixture setup.
+    witness_log = sys.modules.get("agents.publication_bus.witness_log")
+    if witness_log is not None:
+        witness_log.reset_idempotency_cache()
 
 
 @pytest.fixture(autouse=True)

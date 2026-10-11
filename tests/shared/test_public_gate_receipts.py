@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,8 @@ def _write_review_evidence(
     quorum_required: int = 1,
     accept_count: int = 1,
     head_sha: str = "a" * 40,
+    writer_family: str = "glm",
+    **metadata: object,
 ) -> None:
     del root
     authority_root = public_gate_receipts._public_gate_authority_roots()[0]
@@ -66,6 +69,7 @@ def _write_review_evidence(
         "review_team_verdict": "quorum-accept",
         "quorum_required": quorum_required,
         "accept_count": accept_count,
+        "writer_family": writer_family,
         "gate_id": gate,
         "authorized_public_gate_receipts": [f"public-gate:{receipt_name}"],
         "artifact_slug": "demo",
@@ -80,6 +84,7 @@ def _write_review_evidence(
                 "verdict": "accept",
             }
         ],
+        **metadata,
     }
     payload["authority_signature"] = public_gate_receipts.public_gate_authority_signature(
         payload,
@@ -131,6 +136,102 @@ def test_accepts_passed_yaml_receipt_with_extension_inferred(tmp_path: Path) -> 
         expected_gate=GATE,
         roots=(tmp_path,),
     )
+
+
+@pytest.mark.parametrize(
+    ("writer", "families", "metadata", "allowed"),
+    [
+        (
+            "codex",
+            ["gemini", "codex", "muse"],
+            {
+                "registry_id": "review-lenses",
+                "family_substitution": {
+                    "seated_families": ["codex", "gemini", "muse"],
+                    "substitute_families_seated": ["muse"],
+                },
+            },
+            True,
+        ),
+        ("codex", ["codex", "gemini"], {}, False),
+        ("anthropic", ["claude", "gemini"], {}, False),
+        ("", ["claude", "gemini"], {}, False),
+        ("codex", ["gemini", "gemini"], {}, False),
+        ("codex", ["gemini", "muse"], {}, False),
+        ("codex", ["gemini", "bespoke-reviewer"], {}, False),
+        ("codex", ["gemini", "local"], {}, False),
+        ("codex", ["gemini", "vibe"], {}, False),
+        ("codex", ["gemini", "featherless"], {}, False),
+        ("codex", ["gemini", "glm"], {}, True),
+    ],
+)
+def test_dossier_counts_only_known_independent_families(
+    tmp_path: Path, writer: str, families: list[str], metadata: dict, allowed: bool
+) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        writer_family=writer,
+        reviewers=[
+            {"id": f"seat-{i}", "family": family, "verdict": "accept"}
+            for i, family in enumerate(families)
+        ],
+        quorum_required=2,
+        accept_count=len(families),
+        **metadata,
+    )
+    assert (
+        public_gate_receipt_value_present(
+            "public-gate:receipt-1.yaml", expected_gate=GATE, roots=(tmp_path,)
+        )
+        is allowed
+    )
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "declared_at: 2026-99-99\n",
+        "declared_at: 2026-01-01T25:00:00Z\n",
+        "private: !!int private-registry-payload\n",
+    ],
+)
+def test_registry_constructor_error_refuses_consumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog, malformed: str
+) -> None:
+    _write(tmp_path, "receipt-1.yaml", _receipt_text())
+    _write_review_evidence(
+        tmp_path,
+        receipt_name="receipt-1.yaml",
+        writer_family="codex",
+        reviewers=[
+            {"id": f"{family}-1", "family": family, "verdict": "accept"}
+            for family in ("gemini", "muse")
+        ],
+        quorum_required=2,
+        accept_count=2,
+        registry_id="review-lenses",
+        family_substitution={
+            "seated_families": ["codex", "gemini", "muse"],
+            "substitute_families_seated": ["muse"],
+        },
+    )
+    assert public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml", expected_gate=GATE, roots=(tmp_path,)
+    )
+    registry = tmp_path / "registry.yaml"
+    registry.write_text(malformed, encoding="utf-8")
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_REVIEW_REGISTRY_PATH", registry)
+    assert not public_gate_receipt_value_present(
+        "public-gate:receipt-1.yaml", expected_gate=GATE, roots=(tmp_path,)
+    )
+    assert "yaml_error" in caplog.text
+    assert str(registry) in caplog.text
+    assert "next action:" in caplog.text
+    assert "private-registry-payload" not in caplog.text
+    assert "2026-99-99" not in caplog.text
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
 def test_rejects_self_minted_receipt_without_delegated_authority(tmp_path: Path) -> None:

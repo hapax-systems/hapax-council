@@ -53,6 +53,8 @@ Drop 5 §3: omg.lol weblog exposes RSS natively (via ytb-OMG8 shipped
 infrastructure). This URL is the public-facing feed."""
 
 RSS_REQUEST_TIMEOUT_S: float = 30.0
+# The weblog host closes the connection on requests' default User-Agent (2026-10-10).
+RSS_USER_AGENT: str = "hapax-rss-validator/1.0"
 
 DOI_PATTERN: re.Pattern[str] = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 """Crossref-spec DOI prefix pattern (10.NNNN/...). Matches both the
@@ -91,7 +93,9 @@ def fetch_rss(url: str = DEFAULT_HAPAX_RSS_URL) -> bytes | None:
         log.warning("requests library not available; skipping rss fetch")
         return None
     try:
-        response = requests.get(url, timeout=RSS_REQUEST_TIMEOUT_S)
+        response = requests.get(
+            url, timeout=RSS_REQUEST_TIMEOUT_S, headers={"User-Agent": RSS_USER_AGENT}
+        )
     except requests.RequestException as exc:
         log.warning("rss fetch raised: %s", exc)
         rss_validity_total.labels(outcome="transport-error").inc()

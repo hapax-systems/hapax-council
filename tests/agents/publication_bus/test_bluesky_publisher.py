@@ -122,3 +122,74 @@ class TestPublisher:
         # Second call is to createRecord
         post_url = mock_requests.post.call_args_list[1].args[0]
         assert "createRecord" in post_url
+
+
+_LINK = "app.bsky.richtext.facet#link"
+
+
+def _posted_record(text: str) -> dict:
+    """The app.bsky.feed.post record the publisher sends for ``text``."""
+    with patch("agents.publication_bus.bluesky_publisher.requests") as mock_requests:
+        mock_requests.post.side_effect = [
+            _mock_response(200, _LOGIN_OK),
+            _mock_response(200, _POST_OK),
+        ]
+        BlueskyPublisher.allowlist = load_allowlist(BLUESKY_SURFACE, ["operator"])
+        publisher = BlueskyPublisher(handle="operator.bsky.social", app_password="x-y-z-w")
+        result = publisher.publish(PublisherPayload(target="operator", text=text))
+        assert result.ok is True
+        return mock_requests.post.call_args_list[1].kwargs["json"]["record"]
+
+
+def _link_spans(record: dict) -> list[tuple[str, str]]:
+    """Each link facet as (uri, the text its byte span covers)."""
+    encoded = record["text"].encode("utf-8")
+    spans = []
+    for facet in record["facets"]:
+        (feature,) = facet["features"]
+        assert feature["$type"] == _LINK
+        index = facet["index"]
+        spans.append(
+            (feature["uri"], encoded[index["byteStart"] : index["byteEnd"]].decode("utf-8"))
+        )
+    return spans
+
+
+class TestLinkFacets:
+    """Bluesky renders a URL as a link only through a richtext link facet (UTF-8 byte span)."""
+
+    def test_a_url_gets_a_link_facet_over_its_exact_bytes(self) -> None:
+        url = "https://hapax.weblog.lol/2026/10/entry"
+        prefix = "Hapax weblog: An entry. "
+        record = _posted_record(prefix + url)
+        start = len(prefix.encode("utf-8"))
+        assert record["facets"] == [
+            {
+                "index": {"byteStart": start, "byteEnd": start + len(url.encode("utf-8"))},
+                "features": [{"$type": _LINK, "uri": url}],
+            }
+        ]
+
+    def test_offsets_count_utf8_bytes_not_characters(self) -> None:
+        url = "https://hapax.weblog.lol/2026/10/entry-006"
+        prefix = "Hapax weblog: Entry 006 — repaired. "
+        record = _posted_record(prefix + url)
+        (facet,) = record["facets"]
+        # The em dash is one character and three bytes, so the two offsets differ by two.
+        assert facet["index"]["byteStart"] == len(prefix.encode("utf-8")) == len(prefix) + 2
+        assert _link_spans(record) == [(url, url)]
+
+    def test_each_url_gets_its_own_facet(self) -> None:
+        first = "https://hapax.weblog.lol/2026/10/one"
+        second = "https://hapaxresearch.com/corrections/cor-2026-0002/"
+        record = _posted_record(f"Read {first} and {second}")
+        assert _link_spans(record) == [(first, first), (second, second)]
+
+    def test_trailing_punctuation_is_not_part_of_the_link(self) -> None:
+        url = "https://hapax.weblog.lol/2026/10/entry"
+        record = _posted_record(f"Hapax weblog post: {url}.")
+        assert _link_spans(record) == [(url, url)]
+
+    def test_text_without_a_url_sends_no_facets(self) -> None:
+        record = _posted_record("Hapax weblog: no link here.")
+        assert "facets" not in record

@@ -134,6 +134,7 @@ def _write_public_gate_review_evidence(  # type: ignore[no-untyped-def]
         f"task_id: {TASK_ID}\n"
         "head_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
         "review_team_verdict: quorum-accept\n"
+        "writer_family: codex\n"
         "quorum_required: 1\n"
         "accept_count: 1\n"
         "required_gates:\n"
@@ -186,8 +187,10 @@ class _ApprovingReviewPass:
 
 
 class _PassingHardeningGate:
-    def evaluate(self, artifact: PreprintArtifact) -> PublicationGateResult:
-        del artifact
+    def evaluate(
+        self, artifact: PreprintArtifact, *, signed_review_evidence: tuple[str, ...] = ()
+    ) -> PublicationGateResult:
+        del artifact, signed_review_evidence
         report = ReviewReport(
             reviewer_model="test-reviewer",
             overall_confidence=0.99,

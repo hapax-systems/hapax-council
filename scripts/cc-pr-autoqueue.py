@@ -41,7 +41,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -201,6 +201,20 @@ MUST_INCLUDE_REFRESH_POST_CAP = 4
 # R4: refresh must-include proofs when older than one tick (~6 min), not
 # TTL/2 — tolerates 3-4 missed ticks before the gate sees a stale proof.
 MUST_INCLUDE_REFRESH_MARGIN_SECONDS = 6 * 60
+# Proofless demotion: the refresh path can only re-stamp a successful proof
+# that already exists at the PR's current head (R3). A refresh that finds no
+# status, or a non-success one, proves that head is proofless; only a full
+# exam can change it. Such a row keeps its guarantee seat but loses seat
+# priority, so it no longer spends a window seat or the refresh POST cap
+# ahead of healthy must-include PRs (#5045: permanently-blocked queued PRs
+# starved a CLEAN quorum-accepted PR behind the caps; 2026-10-10: eight armed
+# dependabot heads with no status starved every fresh-evidence seat).
+# It demotes at the first proofless refresh, not after a count. A deferral or
+# a transient read failure teaches nothing about the head, so a healthy row
+# that the post cap starved is never demoted and starved further. A later
+# success, or a new head, lifts the demotion.
+MUST_INCLUDE_PROOFLESS_REFRESH_MESSAGE = "no_existing_admission_status"
+MUST_INCLUDE_PROOFLESS_REFRESH_PREFIX = "existing_status_not_success:"
 # R3: the persisted last-known must-include set lives no longer than the
 # proof TTL it exists to keep fresh.
 MUST_INCLUDE_STATE_MAX_AGE_SECONDS = AUTOQUEUE_ADMISSION_TTL_SECONDS
@@ -1707,6 +1721,32 @@ class _WindowSelection:
     fresh_overflow: tuple[int, ...] = ()
 
 
+def _refresh_result_proofless(result: Mapping[str, Any]) -> bool:
+    """Whether a refresh outcome proves its head holds no successful proof."""
+    message = str(result.get("message") or "")
+    return message == MUST_INCLUDE_PROOFLESS_REFRESH_MESSAGE or message.startswith(
+        MUST_INCLUDE_PROOFLESS_REFRESH_PREFIX
+    )
+
+
+def _is_proofless_head(
+    number: int,
+    head_sha: str | None,
+    proof_ledger: Mapping[int, Mapping[str, Any]] | None,
+) -> bool:
+    """Whether a must-include PR's last refresh at *this* head found no proof.
+
+    The guarantee itself is untouched: the row keeps its R2/R5 seats and the
+    overflow reporting. It only sorts after healthy rows, so a head that can
+    never be re-stamped cannot spend the window or the POST cap. A moved head
+    is unknown again and is not demoted.
+    """
+    if not head_sha or not proof_ledger:
+        return False
+    entry = proof_ledger.get(number)
+    return bool(entry) and entry.get("proofless_head_sha") == head_sha
+
+
 def _select_pr_window(
     rows: list[dict[str, Any]],
     *,
@@ -1718,6 +1758,7 @@ def _select_pr_window(
     full_exam: frozenset[int] | set[int] = frozenset(),
     ephemeral_full_exam: frozenset[int] | set[int] = frozenset(),
     fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
+    proof_ledger: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> _WindowSelection:
     """Select without acknowledging work. Repeated failures share the fair rotation.
 
@@ -1729,7 +1770,13 @@ def _select_pr_window(
     ``--limit`` legitimately serves more must-include rows than the cap — the
     cap bounds the guarantee's dominance over the rotation, not the window.
     The guarantee never silently dominates: overflow is reported, and the
-    oldest proofs are served first.
+    oldest proofs are served first. A refresh seat whose last refresh at its
+    current head found no proof (per ``proof_ledger``, the persisted
+    must-include entries) keeps the guarantee but sorts after every other
+    must-include and fresh-evidence row; a full-exam seat keeps its place.
+    A failed refresh never rotation-acks, so without the demotion proofless
+    rows hold the oldest stamps and starve healthy PRs behind the window cap
+    and the POST cap indefinitely.
 
     ``fresh_evidence(row, since)`` marks a previously examined PR whose linked
     receipt or dossier landed after its last examination attempt (a hydration
@@ -1779,6 +1826,24 @@ def _select_pr_window(
             *core_rows,
             *sorted((row for row in rows if row["number"] in fresh), key=priority),
         ]
+        # Armed rows are R2 refresh seats, not R6 follow-ups: a PR that is armed
+        # but has never queued (or re-armed after a dequeue) stays on the cheap
+        # refresh path; the R6 one-shot full exam belongs to rows that left the
+        # queue unarmed.
+        full_exam_live = ((set(full_exam) & live) - armed) | fresh
+
+        # A refresh seat at a proofless head cannot succeed, so it yields priority to
+        # the healthy slice of the guarantee and to fresh evidence (stable: each part
+        # keeps its order). A full-exam seat is what such a head needs; it keeps its place.
+        def demoted(row: dict[str, Any]) -> bool:
+            return row["number"] not in full_exam_live and _is_proofless_head(
+                row["number"], _listing_head_sha(row), proof_ledger
+            )
+
+        must_rows = [
+            *(row for row in must_rows if not demoted(row)),
+            *(row for row in must_rows if demoted(row)),
+        ]
         # No must-include rows: keep the historical window size exactly.
         reserve_floor = (
             min(len(must_rows), MUST_INCLUDE_CAP) + MUST_INCLUDE_RESERVE if must_rows else 0
@@ -1790,11 +1855,6 @@ def _select_pr_window(
         served_numbers = {row["number"] for row in served}
         unserved = [row["number"] for row in must_rows[max(must_capacity, 0) :]]
         overflow = tuple(number for number in unserved if number in must)
-        # Armed rows are R2 refresh seats, not R6 follow-ups: a PR that is armed
-        # but has never queued (or re-armed after a dequeue) stays on the cheap
-        # refresh path; the R6 one-shot full exam belongs to rows that left the
-        # queue unarmed.
-        full_exam_live = ((set(full_exam) & live) - armed) | fresh
         full_exam_rows = [row for row in served if row["number"] in full_exam_live]
         must_refresh = tuple(
             (row["number"], _listing_head_sha(row))
@@ -1920,6 +1980,7 @@ def fetch_rotating_open_prs(
     full_exam: frozenset[int] | set[int] = frozenset(),
     fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
     armed_note_reconciliation: _ArmedNoteReconciliation | None = None,
+    proof_ledger: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]], _WindowSelection]:
     """Prove the complete estate, then hydrate at most limit identities independently.
 
@@ -1965,6 +2026,7 @@ def fetch_rotating_open_prs(
         full_exam=full_exam,
         ephemeral_full_exam=ephemeral_full_exam,
         fresh_evidence=fresh_evidence,
+        proof_ledger=proof_ledger,
     )
     if selection.overflow:
         LOG.warning(
@@ -4523,6 +4585,11 @@ def _load_must_include_state(path: Path, *, repo: str, now: datetime) -> dict[in
             }
         except (TypeError, ValueError):
             continue
+        # The proofless observation must outlive the tick that made it, or no row is
+        # ever demoted. Anything but a non-empty head string is dropped (unknown).
+        proofless = entry.get("proofless_head_sha")
+        if isinstance(proofless, str) and proofless:
+            entries[int(number)]["proofless_head_sha"] = proofless
     return entries
 
 
@@ -4556,13 +4623,20 @@ def _refresh_must_include_batch(
     now: datetime,
     apply: bool,
     route: ListingRoute | str | None,
+    proof_ledger: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> dict[int, dict[str, Any]]:
     """R5: bounded per-tick refresh pass.
 
     Both the reads and the POST count against the per-tick cap; identities
     beyond it are reported as ``deferred_post_cap`` so the R7 counters see the
-    truth instead of a silent skip.
+    truth instead of a silent skip. Identities whose last refresh at this head
+    found no proof (per ``proof_ledger``) are served last. They keep their seat
+    in the pass but cannot spend the cap ahead of refreshable proofs.
     """
+    identities = sorted(
+        identities,
+        key=lambda identity: _is_proofless_head(identity[0], identity[1], proof_ledger),
+    )
     results: dict[int, dict[str, Any]] = {}
     for index, (number, head_sha) in enumerate(identities):
         if index >= MUST_INCLUDE_REFRESH_POST_CAP:
@@ -4592,12 +4666,16 @@ def _record_must_include_outcomes(
     now: datetime,
     served_full_exam: frozenset[int] | set[int] = frozenset(),
     forced_failures: tuple[int, ...] | list[int] = (),
+    proved_by_exam: frozenset[int] | set[int] = frozenset(),
 ) -> None:
     """Advance the persisted must-include counters one tick (apply mode only).
 
     ``current_identities`` is the new authoritative set; ``None`` keeps the
     existing keys (the R3 indeterminate path, where the only job is to record
-    refresh outcomes and keep fresh entries alive).
+    refresh outcomes and keep fresh entries alive). ``proofless_head_sha``
+    records the head whose last refresh found no proof. A successful refresh,
+    or a full exam that wrote a success status this tick (``proved_by_exam``),
+    clears it.
     """
     if not apply:
         return
@@ -4619,8 +4697,15 @@ def _record_must_include_outcomes(
         if result is not None and result.get("ok"):
             entry["consecutive_failures"] = 0
             entry["last_success_at"] = now.isoformat()
+            entry.pop("proofless_head_sha", None)
         elif result is not None or number in forced_failures:
             entry["consecutive_failures"] = int(entry.get("consecutive_failures") or 0) + 1
+            if result is not None and _refresh_result_proofless(result):
+                # Only a full exam can change a proofless head (R3). A deferral or
+                # a transient read failure leaves the last observation as it was.
+                entry["proofless_head_sha"] = entry["head_sha"]
+        if number in proved_by_exam:
+            entry.pop("proofless_head_sha", None)
         entries[number] = entry
     state.clear()
     state.update(entries)
@@ -5138,6 +5223,7 @@ def run_reconciler(
             now=now,
             apply=apply,
             route=None,
+            proof_ledger=dict(must_include_state),
         )
         must_include_report = _must_include_report_summary(refresh_only, overflow=())
         _record_must_include_outcomes(
@@ -5252,6 +5338,7 @@ def run_reconciler(
                 full_exam=dequeued_followup,
                 fresh_evidence=_fresh_evidence_probe(tasks, now=now),
                 armed_note_reconciliation=armed_note_reconciliation,
+                proof_ledger=dict(must_include_state),
             )
         else:
             prs, listing_route = fetch_open_prs(
@@ -5313,6 +5400,7 @@ def run_reconciler(
             now=now,
             apply=apply,
             route=listing_route,
+            proof_ledger=dict(must_include_state),
         )
         must_overflow = window.overflow
         if apply:
@@ -5710,6 +5798,16 @@ def run_reconciler(
                 # decision; only genuinely unserved numbers count as failures.
                 if number not in {pr.number for pr in prs}
             ),
+            # A full exam that wrote a success status proved the head, so a
+            # proofless demotion must not outlive it and age the new proof out.
+            proved_by_exam=frozenset(
+                result["pr"]
+                for result in mutation_results
+                if isinstance(result.get("admission_status"), dict)
+                and result["admission_status"].get("state") == "success"
+                and result["admission_status"].get("ok")
+                and isinstance(result.get("pr"), int)
+            ),
         )
         starved = sorted(
             number
@@ -5774,6 +5872,12 @@ def run_reconciler(
         "must_include": {
             **_must_include_report_summary(must_refresh_results, overflow=must_overflow),
             "starved": starved,
+            # Demoted next tick: the last refresh at the persisted head found no proof.
+            "proofless": sorted(
+                number
+                for number, entry in must_include_state.items()
+                if _is_proofless_head(number, entry.get("head_sha"), must_include_state)
+            ),
             "dequeued_followup": sorted(
                 dequeued_followup - (window.armed_live if window is not None else frozenset())
             ),
