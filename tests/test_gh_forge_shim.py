@@ -4,6 +4,21 @@ Phase A of the S2 re-target (task forge-s2-review-chain-20261005): the shim must
 preserve gh argv shapes exactly (hooks classify by spelling; callers pin argv)
 and emit gh-shaped JSON from Forgejo REST responses. All transport is faked;
 live shadow verification runs outside pytest.
+
+Red-first / mutation-verify record (2026-10-11, task
+forge-s2-gh-forge-hardening-20261011, pytest via repo venv): the hardening
+carry-over defect tests were written against the pre-fix shim and observed red
+before the fix landed (slice-2 record, PR #5047 body). The tokenizer/field
+fail-closed suite below was pinned against the fixed shim and then
+mutation-verified: each guard was broken in isolation, the suite observed red,
+and the exact bytes restored (``git diff`` empty) before green:
+
+- _tokenize "needs a value" guard removed -> 2 failed / 38 passed
+- _tokenize unsupported-flag raise made a positional -> 1 failed / 39 passed
+- _strip_pairs trailing -f/-F bounds guard >= -> > -> 1 failed / 39 passed
+- _field_pair empty-key clause dropped -> 1 failed / 39 passed
+- _required_body falsy guard weakened to is None -> 3 failed / 37 passed
+- all restores byte-exact; final suite 40 passed
 """
 
 from __future__ import annotations
@@ -656,3 +671,93 @@ def test_pr_comment_posts_body_and_returns_html_url(shim):
     assert post.url.endswith("/repos/forge-admin/driver/issues/9/comments")
     assert json.loads(post.body) == {"body": "hello"}
     assert out == "http://forge.test/pulls/9#c1\n"
+
+
+# --- tokenizer/field fail-closed branches (#5047 review round, claude/glm/gemini) --
+
+
+def test_value_flag_at_end_of_argv_fails_closed(shim):
+    # claude-1 major: a value flag as the final token raised nothing on the old
+    # path; the tokenizer must fail closed before any transport call
+    code, _, err, fake = run(shim, ["issue", "list", "--search"])
+    assert code == 1
+    assert "flag '--search' needs a value" in err
+    assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_value_flag_followed_by_known_flag_fails_closed(shim):
+    # glm-1: a value that is itself a known flag is a dropped-value argv shape,
+    # not a value to consume
+    code, _, err, fake = run(shim, ["pr", "create", "--title", "--body", "b"])
+    assert code == 1
+    assert "flag '--title' needs a value" in err
+    assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_unsupported_flag_fails_closed(shim):
+    # gemini-1/claude-1: unknown leading-dash tokens must not silently become
+    # positionals; the error names the flag and the accepted surface
+    code, _, err, fake = run(shim, ["issue", "view", "9", "--nope", "x", "--json", "number"])
+    assert code == 1
+    assert "unsupported flag '--nope'" in err
+    assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_trailing_dash_f_without_value_fails_closed(shim):
+    # claude-1: the index+1 bounds raise in _strip_pairs, distinct from the
+    # missing-'=' path pinned by test_api_malformed_field_value_fails_closed
+    code, _, err, fake = run(
+        shim, ["api", "repos/{owner}/{repo}/pulls/10/reviews", "-X", "POST", "-f"]
+    )
+    assert code == 1
+    assert "-f needs a key=value value" in err
+    assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_field_value_with_empty_key_fails_closed(shim):
+    # glm-1: '=value' has an '=' but an empty key; _field_pair must reject it
+    code, _, err, fake = run(
+        shim, ["api", "repos/{owner}/{repo}/pulls/10/reviews", "-X", "POST", "-f", "=value"]
+    )
+    assert code == 1
+    assert "'=value' is not key=value" in err
+    assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_explicit_empty_body_fails_closed(shim):
+    # glm-1: an explicitly empty --body "" is a dropped body, not a valid one
+    code, _, err, fake = run(shim, ["pr", "comment", "9", "--body", ""])
+    assert code == 1
+    assert "--body" in err
+    assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_issue_edit_label_flags_bind_position_independently(shim):
+    # claude-1: edit label parsing is routed through _tokenize over the full
+    # positionals; interleaved flags must not shift the number positional
+    shim._fake_forge.responses = {"/issues/9/labels": (200, [{"name": "old"}, {"name": "keep"}])}
+    code, _, err, fake = run(
+        shim, ["issue", "edit", "--add-label", "new", "9", "--remove-label", "old"]
+    )
+    assert code == 0, err
+    put = fake.calls[-1]
+    assert put.method == "PUT"
+    assert put.url.endswith("/repos/forge-admin/driver/issues/9/labels")
+    assert json.loads(put.body) == {"labels": ["keep", "new"]}
+
+
+def test_pr_edit_mixed_label_forms_apply_union(shim):
+    # claude-1: equals-form and space-form repeatable flags parse identically
+    shim._fake_forge.responses = {"/issues/12/labels": (200, [{"name": "a"}])}
+    code, _, err, fake = run(shim, ["pr", "edit", "12", "--add-label=plus", "--remove-label", "a"])
+    assert code == 0, err
+    put = fake.calls[-1]
+    assert put.method == "PUT"
+    assert put.url.endswith("/repos/forge-admin/driver/issues/12/labels")
+    assert json.loads(put.body) == {"labels": ["plus"]}
