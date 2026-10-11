@@ -108,10 +108,11 @@ github_repo_slug() {
   esac
 }
 
-# Local-forge origin → "owner/name". http(s) origins are forge origins on
-# their face; ssh/scp origins count only when HAPAX_FORGE_URL is set and its
-# host matches the origin's host — an env var set for the forge must never
-# claim an unrelated host's repo. GitHub origins and anything unparseable
+# Local-forge origin → "owner/name". ssh/scp origins count as forge only
+# when HAPAX_FORGE_URL is set and its host matches the origin's host;
+# http(s) origins are forge on their face, but when HAPAX_FORGE_URL is set
+# its host must match too — an env var set for the forge must never claim
+# an unrelated host's repo. GitHub origins and anything unparseable
 # return 1: the GitHub path takes over, and unparseable keeps the gate open
 # exactly as before local-forge support existed.
 forge_repo_slug() {
@@ -129,6 +130,13 @@ forge_repo_slug() {
       rest="${origin#*://}"
       authority="${rest%%/*}"
       path="${rest#*/}"
+      # With a declared forge, an http(s) origin must be that forge — the
+      # same host guard as ssh/scp below. Without the declaration the origin
+      # itself declares its forge (API base derives from the origin), so no
+      # cross-host claim is possible and none is checked.
+      if [[ -n "${HAPAX_FORGE_URL:-}" ]]; then
+        api_url="${HAPAX_FORGE_URL%/}"
+      fi
       ;;
     ssh://*)
       [[ -n "${HAPAX_FORGE_URL:-}" ]] || return 1
@@ -184,10 +192,15 @@ if [[ -z "$forge_slug" ]] && ! command -v gh &>/dev/null; then
   exit 0
 fi
 
+# The listing error detail travels through this file: rest_pr_json is
+# always invoked under $(...), so a variable assigned inside it never
+# reaches the parent shell. On failure the file is left behind for
+# on_listing_error, which consumes and removes it.
+wrgate_err_file="/tmp/hapax-wrgate-err-$$"
+
 rest_pr_json() {
   local limit="$1"
   shift
-  local err_file="/tmp/hapax-wrgate-err-$$"
   local args=(
     python3 "$status_helper" open-prs
     --repo "$repo_slug"
@@ -211,13 +224,12 @@ rest_pr_json() {
   done
   if [[ -n "$forge_slug" ]]; then
     # One mechanism: the helper lists forge PRs through the gh-shaped shim
-    # (HAPAX_GH_BIN → scripts/gh-forge), never a second HTTP client.
-    if HAPAX_GH_BIN="$repo_root/scripts/gh-forge" "${args[@]}" 2>"$err_file"; then
-      rm -f "$err_file" 2>/dev/null || true
+    # (HAPAX_GH_BIN → scripts/gh-forge), never a second HTTP client. On
+    # failure the stderr file survives for on_listing_error (see above).
+    if HAPAX_GH_BIN="$repo_root/scripts/gh-forge" "${args[@]}" 2>"$wrgate_err_file"; then
+      rm -f "$wrgate_err_file" 2>/dev/null || true
       return 0
     fi
-    listing_error="$(head -c 300 "$err_file" 2>/dev/null || true)"
-    rm -f "$err_file" 2>/dev/null || true
     printf 'error\n'
     return 0
   fi
@@ -232,7 +244,10 @@ rest_pr_json() {
 # reach here (exempted in §2c).
 on_listing_error() {
   if [[ -n "$forge_slug" ]]; then
-    echo "BLOCKED: local forge unreachable — cannot verify PR state for '${repo_slug}'. Restore the forge (origin: ${origin_url:-unknown}), or work from a branch whose PR the forge can list.${listing_error:+ Detail: $listing_error}" >&2
+    local detail=""
+    detail="$(head -c 300 "$wrgate_err_file" 2>/dev/null || true)"
+    rm -f "$wrgate_err_file" 2>/dev/null || true
+    echo "BLOCKED: local forge unreachable — cannot verify PR state for '${repo_slug}'. Restore the forge (origin: ${origin_url:-unknown}), or work from a branch whose PR the forge can list.${detail:+ Detail: $detail}" >&2
     exit 2
   fi
   if [[ -n "${cache_file:-}" ]]; then
