@@ -43,6 +43,7 @@ through the adapter.
 from __future__ import annotations
 
 import logging
+import re
 from typing import ClassVar
 
 from agents.publication_bus.publisher_kit import (
@@ -73,6 +74,12 @@ BLUESKY_ATPROTO_ENDPOINT: str = "https://bsky.social/xrpc"
 """Public Bluesky PDS XRPC endpoint root."""
 
 BLUESKY_REQUEST_TIMEOUT_S: float = 30.0
+
+BLUESKY_LINK_FACET: str = "app.bsky.richtext.facet#link"
+"""Bluesky renders a URL as a link only when the post marks it with this facet."""
+
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+_URL_TRAILING_PUNCTUATION = ".,;:!?)]}"
 
 DEFAULT_BLUESKY_ALLOWLIST: AllowlistGate = load_allowlist(
     BLUESKY_SURFACE,
@@ -160,14 +167,18 @@ class BlueskyPublisher(Publisher):
     def _create_post(self, session: PublisherResult, text: str) -> PublisherResult:
         did, access_jwt = session.detail.split("|", 1)
         url = f"{BLUESKY_ATPROTO_ENDPOINT}/com.atproto.repo.createRecord"
+        post = {
+            "$type": "app.bsky.feed.post",
+            "text": text,
+            "createdAt": _now_iso(),
+        }
+        facets = _link_facets(text)
+        if facets:
+            post["facets"] = facets
         record = {
             "repo": did,
             "collection": "app.bsky.feed.post",
-            "record": {
-                "$type": "app.bsky.feed.post",
-                "text": text,
-                "createdAt": _now_iso(),
-            },
+            "record": post,
         }
         try:
             response = requests.post(
@@ -197,6 +208,24 @@ class BlueskyPostPublisher(BlueskyPublisher):
 
     surface_name: ClassVar[str] = BLUESKY_POST_SURFACE
     allowlist: ClassVar[AllowlistGate] = DEFAULT_BLUESKY_POST_ALLOWLIST
+
+
+def _link_facets(text: str) -> list[dict]:
+    """One link facet per http(s) URL in ``text``, indexed by UTF-8 byte offsets.
+
+    Trailing sentence punctuation stays outside the link.
+    """
+    facets: list[dict] = []
+    for match in _URL_RE.finditer(text):
+        uri = match.group(0).rstrip(_URL_TRAILING_PUNCTUATION)
+        start = len(text[: match.start()].encode("utf-8"))
+        facets.append(
+            {
+                "index": {"byteStart": start, "byteEnd": start + len(uri.encode("utf-8"))},
+                "features": [{"$type": BLUESKY_LINK_FACET, "uri": uri}],
+            }
+        )
+    return facets
 
 
 def _now_iso() -> str:

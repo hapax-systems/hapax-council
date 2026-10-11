@@ -1,3 +1,7 @@
+# Hapax-Parked: true
+# Parked: hapax-post-merge-deploy disables this unit while the marker stands. The Mastodon account it
+# posts to is not yet labelled as the lab's AI-agent account, and its May automated posts have no
+# correction. Row mastodon-account-labelled-as-the-labs-ai-agent-account-20261011 removes the marker.
 [Unit]
 Description=Hapax Mastodon poster (canonical public-event federation)
 Documentation=https://github.com/ryanklee/council/blob/main/agents/cross_surface/mastodon_post.py
@@ -14,7 +18,9 @@ Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HAPAX_MASTODON_METRICS_PORT=9502
 Environment=HAPAX_MASTODON_TICK_S=30
 Environment=HAPAX_LOG_LEVEL=INFO
-# Reviewed weblog entries only; the variable can only narrow the poster's built-in event types.
+# Weblog entries only: the variable can only narrow the poster's built-in event types, here to
+# omg.weblog events from the lab's own weblog feed. Review happens upstream (the gated publish path);
+# this poster does not re-check it.
 Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog
 # Tails canonical ResearchVehiclePublicEvent JSONL records from:
 #   HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH

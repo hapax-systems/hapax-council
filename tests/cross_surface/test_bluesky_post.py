@@ -217,6 +217,35 @@ class TestCursor:
         assert poster.run_once() == 0
         factory.return_value.send_post.assert_called_once()
 
+    def test_a_stop_mid_post_records_that_post_and_leaves_the_rest_for_the_restart(self, tmp_path):
+        """A restart's SIGTERM only sets the stop event (run_forever), so the post in flight is
+        recorded and no later event starts; a restarted poster posts the rest, never the first again.
+        This bounds a stop to one event, inside systemd's stop timeout, so no kill lands between a
+        post and its record."""
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        first = _public_event(event_id="rvpe:broadcast_boundary:first")
+        second = _public_event(event_id="rvpe:broadcast_boundary:second")
+        _write_events(bus, [first, second])
+        first_line_bytes = len(bus.read_bytes().splitlines(keepends=True)[0])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        receipt = mock.Mock(uri="at://did:plc:example/app.bsky.feed.post/1")
+
+        def stopped_mid_post(*args, **kwargs):
+            poster.stop()
+            return receipt
+
+        factory.return_value.send_post.side_effect = stopped_mid_post
+
+        assert poster.run_once() == 1
+        factory.return_value.send_post.assert_called_once()
+        assert int(cursor.read_text(encoding="utf-8")) == first_line_bytes
+
+        restarted, restarted_factory = _make_poster(event_path=bus, cursor_path=cursor)
+        assert restarted.run_once() == 1
+        restarted_factory.return_value.send_post.assert_called_once()
+        assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
+
     def test_persists_post_uri_receipt_for_public_proof(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         cursor = tmp_path / "cursor.txt"
@@ -470,7 +499,10 @@ class TestEventFiltering:
         [
             ("Commitment Status", "Hapax weblog: Commitment Status. {url}"),
             ("Is a record its own witness?", "Hapax weblog: Is a record its own witness? {url}"),
+            ("A record, repaired.", "Hapax weblog: A record, repaired. {url}"),
+            ("It ships!", "Hapax weblog: It ships! {url}"),
             ("", "Hapax weblog post: {url}"),
+            ("   ", "Hapax weblog post: {url}"),
         ],
     )
     def test_default_compose_weblog_text_names_the_entry_once(self, label, expected):

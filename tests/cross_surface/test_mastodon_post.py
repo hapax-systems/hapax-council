@@ -230,6 +230,33 @@ class TestCursor:
         assert poster.run_once() == 0
         factory.return_value.status_post.assert_called_once()
 
+    def test_a_stop_mid_post_records_that_post_and_leaves_the_rest_for_the_restart(self, tmp_path):
+        """A restart's SIGTERM only sets the stop event, so the post in flight is recorded and no
+        later event starts; a restarted poster posts the rest, never the first again."""
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        first = _public_event(event_id="rvpe:broadcast_boundary:first")
+        second = _public_event(event_id="rvpe:broadcast_boundary:second")
+        _write_events(bus, [first, second])
+        first_line_bytes = len(bus.read_bytes().splitlines(keepends=True)[0])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        status = factory.return_value.status_post.return_value
+
+        def stopped_mid_post(*args, **kwargs):
+            poster.stop()
+            return status
+
+        factory.return_value.status_post.side_effect = stopped_mid_post
+
+        assert poster.run_once() == 1
+        factory.return_value.status_post.assert_called_once()
+        assert int(cursor.read_text(encoding="utf-8")) == first_line_bytes
+
+        restarted, restarted_factory = _make_poster(event_path=bus, cursor_path=cursor)
+        assert restarted.run_once() == 1
+        restarted_factory.return_value.status_post.assert_called_once()
+        assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
+
     def test_persists_status_url_receipt_for_public_proof(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         cursor = tmp_path / "cursor.txt"
@@ -475,7 +502,10 @@ class TestEventFiltering:
         [
             ("Commitment Status", "Hapax weblog: Commitment Status. {url}"),
             ("Is a record its own witness?", "Hapax weblog: Is a record its own witness? {url}"),
+            ("A record, repaired.", "Hapax weblog: A record, repaired. {url}"),
+            ("It ships!", "Hapax weblog: It ships! {url}"),
             ("", "Hapax weblog post: {url}"),
+            ("   ", "Hapax weblog post: {url}"),
         ],
     )
     def test_default_compose_weblog_text_names_the_entry_once(self, label, expected):
@@ -923,3 +953,32 @@ class TestEventTypeNarrowing:
         unit = Path(__file__).resolve().parents[2] / "systemd/units/hapax-mastodon-post.service"
         lines = unit.read_text(encoding="utf-8").splitlines()
         assert "Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog" in lines
+
+    def test_the_mastodon_unit_is_parked_until_its_account_is_labelled(self):
+        """hapax-post-merge-deploy disables a unit its own unit_content_parked accepts, so it stays off.
+
+        The predicate is taken from the deploy script's text and run in bash, not copied, so a change
+        to the deploy's matcher is followed here. The Bluesky unit is the control: the same predicate
+        refuses it. The account is not yet labelled as the lab's AI-agent account (row
+        mastodon-account-labelled-as-the-labs-ai-agent-account-20261011), which removes the marker.
+        """
+        import subprocess
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        deploy = (root / "scripts/hapax-post-merge-deploy").read_text(encoding="utf-8")
+        start = deploy.index("unit_content_parked() {")
+        function = deploy[start : deploy.index("\n}\n", start) + 3]
+
+        def parked(unit: str) -> bool:
+            content = (root / "systemd/units" / unit).read_text(encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "-c", function + 'unit_content_parked "$1"', "bash", content],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        assert parked("hapax-mastodon-post.service")
+        assert not parked("hapax-bluesky-post.service")
