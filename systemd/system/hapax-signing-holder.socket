@@ -1,0 +1,13 @@
+[Unit]
+# Hapax-Install-Scope: system
+Description=Signing holder for witness receipts (admits only the system witness-rota unit)
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/shared/signing_holder.py
+
+[Socket]
+ListenStream=/run/hapax-signing-holder.sock
+Accept=yes
+SocketMode=0666
+MaxConnections=16
+
+[Install]
+WantedBy=sockets.target

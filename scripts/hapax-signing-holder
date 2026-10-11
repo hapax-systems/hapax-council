@@ -1,0 +1,10 @@
+#!/usr/bin/python3 -I
+"""Isolated socket entry for the signing holder."""
+
+import sys
+
+sys.path.insert(0, "/usr/local/lib/hapax/signing-holder")
+
+from shared.signing_holder import main  # noqa: E402
+
+sys.exit(main())
