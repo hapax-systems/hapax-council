@@ -979,6 +979,77 @@ def test_frozen_fingerprint_refuses_a_draft_not_allowed_to_publish(tmp_path: Pat
         )
 
 
+def _receipted_draft(tmp_path: Path) -> Path:
+    draft = tmp_path / "draft.md"
+    body_md = "# Allowed Draft\n\nBody\n"
+    receipts = _write_bound_receipts_for_expected_artifact(
+        title="Allowed Draft", slug="allowed-draft", body_md=body_md
+    )
+    draft.write_text(
+        "---\n"
+        "Title: Allowed Draft\n"
+        "Slug: allowed-draft\n"
+        "Publication-Allowed: true\n"
+        f"{_gate_receipts_yaml(receipts)}"
+        "---\n\n"
+        f"{body_md}",
+        encoding="utf-8",
+    )
+    return draft
+
+
+def test_drop_to_inbox_writes_the_receipted_artifact_and_no_partial_file(tmp_path: Path) -> None:
+    """U4b's drop is the CLI's real drop: the same artifact, approved, at the slug's inbox path."""
+    draft = _receipted_draft(tmp_path)
+    state_root = tmp_path / "state"
+
+    path = publish_vault_artifact.drop_to_inbox(
+        draft, surfaces=["omg-weblog"], approver="review-team acceptance", state_root=state_root
+    )
+
+    assert path == state_root / "publish" / "inbox" / "allowed-draft.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["slug"] == "allowed-draft"
+    assert payload["approval"] == "approved"
+    assert payload["surfaces_targeted"] == ["omg-weblog"]
+    assert sorted(p.name for p in path.parent.iterdir()) == ["allowed-draft.json"]
+
+
+def test_drop_to_inbox_refuses_a_draft_without_receipts(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+
+    with pytest.raises(publish_vault_artifact.PublicationGateError):
+        publish_vault_artifact.drop_to_inbox(
+            _frozen_draft(tmp_path), surfaces=["omg-weblog"], approver="x", state_root=state_root
+        )
+
+    assert not (state_root / "publish" / "inbox").exists()
+
+
+@pytest.mark.parametrize("state", ["inbox", "draft", "published", "failed"])
+def test_pipeline_state_names_where_the_slug_already_is(tmp_path: Path, state: str) -> None:
+    state_root = tmp_path / "state"
+    holder = state_root / "publish" / state / "a-frozen-draft.json"
+    holder.parent.mkdir(parents=True)
+    holder.write_text("{}", encoding="utf-8")
+
+    assert (
+        publish_vault_artifact.pipeline_state(
+            _frozen_draft(tmp_path), ["omg-weblog"], state_root=state_root
+        )
+        == state
+    )
+
+
+def test_pipeline_state_is_none_for_a_slug_nowhere_in_the_pipeline(tmp_path: Path) -> None:
+    assert (
+        publish_vault_artifact.pipeline_state(
+            _frozen_draft(tmp_path), ["omg-weblog"], state_root=tmp_path / "state"
+        )
+        is None
+    )
+
+
 def test_the_publish_path_still_refuses_a_draft_without_receipts(tmp_path: Path) -> None:
     path = _frozen_draft(tmp_path)
     frontmatter, body = publish_vault_artifact._parse_publication_markdown(path)

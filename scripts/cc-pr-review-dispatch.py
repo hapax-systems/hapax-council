@@ -56,10 +56,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -5002,12 +5003,52 @@ def review_frozen_artifacts(
     frozen row is reviewed once per head.
     """
     artifact_root = artifact_root or DEFAULT_ARTIFACT_ROOT
-    if fingerprint is None:
-        import publish_vault_artifact  # noqa: PLC0415 — scripts/ is on sys.path; only this scan needs it
-
-        fingerprint = publish_vault_artifact.frozen_fingerprint
     review = review or review_artifact
     results: list[dict[str, Any]] = []
+    for row in _frozen_publication_rows(vault_root, artifact_root, fingerprint):
+        if isinstance(row, dict):
+            results.append(row)
+            continue
+        try:
+            results.append(
+                review(
+                    row.task_id,
+                    [row.rel],
+                    vault_root=vault_root,
+                    artifact_root=artifact_root,
+                    apply=apply,
+                    force=force,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — one row must not starve the scan
+            LOG.warning("frozen-artifact review failed for %s: %s", row.task_id, exc)
+            results.append({"task_id": row.task_id, "status": "error", "error": str(exc)})
+    return results
+
+
+@dataclass(frozen=True)
+class FrozenRow:
+    """An active publication row whose artifact is frozen: the declared fingerprint holds."""
+
+    task_id: str
+    note_path: Path
+    frontmatter: dict[str, Any]
+    rel: str
+    surfaces: tuple[str, ...]
+
+
+def _frozen_publication_rows(
+    vault_root: Path, artifact_root: Path, fingerprint: Any
+) -> Iterator[FrozenRow | dict[str, Any]]:
+    """Each active publication row: a FrozenRow when frozen, else its skip record.
+
+    The one selection both the review scan and the release use, so the two cannot disagree on
+    what is frozen. Rows of other kinds, and rows without a task id, are not yielded.
+    """
+    if fingerprint is None:
+        import publish_vault_artifact  # noqa: PLC0415 — scripts/ is on sys.path; only these scans need it
+
+        fingerprint = publish_vault_artifact.frozen_fingerprint
     for note_path in sorted((vault_root / "active").glob("*.md")):
         frontmatter = review_team._note_frontmatter(note_path)
         if not frontmatter or frontmatter.get("kind") != "publication":
@@ -5043,22 +5084,141 @@ def review_frozen_artifacts(
                 if actual != declared.strip():
                     reason = "not_frozen"
         if reason is not None:
-            results.append({"task_id": task_id, "status": "skipped", "reason": reason})
+            yield {"task_id": task_id, "status": "skipped", "reason": reason}
+            continue
+        yield FrozenRow(task_id, note_path, frontmatter, rel, tuple(surfaces))
+
+
+RELEASE_BLOCKING_SEVERITIES = frozenset({"major", "critical"})
+
+
+def _release_hold_reason(dossier: dict[str, Any]) -> str | None:
+    """Why an accepted dossier still may not release without the seat, or None."""
+    for review in dossier.get("reviewers") or []:
+        for finding in (review.get("findings") or []) if isinstance(review, dict) else []:
+            if not isinstance(finding, dict):
+                return "dossier_findings_unreadable"
+            if str(finding.get("severity") or "").strip().lower() in RELEASE_BLOCKING_SEVERITIES:
+                return "major_findings_need_seat_release"
+    return None
+
+
+def release_accepted_artifacts(
+    *,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    artifact_root: Path | None = None,
+    apply: bool = False,
+    state_root: Path | None = None,
+    fingerprint: Any = None,
+    pipeline_state: Any = None,
+    mint: Any = None,
+    drop: Any = None,
+) -> list[dict[str, Any]]:
+    """Release every frozen publication artifact whose exact-artifact review accepted it (U4b).
+
+    A frozen row (the review scan's own selection) is released when its review dossier is
+    quorum-accept, no reviewer raised a major or critical finding, and its slug is nowhere in the
+    publish pipeline (inbox, draft, published or failed). Release mints the public-gate receipts
+    from the signed acceptance, then drops the artifact to the inbox. The minter refuses an
+    unsigned, below-quorum, non-independent or stale acceptance, so bytes that changed after the
+    review never release, and a refused mint drops nothing. The orchestrator still runs the
+    hardening gate, the receipt check and the legal-name guard before anything is public. A major
+    or critical finding holds the row for the seat: a hold narrows, it never releases.
+    """
+    artifact_root = artifact_root or DEFAULT_ARTIFACT_ROOT
+    if pipeline_state is None or drop is None or mint is None:
+        import publish_vault_artifact  # noqa: PLC0415 — scripts/ is on sys.path; only these scans need it
+
+        root = state_root or publish_vault_artifact._default_state_root()
+        if pipeline_state is None:
+            pipeline_state = partial(publish_vault_artifact.pipeline_state, state_root=root)
+        if drop is None:
+            drop = partial(publish_vault_artifact.drop_to_inbox, state_root=root)
+        if mint is None:
+            import mint_public_gate_receipts  # noqa: PLC0415 — scripts/ is on sys.path
+
+            mint = partial(
+                mint_public_gate_receipts.mint,
+                receipt_root=publish_vault_artifact.PUBLIC_GATE_RECEIPT_ROOTS[0],
+            )
+    results: list[dict[str, Any]] = []
+    for row in _frozen_publication_rows(vault_root, artifact_root, fingerprint):
+        if isinstance(row, dict):
+            results.append(row)
+            continue
+        task_id = row.task_id
+        skipped = {"task_id": task_id, "status": "skipped"}
+        try:
+            dossier = yaml.safe_load(
+                review_team.review_dossier_path(row.note_path, task_id).read_text(encoding="utf-8")
+            )
+        except FileNotFoundError:
+            results.append({**skipped, "reason": "no_review_dossier"})
+            continue
+        except (OSError, yaml.YAMLError) as exc:
+            results.append({**skipped, "reason": f"review_dossier_unreadable:{type(exc).__name__}"})
+            continue
+        if not isinstance(dossier, dict):
+            results.append({**skipped, "reason": "review_dossier_unreadable:not_a_mapping"})
+            continue
+        verdict = str(dossier.get("review_team_verdict") or "").strip()
+        if verdict != "quorum-accept":
+            results.append({**skipped, "reason": f"verdict:{verdict}"})
+            continue
+        hold = _release_hold_reason(dossier)
+        if hold is not None:
+            results.append({"task_id": task_id, "status": "held", "reason": hold})
+            continue
+        artifact = artifact_root / row.rel
+        surfaces = list(row.surfaces)
+        try:
+            state = pipeline_state(artifact, surfaces)
+        except Exception as exc:  # noqa: BLE001 — a draft that cannot be built is not released
+            results.append(
+                {**skipped, "reason": f"pipeline_state_unavailable:{type(exc).__name__}"}
+            )
+            continue
+        if state is not None:
+            results.append({**skipped, "reason": f"already_{state}"})
+            continue
+        head = str(dossier.get("head_sha") or "")
+        if not apply:
+            results.append({"task_id": task_id, "status": "would_release", "head_sha": head})
             continue
         try:
-            results.append(
-                review(
-                    task_id,
-                    [rel],
-                    vault_root=vault_root,
-                    artifact_root=artifact_root,
-                    apply=apply,
-                    force=force,
-                )
+            minted = mint(
+                task_id=task_id,
+                artifact=artifact,
+                artifact_root=artifact_root,
+                authority_case=str(row.frontmatter.get("authority_case") or "").strip(),
             )
-        except Exception as exc:  # noqa: BLE001 — one row must not starve the scan
-            LOG.warning("frozen-artifact review failed for %s: %s", task_id, exc)
-            results.append({"task_id": task_id, "status": "error", "error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 — any refusal to mint holds; nothing is dropped
+            results.append({"task_id": task_id, "status": "held", "reason": f"mint_hold:{exc}"})
+            continue
+        issuer = str(dossier.get("authority_issuer") or "").strip()
+        try:
+            inbox_path = drop(
+                artifact,
+                surfaces=surfaces,
+                approver=f"{issuer} acceptance of {head}, released by the frozen-artifact scan",
+            )
+        except Exception as exc:  # noqa: BLE001 — a refused drop is held and named
+            results.append({"task_id": task_id, "status": "held", "reason": f"drop_refused:{exc}"})
+            continue
+        receipts = minted.get("receipts") if isinstance(minted, dict) else None
+        results.append(
+            {
+                "task_id": task_id,
+                "status": "released",
+                "head_sha": head,
+                "receipts": {
+                    gate: (value or {}).get("state")
+                    for gate, value in (receipts or {}).items()
+                    if isinstance(value, dict)
+                },
+                "inbox_path": str(inbox_path),
+            }
+        )
     return results
 
 
@@ -5143,6 +5303,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="review every frozen publication artifact named by an active row",
     )
+    target.add_argument(
+        "--release-accepted",
+        action="store_true",
+        help=(
+            "mint the public-gate receipts for, and drop to the publish inbox, every frozen "
+            "artifact whose review accepted it with no major or critical finding"
+        ),
+    )
     parser.add_argument(
         "--artifact",
         action="append",
@@ -5217,6 +5385,12 @@ def main(argv: list[str] | None = None) -> int:
             artifact_root=args.artifact_root,
             apply=args.apply,
             force=args.force,
+        )
+    elif args.release_accepted:
+        results = release_accepted_artifacts(
+            vault_root=args.vault_root,
+            artifact_root=args.artifact_root,
+            apply=args.apply,
         )
     elif args.all:
         results = review_all_open_prs(

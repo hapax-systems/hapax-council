@@ -596,6 +596,60 @@ def frozen_fingerprint(path: Path, surfaces: list[str]) -> str:
     return _artifact_fingerprint_for_gate(artifact)
 
 
+PIPELINE_STATES = ("inbox", "draft", "published", "failed")
+
+
+def pipeline_state(path: Path, surfaces: list[str], *, state_root: Path) -> str | None:
+    """Where the draft's slug already is in the publish pipeline, or None if nowhere.
+
+    The slug comes from the publisher's own construction, taken without asserting receipts.
+    Raises PublicationGateError or PublicationFrontmatterError when the draft cannot be built.
+    """
+    frontmatter, body = _parse_publication_markdown(path)
+    artifact = _artifact_from_frontmatter(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver="pipeline-check",
+        source_path=path.resolve(),
+    )
+    paths = {
+        "inbox": artifact.inbox_path(state_root=state_root),
+        "draft": artifact.draft_path(state_root=state_root),
+        "published": artifact.published_path(state_root=state_root),
+        "failed": artifact.failed_path(state_root=state_root),
+    }
+    return next((state for state in PIPELINE_STATES if paths[state].exists()), None)
+
+
+def drop_to_inbox(path: Path, *, surfaces: list[str], approver: str, state_root: Path) -> Path:
+    """Build the approved artifact from a vault draft and write it to the publish inbox.
+
+    The same construction as the command line's drop, so the draft's public-gate receipts are
+    asserted. The file is written beside its final name and renamed into place, so the
+    orchestrator never reads a partial artifact. Raises PublicationGateError on any refusal,
+    before anything is written.
+    """
+    frontmatter, body = _parse_publication_markdown(path)
+    if not body.strip():
+        raise PublicationGateError(f"empty body in {path}")
+    _assert_target_surfaces_allowed(surfaces)
+    artifact = _build_artifact(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver=approver,
+        source_path=path.expanduser().resolve(),
+    )
+    _assert_safe_artifact_slug(artifact.slug)
+    inbox_path = artifact.inbox_path(state_root=state_root)
+    inbox_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = inbox_path.with_name(f".{inbox_path.name}.partial")
+    partial.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+    os.replace(partial, inbox_path)
+    return inbox_path
+
+
 def _artifact_from_frontmatter(
     *,
     body_md: str,
