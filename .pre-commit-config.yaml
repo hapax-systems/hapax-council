@@ -7,6 +7,13 @@ repos:
       - id: ruff-format
   - repo: local
     hooks:
+      - id: household-name-leak-pre-push
+        name: Household/legal name leak gate (pre-push, --diff, local registry)
+        entry: hooks/scripts/name-leak-pre-push.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true
       - id: conflict-markers
         name: Check for conflict markers
         entry: scripts/check-conflict-markers
