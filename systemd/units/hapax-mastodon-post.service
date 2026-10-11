@@ -14,6 +14,8 @@ Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 Environment=HAPAX_MASTODON_METRICS_PORT=9502
 Environment=HAPAX_MASTODON_TICK_S=30
 Environment=HAPAX_LOG_LEVEL=INFO
+# Reviewed weblog entries only; the variable can only narrow the poster's built-in event types.
+Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog
 # Tails canonical ResearchVehiclePublicEvent JSONL records from:
 #   HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH
 #   default: /dev/shm/hapax-public-events/events.jsonl

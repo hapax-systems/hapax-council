@@ -15,6 +15,9 @@ via hapax-secrets:
   HAPAX_BLUESKY_HANDLE          # e.g. ``hapax.bsky.social``
   HAPAX_BLUESKY_APP_PASSWORD    # 19-char app-password from Bluesky
 
+``HAPAX_BLUESKY_DID``, when set, is the login identifier in place of the handle: a handle can
+change and a DID cannot.
+
 Without either, daemon idles + logs ``no_credentials`` per event.
 
 ## Composition
@@ -97,6 +100,20 @@ ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
         "velocity.digest",
     }
 )
+EVENT_TYPES_ENV = "HAPAX_CROSS_SURFACE_EVENT_TYPES"
+
+
+def _allowed_event_types() -> frozenset[str]:
+    """The types this poster may post: the built-in set, narrowed by EVENT_TYPES_ENV when set.
+
+    The variable is a comma-separated list. It can only narrow: a type outside the built-in set
+    is ignored, and a list naming none of them allows nothing.
+    """
+    raw = os.environ.get(EVENT_TYPES_ENV)
+    if raw is None:
+        return ALLOWED_PUBLIC_EVENT_TYPES
+    wanted = {part.strip() for part in raw.split(",") if part.strip()}
+    return ALLOWED_PUBLIC_EVENT_TYPES & wanted
 
 
 @dataclass(frozen=True)
@@ -142,6 +159,7 @@ class BlueskyPoster:
         self._idempotency_path = idempotency_path
         self._tick_s = max(1.0, tick_s)
         self._dry_run = dry_run
+        self._allowed_types = _allowed_event_types()
         self._stop_evt = threading.Event()
         self._processed_event_ids: set[str] | None = None
         self._post_receipts: dict[str, dict[str, Any]] | None = None
@@ -168,7 +186,7 @@ class BlueskyPoster:
                 self._write_cursor(record.byte_after)
                 continue
             event = record.event
-            if event.event_type not in ALLOWED_PUBLIC_EVENT_TYPES:
+            if event.event_type not in self._allowed_types:
                 self._write_cursor(record.byte_after)
                 continue
             if self._event_already_processed(event.event_id):
@@ -507,9 +525,18 @@ def _event_intent(event: ResearchVehiclePublicEvent) -> str:
     return event.event_type
 
 
+def _weblog_post_text(event: ResearchVehiclePublicEvent) -> str:
+    """'Hapax weblog: <title>. <url>', naming the entry once (_event_intent starts 'weblog: ')."""
+    label = event.chapter_ref.label.strip() if event.chapter_ref is not None else ""
+    if not label:
+        return f"Hapax weblog post: {event.public_url}"
+    end = "" if label.endswith((".", "!", "?")) else "."
+    return f"Hapax weblog: {label}{end} {event.public_url}"
+
+
 def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
     if event.event_type == "omg.weblog" and event.public_url:
-        return f"Hapax weblog: {_event_intent(event)}. {event.public_url}"
+        return _weblog_post_text(event)
     if event.event_type in {"governance.enforcement", "velocity.digest"}:
         return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."
@@ -637,9 +664,19 @@ def _dedupe(values: list[str | None]) -> list[str]:
 
 
 def _credentials_from_env() -> tuple[str | None, str | None]:
-    handle = os.environ.get("HAPAX_BLUESKY_HANDLE", "").strip() or None
+    """The login identifier and app password.
+
+    The account's DID is preferred: a handle can change and a DID cannot. On 2026-10-10 the
+    configured handle no longer resolved and its login was refused, while the same app password
+    opened a session by DID.
+    """
+    identifier = (
+        os.environ.get("HAPAX_BLUESKY_DID", "").strip()
+        or os.environ.get("HAPAX_BLUESKY_HANDLE", "").strip()
+        or None
+    )
     pw = os.environ.get("HAPAX_BLUESKY_APP_PASSWORD", "").strip() or None
-    return handle, pw
+    return identifier, pw
 
 
 # ── Orchestrator entry-point (PUB-P1-A foundation) ───────────────────

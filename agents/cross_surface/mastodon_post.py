@@ -106,6 +106,20 @@ ALLOWED_PUBLIC_EVENT_TYPES = frozenset(
         "velocity.digest",
     }
 )
+EVENT_TYPES_ENV = "HAPAX_CROSS_SURFACE_EVENT_TYPES"
+
+
+def _allowed_event_types() -> frozenset[str]:
+    """The types this poster may post: the built-in set, narrowed by EVENT_TYPES_ENV when set.
+
+    The variable is a comma-separated list. It can only narrow: a type outside the built-in set
+    is ignored, and a list naming none of them allows nothing.
+    """
+    raw = os.environ.get(EVENT_TYPES_ENV)
+    if raw is None:
+        return ALLOWED_PUBLIC_EVENT_TYPES
+    wanted = {part.strip() for part in raw.split(",") if part.strip()}
+    return ALLOWED_PUBLIC_EVENT_TYPES & wanted
 
 
 @dataclass(frozen=True)
@@ -153,6 +167,7 @@ class MastodonPoster:
         self._tick_s = max(1.0, tick_s)
         self._text_limit = max(1, text_limit)
         self._dry_run = dry_run
+        self._allowed_types = _allowed_event_types()
         self._stop_evt = threading.Event()
         self._processed_event_ids: set[str] | None = None
         self._post_receipts: dict[str, dict[str, Any]] | None = None
@@ -179,7 +194,7 @@ class MastodonPoster:
                 self._write_cursor(record.byte_after)
                 continue
             event = record.event
-            if event.event_type not in ALLOWED_PUBLIC_EVENT_TYPES:
+            if event.event_type not in self._allowed_types:
                 self._write_cursor(record.byte_after)
                 continue
             if self._event_already_processed(event.event_id):
@@ -523,9 +538,18 @@ def _event_intent(event: ResearchVehiclePublicEvent) -> str:
     return event.event_type
 
 
+def _weblog_post_text(event: ResearchVehiclePublicEvent) -> str:
+    """'Hapax weblog: <title>. <url>', naming the entry once (_event_intent starts 'weblog: ')."""
+    label = event.chapter_ref.label.strip() if event.chapter_ref is not None else ""
+    if not label:
+        return f"Hapax weblog post: {event.public_url}"
+    end = "" if label.endswith((".", "!", "?")) else "."
+    return f"Hapax weblog: {label}{end} {event.public_url}"
+
+
 def _fallback_public_event_text(event: ResearchVehiclePublicEvent) -> str:
     if event.event_type == "omg.weblog" and event.public_url:
-        return f"Hapax weblog: {_event_intent(event)}. {event.public_url}"
+        return _weblog_post_text(event)
     if event.event_type in {"governance.enforcement", "velocity.digest"}:
         return f"Hapax {_event_intent(event)}."
     return f"Hapax livestream: {_event_intent(event)}."
