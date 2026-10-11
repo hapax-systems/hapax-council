@@ -8,10 +8,10 @@ fetches only what changed. Invariants under test (each mutation-verified):
   cached page on 304 (a 304 does not count against the budget);
 - ``--force`` bypasses the unchanged-head gate; dry-run plans never record
   heads; heads of closed PRs are pruned;
-- every failure of the conditional listing raises RuntimeError so the scan can
-  fall back to the transport chooser, and a rate-limit 403 whose stderr carries
-  "304" inside a hex request ID never reads as a 304;
-- a corrupt or wrong-schema scan state fails open to a fresh state.
+- every failure of the conditional listing raises RuntimeError so the scan falls
+  back to the transport chooser; a 403 whose stderr carries "304" in a request
+  ID never reads as a 304;
+- a corrupt or wrong-schema scan state fails open to fresh.
 """
 
 from __future__ import annotations
@@ -435,8 +435,7 @@ class TestConditionalListingFailures:
             )
 
     def test_403_stderr_with_304_in_request_id_does_not_read_as_304(self) -> None:
-        # GitHub's rate-limit 403 carries a hex request ID ("0A1B:304C:..."); a bare
-        # "304" substring there must not serve the cached page as a 304.
+        # A 403's hex request ID can contain "304"; it must not serve the cached page.
         state = {
             "schema": 1,
             "heads": {},

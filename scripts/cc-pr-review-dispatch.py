@@ -5227,10 +5227,8 @@ def _list_open_prs_conditional(
         except (subprocess.SubprocessError, OSError) as exc:
             raise RuntimeError(f"gh api pulls could not run: {exc}") from exc
         status, headers, body = _parse_gh_api_include_output(proc.stdout)
-        # The parsed status decides when there is one. stderr is consulted only when
-        # no status line was parsed, and must say "HTTP 304" verbatim: GitHub's
-        # rate-limit 403 text carries a hex request ID in which a bare "304" appears,
-        # and treating that 403 as a 304 would reuse a cached page for one cycle.
+        # The parsed status decides; stderr ("HTTP 304" verbatim) is consulted only
+        # without one, so a 403's hex request ID containing "304" cannot read as a 304.
         not_modified = status == "304" or (
             status is None and proc.returncode != 0 and "HTTP 304" in proc.stderr
         )
