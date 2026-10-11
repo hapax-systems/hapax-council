@@ -1718,6 +1718,7 @@ def _exam_ledger_reexam_due(
         flaps is None
         or live_route_blocked is None
         or not isinstance(recorded, list)
+        or not all(isinstance(family, str) for family in recorded)
         or not head_sha
         or entry.get("head_sha") != head_sha
         or frozenset(recorded) == live_route_blocked
@@ -1782,7 +1783,11 @@ def _load_exam_ledger(path: Path, *, repo: str, now: datetime) -> dict[int, dict
         )
         return {}
     entries: dict[int, dict[str, Any]] = {}
-    for number, entry in (state.get("repositories", {}).get(repo) or {}).items():
+    repositories = state.get("repositories")
+    by_number = repositories.get(repo) if isinstance(repositories, dict) else None
+    if not isinstance(by_number, dict):
+        return entries
+    for number, entry in by_number.items():
         try:
             examined_at = datetime.fromisoformat(entry["examined_at"])
             if examined_at.tzinfo is None:
@@ -1807,7 +1812,9 @@ def _save_exam_ledger(path: Path, repo: str, entries: Mapping[int, Mapping[str, 
                     state = existing
             except (OSError, ValueError):
                 pass
-            state.setdefault("repositories", {})[repo] = {
+            if not isinstance(state.get("repositories"), dict):
+                state["repositories"] = {}
+            state["repositories"][repo] = {
                 str(number): dict(entry) for number, entry in sorted(entries.items())
             }
             temporary = path.with_suffix(".tmp")
@@ -6029,7 +6036,11 @@ def run_reconciler(
             ):
                 stamps = dict(examined_stamps)
         except RestIndeterminateError as exc:
-            LOG.warning("exam ledger not recorded this tick: %s", exc)
+            LOG.warning(
+                "exam ledger not recorded this tick: %s. Next action: none; the next tick "
+                "records it, and until then only re-exam seats are lost",
+                exc,
+            )
         else:
             _save_exam_ledger(
                 exam_ledger_path,

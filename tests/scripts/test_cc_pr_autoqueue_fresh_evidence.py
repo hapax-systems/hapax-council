@@ -603,6 +603,32 @@ def test_a_row_turning_pr_open_after_its_exam_is_examined_next_tick(
     assert 13 not in examined(report)
 
 
+def test_the_killswitch_also_closes_the_re_exam_seats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #5116 review (claude minor): the docstring's killswitch claim, pinned for these seats.
+    monkeypatch.setattr(autoqueue, "_live_review_route_blocked_families", lambda: frozenset())
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-13", pr=13, status="in_progress")
+    runner = RotationRunner(25)
+    for _ in range(3):
+        tick(tmp_path, runner, vault)
+    _age_rotation_state(tmp_path, 120)
+    tick(tmp_path, runner, vault)
+    _write_task(vault, task_id="task-13", pr=13, status="pr_open")
+    monkeypatch.setenv("HAPAX_AUTOQUEUE_MUST_INCLUDE_OFF", "1")
+    report = tick(tmp_path, runner, vault)
+    assert report["must_include"]["fresh_evidence"] == []
+
+
+def test_the_live_route_state_is_read_once_per_tick() -> None:
+    # #5116 review (claude minor): _once's contract, pinned.
+    calls: list[int] = []
+    read = autoqueue._once(lambda: calls.append(1) or frozenset({"glm"}))
+    assert read() == read() == frozenset({"glm"})
+    assert calls == [1]
+
+
 # ── the ledger fails open: a failure only removes seats, never crashes a tick ──
 
 
@@ -635,6 +661,21 @@ def test_the_ledger_loader_skips_what_it_cannot_ground(tmp_path: Path) -> None:
     assert list(load(path, repo="owner/repo", now=now)) == [13]
 
 
+def test_inner_type_mismatches_neither_raise_nor_grant(tmp_path: Path) -> None:
+    # #5116 review at adc0844e4 (gemini major): a valid version with a wrong inner type.
+    now = datetime.now(UTC)
+    path = tmp_path / "ledger.json"
+    for repositories in (None, [], {"owner/repo": []}):
+        path.write_text(json.dumps({"schema_version": 1, "repositories": repositories}), "utf-8")
+        assert autoqueue._load_exam_ledger(path, repo="owner/repo", now=now) == {}
+    path.write_text(json.dumps({"schema_version": 1, "repositories": None}), encoding="utf-8")
+    autoqueue._save_exam_ledger(path, "owner/repo", {13: _entry()})
+    assert list(json.loads(path.read_text(encoding="utf-8"))["repositories"]["owner/repo"]) == [
+        "13"
+    ]
+    assert _due({**_entry(), "route_blocked": [{"glm": True}]}) is None
+
+
 def test_a_ledger_write_failure_is_logged_not_raised(tmp_path: Path) -> None:
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("", encoding="utf-8")
@@ -649,6 +690,42 @@ def test_an_unreadable_route_state_grants_nothing(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(autoqueue.review_team, "review_route_blocked_families", boom)
     assert autoqueue._live_review_route_blocked_families() is None
+
+
+# ── the review_team boundary, driven for real (#5116 review at adc0844e4, claude major) ──
+
+
+def test_the_flap_prefixes_parse_what_review_team_actually_emits(tmp_path: Path) -> None:
+    # Fails if review_team renames either blocker: the parse then returns None.
+    from tests.test_review_team import TestVerdictBlockers, _write_dossier
+
+    rt, fixture = autoqueue.review_team, TestVerdictBlockers()
+    for name in ("seated", "unwitnessed"):
+        (tmp_path / name).mkdir()
+    seated = rt.review_team_verdict_blockers(
+        fixture._frontmatter(),
+        _write_dossier(tmp_path / "seated", "task-x", fixture._good_dossier(rt)),
+        pr_head_sha="a" * 40,
+        route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
+    )
+    unwitnessed = rt.review_team_verdict_blockers(
+        fixture._frontmatter(),
+        _write_dossier(
+            tmp_path / "unwitnessed", "task-x", fixture._route_blocked_degraded_dossier(rt)
+        ),
+        pr_head_sha="a" * 40,
+        route_blocked_families={},
+    )
+    for blockers, kind in ((seated, "seated"), (unwitnessed, "unwitnessed")):
+        named = [b for b in blockers if b.endswith(":gemini")]  # by family, never by prefix
+        parsed = autoqueue._flap_blocker_families(named)
+        assert parsed is not None and parsed[kind] == frozenset({"gemini"}), blockers
+
+
+def test_the_live_route_state_is_read_through_the_real_review_team_call() -> None:
+    families = autoqueue._live_review_route_blocked_families()
+    assert isinstance(families, frozenset)
+    assert all(isinstance(family, str) and family for family in families)
 
 
 def test_a_row_turning_ready_is_due_even_across_a_moved_head() -> None:
