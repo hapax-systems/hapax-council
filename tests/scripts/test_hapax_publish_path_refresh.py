@@ -39,7 +39,15 @@ def _load() -> types.ModuleType:
 class _Host:
     """A fake host: releases, an activation link, /proc cwd links, systemctl and git."""
 
-    def __init__(self, tmp: Path, *, running: str | None, diff: str = "", diff_rc: int = 0) -> None:
+    def __init__(
+        self,
+        tmp: Path,
+        *,
+        running: str | None,
+        diff: str = "",
+        diff_rc: int = 0,
+        settle_polls: int | None = 0,
+    ) -> None:
         self.releases = tmp / "releases"
         for sha in (OLD, NEW):
             (self.releases / sha).mkdir(parents=True)
@@ -53,24 +61,36 @@ class _Host:
         self.restart_rc = 0
         self.show_rc = 0
         self.calls: list[list[str]] = []
+        self.settle_polls = settle_polls
+        self.now = 0.0
+        self.reads = None
         if running is not None:
             self._point(self.pid, running)
 
     def _point(self, pid: int, sha: str) -> None:
         (self.proc / str(pid)).mkdir(parents=True, exist_ok=True)
-        (self.proc / str(pid) / "cwd").symlink_to(self.releases / sha)
+        cwd = self.proc / str(pid) / "cwd"
+        if cwd.is_symlink():
+            cwd.unlink()
+        cwd.symlink_to(self.releases / sha)
 
     def run(self, argv):  # noqa: ANN001 — the runner signature the script injects
         argv = list(argv)
         self.calls.append(argv)
         if argv[:3] == ["systemctl", "--user", "show"]:
+            if self.reads is not None:
+                self.reads += 1
+                if self.settle_polls is not None and self.reads > self.settle_polls:
+                    self._point(self.pid, NEW)
             pid = self.pid if (self.proc / str(self.pid)).exists() else 0
             stdout = f"{pid}\n" if self.show_rc == 0 else ""
             return subprocess.CompletedProcess(argv, self.show_rc, stdout=stdout, stderr="")
         if argv[:3] == ["systemctl", "--user", "restart"]:
             if self.restart_rc == 0:
+                # A Type=simple restart returns once the child is forked, before it chdirs.
                 self.pid += 1
-                self._point(self.pid, NEW)
+                (self.proc / str(self.pid)).mkdir(parents=True, exist_ok=True)
+                self.reads = 0
             return subprocess.CompletedProcess(argv, self.restart_rc, stdout="", stderr="")
         if argv[0] == "git":
             return subprocess.CompletedProcess(argv, self.diff_rc, stdout=self.diff, stderr="")
@@ -79,9 +99,18 @@ class _Host:
     def restarts(self) -> list[list[str]]:
         return [c for c in self.calls if c[:3] == ["systemctl", "--user", "restart"]]
 
+    def doze(self, seconds: float) -> None:
+        self.now += seconds
+
     def refresh(self, module: types.ModuleType, unit):  # noqa: ANN001
         return module.refresh(
-            unit, run=self.run, activation=self.activation, inbox=self.inbox, proc_root=self.proc
+            unit,
+            run=self.run,
+            activation=self.activation,
+            inbox=self.inbox,
+            proc_root=self.proc,
+            clock=lambda: self.now,
+            sleep=self.doze,
         )
 
 
@@ -265,6 +294,29 @@ def test_a_restart_that_leaves_the_old_release_is_not_verified(module, tmp_path)
     assert result["action"] == "restarted"
     assert result["verified"] is False
     assert result["running"] == OLD
+
+
+def test_a_release_that_appears_late_is_verified(module, tmp_path) -> None:
+    """A Type=simple child enters its release after restart returns; the poll waits for it."""
+    host = _Host(tmp_path, running=OLD, diff="shared/x.py\n", settle_polls=2)
+
+    result = host.refresh(module, _unit(module, ORCH))
+
+    assert result["action"] == "restarted"
+    assert result["verified"] is True
+    assert result["running"] == NEW
+    assert host.restarts() == [["systemctl", "--user", "restart", ORCH]]
+
+
+def test_a_release_that_never_appears_stays_unverified(module, tmp_path) -> None:
+    host = _Host(tmp_path, running=OLD, diff="shared/x.py\n", settle_polls=None)
+
+    result = host.refresh(module, _unit(module, ORCH))
+
+    assert result["action"] == "restarted"
+    assert result["verified"] is False
+    assert result["running"] is None
+    assert module.exit_code([result]) == 1
 
 
 def test_a_failed_restart_is_reported(module, tmp_path) -> None:
