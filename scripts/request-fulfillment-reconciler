@@ -8,6 +8,7 @@ read-only; this tool is the explicit writer for request lifecycle hygiene.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -221,18 +222,29 @@ def request_files_by_key(active_dir: Path, closed_dir: Path) -> dict[str, Path]:
     return files
 
 
+def is_named_file(path: Path) -> bool:
+    # Rows sometimes hold prose in a parent field. A name the filesystem rejects
+    # as too long cannot be a file; any other stat failure is unknown and raises.
+    try:
+        return path.is_file()
+    except OSError as exc:
+        if exc.errno == errno.ENAMETOOLONG:
+            return False
+        raise
+
+
 def resolve_request_key(ref: str, active_dir: Path, request_index: dict[str, Path]) -> str | None:
     if not ref:
         return None
     expanded = Path(os.path.expanduser(ref))
-    if expanded.is_file():
+    if is_named_file(expanded):
         note = parse_frontmatter(expanded)
         if note and is_request_type(note.frontmatter):
             return expanded.name
     name = Path(ref).name
     if name in request_index:
         return request_index[name].name
-    if name.endswith(".md") and (active_dir / name).is_file():
+    if name.endswith(".md") and is_named_file(active_dir / name):
         return name
     if name.startswith("REQ-"):
         for candidate in sorted(active_dir.glob(f"{name}*.md")):

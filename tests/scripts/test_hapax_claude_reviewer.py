@@ -263,6 +263,53 @@ def test_review_child_uses_descriptor_despite_stale_text_and_environment(tmp_pat
     assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
 
 
+# Each of these moves `claude -p` off the subscription route the registry declares
+# for claude.review.opus. The estate's secrets env exports the first three, with the
+# base URL pointing at a proxy, so a caller that loads it must not move the seat.
+PROVIDER_ROUTE_VARIABLES = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
+
+
+@pytest.mark.parametrize("variable", PROVIDER_ROUTE_VARIABLES)
+def test_review_child_never_inherits_a_provider_route_variable(tmp_path, variable):
+    seen = tmp_path / "seen.json"
+    fake = tmp_path / "claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "sys.stdin.read()\n"
+        f"names = {list(PROVIDER_ROUTE_VARIABLES) + ['HAPAX_REVIEW_SEAT_ID']!r}\n"
+        "with open(os.environ['HAPAX_FAKE_SEEN'], 'w', encoding='utf-8') as out:\n"
+        "    json.dump({name: os.environ.get(name) for name in names}, out)\n"
+        "print('```yaml\\nverdict: accept\\nfindings: []\\nchecklist: {}\\n```')\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            variable: "unit-test-value",
+            "HAPAX_REVIEW_SEAT_ID": "claude-1",
+            "HAPAX_FAKE_SEEN": str(seen),
+        },
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(seen.read_text(encoding="utf-8"))
+    assert observed.pop("HAPAX_REVIEW_SEAT_ID") == "claude-1"
+    assert observed == dict.fromkeys(PROVIDER_ROUTE_VARIABLES)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

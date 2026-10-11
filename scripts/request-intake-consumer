@@ -1033,6 +1033,12 @@ write_planning_feed() {
 FEED
 }
 
+# Each listing line carries "<order key>\t" in front; print in key order, then drop the key.
+# LC_ALL=C: byte order, so the result does not depend on the caller's locale collation.
+print_ordered_lines() {
+  printf "%b" "$1" | LC_ALL=C sort -r -s -t $'\t' -k1,1 | cut -f2-
+}
+
 unread_count=0
 stale_count=0
 malformed_count=0
@@ -1062,6 +1068,12 @@ for note in "$ACTIVE_DIR"/*.md; do
   fi
   [[ -z "$status" ]] && status="unknown"
   [[ -z "$title" ]] && title="(untitled request)"
+  # Listing order: standing requests first, then newest first by created_at (updated_at
+  # when absent), so the latest direction is read before older backlog. Values may be
+  # single-quoted, and a quote would sort below every digit.
+  created_at="$(frontmatter_value created_at "$note" | compact_value | tr -d "'")"
+  standing="$(frontmatter_value standing "$note" | compact_value)"
+  order_key="$([[ "$standing" == "true" ]] && echo 1 || echo 0)${created_at:-${updated_at//\'/}}"
 
   receipt_file="$RECEIPTS_DIR/${req_id}.yaml"
 
@@ -1076,7 +1088,7 @@ for note in "$ACTIVE_DIR"/*.md; do
       age=$((now_epoch - receipt_epoch))
       if [[ $age -gt $STALE_SECONDS ]]; then
         stale_count=$((stale_count + 1))
-        unread_lines="${unread_lines}    STALE [${status}] ${req_id} — ${title} (receipt ${age}s old)\n"
+        unread_lines="${unread_lines}${order_key}\t    STALE [${status}] ${req_id} — ${title} (receipt ${age}s old)\n"
         receipt_stale=1
       else
         continue
@@ -1086,7 +1098,7 @@ for note in "$ACTIVE_DIR"/*.md; do
 
   if [[ "$receipt_stale" -eq 0 ]]; then
     unread_count=$((unread_count + 1))
-    unread_lines="${unread_lines}    UNREAD [${status}] ${req_id} — ${title}\n"
+    unread_lines="${unread_lines}${order_key}\t    UNREAD [${status}] ${req_id} — ${title}\n"
   fi
 
   if [[ "$WRITE_RECEIPT" -eq 1 ]]; then
@@ -1126,7 +1138,7 @@ if [[ "$MODE" == "preamble" ]]; then
   if [[ $total -gt 0 ]]; then
     echo ""
     echo "REQUEST INTAKE (${unread_count} unread, ${stale_count} stale):"
-    printf "%b" "$unread_lines"
+    print_ordered_lines "$unread_lines"
     echo "  Run: scripts/request-intake-consumer --write-receipt"
   fi
   exit 0
@@ -1136,7 +1148,7 @@ if [[ $total -eq 0 ]]; then
   echo "Request intake: all requests have fresh read receipts."
 else
   echo "Request intake: ${unread_count} unread, ${stale_count} stale"
-  printf "%b" "$unread_lines"
+  print_ordered_lines "$unread_lines"
 fi
 
 if [[ $malformed_count -gt 0 && "$MODE" != "preamble" ]]; then

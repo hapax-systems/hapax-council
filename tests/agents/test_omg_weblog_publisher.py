@@ -265,6 +265,94 @@ class _FakeArtifact:
 
 
 class TestPublishArtifact:
+    @pytest.mark.parametrize(
+        ("slug", "title", "body"),
+        [
+            (
+                "att0011-cor0003-weblog-20261008",
+                "Correction to the lab's notebook-entry attestation",
+                "Zero completed attribution checks did not establish that there were no entries. "
+                "The commitment's outcome is undetermined.",
+            ),
+            (
+                "notebook-after-the-window",
+                "After the window closed, the result remained undetermined",
+                "The earlier attestations remain available as historical records.",
+            ),
+            (
+                "refusal-brief",
+                "A historical distribution decision",
+                "The earlier refusal is a historical record, not a current promise.",
+            ),
+        ],
+    )
+    def test_compose_does_not_invent_distribution_policy(
+        self, slug: str, title: str, body: str
+    ) -> None:
+        from datetime import datetime
+
+        from agents.omg_weblog_publisher.publisher import _compose_artifact_content
+        from shared.preprint_artifact import PreprintArtifact
+
+        attribution = "Prepared by GPT; independent review remains pending."
+        abstract = "A dated account of the evidence inspected."
+        artifact = PreprintArtifact(
+            slug=slug,
+            title=title,
+            attribution_block=attribution,
+            abstract=abstract,
+            body_md=f"# {title}\n\n{body}",
+        )
+
+        date, rendered = _compose_artifact_content(artifact).split("\n\n", 1)
+
+        datetime.strptime(date, "Date: %Y-%m-%d %H:%M UTC")
+        assert rendered == f"# {title}\n\n{attribution}\n\n{abstract}\n\n{body}"
+
+    @pytest.mark.parametrize("location", ["attribution_block", "body_md"])
+    def test_compose_preserves_explicit_distribution_posture(self, location: str) -> None:
+        from agents.omg_weblog_publisher.publisher import _compose_artifact_content
+        from shared.attribution_block import NON_ENGAGEMENT_CLAUSE_LONG
+        from shared.preprint_artifact import PreprintArtifact
+
+        # Historical refusal content remains renderable when the artifact actually carries it.
+        text = f"Historical distribution statement:\n\n{NON_ENGAGEMENT_CLAUSE_LONG}"
+        artifact = PreprintArtifact(
+            slug="historical-note", title="Historical note", **{location: text}
+        )
+
+        _, rendered = _compose_artifact_content(artifact).split("\n\n", 1)
+
+        assert rendered == f"# Historical note\n\n{text}"
+
+    def test_publish_artifact_transports_admitted_copy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+        from shared.preprint_artifact import PreprintArtifact
+
+        client = MagicMock()
+        client.enabled = True
+        client.get_entry_status.return_value = (404, None)
+        client.set_entry.return_value = {"ok": True}
+        monkeypatch.setattr("shared.omg_lol_client.OmgLolClient", lambda **_: client)
+        artifact = PreprintArtifact(
+            slug="correction-notice",
+            title="Correction notice",
+            attribution_block="Machine-assisted draft; reviewed attribution supplied by the artifact.",
+            body_md="The correction preserves the original record and explains what was unsupported.",
+            grounding_gate_result=_grounding_gate(),
+        )
+
+        assert publish_artifact(artifact) == "ok"
+
+        client.set_entry.assert_called_once()
+        assert client.set_entry.call_args.args == ("hapax", artifact.slug)
+        _, rendered = client.set_entry.call_args.kwargs["content"].split("\n\n", 1)
+        assert rendered == (
+            f"# {artifact.title}\n\n{artifact.attribution_block}\n\n{artifact.body_md}"
+        )
+
     def test_disabled_client_returns_no_credentials(self) -> None:
         from unittest.mock import patch
 
@@ -283,6 +371,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = {"ok": True}
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact(
@@ -335,6 +424,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = None
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact(title="t", body_md="b")
@@ -347,6 +437,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.side_effect = RuntimeError("network down")
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact(title="t", body_md="b")
@@ -359,6 +450,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact()  # all fields empty
             assert publish_artifact(artifact) == "error"
@@ -371,6 +463,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         deny = _MM()
         deny.decision = "deny"
         deny.reason = "test reason"
@@ -392,6 +485,7 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = {"ok": True}
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client) as mock_cls:
             artifact = _FakeArtifact(
@@ -419,8 +513,311 @@ class TestPublishArtifact:
 
         client = MagicMock()
         client.enabled = True
+        client.get_entry_status.return_value = (404, None)
         client.set_entry.return_value = {"ok": True}
         with patch("shared.omg_lol_client.OmgLolClient", return_value=client):
             artifact = _FakeArtifact(slug="x", title="t", body_md="b")
             assert publish_artifact(artifact, address="custom-addr") == "ok"
         assert client.set_entry.call_args.args[0] == "custom-addr"
+        assert client.get_entry_status.call_args.args == ("custom-addr", "x")
+
+
+class TestNewEntryRefusesAnExistingId:
+    """A new entry is written only when its id is confirmed absent.
+
+    omg.lol's set endpoint creates or overwrites, so a new artifact whose slug is an existing
+    entry id would replace that entry with today's Date and move its URL. Only a 404 confirms
+    absence; every other answer is unknown, and unknown writes nothing.
+    """
+
+    def _client(self, monkeypatch: pytest.MonkeyPatch, status: int | None) -> MagicMock:
+        client = MagicMock()
+        client.enabled = True
+        client.get_entry_status.return_value = (status, None)
+        client.set_entry.return_value = {"ok": True}
+        monkeypatch.setattr("shared.omg_lol_client.OmgLolClient", lambda **_: client)
+        return client
+
+    def _artifact(self):
+        from shared.preprint_artifact import PreprintArtifact
+
+        return PreprintArtifact(
+            slug="may-10-origin",
+            title="A new entry",
+            body_md="Body.",
+            grounding_gate_result=_grounding_gate(),
+        )
+
+    def test_an_existing_id_is_refused_and_nothing_is_written(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, 200)
+
+        assert publish_artifact(self._artifact()) == "denied"
+        client.get_entry_status.assert_called_once_with("hapax", "may-10-origin")
+        client.set_entry.assert_not_called()
+
+    def test_a_confirmed_absence_publishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, 404)
+
+        assert publish_artifact(self._artifact()) == "ok"
+        client.set_entry.assert_called_once()
+        assert client.set_entry.call_args.args == ("hapax", "may-10-origin")
+
+    @pytest.mark.parametrize("status", [None, 401, 403, 429, 500, 503])
+    def test_an_unknown_answer_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, status: int | None
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, status)
+
+        assert publish_artifact(self._artifact()) == "error"
+        client.set_entry.assert_not_called()
+
+    def test_a_read_that_raises_writes_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, 404)
+        client.get_entry_status.side_effect = RuntimeError("socket closed")
+
+        assert publish_artifact(self._artifact()) == "error"
+        client.set_entry.assert_not_called()
+
+
+def _entry_response(*, entry_id: str, title: str, source: str, location: str | None = None) -> dict:
+    """The omg.lol weblog GET envelope, shaped as the live API returns it."""
+    return {
+        "request": {"status_code": 200, "success": True},
+        "response": {
+            "message": "Here is your weblog entry.",
+            "entry": {
+                "entry": entry_id,
+                "location": location or f"/2026/05/{entry_id}",
+                "title": title,
+                "date": 1778394600,
+                "type": "post",
+                "status": "live",
+                "source": source,
+            },
+        },
+    }
+
+
+# The two withdrawn May origins, as read on 2026-10-10. One pins its URL with a Slug line. The
+# other has only a Date line, and its entry id differs from its URL slug.
+PINNED_SOURCE = (
+    "---\nDate: 2026-05-10 06:30:00\nSlug: may-10-origin\n---\n\n# Old title\n\nOld body."
+)
+UNPINNED_SOURCE = "---\nDate: 2026-05-11 23:53 UTC\n---\n\n# Entry 006 — May 10-11, 2026\n\nOld."
+
+
+def _set_entry_response(location: str | None) -> dict:
+    entry = {"entry": "x"} if location is None else {"entry": "x", "location": location}
+    return {"response": {"entry": entry}}
+
+
+class TestInPlaceEntryUpdate:
+    """An artifact naming an existing entry replaces its body and keeps where it lives."""
+
+    def _client(
+        self, monkeypatch: pytest.MonkeyPatch, read, *, returned_location: str | None = None
+    ) -> MagicMock:
+        client = MagicMock()
+        client.enabled = True
+        client.get_entry.return_value = read
+        client.set_entry.return_value = _set_entry_response(returned_location)
+        monkeypatch.setattr("shared.omg_lol_client.OmgLolClient", lambda **_: client)
+        return client
+
+    def _artifact(self, *, entry_id: str, title: str, body: str = "New body."):
+        from shared.preprint_artifact import PreprintArtifact
+
+        return PreprintArtifact(
+            slug=entry_id,
+            title=title,
+            body_md=body,
+            weblog_entry_update=entry_id,
+            grounding_gate_result=_grounding_gate(),
+        )
+
+    def test_update_keeps_the_metadata_and_replaces_only_the_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        before = _entry_response(entry_id="may-10-origin", title="Old title", source=PINNED_SOURCE)
+        client = self._client(monkeypatch, before, returned_location="/2026/05/may-10-origin")
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "ok"
+        client.set_entry.assert_called_once()
+        assert client.set_entry.call_args.args == ("hapax", "may-10-origin")
+        assert client.set_entry.call_args.kwargs["content"] == (
+            "---\nDate: 2026-05-10 06:30:00\nSlug: may-10-origin\n---\n\n# New title\n\nNew body."
+        )
+
+    def test_an_unpinned_entry_gets_its_current_url_slug_not_its_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        location = "/2026/05/entry-006-may-10-11-2026"
+        before = _entry_response(
+            entry_id="entry-006-may-10-11",
+            title="Entry 006 — May 10-11, 2026",
+            source=UNPINNED_SOURCE,
+            location=location,
+        )
+        client = self._client(monkeypatch, before, returned_location=location)
+
+        result = publish_artifact(
+            self._artifact(entry_id="entry-006-may-10-11", title="Entry 006 — May 10-11, 2026")
+        )
+
+        assert result == "ok"
+        assert client.set_entry.call_args.kwargs["content"] == (
+            "---\nDate: 2026-05-11 23:53 UTC\nSlug: entry-006-may-10-11-2026\n---\n\n"
+            "# Entry 006 — May 10-11, 2026\n\nNew body."
+        )
+
+    def test_an_unpinned_entry_refuses_a_changed_title(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        # Its URL came from its title; if omg.lol ignored the pinned slug, a new title would
+        # move it off the URL its successor links to. So the title must stay.
+        before = _entry_response(
+            entry_id="entry-006-may-10-11",
+            title="Entry 006 — May 10-11, 2026",
+            source=UNPINNED_SOURCE,
+            location="/2026/05/entry-006-may-10-11-2026",
+        )
+        client = self._client(monkeypatch, before)
+
+        result = publish_artifact(
+            self._artifact(entry_id="entry-006-may-10-11", title="A new title")
+        )
+
+        assert result == "denied"
+        client.set_entry.assert_not_called()
+
+    def test_an_unsafe_entry_id_is_refused_at_the_publisher(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, None)
+        artifact = _FakeArtifact(slug="x", title="T", body_md="B")
+        artifact.weblog_entry_update = "../another-entry"  # a caller that bypassed the model
+
+        assert publish_artifact(artifact) == "denied"
+        client.get_entry.assert_not_called()
+        client.set_entry.assert_not_called()
+
+    def test_a_read_that_raises_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, None)
+        client.get_entry.side_effect = RuntimeError("transport failed")
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "error"
+        client.set_entry.assert_not_called()
+        assert "next action" in caplog.text
+
+    def test_an_artifact_that_composes_no_body_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        before = _entry_response(entry_id="may-10-origin", title="Old title", source=PINNED_SOURCE)
+        client = self._client(monkeypatch, before)
+        artifact = _FakeArtifact(slug="may-10-origin")
+        artifact.weblog_entry_update = "may-10-origin"
+
+        assert publish_artifact(artifact) == "error"
+        client.set_entry.assert_not_called()
+
+    def test_an_unfenced_date_line_as_this_publisher_writes_is_kept(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        source = "Date: 2026-10-10 19:57 UTC\n\n# Notebook entry\n\nOld."
+        before = _entry_response(
+            entry_id="notebook-x",
+            title="Notebook entry",
+            source=source,
+            location="/2026/10/notebook-x",
+        )
+        client = self._client(monkeypatch, before, returned_location="/2026/10/notebook-x")
+
+        result = publish_artifact(self._artifact(entry_id="notebook-x", title="Notebook entry"))
+
+        assert result == "ok"
+        assert client.set_entry.call_args.kwargs["content"] == (
+            "---\nDate: 2026-10-10 19:57 UTC\nSlug: notebook-x\n---\n\n# Notebook entry\n\nNew body."
+        )
+
+    def test_an_unreadable_entry_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        client = self._client(monkeypatch, None)
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "error"
+        client.set_entry.assert_not_called()
+        assert "next action" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("source", "location"),
+        [
+            ("# Old title\n\nNo metadata block at all.", None),
+            ("---\nSlug: may-10-origin\n---\n\n# Old title\n\nNo Date line.", None),
+            ("---\nDate: 2026-05-10 06:30:00\nSlug: may-10-origin\n\n# Never closes.", None),
+            (PINNED_SOURCE.replace("Slug: may-10-origin", "Slug: another-slug"), None),
+            (PINNED_SOURCE.replace("2026-05-10", "2026-06-10"), None),
+            (PINNED_SOURCE, "/weblog"),
+        ],
+        ids=["no-block", "no-date", "unclosed", "slug-disagrees", "month-disagrees", "location"],
+    )
+    def test_metadata_that_disagrees_with_the_location_writes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, source: str, location: str | None
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        before = _entry_response(
+            entry_id="may-10-origin", title="Old title", source=source, location=location
+        )
+        client = self._client(monkeypatch, before)
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "denied"
+        client.set_entry.assert_not_called()
+
+    def test_a_returned_location_that_moved_is_an_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agents.omg_weblog_publisher.publisher import publish_artifact
+
+        before = _entry_response(entry_id="may-10-origin", title="Old title", source=PINNED_SOURCE)
+        client = self._client(monkeypatch, before, returned_location="/2026/10/new-title")
+
+        result = publish_artifact(self._artifact(entry_id="may-10-origin", title="New title"))
+
+        assert result == "error"
+        client.set_entry.assert_called_once()

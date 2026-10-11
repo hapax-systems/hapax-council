@@ -47,6 +47,8 @@ DEFAULT_RSS_URL = os.environ.get(
     "https://hapax.weblog.lol/rss.xml",
 )
 RSS_REQUEST_TIMEOUT_S = float(os.environ.get("HAPAX_WEBLOG_PUBLISH_RSS_TIMEOUT_S", "30"))
+# The weblog host closes the connection on requests' default User-Agent (2026-10-10).
+RSS_USER_AGENT = "hapax-weblog-event-producer/1.0"
 PUBLIC_EVENT_PATH = Path(
     os.environ.get(
         "HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH",
@@ -255,7 +257,9 @@ def fetch_rss(url: str = DEFAULT_RSS_URL) -> bytes | None:
         log.warning("requests library not available; skipping weblog RSS fetch")
         return None
     try:
-        response = requests.get(url, timeout=RSS_REQUEST_TIMEOUT_S)
+        response = requests.get(
+            url, timeout=RSS_REQUEST_TIMEOUT_S, headers={"User-Agent": RSS_USER_AGENT}
+        )
     except requests.RequestException as exc:
         log.warning("weblog RSS fetch raised: %s", exc)
         return None

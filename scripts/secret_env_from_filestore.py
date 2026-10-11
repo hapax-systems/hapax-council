@@ -282,6 +282,27 @@ elif not _first_line(authority_value).strip():
         f"FileStore entry {authority_name} is empty",
         f"re-put {authority_name} with hapax-secret (TTY put) and rerun; both env files are kept",
     )
+
+# The operator's legal name arms the legal-name guards, and the same variable is the display
+# name the livestream egress footer renders. The compositor loads the shared file above, so the
+# name is never written there: it is projected alone into a file that only the publish
+# orchestrator loads. Decided before any file is published, like the signing key.
+GUARD_ENV = "HAPAX_OPERATOR_NAME"
+GUARD_NAME = "hapax-operator-legal-name"  # `hapax-secret hapax/operator-legal-name`
+guard_out = out.with_name("hapax-publish-legal-name-guard.env")
+guard_value = _read_secret(GUARD_NAME)
+if guard_value is None:
+    if not _absence_demonstrated(GUARD_NAME):
+        _prerequisite_failure(
+            f"FileStore entry {GUARD_NAME} could not be shown absent at {store.root}",
+            "restore service-user access to the FileStore root and entry "
+            f"(hapax-secret --where {GUARD_NAME}) and rerun; every env file is kept",
+        )
+elif not _first_line(guard_value).strip():
+    _prerequisite_failure(
+        f"FileStore entry {GUARD_NAME} is empty",
+        f"re-put {GUARD_NAME} with hapax-secret (TTY put) and rerun; every env file is kept",
+    )
 _write_env(out, lines)
 if authority_value is None:
     authority_out.unlink(missing_ok=True)
@@ -289,4 +310,13 @@ if authority_value is None:
 else:
     _write_env(authority_out, [f"{AUTHORITY_ENV}={_first_line(authority_value)}"])
     authority_outcome = f"wrote {authority_out}"
-print(f"wrote {out} keys={len(lines)} backend={store.backend_id}; {authority_outcome}")
+if guard_value is None:
+    guard_out.unlink(missing_ok=True)
+    guard_outcome = f"removed {guard_out} (entry absent)"
+else:
+    _write_env(guard_out, [f"{GUARD_ENV}={_first_line(guard_value)}"])
+    guard_outcome = f"wrote {guard_out}"
+print(
+    f"wrote {out} keys={len(lines)} backend={store.backend_id}; {guard_outcome}; "
+    f"{authority_outcome}"
+)

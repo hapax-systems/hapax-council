@@ -1,0 +1,15 @@
+[Unit]
+Description=hapax — restart publish-path services onto the activated release when their source changed
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-publish-path-refresh
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/.cache/hapax/source-activation/worktree/scripts/hapax-publish-path-refresh
+Nice=10
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Observe old messages without a valid read/<same-filename> ack twin.
+
+Age uses created_at. Only protocol-shaped regular, non-symlink ack files count;
+receipt presence cannot establish semantic read-to-end. No writes or repairs.
+Shares bounded metadata reading and CLI/exit conventions with the clock checker.
+"""
+
+import runpy
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+checker = runpy.run_path(str(Path(__file__).with_name("hapax-seat-clock-check")))
+
+if __name__ == "__main__":
+    raise SystemExit(checker["main"]("inbox"))
