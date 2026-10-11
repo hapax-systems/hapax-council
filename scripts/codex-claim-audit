@@ -7,30 +7,17 @@
 #   3. Are live resumed lane processes still coherent with active task state?
 #   4. Is the assigned lane quota-blocked by receipt or methodology-dispatch evidence?
 #   5. Is a task's PR still open on GitHub? (never clear a pr_open claim whose PR is open)
-#   6. Is the holder's route capability-blocked beyond tolerance? (a dispatched binding or
-#      the lane's relay record names the family; the family-outage record carries a fresh
-#      witness)
+#   6. Is the holder's route capability-blocked beyond tolerance? (_capability_blocker_for)
 #
-# Reports phantom/quota-blocked/capability-blocked claims and optionally releases them
-# (--release).
+# Reports phantom/quota-blocked claims and optionally releases them (--release).
 #
 # Intended to run as a systemd timer (codex-claim-audit.timer) or ad-hoc.
 #
 # Version: 3
-# Changes in v3 (NO-STALL U1, generalised by the operator's act of 2026-10-11T04:51:06Z:
-#   lanes blocked by a capability blocker "should not persist; the work should be
-#   appropriately migrated"):
-#   - --release-capability-blocked releases a claimed/in_progress claim whose holder's
-#     route is blocked beyond HAPAX_BLOCKER_TOLERANCE_HOURS (default 6), or with no known
-#     end. The family is read from evidence of the executor, never from its lane name: a
-#     dispatched claim-dispatch binding for that task, or the lane's relay record (a manual
-#     binding always says codex, so it is not evidence). The blocker is read from the
-#     family-outage record, whose witness must be fresher than the review team's TTL. No
-#     evidence, or evidence that disagrees, keeps today's hold.
-#   - The release carries an open PR instead of holding on it: the note keeps pr, pr_repo
-#     and branch for the next holder, and every claim marker of the holder that names the
-#     task is cleared through the same atomic capture and peer reconcile, which fences the
-#     old holder if its route comes back.
+# Changes in v3 (NO-STALL U1n, the operator's act REQ-20261011T0451): with
+#   --release-capability-blocked, a claim whose holder's route is blocked beyond tolerance
+#   is released when nothing can be lost or doubled, and its open PR is carried to the next
+#   holder (_capability_blocker_for, _release_blocked_holder_markers).
 # Postmortem: 2026-06-12 failure classes #4 (CLAIM-PLANE-HOST-FORK) and
 #   #5 (STATE-ERASING-AUDIT-ON-LIVE-LANES).
 # Changes in v2:
@@ -70,10 +57,11 @@ QUOTA_BLOCKED_LOOKBACK_SECONDS="${HAPAX_QUOTA_BLOCKED_LOOKBACK_SECONDS:-86400}"
 FAMILY_OUTAGE_RECORD="${HAPAX_FAMILY_OUTAGE_RECORD:-$HOME/.cache/hapax/review-team/family-outage.json}"
 # Lane relay records (<lane>.yaml); their `platform` is the harness's own declaration.
 RELAY_STATE_DIR="${HAPAX_RELAY_STATE_DIR:-$HOME/.cache/hapax/relay}"
+# The repository whose worktrees and branches are read before a capability-blocked release.
+CLAIM_AUDIT_REPO="${HAPAX_CLAIM_AUDIT_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # A family-outage witness older than this is not evidence (review_team.FAMILY_OUTAGE_TTL_S).
 BLOCKER_WITNESS_TTL_SECONDS="${HAPAX_BLOCKER_WITNESS_TTL_SECONDS:-7200}"
-# How long a claim may wait on a blocked route before it is released (NO-STALL U1). A 5 h
-# window wall stays held; a weekly wall does not.
+# How long a claim waits on a blocked route (a 5 h window wall stays held; a weekly one does not).
 BLOCKER_TOLERANCE_HOURS="${HAPAX_BLOCKER_TOLERANCE_HOURS:-6}"
 STALE_HOURS="${CODEX_CLAIM_STALE_HOURS:-6}"
 RELEASE=false
@@ -607,29 +595,35 @@ _quota_evidence_for() {
   _receipt_quota_evidence_for "$role" || _dispatch_quota_evidence_for "$role" "$task_id"
 }
 
-# A capability blocker on the holder's route, beyond tolerance (NO-STALL U1). The holder's
+# A capability blocker on the holder's route, beyond tolerance (NO-STALL U1n). The holder's
 # family comes from evidence of its executor, never from its lane name: a dispatched
 # claim-dispatch binding for this task, or the lane's relay record. A manual binding does not
 # count: cc-claim writes `platform: codex` into every manual binding (the Gate-0B carrier
 # route), whatever executes the claim. The blocker comes from the family-outage record, whose
-# witness must be fresher than the review team's TTL. Prints the evidence only when the
-# blocker's end is unknown or later than now + tolerance. Missing, stale, conflicting or
-# unparseable evidence fails, and today's hold stands.
+# witness must be fresher than the review team's TTL, and must end later than now + tolerance.
+# Missing, stale, conflicting or unparseable evidence prints nothing: today's hold stands.
+# With evidence it prints "RELEASE <evidence>" only when nothing could be lost or doubled:
+# the end is known, the branch is this repository's, no live process carries the holder's
+# session ids or lane string or sits in the branch's worktree, and every local commit of the
+# branch is pushed with its worktree clean. Otherwise "HOLD <reason> <evidence>".
 _capability_blocker_for() {
-  local role="$1"
-  local task_id="$2"
+  local role="$1" task_id="$2" branch="$3" pr_repo="$4"
   command -v python3 >/dev/null 2>&1 || return 1
   [ -f "$FAMILY_OUTAGE_RECORD" ] || return 1
   python3 - "$role" "$task_id" "$CLAIM_CACHE_DIR" "$FAMILY_OUTAGE_RECORD" \
-    "$BLOCKER_TOLERANCE_HOURS" "$BLOCKER_WITNESS_TTL_SECONDS" "$RELAY_STATE_DIR" <<'PYEOF'
+    "$BLOCKER_TOLERANCE_HOURS" "$BLOCKER_WITNESS_TTL_SECONDS" "$RELAY_STATE_DIR" \
+    "$branch" "$pr_repo" "$GH_REPO_SLUG" "$CLAIM_AUDIT_REPO" <<'PYEOF'
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 role, task_id, cache_raw, record_raw, tolerance_raw, ttl_raw, relay_raw = sys.argv[1:8]
+branch, pr_repo, gh_repo, repo_root = sys.argv[8:12]
 try:
     tolerance = timedelta(hours=float(tolerance_raw))
     ttl = timedelta(seconds=float(ttl_raw))
@@ -649,10 +643,17 @@ def parse(raw: object) -> datetime | None:
     return when if when.tzinfo else when.replace(tzinfo=UTC)
 
 
-# A dispatched binding for this holder and this task: cc-claim-dispatch-<role>.json or a
-# session-keyed cc-claim-dispatch-<role>-<session id>.json. Another role whose name only
-# starts with "<role>-" is not this holder.
+# This holder's bindings for this task (plain or session-keyed; "<role>-other" is another role).
 platforms: set[str] = set()
+sessions: set[str] = set()  # every session of this holder on this task, for the liveness read
+for marker in Path(cache_raw).glob(f"cc-active-task-{role}-*"):
+    suffix = marker.name[len(f"cc-active-task-{role}-") :]
+    if session_id.fullmatch(suffix):
+        try:
+            if marker.read_text(encoding="utf-8").split()[:1] == [task_id]:
+                sessions.add(suffix)
+        except (OSError, UnicodeError):
+            continue
 for binding in sorted(Path(cache_raw).glob(f"cc-claim-dispatch-{role}*.json")):
     key = binding.name[len("cc-claim-dispatch-") : -len(".json")]
     if key != role and not (
@@ -667,6 +668,8 @@ for binding in sorted(Path(cache_raw).glob(f"cc-claim-dispatch-{role}*.json")):
         continue
     if data.get("lane") != role or data.get("task_id") != task_id:
         continue
+    if isinstance(data.get("session_id"), str) and data["session_id"]:
+        sessions.add(data["session_id"])
     if str(data.get("dispatch_message_id") or "").startswith("manual-cc-claim:"):
         continue
     platform = data.get("platform")
@@ -709,16 +712,86 @@ else:
     end_text = "unknown"
 cause = str(entry.get("cause") or "outage")
 witness = observed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-print(
+evidence = (
     f"family={family} cause={cause} resets_at={end_text} tolerance_h={tolerance_raw} "
     f"witness={witness} record_sha256={hashlib.sha256(raw).hexdigest()[:12]}"
 )
+
+
+def git(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], capture_output=True, text=True, timeout=60)
+
+
+def hold_reason() -> str | None:
+    nullish = {"", "null", "none", "~"}
+    if end_text == "unknown":
+        return "blocker_end_unknown"
+    if branch in nullish:
+        return "no_branch_to_verify"
+    if pr_repo not in nullish and pr_repo != gh_repo:
+        return "cross_repository_branch"
+    listing = git("-C", repo_root, "worktree", "list", "--porcelain")
+    if listing.returncode != 0:
+        return "worktrees_unreadable"
+    trees, tree = [], ""
+    for line in listing.stdout.splitlines():
+        if line.startswith("worktree "):
+            tree = line[len("worktree ") :]
+        elif line == f"branch refs/heads/{branch}" and tree:
+            trees.append(tree)
+    # A live executor: its own session id or lane string in a command line or working
+    # directory, or a working directory inside the branch's worktree. A name may hold a
+    # release here; it never grants one.
+    lane = re.compile(rf"(?<![A-Za-z0-9]){re.escape(role)}(?![A-Za-z0-9])")
+    ancestors, pid = set(), os.getpid()  # this audit's own chain, which carries the role in argv
+    while pid > 1 and pid not in ancestors:
+        ancestors.add(pid)
+        try:
+            pid = int((Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            cmd = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if int(proc.name) in ancestors and not any(s in cmd for s in sessions):
+            continue
+        try:
+            cwd = os.readlink(proc / "cwd")
+        except OSError:
+            cwd = ""
+        in_tree = any(cwd == t or cwd.startswith(f"{t}/") for t in trees) if cwd else False
+        if any(s in cmd for s in sessions) or lane.search(cmd) or lane.search(cwd) or in_tree:
+            return f"live_executor_pid_{proc.name}"
+    for tree in trees:
+        status = git("-C", tree, "status", "--porcelain")
+        if status.returncode != 0:
+            return "worktree_status_unreadable"
+        if status.stdout.strip():
+            return "uncommitted_paths"
+    local = git("-C", repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    if local.returncode == 0:  # local commits must be on the remote branch (tracking refs go stale)
+        remote = git("-C", repo_root, "ls-remote", "--heads", "origin", f"refs/heads/{branch}")
+        if remote.returncode != 0:
+            return "remote_unreadable"
+        heads = [line.split("\t", 1)[0] for line in remote.stdout.splitlines() if line.strip()]
+        if not heads:
+            return "branch_absent_from_remote"
+        tip = local.stdout.strip()
+        if tip != heads[0] and git("-C", repo_root, "merge-base", "--is-ancestor", tip, heads[0]).returncode:
+            return "unpushed_commits"
+    return None
+
+
+reason = hold_reason()
+print(f"HOLD {reason} {evidence}" if reason else f"RELEASE {evidence}")
 PYEOF
 }
 
-# The holder's own claim markers that name this task: cc-active-task-<holder> and every
-# session-keyed cc-active-task-<holder>-<session id>. Another role whose name only starts with
-# "<holder>-" is never matched.
+# The holder's claim markers naming this task, plain or session-keyed ("<holder>-other" is not it).
 _holder_marker_keys_for_task() {
   local holder="$1" task_id="$2" marker key suffix
   for marker in "$CLAIM_CACHE_DIR/cc-active-task-$holder" "$CLAIM_CACHE_DIR/cc-active-task-$holder"-*; do
@@ -734,9 +807,8 @@ _holder_marker_keys_for_task() {
   done
 }
 
-# Clear every marker of a capability-blocked holder that names the task, carrying the PR (no
-# open-PR hold: the PR stays open for the next holder). A leftover session-keyed marker would
-# refuse the next holder's cc-claim. Fails if any clear fails, so the note stays claimed.
+# Clear every such marker, carrying the PR: a leftover one would refuse the next holder's
+# cc-claim. Fails if any clear fails, so the note stays claimed.
 _release_blocked_holder_markers() {
   local holder="$1" task_id="$2" pr_number="$3" keys key messages="" failed=false
   keys="$(_holder_marker_keys_for_task "$holder" "$task_id")"
@@ -829,8 +901,7 @@ _clear_claim_cache_for_release() {
   local task_id="$2"
   local reason="${3:-released}"
   local pr_number="${4:-}"
-  # "carry" only for a holder blocked beyond tolerance (_capability_blocker_for): its claim
-  # is not live, and the open PR is handed to the next holder rather than held.
+  # "carry" only after _capability_blocker_for printed RELEASE: the open PR goes to the next holder.
   local pr_policy="${5:-protect}"
   release_cache_message=""
   local claim_file claimed_task audit_tmp
@@ -1045,11 +1116,14 @@ for note in "$VAULT_ROOT/active/"*.md; do
       claim_matches=true
     fi
 
-    blocker_evidence="$(_capability_blocker_for "$assigned" "$task_id" 2>/dev/null || true)"
-    if [ -n "$blocker_evidence" ]; then
+    blocker_verdict="$(_capability_blocker_for "$assigned" "$task_id" "$branch" "$(_fm_value pr_repo "$note")" 2>/dev/null || true)"
+    if [ -n "$blocker_verdict" ]; then
       capability_blocked_count=$((capability_blocked_count + 1))
+      blocker_evidence="${blocker_verdict#* }"
       capability_report="${capability_report}  CAPABILITY_BLOCKED: ${task_id} assigned=${assigned} status=${status} ${blocker_evidence} pr=${pr} branch=${branch}\n"
-      if [ "$RELEASE" = true ] && [ "$RELEASE_CAPABILITY_BLOCKED" = true ]; then
+      if [ "${blocker_verdict%% *}" != "RELEASE" ]; then
+        capability_report="${capability_report}    -> HELD: ${blocker_evidence%% *}\n"
+      elif [ "$RELEASE" = true ] && [ "$RELEASE_CAPABILITY_BLOCKED" = true ]; then
         if _release_blocked_holder_markers "$assigned" "$task_id" "$pr"; then
           if [ "$DRY_RUN" = true ]; then
             capability_report="${capability_report}    -> [DRY-RUN] WOULD RELEASE back to offered; pr and branch stay for the next holder\n"

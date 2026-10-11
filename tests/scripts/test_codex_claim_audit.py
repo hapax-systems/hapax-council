@@ -50,6 +50,7 @@ def _write_task_note(
     branch: str = "null",
     claimed_at: str = "2026-06-12T08:00:00Z",
     subdir: str = "active",
+    pr_repo: str = "null",
 ) -> Path:
     note = vault / subdir / f"{task_id}.md"
     note.write_text(
@@ -61,6 +62,7 @@ def _write_task_note(
         status: {status}
         assigned_to: {assigned_to}
         pr: {pr}
+        pr_repo: {pr_repo}
         branch: {branch}
         claimed_at: {claimed_at}
         ---
@@ -1325,11 +1327,7 @@ def _write_dispatch_binding(
     session: str | None = None,
     manual: bool = True,
 ) -> Path:
-    """The binding cc-claim writes beside a claim (schema hapax.claim-dispatch-binding.v1).
-
-    A manual claim's binding always says ``platform: codex`` (cc-claim's Gate-0B carrier
-    route), whatever executes it, so manual is the default here, as it is on the estate.
-    """
+    """cc-claim's binding; manual by default, as on the estate, where it always says codex."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     key = role if session is None else f"{role}-{session}"
     binding = cache_dir / f"cc-claim-dispatch-{key}.json"
@@ -1354,7 +1352,6 @@ def _write_dispatch_binding(
 
 
 def _write_relay(tmp_path: Path, role: str, platform: str) -> Path:
-    """A lane relay record; its harness declares the platform it runs on."""
     relay = tmp_path / "relay" / f"{role}.yaml"
     relay.parent.mkdir(parents=True, exist_ok=True)
     relay.write_text(f"session: {role}\nplatform: {platform}\n", encoding="utf-8")
@@ -1368,7 +1365,6 @@ def _write_family_outage(
     resets_in: timedelta | None = timedelta(days=4),
     observed_ago: timedelta = timedelta(minutes=5),
 ) -> Path:
-    """A family-outage record in the review team's current shape."""
     now = datetime.now(UTC)
     entry: dict[str, object] = {
         "observed_at": _iso(now - observed_ago),
@@ -1389,34 +1385,43 @@ def _run_blocked_audit(
     record: Path,
     *,
     release_flag: bool = True,
-    gh_state: str = "OPEN",
+    repo: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    env = {
+        "HAPAX_FAMILY_OUTAGE_RECORD": str(record),
+        "HAPAX_RELAY_STATE_DIR": str(tmp_path / "relay"),
+    }
+    if repo is not None:
+        env["HAPAX_CLAIM_AUDIT_REPO"] = str(repo)
     return _run_audit(
         tmp_path,
         vault,
         cache_dir,
-        release=True,
         extra_args=["--release-capability-blocked"] if release_flag else None,
-        extra_env={
-            "HAPAX_FAMILY_OUTAGE_RECORD": str(record),
-            "HAPAX_RELAY_STATE_DIR": str(tmp_path / "relay"),
-        },
-        gh_state=gh_state,
+        extra_env=env,
     )
 
 
-def _frontmatter_value(note: Path, key: str) -> str:
-    match = re.search(rf"^{key}:\s*(.*)$", note.read_text(encoding="utf-8"), flags=re.MULTILINE)
-    assert match, f"{key} missing from {note}"
-    return match.group(1).strip()
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "core.hooksPath=/dev/null",
+            *args,
+        ],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+    )
 
 
 class TestCapabilityBlockedHolders:
-    """A claim whose holder's route is blocked beyond tolerance returns to the order.
-
-    Operator act 2026-10-11T04:51:06Z: lanes blocked by a capability blocker "should not
-    persist; the work should be appropriately migrated". An open PR is carried, not held.
-    """
+    """NO-STALL U1n (REQ-20261011T0451): a blocked holder's claim moves on, with nothing lost."""
 
     def test_blocked_beyond_tolerance_releases_and_carries_the_open_pr(
         self, tmp_path: Path
@@ -1433,14 +1438,13 @@ class TestCapabilityBlockedHolders:
         _write_relay(tmp_path, "lane-a", "codex")
         record = _write_family_outage(tmp_path)
 
-        result = _run_blocked_audit(tmp_path, vault, cache_dir, record, gh_state="OPEN")
+        result = _run_blocked_audit(tmp_path, vault, cache_dir, record)  # gh says the PR is OPEN
 
         assert "CAPABILITY_BLOCKED: walled-task assigned=lane-a" in result.stdout
         assert "family=codex cause=quota_wall" in result.stdout
-        assert _frontmatter_value(note, "status") == "offered"
-        assert _frontmatter_value(note, "assigned_to") == "unassigned"
-        assert _frontmatter_value(note, "pr") == "89"
-        assert _frontmatter_value(note, "branch") == "feat/walled"
+        text = note.read_text(encoding="utf-8")
+        for line in ("status: offered", "assigned_to: unassigned", "pr: 89", "branch: feat/walled"):
+            assert f"\n{line}\n" in text
         assert "released a capability-blocked claim (lane-a; family=codex" in note.read_text(
             encoding="utf-8"
         )
@@ -1488,11 +1492,9 @@ class TestCapabilityBlockedHolders:
             vault, "named-only-task", assigned_to="cx-walled", pr="77", branch="feat/named"
         )
         marker = _write_claim_cache(cache_dir, "cx-walled", "named-only-task")
-        # A codex-looking name, and the manual binding cc-claim writes for every claim (it
-        # says codex whatever executes): neither is evidence of the holder's family.
+        # None is evidence: the name, the manual binding (always codex), a dispatched binding
+        # for another task, and one for a role whose name only starts with the holder's.
         manual = _write_dispatch_binding(cache_dir, "cx-walled", "named-only-task", manual=True)
-        # A dispatched binding for a different task, and one for another role whose name
-        # only starts with the holder's: neither is this holder's binding for this task.
         other = _write_dispatch_binding(
             cache_dir, "cx-walled", "some-other-task", manual=False, session=SESSION
         )
@@ -1507,25 +1509,118 @@ class TestCapabilityBlockedHolders:
         assert note.read_text(encoding="utf-8") == original
         assert marker.exists()
 
-    def test_unknown_end_is_released(self, tmp_path: Path) -> None:
+    def test_dispatched_binding_is_evidence_and_an_unknown_end_holds(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
-        note = _write_task_note(vault, "no-end-task", assigned_to="lane-b")
+        note = _write_task_note(vault, "no-end-task", assigned_to="lane-b", branch="feat/no-end")
         _write_claim_cache(cache_dir, "lane-b", "no-end-task")
         # Evidence from a dispatched (not manual) session-keyed binding.
         _write_dispatch_binding(cache_dir, "lane-b", "no-end-task", session=SESSION, manual=False)
-        record = _write_family_outage(tmp_path, resets_in=None)
+        original = note.read_text(encoding="utf-8")
 
-        result = _run_blocked_audit(tmp_path, vault, cache_dir, record)
+        result = _run_blocked_audit(
+            tmp_path, vault, cache_dir, _write_family_outage(tmp_path, resets_in=None)
+        )
+        assert "HELD: blocker_end_unknown" in result.stdout
+        assert note.read_text(encoding="utf-8") == original
 
-        assert "resets_at=unknown" in result.stdout
-        assert _frontmatter_value(note, "status") == "offered"
-        assert _frontmatter_value(note, "assigned_to") == "unassigned"
+        result = _run_blocked_audit(tmp_path, vault, cache_dir, _write_family_outage(tmp_path))
+        assert "-> RELEASED" in result.stdout
+        assert "\nassigned_to: unassigned\n" in note.read_text(encoding="utf-8")
+
+    def test_live_executor_holds_the_release(self, tmp_path: Path) -> None:
+        live = "1a2b3c4d-5e6f-4a0b-9c8d-7e6f5a4b3c2d"
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        note = _write_task_note(vault, "live-task", assigned_to="lane-d", branch="feat/live")
+        _write_claim_cache(cache_dir, "lane-d", "live-task")
+        _write_dispatch_binding(cache_dir, "lane-d", "live-task", session=live)
+        _write_relay(tmp_path, "lane-d", "codex")
+        original = note.read_text(encoding="utf-8")
+        # A resumed session carries its session id in its arguments (`codex resume <id>`).
+        proc = subprocess.Popen(["bash", "-c", "sleep 60; :", live])
+        try:
+            result = _run_blocked_audit(tmp_path, vault, cache_dir, _write_family_outage(tmp_path))
+        finally:
+            proc.kill()
+            proc.wait()
+
+        assert f"HELD: live_executor_pid_{proc.pid}" in result.stdout
+        assert note.read_text(encoding="utf-8") == original
+
+    def test_local_work_holds_until_the_branch_is_pushed_and_clean(self, tmp_path: Path) -> None:
+        for state, reason in (
+            ("ahead", "unpushed_commits"),
+            ("dirty", "uncommitted_paths"),
+            ("unpublished", "branch_absent_from_remote"),
+            ("clean", None),
+        ):
+            self._assert_local_work_holds(tmp_path / state, state, reason)
+
+    def test_a_branch_this_audit_cannot_read_is_held(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        none = _write_task_note(vault, "branchless-task", assigned_to="lane-g")
+        other = _write_task_note(
+            vault, "spine-task", assigned_to="lane-e", branch="feat/x", pr_repo="o/spine"
+        )
+        originals = [none.read_text(encoding="utf-8"), other.read_text(encoding="utf-8")]
+        for lane, task in (("lane-g", "branchless-task"), ("lane-e", "spine-task")):
+            _write_claim_cache(cache_dir, lane, task)
+            _write_relay(tmp_path, lane, "codex")
+
+        result = _run_blocked_audit(tmp_path, vault, cache_dir, _write_family_outage(tmp_path))
+
+        assert "HELD: no_branch_to_verify" in result.stdout
+        assert "HELD: cross_repository_branch" in result.stdout
+        assert [none.read_text(encoding="utf-8"), other.read_text(encoding="utf-8")] == originals
+
+    @staticmethod
+    def _assert_local_work_holds(tmp_path: Path, state: str, reason: str | None) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir(parents=True)
+        _git(repo, "init", "-q", "-b", "main")
+        _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+        tree = tmp_path / "item-tree"
+        _git(repo, "worktree", "add", "-q", "-b", "feat/item", str(tree))
+        _git(tree, "commit", "-q", "--allow-empty", "-m", "work")
+        _git(tmp_path, "init", "-q", "--bare", str(tmp_path / "remote.git"))
+        _git(repo, "remote", "add", "origin", str(tmp_path / "remote.git"))
+        _git(
+            repo,
+            "push",
+            "-q",
+            "origin",
+            "main",
+            *(() if state == "unpublished" else ("feat/item",)),
+        )
+        if state == "ahead":
+            _git(tree, "commit", "-q", "--allow-empty", "-m", "not pushed")
+        if state == "dirty":
+            (tree / "unsaved.txt").write_text("unsaved\n", encoding="utf-8")
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        note = _write_task_note(vault, "item-task", assigned_to="lane-f", branch="feat/item")
+        _write_claim_cache(cache_dir, "lane-f", "item-task")
+        _write_relay(tmp_path, "lane-f", "codex")
+        original = note.read_text(encoding="utf-8")
+
+        record = _write_family_outage(tmp_path)
+        result = _run_blocked_audit(tmp_path, vault, cache_dir, record, repo=repo)
+
+        if reason is None:
+            assert "-> RELEASED" in result.stdout
+            assert "\nassigned_to: unassigned\n" in note.read_text(encoding="utf-8")
+        else:
+            assert f"HELD: {reason}" in result.stdout
+            assert note.read_text(encoding="utf-8") == original
 
     def test_without_the_flag_it_is_reported_and_held(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
-        note = _write_task_note(vault, "flagless-task", assigned_to="lane-a")
+        note = _write_task_note(
+            vault, "flagless-task", assigned_to="lane-a", branch="feat/flagless"
+        )
         marker = _write_claim_cache(cache_dir, "lane-a", "flagless-task")
         _write_relay(tmp_path, "lane-a", "codex")
         original = note.read_text(encoding="utf-8")
