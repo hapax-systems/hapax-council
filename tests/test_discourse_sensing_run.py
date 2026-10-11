@@ -9,7 +9,9 @@ domains, or the lab's own Bluesky DID
 or URL appears here, because this repository is public.
 
 These tests import the foundation modules that land in the foundation half
-(PR #5109); on this branch alone they cannot run until that half merges.
+(PR #5109); on a tree without that half — this branch alone, or a merge group
+ahead of it — the module collects and skips instead of breaking the suite, and
+activates once that half merges.
 """
 
 from __future__ import annotations
@@ -19,9 +21,17 @@ from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from typing import TYPE_CHECKING
 
-from agents.discourse_sensing.fetch import FetchResult
-from agents.discourse_sensing.run import run_once
-from agents.discourse_sensing.sources import load_sources
+import pytest
+
+try:
+    from agents.discourse_sensing.fetch import FetchResult
+    from agents.discourse_sensing.run import run_once
+    from agents.discourse_sensing.sources import load_sources
+except ImportError as _err:
+    pytest.skip(
+        f"discourse sensing foundation half (PR #5109) not on this tree: {_err}",
+        allow_module_level=True,
+    )
 
 if TYPE_CHECKING:
     from pathlib import Path
