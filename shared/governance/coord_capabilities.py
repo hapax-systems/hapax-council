@@ -202,10 +202,13 @@ class EscapeGrant:
 
     escape-grants-bind-to-the-minting-session-20261011: the grant also carries
     the minting ``session`` (plus optional narrowing ``paths`` and a best-effort
-    minting ``role``) in its SIGNED payload. ``session == ""`` is the legacy
-    UNBOUND shape — still parseable (enforcement lands in a later slice). An
-    unbound grant signs the PRE-binding payload, so grants minted before this
-    slice verify unchanged; a bound grant's signature covers its binding fields.
+    minting ``role``) in its SIGNED payload, so it releases only the session
+    that minted it. ``session == ""`` is the legacy UNBOUND shape — still
+    parseable, but verification refuses it with ``NEXT_ACTION: re-mint with
+    your session``. An unbound grant signs the PRE-binding payload, so grants
+    minted before the binding existed stay byte-identical on disk; since slice
+    2 the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION`` instead of
+    minting that shape.
     """
 
     grant_id: str
@@ -258,8 +261,11 @@ def mint_escape_grant(
 
     ``session``/``paths``/``role`` are folded into the signature when the grant
     is BOUND (any of them non-default) — rebinding or re-attributing a minted
-    grant then fails verification. An unbound grant signs the pre-binding
-    payload, so it verifies identically before and after this slice.
+    grant then fails verification. An unbound grant signs the PRE-binding
+    payload (byte-identical to a mint from before the binding existed), and
+    verification refuses it with ``NEXT_ACTION: re-mint with your session``;
+    since slice 2 the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION``
+    instead of minting the unbound shape.
     """
     fields: dict[str, object] = {
         "grant_id": secrets.token_hex(16),
@@ -356,8 +362,10 @@ def verify_escape_grant(
     and is bound to THIS session.
 
     Session binding (escape-grants-bind-to-the-minting-session-20261011): an
-    unbound grant (``session == ""`` — legacy files, the INV-3/4/5 auto-mint)
-    is refused, as is a caller that supplies no session or a different one. A
+    unbound grant (``session == ""`` — a legacy pre-binding file; since slice 2
+    the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION`` and no longer
+    mints that shape) is refused with ``NEXT_ACTION: re-mint with your
+    session``, as is a caller that supplies no session or a different one. A
     grant with narrowing ``paths`` releases only those paths when the caller
     supplies a ``path`` (no ``path`` argument + paths on the grant → allow).
     Pure: signature + expiry + scope + binding — no network, no daemon (NEW-2 / INV-4).

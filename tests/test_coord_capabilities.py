@@ -16,6 +16,7 @@ re-bound lane) fails verification.
 """
 
 import json
+import time
 from dataclasses import replace
 
 from shared.governance.coord_capabilities import (
@@ -281,20 +282,47 @@ class TestEscapeGrantSessionBinding:
         assert loaded.paths == ()
         assert loaded.role == ""
 
-    def test_pre_binding_grant_signature_still_verifies(self):
-        # A grant minted BEFORE this slice signs the legacy payload (no
-        # session/paths/role keys). It must verify unchanged — binding cannot
-        # retro-invalidate pre-binding grants.
+    def test_pre_binding_grant_refused_with_next_action(self, tmp_path, capsys):
+        # (d): a grant minted BEFORE the binding existed signs the legacy
+        # payload (no session/paths/role keys) — mechanically valid, but
+        # unbound, so verification refuses it AND names the narrow next action
+        # instead of failing silently.
+        now = time.time()
         fields = {
             "grant_id": "legacy-grant-0000000000000001",
             "grantor": "operator",
             "scope": "cc-task-gate",
             "reason": "pre-binding mint",
-            "issued_at": 1000.0,
-            "expires_at": 4600.0,
+            "issued_at": now,
+            "expires_at": now + 3600.0,
         }
         legacy = EscapeGrant(signature=_sign({"kind": "escape", **fields}, KEY), **fields)
-        assert verify_escape_grant(legacy, key=KEY, now=1500.0, gate="cc-task-gate")
+        assert not verify_escape_grant(
+            legacy, key=KEY, now=now, gate="cc-task-gate", session="lane-a"
+        )
+        key_file = tmp_path / "key"
+        key_file.write_bytes(KEY)
+        path = tmp_path / "legacy.grant"
+        write_grant_file(legacy, path)
+        rc = main(
+            [
+                "verify-grant",
+                "--file",
+                str(path),
+                "--gate",
+                "cc-task-gate",
+                "--session",
+                "lane-a",
+                "--key-file",
+                str(key_file),
+            ]
+        )
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert rc == 1
+        assert result["valid"] is False
+        assert result["next_action"] == "re-mint with your session"
+        assert "NEXT_ACTION: re-mint with your session" in captured.err
 
     def test_bound_grant_stripped_of_binding_fields_fails(self):
         # Downgrade path: strip the binding fields from a BOUND grant without
@@ -327,7 +355,9 @@ class TestEscapeGrantSessionBinding:
             session="lane-a",
             paths=("/srv/a", "/srv/b"),
         )
-        assert verify_escape_grant(grant, key=KEY, now=1500.0, gate="cc-task-gate")
+        assert verify_escape_grant(
+            grant, key=KEY, now=1500.0, gate="cc-task-gate", session="lane-a"
+        )
 
     def test_tampered_paths_rejected_by_signature(self):
         grant = mint_escape_grant(
@@ -537,6 +567,8 @@ class TestCli:
                 str(out),
                 "--gate",
                 "cc-task-gate",
+                "--session",
+                "lane-a",
                 "--key-file",
                 str(key_file),
             ]
@@ -555,7 +587,18 @@ class TestCli:
 
     def test_verify_grant_unbound_next_action(self, tmp_path, capsys):
         key_file = self._key_file(tmp_path)
-        out = self._mint_grant(tmp_path, key_file, capsys)
+        # The CLI refuses to MINT unbound (S1 repair), so build the legacy file
+        # directly: a mechanically valid, session-less grant on disk.
+        grant = mint_escape_grant(
+            grantor="operator",
+            scope="cc-task-gate",
+            reason="x",
+            ttl_s=3600,
+            key=KEY,
+            now=time.time(),
+        )
+        out = tmp_path / "grant.json"
+        write_grant_file(grant, out)
         rc, result = self._verify_grant(out, key_file, capsys, session="lane-a")
         assert rc != 0
         assert result["valid"] is False

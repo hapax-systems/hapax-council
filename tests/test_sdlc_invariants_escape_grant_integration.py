@@ -29,6 +29,7 @@ from shared.governance.coord_capabilities import (
     write_grant_file,
 )
 from shared.sdlc_invariants import (
+    ESCAPE_AUTO_MINT_SESSION,
     InvariantResult,
     Ladder,
     mint_escape_for_violation,
@@ -169,6 +170,11 @@ class TestAutoMintShimRoundTrip:
             f"auto-mint did not write {minted} — dir/extension divergence ({found})"
         )
 
+        # The auto-mint is BOUND to the fallback identity, and the shim (its env
+        # chain cleared by the fixture) releases it under that identity.
+        assert inv3[0].session == ESCAPE_AUTO_MINT_SESSION
+        env["HAPAX_SESSION_ID"] = ESCAPE_AUTO_MINT_SESSION
+
         # THE cross-boundary assertion: the REAL shim's glob + HMAC verify accepts it.
         allowed, out = _shim_allows("floor:merge", env)
         assert allowed, f"real escape-grant.sh REJECTED the auto-minted grant:\n{out}"
@@ -185,6 +191,11 @@ class TestAutoMintShimRoundTrip:
         assert grant is not None
         minted = default_grant_dir() / f"{grant.grant_id}.grant"
         assert minted.exists(), f"auto-mint did not write {minted}"
+
+        # The auto-mint is BOUND to the fallback identity; the shim releases it
+        # under that identity, not under whatever session happens to be asking.
+        assert grant.session == ESCAPE_AUTO_MINT_SESSION
+        env["HAPAX_SESSION_ID"] = ESCAPE_AUTO_MINT_SESSION
 
         # universal "*" scope covers any gate the shim asks about
         allowed, out = _shim_allows("cc-task-gate", env)
