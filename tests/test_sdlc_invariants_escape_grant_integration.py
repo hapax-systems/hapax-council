@@ -28,14 +28,25 @@ from shared.governance.coord_capabilities import (
 )
 from shared.sdlc_invariants import (
     ESCAPE_AUTO_MINT_SESSION,
+    InvariantResult,
     Ladder,
+    mint_escape_for_violation,
     run_evaluator,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SHIM = REPO_ROOT / "hooks" / "scripts" / "escape-grant.sh"
 
-NEXT_ACTION = "re-mint with your session"
+#: A ladder whose BLOCKED state has no escape edge → a genuine INV-3 violation
+#: that ``run_evaluator`` auto-mints for (mirrors the chaos test's no-escape
+#: ladder, but here the minted grant must survive the REAL shim, not an
+#: in-process key).
+_NO_ESCAPE_LADDER = Ladder(
+    stages=("S0", "S11", "BLOCKED"),
+    transitions={"S0": frozenset({"S11"}), "S11": frozenset(), "BLOCKED": frozenset()},
+    terminal=frozenset({"S11"}),
+    blocked=frozenset({"BLOCKED"}),
+)
 
 #: The session env chain mirrored from agent-role.sh hapax_session_id().
 _SESSION_ENV_VARS = (
@@ -46,14 +57,7 @@ _SESSION_ENV_VARS = (
     "CODEX_THREAD_NAME",
 )
 
-#: A ladder whose BLOCKED state has no escape edge → a genuine INV-3 violation
-#: that ``run_evaluator`` auto-mints for.
-_NO_ESCAPE_LADDER = Ladder(
-    stages=("S0", "S11", "BLOCKED"),
-    transitions={"S0": frozenset({"S11"}), "S11": frozenset(), "BLOCKED": frozenset()},
-    terminal=frozenset({"S11"}),
-    blocked=frozenset({"BLOCKED"}),
-)
+NEXT_ACTION = "re-mint with your session"
 
 
 def _shim_allows(gate: str, env: dict[str, str], path: str | None = None) -> tuple[bool, str]:
@@ -128,6 +132,74 @@ def _honored(env: dict[str, str]) -> list[dict]:
     if not ledger.exists():
         return []
     return [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
+
+
+@pytest.mark.skipif(not SHIM.exists(), reason="escape-grant.sh shim absent")
+@pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("python3") is None,
+    reason="bash + python3 required for the real shim round-trip",
+)
+class TestAutoMintShimRoundTrip:
+    def test_run_evaluator_inv3_mint_is_accepted_by_real_shim(self, coord_env):
+        coord, env = coord_env
+
+        # Control: with no grant minted yet, the REAL shim MUST deny — proves this
+        # test is capable of failing (not trivially green).
+        allowed_before, out = _shim_allows("floor:merge", env)
+        assert not allowed_before, f"shim allowed with an empty grant dir:\n{out}"
+
+        grant_dir = default_grant_dir()
+        key = load_or_create_key(default_grant_key())
+
+        report = run_evaluator(
+            (),
+            now=time.time(),
+            ladder=_NO_ESCAPE_LADDER,
+            findings_path=coord / "findings.jsonl",
+            key=key,
+            alert=False,
+        )
+        assert "INV-3" in report.violations
+        inv3 = [g for g in report.minted if "INV-3" in g.reason]
+        assert inv3, f"INV-3 did not auto-mint; minted reasons={[g.reason for g in report.minted]}"
+
+        # Canonical contract: <coord>/grants/<grant_id>.grant (NOT <slug>-<id>.json).
+        minted = grant_dir / f"{inv3[0].grant_id}.grant"
+        found = sorted(p.name for p in grant_dir.glob("*")) if grant_dir.exists() else "NO DIR"
+        assert minted.exists(), (
+            f"auto-mint did not write {minted} — dir/extension divergence ({found})"
+        )
+
+        # The auto-mint is BOUND to the fallback identity, and the shim (its env
+        # chain cleared by the fixture) releases it under that identity.
+        assert inv3[0].session == ESCAPE_AUTO_MINT_SESSION
+        env["HAPAX_SESSION_ID"] = ESCAPE_AUTO_MINT_SESSION
+
+        # THE cross-boundary assertion: the REAL shim's glob + HMAC verify accepts it.
+        allowed, out = _shim_allows("floor:merge", env)
+        assert allowed, f"real escape-grant.sh REJECTED the auto-minted grant:\n{out}"
+
+    def test_mint_escape_for_violation_is_accepted_by_real_shim(self, coord_env):
+        coord, env = coord_env
+        key = load_or_create_key(default_grant_key())
+
+        grant = mint_escape_for_violation(
+            InvariantResult("INV-4", "authority", holds=False, violations=("boom",), advisory="x"),
+            key=key,
+            now=time.time(),
+        )
+        assert grant is not None
+        minted = default_grant_dir() / f"{grant.grant_id}.grant"
+        assert minted.exists(), f"auto-mint did not write {minted}"
+
+        # The auto-mint is BOUND to the fallback identity; the shim releases it
+        # under that identity, not under whatever session happens to be asking.
+        assert grant.session == ESCAPE_AUTO_MINT_SESSION
+        env["HAPAX_SESSION_ID"] = ESCAPE_AUTO_MINT_SESSION
+
+        # universal "*" scope covers any gate the shim asks about
+        allowed, out = _shim_allows("cc-task-gate", env)
+        assert allowed, f"real escape-grant.sh REJECTED the auto-minted grant:\n{out}"
 
 
 @pytest.mark.skipif(not SHIM.exists(), reason="escape-grant.sh shim absent")
