@@ -7,12 +7,30 @@
 #   3. Are live resumed lane processes still coherent with active task state?
 #   4. Is the assigned lane quota-blocked by receipt or methodology-dispatch evidence?
 #   5. Is a task's PR still open on GitHub? (never clear a pr_open claim whose PR is open)
+#   6. Is the holder's route capability-blocked beyond tolerance? (a dispatched binding or
+#      the lane's relay record names the family; the family-outage record carries a fresh
+#      witness)
 #
-# Reports phantom/quota-blocked claims and optionally releases them (--release).
+# Reports phantom/quota-blocked/capability-blocked claims and optionally releases them
+# (--release).
 #
 # Intended to run as a systemd timer (codex-claim-audit.timer) or ad-hoc.
 #
-# Version: 2
+# Version: 3
+# Changes in v3 (NO-STALL U1, generalised by the operator's act of 2026-10-11T04:51:06Z:
+#   lanes blocked by a capability blocker "should not persist; the work should be
+#   appropriately migrated"):
+#   - --release-capability-blocked releases a claimed/in_progress claim whose holder's
+#     route is blocked beyond HAPAX_BLOCKER_TOLERANCE_HOURS (default 6), or with no known
+#     end. The family is read from evidence of the executor, never from its lane name: a
+#     dispatched claim-dispatch binding for that task, or the lane's relay record (a manual
+#     binding always says codex, so it is not evidence). The blocker is read from the
+#     family-outage record, whose witness must be fresher than the review team's TTL. No
+#     evidence, or evidence that disagrees, keeps today's hold.
+#   - The release carries an open PR instead of holding on it: the note keeps pr, pr_repo
+#     and branch for the next holder, and every claim marker of the holder that names the
+#     task is cleared through the same atomic capture and peer reconcile, which fences the
+#     old holder if its route comes back.
 # Postmortem: 2026-06-12 failure classes #4 (CLAIM-PLANE-HOST-FORK) and
 #   #5 (STATE-ERASING-AUDIT-ON-LIVE-LANES).
 # Changes in v2:
@@ -37,7 +55,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION=2
+SCRIPT_VERSION=3
 # Exit code for "audit completed; unresolved findings remain". DISTINCT from a
 # set -euo pipefail crash (which exits with the failing command's status, often
 # 1/2/127): the unit drop-in treats ONLY this code as success-with-warning, so a
@@ -49,9 +67,18 @@ CLAIM_CACHE_DIR="${HAPAX_CLAIM_CACHE_DIR:-$HOME/.cache/hapax}"
 RELAY_RECEIPT_DIR="${HAPAX_RELAY_RECEIPT_DIR:-$HOME/.cache/hapax/relay/receipts}"
 ORCHESTRATION_LEDGER_DIR="${HAPAX_ORCHESTRATION_LEDGER_DIR:-$HOME/.cache/hapax/orchestration}"
 QUOTA_BLOCKED_LOOKBACK_SECONDS="${HAPAX_QUOTA_BLOCKED_LOOKBACK_SECONDS:-86400}"
+FAMILY_OUTAGE_RECORD="${HAPAX_FAMILY_OUTAGE_RECORD:-$HOME/.cache/hapax/review-team/family-outage.json}"
+# Lane relay records (<lane>.yaml); their `platform` is the harness's own declaration.
+RELAY_STATE_DIR="${HAPAX_RELAY_STATE_DIR:-$HOME/.cache/hapax/relay}"
+# A family-outage witness older than this is not evidence (review_team.FAMILY_OUTAGE_TTL_S).
+BLOCKER_WITNESS_TTL_SECONDS="${HAPAX_BLOCKER_WITNESS_TTL_SECONDS:-7200}"
+# How long a claim may wait on a blocked route before it is released (NO-STALL U1). A 5 h
+# window wall stays held; a weekly wall does not.
+BLOCKER_TOLERANCE_HOURS="${HAPAX_BLOCKER_TOLERANCE_HOURS:-6}"
 STALE_HOURS="${CODEX_CLAIM_STALE_HOURS:-6}"
 RELEASE=false
 RELEASE_QUOTA_BLOCKED=false
+RELEASE_CAPABILITY_BLOCKED=false
 NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
 NTFY_TOPIC="${NTFY_TOPIC:-hapax-ops}"
 RECONCILE_HOST="${HAPAX_RECONCILE_HOST:-}"
@@ -140,6 +167,7 @@ for arg in "$@"; do
   case "$arg" in
     --release) RELEASE=true ;;
     --release-quota-blocked) RELEASE_QUOTA_BLOCKED=true ;;
+    --release-capability-blocked) RELEASE_CAPABILITY_BLOCKED=true ;;
     --stale-hours=*) STALE_HOURS="${arg#*=}" ;;
     --reconcile-host=*) RECONCILE_HOST="${arg#*=}" ;;
     --reconcile-cache-dir=*) RECONCILE_CACHE_DIR="${arg#*=}" ;;
@@ -156,6 +184,7 @@ stale_cache_count=0
 coherence_count=0
 process_count=0
 quota_blocked_count=0
+capability_blocked_count=0
 pr_protected_count=0
 reconcile_count=0
 release_failure_count=0
@@ -164,6 +193,7 @@ cache_report=""
 coherence_report=""
 process_report=""
 quota_report=""
+capability_report=""
 pr_protected_report=""
 reconcile_report=""
 release_failure_report=""
@@ -577,6 +607,154 @@ _quota_evidence_for() {
   _receipt_quota_evidence_for "$role" || _dispatch_quota_evidence_for "$role" "$task_id"
 }
 
+# A capability blocker on the holder's route, beyond tolerance (NO-STALL U1). The holder's
+# family comes from evidence of its executor, never from its lane name: a dispatched
+# claim-dispatch binding for this task, or the lane's relay record. A manual binding does not
+# count: cc-claim writes `platform: codex` into every manual binding (the Gate-0B carrier
+# route), whatever executes the claim. The blocker comes from the family-outage record, whose
+# witness must be fresher than the review team's TTL. Prints the evidence only when the
+# blocker's end is unknown or later than now + tolerance. Missing, stale, conflicting or
+# unparseable evidence fails, and today's hold stands.
+_capability_blocker_for() {
+  local role="$1"
+  local task_id="$2"
+  command -v python3 >/dev/null 2>&1 || return 1
+  [ -f "$FAMILY_OUTAGE_RECORD" ] || return 1
+  python3 - "$role" "$task_id" "$CLAIM_CACHE_DIR" "$FAMILY_OUTAGE_RECORD" \
+    "$BLOCKER_TOLERANCE_HOURS" "$BLOCKER_WITNESS_TTL_SECONDS" "$RELAY_STATE_DIR" <<'PYEOF'
+import hashlib
+import json
+import re
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+role, task_id, cache_raw, record_raw, tolerance_raw, ttl_raw, relay_raw = sys.argv[1:8]
+try:
+    tolerance = timedelta(hours=float(tolerance_raw))
+    ttl = timedelta(seconds=float(ttl_raw))
+except ValueError:
+    sys.exit(1)
+now = datetime.now(UTC)
+session_id = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def parse(raw: object) -> datetime | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        when = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=UTC)
+
+
+# A dispatched binding for this holder and this task: cc-claim-dispatch-<role>.json or a
+# session-keyed cc-claim-dispatch-<role>-<session id>.json. Another role whose name only
+# starts with "<role>-" is not this holder.
+platforms: set[str] = set()
+for binding in sorted(Path(cache_raw).glob(f"cc-claim-dispatch-{role}*.json")):
+    key = binding.name[len("cc-claim-dispatch-") : -len(".json")]
+    if key != role and not (
+        key.startswith(f"{role}-") and session_id.fullmatch(key[len(role) + 1 :])
+    ):
+        continue
+    try:
+        data = json.loads(binding.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    if not isinstance(data, dict) or data.get("schema") != "hapax.claim-dispatch-binding.v1":
+        continue
+    if data.get("lane") != role or data.get("task_id") != task_id:
+        continue
+    if str(data.get("dispatch_message_id") or "").startswith("manual-cc-claim:"):
+        continue
+    platform = data.get("platform")
+    if isinstance(platform, str) and platform.strip():
+        platforms.add(platform.strip())
+# The lane's relay record names the platform its harness runs on.
+try:
+    relay_text = (Path(relay_raw) / f"{role}.yaml").read_text(encoding="utf-8")
+except (OSError, UnicodeError):
+    relay_text = ""
+relay_platform = re.search(r"^platform:[ \t]*([A-Za-z0-9_.-]+)[ \t]*$", relay_text, re.MULTILINE)
+if relay_platform:
+    platforms.add(relay_platform.group(1))
+if len(platforms) != 1:
+    sys.exit(1)
+family = platforms.pop()
+
+try:
+    raw = Path(record_raw).read_bytes()
+    record = json.loads(raw)
+except (OSError, ValueError):
+    sys.exit(1)
+entry = record.get(family) if isinstance(record, dict) else None
+if not isinstance(entry, dict):
+    sys.exit(1)
+started = parse(entry.get("outage_started_at"))
+observed = parse(entry.get("observed_at"))
+if started is None or observed is None or observed < started:
+    sys.exit(1)
+if observed > now + timedelta(minutes=5) or now - observed > ttl:
+    sys.exit(1)
+wall = entry.get("wall_evidence")
+end_raw = (wall.get("resets_at") if isinstance(wall, dict) else None) or entry.get("until")
+if end_raw:
+    end = parse(end_raw)
+    if end is None or end <= now + tolerance:
+        sys.exit(1)
+    end_text = end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+else:
+    end_text = "unknown"
+cause = str(entry.get("cause") or "outage")
+witness = observed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+print(
+    f"family={family} cause={cause} resets_at={end_text} tolerance_h={tolerance_raw} "
+    f"witness={witness} record_sha256={hashlib.sha256(raw).hexdigest()[:12]}"
+)
+PYEOF
+}
+
+# The holder's own claim markers that name this task: cc-active-task-<holder> and every
+# session-keyed cc-active-task-<holder>-<session id>. Another role whose name only starts with
+# "<holder>-" is never matched.
+_holder_marker_keys_for_task() {
+  local holder="$1" task_id="$2" marker key suffix
+  for marker in "$CLAIM_CACHE_DIR/cc-active-task-$holder" "$CLAIM_CACHE_DIR/cc-active-task-$holder"-*; do
+    [ -f "$marker" ] || continue
+    case "$marker" in *.audit-claim.*) continue ;; esac
+    key="${marker##*/cc-active-task-}"
+    if [ "$key" != "$holder" ]; then
+      suffix="${key#"$holder"-}"
+      [[ "$suffix" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
+    fi
+    [ "$(_claim_file_task "$marker")" = "$task_id" ] || continue
+    printf '%s\n' "$key"
+  done
+}
+
+# Clear every marker of a capability-blocked holder that names the task, carrying the PR (no
+# open-PR hold: the PR stays open for the next holder). A leftover session-keyed marker would
+# refuse the next holder's cc-claim. Fails if any clear fails, so the note stays claimed.
+_release_blocked_holder_markers() {
+  local holder="$1" task_id="$2" pr_number="$3" keys key messages="" failed=false
+  keys="$(_holder_marker_keys_for_task "$holder" "$task_id")"
+  if [ -z "$keys" ]; then
+    _clear_claim_cache_for_release "$holder" "$task_id" "capability-blocked" "$pr_number" carry
+    return $?
+  fi
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if ! _clear_claim_cache_for_release "$key" "$task_id" "capability-blocked" "$pr_number" carry; then
+      failed=true
+    fi
+    messages="${messages}${release_cache_message}"
+  done <<< "$keys"
+  release_cache_message="$messages"
+  [ "$failed" = false ]
+}
+
 # ---------------------------------------------------------------------------
 # Claim cache clearing — now with PR reality check + journal attribution
 # ---------------------------------------------------------------------------
@@ -651,6 +829,9 @@ _clear_claim_cache_for_release() {
   local task_id="$2"
   local reason="${3:-released}"
   local pr_number="${4:-}"
+  # "carry" only for a holder blocked beyond tolerance (_capability_blocker_for): its claim
+  # is not live, and the open PR is handed to the next holder rather than held.
+  local pr_policy="${5:-protect}"
   release_cache_message=""
   local claim_file claimed_task audit_tmp
   claim_file="$CLAIM_CACHE_DIR/cc-active-task-$assigned"
@@ -659,7 +840,8 @@ _clear_claim_cache_for_release() {
   # Hoisted above the `[ -f "$claim_file" ]` split so it protects the
   # missing-local-cache path too: a vanished local cache must NOT let the remote
   # reconcile erase a live open-PR claim (the delta/zeta + appendix-fork surface).
-  if _reality_check_protects "$task_id" "$assigned" "$pr_number" "claim cache $(basename "$claim_file")"; then
+  if [ "$pr_policy" != "carry" ] \
+    && _reality_check_protects "$task_id" "$assigned" "$pr_number" "claim cache $(basename "$claim_file")"; then
     return 1
   fi
 
@@ -861,6 +1043,35 @@ for note in "$VAULT_ROOT/active/"*.md; do
       _record_coherence "CACHE_MISMATCH: ${task_id} assigned=${assigned} status=${status} cache=$(basename "$claim_file") cache_task=${claimed_task:-<empty>}"
     else
       claim_matches=true
+    fi
+
+    blocker_evidence="$(_capability_blocker_for "$assigned" "$task_id" 2>/dev/null || true)"
+    if [ -n "$blocker_evidence" ]; then
+      capability_blocked_count=$((capability_blocked_count + 1))
+      capability_report="${capability_report}  CAPABILITY_BLOCKED: ${task_id} assigned=${assigned} status=${status} ${blocker_evidence} pr=${pr} branch=${branch}\n"
+      if [ "$RELEASE" = true ] && [ "$RELEASE_CAPABILITY_BLOCKED" = true ]; then
+        if _release_blocked_holder_markers "$assigned" "$task_id" "$pr"; then
+          if [ "$DRY_RUN" = true ]; then
+            capability_report="${capability_report}    -> [DRY-RUN] WOULD RELEASE back to offered; pr and branch stay for the next holder\n"
+          else
+            now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            safe_evidence="$(printf '%s' "$blocker_evidence" | sed 's/[&\\]/_/g')"
+            # First occurrence only: the frontmatter, never a body line that starts the same way.
+            sed -i "0,/^status:.*/s//status: offered/" "$note"
+            sed -i "0,/^assigned_to:.*/s//assigned_to: unassigned/" "$note"
+            sed -i "0,/^updated_at:.*/s//updated_at: $now_iso/" "$note"
+            sed -i "0,/^## Session log$/{/^## Session log$/a\\- $now_iso codex-claim-audit released a capability-blocked claim (${assigned}; ${safe_evidence}); pr and branch stay for the next holder
+}" "$note"
+            capability_report="${capability_report}    -> RELEASED back to offered for governed redispatch; pr and branch kept\n"
+          fi
+        else
+          capability_report="${capability_report}    -> HELD: claim release preflight failed; task note left claimed\n"
+        fi
+        capability_report="${capability_report}${release_cache_message}"
+      elif [ "$RELEASE" = true ]; then
+        capability_report="${capability_report}    -> HELD: pass --release-capability-blocked to release a claim whose holder is blocked beyond tolerance\n"
+      fi
+      continue
     fi
 
     quota_evidence="$(_quota_evidence_for "$assigned" "$task_id" 2>/dev/null || true)"
@@ -1086,9 +1297,13 @@ done <<< "$process_input"
 # Reporting
 # ---------------------------------------------------------------------------
 
-issue_count=$((phantom_count + coherence_count + process_count + quota_blocked_count + release_failure_count))
+issue_count=$((phantom_count + coherence_count + process_count + quota_blocked_count + capability_blocked_count + release_failure_count))
 
 if [ "$issue_count" -gt 0 ]; then
+  if [ "$capability_blocked_count" -gt 0 ]; then
+    printf "codex-claim-audit: %d capability-blocked claim(s) found\n" "$capability_blocked_count"
+    printf '%b' "$capability_report"
+  fi
   if [ "$quota_blocked_count" -gt 0 ]; then
     printf "codex-claim-audit: %d quota-blocked claim(s) found\n" "$quota_blocked_count"
     printf '%b' "$quota_report"
@@ -1135,6 +1350,7 @@ if [ "$issue_count" -gt 0 ]; then
   fi
   if [ "$RELEASE" = true ] \
     && { [ "$quota_blocked_count" -eq 0 ] || [ "$RELEASE_QUOTA_BLOCKED" = true ]; } \
+    && { [ "$capability_blocked_count" -eq 0 ] || [ "$RELEASE_CAPABILITY_BLOCKED" = true ]; } \
     && [ "$release_failure_count" -eq 0 ] \
     && [ "$cache_mismatch_count" -eq 0 ] \
     && [ "$coherence_count" -eq 0 ] \
