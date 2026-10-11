@@ -176,6 +176,11 @@ class BlueskyPoster:
     def run_once(self) -> int:
         handled = 0
         for record in self._tail_from():
+            if self._stop_evt.is_set():
+                # A stop (SIGTERM, a restart) lets the event in flight finish and be recorded, and
+                # starts no other: the rest wait for the next process, so a stop takes at most one
+                # event and no kill lands between a post and its record.
+                break
             if record.event is None:
                 if record.error:
                     log.warning(

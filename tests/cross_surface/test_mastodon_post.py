@@ -230,6 +230,33 @@ class TestCursor:
         assert poster.run_once() == 0
         factory.return_value.status_post.assert_called_once()
 
+    def test_a_stop_mid_post_records_that_post_and_leaves_the_rest_for_the_restart(self, tmp_path):
+        """A restart's SIGTERM only sets the stop event, so the post in flight is recorded and no
+        later event starts; a restarted poster posts the rest, never the first again."""
+        bus = tmp_path / "events.jsonl"
+        cursor = tmp_path / "cursor.txt"
+        first = _public_event(event_id="rvpe:broadcast_boundary:first")
+        second = _public_event(event_id="rvpe:broadcast_boundary:second")
+        _write_events(bus, [first, second])
+        first_line_bytes = len(bus.read_bytes().splitlines(keepends=True)[0])
+        poster, factory = _make_poster(event_path=bus, cursor_path=cursor)
+        status = factory.return_value.status_post.return_value
+
+        def stopped_mid_post(*args, **kwargs):
+            poster.stop()
+            return status
+
+        factory.return_value.status_post.side_effect = stopped_mid_post
+
+        assert poster.run_once() == 1
+        factory.return_value.status_post.assert_called_once()
+        assert int(cursor.read_text(encoding="utf-8")) == first_line_bytes
+
+        restarted, restarted_factory = _make_poster(event_path=bus, cursor_path=cursor)
+        assert restarted.run_once() == 1
+        restarted_factory.return_value.status_post.assert_called_once()
+        assert int(cursor.read_text(encoding="utf-8")) == bus.stat().st_size
+
     def test_persists_status_url_receipt_for_public_proof(self, tmp_path):
         bus = tmp_path / "events.jsonl"
         cursor = tmp_path / "cursor.txt"
