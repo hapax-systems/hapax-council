@@ -48,6 +48,83 @@ def _load(name: str, filename: str) -> ModuleType:
 dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
 
 
+@pytest.mark.parametrize(
+    "family,model",
+    [
+        ("kimi", "kimi-for-coding"),
+        ("featherless", "glm-5.3"),
+        ("verboo", "verboo-coder"),
+    ],
+)
+def test_substitute_dispatch_records_observed_identity(family, model):
+    constitution = dispatch.review_team.Constitution(
+        team_class="t2_standard",
+        quorum_required=1,
+        seats=(dispatch.review_team.Seat(id=f"{family}-1", family=family),),
+        notes=(),
+    )
+    registry = {"families": [{"family": family}]}
+
+    def runner(*_args):
+        return dispatch.ReviewerRunnerResult(
+            stdout=GOOD_REPLY,
+            stderr=f"hapax-{family}-reviewer: served_model={model} pinned_model=other-pin\n",
+        )
+
+    [review] = dispatch.dispatch_reviews(
+        constitution, ["prompt"], registry, runner, diff_full_bytes=10, diff_delivered_bytes=10
+    )
+    assert review["family"] == family  # route/outage identity remains the actual seat
+    assert review["served_model"] == model
+    expected = {"kimi": "kimi", "featherless": "glm", "verboo": None}[family]
+    assert dispatch.review_team.review_voting_family(review) == expected
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "",
+        "hapax-kimi-reviewer: served_model=kimi-k3 pinned_model=x",
+        "hapax-verboo-reviewer: served_model=minimax-m3 pinned_model=x\n"
+        "hapax-verboo-reviewer: served_model=glm-5.3 pinned_model=x",
+    ],
+)
+def test_substitute_dispatch_missing_foreign_or_conflicting_identity_is_not_a_vote(stderr):
+    constitution = dispatch.review_team.Constitution(
+        team_class="t2_standard",
+        quorum_required=1,
+        seats=(dispatch.review_team.Seat(id="verboo-1", family="verboo"),),
+        notes=(),
+    )
+
+    def runner(*_args):
+        return dispatch.ReviewerRunnerResult(stdout=GOOD_REPLY, stderr=stderr)
+
+    [review] = dispatch.dispatch_reviews(
+        constitution,
+        ["prompt"],
+        {"families": [{"family": "verboo"}]},
+        runner,
+        diff_full_bytes=10,
+        diff_delivered_bytes=10,
+    )
+    assert review.get("served_model") is None
+    assert dispatch.review_team._family_floor([review])["met"] is False
+
+
+def test_authority_issuer_collapses_observed_substitute_families():
+    assert (
+        dispatch._review_team_authority_issuer(
+            [
+                {"family": "glm", "verdict": "accept"},
+                {"family": "featherless", "served_model": "glm-5.3", "verdict": "accept"},
+                {"family": "verboo", "served_model": "verboo-coder", "verdict": "accept"},
+            ]
+        )
+        == "review-team:glm"
+    )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", tmp_path / "family-outage.json")
@@ -699,7 +776,10 @@ class TestDryRun:
                     "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
                 ),
                 # substitute families unavailable too, so only one family remains
-                **{f: ("route_state_blocked",) for f in ("muse", "vibe", "local")},
+                **{
+                    f: ("route_state_blocked",)
+                    for f in ("muse", "vibe", "local", "kimi", "featherless", "verboo")
+                },
             },
         )
 
@@ -6876,7 +6956,10 @@ class TestWalledFamilySubstitution:
             route_blocked_families={
                 "gemini": ("agy.review.direct:route_state_blocked",),
                 "glm": ("glmcp.review.direct:route_state_blocked",),
-                **{f: ("route_state_blocked",) for f in ("muse", "vibe", "local")},
+                **{
+                    f: ("route_state_blocked",)
+                    for f in ("muse", "vibe", "local", "kimi", "featherless", "verboo")
+                },
             },
         )
         assert result["status"] == "constitution_blocked"
