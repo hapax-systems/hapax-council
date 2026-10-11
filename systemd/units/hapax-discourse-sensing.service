@@ -1,0 +1,20 @@
+# Hapax-Parked: true
+# Merging installs this disabled; enabling is a separate, recorded act. Read-only
+# sensor: anonymous GETs with a named User-Agent to public endpoints only; it
+# never posts, replies, follows, likes or mentions. The source list is vault-side
+# (the repo is public) and read from DISCOURSE_SENSING_SOURCES.
+[Unit]
+Description=Hapax discourse sensing producer — slice 1 (discourse-sensing-producer-20261011)
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/agents/discourse_sensing/__main__.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:/usr/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=DISCOURSE_SENSING_SOURCES=%h/Documents/Personal/30-areas/hapax/lanebus/hieh-field/SOURCES.yaml
+Environment=DISCOURSE_SENSING_INTAKE=%h/Documents/Personal/30-areas/hapax/lanebus/hieh-field
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.discourse_sensing
+TimeoutStartSec=600
