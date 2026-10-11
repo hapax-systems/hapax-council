@@ -669,8 +669,19 @@ def drop_to_inbox(path: Path, *, surfaces: list[str], approver: str, state_root:
     inbox_path = artifact.inbox_path(state_root=state_root)
     inbox_path.parent.mkdir(parents=True, exist_ok=True)
     partial = inbox_path.with_name(f".{inbox_path.name}.partial")
-    partial.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
-    os.replace(partial, inbox_path)
+    try:
+        partial.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+        os.replace(partial, inbox_path)
+    except BaseException:
+        # A stray partial would sit in the inbox the orchestrator scans; remove it and say so.
+        partial.unlink(missing_ok=True)
+        log.error(
+            "inbox drop of %s failed; removed %s; next action: read the error, free the inbox "
+            "filesystem if it is full, and rerun the drop",
+            path,
+            partial,
+        )
+        raise
     return inbox_path
 
 

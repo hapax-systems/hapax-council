@@ -1116,6 +1116,99 @@ def test_pipeline_state_is_none_for_a_slug_nowhere_in_the_pipeline(tmp_path: Pat
     )
 
 
+def test_pipeline_state_refuses_an_unsafe_slug_before_reading_any_path(tmp_path: Path) -> None:
+    """The slug builds every path pipeline_state reads, so it is checked first, as the drop checks it."""
+    state_root = tmp_path / "state"
+    draft = _frozen_draft(tmp_path)
+    draft.write_text(
+        draft.read_text(encoding="utf-8").replace("slug: a-frozen-draft", "slug: ../../outside"),
+        encoding="utf-8",
+    )
+    # An unchecked slug reads <state_root>/publish/inbox/../../outside.json, outside the pipeline.
+    (state_root / "publish" / "inbox").mkdir(parents=True)
+    (state_root / "outside.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(publish_vault_artifact.PublicationGateError, match="slug must be"):
+        publish_vault_artifact.pipeline_state(draft, ["omg-weblog"], state_root=state_root)
+
+
+def test_pipeline_state_holds_on_a_publication_record_that_is_not_an_object(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    _publication_log(state_root, fingerprint="0" * 64).write_text("[]", encoding="utf-8")
+
+    assert (
+        publish_vault_artifact.pipeline_state(
+            _frozen_draft(tmp_path), ["omg-weblog"], state_root=state_root
+        )
+        == "publication_record_unreadable"
+    )
+
+
+def _receipted_unsafe_slug_draft(tmp_path: Path) -> Path:
+    draft = tmp_path / "unsafe.md"
+    body_md = "# Unsafe Slug\n\nBody\n"
+    receipts = _write_bound_receipts_for_expected_artifact(
+        title="Unsafe Slug", slug="../../outside", body_md=body_md
+    )
+    draft.write_text(
+        "---\n"
+        "Title: Unsafe Slug\n"
+        "Slug: ../../outside\n"
+        "Publication-Allowed: true\n"
+        f"{_gate_receipts_yaml(receipts)}"
+        "---\n\n"
+        f"{body_md}",
+        encoding="utf-8",
+    )
+    return draft
+
+
+def test_drop_to_inbox_refuses_an_unsafe_slug_and_writes_nothing(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    draft = _receipted_unsafe_slug_draft(tmp_path)
+
+    with pytest.raises(publish_vault_artifact.PublicationGateError, match="slug must be"):
+        publish_vault_artifact.drop_to_inbox(
+            draft, surfaces=["omg-weblog"], approver="x", state_root=state_root
+        )
+
+    assert not (state_root / "publish" / "inbox").exists()
+    assert not (state_root / "outside.json").exists()
+
+
+def test_drop_to_inbox_refuses_a_disallowed_surface_and_writes_nothing(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    draft = _receipted_draft(tmp_path)
+
+    with pytest.raises(publish_vault_artifact.SurfaceAllowlistError):
+        publish_vault_artifact.drop_to_inbox(
+            draft, surfaces=["not-a-publication-surface"], approver="x", state_root=state_root
+        )
+
+    assert not (state_root / "publish" / "inbox").exists()
+
+
+def test_drop_to_inbox_removes_its_partial_file_when_the_rename_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed rename leaves no stray .partial in the inbox, and says so with a next action."""
+    state_root = tmp_path / "state"
+    draft = _receipted_draft(tmp_path)
+
+    def refuse_rename(src: object, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(publish_vault_artifact.os, "replace", refuse_rename)
+    with caplog.at_level("ERROR"), pytest.raises(OSError, match="disk full"):
+        publish_vault_artifact.drop_to_inbox(
+            draft, surfaces=["omg-weblog"], approver="x", state_root=state_root
+        )
+
+    assert list((state_root / "publish" / "inbox").iterdir()) == []
+    assert ".allowed-draft.json.partial" in caplog.text
+    assert "next action" in caplog.text
+
+
 def test_the_publish_path_still_refuses_a_draft_without_receipts(tmp_path: Path) -> None:
     path = _frozen_draft(tmp_path)
     frontmatter, body = publish_vault_artifact._parse_publication_markdown(path)
