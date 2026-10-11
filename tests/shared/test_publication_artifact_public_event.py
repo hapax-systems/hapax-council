@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import jsonschema
+import pytest
 
 from agents.publish_orchestrator.orchestrator import _artifact_fingerprint
 from shared.preprint_artifact import (
@@ -97,6 +98,33 @@ def test_surface_log_event_preserves_orchestrator_audit_ownership(tmp_path: Path
     assert event.surface_policy.dry_run_reason is None
     assert f"artifact_fingerprint:{fingerprint}" in event.provenance.evidence_refs
     assert any(str(log_path) in ref for ref in event.provenance.evidence_refs)
+
+
+@pytest.mark.parametrize("surface", ["omg-weblog", "oudepode-omg-weblog"])
+def test_a_weblog_publication_event_never_carries_a_guessed_url(tmp_path: Path, surface) -> None:
+    """An omg.lol weblog entry lives at <address>.weblog.lol<location>, where the location follows the
+    entry's Date and its title or pinned Slug, not the artifact slug. The guessed
+    <address>.omg.lol/weblog/<slug> answered 404 or the not-found page on 2026-10-10, so the event
+    carries no URL until the publish path knows the true one."""
+    artifact = _artifact(slug="entry-006-may-10-11", surfaces=[surface])
+    fingerprint = _artifact_fingerprint(artifact)
+    log_path = _write_log(tmp_path, artifact, surface, "ok", fingerprint)
+
+    decision = build_publication_artifact_public_event(
+        artifact,
+        artifact_fingerprint=fingerprint,
+        state_root=tmp_path,
+        stage="surface_log",
+        surface=surface,
+        result="ok",
+        result_timestamp="2026-04-30T12:49:00Z",
+        source_path=log_path,
+        generated_at=GENERATED_AT,
+    )
+
+    assert decision.public_event is not None
+    assert decision.public_event.public_url is None
+    assert "omg.lol/weblog/" not in decision.public_event.model_dump_json()
 
 
 def test_no_artifact_body_or_title_leaks_into_public_event(tmp_path: Path) -> None:
