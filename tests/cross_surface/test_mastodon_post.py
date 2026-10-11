@@ -475,7 +475,10 @@ class TestEventFiltering:
         [
             ("Commitment Status", "Hapax weblog: Commitment Status. {url}"),
             ("Is a record its own witness?", "Hapax weblog: Is a record its own witness? {url}"),
+            ("A record, repaired.", "Hapax weblog: A record, repaired. {url}"),
+            ("It ships!", "Hapax weblog: It ships! {url}"),
             ("", "Hapax weblog post: {url}"),
+            ("   ", "Hapax weblog post: {url}"),
         ],
     )
     def test_default_compose_weblog_text_names_the_entry_once(self, label, expected):
@@ -923,3 +926,19 @@ class TestEventTypeNarrowing:
         unit = Path(__file__).resolve().parents[2] / "systemd/units/hapax-mastodon-post.service"
         lines = unit.read_text(encoding="utf-8").splitlines()
         assert "Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog" in lines
+
+    def test_the_mastodon_unit_is_parked_until_its_account_is_labelled(self):
+        """hapax-post-merge-deploy disables a unit whose source carries this marker, so it stays off.
+
+        The account is not yet labelled as the lab's AI-agent account (row
+        mastodon-account-labelled-as-the-labs-ai-agent-account-20261011), which removes the marker.
+        """
+        import re
+        from pathlib import Path
+
+        unit = Path(__file__).resolve().parents[2] / "systemd/units/hapax-mastodon-post.service"
+        # The deploy's own whole-line match (scripts/hapax-post-merge-deploy, unit_content_parked).
+        assert re.search(
+            r"(?mi)^[#;][ \t]*Hapax-Parked:[ \t]*(true|yes|1)[ \t]*$",
+            unit.read_text(encoding="utf-8"),
+        )

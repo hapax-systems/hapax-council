@@ -17,13 +17,17 @@ Environment=HAPAX_RESEARCH_VEHICLE_PUBLIC_EVENT_PATH=/dev/shm/hapax-public-event
 Environment=HAPAX_BLUESKY_CURSOR=%h/.cache/hapax/bluesky-post-cursor.txt
 Environment=HAPAX_BLUESKY_IDEMPOTENCY_PATH=%h/.cache/hapax/bluesky-post-event-ids.json
 Environment=HAPAX_LOG_LEVEL=INFO
-# Reviewed weblog entries only: in May 2026 this account posted one gate-refusal message 24 times
-# (correction cor-2026-0002). The variable can only narrow the poster's built-in event types.
+# Weblog entries only: in May 2026 this account posted one gate-refusal message 24 times
+# (correction cor-2026-0002). The variable can only narrow the poster's built-in event types: here to
+# omg.weblog events, which the weblog producer emits from the lab's own weblog feed. Review happens
+# upstream (entries reach the weblog through the gated publish path); this poster does not re-check it.
 Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog
-# Operator must export from hapax-secrets:
-#   HAPAX_BLUESKY_HANDLE         (e.g. hapax.bsky.social)
+# Credentials, from the shared hapax-secrets.env above (written by scripts/secret_env_from_filestore.py):
+#   HAPAX_BLUESKY_DID            the login identifier, preferred when set (FileStore bluesky-operator-did);
+#                                the handle can be refused while the DID is accepted
+#   HAPAX_BLUESKY_HANDLE         the fallback login identifier when no DID is set
 #   HAPAX_BLUESKY_APP_PASSWORD   (19-char from https://bsky.app/settings/app-passwords)
-# Without either, daemon idles + logs "no_credentials" per event.
+# Without an identifier or the password, daemon idles + logs "no_credentials" per event.
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.cross_surface.bluesky_post
 Restart=on-failure
 RestartSec=15
