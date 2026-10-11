@@ -202,9 +202,10 @@ class EscapeGrant:
 
     escape-grants-bind-to-the-minting-session-20261011: the grant also carries
     the minting ``session`` (plus optional narrowing ``paths`` and a best-effort
-    minting ``role``) in its SIGNED payload, so it releases only the session
-    that minted it. ``session == ""`` is the legacy UNBOUND shape — still
-    parseable, but verification refuses it.
+    minting ``role``) in its SIGNED payload. ``session == ""`` is the legacy
+    UNBOUND shape — still parseable (enforcement lands in a later slice). An
+    unbound grant signs the PRE-binding payload, so grants minted before this
+    slice verify unchanged; a bound grant's signature covers its binding fields.
     """
 
     grant_id: str
@@ -253,10 +254,10 @@ def mint_escape_grant(
 ) -> EscapeGrant:
     """Mint a signed escape grant. The operator (root) is the only legitimate grantor.
 
-    ``session``/``paths``/``role`` are folded into the signature — rebinding or
-    re-attributing a minted grant fails verification. ``session=""`` mints the
-    legacy unbound shape, which ``verify_escape_grant`` refuses (the INV-3/4/5
-    auto-mint still mints that shape; rebinding it is a flagged follow-up).
+    ``session``/``paths``/``role`` are folded into the signature when the grant
+    is BOUND (any of them non-default) — rebinding or re-attributing a minted
+    grant then fails verification. An unbound grant signs the pre-binding
+    payload, so it verifies identically before and after this slice.
     """
     fields = {
         "grant_id": secrets.token_hex(16),
