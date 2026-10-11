@@ -220,7 +220,7 @@ class EscapeGrant:
     role: str = ""  # minting role, signed for attribution only
 
     def _signing_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "kind": "escape",
             "grant_id": self.grant_id,
             "grantor": self.grantor,
@@ -228,10 +228,12 @@ class EscapeGrant:
             "reason": self.reason,
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
-            "session": self.session,
-            "paths": list(self.paths),
-            "role": self.role,
         }
+        if self.session or self.paths or self.role:
+            payload["session"] = self.session
+            payload["paths"] = list(self.paths)
+            payload["role"] = self.role
+        return payload
 
     def is_expired(self, now: float) -> bool:
         return now > self.expires_at
@@ -259,19 +261,22 @@ def mint_escape_grant(
     grant then fails verification. An unbound grant signs the pre-binding
     payload, so it verifies identically before and after this slice.
     """
-    fields = {
+    fields: dict[str, object] = {
         "grant_id": secrets.token_hex(16),
         "grantor": grantor,
         "scope": scope,
         "reason": reason,
         "issued_at": now,
         "expires_at": now + ttl_s,
-        "session": session,
-        "paths": tuple(paths),
-        "role": role,
     }
     payload = {"kind": "escape", **fields}
-    return EscapeGrant(signature=_sign(payload, key), **fields)
+    if session or paths or role:
+        payload["session"] = session
+        payload["paths"] = list(paths)
+        payload["role"] = role
+    return EscapeGrant(
+        signature=_sign(payload, key), session=session, paths=tuple(paths), role=role, **fields
+    )
 
 
 def serialize_grant(grant: EscapeGrant) -> str:
@@ -619,6 +624,16 @@ def main(argv: list[str] | None = None) -> int:
     key = _load_key_file(args.key_file)
 
     if args.cmd == "mint-grant":
+        if not args.session and not args.path and not args.role:
+            # Mirror scripts/coord-grant-mint: an unbound grant releases every
+            # lane that hits the gate inside the TTL — refuse narrow. The script
+            # additionally requires a session because it resolves the env chain.
+            print(
+                "refusing to mint an unbound grant: no session, path or role bound; "
+                "pass --session <session-id> and retry",
+                file=sys.stderr,
+            )
+            return 2
         grant = mint_escape_grant(
             grantor=args.grantor,
             scope=args.scope,

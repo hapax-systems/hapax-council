@@ -375,6 +375,33 @@ class TestEscapeGrantSessionBinding:
         assert loaded.role == "glm-steward"
         assert loaded.paths == ("/srv/a",)
 
+    def test_cli_mint_refuses_unbound_grant(self, tmp_path, capsys):
+        # Mirrors scripts/coord-grant-mint: the module CLI must not mint a
+        # fully-unbound grant (it would release every lane inside the TTL).
+        key_file = tmp_path / "key"
+        key_file.write_bytes(KEY)
+        out = tmp_path / "grant.json"
+        rc = main(
+            [
+                "mint-grant",
+                "--scope",
+                "*",
+                "--reason",
+                "x",
+                "--ttl",
+                "3600",
+                "--key-file",
+                str(key_file),
+                "--out",
+                str(out),
+            ]
+        )
+        assert rc == 2
+        assert not out.exists()
+        err = capsys.readouterr().err
+        assert "unbound" in err
+        assert "session" in err
+
 
 # --- verify session/path plumbing (consumers pass the asking session through;
 # with enforcement live a grant releases only its minting session) ------------
@@ -546,6 +573,8 @@ class TestCli:
                 "x",
                 "--ttl",
                 "3600",
+                "--session",
+                "lane-a",
                 "--key-file",
                 str(key_file),
                 "--out",
