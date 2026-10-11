@@ -61,7 +61,11 @@ UNITS = (
         "hapax-weblog-publish-public-event-producer.service",
         ("agents/weblog_publish_public_event_producer.py", "shared/"),
     ),
-    # The say-loop posters tail a cursor, so a restart re-posts nothing and needs no empty inbox.
+    # The say-loop posters need no empty inbox, because a restart re-posts nothing:
+    # - a stop lets the event in flight finish and be recorded, and starts no other;
+    # - a processed event id is never posted again, even after the cursor is lost.
+    # Both are tested in tests/cross_surface/test_{bluesky,mastodon}_post.py
+    # (test_a_stop_mid_post_..., test_processed_event_id_prevents_repost_after_cursor_loss).
     # A stopped poster is never started (the Mastodon poster stays off until its account is labelled).
     Unit(
         "hapax-bluesky-post.service",
