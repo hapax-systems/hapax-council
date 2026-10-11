@@ -1,19 +1,19 @@
 # Security policy
 
-A single individual operates this repository in a single-operator deployment. Public repository surfaces are not a multi-tenant product, customer-data processor, or public auth service. That boundary is a scope statement, not a warranty about every internal integration.
+This repository is published by Hapax Research Lab. Public repository surfaces are not a multi-tenant product, customer-data processor, or public auth service. That boundary is a scope statement, not a warranty about every internal integration.
 
 ## Disclosure path
 
-Submit security disclosures through the contact page. Attach Sigstore-signed disclosure artifacts when applicable:
+Send security disclosures to hrl-han@hapaxresearch.com, the address on the lab's contact page. Attach Sigstore-signed disclosure artifacts when applicable. The commitment that covers this address is on that page:
 
   https://hapaxresearch.com/about/#contact
 
-Repository surfaces do not publish email by constitutional choice. Sigstore signatures let the operator verify authorship via OpenID Connect without publishing an email address.
+Sigstore's keyless signing associates each signature with an OpenID Connect identity through a short-lived certificate, and logs the signing event in Rekor, a signature transparency log.
 
-Endpoint recheck:
+Address check (fails if the contact page no longer carries its contact anchor or this address):
 
 ```bash
-curl -fsSIL https://hapaxresearch.com/about/#contact
+curl -fsSL https://hapaxresearch.com/about/ | grep -qF 'id="contact"' && curl -fsSL https://hapaxresearch.com/about/ | grep -qF 'hrl-han@hapaxresearch.com'
 ```
 
 ## Scope
@@ -22,7 +22,7 @@ In scope: exposure of secrets or private material in public commits/artifacts, p
 
 ## Response time
 
-Best-effort, single-operator basis; no SLA. Critical disclosures such as remote code execution or leaked secrets in published commits are triaged out of band immediately; other reports wait for a maintenance window.
+Best effort; no SLA. Messages sent to this address fall under the commitment stated on the contact page: "The network commits to receipt, retention and published correction. It promises no response time." The page also says: "Today one person inside the network is the first reader of incoming mail, so a correction request currently reaches the network through that person." Critical disclosures, such as remote code execution or leaked secrets in published commits, are triaged out of band as soon as they are read, not deferred to a maintenance window. Other reports wait for one.
 
 ## Advisory record
 
