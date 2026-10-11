@@ -18,7 +18,8 @@ and the exact bytes restored (``git diff`` empty) before green:
 - _strip_pairs trailing -f/-F bounds guard >= -> > -> 1 failed / 39 passed
 - _field_pair empty-key clause dropped -> 1 failed / 39 passed
 - _required_body falsy guard weakened to is None -> 3 failed / 37 passed
-- all restores byte-exact; final suite 40 passed
+- all restores byte-exact; the cycle closed at 40 passed, 41 after the
+  2026-10-11 end-of-argv repeatable pin, 42 after the single-value equals pin
 """
 
 from __future__ import annotations
@@ -771,3 +772,41 @@ def test_pr_edit_mixed_label_forms_apply_union(shim):
     assert put.method == "PUT"
     assert put.url.endswith("/repos/forge-admin/driver/issues/12/labels")
     assert json.loads(put.body) == {"labels": ["plus"]}
+
+
+def test_single_value_flag_equals_form_maps_same_url_as_space_form(shim):
+    # glm-1 (dossier 2026-10-11): the equals spelling for single-value flags
+    # had no direct test through _tokenize (only the repeatable form did);
+    # --state=closed/--search=typo/--limit=5 must build the identical query
+    shim._fake_forge.responses = {
+        "/issues?type=issues&state=closed&q=typo&limit=5": (
+            200,
+            [
+                {
+                    "number": 3,
+                    "title": "Fix typo",
+                    "state": "closed",
+                    "labels": [{"name": "sdlc:done"}],
+                }
+            ],
+        )
+    }
+    code, out, err, fake = run(
+        shim,
+        [
+            "issue",
+            "list",
+            "--state=closed",
+            "--search=typo",
+            "--limit=5",
+            "--json",
+            "number,title,labels,state",
+        ],
+    )
+    assert code == 0, err
+    assert fake.calls[-1].url.endswith(
+        "/repos/forge-admin/driver/issues?type=issues&state=closed&q=typo&limit=5"
+    )
+    assert json.loads(out) == [
+        {"number": 3, "title": "Fix typo", "labels": [{"name": "sdlc:done"}], "state": "CLOSED"}
+    ]
