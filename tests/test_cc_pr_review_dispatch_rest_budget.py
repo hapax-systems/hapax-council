@@ -7,12 +7,17 @@ fetches only what changed. Invariants under test (each mutation-verified):
 - the open-PR list is fetched once per cycle with If-None-Match, reusing the
   cached page on 304 (a 304 does not count against the budget);
 - ``--force`` bypasses the unchanged-head gate; dry-run plans never record
-  heads; heads of closed PRs are pruned.
+  heads; heads of closed PRs are pruned;
+- every failure of the conditional listing raises RuntimeError so the scan can
+  fall back to the transport chooser, and a rate-limit 403 whose stderr carries
+  "304" inside a hex request ID never reads as a 304;
+- a corrupt or wrong-schema scan state fails open to a fresh state.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -384,6 +389,121 @@ class TestConditionalList:
         page = state["list_pages"]["repos/owner/repo/pulls|state=open"]["1"]
         assert page["etag"] == '"fresh-etag"'
         assert state["heads"] == {"42": new_head}
+
+
+def _pulls_proc(stdout: str, stderr: str = "", rc: int = 0) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(["gh", "api"], rc, stdout, stderr)
+
+
+class TestConditionalListingFailures:
+    """Every failure of the conditional listing raises so the scan can fall back."""
+
+    @pytest.mark.parametrize(
+        ("proc", "match"),
+        [
+            pytest.param(None, "could not run", id="runner-raises"),
+            pytest.param(
+                _pulls_proc("HTTP/1.1 403 Forbidden\r\n\r\n", "api rate limit exceeded", 1),
+                "failed",
+                id="nonzero-rc",
+            ),
+            pytest.param(_pulls_proc("HTTP/1.1 200 OK\r\n\r\nnot-json"), "non-json", id="non-json"),
+            pytest.param(
+                _pulls_proc("HTTP/1.1 200 OK\r\n\r\n" + json.dumps({"pr": 1})),
+                "non-list payload",
+                id="non-list",
+            ),
+            pytest.param(
+                _pulls_proc("HTTP/1.1 304 Not Modified\r\n\r\n"),
+                "without a cached copy",
+                id="304-uncached",
+            ),
+        ],
+    )
+    def test_failures_raise_runtime_error(self, proc: Any, match: str) -> None:
+        def runner(cmd: list[str], **kwargs: Any) -> Any:
+            if proc is None:
+                raise subprocess.TimeoutExpired(cmd, 120)
+            return proc
+
+        with pytest.raises(RuntimeError, match=match):
+            dispatch._list_open_prs_conditional(
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                runner=runner,
+                state={"schema": 1, "heads": {}, "list_pages": {}},
+            )
+
+    def test_403_stderr_with_304_in_request_id_does_not_read_as_304(self) -> None:
+        # GitHub's rate-limit 403 carries a hex request ID ("0A1B:304C:..."); a bare
+        # "304" substring there must not serve the cached page as a 304.
+        state = {
+            "schema": 1,
+            "heads": {},
+            "list_pages": {
+                "repos/owner/repo/pulls|state=open": {
+                    "1": {"etag": '"list-etag-1"', "items": ScanGh({42: "c" * 40})._rest_open_prs()}
+                }
+            },
+        }
+        proc = _pulls_proc(
+            "HTTP/1.1 403 Forbidden\r\nX-RateLimit-Remaining: 0\r\n\r\n",
+            "gh: API rate limit exceeded ... request ID 0A1B:304C:5678DEF0",
+            1,
+        )
+        with pytest.raises(RuntimeError, match="failed"):
+            dispatch._list_open_prs_conditional(
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                runner=lambda cmd, **kwargs: proc,
+                state=state,
+            )
+
+
+class TestChooserFallback:
+    def test_conditional_listing_failure_falls_back_to_the_chooser(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        vault = _make_vault(tmp_path)
+        _write_task(vault)
+        head = "c" * 40
+        state_path = tmp_path / "scan-state.json"
+        gh = ScanGh({42: head})
+
+        def _unavailable(**kwargs: Any) -> Any:
+            raise RuntimeError("gh api pulls failed (rc=1): simulated")
+
+        monkeypatch.setattr(dispatch, "_list_open_prs_conditional", _unavailable)
+
+        with caplog.at_level(logging.WARNING, logger="cc-pr-review-dispatch"):
+            results = dispatch.review_all_open_prs(
+                **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
+            )
+
+        assert [r["status"] for r in results] == ["dispatched"]
+        assert "falling back to the transport chooser" in caplog.text
+        # The fallback warning carries an operator next action (gemini M4).
+        assert "gh auth status" in caplog.text
+
+
+class TestScanStateFailOpen:
+    @pytest.mark.parametrize(
+        ("content",),
+        [
+            pytest.param("{corrupt json", id="corrupt-file"),
+            pytest.param(
+                json.dumps({"schema": 999, "heads": {"42": "x" * 40}, "list_pages": {}}),
+                id="wrong-schema",
+            ),
+        ],
+    )
+    def test_unusable_state_fails_open_to_fresh(self, tmp_path: Path, content: str) -> None:
+        state_path = tmp_path / "scan-state.json"
+        state_path.write_text(content, encoding="utf-8")
+        assert dispatch._load_scan_state(state_path) == dispatch._fresh_scan_state()
 
 
 class TestLegacyMode:
