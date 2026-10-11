@@ -673,7 +673,42 @@ def test_inner_type_mismatches_neither_raise_nor_grant(tmp_path: Path) -> None:
     assert list(json.loads(path.read_text(encoding="utf-8"))["repositories"]["owner/repo"]) == [
         "13"
     ]
-    assert _due({**_entry(), "route_blocked": [{"glm": True}]}) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (None, None),  # the control: the well-typed entry earns its re-exam
+        ("blockers", [1]),
+        ("blockers", True),
+        ("blockers", {"not-a-flap": 1}),
+        ("route_blocked", [{"glm": True}]),
+        ("route_blocked", "glm"),
+        ("task_status", []),
+        ("head_sha", 7),
+    ],
+)
+def test_a_mistyped_ledger_field_neither_crashes_a_tick_nor_grants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str | None, value: object
+) -> None:
+    # #5116 review at d4a83c1ff (gemini major): `blockers: [1]` raised inside the tick.
+    # The loader is the boundary: a mistyped field drops its entry, which loses only a seat.
+    monkeypatch.setattr(autoqueue, "_live_review_route_blocked_families", lambda: frozenset())
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-13", pr=13, status="in_progress")
+    runner = RotationRunner(25)
+    for _ in range(3):
+        tick(tmp_path, runner, vault)
+    _age_rotation_state(tmp_path, 120)
+    tick(tmp_path, runner, vault)
+    if field is not None:
+        path = tmp_path / "examined.json.exam-ledger.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["repositories"]["owner/repo"]["13"][field] = value
+        path.write_text(json.dumps(state), encoding="utf-8")
+    _write_task(vault, task_id="task-13", pr=13, status="pr_open")
+    report = tick(tmp_path, runner, vault)
+    assert report["must_include"]["fresh_evidence"] == ([13] if field is None else [])
 
 
 def test_a_ledger_write_failure_is_logged_not_raised(tmp_path: Path) -> None:

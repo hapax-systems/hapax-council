@@ -1697,7 +1697,8 @@ def _exam_ledger_reexam_due(
     the exam into one that satisfies them all (a seated family admitted, an excluded
     one blocked). An unknown route state, or a stamp without a timezone, grants
     nothing; the exam itself decides. ``HAPAX_AUTOQUEUE_MUST_INCLUDE_OFF=1`` turns
-    every fresh-evidence seat off, these included.
+    every fresh-evidence seat off, these included. ``entry`` is one that
+    ``_load_exam_ledger`` admitted, so each field it reads has its type.
     """
     try:
         examined_at = datetime.fromisoformat(str(entry.get("examined_at")))
@@ -1717,8 +1718,7 @@ def _exam_ledger_reexam_due(
     if (
         flaps is None
         or live_route_blocked is None
-        or not isinstance(recorded, list)
-        or not all(isinstance(family, str) for family in recorded)
+        or recorded is None
         or not head_sha
         or entry.get("head_sha") != head_sha
         or frozenset(recorded) == live_route_blocked
@@ -1761,8 +1761,35 @@ def _exam_ledger_path(rotation_state_path: Path) -> Path:
     return rotation_state_path.parent / (rotation_state_path.name + ".exam-ledger.json")
 
 
+def _exam_entry_well_typed(entry: object) -> bool:
+    """Whether a ledger entry has each field the re-exam reads, as the type it is read as.
+
+    ``_load_exam_ledger`` admits only these, so nothing past it type-checks a field.
+    """
+    if not isinstance(entry, Mapping):
+        return False
+    blockers, route_blocked = entry.get("blockers"), entry.get("route_blocked")
+    return (
+        isinstance(entry.get("examined_at"), str)
+        and isinstance(entry.get("head_sha"), str | None)
+        and isinstance(entry.get("task_status"), str | None)
+        and isinstance(blockers, list)
+        and all(isinstance(blocker, str) for blocker in blockers)
+        and (
+            route_blocked is None
+            or (
+                isinstance(route_blocked, list)
+                and all(isinstance(family, str) for family in route_blocked)
+            )
+        )
+    )
+
+
 def _load_exam_ledger(path: Path, *, repo: str, now: datetime) -> dict[int, dict[str, Any]]:
-    """Each PR's last recorded exam. Fail-open to empty: the ledger only adds seats."""
+    """Each PR's last recorded exam. Fail-open to empty: the ledger only adds seats.
+
+    An entry with a mistyped field is dropped, which loses only that PR's seat.
+    """
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -1788,6 +1815,8 @@ def _load_exam_ledger(path: Path, *, repo: str, now: datetime) -> dict[int, dict
     if not isinstance(by_number, dict):
         return entries
     for number, entry in by_number.items():
+        if not _exam_entry_well_typed(entry):
+            continue
         try:
             examined_at = datetime.fromisoformat(entry["examined_at"])
             if examined_at.tzinfo is None:
