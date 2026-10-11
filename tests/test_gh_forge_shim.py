@@ -19,7 +19,9 @@ and the exact bytes restored (``git diff`` empty) before green:
 - _field_pair empty-key clause dropped -> 1 failed / 39 passed
 - _required_body falsy guard weakened to is None -> 3 failed / 37 passed
 - all restores byte-exact; the cycle closed at 40 passed, 41 after the
-  2026-10-11 end-of-argv repeatable pin, 42 after the single-value equals pin
+  2026-10-11 end-of-argv repeatable pin, 42 after the single-value equals pin,
+  46 after the round-3 adjacency pins (attached -f=/-F= refusal, slug
+  empty/extra parts, lone "-", unknown equals-form flag)
 """
 
 from __future__ import annotations
@@ -641,9 +643,23 @@ def test_api_malformed_field_value_fails_closed(shim):
 def test_api_slugless_repo_override_fails_closed(shim, monkeypatch):
     # muse-1 major: a GH_REPO slug without a slash raised IndexError in api()
     monkeypatch.setattr(shim, "resolve_repo", lambda cwd=None, env=None: "noslash")
-    code, _, err, _ = run(shim, ["api", "repos/{owner}/{repo}/pulls/10/reviews"])
+    code, _, err, fake = run(shim, ["api", "repos/{owner}/{repo}/pulls/10/reviews"])
     assert code == 1
     assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_api_empty_or_extra_part_repo_slug_fails_closed(shim, monkeypatch):
+    # claude-1/muse-1 (dossier 2026-10-11T05:29:03Z): the not-all() half of the
+    # api() slug guard (owner/, /driver) and 3-part slugs (a/b/c) must fail
+    # closed before any transport call, like the len!=2 half pinned above
+    for bad_slug in ("owner/", "/driver", "a/b/c"):
+        monkeypatch.setattr(shim, "resolve_repo", lambda cwd=None, env=None, s=bad_slug: s)
+        code, _, err, fake = run(shim, ["api", "repos/{owner}/{repo}/pulls/10/reviews"])
+        assert code == 1, bad_slug
+        assert "is not owner/name" in err
+        assert "Next action" in err
+        assert fake.calls == [], bad_slug
 
 
 def test_issue_comment_posts_body_and_returns_html_url(shim):
@@ -717,6 +733,27 @@ def test_unsupported_flag_fails_closed(shim):
     assert fake.calls == []
 
 
+def test_unsupported_flag_equals_form_fails_closed(shim):
+    # muse-1 (dossier 2026-10-11T05:29:03Z): the equals spelling of an unknown
+    # flag must share the unsupported-flag raise, not fall through to the
+    # positional branch after the known-equals clause declines it
+    code, _, err, fake = run(shim, ["issue", "view", "9", "--nope=x", "--json", "number"])
+    assert code == 1
+    assert "unsupported flag '--nope=x'" in err
+    assert "Next action" in err
+    assert fake.calls == []
+
+
+def test_lone_dash_stays_positional(shim):
+    # muse-1 (dossier 2026-10-11T05:29:03Z): a lone "-" is the argv convention
+    # for stdin, not a flag; the tokenizer must keep it positional instead of
+    # raising the unsupported-flag guard
+    positionals, single, repeat = shim._tokenize(["-", "--state=open"])
+    assert positionals == ["-"]
+    assert single == {"--state": "open"}
+    assert repeat == {}
+
+
 def test_trailing_dash_f_without_value_fails_closed(shim):
     # claude-1: the index+1 bounds raise in _strip_pairs, distinct from the
     # missing-'=' path pinned by test_api_malformed_field_value_fails_closed
@@ -738,6 +775,28 @@ def test_field_value_with_empty_key_fails_closed(shim):
     assert "'=value' is not key=value" in err
     assert "Next action" in err
     assert fake.calls == []
+
+
+def test_api_attached_equals_field_forms_fail_closed(shim):
+    # claude-1/muse-1 (dossier 2026-10-11T05:29:03Z): the -f=/-F= equals-prefix
+    # branch routes arg[2:] through _field_pair, so attached values fail closed
+    # with the same contract as the space form — malformed (no key), doubly
+    # malformed (empty key) and gh-attached-looking shapes alike — with the
+    # next action naming the space form and no transport call
+    for flag, value, fragment in (
+        ("-f=noequals", "=noequals", "'=noequals' is not key=value"),
+        ("-F==value", "==value", "'==value' is not key=value"),
+        ("-f=ref=main", "=ref=main", "'=ref=main' is not key=value"),
+    ):
+        code, _, err, fake = run(
+            shim,
+            ["api", "repos/{owner}/{repo}/pulls/10/reviews", "-X", "POST", flag],
+        )
+        assert code == 1, value
+        assert fragment in err, value
+        assert "pass -f key=value" in err or "pass -F key=value" in err
+        assert "Next action" in err
+        assert fake.calls == [], value
 
 
 def test_explicit_empty_body_fails_closed(shim):
