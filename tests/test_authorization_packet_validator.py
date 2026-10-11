@@ -78,12 +78,25 @@ def _run(
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
     env["CLAUDE_ROLE"] = role
-    env.pop("HAPAX_AGENT_ROLE", None)
-    env.pop("CODEX_ROLE", None)
-    env.pop("HAPAX_METHODOLOGY_EMERGENCY", None)
-    # The escape-grant substrate resolves its grant dir, key and ledger from these; a
-    # live operator grant on the developer's machine must never reach the fixture.
+    # Hermetic identity: hapax_agent_identity resolves HAPAX_AGENT_NAME and the
+    # CODEX/CLAUDE session vars BEFORE CLAUDE_ROLE, so a developer lane's own
+    # agent env must never leak into the fixture role. Grant tests re-add
+    # HAPAX_SESSION_ID via extra_env after these pops.
     for key in (
+        "HAPAX_AGENT_NAME",
+        "HAPAX_AGENT_ROLE",
+        "HAPAX_AGENT_SLOT",
+        "HAPAX_WORKTREE_ROLE",
+        "CODEX_ROLE",
+        "CODEX_SESSION",
+        "CODEX_SESSION_NAME",
+        "CODEX_THREAD_ID",
+        "CODEX_THREAD_NAME",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_SESSION_ID",
+        "HAPAX_METHODOLOGY_EMERGENCY",
+        # The escape-grant substrate resolves its grant dir, key and ledger from these; a
+        # live operator grant on the developer's machine must never reach the fixture.
         "HAPAX_COORD_DIR",
         "HAPAX_COORD_GRANT_DIR",
         "HAPAX_COORD_GRANT_KEY",
@@ -186,6 +199,9 @@ def _grant_env(tmp_path: Path) -> dict[str, str]:
     return {
         "HAPAX_COORD_GRANT_DIR": str(grant_dir),
         "HAPAX_COORD_GRANT_KEY": str(key_file),
+        # Grants are session-bound (escape-grants-bind-to-the-minting-session-20261011):
+        # this lane's session must match the session the grant was minted for.
+        "HAPAX_SESSION_ID": "validator-test-session",
     }
 
 
@@ -202,6 +218,7 @@ def _drop_grant(
         ttl_s=ttl_s,
         key=_GRANT_KEY,
         now=now if now is not None else time.time(),
+        session="validator-test-session",
     )
     path = grant_dir / f"{grant.grant_id}.grant"
     write_grant_file(grant, path)
@@ -231,8 +248,17 @@ def _run_write_gate(
     env["HOME"] = str(tmp_path)
     env["CLAUDE_ROLE"] = "beta"
     for key in (
+        "HAPAX_AGENT_NAME",
         "HAPAX_AGENT_ROLE",
+        "HAPAX_AGENT_SLOT",
+        "HAPAX_WORKTREE_ROLE",
         "CODEX_ROLE",
+        "CODEX_SESSION",
+        "CODEX_SESSION_NAME",
+        "CODEX_THREAD_ID",
+        "CODEX_THREAD_NAME",
+        "CLAUDE_CODE_SESSION_ID",
+        "HAPAX_SESSION_ID",
         "HAPAX_METHODOLOGY_EMERGENCY",
         "HAPAX_COORD_DIR",
         "HAPAX_COORD_GRANT_DIR",
