@@ -96,6 +96,9 @@ def _unit(module: types.ModuleType, name: str):  # noqa: ANN202
 
 ORCH = "hapax-publish-orchestrator.service"
 PRODUCER = "hapax-weblog-publish-public-event-producer.service"
+BLUESKY = "hapax-bluesky-post.service"
+MASTODON = "hapax-mastodon-post.service"
+POSTER_WATCH = ("agents/cross_surface/", "agents/publication_bus/", "shared/")
 
 
 def test_a_watched_change_restarts_the_unit_onto_the_activated_release(module, tmp_path) -> None:
@@ -274,11 +277,46 @@ def test_a_failed_restart_is_reported(module, tmp_path) -> None:
     assert result["next_action"]
 
 
-def test_only_the_two_publish_path_units_are_ever_restarted(module) -> None:
-    assert {u.name for u in module.UNITS} == {ORCH, PRODUCER}
+def test_only_the_publish_path_units_and_the_posters_are_ever_restarted(module) -> None:
+    assert {u.name for u in module.UNITS} == {ORCH, PRODUCER, BLUESKY, MASTODON}
     assert [u.name for u in module.UNITS if u.needs_empty_inbox] == [ORCH]
     for unit in module.UNITS:
         assert not any("audio" in path for path in unit.watch)
+
+
+@pytest.mark.parametrize("poster", [BLUESKY, MASTODON])
+def test_each_poster_watches_its_code_and_shared(module, poster) -> None:
+    assert _unit(module, poster).watch == POSTER_WATCH
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "agents/publication_bus/bluesky_publisher.py\n",
+        "agents/cross_surface/bluesky_post.py\n",
+        "shared/research_vehicle_public_event.py\n",
+    ],
+)
+def test_a_running_poster_follows_a_change_to_its_code(module, tmp_path, changed) -> None:
+    host = _Host(tmp_path, running=OLD, diff=changed)
+    # A poster tails a cursor, so a pending publish inbox is no reason to wait.
+    (host.inbox / "pending-artifact.json").write_text("{}", encoding="utf-8")
+
+    result = host.refresh(module, _unit(module, BLUESKY))
+
+    assert result["action"] == "restarted"
+    assert result["verified"] is True
+    assert host.restarts() == [["systemctl", "--user", "restart", BLUESKY]]
+
+
+def test_a_stopped_poster_is_never_started(module, tmp_path) -> None:
+    """The Mastodon poster is disabled until its account is labelled; the refresh keeps it off."""
+    host = _Host(tmp_path, running=None, diff="agents/cross_surface/mastodon_post.py\n")
+
+    result = host.refresh(module, _unit(module, MASTODON))
+
+    assert result["action"] == "not_running"
+    assert host.restarts() == []
 
 
 def _load_unit(path: Path) -> configparser.ConfigParser:

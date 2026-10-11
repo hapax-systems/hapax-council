@@ -10,8 +10,9 @@ two touches the unit's watched paths.
 Nothing here widens action on doubt: a unit that is not running is not started, and an unknown release or a
 failed diff restarts nothing, names its next action and fails the run, so OnFailure reaches a person. The
 orchestrator restarts only with an empty inbox,
-so no publish is interrupted; a deferred restart is retried on the next run. Only the two units below are
-ever restarted.
+so no publish is interrupted; a deferred restart is retried on the next run. Only the four units below are
+ever restarted: the orchestrator, the weblog producer and the two say-loop posters (on 2026-10-11 the
+Bluesky poster also needed a hand restart, after #5103).
 """
 
 from __future__ import annotations
@@ -59,6 +60,16 @@ UNITS = (
     Unit(
         "hapax-weblog-publish-public-event-producer.service",
         ("agents/weblog_publish_public_event_producer.py", "shared/"),
+    ),
+    # The say-loop posters tail a cursor, so a restart re-posts nothing and needs no empty inbox.
+    # A stopped poster is never started (the Mastodon poster stays off until its account is labelled).
+    Unit(
+        "hapax-bluesky-post.service",
+        ("agents/cross_surface/", "agents/publication_bus/", "shared/"),
+    ),
+    Unit(
+        "hapax-mastodon-post.service",
+        ("agents/cross_surface/", "agents/publication_bus/", "shared/"),
     ),
 )
 
