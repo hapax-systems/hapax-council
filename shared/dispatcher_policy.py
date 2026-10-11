@@ -46,10 +46,12 @@ from shared.platform_capability_receipts import (
 from shared.platform_capability_registry import (
     PLATFORM_CAPABILITY_REGISTRY,
     Effort,
+    FilesystemAccess,
     PlatformCapabilityRegistry,
     PlatformCapabilityRegistryError,
     PlatformCapabilityRoute,
     PrivacyPosture,
+    ShellAccess,
     SupplyDescriptor,
     SupplyVector,
     build_supply_vector,
@@ -212,6 +214,7 @@ class RouteCapabilityState(_PolicyModel):
     explicit_equivalence_records: tuple[str, ...] = Field(default=())
     excluded_task_classes: tuple[str, ...] = Field(default=())
     mutability: dict[str, bool] = Field(default_factory=dict)
+    branch_write_authority: bool | None = None
     freshness_ok: bool = False
     freshness_errors: tuple[str, ...] = Field(default=())
     surface_delta_refs: tuple[str, ...] = Field(default=())
@@ -1214,6 +1217,17 @@ def evaluate_dispatch_policy(
             request,
             DispatchAction.REFUSE,
             (mutation_reason,),
+            checked_at,
+            quality_floor_satisfied=False,
+            authority_allowed=False,
+        )
+
+    branch_reason = _branch_authority_refusal_reason(request, capability)
+    if branch_reason:
+        return _decision(
+            request,
+            DispatchAction.REFUSE,
+            (branch_reason,),
             checked_at,
             quality_floor_satisfied=False,
             authority_allowed=False,
@@ -2924,6 +2938,10 @@ def _route_capability_state(
         explicit_equivalence_records=tuple(route.quality_envelope.explicit_equivalence_records),
         excluded_task_classes=tuple(route.quality_envelope.excluded_task_classes),
         mutability=route.mutability.model_dump(mode="json"),
+        branch_write_authority=(
+            route.tool_access.shell is ShellAccess.FULL
+            and route.tool_access.filesystem is FilesystemAccess.READ_WRITE
+        ),
         freshness_ok=freshness_ok,
         freshness_errors=freshness_errors,
         surface_delta_refs=surface_delta_refs,
@@ -3484,6 +3502,19 @@ def _runtime_actuation_receipt_reference(
             and _route_authority_receipt_is_fresh(receipt, now=checked_at)
         ):
             return route_authority_receipt_reference(receipt)
+    return None
+
+
+def _branch_authority_refusal_reason(
+    request: DispatchRequest,
+    capability: RouteCapabilityState,
+) -> str | None:
+    if request.mutation_surface != "source":
+        return None
+    if capability.branch_write_authority is None:
+        return "branch_authority_unknown"
+    if not capability.branch_write_authority:
+        return "branch_authority_absent"
     return None
 
 

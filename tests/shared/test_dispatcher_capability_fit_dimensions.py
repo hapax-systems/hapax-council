@@ -73,6 +73,7 @@ def _capability(**overrides: object) -> RouteCapabilityState:
             "public": False,
             "provider_spend": False,
         },
+        "branch_write_authority": True,
         "freshness_ok": True,
         "freshness_errors": (),
         "telemetry_quota_source": "manual",
