@@ -598,8 +598,6 @@ _quota_evidence_for() {
 # nothing can be lost or doubled (hold_reason below), else "HOLD <reason> <evidence>".
 _capability_blocker_for() {
   local role="$1" task_id="$2" branch="$3" pr_repo="$4"
-  # Liveness is read from this host's /proc and worktrees, so only this host's claims are judged.
-  [ "$(_claim_file_task "$(_claim_file_for "$role")")" = "$task_id" ] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
   [ -f "$FAMILY_OUTAGE_RECORD" ] || return 1
   # GH_REPO_SLUG is set beside GH_CMD after the options are read (HAPAX_GH_REPO, GH_REPO or default).
@@ -639,12 +637,20 @@ def parse(raw: object) -> datetime | None:
 # This holder's bindings for this task (plain or session-keyed; "<role>-other" is another role).
 platforms: set[str] = set()
 sessions: set[str] = set()  # every session of this holder on this task, for the liveness read
+# Liveness is read from this host's /proc and worktrees, so only this host's claims are judged.
+# cc-claim writes the marker and the binding on the claiming host; a peer's claim has neither.
+try:
+    marker_text = (Path(cache_raw) / f"cc-active-task-{role}").read_text(encoding="utf-8")
+    local = marker_text.split()[:1] == [task_id]
+except (OSError, UnicodeError):
+    local = False
 for marker in Path(cache_raw).glob(f"cc-active-task-{role}-*"):
     suffix = marker.name[len(f"cc-active-task-{role}-") :]
     if session_id.fullmatch(suffix):
         try:
             if marker.read_text(encoding="utf-8").split()[:1] == [task_id]:
                 sessions.add(suffix)
+                local = True
         except (OSError, UnicodeError):
             continue
 for binding in sorted(Path(cache_raw).glob(f"cc-claim-dispatch-{role}*.json")):
@@ -661,6 +667,7 @@ for binding in sorted(Path(cache_raw).glob(f"cc-claim-dispatch-{role}*.json")):
         continue
     if data.get("lane") != role or data.get("task_id") != task_id:
         continue
+    local = True  # evidence of host only; a manual binding is never evidence of family
     if isinstance(data.get("session_id"), str) and data["session_id"]:
         sessions.add(data["session_id"])
     if str(data.get("dispatch_message_id") or "").startswith("manual-cc-claim:"):
@@ -668,6 +675,8 @@ for binding in sorted(Path(cache_raw).glob(f"cc-claim-dispatch-{role}*.json")):
     platform = data.get("platform")
     if isinstance(platform, str) and platform.strip():
         platforms.add(platform.strip())
+if not local:
+    sys.exit(1)
 # The lane's relay record names the platform its harness runs on.
 try:
     relay_text = (Path(relay_raw) / f"{role}.yaml").read_text(encoding="utf-8")

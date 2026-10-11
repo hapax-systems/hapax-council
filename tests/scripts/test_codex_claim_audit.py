@@ -1673,6 +1673,20 @@ class TestCapabilityBlockedHolders:
         assert "CAPABILITY_BLOCKED: peer-task" not in result.stdout
         assert note.read_text(encoding="utf-8") == original
 
+    def test_a_local_binding_without_a_marker_is_judged_here(self, tmp_path: Path) -> None:
+        # U1b: the estate's walled claims lost their markers; cc-claim's binding stays on the claiming host.
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        note = _write_task_note(vault, "bound-task", assigned_to="lane-b2", branch="feat/bound")
+        _write_dispatch_binding(cache_dir, "lane-b2", "bound-task")  # manual: host evidence only
+        _write_relay(tmp_path, "lane-b2", "codex")
+        repo = _pushed_repo(tmp_path, "feat/bound")
+        result = _run_blocked_audit(
+            tmp_path, vault, cache_dir, _write_family_outage(tmp_path), repo=repo
+        )
+        assert "CAPABILITY_BLOCKED: bound-task assigned=lane-b2" in result.stdout
+        assert "\nassigned_to: unassigned\n" in note.read_text(encoding="utf-8")
+
     def test_without_the_flag_it_is_reported_and_held(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
