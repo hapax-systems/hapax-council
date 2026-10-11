@@ -930,3 +930,64 @@ def test_superseded_show_hn_draft_dry_run_refuses_publication(tmp_path, capsys) 
     assert rc == 1
     assert captured.out == ""
     assert not (tmp_path / "publish" / "inbox").exists()
+
+
+def _frozen_draft(tmp_path: Path, *, allowed: bool = True) -> Path:
+    path = tmp_path / "frozen-draft.md"
+    path.write_text(
+        "---\n"
+        "title: A frozen draft\n"
+        "slug: a-frozen-draft\n"
+        f"Publication-Allowed: {'true' if allowed else 'false'}\n"
+        "target_surfaces:\n- omg-weblog\n"
+        "attribution_block: Drafted by a test.\n"
+        "---\n"
+        "The body of a frozen draft.\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_frozen_fingerprint_needs_no_receipts_and_is_what_the_receipts_bind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The freeze fingerprint is the one the publish path binds into the public-gate receipts."""
+    path = _frozen_draft(tmp_path)
+
+    fingerprint = publish_vault_artifact.frozen_fingerprint(path, ["omg-weblog"])
+
+    monkeypatch.setattr(
+        publish_vault_artifact, "_assert_publication_gate_receipts", lambda *a, **k: None
+    )
+    frontmatter, body = publish_vault_artifact._parse_publication_markdown(path)
+    built = publish_vault_artifact._build_artifact(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=["omg-weblog"],
+        approver="test",
+        source_path=path.resolve(),
+    )
+    bindings = publish_vault_artifact._publication_gate_receipt_bindings(built)
+    assert fingerprint == bindings["artifact_fingerprint"]
+    assert len(fingerprint) == 64
+
+
+def test_frozen_fingerprint_refuses_a_draft_not_allowed_to_publish(tmp_path: Path) -> None:
+    with pytest.raises(publish_vault_artifact.PublicationGateError):
+        publish_vault_artifact.frozen_fingerprint(
+            _frozen_draft(tmp_path, allowed=False), ["omg-weblog"]
+        )
+
+
+def test_the_publish_path_still_refuses_a_draft_without_receipts(tmp_path: Path) -> None:
+    path = _frozen_draft(tmp_path)
+    frontmatter, body = publish_vault_artifact._parse_publication_markdown(path)
+
+    with pytest.raises(publish_vault_artifact.PublicationGateError):
+        publish_vault_artifact._build_artifact(
+            body_md=body,
+            frontmatter=frontmatter,
+            surfaces=["omg-weblog"],
+            approver="test",
+            source_path=path.resolve(),
+        )

@@ -554,6 +554,57 @@ def _build_artifact(
     approver: str,
     source_path: Path | None = None,
 ) -> PreprintArtifact:
+    artifact = _artifact_from_frontmatter(
+        body_md=body_md,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver=approver,
+        source_path=source_path,
+    )
+    expected_head = _expected_public_gate_head(source_path)
+    if expected_head is None:
+        raise PublicationGateError(
+            "no public-gate head could be resolved for this draft (neither a vault artifact head "
+            "nor the repository head); next action: publish from a git checkout, or supply the "
+            "vault artifact path the review acceptance binds"
+        )
+    _assert_publication_gate_receipts(
+        frontmatter,
+        surfaces,
+        bindings=_publication_gate_receipt_bindings(artifact),
+        expected_head_sha=expected_head,
+    )
+    return artifact
+
+
+def frozen_fingerprint(path: Path, surfaces: list[str]) -> str:
+    """The gate fingerprint of a publication draft, taken without asserting its receipts.
+
+    A publication row declares its artifact frozen by recording this value as
+    ``artifact_fingerprint``; the review dispatcher compares the two before it reviews the
+    artifact. It is the fingerprint the publish path later binds into the public-gate receipts.
+    Raises PublicationGateError or PublicationFrontmatterError when the draft cannot be built.
+    """
+    frontmatter, body = _parse_publication_markdown(path)
+    artifact = _artifact_from_frontmatter(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver="freeze-check",
+        source_path=path.resolve(),
+    )
+    return _artifact_fingerprint_for_gate(artifact)
+
+
+def _artifact_from_frontmatter(
+    *,
+    body_md: str,
+    frontmatter: dict,
+    surfaces: list[str],
+    approver: str,
+    source_path: Path | None = None,
+) -> PreprintArtifact:
+    """The artifact a draft describes, before any public-gate receipt is checked."""
     if not _publication_allowed(frontmatter):
         raise PublicationGateError(
             "Publication-Allowed must be explicitly true; next action: hold the draft until "
@@ -610,19 +661,6 @@ def _build_artifact(
 
     artifact = PreprintArtifact(**kwargs)
     artifact.mark_approved(by_referent=approver)
-    expected_head = _expected_public_gate_head(source_path)
-    if expected_head is None:
-        raise PublicationGateError(
-            "no public-gate head could be resolved for this draft (neither a vault artifact head "
-            "nor the repository head); next action: publish from a git checkout, or supply the "
-            "vault artifact path the review acceptance binds"
-        )
-    _assert_publication_gate_receipts(
-        frontmatter,
-        surfaces,
-        bindings=_publication_gate_receipt_bindings(artifact),
-        expected_head_sha=expected_head,
-    )
     return artifact
 
 
