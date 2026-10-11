@@ -1687,6 +1687,35 @@ class TestCapabilityBlockedHolders:
         assert "CAPABILITY_BLOCKED: bound-task assigned=lane-b2" in result.stdout
         assert "\nassigned_to: unassigned\n" in note.read_text(encoding="utf-8")
 
+    def test_a_session_keyed_marker_alone_is_judged_here(self, tmp_path: Path) -> None:
+        # #5124 review (muse major): the keyed-marker branch, with no base marker and no binding.
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        note = _write_task_note(vault, "keyed-task", assigned_to="lane-k", branch="feat/keyed")
+        _write_claim_cache(cache_dir, f"lane-k-{SESSION}", "keyed-task")
+        _write_relay(tmp_path, "lane-k", "codex")
+        repo = _pushed_repo(tmp_path, "feat/keyed")
+        result = _run_blocked_audit(
+            tmp_path, vault, cache_dir, _write_family_outage(tmp_path), repo=repo
+        )
+        assert "CAPABILITY_BLOCKED: keyed-task assigned=lane-k" in result.stdout
+        assert "\nassigned_to: unassigned\n" in note.read_text(encoding="utf-8")
+
+    def test_a_binding_for_another_task_is_no_evidence_of_host(self, tmp_path: Path) -> None:
+        # #5124 review (muse major): only a binding naming this task makes the claim local.
+        vault = _make_vault(tmp_path)
+        cache_dir = tmp_path / "cache"
+        note = _write_task_note(vault, "other-task", assigned_to="lane-o", branch="feat/other")
+        _write_dispatch_binding(cache_dir, "lane-o", "unrelated-task")
+        _write_relay(tmp_path, "lane-o", "codex")
+        original = note.read_text(encoding="utf-8")
+        repo = _pushed_repo(tmp_path, "feat/other")
+        result = _run_blocked_audit(
+            tmp_path, vault, cache_dir, _write_family_outage(tmp_path), repo=repo
+        )
+        assert "CAPABILITY_BLOCKED: other-task" not in result.stdout
+        assert note.read_text(encoding="utf-8") == original
+
     def test_without_the_flag_it_is_reported_and_held(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
