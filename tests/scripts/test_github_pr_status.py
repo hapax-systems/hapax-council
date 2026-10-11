@@ -2615,56 +2615,59 @@ def test_graphql_validates_all_rows_before_hydrating_any(tmp_path: Path, bad_row
     assert len(calls) == 1
 
 
-# ── Local-forge backend (Forgejo; PLAN §4 S2 "local PR refs") ─────────────────
+# ── Local-forge listing via the gh-shaped shim (#5048: one mechanism) ────────
 
 
-class FakeForgeFetch:
-    """Serves pulls/statuses fixtures for `api/v1` URLs; records every call."""
+_SHIM_ROW = {
+    "number": 12,
+    "id": 9912,
+    "state": "OPEN",
+    "title": "forge PR",
+    "body": "body",
+    "url": "http://forge.test:3000/owner/repo/pulls/12",
+    "updatedAt": "2026-10-06T12:00:00Z",
+    "mergedAt": None,
+    "headRefName": "feat/forge-branch",
+    "headRefOid": "abc123",
+    "baseRefName": "main",
+    "baseRepoDefaultBranch": "main",
+    "isDraft": False,
+    "labels": [{"name": "agent-authored"}],
+    "statusCheckRollup": [
+        {"context": "ci/lint", "state": "SUCCESS", "updated_at": "2026-10-06T12:01:00Z"},
+        {"context": "ci/test", "state": "FAILURE", "updated_at": "2026-10-06T12:02:00Z"},
+    ],
+}
+
+
+class FakeShimRunner:
+    """Stands in for the gh-shaped shim binary; records argv, serves rows."""
 
     def __init__(
         self,
         *,
-        pulls: list[dict[str, Any]] | None = None,
-        pulls_pages: list[list[dict[str, Any]]] | None = None,
-        statuses_by_sha: dict[str, list[dict[str, Any]]] | None = None,
+        rows: list[dict[str, Any]] | None = None,
+        rc: int = 0,
+        stdout: str | None = None,
+        stderr: str = "",
+        raise_exc: BaseException | None = None,
     ) -> None:
-        self.calls: list[tuple[str, dict[str, str]]] = []
-        self._pulls = pulls
-        self._pulls_pages = pulls_pages
-        self._statuses = statuses_by_sha or {}
+        self.calls: list[list[str]] = []
+        self._rows = rows
+        self._rc = rc
+        self._stdout = stdout
+        self._stderr = stderr
+        self._raise = raise_exc
 
-    def __call__(self, url: str, *, headers: dict[str, str], timeout: int) -> str:
-        from urllib.parse import parse_qs, urlparse
-
-        parsed = urlparse(url)
-        self.calls.append((url, dict(headers)))
-        if parsed.path.endswith("/pulls"):
-            if self._pulls_pages is not None:
-                page = int(parse_qs(parsed.query).get("page", ["1"])[0])
-                return json.dumps(self._pulls_pages[page - 1])
-            return json.dumps(self._pulls or [])
-        match = re.search(r"/commits/([^/]+)/statuses$", parsed.path)
-        if match:
-            return json.dumps(self._statuses.get(match.group(1), []))
-        raise AssertionError(f"unexpected forge URL: {url}")
+    def __call__(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        self.calls.append(list(cmd))
+        if self._raise is not None:
+            raise self._raise
+        stdout = self._stdout if self._stdout is not None else json.dumps(self._rows or [])
+        return subprocess.CompletedProcess(cmd, self._rc, stdout, self._stderr)
 
 
-_FORGE_PULL = {
-    "number": 12,
-    "title": "forge PR",
-    "body": "body",
-    "state": "open",
-    "merged": False,
-    "draft": False,
-    "labels": [{"name": "agent-authored"}],
-    "html_url": "http://forge.test:3000/owner/repo/pulls/12",
-    "updated_at": "2026-10-06T12:00:00Z",
-    "head": {"ref": "feat/forge-branch", "sha": "abc123"},
-    "base": {"ref": "main", "sha": "def456", "repo": {"default_branch": "main"}},
-}
-
-
-def test_forge_rows_carry_spine_receipt_review_authority(
+def test_shim_rows_carry_spine_receipt_review_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """S2 stance made machine-checkable: forge rows never claim review authority.
@@ -2672,20 +2675,11 @@ def test_forge_rows_carry_spine_receipt_review_authority(
     The forge PR is a container; review authority stays estate-side in spine
     receipts. `reviewDecision` stays None and the row says where authority lives.
     """
-    monkeypatch.setenv("FORGE_TOKEN", "unit-test-token")
-    fetch = FakeForgeFetch(
-        pulls=[_FORGE_PULL],
-        statuses_by_sha={
-            "abc123": [
-                {"id": 2, "context": "ci/lint", "status": "success"},
-                {"id": 1, "context": "ci/lint", "status": "pending"},
-                {"id": 3, "context": "ci/test", "status": "failure"},
-            ]
-        },
-    )
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    runner = FakeShimRunner(rows=[_SHIM_ROW])
 
-    rows = github_pr_status.list_open_pr_statuses_forge(
-        repo="owner/repo", forge_url="http://forge.test:3000", fetch=fetch
+    rows = github_pr_status.list_open_pr_statuses_via_shim(
+        repo="owner/repo", repo_root=tmp_path, runner=runner
     )
 
     assert len(rows) == 1
@@ -2697,210 +2691,193 @@ def test_forge_rows_carry_spine_receipt_review_authority(
     assert row["baseRefName"] == "main"
     assert row["reviewDecision"] is None
     assert row["reviewAuthority"] == "spine-receipt"
+    assert row["autoMergeRequest"] is None
+    assert row["mergeStateStatus"] == "UNKNOWN"
+    assert row["changedFiles"] is None and row["files"] is None
     assert row["transport"] == "forge"
     assert {item["context"]: item["state"] for item in row["statusCheckRollup"]} == {
         "ci/lint": "SUCCESS",
         "ci/test": "FAILURE",
     }
-    first_url, first_headers = fetch.calls[0]
-    assert first_url.startswith("http://forge.test:3000/api/v1/repos/owner/repo/pulls")
-    assert first_headers["Authorization"] == "token unit-test-token"
-    assert any("/commits/abc123/statuses" in url for url, _ in fetch.calls[1:])
 
 
-def test_forge_rollup_keeps_latest_status_per_context_and_pends_unknowns(
-    tmp_path: Path,
-) -> None:
-    fetch = FakeForgeFetch(
-        statuses_by_sha={
-            "sha-1": [
-                {"id": 1, "context": "ci/a", "status": "pending"},
-                {"id": 5, "context": "ci/a", "status": "success"},
-                {"id": 2, "context": "ci/b", "status": "error"},
-                {"id": 4, "context": "ci/c", "status": "who-knows"},
-            ]
-        }
+def test_shim_argv_pins_the_gh_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    runner = FakeShimRunner(rows=[])
+    github_pr_status.list_open_pr_statuses_via_shim(
+        repo="owner/repo", repo_root=tmp_path, runner=runner
     )
+    assert runner.calls == [
+        [
+            "/x/gh-forge",
+            "pr",
+            "list",
+            "--repo",
+            "owner/repo",
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            ",".join(github_pr_status._SHIM_PR_LIST_FIELDS),
+        ]
+    ]
 
-    rollup = github_pr_status.forge_status_rollup(
-        "sha-1", repo="owner/repo", forge_url="http://forge.test:3000", fetch=fetch
-    )
 
-    assert {item["context"]: item["state"] for item in rollup} == {
-        "ci/a": "SUCCESS",
-        "ci/b": "ERROR",
-        "ci/c": "PENDING",
-    }
-
-
-def test_forge_head_filter_is_client_side_over_a_full_enumeration(
-    tmp_path: Path,
+def test_shim_head_passes_head_and_widens_the_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    other = json.loads(json.dumps(_FORGE_PULL))
-    other["number"] = 13
-    other["head"] = {"ref": "feat/other-branch", "sha": "zzz999"}
-    fetch = FakeForgeFetch(pulls=[other, _FORGE_PULL])
-
-    rows = github_pr_status.list_open_pr_statuses_forge(
-        repo="owner/repo",
-        forge_url="http://forge.test:3000",
-        head="feat/forge-branch",
-        limit=5,
-        fetch=fetch,
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    runner = FakeShimRunner(rows=[])
+    github_pr_status.list_open_pr_statuses_via_shim(
+        repo="owner/repo", repo_root=tmp_path, head="feat/x", runner=runner
     )
+    cmd = runner.calls[0]
+    index = cmd.index("--head")
+    assert cmd[index : index + 2] == ["--head", "feat/x"]
+    # the forge has no server-side head filter: a --head query must enumerate
+    # widely (FORGE_HEAD_SCAN_LIMIT), never a page-limited slice that could
+    # miss the PR and read as "no PR"
+    assert cmd[cmd.index("--limit") + 1] == str(github_pr_status.FORGE_HEAD_SCAN_LIMIT)
 
-    assert [row["number"] for row in rows] == [12]
 
-
-def test_forge_listing_failure_refuses_instead_of_reading_as_empty(
-    tmp_path: Path,
+def test_shim_no_status_omits_the_rollup_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A dead forge is "we did not look", never "no PRs need attention"."""
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    runner = FakeShimRunner(rows=[_SHIM_ROW])
+    rows = github_pr_status.list_open_pr_statuses_via_shim(
+        repo="owner/repo", repo_root=tmp_path, include_status=False, runner=runner
+    )
+    assert "--json" in runner.calls[0]
+    fields = runner.calls[0][runner.calls[0].index("--json") + 1]
+    assert "statusCheckRollup" not in fields
+    assert rows[0]["statusCheckRollup"] == []
 
-    def failing_fetch(url: str, *, headers: dict[str, str], timeout: int) -> str:
-        raise github_pr_status.ForgeFetchError(f"URLError on GET {url}")
 
-    with pytest.raises(github_pr_status.ForgeListingFailed):
-        github_pr_status.list_open_pr_statuses_forge(
-            repo="owner/repo", forge_url="http://forge.test:3000", fetch=failing_fetch
+def test_shim_missing_bin_raises_shim_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    runner = FakeShimRunner(raise_exc=FileNotFoundError("/x/gh-forge"))
+    with pytest.raises(github_pr_status.ForgeListingFailed, match="shim_unavailable"):
+        github_pr_status.list_open_pr_statuses_via_shim(
+            repo="owner/repo", repo_root=tmp_path, runner=runner
         )
 
 
-def test_forge_token_env_beats_token_cmd_and_failures_fail_open(
-    monkeypatch: pytest.MonkeyPatch,
+def test_shim_nonzero_rc_raises_with_first_stderr_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runs: list[Any] = []
-    holder: dict[str, Any] = {"rc": 0, "stdout": "from-cmd\n"}
-
-    def fake_run(cmd: Any, **_k: Any) -> subprocess.CompletedProcess:
-        runs.append(cmd)
-        return subprocess.CompletedProcess(cmd, holder["rc"], holder["stdout"], "")
-
-    monkeypatch.setattr(github_pr_status.subprocess, "run", fake_run)
-
-    monkeypatch.setenv("FORGE_TOKEN", "from-env")
-    assert github_pr_status._forge_token() == "from-env"
-    assert runs == []
-
-    monkeypatch.delenv("FORGE_TOKEN")
-    monkeypatch.setenv("FORGE_TOKEN_CMD", "printer from-cmd")
-    assert github_pr_status._forge_token() == "from-cmd"
-
-    holder["stdout"] = ""
-    assert github_pr_status._forge_token() is None
-
-    holder["rc"] = 3
-    assert github_pr_status._forge_token() is None
-
-
-def test_forge_token_cmd_runs_shell_free_with_literal_argv(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """B602 repair, pass-through half: the configured command runs as literal
-    argv without a shell, so shell metacharacters can only ever arrive as
-    arguments — a glob or a tilde is never expanded, quotes only group words.
-    """
-    seen: list[Any] = []
-
-    def fake_run(cmd: Any, **kwargs: Any) -> subprocess.CompletedProcess:
-        seen.append((cmd, kwargs.get("shell")))
-        return subprocess.CompletedProcess(cmd, 0, "from-cmd\n", "")
-
-    monkeypatch.setattr(github_pr_status.subprocess, "run", fake_run)
-    monkeypatch.delenv(github_pr_status.FORGE_TOKEN_ENV, raising=False)
-    monkeypatch.setenv(github_pr_status.FORGE_TOKEN_CMD_ENV, "printer 'from *.cfg' ~token")
-
-    assert github_pr_status._forge_token() == "from-cmd"
-    assert seen == [(["printer", "from *.cfg", "~token"], False)]
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        "hapax-secret show forge | tr -d x",
-        "hapax-secret show forge > /tmp/leak",
-        "hapax-secret show forge 2>> /tmp/leak",
-        "echo $(hapax-secret show forge)",
-        "echo `hapax-secret show forge`",
-        "hapax-secret show forge; tr -d x",
-        "printer 'unclosed",
-    ],
-)
-def test_forge_token_cmd_shell_syntax_is_refused_with_next_action(
-    command: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    """B602 repair, refusal half: a command that needs a shell is never run —
-    it could not work as literal argv, and running it through a shell would
-    reopen the injection class the repair closes."""
-    monkeypatch.setattr(
-        github_pr_status.subprocess,
-        "run",
-        lambda *_args, **_kwargs: pytest.fail("a refused token command must not run"),
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    runner = FakeShimRunner(
+        rc=42, stderr="gh-forge: cannot reach http://forge.test: check FORGE_URL\nsecond line"
     )
-    monkeypatch.delenv(github_pr_status.FORGE_TOKEN_ENV, raising=False)
-    monkeypatch.setenv(github_pr_status.FORGE_TOKEN_CMD_ENV, command)
+    with pytest.raises(github_pr_status.ForgeListingFailed, match="shim_listing_failed") as excinfo:
+        github_pr_status.list_open_pr_statuses_via_shim(
+            repo="owner/repo", repo_root=tmp_path, runner=runner
+        )
+    assert "cannot reach http://forge.test" in str(excinfo.value.reason)
 
-    assert github_pr_status._forge_token() is None
-    assert "point the setting at an executable script" in capsys.readouterr().err
+
+def test_shim_bad_payload_refuses_instead_of_reading_as_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    bad = [{"number": 12}, {"number": "13"}]
+    for payload in ("not-json", json.dumps({"not": "a list"}), json.dumps(bad)):
+        runner = FakeShimRunner(stdout=payload)
+        with pytest.raises(github_pr_status.ForgeListingFailed):
+            github_pr_status.list_open_pr_statuses_via_shim(
+                repo="owner/repo", repo_root=tmp_path, runner=runner
+            )
 
 
-def test_open_prs_cli_serves_forge_rows_when_forge_url_is_set(
+def test_gh_bin_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HAPAX_GH_BIN", raising=False)
+    assert github_pr_status._gh_bin() == "gh"
+    monkeypatch.setenv("HAPAX_GH_BIN", "/repo/scripts/gh-forge")
+    assert github_pr_status._gh_bin() == "/repo/scripts/gh-forge"
+    monkeypatch.setenv("HAPAX_GH_BIN", "   ")
+    assert github_pr_status._gh_bin() == "gh"
+
+
+def test_forge_urllib_backend_is_gone() -> None:
+    """R2 (#5048): one listing mechanism — the urllib forge client and the
+    --forge-url flag are dropped; the shim selected by HAPAX_GH_BIN is the
+    only forge path left in this module."""
+    source = Path(github_pr_status.__file__).read_text(encoding="utf-8")
+    assert "urllib.request" not in source
+    assert "--forge-url" not in source
+    dropped = (
+        "ForgeFetchError",
+        "_forge_request",
+        "_forge_get_json",
+        "forge_list_pulls",
+        "forge_status_rollup",
+        "_pull_status_row_from_forge",
+        "list_open_pr_statuses_forge",
+        "_forge_token",
+        "_forge_token_argv",
+        "FORGE_PAGE_SIZE",
+        "FORGE_DEFAULT_TOKEN_CMD",
+    )
+    for name in dropped:
+        assert not hasattr(github_pr_status, name), name
+    assert hasattr(github_pr_status, "ForgeListingFailed")
+    assert github_pr_status.FORGE_REVIEW_AUTHORITY == "spine-receipt"
+    assert hasattr(github_pr_status, "FORGE_HEAD_SCAN_LIMIT")
+
+
+def test_open_prs_cli_serves_shim_rows_when_hapax_gh_bin_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    monkeypatch.setenv("FORGE_TOKEN", "unit-test-token")
-    fetch = FakeForgeFetch(
-        pulls=[_FORGE_PULL],
-        statuses_by_sha={"abc123": [{"id": 1, "context": "ci/lint", "status": "success"}]},
-    )
-    monkeypatch.setattr(github_pr_status, "_forge_request", fetch)
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    runner = FakeShimRunner(rows=[_SHIM_ROW])
+    monkeypatch.setattr(github_pr_status.subprocess, "run", runner)
 
-    rc = github_pr_status.main(
-        [
-            "open-prs",
-            "--repo",
-            "owner/repo",
-            "--repo-root",
-            str(tmp_path),
-            "--forge-url",
-            "http://forge.test:3000",
-        ]
-    )
+    rc = github_pr_status.main(["open-prs", "--repo", "owner/repo", "--repo-root", str(tmp_path)])
 
     assert rc == 0
     rows = json.loads(capsys.readouterr().out)
     assert rows[0]["reviewAuthority"] == "spine-receipt"
     assert rows[0]["statusCheckRollup"][0]["state"] == "SUCCESS"
+    assert runner.calls[0][runner.calls[0].index("--repo") + 1] == "owner/repo"
 
 
-def test_open_prs_cli_forge_failure_never_touches_gh(
+def test_open_prs_cli_shim_failure_refuses_and_never_touches_gh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
-    """Forge mode must not fall back to (or even invoke) the GitHub transport."""
-    monkeypatch.setenv("FORGE_TOKEN", "unit-test-token")
-
-    def failing_fetch(url: str, *, headers: dict[str, str], timeout: int) -> str:
-        raise github_pr_status.ForgeFetchError(f"ConnectionRefused on GET {url}")
-
-    monkeypatch.setattr(github_pr_status, "_forge_request", failing_fetch)
-
-    def no_gh(*_a: Any, **_k: Any) -> subprocess.CompletedProcess:
-        raise AssertionError("gh must not run in forge mode")
-
-    monkeypatch.setattr(github_pr_status.subprocess, "run", no_gh)
-
-    rc = github_pr_status.main(
-        [
-            "open-prs",
-            "--repo",
-            "owner/repo",
-            "--repo-root",
-            str(tmp_path),
-            "--forge-url",
-            "http://forge.test:3000",
-        ]
+    """Shim mode must not fall back to (or even invoke) the GitHub transport."""
+    monkeypatch.setenv("HAPAX_GH_BIN", "/x/gh-forge")
+    runner = FakeShimRunner(
+        rc=1, stderr="gh-forge: cannot reach http://forge.test: check FORGE_URL"
     )
+    monkeypatch.setattr(github_pr_status.subprocess, "run", runner)
+
+    rc = github_pr_status.main(["open-prs", "--repo", "owner/repo", "--repo-root", str(tmp_path)])
 
     assert rc == github_pr_status.GRAPHQL_BACKOFF_RC
     stderr = capsys.readouterr().err
     assert "forge" in stderr
+    assert "HAPAX_GH_BIN" in stderr
     assert "FORGE_TOKEN" in stderr
+    # the shim was the only subprocess: no gh invocation anywhere
+    assert all(call[0] == "/x/gh-forge" for call in runner.calls)
+
+
+def test_open_prs_cli_rejects_forge_url(tmp_path: Path) -> None:
+    """The dropped flag must fail loudly, not silently fall back to GitHub."""
+    with pytest.raises(SystemExit) as excinfo:
+        github_pr_status.main(
+            [
+                "open-prs",
+                "--repo",
+                "owner/repo",
+                "--repo-root",
+                str(tmp_path),
+                "--forge-url",
+                "http://forge.test:3000",
+            ]
+        )
+    assert excinfo.value.code != 0
