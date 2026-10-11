@@ -711,6 +711,27 @@ def test_a_mistyped_ledger_field_neither_crashes_a_tick_nor_grants(
     assert report["must_include"]["fresh_evidence"] == ([13] if field is None else [])
 
 
+def test_the_record_keeps_an_unfinished_pass_and_records_blockers_only_for_a_block() -> None:
+    # #5116 review at d4a83c1ff (claude minor): _record_exam_ledger's two guards, pinned directly.
+    from tests.test_cc_pr_autoqueue import _pr
+
+    pr13, pr14 = (autoqueue._parse_pr(_pr(number)) for number in (13, 14))
+    stamp = _EXAM + timedelta(minutes=5)
+    recorded = autoqueue._record_exam_ledger(
+        {13: _entry()},
+        [
+            autoqueue.Decision(pr=pr13, action="blocked", reasons=(SEATED_GLM,)),
+            autoqueue.Decision(pr=pr14, action="queue", reasons=(SEATED_GLM,)),
+        ],
+        examined_stamps={14: stamp},  # 13's pass did not complete
+        live_route_blocked=lambda: frozenset({"glm"}),
+    )
+    assert recorded[13] == _entry()  # the last record stands
+    assert recorded[14]["blockers"] == []
+    assert recorded[14]["route_blocked"] is None
+    assert recorded[14]["examined_at"] == stamp.isoformat()
+
+
 def test_a_ledger_write_failure_is_logged_not_raised(tmp_path: Path) -> None:
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("", encoding="utf-8")
