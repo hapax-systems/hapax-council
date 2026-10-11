@@ -495,8 +495,12 @@ def mint_escape_for_violation(
     invariant is stamped in the grant ``reason`` for legibility). The grant is
     written as ``<grant_id>.grant`` — the extension the shim globs — into
     ``grant_dir`` (default: the canonical ``default_grant_dir()``, the SAME dir the
-    shim reads). Returns the minted grant, or ``None`` when the invariant holds, is
-    not an auto-mint class, or no signing key is available. Never raises — advisory.
+    shim reads). The minted grant binds to the explicit ``session`` when given,
+    else ``_auto_mint_session()``'s chain (the session env vars mirrored from
+    ``agent-role.sh``), else ``ESCAPE_AUTO_MINT_SESSION`` — the precedence
+    ``docs/runbooks/escape-grants.md`` documents for the bound mint. Returns the
+    minted grant, or ``None`` when the invariant holds, is not an auto-mint class,
+    or no signing key is available. Never raises — advisory.
     """
     if result.holds or result.invariant not in AUTO_MINT_INVARIANTS or not key:
         return None

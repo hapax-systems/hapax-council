@@ -287,3 +287,25 @@ class TestSessionBoundShimRoundTrip:
         allowed, out = _shim_allows("floor:merge", env)
         assert not allowed, f"real shim released another lane's auto-minted grant:\n{out}"
         assert NEXT_ACTION in out, f"the refusal must surface the next action:\n{out}"
+
+    def test_garbage_grant_file_degrades_closed_and_keeps_the_glob_scanning(self, coord_env):
+        # 3b review glm-1 minor: with the CLI's stderr un-swallowed, a corrupted
+        # grant file looping through the glob must neither spam a traceback nor
+        # break the calling hook — the shim degrades CLOSED past it.
+        _, env = coord_env
+        load_or_create_key(default_grant_key())  # substrate present, so the glob really runs
+        default_grant_dir().mkdir(parents=True, exist_ok=True)
+        # "0-…" sorts before every minted grant id: the loop must scan PAST it.
+        (default_grant_dir() / "0-garbage.grant").write_text("not a grant {{{", encoding="utf-8")
+        env["HAPAX_SESSION_ID"] = "alpha-lane"
+
+        # Garbage alone: closed, no traceback, and the calling script completed.
+        allowed, out = _shim_allows("cc-task-gate", env)
+        assert not allowed, f"a corrupted grant file must degrade CLOSED:\n{out}"
+        assert "__DENY__" in out, f"the corrupted grant file broke the calling hook:\n{out}"
+        assert "Traceback" not in out, f"the corrupted grant file spammed a traceback:\n{out}"
+
+        # A valid grant behind the garbage one is still reached and honored.
+        _mint_grant(session="alpha-lane")
+        allowed, out = _shim_allows("cc-task-gate", env)
+        assert allowed, f"the corrupted grant file masked a later valid grant:\n{out}"
