@@ -6,14 +6,14 @@ A single individual operates this repository in a single-operator deployment. Pu
 
 Submit security disclosures through the contact page. Attach Sigstore-signed disclosure artifacts when applicable:
 
-  https://hapax.weblog.lol/contact
+  https://hapaxresearch.com/about/#contact
 
 Repository surfaces do not publish email by constitutional choice. Sigstore signatures let the operator verify authorship via OpenID Connect without publishing an email address.
 
 Endpoint recheck:
 
 ```bash
-curl -fsSIL https://hapax.weblog.lol/contact
+curl -fsSIL https://hapaxresearch.com/about/#contact
 ```
 
 ## Scope
