@@ -170,6 +170,9 @@ class TestRetroGrantWatch:
         env["HAPAX_COORD_DIR"] = str(base)
 
         # Writer: mint a covering grant (auto-creates the signing key under <base>).
+        # Session-bound per escape-grants-bind-to-the-minting-session-20261011: the
+        # minter refuses an unbound mint, so the parity fixture passes --session
+        # explicitly (deterministic regardless of the ambient session env chain).
         mint = subprocess.run(
             [
                 sys.executable,
@@ -180,6 +183,8 @@ class TestRetroGrantWatch:
                 "parity",
                 "--grantor",
                 "operator",
+                "--session",
+                "retro-parity",
             ],
             capture_output=True,
             text=True,

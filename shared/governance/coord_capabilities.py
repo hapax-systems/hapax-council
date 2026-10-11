@@ -197,7 +197,13 @@ class CapabilityConsumptionLedger:
 
 @dataclass(frozen=True)
 class EscapeGrant:
-    """A signed escape grant the bash shim reads directly (no RPC). Scoped + expiring."""
+    """A signed escape grant the bash shim reads directly (no RPC). Scoped + expiring.
+
+    escape-grants-bind-to-the-minting-session-20261011: the grant also carries
+    the minting ``session`` (plus optional narrowing ``paths`` and a best-effort
+    minting ``role``) in its SIGNED payload. ``session == ""`` is the legacy
+    UNBOUND shape — still parseable (enforcement lands in a later slice).
+    """
 
     grant_id: str
     grantor: str
@@ -206,6 +212,9 @@ class EscapeGrant:
     issued_at: float
     expires_at: float
     signature: str
+    session: str = ""  # minting session; "" = unbound (legacy)
+    paths: tuple[str, ...] = ()  # optional narrowing; () = any path
+    role: str = ""  # minting role, signed for attribution only
 
     def _signing_payload(self) -> dict[str, object]:
         return {
@@ -216,6 +225,9 @@ class EscapeGrant:
             "reason": self.reason,
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
+            "session": self.session,
+            "paths": list(self.paths),
+            "role": self.role,
         }
 
     def is_expired(self, now: float) -> bool:
@@ -226,9 +238,22 @@ class EscapeGrant:
 
 
 def mint_escape_grant(
-    *, grantor: str, scope: str, reason: str, ttl_s: float, key: bytes, now: float
+    *,
+    grantor: str,
+    scope: str,
+    reason: str,
+    ttl_s: float,
+    key: bytes,
+    now: float,
+    session: str = "",
+    paths: tuple[str, ...] = (),
+    role: str = "",
 ) -> EscapeGrant:
-    """Mint a signed escape grant. The operator (root) is the only legitimate grantor."""
+    """Mint a signed escape grant. The operator (root) is the only legitimate grantor.
+
+    ``session``/``paths``/``role`` are folded into the signature — rebinding or
+    re-attributing a minted grant fails verification.
+    """
     fields = {
         "grant_id": secrets.token_hex(16),
         "grantor": grantor,
@@ -236,6 +261,9 @@ def mint_escape_grant(
         "reason": reason,
         "issued_at": now,
         "expires_at": now + ttl_s,
+        "session": session,
+        "paths": tuple(paths),
+        "role": role,
     }
     payload = {"kind": "escape", **fields}
     return EscapeGrant(signature=_sign(payload, key), **fields)
@@ -252,6 +280,9 @@ def serialize_grant(grant: EscapeGrant) -> str:
             "issued_at": grant.issued_at,
             "expires_at": grant.expires_at,
             "signature": grant.signature,
+            "session": grant.session,
+            "paths": list(grant.paths),
+            "role": grant.role,
         }
     )
 
@@ -276,6 +307,9 @@ def read_grant_file(path: str | Path) -> EscapeGrant | None:
             issued_at=float(data["issued_at"]),
             expires_at=float(data["expires_at"]),
             signature=str(data["signature"]),
+            session=str(data.get("session", "")),
+            paths=tuple(str(p) for p in data.get("paths", ())),
+            role=str(data.get("role", "")),
         )
     except Exception:  # noqa: BLE001 — a malformed/missing grant must never raise.
         return None
@@ -516,6 +550,9 @@ def main(argv: list[str] | None = None) -> int:
     mg.add_argument("--reason", default="")
     mg.add_argument("--grantor", default="operator")
     mg.add_argument("--ttl", type=float, default=3600.0)
+    mg.add_argument("--session", default="")
+    mg.add_argument("--role", default="")
+    mg.add_argument("--path", action="append", default=None)
     mg.add_argument("--key-file", dest="key_file", required=True)
     mg.add_argument("--out", required=True)
 
@@ -551,6 +588,9 @@ def main(argv: list[str] | None = None) -> int:
             ttl_s=args.ttl,
             key=key,
             now=now,
+            session=args.session,
+            paths=tuple(args.path or ()),
+            role=args.role,
         )
         write_grant_file(grant, args.out)
         print(grant.grant_id)
