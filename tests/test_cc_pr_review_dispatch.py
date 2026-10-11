@@ -7474,3 +7474,83 @@ class TestVaultArtifactRedaction:
         assert reviewers.invocations == [], (
             "no artifact packet may be sent when redaction can't run"
         )
+
+
+class TestRouteAdmissionBasisRecording:
+    """F1 of the 2026-10-06 flap ruling: at review completion the dispatcher
+    records the route basis each seated family ran under, bound to the admission
+    receipt's independently retained record (the receipt file's sha256)."""
+
+    def _receipt_text(
+        self,
+        *,
+        evidence_ref: str = "glmcp-reviewer-roundtrip-ok-test",
+        observed_at: str = "2026-06-11T21:00:00Z",
+        stale_after_seconds: int = 900,
+        status: str = "quota_available",
+    ) -> str:
+        return (
+            "schema: hapax.glmcp_quota_admission.v1\n"
+            f"status: {status}\n"
+            "route_id: glmcp.review.direct\n"
+            f"observed_at: {observed_at}\n"
+            f"stale_after_seconds: {stale_after_seconds}\n"
+            f"evidence_ref: {evidence_ref}\n"
+        )
+
+    def test_records_glm_basis_bound_to_retained_receipt(self, tmp_path: Path) -> None:
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        receipt = receipts / "glmcp-quota-admission.yaml"
+        receipt.write_text(self._receipt_text(), encoding="utf-8")
+        basis = dispatch.route_admission_basis_for_reviews(
+            [{"id": "glm-1", "family": "glm", "verdict": "accept"}],
+            registry=dispatch.review_team.load_lens_registry(),
+            completed_at="2026-06-11T21:10:00Z",
+            receipts_dir=receipts,
+        )
+        assert set(basis) == {"glm"}
+        entry = basis["glm"]
+        assert entry["state"] == "seated"
+        assert entry["roles"] == ["glm-1"]
+        assert entry["route_id"] == "glmcp.review.direct"
+        assert entry["evidence_ref"] == "glmcp-reviewer-roundtrip-ok-test"
+        assert entry["observed_at"] == "2026-06-11T21:00:00Z"
+        assert entry["stale_after_seconds"] == 900
+        assert entry["completed_at"] == "2026-06-11T21:10:00Z"
+        assert entry["receipt_sha256"] == sha256(receipt.read_bytes()).hexdigest()
+
+    def test_no_admission_receipt_records_no_basis(self, tmp_path: Path) -> None:
+        basis = dispatch.route_admission_basis_for_reviews(
+            [{"id": "glm-1", "family": "glm", "verdict": "accept"}],
+            registry=dispatch.review_team.load_lens_registry(),
+            completed_at="2026-06-11T21:10:00Z",
+            receipts_dir=tmp_path,
+        )
+        assert basis == {}
+
+    def test_hold_status_receipt_is_not_an_admission_basis(self, tmp_path: Path) -> None:
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        (receipts / "glmcp-quota-admission.yaml").write_text(
+            self._receipt_text(status="hold"), encoding="utf-8"
+        )
+        basis = dispatch.route_admission_basis_for_reviews(
+            [{"id": "glm-1", "family": "glm", "verdict": "accept"}],
+            registry=dispatch.review_team.load_lens_registry(),
+            completed_at="2026-06-11T21:10:00Z",
+            receipts_dir=receipts,
+        )
+        assert basis == {}
+
+    def test_unrouted_family_records_no_basis(self, tmp_path: Path) -> None:
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        (receipts / "glmcp-quota-admission.yaml").write_text(self._receipt_text(), encoding="utf-8")
+        basis = dispatch.route_admission_basis_for_reviews(
+            [{"id": "codex-1", "family": "codex", "verdict": "accept"}],
+            registry=dispatch.review_team.load_lens_registry(),
+            completed_at="2026-06-11T21:10:00Z",
+            receipts_dir=receipts,
+        )
+        assert basis == {}
