@@ -696,6 +696,16 @@ def test_value_flag_followed_by_known_flag_fails_closed(shim):
     assert fake.calls == []
 
 
+def test_repeatable_flag_at_end_of_argv_fails_closed(shim):
+    # glm-1 (dossier 2026-10-11): the repeatable branch of the needs-a-value
+    # guard must fail closed like the single-value branch
+    code, _, err, fake = run(shim, ["issue", "edit", "3", "--add-label"])
+    assert code == 1
+    assert "flag '--add-label' needs a value" in err
+    assert "Next action" in err
+    assert fake.calls == []
+
+
 def test_unsupported_flag_fails_closed(shim):
     # gemini-1/claude-1: unknown leading-dash tokens must not silently become
     # positionals; the error names the flag and the accepted surface
