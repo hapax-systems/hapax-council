@@ -22,6 +22,7 @@ import os
 import string
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,10 @@ ACTIVATION = Path(
 )
 INBOX = Path(os.environ.get("HAPAX_PUBLISH_INBOX", str(Path.home() / "hapax-state/publish/inbox")))
 SHA_CHARS = frozenset(string.hexdigits.lower())
+# After a restart the new MainPID may not have entered its release yet (Type=simple returns
+# once the child is forked), so verification polls for a bounded time before judging.
+SETTLE_SECONDS = 10.0
+SETTLE_INTERVAL = 0.2
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
 
@@ -114,7 +119,14 @@ def activated_release(activation: Path) -> str | None:
 
 
 def refresh(
-    unit: Unit, *, run: Runner, activation: Path, inbox: Path, proc_root: Path
+    unit: Unit,
+    *,
+    run: Runner,
+    activation: Path,
+    inbox: Path,
+    proc_root: Path,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"unit": unit.name}
     activated = activated_release(activation)
@@ -168,7 +180,11 @@ def refresh(
             next_action=f"read `journalctl --user -u {unit.name}`; the old release may still run",
         )
         return result
+    deadline = clock() + SETTLE_SECONDS
     after = pid_release(main_pid(unit.name, run), proc_root)
+    while after != activated and clock() < deadline:
+        sleep(SETTLE_INTERVAL)
+        after = pid_release(main_pid(unit.name, run), proc_root)
     result.update(action="restarted", running=after, verified=after == activated)
     return result
 
