@@ -85,6 +85,8 @@ def layout(tmp_path: Path) -> tuple[Path, Path]:
     artifact = root / ARTIFACT
     artifact.parent.mkdir(parents=True)
     artifact.write_text("---\ntitle: Entry\n---\nBody.\n", encoding="utf-8")
+    # A real file just outside the root: only the escape guard keeps "../outside.md" out.
+    (tmp_path / "outside.md").write_text("---\ntitle: Outside\n---\nBody.\n", encoding="utf-8")
     return root, vault
 
 
@@ -147,7 +149,8 @@ def test_bytes_that_differ_from_the_declared_freeze_are_not_reviewed(layout) -> 
         ({"status": "offered"}, "status:offered"),
         ({"artifact": "30-areas/hapax/frame/notebook/MISSING.md"}, "artifact_not_a_file"),
         ({"artifact": "../outside.md"}, "artifact_not_a_file"),
-        ({"artifact": "/etc/passwd"}, "artifact_not_a_file"),
+        # An absolute spelling of the real artifact is refused, never reinterpreted under the root.
+        ({"artifact": "/" + ARTIFACT}, "artifact_not_a_file"),
         ({"artifact": "[[ENTRY]]"}, "artifact_not_a_file"),
         ({"artifact_fingerprint": "null"}, "no_artifact_fingerprint"),
         ({"target_surfaces": "null"}, "no_target_surfaces"),
