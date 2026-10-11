@@ -53,8 +53,9 @@ def _env(key: str, default: str | None = None) -> str | None:
     return os.environ.get(key, default)
 
 
-def transport_request(method: str, url: str, body: str | None = None,
-                      headers: dict[str, str] | None = None) -> tuple[int, str]:
+def transport_request(
+    method: str, url: str, body: str | None = None, headers: dict[str, str] | None = None
+) -> tuple[int, str]:
     """Perform one HTTP request. Tests monkeypatch this seam."""
     data = body.encode() if body is not None else None
     request = urllib.request.Request(url, data=data, method=method)
@@ -77,9 +78,7 @@ def _token() -> str:
     if token:
         return token.strip()
     command = _env("FORGE_TOKEN_CMD", DEFAULT_TOKEN_CMD)
-    result = subprocess.run(
-        command, shell=True, capture_output=True, text=True, timeout=30
-    )
+    result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
     if result.returncode != 0 or not result.stdout.strip():
         raise ForgeError(
             f"token command failed: {command}. "
@@ -117,7 +116,7 @@ def _current_branch(cwd: str | None = None) -> str | None:
     except OSError:
         return None
     prefix = "ref: refs/heads/"
-    return text[len(prefix):] if text.startswith(prefix) else None
+    return text[len(prefix) :] if text.startswith(prefix) else None
 
 
 def resolve_repo(cwd: str | None = None, env: dict[str, str] | None = None) -> str:
@@ -158,8 +157,9 @@ class Forge:
             self._auth = {"Authorization": f"token {_token()}"}
         return self._auth
 
-    def call(self, method: str, path: str, body: dict | None = None,
-             accept: str = "application/json") -> tuple[int, str]:
+    def call(
+        self, method: str, path: str, body: dict | None = None, accept: str = "application/json"
+    ) -> tuple[int, str]:
         url = path if path.startswith("http") else f"{self.api_base}/{path.lstrip('/')}"
         headers = {**self.auth, "Accept": accept}
         payload = json.dumps(body) if body is not None else None
@@ -183,8 +183,7 @@ class Forge:
         return [row.get("name", "") for row in rows or []]
 
     def _set_labels(self, number: str, names: list[str]) -> None:
-        self.json("PUT", f"repos/{self.repo}/issues/{number}/labels",
-                  {"labels": names})
+        self.json("PUT", f"repos/{self.repo}/issues/{number}/labels", {"labels": names})
 
     def _apply_labels(self, number: str, adds: list[str], removes: list[str]) -> None:
         current = self._labels(number)
@@ -196,9 +195,7 @@ class Forge:
             self._set_labels(number, desired)
 
     def _comment(self, number: str, body: str) -> str:
-        created = self.json(
-            "POST", f"repos/{self.repo}/issues/{number}/comments", {"body": body}
-        )
+        created = self.json("POST", f"repos/{self.repo}/issues/{number}/comments", {"body": body})
         return (created or {}).get("html_url", "")
 
     # -- issue verbs --------------------------------------------------------
@@ -294,8 +291,9 @@ class Forge:
 
     # -- api passthrough ------------------------------------------------------
 
-    def pr_create(self, title: str, body: str, head: str | None, base: str | None,
-                  labels: list[str]) -> str:
+    def pr_create(
+        self, title: str, body: str, head: str | None, base: str | None, labels: list[str]
+    ) -> str:
         if not head:
             head = _current_branch()
         if not head:
@@ -304,17 +302,15 @@ class Forge:
                 "from a git checkout on a branch."
             )
         if not base:
-            base = (self.json("GET", f"repos/{self.repo}") or {}).get(
-                "default_branch"
-            ) or "main"
+            base = (self.json("GET", f"repos/{self.repo}") or {}).get("default_branch") or "main"
         created = self.json(
-            "POST", f"repos/{self.repo}/pulls",
+            "POST",
+            f"repos/{self.repo}/pulls",
             {"title": title, "body": body, "head": head, "base": base},
         )
         number = (created or {}).get("number")
         if labels and number is not None:
-            self.json("POST", f"repos/{self.repo}/issues/{number}/labels",
-                      {"labels": labels})
+            self.json("POST", f"repos/{self.repo}/issues/{number}/labels", {"labels": labels})
         return (created or {}).get("html_url", "")
 
     def api(self, path: str, method: str | None, fields: list[tuple[str, str]]) -> None:
@@ -324,9 +320,7 @@ class Forge:
                 f"repo '{self.repo}' is not owner/name. Next action: set "
                 "GH_REPO=owner/name or --repo owner/name."
             )
-        path = path.replace("{owner}", repo_parts[0]).replace(
-            "{repo}", repo_parts[1]
-        )
+        path = path.replace("{owner}", repo_parts[0]).replace("{repo}", repo_parts[1])
         base = path.split("?")[0]
         if base.endswith("/dispatches") and "/actions/workflows/" not in base:
             raise ForgeError(
@@ -408,8 +402,7 @@ def _strip_pairs(args: list[str]) -> tuple[list[str], list[tuple[str, str]], dic
         if arg in ("-f", "-F"):
             if index + 1 >= len(args):
                 raise ForgeError(
-                    f"{arg} needs a key=value value. Next action: pass "
-                    f"{arg} key=value."
+                    f"{arg} needs a key=value value. Next action: pass {arg} key=value."
                 )
             fields.append(_field_pair(args[index + 1], arg))
             skip_next = True
@@ -526,8 +519,7 @@ def _emit(payload: str | list | dict, jq: str | None) -> None:
         )
         if result.returncode != 0:
             raise ForgeError(
-                f"jq filter failed: {result.stderr.strip()}. "
-                "Next action: fix the --jq expression."
+                f"jq filter failed: {result.stderr.strip()}. Next action: fix the --jq expression."
             )
         sys.stdout.write(result.stdout)
         return
@@ -537,8 +529,7 @@ def _emit(payload: str | list | dict, jq: str | None) -> None:
 def main(argv: list[str]) -> int:
     if not argv:
         print(
-            "gh-forge: no command. Next action: invoke with gh-style argv "
-            "(issue|pr|api ...).",
+            "gh-forge: no command. Next action: invoke with gh-style argv (issue|pr|api ...).",
             file=sys.stderr,
         )
         return 2
@@ -582,8 +573,7 @@ def main(argv: list[str]) -> int:
                 )
             else:
                 raise ForgeError(
-                    f"unsupported issue verb '{verb}'. Next action: use "
-                    "view|list|comment|edit."
+                    f"unsupported issue verb '{verb}'. Next action: use view|list|comment|edit."
                 )
             return 0
 
