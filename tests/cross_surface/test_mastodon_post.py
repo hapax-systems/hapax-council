@@ -502,7 +502,10 @@ class TestEventFiltering:
         [
             ("Commitment Status", "Hapax weblog: Commitment Status. {url}"),
             ("Is a record its own witness?", "Hapax weblog: Is a record its own witness? {url}"),
+            ("A record, repaired.", "Hapax weblog: A record, repaired. {url}"),
+            ("It ships!", "Hapax weblog: It ships! {url}"),
             ("", "Hapax weblog post: {url}"),
+            ("   ", "Hapax weblog post: {url}"),
         ],
     )
     def test_default_compose_weblog_text_names_the_entry_once(self, label, expected):
@@ -950,3 +953,32 @@ class TestEventTypeNarrowing:
         unit = Path(__file__).resolve().parents[2] / "systemd/units/hapax-mastodon-post.service"
         lines = unit.read_text(encoding="utf-8").splitlines()
         assert "Environment=HAPAX_CROSS_SURFACE_EVENT_TYPES=omg.weblog" in lines
+
+    def test_the_mastodon_unit_is_parked_until_its_account_is_labelled(self):
+        """hapax-post-merge-deploy disables a unit its own unit_content_parked accepts, so it stays off.
+
+        The predicate is taken from the deploy script's text and run in bash, not copied, so a change
+        to the deploy's matcher is followed here. The Bluesky unit is the control: the same predicate
+        refuses it. The account is not yet labelled as the lab's AI-agent account (row
+        mastodon-account-labelled-as-the-labs-ai-agent-account-20261011), which removes the marker.
+        """
+        import subprocess
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        deploy = (root / "scripts/hapax-post-merge-deploy").read_text(encoding="utf-8")
+        start = deploy.index("unit_content_parked() {")
+        function = deploy[start : deploy.index("\n}\n", start) + 3]
+
+        def parked(unit: str) -> bool:
+            content = (root / "systemd/units" / unit).read_text(encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "-c", function + 'unit_content_parked "$1"', "bash", content],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        assert parked("hapax-mastodon-post.service")
+        assert not parked("hapax-bluesky-post.service")

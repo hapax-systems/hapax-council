@@ -499,7 +499,10 @@ class TestEventFiltering:
         [
             ("Commitment Status", "Hapax weblog: Commitment Status. {url}"),
             ("Is a record its own witness?", "Hapax weblog: Is a record its own witness? {url}"),
+            ("A record, repaired.", "Hapax weblog: A record, repaired. {url}"),
+            ("It ships!", "Hapax weblog: It ships! {url}"),
             ("", "Hapax weblog post: {url}"),
+            ("   ", "Hapax weblog post: {url}"),
         ],
     )
     def test_default_compose_weblog_text_names_the_entry_once(self, label, expected):
