@@ -5555,3 +5555,9 @@ _ = (
     _research_desk_list_open_requests,
     _research_desk_neutralize_markdown,
 )
+
+# U4b's release helpers in scripts/publish_vault_artifact.py land (split A) before
+# their caller, the release scan in scripts/cc-pr-review-dispatch.py (#5104), which
+# calls both as publish_vault_artifact.<name>; vulture cannot see that path yet.
+pipeline_state
+drop_to_inbox
