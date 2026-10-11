@@ -5100,9 +5100,8 @@ def review_frozen_artifacts(
 
 SCAN_STATE_SCHEMA = 1
 
-#: Result statuses that prove this head sha reached a current-head dossier. Only these
-#: are recorded in the scan state — a dry-run plan, a missing task link, or a per-PR
-#: error proves nothing about the head and must not suppress the next cycle's fetch.
+#: Result statuses proving this head sha reached a current-head dossier. A dry-run
+#: plan, a missing task link or a per-PR error must not suppress the next fetch.
 _SCAN_HEAD_RECORDING_STATUSES = frozenset(
     {
         "dispatched",
@@ -5113,6 +5112,10 @@ _SCAN_HEAD_RECORDING_STATUSES = frozenset(
         "multi_skipped_blocked",
     }
 )
+
+#: Safety cap for the scan's open-PR listing; pagination is driven by the short
+#: terminal page, not by this number. ~10x the estate's peak open-PR count.
+_SCAN_LIST_LIMIT = 1000
 
 
 def _fresh_scan_state() -> dict[str, Any]:
@@ -5175,7 +5178,7 @@ def _list_open_prs_conditional(
     repo_root: Path,
     runner: Any,
     state: dict[str, Any],
-    limit: int = 100,
+    limit: int = _SCAN_LIST_LIMIT,
 ) -> tuple[list[dict[str, Any]], ListingRoute]:
     """List open PRs over REST with per-page conditional requests.
 
@@ -5192,6 +5195,7 @@ def _list_open_prs_conditional(
     per_page = 100
     rows: list[dict[str, Any]] = []
     page_number = 1
+    last_page: int | None = None
     while len(rows) < limit:
         page_key = str(page_number)
         cached = pages.get(page_key)
@@ -5244,6 +5248,7 @@ def _list_open_prs_conditional(
             page_rows = _scan_listing_rows(items)
             rows.extend(page_rows)
             if len(items) < per_page:
+                last_page = page_number
                 break
             page_number += 1
             continue
@@ -5261,13 +5266,18 @@ def _list_open_prs_conditional(
         if new_etag:
             pages[page_key] = {"etag": new_etag, "items": items}
         else:
-            # Nothing to condition on next cycle; keeping a stale etag would only
-            # invite a page-2 fetch the response cannot make free.
+            # Nothing to condition on; a stale etag would only invite page-2
+            # fetches the response cannot make free.
             pages.pop(page_key, None)
         rows.extend(_scan_listing_rows(items))
         if len(items) < per_page:
+            last_page = page_number
             break
         page_number += 1
+    if last_page is not None:
+        # The open set shrank: cached pages beyond the terminal one are stale.
+        for stale in [k for k in pages if k.isdigit() and int(k) > last_page]:
+            del pages[stale]
     state["list_pages"][pages_key] = pages
     return rows, ListingRoute(
         transport="rest",
@@ -5302,20 +5312,18 @@ def review_all_open_prs(
 
     def _chooser_listing() -> tuple[list[dict[str, Any]], ListingRoute] | None:
         try:
-            # The scan needs only PR numbers, draft flags and head shas; fetching
-            # statuses here would couple every review to one row's rollup availability.
+            # The scan needs only PR numbers, draft flags and head shas; statuses would
+            # couple every review to one row's rollup availability.
             return list_open_pr_statuses(
                 repo=repo,
                 repo_root=repo_root,
                 runner=gh_runner,
-                limit=100,
+                limit=_SCAN_LIST_LIMIT,
                 include_status=False,
             )
         except PrListingUnavailable as exc:
-            # Skip this scan rather than spending it into guaranteed 403s. Returning an empty
-            # result set is safe here — the next scan re-evaluates every open PR from scratch,
-            # so nothing is lost by sitting out a cycle. Logged loudly so an empty scan is
-            # never mistaken for "no PRs needed review".
+            # Skipping is safe: the next scan re-evaluates every open PR from scratch.
+            # Logged loudly so an empty scan is never mistaken for "no PRs needed review".
             LOG.warning(
                 "review-team dispatch scan skipped: %s%s",
                 exc.reason,
@@ -5333,7 +5341,7 @@ def review_all_open_prs(
                 repo_root=repo_root,
                 runner=gh_runner,
                 state=state,
-                limit=100,
+                limit=_SCAN_LIST_LIMIT,
             )
         except RuntimeError as exc:
             LOG.warning(
@@ -5351,9 +5359,8 @@ def review_all_open_prs(
         if listed is None:
             return []
         open_prs, route = listed
-    # `route` is the cycle's measured transport decision — the conditional REST listing
-    # served, or the chooser's pick on fallback — threaded all the way down so per-PR
-    # fetches never re-probe.
+    # `route` is the cycle's measured transport decision (conditional listing or
+    # chooser fallback pick), threaded down so per-PR fetches never re-probe.
     results: list[dict[str, Any]] = []
     for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):

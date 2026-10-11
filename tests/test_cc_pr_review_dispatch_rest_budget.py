@@ -1,15 +1,10 @@
 """REST-budget behavior of the review dispatcher's ``--all`` scan.
 
-REQ: the account's GitHub REST budget is shared by every lane, so the scan
-fetches only what changed. Invariants under test (each mutation-verified):
-
-- a PR whose head sha matches the last cycle's record makes no diff fetch;
-- the open-PR list is fetched once per cycle with If-None-Match, reusing the
-  cached page on 304 (a 304 does not count against the budget);
-- ``--force`` bypasses the unchanged-head gate; dry-run plans never record
-  heads; heads of closed PRs are pruned;
-- conditional-listing failures raise (fallback to the chooser; a 403's request
-  ID containing "304" never reads as a 304); unusable scan state fails open.
+The account's REST budget is shared by every lane, so the scan fetches only
+what changed (invariants mutation-verified): unchanged heads make no fetch;
+the list uses If-None-Match and pages to the end (a 304 is free); force
+bypasses the gate; dry runs record nothing; closed heads are pruned; listing
+failures fall back to the chooser; unusable state fails open.
 """
 
 from __future__ import annotations
@@ -112,6 +107,13 @@ def _read_state(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _run_scan(vault: Path, tmp_path: Path, gh: Any, **overrides: Any) -> list[Any]:
+    kwargs = _scan_kwargs(
+        vault, tmp_path, gh, scan_state_path=tmp_path / "scan-state.json", **overrides
+    )
+    return dispatch.review_all_open_prs(**kwargs)
+
+
 class TestUnchangedHeadGate:
     def test_scan_skips_pr_with_unchanged_head_without_fetches(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
@@ -120,9 +122,7 @@ class TestUnchangedHeadGate:
         state_path.write_text(json.dumps({"schema": 1, "heads": {"42": head}}), encoding="utf-8")
         gh = ScanGh({42: head})
 
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
-        )
+        results = _run_scan(vault, tmp_path, gh)
 
         assert [r["status"] for r in results] == ["skipped_unchanged_head"]
         assert results[0]["pr"] == 42
@@ -144,16 +144,12 @@ class TestUnchangedHeadGate:
         gh = ScanGh({42: head})
         state_path = tmp_path / "scan-state.json"
 
-        first = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
-        )
+        first = _run_scan(vault, tmp_path, gh)
         assert [r["status"] for r in first] == ["dispatched"]
         assert _read_state(state_path)["heads"] == {"42": head}
 
         gh_second = ScanGh({42: head})
-        second = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh_second, scan_state_path=state_path)
-        )
+        second = _run_scan(vault, tmp_path, gh_second)
         assert [r["status"] for r in second] == ["skipped_unchanged_head"]
         assert not any("v3.diff" in " ".join(call) for call in gh_second.calls)
 
@@ -167,9 +163,7 @@ class TestUnchangedHeadGate:
         head = "e" * 40
         gh = ScanGh({42: head})
 
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
-        )
+        results = _run_scan(vault, tmp_path, gh)
 
         assert [r["status"] for r in results] == ["dispatched"]
         assert _read_state(state_path)["heads"] == {"42": head}
@@ -183,16 +177,7 @@ class TestUnchangedHeadGate:
         reviewers = RecordingReviewers()
         gh = ScanGh({42: head})
 
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(
-                vault,
-                tmp_path,
-                gh,
-                scan_state_path=state_path,
-                force=True,
-                reviewer_runner=reviewers,
-            )
-        )
+        results = _run_scan(vault, tmp_path, gh, force=True, reviewer_runner=reviewers)
 
         assert [r["status"] for r in results] == ["dispatched"]
         assert reviewers.invocations
@@ -204,36 +189,28 @@ class TestUnchangedHeadGate:
         state_path = tmp_path / "scan-state.json"
         gh = ScanGh({42: head})
 
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path, apply=False)
-        )
+        results = _run_scan(vault, tmp_path, gh, apply=False)
 
         assert [r["status"] for r in results] == ["planned"]
         state = _read_state(state_path)
         assert state.get("heads", {}) == {}
 
     def test_dry_run_scan_does_not_record_heads_for_fresh_dossiers(self, tmp_path: Path) -> None:
-        # The dossier freshness gate fires before review_pr's `not apply` return, so a
-        # dry-run scan over an already-reviewed head answers skipped_fresh — a head
-        # recording status. Only the apply guard keeps the dry run read-only.
+        # The freshness gate fires before the apply guard, so a dry run over a reviewed
+        # head answers skipped_fresh — a recording status; only the apply guard is read-only.
         vault = _make_vault(tmp_path)
         _write_task(vault, "task-41", pr=41)
         head = "a" * 40
         state_path = tmp_path / "scan-state.json"
         gh = ScanGh({41: head})
 
-        first = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
-        )
+        first = _run_scan(vault, tmp_path, gh)
         assert [r["status"] for r in first] == ["dispatched"]
         assert _read_state(state_path)["heads"] == {"41": head}
 
-        # Scan state lost, dossiers intact: the next cycle re-observes the PR and the
-        # freshness gate answers for it. The dry run must still record nothing.
+        # State lost, dossiers intact: the freshness gate answers; the dry run records nothing.
         state_path.unlink()
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path, apply=False)
-        )
+        results = _run_scan(vault, tmp_path, gh, apply=False)
 
         assert [r["status"] for r in results] == ["skipped_fresh"]
         assert _read_state(state_path).get("heads", {}) == {}
@@ -241,8 +218,7 @@ class TestUnchangedHeadGate:
     def test_scan_does_not_record_heads_for_constitution_blocked_reviews(
         self, tmp_path: Path
     ) -> None:
-        # The head-recording status filter: a cycle where the constitution cannot form
-        # reviewed nothing, so the PR must stay unrecorded and retry next cycle.
+        # A constitution-blocked cycle reviewed nothing: stay unrecorded, retry next cycle.
         vault = _make_vault(tmp_path)
         _write_task(vault, "task-41", pr=41)
         head = "a" * 40
@@ -261,17 +237,13 @@ class TestUnchangedHeadGate:
             encoding="utf-8",
         )
 
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(
-                vault,
-                tmp_path,
-                gh,
-                scan_state_path=state_path,
-                route_blocked_families={
-                    family: ("route_state_blocked",)
-                    for family in ("gemini", "glm", "muse", "vibe", "local")
-                },
-            )
+        results = _run_scan(
+            vault,
+            tmp_path,
+            gh,
+            route_blocked_families=dict.fromkeys(
+                ("gemini", "glm", "muse", "vibe", "local"), ("route_state_blocked",)
+            ),
         )
 
         assert [r["status"] for r in results] == ["constitution_blocked"]
@@ -282,17 +254,14 @@ class TestUnchangedHeadGate:
         _write_task(vault, "task-41", pr=41)
         head41 = "a" * 40
         state_path = tmp_path / "scan-state.json"
-        # Only 99 is primed: 41 must dispatch fresh this cycle so the test exercises
-        # recording AND pruning in one pass.
+        # Only 99 is primed: 41 dispatches fresh, exercising record and prune in one pass.
         state_path.write_text(
             json.dumps({"schema": 1, "heads": {"99": "f" * 40}}),
             encoding="utf-8",
         )
         gh = ScanGh({41: head41})
 
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
-        )
+        results = _run_scan(vault, tmp_path, gh)
 
         assert [r["status"] for r in results] == ["dispatched"]
         assert _read_state(state_path)["heads"] == {"41": head41}
@@ -334,9 +303,7 @@ class TestConditionalList:
                 return super().__call__(cmd, **kwargs)
 
         gh = NotModifiedGh({42: head})
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
-        )
+        results = _run_scan(vault, tmp_path, gh)
 
         assert [r["status"] for r in results] == ["skipped_unchanged_head"]
         # Exactly one conditional list call: no page-2 fetch, no per-PR fetches.
@@ -377,9 +344,7 @@ class TestConditionalList:
                 return super().__call__(cmd, **kwargs)
 
         gh = FreshPageGh()
-        results = dispatch.review_all_open_prs(
-            **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
-        )
+        results = _run_scan(vault, tmp_path, gh)
 
         assert [r["status"] for r in results] == ["dispatched"]
         assert gh.sent_if_none_match
@@ -387,6 +352,54 @@ class TestConditionalList:
         page = state["list_pages"]["repos/owner/repo/pulls|state=open"]["1"]
         assert page["etag"] == '"fresh-etag"'
         assert state["heads"] == {"42": new_head}
+
+
+class PagedListingGh:
+    """Serves the open-PR listing as the server does: 100 rows per page."""
+
+    def __init__(self, open_heads: dict[int, str]) -> None:
+        self.open_heads = open_heads
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        self.calls.append(list(cmd))
+        page = int(next(tok for tok in cmd if tok.startswith("page=")).split("=")[1])
+        chunk = sorted(self.open_heads.items())[(page - 1) * 100 : page * 100]
+        items = [{"number": n, "draft": False, "head": {"sha": sha}} for n, sha in chunk]
+        body = f'HTTP/1.1 200 OK\r\nETag: "pg{page}"\r\n\r\n' + json.dumps(items)
+        return subprocess.CompletedProcess(cmd, 0, body, "")
+
+
+class TestFullPagination:
+    def test_scan_pages_past_one_hundred_prs_and_keeps_their_heads(self, tmp_path: Path) -> None:
+        vault = _make_vault(tmp_path)
+        open_heads = {number: f"{number:040d}" for number in range(1, 131)}
+        primed = {str(number): sha for number, sha in open_heads.items()}
+        state_path = tmp_path / "scan-state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "heads": primed,
+                    "list_pages": {
+                        "repos/owner/repo/pulls|state=open": {"3": {"etag": '"stale"', "items": []}}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        gh = PagedListingGh(open_heads)
+
+        results = _run_scan(vault, tmp_path, gh)
+
+        assert [r["status"] for r in results] == ["skipped_unchanged_head"] * 130
+        assert any("page=2" in call for call in gh.calls)
+        # Every call was a list call: no per-PR fetch was spent on unchanged heads.
+        assert all(len(call) > 6 and call[6] == "repos/owner/repo/pulls" for call in gh.calls)
+        state = _read_state(state_path)
+        assert state["heads"] == primed
+        pages = state["list_pages"]["repos/owner/repo/pulls|state=open"]
+        assert sorted(pages) == ["1", "2"]
 
 
 def _pulls_proc(stdout: str, stderr: str = "", rc: int = 0) -> subprocess.CompletedProcess:
@@ -467,7 +480,6 @@ class TestChooserFallback:
         vault = _make_vault(tmp_path)
         _write_task(vault)
         head = "c" * 40
-        state_path = tmp_path / "scan-state.json"
         gh = ScanGh({42: head})
 
         def _unavailable(**kwargs: Any) -> Any:
@@ -476,9 +488,7 @@ class TestChooserFallback:
         monkeypatch.setattr(dispatch, "_list_open_prs_conditional", _unavailable)
 
         with caplog.at_level(logging.WARNING, logger="cc-pr-review-dispatch"):
-            results = dispatch.review_all_open_prs(
-                **_scan_kwargs(vault, tmp_path, gh, scan_state_path=state_path)
-            )
+            results = _run_scan(vault, tmp_path, gh)
 
         assert [r["status"] for r in results] == ["dispatched"]
         assert "falling back to the transport chooser" in caplog.text
@@ -512,9 +522,8 @@ class TestLegacyMode:
         assert [r["status"] for r in results] == ["dispatched"]
         assert any("v3.diff" in " ".join(call) for call in first.calls)
 
-        # Legacy (no scan state) keeps today's exact behavior: the dossier freshness
-        # gate stops the DIFF re-fetch, but the per-PR metadata fetch (the REST spend
-        # this row removes) still happens every cycle.
+        # Legacy (no scan state) keeps today's behavior: freshness stops the DIFF
+        # re-fetch, but the per-PR metadata fetch (the REST spend) still happens.
         second = ScanGh({42: "c" * 40})
         results = dispatch.review_all_open_prs(**_scan_kwargs(vault, tmp_path, second))
         assert [r["status"] for r in results] == ["skipped_fresh"]
