@@ -1504,6 +1504,9 @@ def _grant_env(tmp_path: Path, *, key: bytes = _GRANT_KEY) -> dict:
     return {
         "HAPAX_COORD_GRANT_DIR": str(grant_dir),
         "HAPAX_COORD_GRANT_KEY": str(key_file),
+        # Grants are session-bound (escape-grants-bind-to-the-minting-session-20261011):
+        # the lane's session must match the session the grant was minted for.
+        "HAPAX_SESSION_ID": "gate-test-session",
     }
 
 
@@ -1525,6 +1528,7 @@ def _drop_grant(
         ttl_s=ttl_s,
         key=key,
         now=now if now is not None else time.time(),
+        session="gate-test-session",
     )
     path = grant_dir / f"{grant.grant_id}.grant"
     write_grant_file(grant, path)
@@ -1643,6 +1647,29 @@ class TestEscapeGrant:
             extra_env=env,
         )
         assert "escape_grant_honored" in _ledger_kinds(tmp_path), "grant use must be ledgered"
+        ledger = tmp_path / ".cache" / "hapax" / "methodology-emergency-ledger.jsonl"
+        honored = [
+            json.loads(line)
+            for line in ledger.read_text().splitlines()
+            if line.strip() and json.loads(line).get("kind") == "escape_grant_honored"
+        ]
+        assert honored[0].get("session") == "gate-test-session", honored
+
+    def test_grant_from_another_session_does_not_unblock(self, tmp_path: Path) -> None:
+        # The grant is bound to gate-test-session (see _drop_grant); a DIFFERENT
+        # lane's session must not be released by it — the measured 2026-10-11
+        # defect (one mint, six honors across three roles).
+        env = _grant_env(tmp_path)
+        _drop_grant(tmp_path, scope="cc-task-gate")
+        result = _run_hook(
+            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/x"}},
+            home=tmp_path,
+            extra_env={**env, "HAPAX_SESSION_ID": "another-lane"},
+        )
+        assert result.returncode == 2, (
+            f"a grant minted by gate-test-session must not release another lane:\n{result.stderr}"
+        )
+        assert "escape_grant_honored" not in _ledger_kinds(tmp_path)
 
 
 class TestGateOffDeprecation:

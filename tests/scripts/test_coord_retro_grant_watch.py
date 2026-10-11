@@ -86,6 +86,31 @@ class TestRetroGrantWatch:
         obligations, grant_dir, key = self._setup(tmp_path)
         _write_obligation(obligations, gate="cc-task-gate", ts_s=1000, deadline_s=4600)
         # A retro-grant minted AFTER the obligation, covering the gate, still valid.
+        # Session-bound (escape-grants-bind-to-the-minting-session-20261011): the
+        # watcher checks the grant is validly bound and signed — it is not a gate
+        # release, so fulfillment does not depend on the watcher's own session.
+        grant = mint_escape_grant(
+            grantor="operator",
+            scope="cc-task-gate",
+            reason="retro",
+            ttl_s=100_000,
+            key=KEY,
+            now=2000.0,
+            session="retro-lane",
+        )
+        write_grant_file(grant, grant_dir / f"{grant.grant_id}.grant")
+        r = _run(obligations, grant_dir, key, now=10_000)
+        assert r.returncode == 0, f"stderr={r.stderr}"
+        summary = json.loads(r.stdout)
+        assert summary["fulfilled"] == 1
+        assert summary["escalated"] == 0
+        assert _records(obligations)[-1]["status"] == "fulfilled"
+
+    def test_unbound_grant_does_not_fulfil(self, tmp_path: Path) -> None:
+        # An unbound (legacy-shaped) grant is not honored anywhere — failure
+        # narrows — so it cannot fulfil a retro obligation either.
+        obligations, grant_dir, key = self._setup(tmp_path)
+        _write_obligation(obligations, gate="cc-task-gate", ts_s=1000, deadline_s=4600)
         grant = mint_escape_grant(
             grantor="operator",
             scope="cc-task-gate",
@@ -98,9 +123,8 @@ class TestRetroGrantWatch:
         r = _run(obligations, grant_dir, key, now=10_000)
         assert r.returncode == 0, f"stderr={r.stderr}"
         summary = json.loads(r.stdout)
-        assert summary["fulfilled"] == 1
-        assert summary["escalated"] == 0
-        assert _records(obligations)[-1]["status"] == "fulfilled"
+        assert summary["escalated"] == 1
+        assert summary["fulfilled"] == 0
 
     def test_grant_predating_obligation_does_not_fulfil(self, tmp_path: Path) -> None:
         # A grant minted BEFORE the emergency cannot retro-justify it.

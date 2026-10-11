@@ -25,6 +25,7 @@ reused thereafter. Prints the absolute path of the grant file it wrote.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -40,6 +41,39 @@ from shared.governance.coord_capabilities import (  # noqa: E402
     write_grant_file,
 )
 
+#: The session env chain mirrored from hooks/scripts/agent-role.sh
+#: ``hapax_session_id()`` — the first set variable wins.
+_SESSION_ENV_VARS = (
+    "HAPAX_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_SESSION",
+    "CODEX_THREAD_ID",
+    "CODEX_THREAD_NAME",
+)
+
+#: Best-effort minting-role chain, mirrored from the gates' role resolution.
+_ROLE_ENV_VARS = ("HAPAX_AGENT_ROLE", "CODEX_ROLE", "CLAUDE_ROLE")
+
+
+def _resolve_session(override: str | None) -> str:
+    if override:
+        return override
+    for var in _SESSION_ENV_VARS:
+        value = os.environ.get(var, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_role(override: str | None) -> str:
+    if override:
+        return override
+    for var in _ROLE_ENV_VARS:
+        value = os.environ.get(var, "").strip()
+        if value:
+            return value
+    return ""
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
@@ -53,9 +87,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ttl", type=float, default=3600.0, help="seconds until the grant expires (default 1h)"
     )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="minting session to bind the grant to (default: session env chain)",
+    )
+    parser.add_argument(
+        "--role", default=None, help="minting role to record (default: role env chain)"
+    )
+    parser.add_argument(
+        "--path",
+        action="append",
+        default=None,
+        help="narrow the grant to this path (repeatable; default: any path)",
+    )
     parser.add_argument("--grant-dir", default=None, help="override the grant directory")
     parser.add_argument("--key-file", default=None, help="override the signing key path")
     args = parser.parse_args(argv)
+
+    session = _resolve_session(args.session)
+    if not session:
+        # escape-grants-bind-to-the-minting-session-20261011: an unbound grant
+        # releases every lane that hits the gate inside the TTL — refuse narrow,
+        # before creating any substrate.
+        print(
+            "refusing to mint an unbound grant: no session resolved; "
+            "set HAPAX_SESSION_ID (or pass --session <session-id>) and retry",
+            file=sys.stderr,
+        )
+        return 2
 
     grant_dir = Path(args.grant_dir) if args.grant_dir else default_grant_dir()
     key_path = Path(args.key_file) if args.key_file else default_grant_key()
@@ -69,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
         ttl_s=args.ttl,
         key=key,
         now=time.time(),
+        session=session,
+        paths=tuple(args.path or ()),
+        role=_resolve_role(args.role),
     )
     out = grant_dir / f"{grant.grant_id}.grant"
     write_grant_file(grant, out)

@@ -424,20 +424,22 @@ def decide_with_escape(
     grant: EscapeGrant | None = None,
     key: bytes,
     now: float,
+    session: str | None = None,
 ) -> Decision:
     """The kernel-DOWN floor decision, with a valid escape grant overriding a block.
 
     This is the Python form of the L3 hook-shim's daemon-down contract: evaluate the
     embedded conservative floor and, if it BLOCKS, honor an escape grant iff it
-    verifies (signature + expiry + scope — pure, no RPC, no daemon). So a signed
-    grant unblocks a lane with the kernel dead, which is exactly INV-4
-    (authority-always-escapable). Never raises.
+    verifies (signature + expiry + scope + session binding — pure, no RPC, no
+    daemon; escape-grants-bind-to-the-minting-session-20261011). So a signed grant
+    bound to this session unblocks a lane with the kernel dead, which is exactly
+    INV-4 (authority-always-escapable). Never raises.
     """
     try:
         decision = evaluate_floor(tool_name, command=command, file_path=file_path)
         if decision.allowed:
             return decision
-        if verify_escape_grant(grant, key=key, now=now, gate=decision.gate):
+        if verify_escape_grant(grant, key=key, now=now, gate=decision.gate, session=session):
             return Decision(
                 verdict=Verdict.ALLOW,
                 gate="escape:granted",
