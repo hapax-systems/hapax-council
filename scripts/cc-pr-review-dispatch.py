@@ -56,7 +56,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -1007,6 +1007,92 @@ def _glmcp_payg_review_route_eligible(now_iso: str) -> bool:
         return _glmcp_review_direct_quota_admission_fresh(now)
     except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
         return False
+
+
+def _route_admission_receipt(route_id: str, receipts_dir: Path | None) -> dict[str, Any] | None:
+    """Retained admission receipt for a review route, or None when it does not
+    witness a fresh quota_available admission (missing, unparsable, wrong route,
+    hold/wall status, or non-positive staleness)."""
+
+    receipt_name = review_team.ROUTE_ADMISSION_RECEIPT_NAMES.get(route_id)
+    if not receipt_name:
+        return None
+    path = (receipts_dir or _relay_receipts_dir()) / receipt_name
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        payload = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("route_id") or "") != route_id:
+        return None
+    if str(payload.get("status") or "") != "quota_available":
+        return None
+    stale_after = payload.get("stale_after_seconds")
+    if type(stale_after) is not int or stale_after <= 0:
+        return None
+    evidence_ref = str(payload.get("evidence_ref") or "")
+    observed_at = _receipt_iso_text(payload.get("observed_at"))
+    if not evidence_ref or not observed_at:
+        return None
+    return {
+        "evidence_ref": evidence_ref,
+        "observed_at": observed_at,
+        "stale_after_seconds": stale_after,
+        "receipt_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def route_admission_basis_for_reviews(
+    reviews: list[dict[str, Any]],
+    *,
+    registry: Mapping[str, Any],
+    completed_at: str,
+    receipts_dir: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Record the route admission basis each seated family ran under.
+
+    An entry is bound to the admission receipt's independently retained record —
+    the receipt file's sha256 plus its evidence_ref/observed_at/stale_after_seconds —
+    so a later examination can witness the seated family from the record even
+    after the live receipt has rotated stale. Entries carry ``state: "seated"``
+    and the family's seat ids under ``roles`` so excluded-family entries can
+    extend the same record later without a schema change. A family whose route
+    has no retained admission receipt records no basis: the live examination
+    check still governs it."""
+
+    basis: dict[str, dict[str, Any]] = {}
+    skipped: set[str] = set()
+    family_route_ids = review_team.review_family_route_ids(registry)
+    for review in reviews:
+        family = str(review.get("family") or "")
+        if not family or family in skipped or family in basis:
+            continue
+        route_id = family_route_ids.get(family)
+        receipt = _route_admission_receipt(route_id, receipts_dir) if route_id else None
+        if receipt is None:
+            skipped.add(family)
+            continue
+        basis[family] = {
+            "state": "seated",
+            "roles": [],
+            "route_id": route_id,
+            **receipt,
+            "completed_at": completed_at,
+        }
+    roles_by_family: dict[str, list[str]] = {}
+    for review in reviews:
+        family = str(review.get("family") or "")
+        role = str(review.get("id") or "")
+        if family in basis and role and role not in roles_by_family.setdefault(family, []):
+            roles_by_family[family].append(role)
+    for family, entry in basis.items():
+        entry["roles"] = sorted(roles_by_family.get(family, []))
+    return basis
 
 
 def update_family_outage(
@@ -4426,6 +4512,11 @@ def _apply_review(
         diff_delivered_bytes=len(diff.encode("utf-8")),
     )
     update_family_outage(reviews, now_iso)
+    route_admission_basis = route_admission_basis_for_reviews(
+        reviews,
+        registry=registry,
+        completed_at=now_iso,
+    )
     results: list[dict[str, Any]] = []
     comment_bodies: list[str] = []
     for target_note_path, target_frontmatter, target_task_id in keyed_matches:
@@ -4451,6 +4542,8 @@ def _apply_review(
             packet_redactions=packet_redactions,
         )
         dossier["family_substitution"] = substitution
+        if route_admission_basis:
+            dossier["route_admission_basis"] = route_admission_basis
         dossier["diff_source"] = pr_diff.source
         dossier["comparison_base"] = pr_diff.comparison_base
         dossier["diff_sha256"] = hashlib.sha256(pr_diff.encode("utf-8")).hexdigest()
@@ -4902,6 +4995,11 @@ def review_artifact(
         diff_delivered_bytes=artifact_payload_bytes,
     )
     update_family_outage(reviews, now_iso)
+    route_admission_basis = route_admission_basis_for_reviews(
+        reviews,
+        registry=registry,
+        completed_at=now_iso,
+    )
     dossier = review_team.synthesize_dossier(
         task_id=task_id,
         pr_number=0,
@@ -4926,6 +5024,8 @@ def review_artifact(
         "lineage": lineage,
     }
     dossier["family_substitution"] = substitution
+    if route_admission_basis:
+        dossier["route_admission_basis"] = route_admission_basis
     dossier["review_task_hash"] = task_hash
     dossier["review_task_hash_source_task_id"] = hash_task_id
     dossier["review_task_hash_source_note"] = hash_note
