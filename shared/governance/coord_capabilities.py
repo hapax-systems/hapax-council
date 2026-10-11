@@ -204,7 +204,11 @@ class EscapeGrant:
     the minting ``session`` (plus optional narrowing ``paths`` and a best-effort
     minting ``role``) in its SIGNED payload, so it releases only the session
     that minted it. ``session == ""`` is the legacy UNBOUND shape — still
-    parseable, but verification refuses it.
+    parseable, but verification refuses it with ``NEXT_ACTION: re-mint with
+    your session``. An unbound grant signs the PRE-binding payload, so grants
+    minted before the binding existed stay byte-identical on disk; since slice
+    2 the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION`` instead of
+    minting that shape.
     """
 
     grant_id: str
@@ -219,7 +223,7 @@ class EscapeGrant:
     role: str = ""  # minting role, signed for attribution only
 
     def _signing_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "kind": "escape",
             "grant_id": self.grant_id,
             "grantor": self.grantor,
@@ -227,10 +231,12 @@ class EscapeGrant:
             "reason": self.reason,
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
-            "session": self.session,
-            "paths": list(self.paths),
-            "role": self.role,
         }
+        if self.session or self.paths or self.role:
+            payload["session"] = self.session
+            payload["paths"] = list(self.paths)
+            payload["role"] = self.role
+        return payload
 
     def is_expired(self, now: float) -> bool:
         return now > self.expires_at
@@ -253,24 +259,30 @@ def mint_escape_grant(
 ) -> EscapeGrant:
     """Mint a signed escape grant. The operator (root) is the only legitimate grantor.
 
-    ``session``/``paths``/``role`` are folded into the signature — rebinding or
-    re-attributing a minted grant fails verification. ``session=""`` mints the
-    legacy unbound shape, which ``verify_escape_grant`` refuses (the INV-3/4/5
-    auto-mint still mints that shape; rebinding it is a flagged follow-up).
+    ``session``/``paths``/``role`` are folded into the signature when the grant
+    is BOUND (any of them non-default) — rebinding or re-attributing a minted
+    grant then fails verification. An unbound grant signs the PRE-binding
+    payload (byte-identical to a mint from before the binding existed), and
+    verification refuses it with ``NEXT_ACTION: re-mint with your session``;
+    since slice 2 the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION``
+    instead of minting the unbound shape.
     """
-    fields = {
+    fields: dict[str, object] = {
         "grant_id": secrets.token_hex(16),
         "grantor": grantor,
         "scope": scope,
         "reason": reason,
         "issued_at": now,
         "expires_at": now + ttl_s,
-        "session": session,
-        "paths": tuple(paths),
-        "role": role,
     }
     payload = {"kind": "escape", **fields}
-    return EscapeGrant(signature=_sign(payload, key), **fields)
+    if session or paths or role:
+        payload["session"] = session
+        payload["paths"] = list(paths)
+        payload["role"] = role
+    return EscapeGrant(
+        signature=_sign(payload, key), session=session, paths=tuple(paths), role=role, **fields
+    )
 
 
 def serialize_grant(grant: EscapeGrant) -> str:
@@ -350,8 +362,10 @@ def verify_escape_grant(
     and is bound to THIS session.
 
     Session binding (escape-grants-bind-to-the-minting-session-20261011): an
-    unbound grant (``session == ""`` — legacy files, the INV-3/4/5 auto-mint)
-    is refused, as is a caller that supplies no session or a different one. A
+    unbound grant (``session == ""`` — a legacy pre-binding file; since slice 2
+    the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION`` and no longer
+    mints that shape) is refused with ``NEXT_ACTION: re-mint with your
+    session``, as is a caller that supplies no session or a different one. A
     grant with narrowing ``paths`` releases only those paths when the caller
     supplies a ``path`` (no ``path`` argument + paths on the grant → allow).
     Pure: signature + expiry + scope + binding — no network, no daemon (NEW-2 / INV-4).
@@ -618,6 +632,16 @@ def main(argv: list[str] | None = None) -> int:
     key = _load_key_file(args.key_file)
 
     if args.cmd == "mint-grant":
+        if not args.session and not args.path and not args.role:
+            # Mirror scripts/coord-grant-mint: an unbound grant releases every
+            # lane that hits the gate inside the TTL — refuse narrow. The script
+            # additionally requires a session because it resolves the env chain.
+            print(
+                "refusing to mint an unbound grant: no session, path or role bound; "
+                "pass --session <session-id> and retry",
+                file=sys.stderr,
+            )
+            return 2
         grant = mint_escape_grant(
             grantor=args.grantor,
             scope=args.scope,
