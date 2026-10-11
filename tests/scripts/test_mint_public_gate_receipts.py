@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest import mock
 
@@ -22,6 +23,18 @@ REF = {gate: f"public-gate:{SLUG}-{gate.replace('_', '-')}" for gate in GATES}
 CLAUDE = {"id": "claude-1", "family": "claude", "verdict": "accept"}
 GEMINI = {"id": "gemini-1", "family": "gemini", "verdict": "accept"}
 GLM = {"id": "glm-1", "family": "glm", "verdict": "accept"}
+CODEX = {"id": "codex-1", "family": "codex", "verdict": "accept"}
+MUSE = {"id": "muse-1", "family": "muse", "verdict": "accept"}
+
+# Redacted structural basis: frozen cor0004 R3 dossier a3c55eee413ab144... (2026-10-08).
+# All signatures and artifact bytes are created with the isolated test key, never copied.
+MUSE_PROVENANCE = {
+    "registry_id": "review-lenses",
+    "family_substitution": {
+        "seated_families": ["codex", "gemini", "muse"],
+        "substitute_families_seated": ["muse"],
+    },
+}
 
 
 def _argv(env) -> list[str]:
@@ -146,6 +159,255 @@ def test_mints_receipts_the_validator_accepts(env) -> None:
     # The writer may vote, but never counts: two distinct families still meet the quorum.
     _dossier(env, reviewers=[CLAUDE, GEMINI, GLM])
     assert {item["state"] for item in _mint(env)["receipts"].values()} == {"unchanged"}
+
+
+def test_signed_muse_substitution_mints_consumable_receipts(env) -> None:
+    _dossier(env, writer_family="codex", reviewers=[GEMINI, CODEX, MUSE], **MUSE_PROVENANCE)
+    _mint(env)
+    for gate, ref in env["declared"].items():
+        assert public_gate_receipts.public_gate_receipt_value_present(
+            ref,
+            expected_gate=gate,
+            roots=(env["receipts"],),
+            bindings=env["bindings"],
+            expected_head_sha=artifact_head_sha(env["manifest"]),
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"registry_id": "bespoke"},
+        {"family_substitution": {}},
+        {"family_substitution": {"seated_families": ["muse"]}},
+        {"family_substitution": {"substitute_families_seated": ["muse"]}},
+        {"family_substitution": "muse"},
+        {"reviewers": [CODEX, MUSE]},
+        {"reviewers": [MUSE, MUSE]},
+        {"reviewers": [GEMINI, {**MUSE, "family": "meta"}]},
+        {"reviewers": [GEMINI, {**MUSE, "family": "local"}]},
+        {"reviewers": [GEMINI, {**MUSE, "family": "vibe"}]},
+        {"reviewers": [GEMINI, {**MUSE, "family": "featherless"}]},
+    ],
+)
+def test_muse_cannot_supply_an_ungrounded_or_duplicate_vote(env, change) -> None:
+    _dossier(
+        env,
+        **{
+            "writer_family": "codex",
+            "reviewers": [GEMINI, MUSE],
+            **MUSE_PROVENANCE,
+            **change,
+        },
+    )
+    with pytest.raises(minter.MintError, match="mint_public_gate_quorum_not_independent"):
+        _mint(env)
+    assert not env["receipts"].exists()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing",
+        "read",
+        "decode",
+        "unmeasured",
+        "command",
+        "substitute",
+        "duplicate",
+        "schema",
+        "malformed",
+        "root_shape",
+        "families_shape",
+    ],
+)
+def test_muse_requires_the_trusted_registry_declaration(
+    env, monkeypatch, caplog, capsys, damage
+) -> None:
+    registry = Path(__file__).resolve().parents[2] / "config/review-lenses/registry.yaml"
+    data = yaml.safe_load(registry.read_text())
+    if damage == "unmeasured":
+        data["diff_capacity"]["seats"]["muse-1"].update(status="unmeasured", limit_bytes=80_000)
+    elif damage in {"command", "substitute"}:
+        row = next(r for r in data["families"] if r["family"] == "muse")
+        row["reviewer_command" if damage == "command" else "substitute"] = (
+            ["arbitrary-provider"] if damage == "command" else False
+        )
+    elif damage == "duplicate":
+        data["families"].append(next(r for r in data["families"] if r["family"] == "muse"))
+    elif damage == "schema":
+        data["registry_schema"] = 2
+    elif damage == "families_shape":
+        data["families"] = {}
+    elif damage == "root_shape":
+        data = []
+    path = env["root"] / "registry.yaml"
+    if damage != "missing":
+        path.write_text(
+            "[private-registry-payload" if damage == "malformed" else yaml.safe_dump(data)
+        )
+    if damage == "decode":
+        path.write_bytes(b"private-registry-payload\xff")
+    if damage == "read":
+        read_text = Path.read_text
+
+        def unreadable(self, *args, **kwargs):
+            if self == path:
+                raise PermissionError("private-registry-payload")
+            return read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+    _dossier(env, writer_family="codex", reviewers=[GEMINI, MUSE], **MUSE_PROVENANCE)
+    _mint(env)
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_REVIEW_REGISTRY_PATH", path)
+    # Eligibility must still hold when an already minted receipt is consumed.
+    for gate, ref in env["declared"].items():
+        assert not public_gate_receipts.public_gate_receipt_value_present(
+            ref,
+            expected_gate=gate,
+            roots=(env["receipts"],),
+            bindings=env["bindings"],
+            expected_head_sha=artifact_head_sha(env["manifest"]),
+        )
+    before = {p.name: p.read_bytes() for p in env["receipts"].iterdir()}
+    with pytest.raises(minter.MintError, match="mint_public_gate_review_registry_invalid") as exc:
+        _mint(env)
+    assert {p.name: p.read_bytes() for p in env["receipts"].iterdir()} == before
+    reason = {
+        "missing": "missing",
+        "read": "read_error",
+        "decode": "decode_error",
+        "malformed": "yaml_error",
+        "schema": "invalid_registry",
+        "root_shape": "invalid_registry",
+        "families_shape": "invalid_registry",
+        "unmeasured": "invalid_capacity",
+    }.get(damage, "invalid_muse_declaration")
+    assert minter.main(_argv(env)) == 1
+    captured = capsys.readouterr()
+    assert not captured.out
+    for message in (caplog.text, str(exc.value), captured.err):
+        assert str(path) in message
+        assert reason in message
+        assert "next action:" in message
+        assert "private-registry-payload" not in message
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize("boundary", ["mint", "consume"])
+@pytest.mark.parametrize(
+    ("location", "key", "value"),
+    [
+        ("default", "measurement_file", None),
+        ("default", "measurement_sha256", None),
+        ("default", "measurement_sha256", "private-registry-payload"),
+        ("default", "measurement_sha256", "A" * 64),
+        ("muse-1", "limit_bytes", -1),
+        ("muse-1", "limit_bytes", 0),
+        ("muse-1", "limit_bytes", True),
+        ("muse-1", "limit_bytes", "61494"),
+        ("muse-1", "prompt_limit_bytes", -1),
+        ("muse-1", "prompt_limit_bytes", 0),
+        ("muse-1", "prompt_limit_bytes", True),
+        ("muse-1", "prompt_limit_bytes", "95534"),
+        ("muse-1", "measurement_file", None),
+        ("muse-1", "measurement_sha256", None),
+        ("muse-1", "status", ["measured"]),
+        ("muse-1", "status", "private-registry-payload"),
+        ("capacity", "default", None),
+        ("capacity", "seats", []),
+        ("seats", "muse-1", []),
+        ("registry", "diff_capacity", None),
+    ],
+)
+def test_invalid_inherited_capacity_refuses_at_use(
+    env, monkeypatch, caplog, boundary, location, key, value
+) -> None:
+    _dossier(env, writer_family="codex", reviewers=[GEMINI, MUSE], **MUSE_PROVENANCE)
+    if boundary == "consume":
+        _mint(env)
+    data = yaml.safe_load(public_gate_receipts.PUBLIC_GATE_REVIEW_REGISTRY_PATH.read_text())
+    capacity = data["diff_capacity"]
+    target = {
+        "registry": data,
+        "capacity": capacity,
+        "default": capacity["default"],
+        "seats": capacity["seats"],
+        "muse-1": capacity["seats"]["muse-1"],
+    }[location]
+    target[key] = value
+    path = env["root"] / "registry.yaml"
+    path.write_text(yaml.safe_dump(data))
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_REVIEW_REGISTRY_PATH", path)
+    if boundary == "mint":
+        with pytest.raises(minter.MintError, match="invalid_capacity") as exc:
+            _mint(env)
+        assert "next action:" in str(exc.value)
+        assert str(path) in str(exc.value)
+        assert not env["receipts"].exists()
+    else:
+        for gate, ref in env["declared"].items():
+            assert not public_gate_receipts.public_gate_receipt_value_present(
+                ref,
+                expected_gate=gate,
+                roots=(env["receipts"],),
+                bindings=env["bindings"],
+                expected_head_sha=artifact_head_sha(env["manifest"]),
+            )
+    assert "invalid_capacity" in caplog.text
+    assert "next action:" in caplog.text
+    assert str(path) in caplog.text
+    assert "private-registry-payload" not in caplog.text
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize("boundary", ["mint", "cli"])
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "declared_at: 2026-99-99\n",
+        "declared_at: 2026-01-01T25:00:00Z\n",
+        "private: !!int private-registry-payload\n",
+    ],
+)
+def test_registry_constructor_error_holds_mint(
+    env, monkeypatch, caplog, capsys, boundary, malformed
+) -> None:
+    _dossier(env, writer_family="codex", reviewers=[GEMINI, MUSE], **MUSE_PROVENANCE)
+    path = env["root"] / "registry.yaml"
+    path.write_text(malformed, encoding="utf-8")
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_REVIEW_REGISTRY_PATH", path)
+    if boundary == "mint":
+        with pytest.raises(
+            minter.MintError, match="mint_public_gate_review_registry_invalid"
+        ) as exc:
+            _mint(env)
+        message = str(exc.value)
+    else:
+        assert minter.main(_argv(env)) == 1
+        captured = capsys.readouterr()
+        assert not captured.out
+        assert "HOLD" in captured.err
+        message = captured.err
+    assert not env["receipts"].exists()
+    for diagnostic in (message, caplog.text):
+        assert "yaml_error" in diagnostic
+        assert str(path) in diagnostic
+        assert "next action:" in diagnostic
+        assert "private-registry-payload" not in diagnostic
+        assert "2026-99-99" not in diagnostic
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_muse_capacity_inherits_valid_default_fields(env, monkeypatch) -> None:
+    data = yaml.safe_load(public_gate_receipts.PUBLIC_GATE_REVIEW_REGISTRY_PATH.read_text())
+    capacity = data["diff_capacity"]
+    capacity["default"].update(capacity["seats"]["muse-1"])
+    capacity["seats"]["muse-1"] = {}
+    path = env["root"] / "registry.yaml"
+    path.write_text(yaml.safe_dump(data))
+    monkeypatch.setattr(public_gate_receipts, "PUBLIC_GATE_REVIEW_REGISTRY_PATH", path)
+    test_signed_muse_substitution_mints_consumable_receipts(env)
 
 
 _AUTHORIZED = [gate for gate in GATES if gate != "claim_review_current"]

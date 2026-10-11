@@ -177,10 +177,25 @@ class OmgLolClient:
         json_body: dict | None = None,
         text_body: str | None = None,
     ) -> dict | None:
+        body, _ = self._execute_with_status(
+            method, path, endpoint=endpoint, json_body=json_body, text_body=text_body
+        )
+        return body
+
+    def _execute_with_status(
+        self,
+        method: str,
+        path: str,
+        *,
+        endpoint: str,
+        json_body: dict | None = None,
+        text_body: str | None = None,
+    ) -> tuple[dict | None, int | None]:
+        """The body, and the HTTP status the request ended with (None when no response came)."""
         if not self.enabled:
             log.warning("omg.lol client disabled; skipping %s", endpoint)
             _record_metric(ApiCallOutcome(endpoint=endpoint, result="disabled", http_status=None))
-            return None
+            return None, None
 
         url = f"{OMG_LOL_API_BASE}{path}"
         started = time.time()
@@ -222,7 +237,7 @@ class OmgLolClient:
                         latency_s=time.time() - started,
                     )
                 )
-                return None
+                return None, None
 
             status = resp.status_code
             last_status = status
@@ -238,10 +253,10 @@ class OmgLolClient:
                     )
                 )
                 try:
-                    return resp.json()
+                    return resp.json(), status
                 except ValueError:
                     log.warning("omg.lol %s returned 2xx but non-JSON body", endpoint)
-                    return {"raw": resp.text}
+                    return {"raw": resp.text}, status
 
             if status in (401, 403):
                 log.warning(
@@ -258,7 +273,7 @@ class OmgLolClient:
                         latency_s=time.time() - started,
                     )
                 )
-                return None
+                return None, status
 
             if status == 429:
                 retry_after = float(resp.headers.get("Retry-After", "0") or 0)
@@ -276,7 +291,7 @@ class OmgLolClient:
                         latency_s=time.time() - started,
                     )
                 )
-                return None
+                return None, status
 
             if status >= 500:
                 log.warning(
@@ -294,7 +309,7 @@ class OmgLolClient:
                         latency_s=time.time() - started,
                     )
                 )
-                return None
+                return None, status
 
             # Non-retriable 4xx other than 401/403/429 — log + metric, return None.
             # (Could raise OmgLolHttpError if stricter callers need to abort,
@@ -309,7 +324,7 @@ class OmgLolClient:
                     latency_s=time.time() - started,
                 )
             )
-            return None
+            return None, status
 
         # Unreachable — the loop returns in every branch. Kept for type checker.
         _record_metric(
@@ -321,7 +336,7 @@ class OmgLolClient:
                 latency_s=time.time() - started,
             )
         )
-        return None
+        return None, last_status
 
     # ── Address info ──────────────────────────────────────────────────
 
@@ -440,6 +455,20 @@ class OmgLolClient:
             f"/address/{address}/weblog/entry/{entry_id}",
             endpoint="address.weblog.get",
         )
+
+    def get_entry_status(self, address: str, entry_id: str) -> tuple[int | None, dict | None]:
+        """The HTTP status a GET of the entry ended with, and its body.
+
+        ``get_entry`` answers None for a missing entry, an auth failure, rate limiting, a server
+        error and a network error alike. Only a 404 here confirms absence; a None status means
+        no response came, which is unknown.
+        """
+        body, status = self._execute_with_status(
+            "GET",
+            f"/address/{address}/weblog/entry/{entry_id}",
+            endpoint="address.weblog.get",
+        )
+        return status, body
 
     def set_entry(self, address: str, entry_id: str, *, content: str) -> dict | None:
         # omg.lol weblog API expects raw markdown body (Content-Type:

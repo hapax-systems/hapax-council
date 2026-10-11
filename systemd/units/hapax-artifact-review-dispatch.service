@@ -1,0 +1,24 @@
+[Unit]
+Description=Hapax frozen-artifact review and release scan (no-stall U4a, U4b)
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/cc-pr-review-dispatch.py
+After=network-online.target hapax-secrets.service
+Wants=network-online.target hapax-secrets.service
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+# The same environment as hapax-pr-review-dispatch.service: only the public-gate signing key,
+# never the common hapax-secrets.env, whose provider routing reviewer children would inherit.
+# A unit of its own, because the PR scan can run for hours and a frozen artifact should not wait.
+EnvironmentFile=-/run/user/%U/hapax-public-gate-authority.env
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/cc-pr-review-dispatch.py --frozen-artifacts --apply
+# U4b, after the reviews: an accepted frozen artifact with no major or critical finding gets its
+# public-gate receipts from the signed acceptance and is dropped to the publish inbox. The
+# orchestrator's gates still decide publication. The off switch for both steps is the
+# dispatcher's killswitch environment variable, or disabling the timer.
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/cc-pr-review-dispatch.py --release-accepted --apply
+TimeoutStartSec=30min

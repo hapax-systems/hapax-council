@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import agents.weblog_publish_public_event_producer as producer_module
 from agents.weblog_publish_public_event_producer import (
     WeblogPublishPolicyConfig,
     WeblogPublishPublicEventProducer,
     WeblogRssItem,
     build_weblog_publish_public_event,
+    fetch_rss,
     parse_weblog_rss_items,
     weblog_publish_event_id,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 NOW = 1_777_777_777.0
 GENERATED_AT = "2026-05-10T10:30:00Z"
@@ -128,6 +134,34 @@ def test_build_weblog_event_fails_closed_without_public_url() -> None:
     assert event.surface_policy.dry_run_reason is not None
     assert "missing_public_url" in event.surface_policy.dry_run_reason
     assert "missing_provenance" in event.surface_policy.dry_run_reason
+
+
+def test_fetch_rss_names_itself_to_the_weblog_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The weblog host closes the connection on the library's default User-Agent.
+
+    Measured 2026-10-10: ``python-requests/2.34.2`` got RemoteDisconnected from the feed,
+    while a named User-Agent got HTTP 200, so the producer emitted nothing for a week.
+    """
+    seen: dict[str, object] = {}
+
+    class _Response:
+        status_code = 200
+        content = b"<rss/>"
+
+    def fake_get(url: str, **kwargs: object) -> _Response:
+        seen["url"] = url
+        seen.update(kwargs)
+        return _Response()
+
+    monkeypatch.setattr(producer_module.requests, "get", fake_get)
+
+    assert fetch_rss(FEED_URL) == b"<rss/>"
+    headers = seen.get("headers")
+    assert isinstance(headers, dict)
+    user_agent = headers.get("User-Agent", "")
+    assert user_agent.startswith("hapax-")
+    assert "python-requests" not in user_agent
+    assert seen["timeout"] == producer_module.RSS_REQUEST_TIMEOUT_S
 
 
 def test_first_run_seeds_baseline_without_backfill(tmp_path: Path) -> None:

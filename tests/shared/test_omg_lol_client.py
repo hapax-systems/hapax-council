@@ -184,6 +184,70 @@ class TestExecute429:
         assert mock_session.request.call_count == 2
 
 
+class TestGetEntryStatus:
+    """``get_entry`` answers None for a missing entry and for no answer alike.
+
+    A caller deciding whether an entry exists needs the difference: only a 404 confirms
+    absence, and a request that ended without an HTTP response reports no status at all.
+    """
+
+    def _client(self, *responses: object, max_retries: int = 0) -> tuple[OmgLolClient, MagicMock]:
+        client = OmgLolClient(max_retries=max_retries, backoff_base_s=0.0)
+        session = MagicMock()
+        session.request.side_effect = list(responses)
+        client._session = session
+        return client, session
+
+    def test_existing_entry_reports_200_and_its_body(self) -> None:
+        body = {"response": {"entry": {"entry": "hello", "location": "/2026/10/hello"}}}
+        client, session = self._client(_fake_response(200, body))
+
+        assert client.get_entry_status("hapax", "hello") == (200, body)
+        assert session.request.call_args.kwargs["url"].endswith("/address/hapax/weblog/entry/hello")
+
+    def test_missing_entry_reports_404(self) -> None:
+        client, _ = self._client(_fake_response(404, {"error": "not found"}))
+
+        assert client.get_entry_status("hapax", "absent") == (404, None)
+
+    def test_auth_failure_reports_its_status_not_absence(self) -> None:
+        client, _ = self._client(_fake_response(401, {"error": "unauthorized"}))
+
+        assert client.get_entry_status("hapax", "x") == (401, None)
+
+    def test_server_error_after_retries_reports_the_last_status(self) -> None:
+        client, _ = self._client(
+            _fake_response(500, {"error": "internal"}),
+            _fake_response(503, {"error": "unavailable"}),
+            max_retries=1,
+        )
+
+        assert client.get_entry_status("hapax", "x") == (503, None)
+
+    def test_network_error_reports_no_status(self) -> None:
+        import requests
+
+        client, _ = self._client(requests.ConnectionError("reset"))
+
+        assert client.get_entry_status("hapax", "x") == (None, None)
+
+    def test_network_error_after_a_server_error_still_reports_no_status(self) -> None:
+        import requests
+
+        client, _ = self._client(
+            _fake_response(500, {"error": "internal"}),
+            requests.ConnectionError("reset"),
+            max_retries=1,
+        )
+
+        assert client.get_entry_status("hapax", "x") == (None, None)
+
+    def test_get_entry_is_unchanged_on_404(self) -> None:
+        client, _ = self._client(_fake_response(404, {"error": "not found"}))
+
+        assert client.get_entry("hapax", "absent") is None
+
+
 class TestApiCallOutcome:
     def test_outcome_dataclass_shape(self) -> None:
         outcome = ApiCallOutcome(

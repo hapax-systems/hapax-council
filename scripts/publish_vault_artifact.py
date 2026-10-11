@@ -554,6 +554,146 @@ def _build_artifact(
     approver: str,
     source_path: Path | None = None,
 ) -> PreprintArtifact:
+    artifact = _artifact_from_frontmatter(
+        body_md=body_md,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver=approver,
+        source_path=source_path,
+    )
+    expected_head = _expected_public_gate_head(source_path)
+    if expected_head is None:
+        raise PublicationGateError(
+            "no public-gate head could be resolved for this draft (neither a vault artifact head "
+            "nor the repository head); next action: publish from a git checkout, or supply the "
+            "vault artifact path the review acceptance binds"
+        )
+    _assert_publication_gate_receipts(
+        frontmatter,
+        surfaces,
+        bindings=_publication_gate_receipt_bindings(artifact),
+        expected_head_sha=expected_head,
+    )
+    return artifact
+
+
+def frozen_fingerprint(path: Path, surfaces: list[str]) -> str:
+    """The gate fingerprint of a publication draft, taken without asserting its receipts.
+
+    A publication row declares its artifact frozen by recording this value as
+    ``artifact_fingerprint``; the review dispatcher compares the two before it reviews the
+    artifact. It is the fingerprint the publish path later binds into the public-gate receipts.
+    Raises PublicationGateError or PublicationFrontmatterError when the draft cannot be built.
+    """
+    frontmatter, body = _parse_publication_markdown(path)
+    artifact = _artifact_from_frontmatter(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver="freeze-check",
+        source_path=path.resolve(),
+    )
+    return _artifact_fingerprint_for_gate(artifact)
+
+
+PIPELINE_STATES = ("inbox", "draft", "published", "failed")
+
+
+def pipeline_state(path: Path, surfaces: list[str], *, state_root: Path) -> str | None:
+    """Where the draft already is in the publish pipeline, or None if nowhere.
+
+    First by slug: an inbox, draft, published or failed file. Then by content: a per-surface
+    publication record that holds this draft's fingerprint ("publication_record"), so the same
+    bytes are never released twice even after the pipeline files are moved or cleaned. A record
+    of other bytes does not count, so a corrected version can republish. A record that cannot be
+    read is "publication_record_unreadable", which holds. The slug and fingerprint come from the
+    publisher's own construction, taken without asserting receipts. Raises PublicationGateError
+    or PublicationFrontmatterError when the draft cannot be built.
+    """
+    frontmatter, body = _parse_publication_markdown(path)
+    artifact = _artifact_from_frontmatter(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver="pipeline-check",
+        source_path=path.resolve(),
+    )
+    paths = {
+        "inbox": artifact.inbox_path(state_root=state_root),
+        "draft": artifact.draft_path(state_root=state_root),
+        "published": artifact.published_path(state_root=state_root),
+        "failed": artifact.failed_path(state_root=state_root),
+    }
+    state = next((state for state in PIPELINE_STATES if paths[state].exists()), None)
+    if state is not None:
+        return state
+    fingerprint = _artifact_fingerprint_for_gate(artifact)
+    for surface in surfaces:
+        log_path = artifact.log_path(surface, state_root=state_root)
+        try:
+            record = json.loads(log_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return "publication_record_unreadable"
+        if not isinstance(record, dict):
+            return "publication_record_unreadable"
+        if record.get("artifact_fingerprint") == fingerprint:
+            return "publication_record"
+    return None
+
+
+def drop_to_inbox(path: Path, *, surfaces: list[str], approver: str, state_root: Path) -> Path:
+    """Build the approved artifact from a vault draft and write it to the publish inbox.
+
+    The same construction as the command line's drop, so the draft's public-gate receipts are
+    asserted. The file is written beside its final name and renamed into place, so the
+    orchestrator never reads a partial artifact. Raises PublicationGateError on any refusal,
+    before anything is written.
+    """
+    frontmatter, body = _parse_publication_markdown(path)
+    if not body.strip():
+        raise PublicationGateError(
+            f"empty body in {path}; next action: restore the draft's body and freeze it again, "
+            "so its review covers the bytes that would publish"
+        )
+    _assert_target_surfaces_allowed(surfaces)
+    artifact = _build_artifact(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver=approver,
+        source_path=path.expanduser().resolve(),
+    )
+    _assert_safe_artifact_slug(artifact.slug)
+    inbox_path = artifact.inbox_path(state_root=state_root)
+    inbox_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = inbox_path.with_name(f".{inbox_path.name}.partial")
+    try:
+        partial.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+        os.replace(partial, inbox_path)
+    except BaseException:
+        # A stray partial would sit in the inbox the orchestrator scans; remove it and say so.
+        partial.unlink(missing_ok=True)
+        log.error(
+            "inbox drop of %s failed; removed %s; next action: read the error, free the inbox "
+            "filesystem if it is full, and rerun the drop",
+            path,
+            partial,
+        )
+        raise
+    return inbox_path
+
+
+def _artifact_from_frontmatter(
+    *,
+    body_md: str,
+    frontmatter: dict,
+    surfaces: list[str],
+    approver: str,
+    source_path: Path | None = None,
+) -> PreprintArtifact:
+    """The artifact a draft describes, before any public-gate receipt is checked."""
     if not _publication_allowed(frontmatter):
         raise PublicationGateError(
             "Publication-Allowed must be explicitly true; next action: hold the draft until "
@@ -580,6 +720,7 @@ def _build_artifact(
     if publication_gate_receipts:
         publication_gate_context = dict(publication_gate_context or {})
         publication_gate_context["publication_gate_receipts"] = publication_gate_receipts
+    weblog_entry_update = _optional_string(_frontmatter_value(frontmatter, "weblog_entry_update"))
     publication_gate_override = _optional_mapping(
         _frontmatter_value(frontmatter, "publication_gate_override")
     )
@@ -600,6 +741,8 @@ def _build_artifact(
         kwargs["source_path"] = str(source_path)
     if author_model:
         kwargs["author_model"] = author_model
+    if weblog_entry_update:
+        kwargs["weblog_entry_update"] = weblog_entry_update
     if publication_gate_context is not None:
         kwargs["publication_gate_context"] = publication_gate_context
     if publication_gate_override is not None:
@@ -607,19 +750,6 @@ def _build_artifact(
 
     artifact = PreprintArtifact(**kwargs)
     artifact.mark_approved(by_referent=approver)
-    expected_head = _expected_public_gate_head(source_path)
-    if expected_head is None:
-        raise PublicationGateError(
-            "no public-gate head could be resolved for this draft (neither a vault artifact head "
-            "nor the repository head); next action: publish from a git checkout, or supply the "
-            "vault artifact path the review acceptance binds"
-        )
-    _assert_publication_gate_receipts(
-        frontmatter,
-        surfaces,
-        bindings=_publication_gate_receipt_bindings(artifact),
-        expected_head_sha=expected_head,
-    )
     return artifact
 
 

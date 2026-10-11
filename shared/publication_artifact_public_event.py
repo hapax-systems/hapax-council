@@ -584,12 +584,12 @@ def _public_url_for_surface(
     surface: str | None,
     result: str | None,
 ) -> str | None:
-    if result != "ok":
-        return None
-    if surface == "omg-weblog":
-        return f"https://hapax.omg.lol/weblog/{artifact.slug}"
-    if surface == "oudepode-omg-weblog":
-        return f"https://oudepode.omg.lol/weblog/{artifact.slug}"
+    # No URL is guessed. An omg.lol weblog entry lives at <address>.weblog.lol<location>, where the
+    # location follows the entry's Date and its title or pinned Slug, not the artifact slug; the old
+    # guess <address>.omg.lol/weblog/<slug> answered 404 or the not-found page (2026-10-10). The
+    # entry's true URL reaches consumers through the weblog producer's omg.weblog events, which take
+    # it from the feed. A surface whose true location this builder does not know gets None.
+    del artifact, surface, result
     return None
 
 

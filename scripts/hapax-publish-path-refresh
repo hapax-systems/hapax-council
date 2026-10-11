@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Restart publish-path services onto the activated release when their watched source changed.
+
+Source activation moves the activation link to each new main head, but a long-running service keeps the
+release it started on: on 2026-10-10 the publish orchestrator ran the release before #5095 until a seat
+restarted it by hand. For each publish-path unit this compares the release the unit runs (its MainPID's
+cwd, a ``releases/<sha>`` directory) with the activated one, and restarts it only when the diff between the
+two touches the unit's watched paths.
+
+Nothing here widens action on doubt: a unit that is not running is not started, and an unknown release or a
+failed diff restarts nothing, names its next action and fails the run, so OnFailure reaches a person. The
+orchestrator restarts only with an empty inbox,
+so no publish is interrupted; a deferred restart is retried on the next run. Only the four units below are
+ever restarted: the orchestrator, the weblog producer and the two say-loop posters (on 2026-10-11 the
+Bluesky poster also needed a hand restart, after #5103).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import string
+import subprocess
+import sys
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+ACTIVATION = Path(
+    os.environ.get(
+        "HAPAX_SOURCE_ACTIVATE_WORKTREE",
+        str(Path.home() / ".cache/hapax/source-activation/worktree"),
+    )
+)
+INBOX = Path(os.environ.get("HAPAX_PUBLISH_INBOX", str(Path.home() / "hapax-state/publish/inbox")))
+SHA_CHARS = frozenset(string.hexdigits.lower())
+# After a restart the new MainPID may not have entered its release yet (Type=simple returns
+# once the child is forked), so verification polls for a bounded time before judging.
+SETTLE_SECONDS = 10.0
+SETTLE_INTERVAL = 0.2
+
+Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
+
+
+@dataclass(frozen=True)
+class Unit:
+    name: str
+    watch: tuple[str, ...]
+    needs_empty_inbox: bool = False
+
+
+UNITS = (
+    Unit(
+        "hapax-publish-orchestrator.service",
+        (
+            "agents/publish_orchestrator/",
+            "agents/omg_weblog_publisher/",
+            "agents/publication_bus/",
+            "shared/",
+        ),
+        needs_empty_inbox=True,
+    ),
+    Unit(
+        "hapax-weblog-publish-public-event-producer.service",
+        ("agents/weblog_publish_public_event_producer.py", "shared/"),
+    ),
+    # The say-loop posters need no empty inbox, because a restart re-posts nothing:
+    # - a stop lets the event in flight finish and be recorded, and starts no other;
+    # - a processed event id is never posted again, even after the cursor is lost.
+    # Both are tested in tests/cross_surface/test_{bluesky,mastodon}_post.py
+    # (test_a_stop_mid_post_..., test_processed_event_id_prevents_repost_after_cursor_loss).
+    # A stopped poster is never started (the Mastodon poster stays off until its account is labelled).
+    Unit(
+        "hapax-bluesky-post.service",
+        ("agents/cross_surface/", "agents/publication_bus/", "shared/"),
+    ),
+    Unit(
+        "hapax-mastodon-post.service",
+        ("agents/cross_surface/", "agents/publication_bus/", "shared/"),
+    ),
+)
+
+
+def release_sha(path: Path | None) -> str | None:
+    """The sha of a ``releases/<sha>`` directory, or None for any other path."""
+    if path is None or path.parent.name != "releases":
+        return None
+    name = path.name
+    return name if len(name) == 40 and set(name) <= SHA_CHARS else None
+
+
+def main_pid(unit: str, run: Runner) -> int | None:
+    """The unit's MainPID (0 when it is not running), or None when systemctl gave no answer."""
+    shown = run(["systemctl", "--user", "show", "-p", "MainPID", "--value", unit])
+    if shown.returncode != 0:
+        return None
+    try:
+        return max(int(shown.stdout.strip()), 0)
+    except ValueError:
+        return None
+
+
+def pid_release(pid: int | None, proc_root: Path) -> str | None:
+    if not pid:
+        return None
+    try:
+        return release_sha(Path(os.readlink(proc_root / str(pid) / "cwd")))
+    except OSError:
+        return None
+
+
+def activated_release(activation: Path) -> str | None:
+    try:
+        return release_sha(activation.resolve(strict=True))
+    except OSError:
+        return None
+
+
+def refresh(
+    unit: Unit,
+    *,
+    run: Runner,
+    activation: Path,
+    inbox: Path,
+    proc_root: Path,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"unit": unit.name}
+    activated = activated_release(activation)
+    pid = main_pid(unit.name, run)
+    if pid == 0:
+        # A stopped unit is not started here; there is nothing running to refresh.
+        result.update(action="not_running", running=None, activated=activated)
+        return result
+    running = pid_release(pid, proc_root)
+    result.update(running=running, activated=activated)
+    if activated is None or running is None:
+        result.update(
+            action="unknown",
+            next_action=(
+                "nothing restarted: systemctl gave no MainPID, the unit is not running from a "
+                "release, or the activation link does not resolve to one; read "
+                "`systemctl --user status` and the activation link"
+            ),
+        )
+        return result
+    if running == activated:
+        result["action"] = "current"
+        return result
+    diff = run(
+        ["git", "-C", str(activation), "diff", "--name-only", running, activated, "--", *unit.watch]
+    )
+    if diff.returncode != 0:
+        result.update(
+            action="unknown",
+            next_action=(
+                f"nothing restarted: git diff {running[:9]}..{activated[:9]} failed "
+                f"(rc {diff.returncode}); check that both releases' commits are in the object store"
+            ),
+        )
+        return result
+    if not diff.stdout.strip():
+        result["action"] = "unchanged"
+        return result
+    if unit.needs_empty_inbox:
+        try:
+            busy = any(inbox.glob("*.json"))
+        except OSError:
+            busy = True
+        if busy:
+            result.update(action="deferred", reason="publish inbox not empty, or unreadable")
+            return result
+    restarted = run(["systemctl", "--user", "restart", unit.name])
+    if restarted.returncode != 0:
+        result.update(
+            action="restart_failed",
+            next_action=f"read `journalctl --user -u {unit.name}`; the old release may still run",
+        )
+        return result
+    deadline = clock() + SETTLE_SECONDS
+    after = pid_release(main_pid(unit.name, run), proc_root)
+    while after != activated and clock() < deadline:
+        sleep(SETTLE_INTERVAL)
+        after = pid_release(main_pid(unit.name, run), proc_root)
+    result.update(action="restarted", running=after, verified=after == activated)
+    return result
+
+
+def exit_code(results: list[dict[str, Any]]) -> int:
+    """1 when any unit needs a person: an unknown state, a failed or an unverified restart.
+
+    A stopped unit, a current or unchanged release and a deferral are not failures.
+    """
+    for result in results:
+        if result["action"] in ("unknown", "restart_failed"):
+            return 1
+        if result["action"] == "restarted" and not result["verified"]:
+            return 1
+    return 0
+
+
+def _run(argv: Sequence[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(list(argv), capture_output=True, text=True, check=False)
+
+
+def main() -> int:
+    results = [
+        refresh(unit, run=_run, activation=ACTIVATION, inbox=INBOX, proc_root=Path("/proc"))
+        for unit in UNITS
+    ]
+    print(json.dumps(results, sort_keys=True))
+    return exit_code(results)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -17,6 +17,10 @@ WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 # materialised yet (CI runners, fresh VMs).
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
 EnvironmentFile=-/run/user/%U/hapax-public-gate-authority.env
+# The legal name, projected alone so the guards are armed here and nothing that renders sees it.
+# Required (no "-"): without it the gate's legal-name child passes unarmed, so the orchestrator
+# does not start rather than publish with the guard silently off.
+EnvironmentFile=/run/user/%U/hapax-publish-legal-name-guard.env
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.publish_orchestrator
 Restart=on-failure

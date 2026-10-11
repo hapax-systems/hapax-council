@@ -243,6 +243,98 @@ def test_non_request_markdown_parent_spec_with_body_fences_is_ignored(tmp_path: 
     assert payload["blocked"][0]["reason"] == "no_linked_tasks"
 
 
+# Rows sometimes carry prose in a parent field. One path component longer than
+# NAME_MAX (255 bytes) cannot name a file; Python 3.12's stat raises
+# ENAMETOOLONG for it, which crashed every run for all requests.
+LONG_PROSE_REF = "Operator note, not a path: " + "the gate refused the vault mv, " * 12
+
+
+@pytest.mark.parametrize(
+    "prose", [LONG_PROSE_REF, LONG_PROSE_REF + "see NOTES.md"], ids=["prose", "prose-ending-md"]
+)
+def test_over_long_prose_parent_ref_is_not_a_file(tmp_path: Path, prose: str) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(active / "REQ-PROSE.md", "REQ-PROSE", downstream_tasks=["T-OK"])
+    _write_task(task_closed / "T-OK.md", "T-OK", status="done")
+    _write_task(
+        task_closed / "T-PROSE.md",
+        "T-PROSE",
+        status="done",
+        extra_frontmatter={"parent_spec": prose},
+    )
+
+    result = _run(tmp_path, "--dry-run", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 1
+
+
+def test_over_long_prose_parent_spec_keeps_the_rows_other_links(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    task_active = tmp_path / "tasks" / "active"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    task_active.mkdir(parents=True)
+    request = active / "REQ-HELD.md"
+    _write_request(request, "REQ-HELD", downstream_tasks=["T-OK"])
+    _write_task(task_closed / "T-OK.md", "T-OK", status="done")
+    _write_task(
+        task_active / "T-OPEN.md",
+        "T-OPEN",
+        status="claimed",
+        parent_request=str(request),
+        extra_frontmatter={"parent_spec": LONG_PROSE_REF},
+    )
+
+    result = _run(tmp_path, "--apply", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["eligible_count"] == 0
+    assert payload["blocked"][0]["reason"] == "linked_tasks_not_fulfilled"
+    assert request.exists()
+    assert not (closed / "REQ-HELD.md").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unstatable_parent_ref_is_not_read_as_absent(tmp_path: Path) -> None:
+    active = tmp_path / "requests" / "active"
+    closed = tmp_path / "requests" / "closed"
+    task_closed = tmp_path / "tasks" / "closed"
+    active.mkdir(parents=True)
+    closed.mkdir(parents=True)
+    task_closed.mkdir(parents=True)
+    _write_request(active / "REQ-LOCK.md", "REQ-LOCK", downstream_tasks=["T-OK"])
+    _write_task(task_closed / "T-OK.md", "T-OK", status="done")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    _write_task(
+        task_closed / "T-LOCKED.md",
+        "T-LOCKED",
+        status="done",
+        extra_frontmatter={"parent_spec": str(locked / "spec.md")},
+    )
+    locked.chmod(0)
+    try:
+        result = _run(tmp_path, "--apply", "--json")
+    finally:
+        locked.chmod(0o755)
+
+    assert result.returncode != 0
+    assert "Permission denied" in result.stderr
+    assert (active / "REQ-LOCK.md").exists()
+    assert not (closed / "REQ-LOCK.md").exists()
+
+
 @pytest.mark.parametrize("status", ["active", "phase0_active", "accepted_for_execution"])
 def test_active_request_statuses_close_with_explicit_fulfillment(
     tmp_path: Path, status: str

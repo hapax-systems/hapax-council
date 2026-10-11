@@ -126,13 +126,29 @@ class PublicationHardeningGate:
         self.entity_checker = entity_checker or check_attributions
         self.codebase_verifier = codebase_verifier
 
-    def evaluate(self, artifact: PreprintArtifact) -> PublicationGateResult:
+    def evaluate(
+        self,
+        artifact: PreprintArtifact,
+        *,
+        signed_review_evidence: Sequence[str] = (),
+    ) -> PublicationGateResult:
+        """Run every child predicate.
+
+        ``signed_review_evidence`` is for the caller that has already verified a signed,
+        writer-independent, quorum-accept review of this artifact's exact head (the publish
+        orchestrator's public-gate receipts child). Its refs satisfy the review step without a
+        model call. It is never read from the artifact, whose author controls the front matter.
+        """
+
         text = _artifact_publication_text(artifact)
         context = _publication_gate_context(artifact)
         lint_child = self._lint_child(text, artifact)
         entity_child = self._entity_child(text)
         legal_name_child = self._legal_name_child(_artifact_legal_name_surface(artifact))
         codebase_child = self._codebase_child(text, context)
+        signed_refs = tuple(
+            ref.strip() for ref in signed_review_evidence if isinstance(ref, str) and ref.strip()
+        )
 
         if legal_name_child.decision == PublicationGateDecision.REJECT:
             # corporate_boundary egress: a detected legal name must NOT leave the
@@ -148,6 +164,17 @@ class PublicationHardeningGate:
                 ),
             )
             review_report_fm: dict[str, object] | None = None
+        elif signed_refs:
+            review_child = PublicationGateChildResult(
+                name="review",
+                decision=PublicationGateDecision.PASS,
+                findings=(
+                    "review satisfied by the verified exact-artifact review-team acceptance; "
+                    "no model review was called",
+                ),
+                evidence_refs=signed_refs,
+            )
+            review_report_fm = None
         else:
             review_child, review_report = self._review_child(text, artifact, lint_child)
             review_report_fm = review_report.to_frontmatter()
