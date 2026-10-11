@@ -1661,6 +1661,18 @@ class TestCapabilityBlockedHolders:
             assert f"HELD: {reason}" in result.stdout
             assert note.read_text(encoding="utf-8") == original
 
+    def test_a_claim_this_hosts_cache_does_not_hold_is_never_released(self, tmp_path: Path) -> None:
+        # A peer host's lane: this host's /proc and worktrees cannot see it (#5111 review).
+        vault = _make_vault(tmp_path)
+        note = _write_task_note(vault, "peer-task", assigned_to="lane-p", branch="feat/peer")
+        _write_relay(tmp_path, "lane-p", "codex")
+        original = note.read_text(encoding="utf-8")
+        repo = _pushed_repo(tmp_path, "feat/peer")
+        record = _write_family_outage(tmp_path)
+        result = _run_blocked_audit(tmp_path, vault, tmp_path / "cache", record, repo=repo)
+        assert "CAPABILITY_BLOCKED: peer-task" not in result.stdout
+        assert note.read_text(encoding="utf-8") == original
+
     def test_without_the_flag_it_is_reported_and_held(self, tmp_path: Path) -> None:
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"

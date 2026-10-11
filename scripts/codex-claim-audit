@@ -598,6 +598,8 @@ _quota_evidence_for() {
 # nothing can be lost or doubled (hold_reason below), else "HOLD <reason> <evidence>".
 _capability_blocker_for() {
   local role="$1" task_id="$2" branch="$3" pr_repo="$4"
+  # Liveness is read from this host's /proc and worktrees, so only this host's claims are judged.
+  [ "$(_claim_file_task "$(_claim_file_for "$role")")" = "$task_id" ] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
   [ -f "$FAMILY_OUTAGE_RECORD" ] || return 1
   # GH_REPO_SLUG is set beside GH_CMD after the options are read (HAPAX_GH_REPO, GH_REPO or default).
