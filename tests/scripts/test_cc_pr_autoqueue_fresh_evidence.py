@@ -601,3 +601,57 @@ def test_a_row_turning_pr_open_after_its_exam_is_examined_next_tick(
     assert report["must_include"]["fresh_evidence"] == [13]
     report = tick(tmp_path, runner, vault)  # one-shot
     assert 13 not in examined(report)
+
+
+# ── the ledger fails open: a failure only removes seats, never crashes a tick ──
+
+
+def test_a_naive_examined_at_grants_nothing_and_does_not_raise() -> None:
+    naive = {**_entry(), "examined_at": "2026-10-11T07:46:04"}  # no timezone
+    assert _due(naive) is None
+    assert _due({**_entry(), "examined_at": "not-a-time"}) is None
+
+
+def test_the_ledger_loader_skips_what_it_cannot_ground(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    path = tmp_path / "examined.json.exam-ledger.json"
+    load = autoqueue._load_exam_ledger
+    path.write_text("{not json", encoding="utf-8")
+    assert load(path, repo="owner/repo", now=now) == {}
+    path.write_text(json.dumps({"schema_version": 2, "repositories": {}}), encoding="utf-8")
+    assert load(path, repo="owner/repo", now=now) == {}
+    good = {**_entry(), "examined_at": (now - timedelta(minutes=5)).isoformat()}
+    entries = {
+        "13": good,
+        "14": {**good, "examined_at": "2026-10-11T07:46:04"},  # naive: skipped, no raise
+        "15": {**good, "examined_at": (now - timedelta(days=8)).isoformat()},  # aged out
+        "16": "not a mapping",
+        "nan": good,
+    }
+    path.write_text(
+        json.dumps({"schema_version": 1, "repositories": {"owner/repo": entries}}),
+        encoding="utf-8",
+    )
+    assert list(load(path, repo="owner/repo", now=now)) == [13]
+
+
+def test_a_ledger_write_failure_is_logged_not_raised(tmp_path: Path) -> None:
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+    # The parent is a file, so every write under it fails with OSError.
+    autoqueue._save_exam_ledger(blocker / "ledger.json", "owner/repo", {13: _entry()})
+    assert not (blocker / "ledger.json").exists()
+
+
+def test_an_unreadable_route_state_grants_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(_registry):  # type: ignore[no-untyped-def]
+        raise RuntimeError("registry unreadable")
+
+    monkeypatch.setattr(autoqueue.review_team, "review_route_blocked_families", boom)
+    assert autoqueue._live_review_route_blocked_families() is None
+
+
+def test_a_row_turning_ready_is_due_even_across_a_moved_head() -> None:
+    # By design: readiness is the row's, not the head's, and the exam reruns every check.
+    not_ready = _entry(blockers=("active_task_status_not_ready:claimed",), task_status="claimed")
+    assert _due(not_ready, head="sha-new", status="pr_open") == "row_turned_ready"

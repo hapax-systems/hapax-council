@@ -1691,14 +1691,19 @@ def _exam_ledger_reexam_due(
 
     One-shot: an attempt after the recorded exam (``since`` past it) retires the
     reason until the next completed exam records again. ``row_turned_ready``: the
-    linked row was not ready at the exam and is now. ``route_flap_satisfied``: every
+    linked row was not ready at the exam and is now, at any head (readiness is the
+    row's, and the exam reruns every check). ``route_flap_satisfied``: every
     blocker was a route flap at this head, and the live route state has changed since
     the exam into one that satisfies them all (a seated family admitted, an excluded
-    one blocked). An unknown route state grants nothing; the exam itself decides.
+    one blocked). An unknown route state, or a stamp without a timezone, grants
+    nothing; the exam itself decides. ``HAPAX_AUTOQUEUE_MUST_INCLUDE_OFF=1`` turns
+    every fresh-evidence seat off, these included.
     """
     try:
         examined_at = datetime.fromisoformat(str(entry.get("examined_at")))
     except ValueError:
+        return None
+    if examined_at.tzinfo is None:
         return None
     if since > examined_at:
         return None
@@ -1730,7 +1735,12 @@ def _live_review_route_blocked_families() -> frozenset[str] | None:
             review_team.review_route_blocked_families(review_team.load_lens_registry())
         )
     except Exception as exc:  # noqa: BLE001 — an unknown state grants no seat
-        LOG.warning("live review route state unreadable; no flap re-exam this tick: %s", exc)
+        LOG.warning(
+            "live review route state unreadable; no flap re-exam this tick: %s. Next action: "
+            "none if it clears next tick; if it repeats, read the platform capability "
+            "registry and its receipts",
+            exc,
+        )
         return None
 
 
@@ -1757,20 +1767,31 @@ def _load_exam_ledger(path: Path, *, repo: str, now: datetime) -> dict[int, dict
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:
-        LOG.warning("exam ledger unreadable, starting empty: %s", exc)
+        LOG.warning(
+            "exam ledger unreadable, starting empty: %s. Next action: none; the next "
+            "completed exam rewrites %s, and until then only re-exam seats are lost",
+            exc,
+            path,
+        )
         return {}
     if not isinstance(state, dict) or state.get("schema_version") != 1:
-        LOG.warning("exam ledger has an unexpected schema, starting empty")
+        LOG.warning(
+            "exam ledger at %s has an unexpected schema, starting empty. Next action: none; "
+            "the next completed exam rewrites it",
+            path,
+        )
         return {}
     entries: dict[int, dict[str, Any]] = {}
     for number, entry in (state.get("repositories", {}).get(repo) or {}).items():
         try:
             examined_at = datetime.fromisoformat(entry["examined_at"])
+            if examined_at.tzinfo is None:
+                continue
+            if now - examined_at > timedelta(seconds=EXAM_LEDGER_MAX_AGE_SECONDS):
+                continue
             entries[int(number)] = dict(entry)
         except (KeyError, TypeError, ValueError):
             continue
-        if now - examined_at > timedelta(seconds=EXAM_LEDGER_MAX_AGE_SECONDS):
-            del entries[int(number)]
     return entries
 
 
@@ -1793,7 +1814,12 @@ def _save_exam_ledger(path: Path, repo: str, entries: Mapping[int, Mapping[str, 
             temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
             temporary.replace(path)
     except OSError as exc:
-        LOG.warning("exam ledger write failed: %s", exc)
+        LOG.warning(
+            "exam ledger write failed: %s. Next action: check %s's directory permissions and "
+            "free space; until it writes, no re-exam seats open (admission is unchanged)",
+            exc,
+            path,
+        )
 
 
 def _record_exam_ledger(
