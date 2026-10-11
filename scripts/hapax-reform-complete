@@ -330,9 +330,8 @@ def gather_escape_grant() -> dict[str, Any]:
     if not (obs["grant_dir_exists"] and obs["key_present"] and obs["shim_present"]):
         return obs
     scope = f"reform-complete-selfcheck-{os.getpid()}"
-    # The pid-scoped scope doubles as the self-check session: mint and verify both
-    # bind to it, so the roundtrip grant is born session-bound (the minter refuses
-    # an unbound mint) — escape-grants-bind-to-the-minting-session-20261011.
+    # The self-check is its own synthetic minting session: the minter refuses
+    # unbound mints (escape-grants-bind-to-the-minting-session-20261011).
     mint_rc, mint_out, _ = _run(
         [
             sys.executable,

@@ -107,11 +107,11 @@ _escape_grant_ledger() {
 # escape_grant_allows <gate> [path] — returns 0 (allow) iff a valid signed grant
 # covering <gate> is bound to THIS session (escape-grants-bind-to-the-minting-
 # session-20261011: a grant releases only the session that minted it; an unbound
-# legacy grant is refused). A PURE file read: no network, no daemon, no RPC.
-# Degrades CLOSED (returns 1) when the grant dir, key, python3, or a resolvable
-# session are unavailable — so a missing substrate can never accidentally open
-# the gate. The optional <path> honors path-narrowed grants (a grant with no
-# paths covers any path).
+# legacy grant is refused, surfacing the CLI's next action on stderr). A PURE
+# file read: no network, no daemon, no RPC. Degrades CLOSED (returns 1) when the
+# grant dir, key, python3, or a resolvable session are unavailable — so a missing
+# substrate can never accidentally open the gate. The optional <path> honors
+# path-narrowed grants (a grant with no paths covers any path).
 #
 # Call it from inside an `if` (e.g. `if escape_grant_allows X; then`): bash then
 # ignores `set -e` for the whole function body, so a transient internal failure
@@ -130,11 +130,12 @@ escape_grant_allows() {
   shopt -s nullglob
   for f in "$HAPAX_COORD_GRANT_DIR"/*.grant; do
     # verify-grant exits 0 iff the signature is valid, unexpired, covers the
-    # gate, AND the grant is bound to this session (and path).
+    # gate, AND the grant is bound to this session (and path). Its stderr — the
+    # binding-refusal next action — flows through unswallowed on refusal.
     vargs=(verify-grant --file "$f" --gate "$gate" --session "$session")
     [[ -n "$path" ]] && vargs+=(--path "$path")
     if out="$(cd "$root" && python3 -m shared.governance.coord_capabilities "${vargs[@]}" \
-      --key-file "$HAPAX_COORD_GRANT_KEY" 2>/dev/null)"; then
+      --key-file "$HAPAX_COORD_GRANT_KEY")"; then
       _escape_grant_ledger "$gate" "$f" "$session" "$out"
       found=0
       break
