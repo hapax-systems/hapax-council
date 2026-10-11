@@ -4514,7 +4514,7 @@ def _apply_review(
     route_admission_basis = route_admission_basis_for_reviews(
         reviews,
         registry=registry,
-        completed_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        completed_at=now_iso,
     )
     results: list[dict[str, Any]] = []
     comment_bodies: list[str] = []
@@ -4997,7 +4997,7 @@ def review_artifact(
     route_admission_basis = route_admission_basis_for_reviews(
         reviews,
         registry=registry,
-        completed_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        completed_at=now_iso,
     )
     dossier = review_team.synthesize_dossier(
         task_id=task_id,

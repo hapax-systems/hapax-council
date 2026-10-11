@@ -7554,3 +7554,95 @@ class TestRouteAdmissionBasisRecording:
             receipts_dir=receipts,
         )
         assert basis == {}
+
+    def _basis_from_receipt_text(self, tmp_path: Path, text: str) -> dict[str, dict[str, Any]]:
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        (receipts / "glmcp-quota-admission.yaml").write_text(text, encoding="utf-8")
+        return dispatch.route_admission_basis_for_reviews(
+            [{"id": "glm-1", "family": "glm", "verdict": "accept"}],
+            registry=dispatch.review_team.load_lens_registry(),
+            completed_at="2026-06-11T21:10:00Z",
+            receipts_dir=receipts,
+        )
+
+    def test_pr_dispatch_records_basis_with_pinned_completion_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        (receipts / "glmcp-quota-admission.yaml").write_text(self._receipt_text(), encoding="utf-8")
+        monkeypatch.setattr(dispatch, "_relay_receipts_dir", lambda: receipts)
+        result, _gh, _reviewers, _note = _review(tmp_path)
+        assert result["status"] == "dispatched"
+        basis = result["dossier"]["route_admission_basis"]
+        assert set(basis) == {"glm"}
+        assert basis["glm"]["state"] == "seated"
+        assert basis["glm"]["route_id"] == "glmcp.review.direct"
+        assert (
+            basis["glm"]["receipt_sha256"]
+            == sha256((receipts / "glmcp-quota-admission.yaml").read_bytes()).hexdigest()
+        )
+        assert basis["glm"]["completed_at"] == "2026-06-11T21:00:00+00:00"
+
+    def test_artifact_dispatch_records_basis_with_pinned_completion_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        (receipts / "glmcp-quota-admission.yaml").write_text(self._receipt_text(), encoding="utf-8")
+        monkeypatch.setattr(dispatch, "_relay_receipts_dir", lambda: receipts)
+        result, _reviewers, _note, _files = _review_artifact(tmp_path)
+        assert result["status"] == "dispatched"
+        basis = result["dossier"]["route_admission_basis"]
+        assert set(basis) == {"glm"}
+        assert (
+            basis["glm"]["receipt_sha256"]
+            == sha256((receipts / "glmcp-quota-admission.yaml").read_bytes()).hexdigest()
+        )
+        assert basis["glm"]["completed_at"] == _WALL_NOW
+
+    def test_pr_dispatch_omits_basis_when_no_family_has_a_receipt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        monkeypatch.setattr(dispatch, "_relay_receipts_dir", lambda: receipts)
+        result, _gh, _reviewers, _note = _review(tmp_path)
+        assert result["status"] == "dispatched"
+        assert "route_admission_basis" not in result["dossier"]
+
+    def test_artifact_dispatch_omits_basis_when_no_family_has_a_receipt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receipts = tmp_path / "receipts"
+        receipts.mkdir()
+        monkeypatch.setattr(dispatch, "_relay_receipts_dir", lambda: receipts)
+        result, _reviewers, _note, _files = _review_artifact(tmp_path)
+        assert result["status"] == "dispatched"
+        assert "route_admission_basis" not in result["dossier"]
+
+    def test_unparsable_receipt_records_no_basis(self, tmp_path: Path) -> None:
+        assert self._basis_from_receipt_text(tmp_path, "bad: [unclosed\n") == {}
+
+    def test_non_mapping_receipt_records_no_basis(self, tmp_path: Path) -> None:
+        assert self._basis_from_receipt_text(tmp_path, "scalar-receipt\n") == {}
+
+    def test_route_mismatch_receipt_records_no_basis(self, tmp_path: Path) -> None:
+        text = self._receipt_text().replace("glmcp.review.direct", "other.review.route")
+        assert self._basis_from_receipt_text(tmp_path, text) == {}
+
+    def test_string_staleness_receipt_records_no_basis(self, tmp_path: Path) -> None:
+        text = self._receipt_text(stale_after_seconds='"900"')
+        assert self._basis_from_receipt_text(tmp_path, text) == {}
+
+    def test_non_positive_staleness_receipt_records_no_basis(self, tmp_path: Path) -> None:
+        assert (
+            self._basis_from_receipt_text(tmp_path, self._receipt_text(stale_after_seconds=0)) == {}
+        )
+
+    def test_missing_evidence_ref_receipt_records_no_basis(self, tmp_path: Path) -> None:
+        assert self._basis_from_receipt_text(tmp_path, self._receipt_text(evidence_ref="")) == {}
+
+    def test_missing_observed_at_receipt_records_no_basis(self, tmp_path: Path) -> None:
+        assert self._basis_from_receipt_text(tmp_path, self._receipt_text(observed_at="")) == {}
