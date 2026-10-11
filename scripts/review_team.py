@@ -32,7 +32,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -2525,6 +2525,143 @@ def _live_capacity_evidence(
     }
 
 
+def _route_admission_receipts_dir(explicit: Path | None) -> Path:
+    """Exam-time admission receipts dir: caller-supplied, else the live relay
+    receipts dir (HAPAX_RELAY_RECEIPTS / HAPAX_RELAY_RECEIPT_DIR), matching
+    dispatch's resolution."""
+
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get("HAPAX_RELAY_RECEIPTS") or os.environ.get("HAPAX_RELAY_RECEIPT_DIR")
+    if raw and str(raw).strip():
+        return Path(str(raw).strip())
+    return Path.home() / ".cache" / "hapax" / "relay" / "receipts"
+
+
+def _basis_retained_record_matches(
+    entry: Mapping[str, Any], route_id: str, receipts_dir: Path
+) -> bool:
+    """True when an independently retained record backs the recorded basis: the
+    retained admission receipt file's sha256, or the basis evidence_ref inside
+    the quota-spend ledger's retained route history. The dispatcher's own
+    assertion is never enough."""
+
+    receipt_sha256 = str(entry.get("receipt_sha256") or "")
+    receipt_name = ROUTE_ADMISSION_RECEIPT_NAMES.get(route_id)
+    if receipt_sha256 and receipt_name:
+        try:
+            raw = (receipts_dir / receipt_name).read_bytes()
+        except OSError:
+            raw = None
+        if raw is not None and hashlib.sha256(raw).hexdigest() == receipt_sha256:
+            return True
+    evidence_ref = str(entry.get("evidence_ref") or "")
+    if not evidence_ref:
+        return False
+    try:
+        snapshots = load_quota_spend_ledger_resolved().ledger.quota_snapshots
+    except (OSError, AttributeError, QuotaSpendLedgerError, ValueError):
+        return False
+    for snapshot in snapshots:
+        if not isinstance(snapshot, Mapping) or str(snapshot.get("route_id") or "") != route_id:
+            continue
+        for ref in snapshot.get("evidence_refs") or ():
+            if evidence_ref in str(ref):
+                return True
+    return False
+
+
+def _route_admission_negative_after(
+    receipts_dir: Path, route_id: str, observed_at: datetime
+) -> bool:
+    """True when a retained hold/wall receipt for this route is stamped strictly
+    after the basis observation — newer negative evidence outranks the basis."""
+
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=UTC)
+    for pattern in ("*quota-hold*", "*quota-wall*"):
+        for path in sorted(receipts_dir.glob(pattern)):
+            try:
+                payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, yaml.YAMLError):
+                continue
+            if not isinstance(payload, Mapping):
+                continue
+            if str(payload.get("route_id") or "") != route_id:
+                continue
+            if str(payload.get("status") or "") not in ("hold", "quota_blocked"):
+                continue
+            for key in ("observed_at", "detected_at"):
+                value = payload.get(key)
+                if isinstance(value, datetime):
+                    stamped = value
+                else:
+                    try:
+                        stamped = _parse_iso_datetime(value)
+                    except (TypeError, ValueError):
+                        continue
+                if stamped.tzinfo is None:
+                    stamped = stamped.replace(tzinfo=UTC)
+                if stamped > observed_at:
+                    return True
+    return False
+
+
+def _seated_route_admission_witnessed(
+    dossier: Mapping[str, Any],
+    family: str,
+    *,
+    registry: Mapping[str, Any],
+    live_reasons: Sequence[str],
+    receipts_dir: Path | None,
+) -> bool:
+    """F1: a seated route-blocked family is witnessed at examination when the
+    dossier carries a coherent route admission basis for it, regardless of the
+    live receipt. Coherent = the recorded route matches the registry, the review
+    completed inside the receipt freshness window, every live block reason is
+    one the basis may waive, an independently retained record backs the basis,
+    and no strictly newer hold/wall receipt exists for the route."""
+
+    basis_map = dossier.get("route_admission_basis")
+    if not isinstance(basis_map, Mapping):
+        return False
+    entry = basis_map.get(family)
+    if not isinstance(entry, Mapping) or str(entry.get("state") or "") != "seated":
+        return False
+    route_id = review_family_route_ids(registry).get(family)
+    if not route_id or str(entry.get("route_id") or "") != route_id:
+        return False
+    waivable = ROUTE_ADMISSION_WAIVABLE_REASONS.get(route_id)
+    if not waivable:
+        return False
+    normalized_reasons = set()
+    for reason in live_reasons:
+        text = str(reason).strip()
+        if text.startswith(route_id + ":"):
+            text = text[len(route_id) + 1 :]
+        normalized_reasons.add(text)
+    if not normalized_reasons or not normalized_reasons <= waivable:
+        return False
+    stale_after = entry.get("stale_after_seconds")
+    if type(stale_after) is not int or stale_after <= 0:
+        return False
+    try:
+        observed_at = _parse_iso_datetime(entry.get("observed_at"))
+        completed_at = _parse_iso_datetime(entry.get("completed_at"))
+    except (TypeError, ValueError):
+        return False
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=UTC)
+    if completed_at.tzinfo is None:
+        completed_at = completed_at.replace(tzinfo=UTC)
+    if completed_at < observed_at or completed_at > observed_at + timedelta(seconds=stale_after):
+        return False
+    receipts = _route_admission_receipts_dir(receipts_dir)
+    if not _basis_retained_record_matches(entry, route_id, receipts):
+        return False
+    return not _route_admission_negative_after(receipts, route_id, observed_at)
+
+
 def _dossier_validity_blockers(
     dossier: Mapping[str, Any],
     *,
@@ -2544,6 +2681,7 @@ def _dossier_validity_blockers(
         [int, str, tuple[str, ...]], tuple[int, Mapping[str, int]] | None
     ]
     | None = None,
+    admission_receipts_dir: Path | None = None,
 ) -> tuple[str, ...]:
     """Blockers for a recorded dossier; ``floor_release_out`` receives the T2 rule's evidence
     when the rule stood in for the family floor (the dossier may still carry other blockers).
@@ -2880,7 +3018,17 @@ def _dossier_validity_blockers(
             )
         roster = roster - degraded_families
     blocked_route_families = set(live_route_blocked) - degraded_families
-    seated_blocked_routes = sorted({str(r.get("family")) for r in reviews} & blocked_route_families)
+    seated_blocked_routes = sorted(
+        family
+        for family in {str(r.get("family")) for r in reviews} & blocked_route_families
+        if not _seated_route_admission_witnessed(
+            dossier,
+            family,
+            registry=registry,
+            live_reasons=live_route_blocked.get(family, ()),
+            receipts_dir=admission_receipts_dir,
+        )
+    )
     if seated_blocked_routes:
         blockers.append(
             "review_dossier_blocked_route_family_seated:" + ",".join(seated_blocked_routes)
@@ -3063,6 +3211,7 @@ def review_dossier_validity_blockers(
         [int, str, tuple[str, ...]], tuple[int, Mapping[str, int]] | None
     ]
     | None = None,
+    admission_receipts_dir: Path | None = None,
 ) -> tuple[str, ...]:
     """Validate a recorded review dossier without honoring any gate killswitch.
 
@@ -3122,6 +3271,7 @@ def review_dossier_validity_blockers(
         floor_release_out=floor_release_out,
         diff_size_measurer=diff_size_measurer,
         capacity_evidence_measurer=capacity_evidence_measurer,
+        admission_receipts_dir=admission_receipts_dir,
     )
 
 
@@ -3142,6 +3292,7 @@ def review_team_verdict_blockers(
         [int, str, tuple[str, ...]], tuple[int, Mapping[str, int]] | None
     ]
     | None = None,
+    admission_receipts_dir: Path | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
 
@@ -3170,4 +3321,5 @@ def review_team_verdict_blockers(
         route_blocked_families=route_blocked_families,
         diff_size_measurer=diff_size_measurer,
         capacity_evidence_measurer=capacity_evidence_measurer,
+        admission_receipts_dir=admission_receipts_dir,
     )
