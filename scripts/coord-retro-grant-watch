@@ -62,7 +62,7 @@ def _has_covering_grant(
         grant = read_grant_file(path)
         if grant is None or grant.issued_at < min_issued_at:
             continue
-        if verify_escape_grant(grant, key=key, now=now, gate=gate):
+        if verify_escape_grant(grant, key=key, now=now, gate=gate, session=grant.session):
             return True
     return False
 

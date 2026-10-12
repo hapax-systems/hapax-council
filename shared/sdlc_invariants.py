@@ -424,6 +424,7 @@ def decide_with_escape(
     grant: EscapeGrant | None = None,
     key: bytes,
     now: float,
+    session: str | None = None,
 ) -> Decision:
     """The kernel-DOWN floor decision, with a valid escape grant overriding a block.
 
@@ -431,13 +432,15 @@ def decide_with_escape(
     embedded conservative floor and, if it BLOCKS, honor an escape grant iff it
     verifies (signature + expiry + scope — pure, no RPC, no daemon). So a signed
     grant unblocks a lane with the kernel dead, which is exactly INV-4
-    (authority-always-escapable). Never raises.
+    (authority-always-escapable). ``session`` is the asking lane's session, passed
+    through to the verifier so a session-bound grant can be matched against it;
+    the plumbing lands here first, binding enforcement in slice 3. Never raises.
     """
     try:
         decision = evaluate_floor(tool_name, command=command, file_path=file_path)
         if decision.allowed:
             return decision
-        if verify_escape_grant(grant, key=key, now=now, gate=decision.gate):
+        if verify_escape_grant(grant, key=key, now=now, gate=decision.gate, session=session):
             return Decision(
                 verdict=Verdict.ALLOW,
                 gate="escape:granted",
@@ -449,6 +452,34 @@ def decide_with_escape(
         return evaluate_floor(tool_name, command=command, file_path=file_path)
 
 
+#: Identity stamped on auto-minted grants when no session env resolves. The
+#: production evaluator (systemd/units/hapax-sdlc-invariants.service) runs with no
+#: session env at all, so an env-only source would leave its grants unbound — and
+#: once verify enforces the binding (slice 3), unbound means universally refused.
+#: A stable, attributable, non-wildcard identity keeps the never-freeze floor live.
+ESCAPE_AUTO_MINT_SESSION = "sdlc-evaluator"
+
+
+def _auto_mint_session() -> str:
+    """Resolve the session an auto-minted grant binds to.
+
+    First set wins over the same env chain the gates mirror from
+    hooks/scripts/agent-role.sh ``hapax_session_id()``; falls back to
+    ``ESCAPE_AUTO_MINT_SESSION`` so the grant is never minted unbound.
+    """
+    for var in (
+        "HAPAX_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_SESSION",
+        "CODEX_THREAD_ID",
+        "CODEX_THREAD_NAME",
+    ):
+        value = os.environ.get(var, "").strip()
+        if value:
+            return value
+    return ESCAPE_AUTO_MINT_SESSION
+
+
 def mint_escape_for_violation(
     result: InvariantResult,
     *,
@@ -456,16 +487,20 @@ def mint_escape_for_violation(
     grant_dir: str | os.PathLike[str] | None = None,
     now: float,
     ttl_s: float = ESCAPE_GRANT_TTL_S,
+    session: str | None = None,
 ) -> EscapeGrant | None:
     """Auto-mint a signed universal ("*") escape grant for an INV-3/4/5 violation.
 
     INV-3/4/5 violations all mean the escape machinery itself may be compromised, so
     the never-freeze response is a broad daemon-independent escape (the triggering
-    invariant is stamped in the grant ``reason`` for legibility). The grant is
-    written as ``<grant_id>.grant`` — the extension the shim globs — into
-    ``grant_dir`` (default: the canonical ``default_grant_dir()``, the SAME dir the
-    shim reads). Returns the minted grant, or ``None`` when the invariant holds, is
-    not an auto-mint class, or no signing key is available. Never raises — advisory.
+    invariant is stamped in the grant ``reason`` for legibility). The grant binds to
+    the minting session — explicit ``session``, else the session env chain, else
+    ``ESCAPE_AUTO_MINT_SESSION`` — so it stays attributable and slice-3 enforcement
+    cannot fail every lane closed. The grant is written as ``<grant_id>.grant`` —
+    the extension the shim globs — into ``grant_dir`` (default: the canonical
+    ``default_grant_dir()``, the SAME dir the shim reads). Returns the minted
+    grant, or ``None`` when the invariant holds, is not an auto-mint class, or no
+    signing key is available. Never raises — advisory.
     """
     if result.holds or result.invariant not in AUTO_MINT_INVARIANTS or not key:
         return None
@@ -480,6 +515,7 @@ def mint_escape_for_violation(
             ttl_s=ttl_s,
             key=key,
             now=now,
+            session=session if session is not None else _auto_mint_session(),
         )
         target_dir = Path(grant_dir) if grant_dir is not None else default_grant_dir()
         write_grant_file(grant, target_dir / f"{grant.grant_id}.grant")

@@ -325,13 +325,13 @@ def read_grant_file(path: str | Path) -> EscapeGrant | None:
         return None
 
 
-def verify_escape_grant(
-    grant: EscapeGrant | None, *, key: bytes, now: float, gate: str | None = None
+def _grant_mechanically_valid(
+    grant: EscapeGrant | None, *, key: bytes, now: float, gate: str | None
 ) -> bool:
-    """True iff the grant's signature matches, it is unexpired, and it covers ``gate``.
+    """Signature, expiry and gate coverage — the mechanically checkable legs.
 
-    Pure: signature + expiry + scope only — no network, no daemon. This is what
-    makes the escape daemon-independent (NEW-2 / INV-4).
+    Session/path binding is deliberately NOT checked here; it composes in
+    :func:`verify_escape_grant`.
     """
     if grant is None:
         return False
@@ -340,6 +340,32 @@ def verify_escape_grant(
     if grant.is_expired(now):
         return False
     return gate is None or grant.covers(gate)
+
+
+def verify_escape_grant(
+    grant: EscapeGrant | None,
+    *,
+    key: bytes,
+    now: float,
+    gate: str | None = None,
+    session: str | None = None,
+    path: str | None = None,
+) -> bool:
+    """True iff the grant's signature matches, it is unexpired, and it covers ``gate``.
+
+    Pure: signature + expiry + scope only — no network, no daemon. This is what
+    makes the escape daemon-independent (NEW-2 / INV-4).
+
+    ``session`` and ``path`` narrow which grants are honored (the minting session
+    and named paths); this slice plumbs the kwargs through the API and CLI, and
+    the binding enforcement follows in slice 3 of
+    escape-grants-bind-to-the-minting-session-20261011.
+    """
+    if grant is None:
+        return False
+    # Session/path enforcement lands in slice 3 (escape-grants-bind-to-the-
+    # minting-session-20261011); this slice carries the plumbing only.
+    return _grant_mechanically_valid(grant, key=key, now=now, gate=gate)
 
 
 # --- AVWitnessReceipt (AVSDLC Tier-C: independent runtime-witness evidence) ----
@@ -570,6 +596,8 @@ def main(argv: list[str] | None = None) -> int:
     vg.add_argument("--file", required=True)
     vg.add_argument("--gate", default=None)
     vg.add_argument("--key-file", dest="key_file", required=True)
+    vg.add_argument("--session", default=None)
+    vg.add_argument("--path", default=None)
 
     md = sub.add_parser("mint-dispatch")
     md.add_argument("--task", required=True)
@@ -618,7 +646,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "verify-grant":
         grant = read_grant_file(args.file)
-        ok = verify_escape_grant(grant, key=key, now=now, gate=args.gate)
+        ok = verify_escape_grant(
+            grant, key=key, now=now, gate=args.gate, session=args.session, path=args.path
+        )
         print(json.dumps({"valid": ok, "grant_id": grant.grant_id if grant else None}))
         return 0 if ok else 1
 
