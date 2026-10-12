@@ -52,7 +52,10 @@ def _write_claude_settings(
                         {
                             "type": "command",
                             "command": hook_command_overrides.get(
-                                hook_name, f"/tmp/hapax-hooks/{hook_name}"
+                                hook_name,
+                                f'bash "{entry["activation_command"]}"'
+                                if entry.get("activation_command")
+                                else f"/tmp/hapax-hooks/{hook_name}",
                             ),
                         }
                         for hook_name in hook_names

@@ -33,7 +33,33 @@ mkdir -p -- "$(dirname -- "$LOG")"
 
 DISPATCHER="$SCRIPT_DIR/codex-hook-adapter.sh"
 [ -x "$DISPATCHER" ] || fail 'shared dispatcher is unavailable'
-# One dispatcher owns the lists, normalization and ordering for both harnesses.
+# SessionStart's shared dispatcher discards dependency failure notices. Run the
+# same observational dependencies once here, retaining only failure metadata.
+# All tool/Stop guard lists and normalization remain in the shared dispatcher.
+if [ "$EVENT" = SessionStart ]; then
+  for hook in session-context.sh conductor-start.sh; do
+    status=127
+    out=""
+    if [ -x "$SCRIPT_DIR/$hook" ]; then
+      status=0
+      out="$("$SCRIPT_DIR/$hook" <<<"$INPUT" 2>&1)" || status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
+      [ -z "$out" ] || printf '%s\n' "$out"
+    else
+      notice="kimi-hook-adapter: $hook exited $status. Next action: restore the activated SessionStart dependency before relying on its context."
+      printf '%s\n' "$notice"
+      (
+        umask 077
+        jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg event "$EVENT" \
+          --arg hook "$hook" --argjson status "$status" --arg notice "$notice" \
+          --arg session_id "$HAPAX_SESSION_ID" \
+          '{ts:$ts,event:$event,hook:$hook,status:$status,notice:$notice,session_id:$session_id}' >>"$LOG"
+      )
+    fi
+  done
+  exit 0
+fi
 if ! RESULT="$("$DISPATCHER" <<<"$INPUT")"; then
   fail 'shared dispatcher failed'
 fi

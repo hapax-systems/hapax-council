@@ -69,17 +69,23 @@ fi
 
 ZAI_KEY="$(hapax_secret_or_fail glmcp/api-key)" || exit 5
 
-printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
+if ! mkdir -p "$HOME/.cache/hapax" || \
+   ! printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID"; then
+  echo 'hapax-glmcp: session-role marker write failed. Next action: repair the session marker directory before launching.' >&2
+  exit 9
+fi
 
 # Render the lane's kimi home on tmpfs (secret never on durable disk).
 RUNTIME_BASE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 GLM_HOME="$RUNTIME_BASE/kimi-glm/$ROLE"
-mkdir -p "$GLM_HOME"
-chmod 700 "$RUNTIME_BASE/kimi-glm" "$GLM_HOME" 2>/dev/null || true
+if ! mkdir -p "$GLM_HOME" || ! chmod 700 "$RUNTIME_BASE/kimi-glm" "$GLM_HOME"; then
+  echo 'hapax-glmcp: private runtime directory setup failed. Next action: restore writable mode-700 runtime directories before launching.' >&2
+  exit 9
+fi
 (
   umask 077
-  # JSON strings are TOML-compatible basic strings; quote paths and secret
-  # values instead of interpolating them into TOML or a shell command.
+  # Quote Unicode scalars directly, with JSON escapes for controls. TOML rejects
+  # JSON surrogate-pair escapes and also requires DEL to be escaped.
   ZAI_KEY="$ZAI_KEY" python3 - "$GLM_HOME/config.toml" "$BASE_URL" "$MODEL" \
     "$COUNCIL_DIR/hooks/scripts/kimi-hook-adapter.sh" <<'PYCONFIG'
 import json
@@ -89,7 +95,8 @@ import sys
 from pathlib import Path
 
 path, base_url, model, adapter = sys.argv[1:]
-quote = json.dumps
+def quote(value):
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 config = f"""default_permission_mode = "auto"
 default_plan_mode = false
 merge_all_available_skills = true
@@ -143,13 +150,28 @@ fi
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 
+# Keep the supervising shell alive for EXIT retirement. Signal the child and
+# reap it before retirement, preserving both ordinary and signal exit status.
+run_kimi_child() {
+  "$KIMI_BIN" "${KIMI_ARGS[@]}" <&0 &
+  local child=$! status=0
+  trap 'kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 143' TERM
+  # Non-job-control background children can inherit SIGINT as ignored. TERM
+  # still permits cleanup; the supervising shell preserves the requested 130.
+  trap 'kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 130' INT
+  trap 'kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 129' HUP
+  wait "$child" || status=$?
+  return "$status"
+}
+
 if [ "$TERMINAL" = "none" ]; then
-  trap '"$RELAY_RETIRE" "$ROLE" --reason "clean exit (terminal=none)" 2>/dev/null || true' EXIT
+  trap '"$RELAY_RETIRE" "$ROLE" --reason "session exit (terminal=none)" 2>/dev/null || true' EXIT
   cd "$WORKDIR"
   export KIMI_CODE_HOME="$GLM_HOME"
   export HAPAX_AGENT_INTERFACE=glmcp HAPAX_AGENT_NAME="$ROLE" HAPAX_AGENT_ROLE="$ROLE"
   export HAPAX_WORKTREE_ROLE="$ROLE" HAPAX_SESSION_ID="$SESSION_UUID"
-  exec "$KIMI_BIN" "${KIMI_ARGS[@]}"
+  run_kimi_child
+  exit $?
 fi
 
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/glmcp-spawns"
@@ -158,7 +180,7 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
-  printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
+  printf 'trap '\''%q %q --reason "session exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
   printf 'export KIMI_CODE_HOME=%q\n' "$GLM_HOME"
   printf 'export HAPAX_AGENT_INTERFACE=glmcp\n'
@@ -166,11 +188,13 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
-  printf 'exec %q' "$KIMI_BIN"
+  declare -f run_kimi_child
+  printf 'KIMI_BIN=%q\n' "$KIMI_BIN"
+  printf 'KIMI_ARGS=('
   for arg in "${KIMI_ARGS[@]+"${KIMI_ARGS[@]}"}"; do
     printf ' %q' "$arg"
   done
-  printf '\n'
+  printf ')\nrun_kimi_child\n'
 } >"$RUNNER"
 chmod 700 "$RUNNER"
 
