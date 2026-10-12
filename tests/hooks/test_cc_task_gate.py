@@ -389,6 +389,7 @@ class TestConnectorClassifierDeployedLayout:
         # Hermetic fallback ladder: no real ~/.cache or ~/projects consults.
         env["XDG_CACHE_HOME"] = str(tmp_path / "xdg-cache")
         env.pop("HAPAX_COORD_REPO_ROOT", None)
+        env.pop("HAPAX_SOURCE_ACTIVATE_WORKTREE", None)
         env.setdefault("CLAUDE_ROLE", "alpha")
         # Hermetic interpreter: the suite runs under `uv run`, which prepends the
         # project venv to PATH; that venv's editable install exposes shared/ from
@@ -429,17 +430,18 @@ class TestConnectorClassifierDeployedLayout:
         assert result.returncode == 2
         assert "no claimed task" in result.stderr.lower()
 
-    def test_deployed_without_any_module_root_degrades_closed(self, tmp_path: Path) -> None:
+    def test_deployed_without_any_module_root_reports_inv5(self, tmp_path: Path) -> None:
         gate = self._deploy(tmp_path)
         result = self._run_deployed(gate, "mcp__context7__query-docs", tmp_path)
-        assert result.returncode == 2
-        assert "connector classifier failed" in result.stderr
+        assert result.returncode == 0
+        assert "module_root_unavailable" in result.stderr
+        assert "INV-5" in result.stderr
 
-    def _fake_rebuild_worktree(self, tmp_path: Path) -> None:
-        """A stable-checkout candidate that actually carries the classifier:
-        $XDG_CACHE_HOME/hapax/rebuild/worktree with a stub module honouring the
+    def _fake_activated_release(self, tmp_path: Path) -> None:
+        """An activated candidate that actually carries the classifier:
+        $XDG_CACHE_HOME/hapax/source-activation/worktree with a stub honouring the
         is-side-effecting CLI contract (exit 0 mutating, exit 10 read-only)."""
-        shared = tmp_path / "xdg-cache" / "hapax" / "rebuild" / "worktree" / "shared"
+        shared = tmp_path / "xdg-cache" / "hapax" / "source-activation" / "worktree" / "shared"
         shared.mkdir(parents=True)
         (shared / "__init__.py").write_text("")
         (shared / "mcp_connector_policy.py").write_text(
@@ -449,18 +451,18 @@ class TestConnectorClassifierDeployedLayout:
             "sys.exit(2)\n"
         )
 
-    def test_stable_checkout_fallback_classifies_readonly(self, tmp_path: Path) -> None:
+    def test_activated_release_classifies_readonly(self, tmp_path: Path) -> None:
         # Positive branch: the fallback candidate HAS the module, so a
         # read-only connector classifies cleanly with no override set.
-        self._fake_rebuild_worktree(tmp_path)
+        self._fake_activated_release(tmp_path)
         gate = self._deploy(tmp_path)
         result = self._run_deployed(gate, "mcp__context7__query-docs", tmp_path)
         assert result.returncode == 0, result.stderr
 
-    def test_stable_checkout_fallback_gates_mutating(self, tmp_path: Path) -> None:
+    def test_activated_release_gates_mutating(self, tmp_path: Path) -> None:
         # Positive branch, mutating side: classification succeeds via the
         # fallback and the claim requirement still binds.
-        self._fake_rebuild_worktree(tmp_path)
+        self._fake_activated_release(tmp_path)
         gate = self._deploy(tmp_path)
         result = self._run_deployed(gate, "mcp__github__create_pull_request", tmp_path)
         assert result.returncode == 2
@@ -474,8 +476,8 @@ class TestConnectorClassifierDeployedLayout:
         (stale / "__init__.py").write_text("")
         gate = self._deploy(tmp_path)
         result = self._run_deployed(gate, "mcp__context7__query-docs", tmp_path)
-        assert result.returncode == 2
-        assert "connector classifier failed" in result.stderr
+        assert result.returncode == 0
+        assert "module_root_unavailable" in result.stderr
 
     def test_deployed_stage_stamp_path_uses_fallback_root(self, tmp_path: Path) -> None:
         # The FR-STAGE-S6-TRAP derive+stamp path imports shared.task_note_lock

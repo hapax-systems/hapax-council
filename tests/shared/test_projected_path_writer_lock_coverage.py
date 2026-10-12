@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import runpy
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -215,7 +216,16 @@ def _gate_stamp_source() -> str:
     assert root_match, "the gate's repo-root resolver was renamed; update this test with it"
     match = re.search(r"^_stamp_frontmatter_field\(\) \{.*?^\}", body, re.M | re.S)
     assert match, "the gate's stamp function was renamed; update this test with it"
-    return f"SCRIPT_DIR={str(REPO_ROOT / 'hooks' / 'scripts')!r}\n{root_match.group(0)}\n{match.group(0)}\n"
+    hooks = REPO_ROOT / "hooks" / "scripts"
+    # The production gate sources this library before using its module resolver.
+    # Keep the extracted function's dependency real, and bind both lock contenders
+    # to this test tree rather than an inherited host activation/rebuild checkout.
+    return (
+        f"SCRIPT_DIR={shlex.quote(str(hooks))}\n"
+        f"export HAPAX_SOURCE_ACTIVATE_WORKTREE={shlex.quote(str(REPO_ROOT))}\n"
+        f". {shlex.quote(str(hooks / 'escape-grant.sh'))}\n"
+        f"{root_match.group(0)}\n{match.group(0)}\n"
+    )
 
 
 def test_the_gate_s_lock_bound_reaches_the_interpreter(tmp_path: Path) -> None:
@@ -235,12 +245,14 @@ def test_the_gate_s_lock_bound_reaches_the_interpreter(tmp_path: Path) -> None:
     stand_in = tmp_path / "bin"
     stand_in.mkdir()
     (stand_in / "python3").write_text(
-        '#!/usr/bin/env bash\necho "SEEN=${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-unset}"\n',
+        '#!/usr/bin/env bash\necho "SEEN=${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-unset}"\n'
+        'echo "ROOT=${5:-unset}"\n',
         encoding="utf-8",
     )
     (stand_in / "python3").chmod(0o755)
     env = {k: v for k, v in os.environ.items() if k != "HAPAX_TASK_NOTE_LOCK_TIMEOUT"}
     env["PATH"] = f"{stand_in}:{env.get('PATH', '')}"
+    env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(tmp_path / "unrelated-host-activation")
     script = f"{_gate_stamp_source()}\n_stamp_frontmatter_field /dev/null stage S9_DONE"
 
     default = subprocess.run(
@@ -251,6 +263,7 @@ def test_the_gate_s_lock_bound_reaches_the_interpreter(tmp_path: Path) -> None:
         "command must be one logical line with nothing between them.\n"
         f"stdout={default.stdout!r}\nstderr={default.stderr!r}"
     )
+    assert f"ROOT={REPO_ROOT}" in default.stdout, default.stdout
     override = subprocess.run(
         ["bash", "-c", script],
         capture_output=True,
@@ -259,6 +272,7 @@ def test_the_gate_s_lock_bound_reaches_the_interpreter(tmp_path: Path) -> None:
         timeout=30,
     )
     assert "SEEN=1" in override.stdout, override.stdout
+    assert f"ROOT={REPO_ROOT}" in override.stdout, override.stdout
 
 
 def test_the_gate_s_effective_bound_is_seconds_not_tens_of_seconds(

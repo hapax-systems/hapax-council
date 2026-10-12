@@ -371,46 +371,34 @@ bash_source_mutation_requires_scope() {
   return 1
 }
 
-# Resolve a repo root that actually carries the needed shared/ module.
-# In-repo the gate lives at <repo>/hooks/scripts, so ../.. works. In the
-# canonical FM-6 deployment the impl IS ~/.local/lib/hapax/hooks/cc-task-gate.sh,
-# whose ../.. (~/.local/lib) has no shared/ tree at all — and a bare shared/
-# presence check is not sufficient either, since stale checkouts (e.g.
-# ~/.cache/hapax/rebuild/worktree) can carry shared/ without the module. Gate
-# every candidate on the module file itself, mirroring the
-# _escape_grant_repo_root ladder; degrade-closed on the original ../.. output.
+# Share the escape shim's release-first, module-specific source binding. Missing
+# substrate is the gate's named, ledgered advisory INV-5 case, never an implicit
+# import from a stale checkout or the interpreter's unrelated editable install.
 _cc_gate_repo_root() {
   local module_rel="$1"
-  local d r c
-  d="$SCRIPT_DIR"
-  r="$(cd "$d/../.." 2>/dev/null && pwd)"
-  if [[ -n "${HAPAX_COORD_REPO_ROOT:-}" && -f "$HAPAX_COORD_REPO_ROOT/$module_rel" ]]; then
-    printf '%s\n' "$HAPAX_COORD_REPO_ROOT"
+  if declare -F _escape_grant_repo_root >/dev/null \
+    && _escape_grant_repo_root "$module_rel"; then
     return 0
   fi
-  if [[ -n "$r" && -f "$r/$module_rel" ]]; then
-    printf '%s\n' "$r"
-    return 0
-  fi
-  for c in \
-    "${XDG_CACHE_HOME:-$HOME/.cache}/hapax/rebuild/worktree" \
-    "$HOME/projects/hapax-council"; do
-    if [[ -f "$c/$module_rel" ]]; then
-      printf '%s\n' "$c"
-      return 0
-    fi
-  done
-  printf '%s\n' "$r"
+  local ledger="${HAPAX_METHODOLOGY_LEDGER:-$HOME/.cache/hapax/methodology-emergency-ledger.jsonl}"
+  mkdir -p "$(dirname "$ledger")" 2>/dev/null || true
+  printf '{"ts":"%s","kind":"module_root_unavailable","module":"%s","gate":"cc-task-gate","action":"fail_open"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$module_rel" >> "$ledger" 2>/dev/null || true
+  echo "cc-task-gate: module_root_unavailable ($module_rel) — FAILING OPEN (advisory, ledgered, INV-5). Next action: restore the module in the activated release and run hapax-hooks-doctor --check." >&2
+  return 1
 }
 
 connector_tool_is_mutating() {
   local name="$1"
   local repo_root rc
-  repo_root="$(_cc_gate_repo_root shared/mcp_connector_policy.py)"
+  repo_root="$(_cc_gate_repo_root shared/mcp_connector_policy.py)" || return 3
   if command -v python3 >/dev/null 2>&1; then
     set +e
-    PYTHONPATH="$repo_root:${PYTHONPATH:-}" \
-      python3 -m shared.mcp_connector_policy is-side-effecting "$name" >/dev/null 2>&1
+    (
+      cd "$repo_root" || exit 1
+      PYTHONPATH="$repo_root:${PYTHONPATH:-}" \
+        python3 -m shared.mcp_connector_policy is-side-effecting "$name" >/dev/null 2>&1
+    )
     rc=$?
     case "$rc" in
       0) return 0 ;;
@@ -488,6 +476,7 @@ case "$tool_name" in
     case "$connector_rc" in
       0) ;;
       1) exit 0 ;;
+      3) exit 0 ;; # named, ledgered missing module substrate (INV-5)
       *)
         _emit_block <<EOF
 cc-task-gate: BLOCKED — connector classifier failed for '$tool_name'.
@@ -1113,7 +1102,11 @@ is_nullish() {
 # exactly the race this closes; the caller reports the refusal instead.
 _stamp_frontmatter_field() {
   local note="$1" key="$2" value="$3" repo_root
-  repo_root="$(_cc_gate_repo_root shared/task_note_lock.py)" || return 1
+  _stamp_module_root_unavailable=false
+  repo_root="$(_cc_gate_repo_root shared/task_note_lock.py)" || {
+    _stamp_module_root_unavailable=true
+    return 1
+  }
   # Propagate the interpreter's exit code verbatim. `|| return 1` collapsed the 3 that
   # means "the projection lock is held" into the 1 that means "something else broke", so
   # the caller's contention branch could never fire and every failure was recorded as
@@ -1133,10 +1126,11 @@ _stamp_frontmatter_field() {
   # test_the_gate_s_lock_bound_reaches_the_interpreter, which asks the interpreter, not the
   # source.
   HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
-  PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" <<'PYEOF' || _stamp_py_rc=$?
+  PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" "$repo_root" <<'PYEOF' || _stamp_py_rc=$?
 import sys
 from pathlib import Path
 
+sys.path.insert(0, sys.argv[4])
 from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
 path, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
@@ -1285,6 +1279,11 @@ if [[ "$_is_docs_edit" != "true" && -z "$_stage_num" && "$impl_authorized" == "t
     # and must not be filed as contention — a receipt that says projection_lock_held for a
     # malformed note sends the operator to look for a holder that was never there.
     _stamp_rc=$?
+    if [[ "$_stamp_module_root_unavailable" == "true" ]]; then
+      # No stage was derived or stamped. The resolver recorded the advisory
+      # substrate failure; don't misreport it as lock contention or deny policy.
+      exit 0
+    fi
     if [[ "$_stamp_rc" -eq 3 ]]; then
       _stage_outcome="refused_locked"
       _stage_reason="projection_lock_held"
@@ -1509,9 +1508,10 @@ PYEOF
       # is outside the precise mutation_scope_refs is still allowed. When it
       # is inside the charter_scope, the recorded units are consulted: an
       # edit a unit covers is that unit's work, and an edit no unit covers is
-      # written down as a breach. If the report cannot be written, the edit
-      # stops.
-      _charter_shared_top="$(_escape_grant_repo_root 2>/dev/null || true)"
+      # written down as a breach. An unavailable charter module is the named,
+      # ledgered advisory INV-5 substrate failure. With the module available,
+      # a report-write failure stops the edit.
+      _charter_shared_top="$(_cc_gate_repo_root shared/charter_claim.py)" || exit 0
       if ! python3 - "$note_path" "$edit_path" "$HOME/.cache/hapax" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" "$_charter_shared_top" <<'PYEOF'
 import json
 import os
@@ -1522,13 +1522,9 @@ note, edit, cache, repo_top, vault_root, file_top, shared_top = sys.argv[1:8]
 text = Path(note).read_text(encoding="utf-8")
 if "\nclaim_form: charter" not in f"\n{text}":
     sys.exit(0)
-# The edit may target a repository that carries no shared/ tree; the canonical
-# council source root selected by _escape_grant_repo_root is the import source
-# when it exists, with the previous anchoring kept as the fallback.
-if shared_top and (Path(shared_top) / "shared").is_dir():
-    sys.path.insert(0, shared_top)
-else:
-    sys.path.insert(0, file_top or repo_top or str(Path(note).resolve().parents[3]))
+# The gate already resolved the exact charter module from its release binding.
+# The target repository and task vault are data, not alternate import sources.
+sys.path.insert(0, shared_top)
 from shared.charter_claim import (  # noqa: E402
     _frontmatter,
     _refs,

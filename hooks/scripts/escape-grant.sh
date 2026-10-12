@@ -38,37 +38,31 @@
 # set by the sourcing shim (it lives in hooks/scripts); fall back to this file's
 # own directory when sourced standalone.
 #
-# Reform FM-6 (gate-shim collapse): the canonical-deployed gate runs this from
-# ~/.local/lib/hapax/hooks, where ../.. carries no shared/ tree. So when the
-# in-tree ../.. resolution doesn't land on a checkout that has shared/, fall back
-# to an explicit override or a known stable full checkout. Every branch is gated
-# on shared/ presence so a wrong dir is never selected, and the original ../..
-# output is preserved as the last resort — escape_grant_allows still degrades
-# CLOSED (returns 1) if none carries shared/, exactly as before this fallback.
+# The activated release is the deployed module binding. Explicit roots and the
+# co-located repository support isolated/development invocations without an
+# activation. Never depend on the removable rebuild or primary checkout.
+# A caller names the actual module it imports; shared/ alone proves nothing.
 _escape_grant_repo_root() {
-  # 1. Explicit override (deploy / operator), only if it carries shared/.
-  if [[ -n "${HAPAX_COORD_REPO_ROOT:-}" && -d "$HAPAX_COORD_REPO_ROOT/shared" ]]; then
-    printf '%s\n' "$HAPAX_COORD_REPO_ROOT"
+  local module_rel="${1:-shared/governance/coord_capabilities.py}" d r c active
+  active="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/source-activation/worktree}"
+  # An existing (even broken) activation binding is authoritative. Missing a
+  # module there is infrastructure failure, not permission to use older code.
+  if [[ -n "${HAPAX_SOURCE_ACTIVATE_WORKTREE:-}" || -e "$active" || -L "$active" ]]; then
+    [[ -f "$active/$module_rel" ]] || return 1
+    (cd "$active" && pwd -P) || return 1
     return 0
   fi
-  # 2. In-repo invocation: this file lives at <repo>/hooks/scripts/ (unchanged).
-  local d r
   d="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
   r="$(cd "$d/../.." 2>/dev/null && pwd)"
-  if [[ -n "$r" && -d "$r/shared" ]]; then
-    printf '%s\n' "$r"
-    return 0
-  fi
-  # 3. Canonical-deployed gate: prefer a stable checkout kept fresh by the
-  #    rebuild/source-activation timer; the interactive worktree is a last resort.
-  local c
   for c in \
-    "${XDG_CACHE_HOME:-$HOME/.cache}/hapax/rebuild/worktree" \
-    "$HOME/projects/hapax-council"; do
-    [[ -d "$c/shared" ]] && { printf '%s\n' "$c"; return 0; }
+    "${HAPAX_COORD_REPO_ROOT:-}" "$r"; do
+    if [[ -n "$c" && -f "$c/$module_rel" ]]; then
+      # Resolve the activation symlink now, so imports keep this release identity.
+      (cd "$c" && pwd -P) || return 1
+      return 0
+    fi
   done
-  # 4. Last resort: original ../.. output (degrade-closed if it lacks shared/).
-  printf '%s\n' "$r"
+  return 1
 }
 
 # Record that a grant was honored (the audit's "recorded" property). Best-effort;
@@ -99,7 +93,7 @@ escape_grant_allows() {
   [[ -f "$HAPAX_COORD_GRANT_KEY" ]] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
   local root out f _ng found=1
-  root="$(_escape_grant_repo_root)"
+  root="$(_escape_grant_repo_root)" || return 1
   [[ -n "$root" ]] || return 1
   _ng="$(shopt -p nullglob 2>/dev/null || printf 'shopt -u nullglob')"
   shopt -s nullglob
