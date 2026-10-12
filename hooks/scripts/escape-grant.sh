@@ -97,8 +97,16 @@ _escape_grant_ledger() {
     2>/dev/null || printf '')"
   role="$(hapax_effective_role 2>/dev/null || echo unknown)"
   mkdir -p "$(dirname "$HAPAX_METHODOLOGY_LEDGER")" 2>/dev/null || true
-  printf '{"ts":"%s","kind":"escape_grant_honored","gate":"%s","grant_id":"%s","grant_file":"%s","session":"%s","role":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gate" "$gid" "$file" "$session" "$role" \
+  # JSON-encode every value (encoding repair, 2026-10-12): session/role come
+  # from env chains, gate from the caller, grant_id/grant_file from the grant
+  # — any may carry quotes, backslashes or newlines, and the ledger's parsers
+  # json-decode each physical line. Values pass as argv (never interpolated
+  # into the format) so json.dumps preserves them exactly; the compact
+  # separators keep the established line shape. Best-effort as before: no
+  # python3 → no line, never a corrupt one (the shim already requires python3
+  # to verify the grant at all).
+  python3 -c 'import json,sys,time; print(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kind": "escape_grant_honored", "gate": sys.argv[1], "grant_id": sys.argv[2], "grant_file": sys.argv[3], "session": sys.argv[4], "role": sys.argv[5]}, separators=(",", ":")))' \
+    "$gate" "$gid" "$file" "$session" "$role" \
     >>"$HAPAX_METHODOLOGY_LEDGER" 2>/dev/null || true
 }
 

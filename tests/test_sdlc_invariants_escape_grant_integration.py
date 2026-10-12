@@ -24,6 +24,8 @@ import pytest
 
 from shared.coord_event_log import default_grant_dir, default_grant_key
 from shared.governance.coord_capabilities import (
+    EscapeGrant,
+    _sign,
     load_or_create_key,
     mint_escape_grant,
     write_grant_file,
@@ -213,3 +215,52 @@ class TestSessionBoundShimRoundTrip:
         honored = [r for r in _honored(env) if r.get("kind") == "escape_grant_honored"]
         assert honored, "the honored release must be ledgered"
         assert honored[0].get("session") == "alpha-lane", honored
+
+    def test_honored_ledger_line_encodes_hostile_values(self, coord_env):
+        """The honored line stays ONE valid JSON record with exact decoded
+        values even when every interpolated field is hostile (S1 encoding
+        repair): session/role arrive via env and function stubs, gate via the
+        caller, grant_id (and so the grant_file name) via a directly signed
+        grant — any of them may carry quotes, backslashes or newlines, and the
+        ledger's parsers json-decode each physical line."""
+        _, env = coord_env
+        hostile = 'q"ote\\back\nslash'
+        now = time.time()
+        key = load_or_create_key(default_grant_key())
+        fields = {
+            "grant_id": hostile,
+            "grantor": "operator",
+            "scope": "*",
+            "reason": "hostile-encoding pin",
+            "issued_at": now,
+            "expires_at": now + 3600.0,
+        }
+        payload = {"kind": "escape", **fields, "session": hostile, "paths": [], "role": hostile}
+        grant = EscapeGrant(signature=_sign(payload, key), session=hostile, role=hostile, **fields)
+        write_grant_file(grant, default_grant_dir() / f"{grant.grant_id}.grant")
+        env["HAPAX_SESSION_ID"] = hostile
+        env["HAPAX_TEST_HOSTILE_ROLE"] = hostile
+        script = (
+            "set -uo pipefail; "
+            f"export SCRIPT_DIR={SHIM.parent!s}; "
+            "hapax_effective_role() { printf '%s\\n' \"$HAPAX_TEST_HOSTILE_ROLE\"; }; "
+            f"source {SHIM!s}; "
+            f"if escape_grant_allows {shlex.quote(hostile)}; then echo __ALLOW__; else echo __DENY__; fi"
+        )
+        proc = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, env=env, cwd=str(REPO_ROOT)
+        )
+        assert "__ALLOW__" in proc.stdout, proc.stdout + proc.stderr
+        ledger = Path(env["HAPAX_METHODOLOGY_LEDGER"])
+        lines = [ln for ln in ledger.read_text().splitlines() if ln.strip()]
+        assert len(lines) == 1, f"expected one ledger record, got {lines!r}"
+        try:
+            record = json.loads(lines[0])
+        except json.JSONDecodeError as exc:
+            pytest.fail(f"ledger line is not one valid JSON record: {exc}: {lines[0]!r}")
+        assert record["kind"] == "escape_grant_honored", record
+        assert record["gate"] == hostile, record
+        assert record["session"] == hostile, record
+        assert record["role"] == hostile, record
+        assert record["grant_id"] == hostile, record
+        assert record["grant_file"].endswith(f"{hostile}.grant"), record
