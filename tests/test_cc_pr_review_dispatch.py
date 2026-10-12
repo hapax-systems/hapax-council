@@ -1469,8 +1469,7 @@ class TestApply:
             for _, _, prompt in reviewers.invocations
         )
         assert all(
-            "Historical session narrative" not in prompt
-            for _, _, prompt in reviewers.invocations
+            "Historical session narrative" not in prompt for _, _, prompt in reviewers.invocations
         )
         dossier = yaml.safe_load(
             (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
