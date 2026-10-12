@@ -28,7 +28,6 @@ else
   TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // .tool // empty' 2>/dev/null || true)"
 fi
 SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
-CWD_VALUE="$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)"
 
 export HAPAX_AGENT_INTERFACE="${HAPAX_AGENT_INTERFACE:-codex}"
 if [ -z "${HAPAX_SESSION_ID:-}" ] && [ -n "$SESSION_ID" ]; then
@@ -178,28 +177,20 @@ tool_kind() {
 }
 
 normalize_shell_event() {
-  local cmd tool_output
-  cmd="$(printf '%s' "$INPUT" | jq -r '
+  # Only the event selector is an argv value. Command/output stay JSON on stdin
+  # so large tool events do not hit execve's per-argument limit or lose bytes.
+  printf '%s' "$INPUT" | jq -c --arg event "$EVENT" '
     .tool_input as $ti |
-    if ($ti | type) == "string" then $ti
-    elif ($ti | type) == "object" then
-      ($ti.command // $ti.cmd // $ti.shell_command // $ti.arguments.command // $ti.args.command // empty)
-    else empty end
-  ' 2>/dev/null || true)"
-  tool_output="$(printf '%s' "$INPUT" | jq -r '
-    .tool_output // .tool_response.output // .tool_response.stdout // .tool_response // empty |
-    if type == "string" then . else @json end
-  ' 2>/dev/null || true)"
-  jq -cn \
-    --arg event "$EVENT" \
-    --arg session_id "$SESSION_ID" \
-    --arg cwd "$CWD_VALUE" \
-    --arg command "$cmd" \
-    --arg tool_output "$tool_output" \
-    '{
+    (if ($ti | type) == "string" then $ti
+     elif ($ti | type) == "object" then
+       ($ti.command // $ti.cmd // $ti.shell_command // $ti.arguments.command // $ti.args.command // "")
+     else "" end | tostring) as $command |
+    (.tool_output // .tool_response.output // .tool_response.stdout // .tool_response // "" |
+     if type == "string" then . else @json end) as $tool_output |
+    {
       hook_event_name: $event,
-      session_id: $session_id,
-      cwd: $cwd,
+      session_id: (.session_id // ""),
+      cwd: (.cwd // ""),
       tool_name: "Bash",
       tool_input: {command: $command},
       tool_output: $tool_output,

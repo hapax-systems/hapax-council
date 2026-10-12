@@ -221,5 +221,4 @@ class TestSocketProtocol:
         assert event.get("user_message", "") == "", (
             "tool output reached the conductor's operator-message field"
         )
-        # `jq -r` drops the trailing newline the tool emitted.
-        assert event.get("tool_output") == "we should hand off the relay work"
+        assert event.get("tool_output") == "we should hand off the relay work\n"
