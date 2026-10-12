@@ -2112,6 +2112,80 @@ class TestVaultScopeAnchoringAndOwnNote:
         )
         assert result.returncode == 0, f"own-note edit blocked: {result.stderr}"
 
+    @pytest.mark.parametrize("tool", ["Edit", "Write"])
+    @pytest.mark.parametrize("session_id", [None, "own-session"])
+    def test_current_claimer_can_maintain_own_note(
+        self, tmp_path: Path, tool: str, session_id: str | None
+    ) -> None:
+        _, note = _make_vault(tmp_path, status="pr_open", assigned="alpha")
+        key = f"alpha-{session_id}" if session_id else "alpha"
+        _write_session_claim(tmp_path, key, "test-001")
+        before = note.read_bytes()
+        result = _run_hook(
+            {
+                "tool_name": tool,
+                "tool_input": {
+                    "file_path": str(note),
+                    "content": before.decode() + "\n- retained publication evidence\n",
+                },
+            },
+            home=tmp_path,
+            extra_env={"HAPAX_SESSION_ID": session_id} if session_id else {},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "own claimed-task note" in result.stderr
+        assert note.read_bytes() == before  # This is a gate decision, not the Write itself.
+
+    @pytest.mark.parametrize(
+        "invalid",
+        [
+            "unclaimed",
+            "other-note",
+            "wrong-owner",
+            "wrong-session",
+            "empty-claim",
+            "offered",
+            "wrong-task-id",
+            "wrong-note-type",
+        ],
+    )
+    def test_existing_governance_write_requires_current_own_claim(
+        self, tmp_path: Path, invalid: str
+    ) -> None:
+        _, note = _make_vault(
+            tmp_path,
+            status="offered" if invalid == "offered" else "pr_open",
+            assigned="beta" if invalid == "wrong-owner" else "alpha",
+        )
+        if invalid != "unclaimed":
+            _write_session_claim(
+                tmp_path,
+                "alpha-other-session" if invalid == "wrong-session" else "alpha-own-session",
+                "" if invalid == "empty-claim" else "test-001",
+            )
+        if invalid == "wrong-session":
+            # The same-role legacy pointer must not lend another session custody.
+            _write_claim(tmp_path, "alpha", "test-001")
+        if invalid == "other-note":
+            _, note = _make_vault(tmp_path, status="pr_open", assigned="alpha", task_id="other")
+        if invalid == "wrong-task-id":
+            note.write_text(note.read_text().replace("task_id: test-001", "task_id: other"))
+        if invalid == "wrong-note-type":
+            note.write_text(note.read_text().replace("type: cc-task", "type: hapax-request"))
+        before = note.read_bytes()
+        result = _run_hook(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(note), "content": before.decode() + "\nchange\n"},
+            },
+            home=tmp_path,
+            extra_env={"HAPAX_SESSION_ID": "own-session"},
+        )
+        assert result.returncode == 2, result.stderr
+        assert "BLOCKED" in result.stderr
+        assert "own claimed-task note — allowed" not in result.stderr
+        assert note.read_bytes() == before
+
     def test_vault_relative_scope_ref_resolves_against_vault_root(self, tmp_path: Path) -> None:
         # A vault-relative scope ref (`20-projects/hapax-cc-tasks/`) must resolve
         # against ~/Documents/Personal so a DIFFERENT vault note under it is in scope
