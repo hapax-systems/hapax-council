@@ -31,6 +31,7 @@ import hmac
 import json
 import os
 import secrets
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -197,7 +198,14 @@ class CapabilityConsumptionLedger:
 
 @dataclass(frozen=True)
 class EscapeGrant:
-    """A signed escape grant the bash shim reads directly (no RPC). Scoped + expiring."""
+    """A signed escape grant the bash shim reads directly (no RPC). Scoped + expiring.
+
+    escape-grants-bind-to-the-minting-session-20261011: the grant also carries
+    the minting ``session`` (plus optional narrowing ``paths`` and a best-effort
+    minting ``role``) in its SIGNED payload, so it releases only the session
+    that minted it. ``session == ""`` is the legacy UNBOUND shape — still
+    parseable, but verification refuses it.
+    """
 
     grant_id: str
     grantor: str
@@ -206,6 +214,9 @@ class EscapeGrant:
     issued_at: float
     expires_at: float
     signature: str
+    session: str = ""  # minting session; "" = unbound (legacy) → refused
+    paths: tuple[str, ...] = ()  # optional narrowing; () = any path
+    role: str = ""  # minting role, signed for attribution only
 
     def _signing_payload(self) -> dict[str, object]:
         return {
@@ -216,6 +227,9 @@ class EscapeGrant:
             "reason": self.reason,
             "issued_at": self.issued_at,
             "expires_at": self.expires_at,
+            "session": self.session,
+            "paths": list(self.paths),
+            "role": self.role,
         }
 
     def is_expired(self, now: float) -> bool:
@@ -226,9 +240,24 @@ class EscapeGrant:
 
 
 def mint_escape_grant(
-    *, grantor: str, scope: str, reason: str, ttl_s: float, key: bytes, now: float
+    *,
+    grantor: str,
+    scope: str,
+    reason: str,
+    ttl_s: float,
+    key: bytes,
+    now: float,
+    session: str = "",
+    paths: tuple[str, ...] = (),
+    role: str = "",
 ) -> EscapeGrant:
-    """Mint a signed escape grant. The operator (root) is the only legitimate grantor."""
+    """Mint a signed escape grant. The operator (root) is the only legitimate grantor.
+
+    ``session``/``paths``/``role`` are folded into the signature — rebinding or
+    re-attributing a minted grant fails verification. ``session=""`` mints the
+    legacy unbound shape, which ``verify_escape_grant`` refuses (the INV-3/4/5
+    auto-mint still mints that shape; rebinding it is a flagged follow-up).
+    """
     fields = {
         "grant_id": secrets.token_hex(16),
         "grantor": grantor,
@@ -236,6 +265,9 @@ def mint_escape_grant(
         "reason": reason,
         "issued_at": now,
         "expires_at": now + ttl_s,
+        "session": session,
+        "paths": tuple(paths),
+        "role": role,
     }
     payload = {"kind": "escape", **fields}
     return EscapeGrant(signature=_sign(payload, key), **fields)
@@ -252,6 +284,9 @@ def serialize_grant(grant: EscapeGrant) -> str:
             "issued_at": grant.issued_at,
             "expires_at": grant.expires_at,
             "signature": grant.signature,
+            "session": grant.session,
+            "paths": list(grant.paths),
+            "role": grant.role,
         }
     )
 
@@ -276,19 +311,23 @@ def read_grant_file(path: str | Path) -> EscapeGrant | None:
             issued_at=float(data["issued_at"]),
             expires_at=float(data["expires_at"]),
             signature=str(data["signature"]),
+            session=str(data.get("session", "")),
+            paths=tuple(str(p) for p in data.get("paths", ())),
+            role=str(data.get("role", "")),
         )
     except Exception:  # noqa: BLE001 — a malformed/missing grant must never raise.
         return None
 
 
-def verify_escape_grant(
-    grant: EscapeGrant | None, *, key: bytes, now: float, gate: str | None = None
-) -> bool:
-    """True iff the grant's signature matches, it is unexpired, and it covers ``gate``.
+#: Surfaced when a mechanically valid grant is refused ONLY by its session/path
+#: binding — the narrow next action is a fresh, session-bound mint.
+GRANT_REBIND_NEXT_ACTION = "re-mint with your session"
 
-    Pure: signature + expiry + scope only — no network, no daemon. This is what
-    makes the escape daemon-independent (NEW-2 / INV-4).
-    """
+
+def _grant_mechanically_valid(
+    grant: EscapeGrant | None, *, key: bytes, now: float, gate: str | None
+) -> bool:
+    """The pre-binding contract: signature + expiry + scope only."""
     if grant is None:
         return False
     if not _verify_sig(grant._signing_payload(), grant.signature, key):
@@ -296,6 +335,36 @@ def verify_escape_grant(
     if grant.is_expired(now):
         return False
     return gate is None or grant.covers(gate)
+
+
+def verify_escape_grant(
+    grant: EscapeGrant | None,
+    *,
+    key: bytes,
+    now: float,
+    gate: str | None = None,
+    session: str | None = None,
+    path: str | None = None,
+) -> bool:
+    """True iff the grant's signature matches, it is unexpired, covers ``gate``,
+    and is bound to THIS session.
+
+    Session binding (escape-grants-bind-to-the-minting-session-20261011): an
+    unbound grant (``session == ""`` — legacy files, the INV-3/4/5 auto-mint)
+    is refused, as is a caller that supplies no session or a different one. A
+    grant with narrowing ``paths`` releases only those paths when the caller
+    supplies a ``path`` (no ``path`` argument + paths on the grant → allow).
+    Pure: signature + expiry + scope + binding — no network, no daemon (NEW-2 / INV-4).
+    """
+    if grant is None:
+        return False
+    if not _grant_mechanically_valid(grant, key=key, now=now, gate=gate):
+        return False
+    if not grant.session:
+        return False
+    if session is None or session != grant.session:
+        return False
+    return not (grant.paths and path is not None and path not in grant.paths)
 
 
 # --- AVWitnessReceipt (AVSDLC Tier-C: independent runtime-witness evidence) ----
@@ -516,12 +585,17 @@ def main(argv: list[str] | None = None) -> int:
     mg.add_argument("--reason", default="")
     mg.add_argument("--grantor", default="operator")
     mg.add_argument("--ttl", type=float, default=3600.0)
+    mg.add_argument("--session", default="")
+    mg.add_argument("--role", default="")
+    mg.add_argument("--path", action="append", default=None)
     mg.add_argument("--key-file", dest="key_file", required=True)
     mg.add_argument("--out", required=True)
 
     vg = sub.add_parser("verify-grant")
     vg.add_argument("--file", required=True)
     vg.add_argument("--gate", default=None)
+    vg.add_argument("--session", default=None)
+    vg.add_argument("--path", default=None)
     vg.add_argument("--key-file", dest="key_file", required=True)
 
     md = sub.add_parser("mint-dispatch")
@@ -551,6 +625,9 @@ def main(argv: list[str] | None = None) -> int:
             ttl_s=args.ttl,
             key=key,
             now=now,
+            session=args.session,
+            paths=tuple(args.path or ()),
+            role=args.role,
         )
         write_grant_file(grant, args.out)
         print(grant.grant_id)
@@ -558,8 +635,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "verify-grant":
         grant = read_grant_file(args.file)
-        ok = verify_escape_grant(grant, key=key, now=now, gate=args.gate)
-        print(json.dumps({"valid": ok, "grant_id": grant.grant_id if grant else None}))
+        ok = verify_escape_grant(
+            grant, key=key, now=now, gate=args.gate, session=args.session, path=args.path
+        )
+        result: dict[str, object] = {"valid": ok, "grant_id": grant.grant_id if grant else None}
+        if not ok and _grant_mechanically_valid(grant, key=key, now=now, gate=args.gate):
+            # Well-signed, unexpired, covering — refused ONLY by the session/path
+            # binding: the narrow next action is a fresh, session-bound mint.
+            result["next_action"] = GRANT_REBIND_NEXT_ACTION
+            print(f"NEXT_ACTION: {GRANT_REBIND_NEXT_ACTION}", file=sys.stderr)
+        print(json.dumps(result))
         return 0 if ok else 1
 
     if args.cmd == "mint-dispatch":

@@ -106,23 +106,35 @@ class TestEscapeGrant:
             ttl_s=3600,
             key=KEY,
             now=1000.0,
+            session="lane-a",
         )
         path = tmp_path / "grant.json"
         write_grant_file(grant, path)
         loaded = read_grant_file(path)
         assert loaded is not None
-        assert verify_escape_grant(loaded, key=KEY, now=1500.0, gate="cc-task-gate")
+        assert loaded.session == "lane-a"
+        assert verify_escape_grant(
+            loaded, key=KEY, now=1500.0, gate="cc-task-gate", session="lane-a"
+        )
 
     def test_hand_written_grant_accepted(self, tmp_path):
         # With the kernel down the operator hand-writes the grant file; a valid
         # signature is all the shim needs (no RPC).
         grant = mint_escape_grant(
-            grantor="operator", scope="*", reason="kernel down", ttl_s=3600, key=KEY, now=1000.0
+            grantor="operator",
+            scope="*",
+            reason="kernel down",
+            ttl_s=3600,
+            key=KEY,
+            now=1000.0,
+            session="lane-a",
         )
         path = tmp_path / "grant.json"
         path.write_text(serialize_grant(grant))  # hand-written
         loaded = read_grant_file(path)
-        assert verify_escape_grant(loaded, key=KEY, now=1500.0, gate="any-gate")  # "*" covers all
+        assert verify_escape_grant(
+            loaded, key=KEY, now=1500.0, gate="any-gate", session="lane-a"
+        )  # "*" covers all gates
 
     def test_tampered_scope_rejected(self):
         grant = mint_escape_grant(
@@ -161,6 +173,87 @@ class TestEscapeGrant:
         assert verify_escape_grant(None, key=KEY, now=1.0, gate="x") is False
 
 
+# --- EscapeGrant session/path binding (escape-grants-bind-to-the-minting-session-20261011) ---
+
+
+def _bound_grant(**overrides):
+    """A standard session-bound grant; each test varies only what it pins."""
+    kwargs = dict(
+        grantor="operator",
+        scope="cc-task-gate",
+        reason="x",
+        ttl_s=3600,
+        key=KEY,
+        now=1000.0,
+        session="lane-a",
+    )
+    kwargs.update(overrides)
+    return mint_escape_grant(**kwargs)
+
+
+def _verify(grant, *, session=None, **overrides):
+    kwargs = dict(key=KEY, now=1500.0, gate="cc-task-gate", session=session)
+    kwargs.update(overrides)
+    return verify_escape_grant(grant, **kwargs)
+
+
+class TestEscapeGrantSessionBinding:
+    """A grant releases only the session that minted it; unbound grants are refused."""
+
+    def test_minting_session_verifies(self):
+        assert _verify(_bound_grant(), session="lane-a")
+
+    def test_other_session_rejected(self):
+        assert not _verify(_bound_grant(), session="lane-b")
+
+    def test_no_session_argument_rejected(self):
+        assert not _verify(_bound_grant())
+
+    def test_unbound_legacy_grant_rejected_even_with_session(self):
+        grant = _bound_grant(session="")
+        assert not _verify(grant, session="lane-a")
+        assert not _verify(grant)
+
+    def test_tampered_session_rejected(self):
+        forged = replace(_bound_grant(), session="lane-b")  # re-bind without re-signing
+        assert not _verify(forged, session="lane-b")
+
+    def test_path_narrowed_grant_releases_only_its_paths(self):
+        grant = _bound_grant(paths=("/srv/a", "/srv/b"))
+        assert _verify(grant, session="lane-a", path="/srv/a")
+        assert not _verify(grant, session="lane-a", path="/srv/c")
+
+    def test_path_narrowed_grant_without_path_argument_released(self):
+        grant = _bound_grant(paths=("/srv/a",))
+        assert _verify(grant, session="lane-a")
+
+    def test_ttl_expiry_unchanged_for_session_bound_grant(self):
+        grant = _bound_grant(ttl_s=60)
+        assert _verify(grant, session="lane-a", now=1050.0)
+        assert not _verify(grant, session="lane-a", now=2000.0)
+
+    def test_role_recorded_and_signed(self):
+        grant = _bound_grant(role="glm-steward")
+        assert grant.role == "glm-steward"
+        forged = replace(grant, role="forge-build")  # re-attribute without re-signing
+        assert not _verify(forged, session="lane-a")
+
+    def test_grant_without_binding_fields_parses_as_unbound(self, tmp_path):
+        path = tmp_path / "grant.json"
+        path.write_text(serialize_grant(_bound_grant()))
+        # Drop the binding keys from the written record the way a pre-binding
+        # (legacy) grant file looks; the reader must parse it, not crash, and the
+        # resulting grant is unbound → refused.
+        record = json.loads(path.read_text())
+        for key in ("session", "paths", "role"):
+            record.pop(key, None)
+        path.write_text(json.dumps(record))
+        loaded = read_grant_file(path)
+        assert loaded is not None
+        assert loaded.session == ""
+        assert not _verify(loaded, session="lane-a")
+
+
 # --- CLI (the operator's daemon-independent grant tool) -----------------------
 
 
@@ -170,40 +263,56 @@ class TestCli:
         path.write_bytes(KEY)
         return path
 
+    def _mint_grant(self, tmp_path, key_file, capsys, *, session=None):
+        out = tmp_path / "grant.json"
+        args = [
+            "mint-grant",
+            "--scope",
+            "cc-task-gate",
+            "--reason",
+            "x",
+            "--ttl",
+            "3600",
+            "--key-file",
+            str(key_file),
+            "--out",
+            str(out),
+        ]
+        if session is not None:
+            args += ["--session", session]
+        main(args)
+        capsys.readouterr()
+        return out
+
+    def _verify_grant(self, out, key_file, capsys, *, gate="cc-task-gate", session=None):
+        args = ["verify-grant", "--file", str(out), "--gate", gate, "--key-file", str(key_file)]
+        if session is not None:
+            args += ["--session", session]
+        rc = main(args)
+        return rc, json.loads(capsys.readouterr().out)
+
     def test_mint_grant_then_verify_grant(self, tmp_path, capsys):
         key_file = self._key_file(tmp_path)
-        out = tmp_path / "grant.json"
-        rc = main(
-            [
-                "mint-grant",
-                "--scope",
-                "cc-task-gate",
-                "--reason",
-                "incident",
-                "--ttl",
-                "3600",
-                "--key-file",
-                str(key_file),
-                "--out",
-                str(out),
-            ]
-        )
+        out = self._mint_grant(tmp_path, key_file, capsys, session="lane-a")
+        rc, result = self._verify_grant(out, key_file, capsys, session="lane-a")
         assert rc == 0
-        capsys.readouterr()
-        rc2 = main(
-            [
-                "verify-grant",
-                "--file",
-                str(out),
-                "--gate",
-                "cc-task-gate",
-                "--key-file",
-                str(key_file),
-            ]
-        )
-        result = json.loads(capsys.readouterr().out)
-        assert rc2 == 0
         assert result["valid"] is True
+
+    def test_verify_grant_session_mismatch_exits_nonzero(self, tmp_path, capsys):
+        key_file = self._key_file(tmp_path)
+        out = self._mint_grant(tmp_path, key_file, capsys, session="lane-a")
+        rc, result = self._verify_grant(out, key_file, capsys, session="lane-b")
+        assert rc != 0
+        assert result["valid"] is False
+        assert result["next_action"] == "re-mint with your session"
+
+    def test_verify_grant_unbound_next_action(self, tmp_path, capsys):
+        key_file = self._key_file(tmp_path)
+        out = self._mint_grant(tmp_path, key_file, capsys)
+        rc, result = self._verify_grant(out, key_file, capsys, session="lane-a")
+        assert rc != 0
+        assert result["valid"] is False
+        assert result["next_action"] == "re-mint with your session"
 
     def test_verify_grant_wrong_gate_exits_nonzero(self, tmp_path, capsys):
         key_file = self._key_file(tmp_path)

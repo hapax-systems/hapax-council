@@ -57,11 +57,34 @@ class TestDecideWithEscape:
 
     def test_valid_grant_unblocks_irreversible_op(self):
         grant = mint_escape_grant(
-            grantor="operator", scope="*", reason="r", ttl_s=3600, key=_KEY, now=_NOW
+            grantor="operator",
+            scope="*",
+            reason="r",
+            ttl_s=3600,
+            key=_KEY,
+            now=_NOW,
+            session="chaos-lane",
         )
-        d = decide_with_escape("Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW)
+        d = decide_with_escape(
+            "Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW, session="chaos-lane"
+        )
         assert d.allowed
         assert d.gate == "escape:granted"
+
+    def test_grant_from_another_session_does_not_unblock(self):
+        grant = mint_escape_grant(
+            grantor="operator",
+            scope="*",
+            reason="r",
+            ttl_s=3600,
+            key=_KEY,
+            now=_NOW,
+            session="chaos-lane",
+        )
+        d = decide_with_escape(
+            "Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW, session="other-lane"
+        )
+        assert d.blocked
 
     def test_expired_grant_does_not_unblock(self):
         grant = mint_escape_grant(
@@ -129,12 +152,21 @@ class TestMintEscapeForViolation:
             assert grant_file.exists()
             assert read_grant_file(grant_file) == grant
 
-    def test_minted_grant_actually_unblocks_a_lane(self, tmp_path):
+    def test_auto_minted_unbound_grant_no_longer_unblocks_a_lane(self, tmp_path):
+        # escape-grants-bind-to-the-minting-session-20261011: the INV-3/4/5
+        # auto-mint still mints UNBOUND grants (rebinding it to a session is a
+        # flagged follow-up), and an unbound grant releases nobody — failure
+        # narrows. The escape for a lane whose gate check is refused by the
+        # unbound auto-mint is to mint its own session-bound grant.
         grant = mint_escape_for_violation(
             _violation("INV-4"), key=_KEY, grant_dir=tmp_path, now=_NOW
         )
-        d = decide_with_escape("Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW)
-        assert d.allowed
+        assert grant is not None
+        assert grant.session == ""
+        d = decide_with_escape(
+            "Bash", command="gh pr merge 1", grant=grant, key=_KEY, now=_NOW, session="any-lane"
+        )
+        assert d.blocked
 
 
 # --- load_or_create_grant_key -------------------------------------------------
@@ -318,6 +350,7 @@ class TestDaemonKillChaos:
                 ttl_s=3600,
                 key=_KEY,
                 now=_NOW,
+                session="chaos-lane",
             )
             grant_file = tmp_path / "escape.grant"
             write_grant_file(grant, grant_file)
@@ -326,7 +359,9 @@ class TestDaemonKillChaos:
             #    and is unblocked. Escape never depended on the process it governs (INV-4).
             assert not _kernel_up(token)
             loaded = read_grant_file(grant_file)
-            allowed = decide_with_escape(**merge, grant=loaded, key=_KEY, now=_NOW)
+            allowed = decide_with_escape(
+                **merge, grant=loaded, key=_KEY, now=_NOW, session="chaos-lane"
+            )
             assert allowed.allowed, (
                 "a valid signed grant must unblock the lane with the daemon dead"
             )
