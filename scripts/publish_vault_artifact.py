@@ -596,6 +596,95 @@ def frozen_fingerprint(path: Path, surfaces: list[str]) -> str:
     return _artifact_fingerprint_for_gate(artifact)
 
 
+PIPELINE_STATES = ("inbox", "draft", "published", "failed")
+
+
+def pipeline_state(path: Path, surfaces: list[str], *, state_root: Path) -> str | None:
+    """Where the draft already is in the publish pipeline, or None if nowhere.
+
+    First by slug: an inbox, draft, published or failed file. Then by content: a per-surface
+    publication record that holds this draft's fingerprint ("publication_record"), so the same
+    bytes are never released twice even after the pipeline files are moved or cleaned. A record
+    of other bytes does not count, so a corrected version can republish. A record that cannot be
+    read is "publication_record_unreadable", which holds. The slug and fingerprint come from the
+    publisher's own construction, taken without asserting receipts. Raises PublicationGateError
+    or PublicationFrontmatterError when the draft cannot be built.
+    """
+    frontmatter, body = _parse_publication_markdown(path)
+    artifact = _artifact_from_frontmatter(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver="pipeline-check",
+        source_path=path.resolve(),
+    )
+    paths = {
+        "inbox": artifact.inbox_path(state_root=state_root),
+        "draft": artifact.draft_path(state_root=state_root),
+        "published": artifact.published_path(state_root=state_root),
+        "failed": artifact.failed_path(state_root=state_root),
+    }
+    state = next((state for state in PIPELINE_STATES if paths[state].exists()), None)
+    if state is not None:
+        return state
+    fingerprint = _artifact_fingerprint_for_gate(artifact)
+    for surface in surfaces:
+        log_path = artifact.log_path(surface, state_root=state_root)
+        try:
+            record = json.loads(log_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return "publication_record_unreadable"
+        if not isinstance(record, dict):
+            return "publication_record_unreadable"
+        if record.get("artifact_fingerprint") == fingerprint:
+            return "publication_record"
+    return None
+
+
+def drop_to_inbox(path: Path, *, surfaces: list[str], approver: str, state_root: Path) -> Path:
+    """Build the approved artifact from a vault draft and write it to the publish inbox.
+
+    The same construction as the command line's drop, so the draft's public-gate receipts are
+    asserted. The file is written beside its final name and renamed into place, so the
+    orchestrator never reads a partial artifact. Raises PublicationGateError on any refusal,
+    before anything is written.
+    """
+    frontmatter, body = _parse_publication_markdown(path)
+    if not body.strip():
+        raise PublicationGateError(
+            f"empty body in {path}; next action: restore the draft's body and freeze it again, "
+            "so its review covers the bytes that would publish"
+        )
+    _assert_target_surfaces_allowed(surfaces)
+    artifact = _build_artifact(
+        body_md=body,
+        frontmatter=frontmatter,
+        surfaces=surfaces,
+        approver=approver,
+        source_path=path.expanduser().resolve(),
+    )
+    _assert_safe_artifact_slug(artifact.slug)
+    inbox_path = artifact.inbox_path(state_root=state_root)
+    inbox_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = inbox_path.with_name(f".{inbox_path.name}.partial")
+    try:
+        partial.write_text(artifact.model_dump_json(indent=2), encoding="utf-8")
+        os.replace(partial, inbox_path)
+    except BaseException:
+        # A stray partial would sit in the inbox the orchestrator scans; remove it and say so.
+        partial.unlink(missing_ok=True)
+        log.error(
+            "inbox drop of %s failed; removed %s; next action: read the error, free the inbox "
+            "filesystem if it is full, and rerun the drop",
+            path,
+            partial,
+        )
+        raise
+    return inbox_path
+
+
 def _artifact_from_frontmatter(
     *,
     body_md: str,

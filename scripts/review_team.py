@@ -55,6 +55,7 @@ from shared.failure_classification import (  # noqa: E402
 )
 from shared.platform_capability_registry import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+    GLMCP_REVIEW_ADMISSION_BLOCKER,
     AuthorityCeiling,
     Mode,
     PlatformCapabilityRegistry,
@@ -918,6 +919,19 @@ def substitute_families(registry: Mapping[str, Any]) -> frozenset[str]:
 def _core_roster(registry: Mapping[str, Any]) -> list[str]:
     substitutes = substitute_families(registry)
     return [e["family"] for e in review_family_entries(registry) if e["family"] not in substitutes]
+
+
+#: Receipt file name per review route for seated-family admission witnessing.
+#: A route absent here records no basis at completion; the live examination
+#: check still governs that family — nothing is grandfathered.
+ROUTE_ADMISSION_RECEIPT_NAMES: dict[str, str] = {
+    GLMCP_PAYG_BUDGET_ROUTE_ID: "glmcp-quota-admission.yaml",
+}
+#: Live-block reasons a coherent recorded admission basis may waive, per route.
+#: Every other reason (PAYG gate, revocation, spend ledger, outage) still blocks.
+ROUTE_ADMISSION_WAIVABLE_REASONS: dict[str, frozenset[str]] = {
+    GLMCP_PAYG_BUDGET_ROUTE_ID: frozenset({GLMCP_REVIEW_ADMISSION_BLOCKER}),
+}
 
 
 def review_family_route_ids(registry: Mapping[str, Any]) -> dict[str, str]:

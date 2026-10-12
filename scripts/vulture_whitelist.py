@@ -5555,3 +5555,47 @@ _ = (
     _research_desk_list_open_requests,
     _research_desk_neutralize_markdown,
 )
+
+# U4b's release helpers in scripts/publish_vault_artifact.py land (split A) before
+# their caller, the release scan in scripts/cc-pr-review-dispatch.py (#5104), which
+# calls both as publish_vault_artifact.<name>; vulture cannot see that path yet.
+pipeline_state
+drop_to_inbox
+
+# split-A-of-5109: the producer's runner (agents/discourse_sensing/run.py and __main__.py) is
+# the production caller of these foundation entrypoints and lands in the stacked PR B of the
+# same seat split (#5112, row discourse-sensing-producer-slice1b-runner-20261011), so this
+# half has no call site for them yet. Removable once PR B merges.
+from agents.discourse_sensing.fetch import fetch_url as _ds_fetch_url  # noqa: E402
+from agents.discourse_sensing.intake import (  # noqa: E402
+    append_items as _ds_append_items,
+)
+from agents.discourse_sensing.intake import (
+    write_run_report as _ds_write_run_report,
+)
+from agents.discourse_sensing.parsers import (  # noqa: E402
+    parse_bluesky_feed as _ds_parse_bluesky_feed,
+)
+from agents.discourse_sensing.parsers import (
+    parse_feed as _ds_parse_feed,
+)
+from agents.discourse_sensing.parsers import (
+    parse_hn_search as _ds_parse_hn_search,
+)
+from agents.discourse_sensing.sources import (  # noqa: E402
+    SourceSpec as _ds_SourceSpec,
+)
+from agents.discourse_sensing.sources import (
+    load_sources as _ds_load_sources,
+)
+
+_ = (
+    _ds_SourceSpec.request_url,
+    _ds_fetch_url,
+    _ds_append_items,
+    _ds_write_run_report,
+    _ds_parse_bluesky_feed,
+    _ds_parse_feed,
+    _ds_parse_hn_search,
+    _ds_load_sources,
+)
