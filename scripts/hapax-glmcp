@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# hapax-glmcp ROLE [--continue] [--terminal none] — launch a GLM-5.3 lane the
+# coordinator can see.
+#
+# Sibling of hapax-kimi: tmux session hapax-glmcp-<role>, identity env,
+# session-role marker, relay-retire EXIT trap.
+#
+# Harness: kimi-code over the Z.ai GLM Coding Plan OpenAI-compatible endpoint
+# (https://api.z.ai/api/coding/paas/v4), NOT the claude binary. Measured
+# 2026-09-10: claude-code 2.1.260 refuses every glm-* id client-side
+# ([claude-code:unrecognized_model], no HTTP call is ever made) and refuses
+# recognized claude ids account-side (operator weekly subscription cap until
+# Sep 11 5pm), so the historical claude-harness glmcp lane cannot run any
+# model. The z.ai endpoint itself is verified live: glm-5.3 -> HTTP 200 on
+# both /api/anthropic/v1/messages and /api/coding/paas/v4/chat/completions;
+# the [1m] model ids are rejected (HTTP 400 code 1211). The claude-harness
+# wrapper (hapax-glmcp-claude) and the review seat are untouched; this
+# launcher is the agentic-lane path while the claude binary blocks glm ids.
+#
+# Secret handling: mirrors hapax-glmcp-claude — the Z.ai key is read from
+# `hapax-secret glmcp/api-key` at spawn and is NEVER written to durable disk. The
+# lane's KIMI_CODE_HOME (which kimi requires to hold provider credentials in
+# its config.toml) is rendered fresh into $XDG_RUNTIME_DIR (per-user tmpfs,
+# mode 700) on every launch; kimi sessions/logs under it are tmpfs-volatile
+# by design — durable lane evidence lives in the relay YAMLs and the vault.
+#
+# Usage:
+#   hapax-glmcp <role>              new lane (tmux hapax-glmcp-<role>)
+#   hapax-glmcp <role> --continue   resume the lane's last kimi session
+#   hapax-glmcp <role> --terminal none   run in the current terminal
+set -euo pipefail
+
+ROLE="${1:?usage: hapax-glmcp <role> [--continue] [--terminal none]}"
+shift || true
+
+CONTINUE=0
+TERMINAL="tmux"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --continue|-c) CONTINUE=1 ;;
+    --terminal) TERMINAL="${2:?--terminal needs a value}"; shift ;;
+    *) echo "hapax-glmcp: unknown arg $1" >&2; exit 2 ;;
+  esac
+  shift || true
+done
+
+KIMI_BIN="${KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
+SESSION="hapax-glmcp-$ROLE"
+SESSION_UUID="$(cat /proc/sys/kernel/random/uuid)"
+# The installed entrypoint follows the governed activated release, never main's
+# mutable checkout. Resolve the link once so a launch uses one release throughout.
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/.cache/hapax/source-activation/worktree}"
+if [ ! -r "$COUNCIL_DIR/scripts/lib/secret.sh" ] || \
+   [ ! -x "$COUNCIL_DIR/hooks/scripts/kimi-hook-adapter.sh" ] || \
+   [ ! -x "$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh" ]; then
+  echo "hapax-glmcp: activated launcher dependencies unavailable at $COUNCIL_DIR. Next action: restore the governed activated release before launching." >&2
+  exit 9
+fi
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)"
+. "$COUNCIL_DIR/scripts/lib/secret.sh"
+WORKDIR="${HAPAX_GLMCP_WORKDIR:-$HOME}"
+MODEL="${HAPAX_GLMCP_MODEL:-glm-5.3}"
+BASE_URL="${HAPAX_GLMCP_OPENAI_BASE_URL:-https://api.z.ai/api/coding/paas/v4}"
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "hapax-glmcp: session $SESSION already exists — attach with: tmux attach -t $SESSION" >&2
+  exit 12
+fi
+
+ZAI_KEY="$(hapax_secret_or_fail glmcp/api-key)" || exit 5
+
+printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
+
+# Render the lane's kimi home on tmpfs (secret never on durable disk).
+RUNTIME_BASE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+GLM_HOME="$RUNTIME_BASE/kimi-glm/$ROLE"
+mkdir -p "$GLM_HOME"
+chmod 700 "$RUNTIME_BASE/kimi-glm" "$GLM_HOME" 2>/dev/null || true
+(
+  umask 077
+  # JSON strings are TOML-compatible basic strings; quote paths and secret
+  # values instead of interpolating them into TOML or a shell command.
+  ZAI_KEY="$ZAI_KEY" python3 - "$GLM_HOME/config.toml" "$BASE_URL" "$MODEL" \
+    "$COUNCIL_DIR/hooks/scripts/kimi-hook-adapter.sh" <<'PYCONFIG'
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+path, base_url, model, adapter = sys.argv[1:]
+quote = json.dumps
+config = f"""default_permission_mode = "auto"
+default_plan_mode = false
+merge_all_available_skills = true
+default_model = "zai/glm-5.3"
+
+[thinking]
+enabled = true
+effort = "high"
+
+[loop_control]
+max_steps_per_turn = 0
+
+[providers.zai]
+type = "openai"
+base_url = {quote(base_url)}
+api_key = {quote(os.environ["ZAI_KEY"])}
+
+[models."zai/glm-5.3"]
+provider = "zai"
+model = {quote(model)}
+max_context_size = 200000
+capabilities = [ "thinking", "tool_use" ]
+display_name = "GLM-5.3 (Z.ai Coding Plan)"
+"""
+# Kimi Code 2.1.1 supports all four Codex parity events. No matcher means
+# all tools (including MCP) and both SessionStart startup/resume sources.
+# https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html
+for event in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
+    config += f"""
+[[hooks]]
+event = {quote(event)}
+command = {quote(shlex.join(["bash", adapter]))}
+timeout = 30
+"""
+config_path = Path(path)
+config_path.write_text(config)
+config_path.chmod(0o600)
+PYCONFIG
+)
+unset ZAI_KEY
+ln -sfn "$HOME/.kimi-code/mcp.json" "$GLM_HOME/mcp.json"
+ln -sfn "$HOME/.kimi-code/AGENTS.md" "$GLM_HOME/AGENTS.md"
+if [ -d "$HOME/.kimi-code/workspace-trust" ] && [ ! -e "$GLM_HOME/workspace-trust" ]; then
+  cp -r "$HOME/.kimi-code/workspace-trust" "$GLM_HOME/workspace-trust" 2>/dev/null || true
+fi
+
+KIMI_ARGS=()
+if [ "$CONTINUE" = "1" ]; then
+  KIMI_ARGS=(--continue)
+fi
+
+RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
+
+if [ "$TERMINAL" = "none" ]; then
+  trap '"$RELAY_RETIRE" "$ROLE" --reason "clean exit (terminal=none)" 2>/dev/null || true' EXIT
+  cd "$WORKDIR"
+  export KIMI_CODE_HOME="$GLM_HOME"
+  export HAPAX_AGENT_INTERFACE=glmcp HAPAX_AGENT_NAME="$ROLE" HAPAX_AGENT_ROLE="$ROLE"
+  export HAPAX_WORKTREE_ROLE="$ROLE" HAPAX_SESSION_ID="$SESSION_UUID"
+  exec "$KIMI_BIN" "${KIMI_ARGS[@]}"
+fi
+
+SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/glmcp-spawns"
+mkdir -p "$SPAWN_DIR"
+RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
+{
+  printf '%s\n' '#!/usr/bin/env bash'
+  printf '%s\n' 'set -euo pipefail'
+  printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
+  printf 'cd %q\n' "$WORKDIR"
+  printf 'export KIMI_CODE_HOME=%q\n' "$GLM_HOME"
+  printf 'export HAPAX_AGENT_INTERFACE=glmcp\n'
+  printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"
+  printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_WORKTREE_ROLE=%q\n' "$ROLE"
+  printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+  printf 'exec %q' "$KIMI_BIN"
+  for arg in "${KIMI_ARGS[@]+"${KIMI_ARGS[@]}"}"; do
+    printf ' %q' "$arg"
+  done
+  printf '\n'
+} >"$RUNNER"
+chmod 700 "$RUNNER"
+
+tmux new-session -d -s "$SESSION" "$RUNNER"
+echo "hapax-glmcp: lane $ROLE up at tmux session $SESSION (kimi harness, glm-5.3 via z.ai coding plan)"
