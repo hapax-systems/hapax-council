@@ -9,10 +9,18 @@
 set -euo pipefail
 
 # Child identity is authored below; the caller contributes only declared host bindings.
+# Inherited names may already be exported; keep newly authored state private.
+export -n COUNCIL_DIR LANE_ENVIRONMENT LANE_RESET
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}}"
-COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)" || exit 9
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P || {
+  echo "hapax-glmcp-claude: cannot resolve source root $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE" >&2
+  exit 9
+})" || exit 9
 LANE_ENVIRONMENT="$COUNCIL_DIR/scripts/lane_environment.py"
-LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || exit 9
+LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || {
+  echo "hapax-glmcp-claude: cannot reset lane environment from $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE" >&2
+  exit 9
+}
 eval "$LANE_RESET"
 export HAPAX_COUNCIL_DIR="$COUNCIL_DIR"
 

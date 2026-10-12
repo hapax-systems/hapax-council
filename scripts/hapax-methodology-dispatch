@@ -2108,11 +2108,11 @@ def launch_codex_headless(
         args.append("--force")
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
+    if lifecycle_receipt is not None:
+        args.extend(["--lifecycle-receipt", str(lifecycle_receipt)])
     args.extend([lane, prompt])
     env = {}
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
-    if lifecycle_receipt is not None:
-        env["HAPAX_NATIVE_LIFECYCLE_RECEIPT"] = str(lifecycle_receipt)
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:
         # Preserve a caller/operator-provided fallback value; the P0 drain rule

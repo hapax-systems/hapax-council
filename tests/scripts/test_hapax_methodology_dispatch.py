@@ -40,7 +40,7 @@ def _dispatcher_module() -> ModuleType:
 def _native_lifecycle_writer(variant: str = "matching") -> str:
     """Independent native-stream/receipt fixture, executed only by the fake launcher."""
     return (
-        f"{sys.executable} - <<'PY'\n"
+        f"{sys.executable} - \"$@\" <<'PY'\n"
         f"variant = {variant!r}\n"
         + textwrap.dedent(
             r"""
@@ -51,7 +51,9 @@ def _native_lifecycle_writer(variant: str = "matching") -> str:
 
             if variant == "missing":
                 raise SystemExit(0)
-            receipt = Path(os.environ["HAPAX_NATIVE_LIFECYCLE_RECEIPT"])
+            import sys
+
+            receipt = Path(sys.argv[sys.argv.index("--lifecycle-receipt") + 1])
             receipt.parent.mkdir(parents=True, exist_ok=True)
             stream = receipt.with_suffix(".jsonl")
             events = [
@@ -2399,8 +2401,9 @@ printf '%s\\n' "$@" > {launcher_args}
     # relay. Local fallback remains independently restricted to P0 drain lanes.
     recorded = launcher_args.read_text(encoding="utf-8")
     assert recorded.startswith(
-        "--execution-route\ncodex.headless.full\n--task\ngoverned-build\n--force\ncx-green\n"
+        "--execution-route\ncodex.headless.full\n--task\ngoverned-build\n--force\n--lifecycle-receipt\n"
     )
+    assert recorded.splitlines()[7] == "cx-green"
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded

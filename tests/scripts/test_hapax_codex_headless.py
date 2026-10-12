@@ -391,7 +391,6 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
         "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
         "HAPAX_DISPATCH_HOST": "observer-test.invalid" if remote else "local",
         "HAPAX_DISPATCH_HOST_FALLBACK": "",
-        "HAPAX_NATIVE_LIFECYCLE_RECEIPT": str(receipt),
     }
     env.pop("HAPAX_COUNCIL_DIR", None)
     env.pop("HAPAX_SOURCE_ACTIVATE_WORKTREE", None)
@@ -399,7 +398,16 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
         env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(activation)
 
     result = subprocess.run(
-        [str(installed), "--task", "task-x", "--no-claim", "cx-amber", "fixture"],
+        [
+            str(installed),
+            "--lifecycle-receipt",
+            str(receipt),
+            "--task",
+            "task-x",
+            "--no-claim",
+            "cx-amber",
+            "fixture",
+        ],
         capture_output=True,
         text=True,
         env=env,
@@ -865,10 +873,19 @@ def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, termination)
         "HAPAX_CODEX_HEADLESS_ALLOW": "1",
         "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
         "HAPAX_DISPATCH_HOST": "appendix",
-        "HAPAX_NATIVE_LIFECYCLE_RECEIPT": str(receipt),
     }
     process = subprocess.Popen(
-        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "fixture"],
+        [
+            str(SCRIPT),
+            "--lifecycle-receipt",
+            str(receipt),
+            "--task",
+            "task-x",
+            "--no-claim",
+            "--force",
+            "cx-amber",
+            "fixture",
+        ],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1004,7 +1021,6 @@ def test_codex_headless_cancels_wrapper_group(
         "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
         "HAPAX_CODEX_BIN_PATH": str(bin_dir / "codex"),
         "HAPAX_DISPATCH_HOST": "local",
-        "HAPAX_NATIVE_LIFECYCLE_RECEIPT": str(receipt),
     }
     env.pop("BASH_ENV", None)
     if cancel_at == "starting":
@@ -1038,7 +1054,17 @@ fi
     process = None
     try:
         process = subprocess.Popen(
-            [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "fixture"],
+            [
+                str(SCRIPT),
+                "--lifecycle-receipt",
+                str(receipt),
+                "--task",
+                "task-x",
+                "--no-claim",
+                "--force",
+                "cx-amber",
+                "fixture",
+            ],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

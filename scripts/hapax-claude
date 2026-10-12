@@ -31,10 +31,18 @@
 set -euo pipefail
 
 # Child identity is authored below; the caller contributes only declared host bindings.
+# Inherited names may already be exported; keep newly authored state private.
+export -n COUNCIL_DIR LANE_ENVIRONMENT LANE_RESET
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}}"
-COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)" || exit 9
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P || {
+  echo "hapax-claude: cannot resolve source root $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE" >&2
+  exit 9
+})" || exit 9
 LANE_ENVIRONMENT="$COUNCIL_DIR/scripts/lane_environment.py"
-LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || exit 9
+LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || {
+  echo "hapax-claude: cannot reset lane environment from $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE" >&2
+  exit 9
+}
 eval "$LANE_RESET"
 export HAPAX_COUNCIL_DIR="$COUNCIL_DIR"
 
@@ -423,9 +431,6 @@ fi
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
 # Minted, never inherited: HAPAX_SESSION_ID was scrubbed above, because a lane
 # launched from inside another session would otherwise share that session's lease.
-mint_uuid() {
-  cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || true
-}
 SESSION_UUID="$(python3 -I "$LANE_ENVIRONMENT" session-id "$EXPLICIT_SESSION_ID")"
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
@@ -691,9 +696,6 @@ for arg in "${CLAUDE_EXTRA[@]}"; do
 done
 if [ "$pin_harness_session" -eq 1 ]; then
   HARNESS_SESSION_ID="$SESSION_UUID"
-  if [ -z "$HARNESS_SESSION_ID" ]; then
-    echo "hapax-claude: could not mint a session id (no /proc/sys/kernel/random/uuid, no uuidgen); the witness falls back to this workdir's transcripts (next: install util-linux)" >&2
-  fi
 fi
 if [ -n "$HARNESS_SESSION_ID" ]; then
   CLAUDE_DEFAULT_ARGS+=("--session-id" "$HARNESS_SESSION_ID")
@@ -786,7 +788,8 @@ RUNNER="$(mktemp "$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE-XXXXXX.sh")"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
-  printf 'LANE_RESET="$(python3 -I %q shell)" || exit 9\n' "$LANE_ENVIRONMENT"
+  printf 'LANE_RESET="$(python3 -I %q shell)" || { echo %q >&2; exit 9; }\n' "$LANE_ENVIRONMENT" \
+      "hapax-claude: cannot reset runner environment from $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE"
   printf '%s\n' 'eval "$LANE_RESET"'
   printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"

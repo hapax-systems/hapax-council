@@ -4,10 +4,18 @@
 set -euo pipefail
 
 # Child identity is authored below; the caller contributes only declared host bindings.
+# Inherited names may already be exported; keep newly authored state private.
+export -n COUNCIL_DIR LANE_ENVIRONMENT LANE_RESET
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}}"
-COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)" || exit 9
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P || {
+  echo "hapax-codex: cannot resolve source root $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE" >&2
+  exit 9
+})" || exit 9
 LANE_ENVIRONMENT="$COUNCIL_DIR/scripts/lane_environment.py"
-LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || exit 9
+LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || {
+  echo "hapax-codex: cannot reset lane environment from $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE" >&2
+  exit 9
+}
 eval "$LANE_RESET"
 export HAPAX_COUNCIL_DIR="$COUNCIL_DIR"
 
@@ -746,7 +754,11 @@ sys.exit(0)'
 REMOTE_EXEC_PY='import base64,json,os,shutil,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"])
 import runpy
 source_root=os.environ.get("HAPAX_COUNCIL_DIR",os.path.expanduser("~/.cache/hapax/source-activation/worktree"))
-lane=runpy.run_path(os.path.join(source_root,"scripts/lane_environment.py"))
+try:
+    lane=runpy.run_path(os.path.join(source_root,"scripts/lane_environment.py"))
+except Exception as exc:
+    print("remote lane environment unavailable at "+source_root+" ("+type(exc).__name__+"); next action: restore the activated release and python3 on the dispatch host, or correct HAPAX_COUNCIL_DIR", file=sys.stderr)
+    sys.exit(9)
 child_env=lane["clean_environment"](os.environ)
 child_env.update(p.get("env",{}))
 os.environ.clear(); os.environ.update(child_env)
@@ -1538,7 +1550,8 @@ if [ -n "$DISPATCH_HOST" ]; then
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
-    printf 'LANE_RESET="$(python3 -I %q shell)" || exit 9\n' "$LANE_ENVIRONMENT"
+    printf 'LANE_RESET="$(python3 -I %q shell)" || { echo %q >&2; exit 9; }\n' "$LANE_ENVIRONMENT" \
+      "hapax-codex: cannot reset runner environment from $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE"
     printf '%s\n' 'eval "$LANE_RESET"'
     printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
     printf 'DISPATCH_HOST=%q\n' "$DISPATCH_HOST"
@@ -1590,7 +1603,8 @@ else
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
-    printf 'LANE_RESET="$(python3 -I %q shell)" || exit 9\n' "$LANE_ENVIRONMENT"
+    printf 'LANE_RESET="$(python3 -I %q shell)" || { echo %q >&2; exit 9; }\n' "$LANE_ENVIRONMENT" \
+      "hapax-codex: cannot reset runner environment from $COUNCIL_DIR; next action: restore the activated release and python3, or correct HAPAX_COUNCIL_DIR / HAPAX_SOURCE_ACTIVATE_WORKTREE"
     printf '%s\n' 'eval "$LANE_RESET"'
     printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
     printf 'trap '\''%q %q --reason "clean exit (codex)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"

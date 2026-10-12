@@ -161,7 +161,7 @@ def _env_with_fake_codex(tmp_path: Path) -> tuple[dict[str, str], Path]:
     return env, args_file
 
 
-def _launch(launcher, env, route="codex.headless.full", extra=(), workdir=None):
+def _launch(launcher, env, route="codex.headless.full", extra=(), workdir=None, receipt=None):
     if launcher == HEADLESS:
         args = [
             "--execution-route",
@@ -186,6 +186,8 @@ def _launch(launcher, env, route="codex.headless.full", extra=(), workdir=None):
             "--terminal",
             "none",
         ]
+    if receipt is not None:
+        args[0:0] = ["--lifecycle-receipt", str(receipt)]
     if extra:
         args += ["--", *extra]
     return subprocess.run(
@@ -290,6 +292,10 @@ def test_missing_descriptor_is_refused_before_invocation(tmp_path, launcher, fai
     if failure == "missing_runtime":
         council = tmp_path / "unprovisioned-council"
         (council / "scripts").mkdir(parents=True)
+        shutil.copy2(
+            REPO_ROOT / "scripts/lane_environment.py", council / "scripts/lane_environment.py"
+        )
+        (council / "shared").symlink_to(REPO_ROOT / "shared", target_is_directory=True)
         (council / "scripts/capability-execution.sh").write_bytes(
             (REPO_ROOT / "scripts/capability-execution.sh").read_bytes()
         )
@@ -583,7 +589,6 @@ def test_headless_identity_reaches_result_reader_with_frozen_declaration(tmp_pat
     registry = _registry(tmp_path)
     env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(registry)
     receipt = tmp_path / "lifecycle.json"
-    env["HAPAX_NATIVE_LIFECYCLE_RECEIPT"] = str(receipt)
     native = tmp_path / "bin/codex"
     script = native.read_text()
     # Preserve the controlled authentication sentinel path, then replace only
@@ -624,7 +629,7 @@ for event in [{"type": "thread.started", "thread_id": sid}, {"type": "turn.start
 PY
 """
     )
-    result = _launch(HEADLESS, env)
+    result = _launch(HEADLESS, env, receipt=receipt)
     assert result.returncode == 0, result.stderr
     observed, reference = _dispatch().read_native_lifecycle_receipt(receipt, platform="codex")
     assert observed["complete"] is True
@@ -768,7 +773,7 @@ def test_codex_dispatch_carries_variant_and_lifecycle_together(tmp_path, monkeyp
         "import json, os, sys\n"
         "from pathlib import Path\n"
         f"Path({str(recorded)!r}).write_text(json.dumps({{"
-        "'args': sys.argv[1:], 'receipt': os.environ['HAPAX_NATIVE_LIFECYCLE_RECEIPT']"
+        "'args': sys.argv[1:], 'receipt': sys.argv[sys.argv.index('--lifecycle-receipt') + 1]"
         "}))\n"
     )
     launcher.chmod(0o755)
@@ -918,11 +923,12 @@ def test_installed_codex_identity_uses_activated_source_before_provider(
     env.pop("HAPAX_CODEX_HEADLESS_ALLOW")
     activation = native_home / ".cache/hapax/source-activation/worktree"
     activation.parent.mkdir(parents=True)
-    if binding != "missing_activation":
+    if binding == "default_activation":
         activation.symlink_to(REPO_ROOT, target_is_directory=True)
     if binding == "explicit_activation":
-        # The declared activation must not inherit the legacy primary's runtime.
-        env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "stale-primary")
+        # The explicit source binding must work even when the default is absent.
+        activation = tmp_path / "explicit-release"
+        activation.symlink_to(REPO_ROOT, target_is_directory=True)
         env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(activation)
     if launcher == HEADLESS:
         args = ["--task", "fixture-only", "cx-amber", ""]
@@ -937,8 +943,8 @@ def test_installed_codex_identity_uses_activated_source_before_provider(
     )
     if binding == "missing_activation":
         assert result.returncode == 9
-        assert "identity source unavailable" in result.stderr
-        assert "hapax-source-activate" in result.stderr
+        assert f"cannot resolve source root {activation}" in result.stderr
+        assert "next action: restore the activated release" in result.stderr
     else:
         assert result.returncode == rc, result.stderr
         assert expected in result.stderr

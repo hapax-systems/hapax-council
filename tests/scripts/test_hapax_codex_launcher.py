@@ -2390,7 +2390,6 @@ def test_terminal_tmux_remote_runner_refuses_handoff_when_self_delete_fails(
     remote_cmds = tmp_path / "remote-cmds.txt"
     _write_fake_ssh_eval(tmp_path / "bin", commands=remote_cmds)
     env["HAPAX_DISPATCH_HOST"] = "appendix"
-    env["HAPAX_SESSION_ID"] = session_id
     env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
     _clear_handoff_glob(session_id)
 
@@ -2424,6 +2423,8 @@ esac
     result = subprocess.run(
         [
             str(LAUNCHER),
+            "--session-id",
+            session_id,
             "--session",
             "cx-amber",
             "--slot",
@@ -2445,6 +2446,7 @@ esac
     assert result.returncode == 0, result.stderr
     runner = Path(_new_session_args(tmux_args)[-1])
     try:
+        assert f"export HAPAX_SESSION_ID={shlex.quote(session_id)}\n" in runner.read_text()
         runner_result = subprocess.run(
             [str(runner)],
             capture_output=True,
