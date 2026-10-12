@@ -3431,6 +3431,21 @@ def test_holder_refresh_and_release_expired_lease_keep_predecessor(tmp_path):
     assert any("shape: holder_release" in s for s in readmes)
 
 
+def test_refresh_other_task_never_skips_expired_holder_marker(tmp_path):
+    home = tmp_path / "home"
+    _write_task(home, "active", "held-task")
+    _write_task(home, "active", "other-task")
+    env = _holder_fixture_env(home)
+    assert _claim(home, "held-task", extra_env=env).returncode == 0
+    for marker in (home / ".cache/hapax").glob("cc-active-task-*"):
+        os.utime(marker, (1, 1))
+    before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+    result = _claim(home, "other-task", extra_env=env, extra_args=["--refresh-lease"])
+    assert result.returncode == 7, result.stdout + result.stderr
+    assert "expired claim" in result.stderr and "held-task" in result.stderr
+    assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+
+
 @pytest.mark.parametrize(
     "other",
     [

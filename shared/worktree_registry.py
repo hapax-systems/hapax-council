@@ -343,6 +343,11 @@ def save(rec: WorktreeRecord) -> None:
         current, corrupt = _read_record(rec.path)
         if corrupt:
             raise CorruptRecordError("preserve corrupt registry record")
+        if current is None and (rec.executor or rec.executor_history):
+            raise HolderProofError(
+                "holder_record_retired: metadata cannot restore executor authority. "
+                "Next action: preserve history and use the declared launcher."
+            )
         if current and current.executor is not None:
             rec.executor = current.executor
             rec.executor_history = current.executor_history
@@ -596,13 +601,79 @@ def set_status(path: str, status: Status, *, pinned: bool = True) -> WorktreeRec
     return rec
 
 
-def deregister(path: str) -> None:
-    with holder_lock(path):
+@contextmanager
+def retirement_guard(path: str, *, work_check: Callable[[], bool] | None = None):
+    """Keep launch excluded through the checkout removal and registry retirement.
+
+    Existing cleanup predicates remain required. Executor-bearing records also
+    need positive absence, reobserved after those predicates under both locks.
+    This retires a checkout binding, never a claim or its publication journal.
+    """
+    initial, _ = _read_record(path)
+    role = initial.role if initial else None
+    with holder_lock(path, role=role):
         rec, corrupt = _read_record(path)
-        if corrupt or (rec is not None and (rec.executor or rec.executor_history)):
+        if corrupt or (rec.role if rec else None) != role:
             raise HolderProofError(
-                "holder_record_retained: preserve executor lineage; reconcile the holder before deregistration"
+                "holder_record_retained: registry changed or is unreadable. "
+                "Next action: preserve the checkout and reconcile its registry record."
             )
+        before = record_path(path).read_bytes() if rec else None
+        proof = None
+        if rec and (rec.executor or rec.executor_history):
+            proof = observe_holder(rec, role=role or "", session_id=rec.session_id or "")
+            if proof.state != "ABSENT":
+                raise HolderProofError(
+                    f"holder_record_retained: {proof.state} {proof.reason}. "
+                    "Next action: preserve the checkout and reconcile the existing holder."
+                )
+        if work_check is not None and not work_check():
+            raise HolderProofError(
+                "worktree_changed: cleanup predicates no longer hold. "
+                "Next action: preserve the checkout and inspect its current work."
+            )
+        current, corrupt = _read_record(path)
+        after = record_path(path).read_bytes() if current else None
+        rechecked = (
+            observe_holder(current, role=role or "", session_id=rec.session_id or "")
+            if proof
+            else None
+        )
+        if corrupt or before != after or (proof and rechecked != proof):
+            raise HolderProofError(
+                "holder_record_retained: retirement observation changed. "
+                "Next action: preserve the checkout and recheck the current holder."
+            )
+        yield
+
+
+def deregister(path: str) -> None:
+    with retirement_guard(path):
+        rec, _ = _read_record(path)
+        if rec and (rec.executor or rec.executor_history):
+            if os.path.lexists(path):
+                raise HolderProofError(
+                    "holder_record_retained: checkout still exists. "
+                    "Next action: use governed worktree retirement."
+                )
+            source = record_path(path)
+            content = source.read_bytes()
+            archive_dir = registry_dir() / "retired"
+            archive_dir.mkdir(exist_ok=True)
+            archive = archive_dir / f"{_slug(path)}-{hashlib.sha256(content).hexdigest()}.json"
+            if os.path.lexists(archive):
+                if archive.is_symlink() or archive.read_bytes() != content:
+                    raise HolderProofError(
+                        "holder_record_retained: retirement archive differs. "
+                        "Next action: preserve both records and repair the archive."
+                    )
+                source.unlink()
+            else:
+                # Both names are in this registry and protected by the record
+                # and role locks. Move atomically: never leave the live index
+                # behind after a partially completed archive operation.
+                source.rename(archive)
+            return
         record_path(path).unlink(missing_ok=True)
 
 

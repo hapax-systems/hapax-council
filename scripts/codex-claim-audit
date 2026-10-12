@@ -810,8 +810,9 @@ _holder_marker_keys_for_task() {
   done
 }
 
-# Clear every such marker, carrying the PR: a leftover one would refuse the next holder's
-# cc-claim. Fails if any clear fails, so the note stays claimed.
+# One exact applied publication owns the bare and session-qualified sidecars.
+# An additional session marker holds the whole transition; a per-name sweep
+# cannot establish that other session's executor/epoch authority.
 _release_blocked_holder_markers() {
   _clear_claim_cache_for_release "$1" "$2" "capability-blocked" "$3" carry
 }
@@ -897,7 +898,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from shared import worktree_registry as wr
 from shared.gate0b_claim_publication_install import default_claim_publication_roots
-from shared.sdlc_claim import resolve_applied_claim_publication_for_task, transition_holder_claim
+from shared.sdlc_claim import ClaimPublicationError, ClaimResidueArchiveHold, resolve_applied_claim_publication_for_task, transition_holder_claim
 role, task, vault, cache, apply, dry, peer, carry, repo, gh_command = sys.argv[2:]
 # Cache sweeps also pass a session-qualified key; only the UUID suffix is a session.
 role = re.sub(r'-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$', '', role)
@@ -1000,8 +1001,10 @@ try:
         sys.exit(0)
     result = transition_holder_claim(expected=expected, holder_path=record.path, observed=observed, action='audit_absent', caller_pid=None, vault_root=Path(vault), transaction_root=Path(roots.claim_transaction_root), lock_root=Path(roots.claim_lock_root), observed_at=datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ'), audit_work_check=work_check, audit_carry_pr=carry == 'true', dry_run=dry == 'true')
     print(f'WOULD_RELEASE: {task}' if dry == 'true' else f'RELEASED: {task} audit_absent; predecessor={result.publication_id} archive={result.archive_dir}')
+except (ClaimPublicationError, ClaimResidueArchiveHold, wr.HolderProofError, OSError, ValueError, subprocess.SubprocessError) as exc:
+    print(f'HOLDER_UNKNOWN: {task} {type(exc).__name__}: {exc}; Next action: preserve claim and reconcile the named executor, epoch or work evidence')
 except Exception as exc:
-    print(f'HOLDER_UNKNOWN: {task} {type(exc).__name__}: {exc}; next action: preserve claim and reconcile the named executor, epoch or work evidence')
+    print(f'HOLDER_ERROR: {task} {type(exc).__name__}; Next action: preserve claim and repair the audit observer before retrying')
 PYHOLDER
 }
 
@@ -1242,10 +1245,11 @@ for note in "$VAULT_ROOT/active/"*.md; do
     if _reality_check_protects "$task_id" "$assigned" "$pr" "aged claim $task_id"; then
       continue
     fi
-    holder_inspection="$(_holder_audit_for "$assigned" "$task_id" false)" || holder_inspection="HOLDER_UNKNOWN: holder observer unavailable; preserve and repair observer"
+    holder_inspection="$(_holder_audit_for "$assigned" "$task_id" false)" || holder_inspection="HOLDER_ERROR: holder observer unavailable; Next action: preserve and repair observer"
     case "$holder_inspection" in
       HOLDER_PRESENT:*) printf '%s\n' "$holder_inspection"; continue ;;
-      HOLDER_UNKNOWN:*) _record_coherence "$holder_inspection"; continue ;;
+      HOLDER_ABSENT:*) ;;
+      *) _record_coherence "$holder_inspection"; continue ;;
     esac
     phantom_count=$((phantom_count + 1))
     age_h=$((age / 3600))

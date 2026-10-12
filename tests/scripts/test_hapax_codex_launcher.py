@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -2197,6 +2199,51 @@ printf '%s\\n' -- "$@" >> {tmux_args}
     # hapax-lane-supervisor to read. Reverting the branch to an inline new-session
     # leaves the helper defined-but-unused, and this is what catches that.
     _assert_remain_on_exit_set_after_new_session(tmux_args)
+
+
+@pytest.mark.parametrize("terminal", ["tmux", "foot"])
+def test_remote_terminal_no_claim_still_requires_holder_transport(tmp_path: Path, terminal) -> None:
+    env, args_file, _ = _env_with_fake_codex(tmp_path)
+    _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
+    _write_active_task(env, "demo-task")
+    (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
+    _write_fake_ssh_eval(tmp_path / "bin")
+    env["HAPAX_DISPATCH_HOST"] = "appendix"
+    witness = tmp_path / "terminal-created"
+    for name in ("tmux", "foot"):
+        stub = tmp_path / "bin" / name
+        stub.write_text(
+            f'#!/bin/bash\n[[ "$1" != has-session ]] || exit 1\nprintf "%s\\n" "$*" >> {witness}\n'
+        )
+        stub.chmod(0o755)
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    before = {p: p.read_bytes() for p in cache.glob("cc-*") if p.is_file()}
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--terminal",
+            terminal,
+            "--no-claim",
+            "--force",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 8, result.stdout + result.stderr
+    assert "holder_transport_unsupported. Next action:" in result.stderr
+    assert not witness.exists()
+    assert not args_file.exists()
+    assert {p: p.read_bytes() for p in cache.glob("cc-*") if p.is_file()} == before
 
 
 def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex_holds_without_remote_holder(

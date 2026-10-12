@@ -8,6 +8,40 @@ machine-authorizing paths.
 
 ## Default Recheck
 
+Claim and resume require a committed local executor from the declared launcher
+in the existing worktree registry. The role and session must match, and the
+calling process must descend from that exact root (host, boot, PID and kernel
+start time). The same prerequisite applies to the legacy emergency writer and
+`--return-claim`; the fallback flag does not bypass holder proof. A saved session
+ID, live launch parent, heartbeat or old receipt alone is insufficient.
+
+From the existing launched holder's worktree, this read-only proof recheck takes
+the same registry locks as claim:
+
+```bash
+uv run --no-sync python - <<'PY'
+import os
+from pathlib import Path
+from shared.worktree_registry import claimed_holder
+
+with claimed_holder(
+    str(Path.cwd().resolve()),
+    role=os.environ["HAPAX_AGENT_ROLE"],
+    session_id=os.environ["HAPAX_SESSION_ID"],
+    caller_pid=os.getpid(),
+) as proof:
+    print(proof.state, proof.reason)
+PY
+```
+
+Expect `PRESENT executor_alive`. Missing, pending, foreign-host, reused-PID or
+unreadable identity holds. Preserve the registry, claim sidecars and journals;
+reconcile that exact executor with the coordinating seat through the declared
+launcher. Do not manufacture a registry entry or start a replacement alongside
+a present or unknown holder. Unsupported remote transports hold even with
+`--no-claim`. This runbook describes source behavior; installed observation is
+required before claiming runtime activation.
+
 Manual claims have a built-in producer. A hand-run default claim with no
 dispatch flags issues a self-witnessed manual binding bound to the task
 `authority_case`, claimer role, and session id. The sidecar keeps the installed
@@ -110,6 +144,9 @@ condition and rerun `cc-claim`. Do not switch to the fallback for routine
 stale-claim cleanup.
 
 ## Emergency Fallback
+
+Explicit emergency authorization is still required. First satisfy the executor
+prerequisite above; this switch changes the publication writer, not holdership.
 
 ```bash
 HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1 cc-claim <task-id>
@@ -293,9 +330,47 @@ before the journal; inspect them before rerunning.
 decides the residue must go anyway, the Manual Stale-Lease Release below is the emergency path,
 run with operator approval and recorded in the row's lineage.
 
+### Current Holder Past The Lease TTL
+
+The actual current holder can refresh its own admitted claim after 21,600
+seconds without operator approval:
+
+```bash
+cc-claim --refresh-lease <held-task-id>
+```
+
+The command rechecks the current executor and exact task/session/epoch under
+registry, claim-role and task-note locks. It archives the previous six sidecars
+as `holder_refresh`, retains the original journal/receipt, then publishes a new
+admitted epoch and records it in the row's log. Verify the new epoch and admitted
+receipt as in Default Recheck. Another task's expired marker is not skipped.
+
+To return only an eligible unstarted claim, the same holder can use:
+
+```bash
+cc-claim --release-lease <held-task-id>
+```
+
+Expect `offered`, `unassigned`, and a `holder_release` lineage archive. A started
+status, branch or PR holds with `holder_release_custody_required`: complete normal
+publication or use the existing governed U3 custody path. Holder identity does
+not authorize parking unpublished source. A non-holder cannot use either verb;
+unknown identity preserves everything and names reconciliation. Legacy writes
+without an admitted publication cannot supply these verbs' journal prerequisite.
+
+An audit release is separately recorded as `audit_absent`: it requires positive
+executor absence and locked work/PR/epoch rechecks, never the holder's authority.
+The normal role and session sidecars are archived together. An additional live
+session marker holds the whole transition; do not sweep it by name. Interrupted
+archives retain their named recovery path and exact predecessor bytes.
+
 ### Return An Unstarted Claim
 
 A role that claimed a row and has not started it (no PR, no branch) returns it itself:
+
+The caller must pass the committed executor recheck above before this verb
+can act. A `holder_unknown` or caller-root mismatch preserves the claim; repair
+the declared executor binding instead of switching publication writers.
 
 ```bash
 cc-claim --return-claim <task-id>
@@ -362,7 +437,9 @@ the claim path, not by `--release-claim-residue`, not by `--return-claim`.
 
 Use this manual procedure only with operator approval, and only for the shape the governed release
 refuses: an **expired** claim HOLD (exit 7) that names an exact `cc-active-task-*` path whose task
-is still live. For the four shapes above, use `cc-claim --release-claim-residue` instead.
+is still live and cannot use the current-holder verbs above. Age alone is not
+authority to clear another executor. For the residue shapes above, use
+`cc-claim --release-claim-residue` instead.
 
 ```bash
 set -euo pipefail

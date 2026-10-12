@@ -1453,6 +1453,124 @@ def test_deregister_cannot_destroy_executor_lineage(tmp_path, monkeypatch):
     assert wr.record_path(record.path).read_bytes() == before
 
 
+@pytest.mark.parametrize("holder", ["absent", "present", "unknown"])
+def test_reaper_composes_holder_proof_and_retains_retired_lineage(
+    tmp_path, monkeypatch, capsys, holder
+):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    tree, branch = _add_worktree(repo, "holder")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "SELF", "")
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(wr, "is_merged", lambda *_a, **_k: True)
+    with subprocess.Popen(["sleep", "30"]) as process:
+        try:
+            record = wr.publish_executor(
+                str(tree), role="cx-test", session_id="sid", pid=process.pid
+            )
+            if holder == "absent":
+                process.terminate()
+                process.wait(timeout=5)
+            elif holder == "unknown":
+                record.executor["state"] = "pending"
+                wr._save_unlocked(record)
+            before = wr.record_path(str(tree)).read_bytes()
+            assert cli.cmd_protected_paths(argparse.Namespace()) == 0
+            assert str(tree) in capsys.readouterr().out
+            assert cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0)) == 0
+            if holder != "absent":
+                assert tree.is_dir()
+                assert wr.record_path(str(tree)).read_bytes() == before
+                assert not list((wr.registry_dir() / "retired").glob("*.json"))
+                return
+            assert not tree.exists()
+            assert wr.load(str(tree)) is None
+            archived = list((wr.registry_dir() / "retired").glob("*.json"))
+            assert len(archived) == 1 and archived[0].read_bytes() == before
+            assert wr._git(str(repo), "rev-parse", "--verify", branch).returncode == 0
+            replacement = wr.publish_executor(
+                str(tmp_path / "new-tree"), role="cx-test", session_id="new-sid", pid=os.getpid()
+            )
+            assert (
+                wr.observe_holder(replacement, role="cx-test", session_id="new-sid").state
+                == "PRESENT"
+            )
+            assert archived[0].read_bytes() == before
+            record.last_heartbeat = datetime.now(UTC)
+            with pytest.raises(wr.HolderProofError, match="holder_record_retired"):
+                wr.save(record)
+            assert wr.load(str(tree)) is None
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+
+
+def test_retirement_rechecks_work_and_executor_before_removal(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    with subprocess.Popen(["sleep", "30"]) as process:
+        record = wr.publish_executor(
+            str(tmp_path / "tree"), role="cx-test", session_id="sid", pid=process.pid
+        )
+        process.terminate()
+        process.wait(timeout=5)
+    before = wr.record_path(record.path).read_bytes()
+    with pytest.raises(wr.HolderProofError, match="worktree_changed"):
+        with wr.retirement_guard(record.path, work_check=lambda: False):
+            pytest.fail("work changed but removal was admitted")
+    assert wr.record_path(record.path).read_bytes() == before
+
+    def relaunch_during_inspection():
+        # Simulate changed evidence at the last read boundary. Production
+        # publishers take these locks; this fault injects a broken writer.
+        record.executor["state"] = "pending"
+        wr._save_unlocked(record)
+        return True
+
+    with pytest.raises(wr.HolderProofError, match="retirement observation changed"):
+        with wr.retirement_guard(record.path, work_check=relaunch_during_inspection):
+            pytest.fail("executor changed but removal was admitted")
+    assert wr.load(record.path).executor["state"] == "pending"
+    assert not list((wr.registry_dir() / "retired").glob("*.json"))
+
+
+def test_retirement_excludes_successor_until_archive_complete(tmp_path, monkeypatch):
+    import concurrent.futures
+    import threading
+
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    with subprocess.Popen(["sleep", "30"]) as process:
+        old = wr.publish_executor(
+            str(tmp_path / "old"), role="cx-test", session_id="old-sid", pid=process.pid
+        )
+        process.terminate()
+        process.wait(timeout=5)
+    attempted = threading.Event()
+
+    def launch():
+        attempted.set()
+        return wr.publish_executor(
+            str(tmp_path / "new"), role="cx-test", session_id="new-sid", pid=os.getpid()
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        with wr.retirement_guard(old.path, work_check=lambda: True):
+            future = pool.submit(launch)
+            assert attempted.wait(2)
+            with pytest.raises(concurrent.futures.TimeoutError):
+                future.result(timeout=0.15)
+            wr.deregister(old.path)
+        successor = future.result(timeout=3)
+    assert successor.session_id == "new-sid"
+    assert wr.load(old.path) is None
+    assert len(list((wr.registry_dir() / "retired").glob("*.json"))) == 1
+
+
 def test_pending_timeout_preserves_attempt_and_never_admits(tmp_path, monkeypatch):
     monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
     path = str(tmp_path / "tree")

@@ -2179,6 +2179,7 @@ def _canonical_absent_claim(tmp_path, vault, cache, role, task_id, worktree):
         "cache_mismatch",
         "dry_run",
         "dry_dirty",
+        "other_session_marker",
     ],
 )
 def test_positive_absence_uses_exact_journal_and_preserves_work_guards(tmp_path, work):
@@ -2197,6 +2198,10 @@ def test_positive_absence_uses_exact_journal_and_preserves_work_guards(tmp_path,
         _git(repo, "commit", "-q", "--allow-empty", "-m", "not pushed")
     if work == "cache_mismatch":
         (cache / "cc-claim-epoch-cx-test").write_text("99999999 another-task\n")
+    if work == "other_session_marker":
+        (cache / "cc-active-task-cx-test-ffffffff-ffff-ffff-ffff-ffffffffffff").write_text(
+            "absent-holder\n"
+        )
     before = {p: p.read_bytes() for p in [note, *cache.glob("cc-*")] if p.is_file()}
     extra = (
         ["--reconcile-host=unavailable-peer"]
@@ -2225,6 +2230,7 @@ def test_positive_absence_uses_exact_journal_and_preserves_work_guards(tmp_path,
             "cache_mismatch": "claim",
             "dry_run": "WOULD_RELEASE:",
             "dry_dirty": "uncommitted_paths",
+            "other_session_marker": "other_marker",
         }[work]
         assert reason in result.stdout, result.stdout + result.stderr
         if work != "dry_run":
@@ -2252,3 +2258,56 @@ exit 0
     assert all(p.is_file() and p.read_bytes() == data for p, data in before.items()), result.stdout
     assert "branch_pr_changed_or_unknown" in result.stdout
     assert 3 <= int(calls.read_text()) <= 5
+
+
+@pytest.mark.parametrize("fault", ["TypeError", "PermissionError"])
+def test_audit_distinguishes_internal_error_from_unknown_holder(tmp_path, fault):
+    vault = _make_vault(tmp_path)
+    cache = tmp_path / "cache"
+    repo = _pushed_repo(tmp_path, "feat/absent")
+    note = _write_task_note(vault, "observer-fault", assigned_to="cx-test", branch="feat/absent")
+    _canonical_absent_claim(tmp_path, vault, cache, "cx-test", "observer-fault", repo)
+    body = SCRIPT.read_text().split("<<'PYHOLDER'\n", 1)[1].split("\nPYHOLDER", 1)[0]
+    body = body.replace(
+        "from shared import worktree_registry as wr",
+        "from shared import worktree_registry as wr\n"
+        f"def broken_observer(*a, **k): raise {fault}('untrusted detail')\n"
+        "wr.observe_holder = broken_observer",
+    )
+    before = {p: p.read_bytes() for p in [note, *cache.glob("cc-*")] if p.is_file()}
+    result = subprocess.run(
+        [
+            str(SCRIPT.parent.parent / ".venv/bin/python"),
+            "-I",
+            "-c",
+            body,
+            str(SCRIPT.parent.parent),
+            "cx-test",
+            "observer-fault",
+            str(vault),
+            str(cache),
+            "true",
+            "false",
+            "",
+            "false",
+            "fixture/repo",
+            "/unused-gh",
+        ],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path / "fakehome"),
+            "HAPAX_WORKTREE_REGISTRY_DIR": str(
+                tmp_path / "fakehome/.cache/hapax/worktree-registry"
+            ),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    prefix = "HOLDER_ERROR:" if fault == "TypeError" else "HOLDER_UNKNOWN:"
+    assert prefix in result.stdout, result.stdout + result.stderr
+    assert "Next action:" in result.stdout
+    if fault == "TypeError":
+        assert "untrusted detail" not in result.stdout
+    assert all(p.is_file() and p.read_bytes() == content for p, content in before.items())
