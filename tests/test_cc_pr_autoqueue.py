@@ -6811,6 +6811,262 @@ def test_failed_group_truncation_reports_unknown_not_zero(tmp_path: Path, monkey
     )
 
 
+def _lifetime_coverage_fixture(tmp_path, monkeypatch, *, current_head="new-source-head"):
+    _, runner, ledger = _failed_group_report(tmp_path, current_head=current_head)
+    runner.queue_history[130]["createdAt"] = "2026-10-12T00:00:00Z"
+    failed = dict(runner.merge_group_runs[0], repository={"full_name": "owner/repo"}, run_attempt=1)
+    successes = [
+        dict(
+            failed,
+            id=10000 + i,
+            conclusion="success",
+            head_sha=f"other-group-{i}",
+            head_branch=f"gh-readonly-queue/main/pr-{1000 + i}-" + "a" * 40,
+        )
+        for i in range(120)
+    ]
+    # More than 100 runs relevant to this PR's lifetime, and 10,001 globally.
+    pages = [successes[:100], [*successes[100:], failed]]
+    calls = []
+    original = autoqueue._rest_get_json
+
+    def response(endpoint, **kwargs):
+        if not endpoint.endswith("/actions/runs"):
+            return original(endpoint, **kwargs)
+        fields = kwargs.get("fields", {})
+        calls.append(dict(fields))
+        if "created" not in fields:
+            return {"total_count": 10001, "workflow_runs": successes[:100]}
+        return {"total_count": 121, "workflow_runs": pages[int(fields["page"]) - 1]}
+
+    monkeypatch.setattr(autoqueue, "_rest_get_json", response)
+    return runner, ledger, pages, calls, response
+
+
+@pytest.mark.parametrize("current_head", ["source-head", "new-source-head"])
+def test_failed_group_over_100_complete_lifetime_coverage(tmp_path, monkeypatch, current_head):
+    runner, ledger, _, calls, _ = _lifetime_coverage_fixture(
+        tmp_path,
+        monkeypatch,
+        current_head=current_head,
+    )
+    runner.calls.clear()
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=_make_vault(tmp_path),
+        apply=True,
+        lineage_ledger_path=ledger,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+        runner=runner,
+    )
+    decision = report["decisions"][0]
+    assert decision["action"] == ("blocked" if current_head == "source-head" else "queue")
+    assert not any("evidence_unknown" in reason for reason in decision.get("reasons", []))
+    observation = report["merge_group_observation"]
+    proof = observation["run_coverage"]["130"]
+    assert proof["complete"] is True
+    assert proof["total_count"] == 121
+    assert proof["observed_run_count"] == 121
+    assert proof["head_sha"] == current_head
+    assert proof["created_at"] == "2026-10-12T00:00:00Z"
+    assert observation["admission_evidence_complete"] is True
+    assert observation["complete"] is False  # Repository history is still truncated.
+    assert report["storm_mode"]["failed_recent_merge_group_run_count"] is None
+    assert [call["page"] for call in calls if "created" in call] == ["1", "2"]
+    assert all(
+        call["created"].startswith("2026-10-12T00:00:00Z..") for call in calls if "created" in call
+    )
+    [retained] = [r for r in lineage.read_jsonl_records(ledger) if r.merge_group_run_id == 9001]
+    assert retained.run_conclusion == "failure"
+    assert retained.pr_head_sha == "source-head"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_page",
+        "duplicate",
+        "changed_total",
+        "outside_window",
+        "foreign_repo",
+        "missing_attempt",
+        "omitted_known",
+        "omitted_recent",
+        "missing_birth",
+        "future_birth",
+        "unbound",
+        "removal_gap",
+        "search_ceiling",
+        "budget",
+    ],
+)
+def test_failed_group_lifetime_coverage_gaps_hold(tmp_path, monkeypatch, fault):
+    runner, ledger, pages, calls, response = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    if fault == "duplicate":
+        pages[1][0] = pages[0][0]
+    if fault == "outside_window":
+        pages[1][0]["created_at"] = "2026-10-11T23:59:59Z"
+    if fault == "foreign_repo":
+        pages[1][0]["repository"] = {"full_name": "other/repo"}
+    if fault == "missing_attempt":
+        pages[1][0].pop("run_attempt")
+    if fault == "omitted_known":
+        pages[1].pop()
+    if fault == "omitted_recent":
+        pages[0][0] = dict(pages[0][0], id=99999)
+    if fault == "missing_birth":
+        runner.queue_history[130].pop("createdAt")
+    if fault == "future_birth":
+        runner.queue_history[130]["createdAt"] = "2099-01-01T00:00:00Z"
+    if fault == "removal_gap":
+        runner.queue_history[130]["timelineItems"]["pageInfo"]["hasPreviousPage"] = True
+
+    def broken(endpoint, **kwargs):
+        result = response(endpoint, **kwargs)
+        fields = kwargs.get("fields", {})
+        if "created" in fields:
+            if fault == "omitted_known":
+                result["total_count"] = 120
+            if fault == "budget":
+                raise autoqueue.RestIndeterminateError("test_budget_hold")
+            if fault == "search_ceiling":
+                result["total_count"] = 1000
+            if fields["page"] == "2":
+                if fault == "missing_page":
+                    result["workflow_runs"] = []
+                if fault == "changed_total":
+                    result["total_count"] = 120
+        return result
+
+    monkeypatch.setattr(autoqueue, "_rest_get_json", broken)
+    _, blockers, evidence = _observe_again(
+        tmp_path,
+        runner,
+        [] if fault == "unbound" else lineage.read_jsonl_records(ledger),
+    )
+    assert any(reason.startswith("merge_group_evidence_unknown:") for reason in blockers[130])
+    assert evidence["admission_evidence_complete"] is False
+    assert len([call for call in calls if "created" in call]) <= 2
+    expected = {
+        "missing_page": "coverage_page_gap",
+        "duplicate": "coverage_run_identity_or_boundary",
+        "changed_total": "coverage_count_changed",
+        "outside_window": "coverage_run_identity_or_boundary",
+        "foreign_repo": "coverage_run_identity_or_boundary",
+        "missing_attempt": "coverage_run_identity_or_boundary",
+        "omitted_known": "coverage_known_run_missing",
+        "omitted_recent": "coverage_known_run_missing",
+        "missing_birth": "pr_creation_missing_or_future",
+        "future_birth": "pr_creation_missing_or_future",
+        "search_ceiling": "coverage_search_ceiling",
+        "budget": "test_budget_hold",
+    }
+    if fault in expected:
+        assert evidence["run_coverage"]["130"]["reason"] == expected[fault]
+
+
+def test_failed_group_lifetime_request_budget_is_bounded(tmp_path, monkeypatch):
+    runner, ledger, _, calls, response = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(autoqueue, "MERGE_GROUP_COVERAGE_REQUEST_LIMIT", 1, raising=False)
+    _, blockers, evidence = _observe_again(tmp_path, runner, lineage.read_jsonl_records(ledger))
+    assert "merge_group_evidence_unknown:runs_truncated" in blockers[130]
+    assert len([call for call in calls if "created" in call]) == 1
+    assert evidence["run_coverage"]["130"]["reason"] == "coverage_request_limit"
+
+
+def test_failed_group_lifetime_coverage_admits_unaffected_pr(tmp_path, monkeypatch):
+    runner, ledger, _, _, _ = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    runner.open_prs = [_pr(131)]
+    runner.queue_history[131] = {
+        "headRefOid": "sha-131",
+        "baseRefName": "main",
+        "createdAt": "2026-10-12T00:00:00Z",
+        "mergeQueueEntry": None,
+        "timelineItems": {"pageInfo": {"hasPreviousPage": False}, "nodes": []},
+    }
+    _, blockers, evidence = _observe_again(tmp_path, runner, lineage.read_jsonl_records(ledger))
+    assert not blockers
+    assert evidence["run_coverage"]["131"]["complete"]
+    assert evidence["admission_evidence_complete"]
+
+
+def test_failed_group_lifetime_rerun_cannot_erase_uncaptured_failure(tmp_path, monkeypatch):
+    runner, _, pages, _, _ = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    runner.queue_history[130]["timelineItems"]["nodes"] = []
+    pages[1][-1].update(conclusion="success", run_attempt=2)
+    # The first attempt was never captured (or was evicted). Latest success is
+    # not evidence that this synthetic group has never failed.
+    _, blockers, evidence = _observe_again(tmp_path, runner)
+    assert "merge_group_evidence_unknown:run_attempt_history_missing:9001" in blockers[130]
+    assert not evidence["admission_evidence_complete"]
+
+
+def test_failed_group_lifetime_stops_when_pool_loses_headroom(tmp_path, monkeypatch):
+    runner, ledger, _, calls, _ = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    checks = []
+
+    def pool(_snapshot):
+        checks.append(1)
+        return "below_floor" if len(checks) >= 3 else None
+
+    monkeypatch.setattr(autoqueue, "rest_pool_blocked", pool)
+    _, blockers, evidence = _observe_again(tmp_path, runner, lineage.read_jsonl_records(ledger))
+    assert "merge_group_evidence_unknown:runs_truncated" in blockers[130]
+    assert len([call for call in calls if "created" in call]) == 1
+    assert evidence["run_coverage"]["130"]["reason"] == "below_floor"
+
+
+def test_failed_group_lifetime_budget_is_shared_without_holding_covered_peer(tmp_path, monkeypatch):
+    runner, ledger, _, calls, _ = _lifetime_coverage_fixture(tmp_path, monkeypatch)
+    runner.open_prs.append(_pr(131))
+    runner.queue_history[131] = dict(
+        runner.queue_history[130],
+        headRefOid="sha-131",
+        timelineItems={"pageInfo": {"hasPreviousPage": False}, "nodes": []},
+    )
+    monkeypatch.setattr(autoqueue, "MERGE_GROUP_COVERAGE_REQUEST_LIMIT", 2)
+    _, blockers, evidence = autoqueue._observe_merge_groups(
+        [autoqueue._parse_pr(pr) for pr in runner.open_prs],
+        repo="owner/repo",
+        repo_root=tmp_path,
+        records=lineage.read_jsonl_records(ledger),
+        runner=runner,
+        now=datetime.now(UTC),
+    )
+    assert 130 not in blockers
+    assert "merge_group_evidence_unknown:runs_truncated" in blockers[131]
+    assert evidence["run_coverage"]["130"]["complete"] is True
+    assert evidence["run_coverage"]["131"]["reason"] == "coverage_request_limit"
+    assert len([call for call in calls if "created" in call]) == 2
+
+
+def test_failed_group_lifetime_overlap_preserves_newly_observed_failure(tmp_path, monkeypatch):
+    runner, _, pages, _, response = _lifetime_coverage_fixture(
+        tmp_path,
+        monkeypatch,
+        current_head="source-head",
+    )
+    failed = dict(pages[1][-1])
+    pages[1][-1].update(conclusion="success", run_attempt=2)
+    runner.queue_history[130]["mergeQueueEntry"] = {"headCommit": {"oid": "group-head"}}
+    runner.queue_history[130]["timelineItems"]["nodes"] = []
+
+    def overlapping(endpoint, **kwargs):
+        result = response(endpoint, **kwargs)
+        if endpoint.endswith("/actions/runs") and "created" not in kwargs.get("fields", {}):
+            result["workflow_runs"] = [failed, *result["workflow_runs"][:99]]
+        return result
+
+    monkeypatch.setattr(autoqueue, "_rest_get_json", overlapping)
+    records, blockers, _ = _observe_again(tmp_path, runner)
+    assert "queue_refused:merge_group_failed_at_head:9001" in blockers[130]
+    [record] = [r for r in records if r.merge_group_run_id == 9001]
+    assert record.run_conclusion == "failure"
+    assert record.pr_head_sha == "source-head"
+
+
 def test_failed_group_base_retarget_does_not_waive_same_source_failure(tmp_path: Path) -> None:
     _, runner, ledger = _failed_group_report(tmp_path)
     runner.open_prs[0]["baseRefName"] = "release"

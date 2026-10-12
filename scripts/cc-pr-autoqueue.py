@@ -259,6 +259,7 @@ DEFAULT_ADVISORY_OPEN_PR_COUNT = 8
 DEFAULT_STORM_OPEN_PR_THRESHOLD = DEFAULT_ADVISORY_OPEN_PR_COUNT  # deprecated alias
 DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD = 1
 DEFAULT_STORM_RECENT_RUN_LIMIT = 20
+MERGE_GROUP_COVERAGE_REQUEST_LIMIT = 10
 STORM_MAX_ENTRIES_TO_BUILD = 1
 STEADY_MAX_ENTRIES_TO_BUILD = 6
 
@@ -5368,6 +5369,116 @@ def _release_auto_arm_fail_closed_mutations(
     return results
 
 
+def _merge_group_lifetime_coverage(
+    pr: PullRequest,
+    history: dict[str, Any],
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    now: datetime,
+    request_limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Prove the PR's entire lifetime, never a cutoff inferred from a new head.
+
+    GitHub's created-range filter gives a fixed pagination interval. Count,
+    page length, unique IDs, repository and timestamps must all agree. Search
+    saturation (1,000 results), budget loss and partial pages remain unknown.
+    This proof is recomputed at use; the bounded lineage is not a coverage cache.
+    """
+    through = now.astimezone(UTC).replace(microsecond=0)
+    created = parse_datetime(history.get("createdAt"))
+    proof: dict[str, Any] = {
+        "complete": False,
+        "kind": "pr_lifetime",
+        "repo": repo,
+        "pr": pr.number,
+        "head_sha": pr.head_sha,
+        "base_ref": pr.base_ref,
+        "created_at": history.get("createdAt"),
+        "through": through.isoformat().replace("+00:00", "Z"),
+        "requests": 0,
+        "observed_run_count": 0,
+    }
+    observed: list[dict[str, Any]] = []
+    if created is None or created > through:
+        proof["reason"] = "pr_creation_missing_or_future"
+        return observed, proof
+    interval = created.isoformat().replace("+00:00", "Z") + ".." + proof["through"]
+    total: int | None = None
+    seen: set[int] = set()
+    try:
+        while True:
+            if proof["requests"] >= request_limit:
+                raise ValueError("coverage_request_limit")
+            rest_block = rest_pool_blocked(rate_snapshot(repo_root=repo_root, runner=runner))
+            if rest_block:
+                raise ValueError(rest_block)
+            page = proof["requests"] + 1
+            proof["requests"] += 1
+            payload = _rest_get_json(
+                f"repos/{repo}/actions/runs",
+                repo_root=repo_root,
+                runner=runner,
+                fields={
+                    "event": "merge_group",
+                    "created": interval,
+                    "per_page": "100",
+                    "page": str(page),
+                },
+                fail_on_indeterminate=True,
+            )
+            if (
+                not isinstance(payload, dict)
+                or type(payload.get("total_count")) is not int
+                or not isinstance(payload.get("workflow_runs"), list)
+            ):
+                raise ValueError("coverage_page_malformed")
+            count, rows = payload["total_count"], payload["workflow_runs"]
+            proof["total_count"] = count
+            if count < 0 or count >= 1000:
+                raise ValueError("coverage_search_ceiling")
+            if total is not None and count != total:
+                raise ValueError("coverage_count_changed")
+            total = count
+            proof["total_count"] = total
+            if len(rows) != min(100, total - (page - 1) * 100):
+                raise ValueError("coverage_page_gap")
+            for run in rows:
+                if not isinstance(run, dict) or run.get("event") != "merge_group":
+                    raise ValueError("coverage_run_malformed")
+                run_id, timestamp = run.get("id"), parse_datetime(run.get("created_at"))
+                repository = run.get("repository")
+                if (
+                    type(run_id) is not int
+                    or run_id <= 0
+                    or run_id in seen
+                    or type(run.get("run_attempt")) is not int
+                    or run["run_attempt"] < 1
+                    or not isinstance(repository, dict)
+                    or str(repository.get("full_name", "")).lower() != repo.lower()
+                    or timestamp is None
+                    or not created <= timestamp <= through
+                ):
+                    raise ValueError("coverage_run_identity_or_boundary")
+                seen.add(run_id)
+                observed.append(run)
+            proof["observed_run_count"] = len(seen)
+            if len(seen) == total:
+                proof["complete"] = True
+                break
+    except (
+        ValueError,
+        TypeError,
+        OSError,
+        subprocess.SubprocessError,
+        RestIndeterminateError,
+    ) as exc:
+        proof["reason"] = str(exc) or type(exc).__name__
+    proof["observed_run_count"] = len(observed)
+    return observed, proof
+
+
 def _observe_merge_groups(
     prs: list[PullRequest],
     *,
@@ -5377,7 +5488,7 @@ def _observe_merge_groups(
     runner: Any,
     now: datetime,
 ) -> tuple[list[MergeQueueLineageRecord], dict[int, tuple[str, ...]], dict[str, Any]]:
-    """One run page and one batched removal query; never infer source from base/group.
+    """Bounded run/removal observation; never infer source from base/group.
 
     Historical collectors populated pr_head_sha from today's PR or the queue
     branch's *base* suffix. Only a source binding observed alongside the live
@@ -5394,6 +5505,9 @@ def _observe_merge_groups(
         "runs_truncated": False,
         "removals_truncated": [],
         "unqueried_prs": [pr.number for pr in prs[100:]],
+        "run_coverage": {},
+        "coverage_request_limit": MERGE_GROUP_COVERAGE_REQUEST_LIMIT,
+        "admission_evidence_complete": False,
     }
     if not prs:
         evidence["unresolved"] = ["no_examined_prs"]
@@ -5410,7 +5524,7 @@ def _observe_merge_groups(
     fields = " ".join(
         f"pr_{pr.number}:pullRequest(number:{pr.number})"
         + "{"
-        + "headRefOid baseRefName mergeQueueEntry{headCommit{oid}} "
+        + "headRefOid baseRefName createdAt mergeQueueEntry{headCommit{oid}} "
         "timelineItems(last:20,itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT]){"
         "pageInfo{hasPreviousPage} nodes{... on RemovedFromMergeQueueEvent{"
         "createdAt beforeCommit{oid} actor{login} reason}}}}"
@@ -5472,10 +5586,6 @@ def _observe_merge_groups(
     runs = runs_payload["workflow_runs"]
     evidence["runs_truncated"] = runs_payload["total_count"] > len(runs)
     evidence["observed_run_count"] = len(runs)
-    if evidence["runs_truncated"]:
-        # A bounded ledger is not a coverage proof for the omitted run history.
-        for pr in prs:
-            unknown(pr, "runs_truncated")
     by_pr = {pr.number: pr for pr in prs}
     valid_histories: dict[int, dict[str, Any]] = {}
     for pr in prs:
@@ -5507,8 +5617,49 @@ def _observe_merge_groups(
             unknown(pr, "removals_truncated")
         valid_histories[pr.number] = history
 
+    if evidence["runs_truncated"]:
+        remaining = MERGE_GROUP_COVERAGE_REQUEST_LIMIT
+        runs = list(runs)
+        for pr in prs:
+            history = valid_histories.get(pr.number)
+            if history is None:
+                unknown(pr, "runs_truncated")
+                continue
+            extra, proof = _merge_group_lifetime_coverage(
+                pr,
+                history,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                now=now,
+                request_limit=remaining,
+            )
+            if proof["complete"]:
+                start, end = parse_datetime(proof["created_at"]), parse_datetime(proof["through"])
+                assert start is not None and end is not None  # Validated by the coverage reader.
+                known_ids = {
+                    run["id"]
+                    for run in runs
+                    if isinstance(run, dict)
+                    and type(run.get("id")) is int
+                    and (when := parse_datetime(run.get("created_at"))) is not None
+                    and start <= when <= end
+                }
+                known_ids.update(
+                    record.merge_group_run_id for record in records if record.pr_number == pr.number
+                )
+                if not known_ids.issubset({run["id"] for run in extra}):
+                    proof.update(complete=False, reason="coverage_known_run_missing")
+            remaining -= proof["requests"]
+            evidence["run_coverage"][str(pr.number)] = proof
+            runs.extend(extra)
+            if not proof["complete"]:
+                unknown(pr, "runs_truncated")
+        evidence["observed_run_count"] = len(
+            {run["id"] for run in runs if isinstance(run, dict) and type(run.get("id")) is int}
+        )
+
     retained = {record.merge_group_run_id: record for record in records}
-    observed: list[MergeQueueLineageRecord] = []
     for run in runs:
         if not isinstance(run, dict) or run.get("event") != "merge_group":
             for pr in prs:
@@ -5541,6 +5692,14 @@ def _observe_merge_groups(
                 unknown(pr, f"run_outcome_malformed:{run_id}")
             continue
         prior = retained.get(run_id)
+        attempt = run.get("run_attempt")
+        if (
+            type(attempt) is int
+            and attempt > 1
+            and not (prior and prior.run_conclusion in FAILED_MERGE_GROUP_CONCLUSIONS)
+            and number in by_pr
+        ):
+            unknown(by_pr[number], f"run_attempt_history_missing:{run_id}")
         source_sha = None
         reasons: list[str] = []
         if (
@@ -5595,8 +5754,9 @@ def _observe_merge_groups(
                 for pr in prs:
                     unknown(pr, f"retained_identity_conflict:{run_id}")
                 continue
-        observed.append(updated)
-    retained.update({record.merge_group_run_id: record for record in observed})
+        # Overlapping coverage pages may observe a later rerun; compose each
+        # observation immediately so it cannot erase an earlier failed attempt.
+        retained[updated.merge_group_run_id] = updated
     # Removal events identify the *synthetic* commit, not the source commit.
     for number, history in valid_histories.items():
         pr = by_pr[number]
@@ -5659,7 +5819,8 @@ def _observe_merge_groups(
                     *blockers.get(pr.number, ()),
                     f"queue_refused:merge_group_failed_at_head:{record.merge_group_run_id}",
                 )
-    evidence["complete"] = not evidence["unresolved"]
+    evidence["admission_evidence_complete"] = not evidence["unresolved"]
+    evidence["complete"] = not evidence["unresolved"] and not evidence["runs_truncated"]
     return list(retained.values()), blockers, evidence
 
 

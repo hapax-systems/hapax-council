@@ -6,19 +6,33 @@ must be joined by observed evidence before a failure can be attributed to a
 source head.
 
 `scripts/cc-pr-autoqueue.py` reads one page of at most 100 `merge_group` runs
-and one batched query of the last 20 removal events per examined PR. Reads use
-the existing GitHub rate governors, without sleep, pagination, alternate
-transport fallback, or retry-count exceptions. This is a bounded observation,
-not a complete repository history. The normal rotating PR window still applies.
-If the run page is truncated, all examined PRs have unknown history and are
-held. A truncated removal timeline holds that PR. PRs beyond the 100 aliases in
-the observation query receive `pr_query_limit`; they are never silently cleared.
-The bounded ledger alone cannot establish coverage of omitted history. In a
-repository with more than 100 retained merge-group runs this can hold every
-examined PR indefinitely: waiting for a new tick or publishing a new source
-head does not establish the missing coverage. Release must account for this
-constraint; do not represent the observation as complete or raise an exception
-to admission just to drain the queue.
+and one batched query of the last 20 removal events per examined PR. If repository
+history exceeds that page, it makes bounded, paginated queries over each PR's
+lifetime: the server-recorded PR creation time through the fixed observation
+time. A PR cannot have a merge-group run before it exists. This boundary is not
+inferred from a commit timestamp, a new head, or time elapsed since a failure.
+The same GraphQL response binds creation time to the examined source and base.
+
+Coverage requires every page in that interval: stable total count, exact page
+lengths, distinct run IDs, matching repository, valid attempt numbers, and run
+creation times within the interval. The result must also contain the current
+observation's in-window runs and all run IDs already retained for that PR;
+matching counts cannot hide known rows.
+There are at most ten additional run-page requests per tick, shared across
+examined PRs; the REST governor is checked before every page. GitHub's
+1,000-result search ceiling, exhausted request/API
+budgets, missing pages, identity conflicts and malformed evidence keep the
+affected PR held. A truncated removal timeline also holds that PR. PRs beyond
+the 100 GraphQL aliases receive `pr_query_limit`. The rotating PR window applies.
+
+Thus a repository with 10,001 runs can admit a PR with a complete 121-run lifetime
+query (two pages), provided its failures are bound to a different source head
+and all other admission requirements pass. The same failed source head remains
+refused. Another PR's longer or incomplete lifetime does not itself invalidate
+this proof. No blanket history-count exception is granted. Very old or busy
+PRs whose own lifetime exceeds the bounded query remain held; this is reported
+per PR, not inferred from the repository total. Proofs are recomputed on each
+observation; the bounded ledger is never treated as a cached coverage receipt.
 
 The `gh-readonly-queue/<base>/pr-<number>-<sha>` suffix is a base SHA; the run's
 `head_sha` and a removal event's `beforeCommit.oid` identify the synthetic
@@ -35,6 +49,9 @@ status says `cc-pr-autoqueue held: merge_group_failed_at_head:<run_id>`. A new
 source head is evaluated afresh against all ordinary admission requirements.
 Every positive enqueue uses `--match-head-commit` to bind the mutation to the
 examined head. A successful rerun does not erase an already observed failure.
+If the latest run is a later attempt and no earlier failure was retained, its
+earlier outcomes remain unknown (`run_attempt_history_missing`); a successful
+latest attempt alone cannot establish that the group never failed.
 Completed runs require a recognized terminal conclusion; nonterminal runs must
 have a recognized status and no conclusion. Malformed entries hold admission
 while valid later entries still contribute observed failures.
@@ -57,13 +74,18 @@ truncation, and unresolved evidence. When observation is incomplete,
 Consumers must not turn null into a healthy zero. Otherwise admissible PRs with
 unresolved evidence receive `merge_group_evidence_unknown:<reason>` and a
 pending admission status. Existing definitive blockers remain visible.
+`run_coverage` records each scoped query's identity, interval, page count,
+observed count and completion/failure reason. `admission_evidence_complete`
+describes the examined PRs' evidence; repository `complete` remains false when
+the initial repository run page is truncated, even if scoped coverage permits
+admission. This keeps the exact storm count null while preserving its lower bound.
 
 Historical source bindings that were never captured cannot be reconstructed
 from today's PR head. Such a failure remains unknown and held; publishing a new
 head alone cannot prove which source an unbound historical group tested.
 Repair requires independent evidence of that historical source/group binding
 through the existing lineage producer. There is no manual retry waiver. Missing
-runs outside the bounded page are also reported as unresolved, not absent.
+relevant runs outside the bounded pages are unresolved, not absent.
 
 Verification is offline with injected GitHub responses:
 
@@ -92,12 +114,35 @@ source owner has no runtime mutation or release authority.
 A low REST budget holds merge-group observation even if GraphQL can still read
 queue rules: those rules do not contain workflow-run outcomes. Keep the hold,
 allow the existing budget governor to recover, and check the next report.
-For truncated or missing history, recovery instead requires independently
-verified coverage/source-binding evidence through the existing producer and
-reviewed reader contract. A successful API response, empty page, head change or
-operator retry count is not that evidence. After the cause is repaired and the
-release owner authorizes resumption, restart the existing timer. There is no
+Repository-page truncation is recovered automatically by the lifetime query
+when its complete coverage predicate succeeds. Missing historical bindings or
+an incomplete lifetime/removal query still require independently verified
+evidence through the existing producer and reviewed reader contract. A successful
+API response, head change or operator retry count is not that evidence. After
+the cause is repaired and the release owner authorizes resumption, restart the
+existing timer. There is no
 fallback transport or retry-count waiver.
+
+After the release owner activates reviewed source, the existing reconciler
+entrypoint can inspect the decision without apply or report writes (this command
+still performs governed GitHub reads):
+
+```sh
+uv --directory ~/.cache/hapax/source-activation/worktree run python scripts/cc-pr-autoqueue.py \
+  --repo hapax-systems/hapax-council --repo-root ~/.cache/hapax/source-activation/worktree \
+  --limit 5 --no-write-report
+```
+
+Recovery requires `run_coverage[PR].complete=true`, the matching examined source
+and base, no unresolved removal/source/attempt evidence, and the ordinary
+admission checks. This command does not repair missing facts or authorize
+runtime activation. Offline recheck of the exact over-100 cases:
+
+```sh
+TMPDIR=/store-fast/tmp uv run pytest tests/test_cc_pr_autoqueue.py \
+  -k 'lifetime_coverage or lifetime_request_budget or lifetime_rerun or lifetime_stops' \
+  -q -p no:cacheprovider
+```
 
 Read back the installed invocation and source without printing service secrets:
 
@@ -139,4 +184,5 @@ must retain a null exact failure count and a separate known lower bound. These
 commands observe runtime state; they do not themselves activate this PR.
 
 References: [GitHub merge-queue behavior](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue),
-[removal-event fields](https://docs.github.com/en/graphql/reference/pulls#removedfrommergequeueevent).
+[removal-event fields](https://docs.github.com/en/graphql/reference/pulls#removedfrommergequeueevent),
+[workflow-run filtering and pagination](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository).
