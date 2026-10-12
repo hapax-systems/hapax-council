@@ -430,11 +430,10 @@ def decide_with_escape(
 
     This is the Python form of the L3 hook-shim's daemon-down contract: evaluate the
     embedded conservative floor and, if it BLOCKS, honor an escape grant iff it
-    verifies (signature + expiry + scope — pure, no RPC, no daemon). So a signed
-    grant unblocks a lane with the kernel dead, which is exactly INV-4
-    (authority-always-escapable). ``session`` is the asking lane's session, passed
-    through to the verifier so a session-bound grant can be matched against it;
-    the plumbing lands here first, binding enforcement in slice 3. Never raises.
+    verifies (signature + expiry + scope + session binding — pure, no RPC, no
+    daemon; escape-grants-bind-to-the-minting-session-20261011). So a signed grant
+    bound to this session unblocks a lane with the kernel dead, which is exactly
+    INV-4 (authority-always-escapable). Never raises.
     """
     try:
         decision = evaluate_floor(tool_name, command=command, file_path=file_path)
@@ -493,14 +492,15 @@ def mint_escape_for_violation(
 
     INV-3/4/5 violations all mean the escape machinery itself may be compromised, so
     the never-freeze response is a broad daemon-independent escape (the triggering
-    invariant is stamped in the grant ``reason`` for legibility). The grant binds to
-    the minting session — explicit ``session``, else the session env chain, else
-    ``ESCAPE_AUTO_MINT_SESSION`` — so it stays attributable and slice-3 enforcement
-    cannot fail every lane closed. The grant is written as ``<grant_id>.grant`` —
-    the extension the shim globs — into ``grant_dir`` (default: the canonical
-    ``default_grant_dir()``, the SAME dir the shim reads). Returns the minted
-    grant, or ``None`` when the invariant holds, is not an auto-mint class, or no
-    signing key is available. Never raises — advisory.
+    invariant is stamped in the grant ``reason`` for legibility). The grant is
+    written as ``<grant_id>.grant`` — the extension the shim globs — into
+    ``grant_dir`` (default: the canonical ``default_grant_dir()``, the SAME dir the
+    shim reads). The minted grant binds to the explicit ``session`` when given,
+    else ``_auto_mint_session()``'s chain (the session env vars mirrored from
+    ``agent-role.sh``), else ``ESCAPE_AUTO_MINT_SESSION`` — the precedence
+    ``docs/runbooks/escape-grants.md`` documents for the bound mint. Returns the
+    minted grant, or ``None`` when the invariant holds, is not an auto-mint class,
+    or no signing key is available. Never raises — advisory.
     """
     if result.holds or result.invariant not in AUTO_MINT_INVARIANTS or not key:
         return None
