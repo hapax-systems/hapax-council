@@ -1,0 +1,84 @@
+L="$HOME/Documents/Personal/30-areas/hapax/lanebus"
+MAIL_RE='^[0-9]{8}T[0-9]{6}Z-[^/]+\.md$'
+declare -A SEEN PEND LAST LACT FAM
+log(){ echo "$(date -u +%FT%TZ) $*"; }
+sessions(){
+  tmux list-sessions -F '#{session_name}' 2>/dev/null |
+    grep -E '^hapax-(kimi|glmcp|fugu)-' |
+    grep -v -E 'review|frozen|protected' || true
+}
+family_of(){
+  case "$1" in
+    hapax-kimi-*)  echo kimi ;;
+    hapax-glmcp-*) echo glmcp ;;
+    hapax-fugu-*)  echo fugu ;;
+    *)             echo '' ;;
+  esac
+}
+role_of(){
+  local t=$1 f r
+  f=$(family_of "$t"); r=${t#hapax-$f-}
+  [ "$f" = fugu ] && r="fugu-$r"
+  printf '%s' "$r"
+}
+inbox_dirs(){
+  if [ "$1" = kimi-seat ]; then echo "dev1 $1"; else echo "$1"; fi
+}
+lsd(){
+  local d f b
+  for d in $(inbox_dirs "$1"); do
+    for f in "$L/$d"/*.md; do
+      [ -f "$f" ] || continue
+      b=$(basename "$f")
+      echo "$b" | grep -qE "$MAIL_RE" || continue
+      echo "$b" | grep -q 'host-recovery' && continue
+      echo "$b" | grep -q '\.tmp\.' && continue
+      echo "$d/$b"
+    done
+  done | sort -u
+}
+busy(){ tmux capture-pane -p -t "$1" 2>/dev/null | tail -8 | grep -q -E 'hinking|elapsed|Using |Running|Preparing|Ran a command'; }
+idle(){
+  local t=$1 c1 c2
+  tmux display-message -p -t "$t" '#{pane_current_command}' 2>/dev/null | grep -q . || return 1
+  c1=$(tmux capture-pane -p -t "$t" 2>/dev/null | tail -12); [ -n "$c1" ] || return 1
+  sleep 1
+  c2=$(tmux capture-pane -p -t "$t" 2>/dev/null | tail -12)
+  [ "$c1" = "$c2" ] && ! busy "$t"
+}
+init_target(){ SEEN[$1]=$(lsd "$(role_of "$1")"); PEND[$1]=''; LAST[$1]=0; LACT[$1]=$(date +%s); }
+for t in $(sessions); do FAM[$t]=$(family_of "$t"); init_target "$t"; done
+tgts=''
+for k in "${!FAM[@]}"; do tgts="$tgts $k"; done
+log "v2 up: families=kimi,glmcp,fugu targets='${tgts:- none}'"
+while true; do
+  for t in $(sessions); do
+    [ -n "${FAM[$t]:-}" ] || { FAM[$t]=$(family_of "$t"); init_target "$t"; log "target added: $t"; }
+    role=$(role_of "$t")
+    now=$(lsd "$role")
+    new=$(comm -13 <(echo "${SEEN[$t]}") <(echo "$now") | grep -v -E "/[0-9TZ]+-${role}-" || true)
+    SEEN[$t]=$now
+    p0=0; for f in $new; do head -20 "$L/$f" 2>/dev/null | grep -q '^priority: p0' && p0=1; done
+    [ -n "$new" ] && PEND[$t]=$(printf '%s\n%s' "${PEND[$t]}" "$new" | grep -v '^$' | sort -u)
+    ts=$(date +%s)
+    if [ -n "${PEND[$t]}" ]; then
+      ok=0
+      if [ "${FAM[$t]}" = fugu ]; then
+        [ $((ts-${LAST[$t]})) -ge 120 ] && idle "$t" && ok=1
+      else
+        { [ $p0 = 1 ] || [ $((ts-${LAST[$t]})) -ge 120 ]; } && ok=1
+      fi
+      if [ $ok = 1 ]; then
+        msg="[mail-wake] New mail for you: $(echo "${PEND[$t]}" | head -6 | tr '\n' ' ')$( [ $(echo "${PEND[$t]}" | wc -l) -gt 6 ] && echo '(+more)') (paths under ~/Documents/Personal/30-areas/hapax/lanebus/). Read each to the end; a p0 comes before your current step."
+        b=0; busy "$t" && b=1
+        tmux send-keys -t "$t" -l "$msg"; sleep 1; tmux send-keys -t "$t" Enter
+        if [ "${FAM[$t]}" != fugu ] && [ $b = 1 ]; then sleep 2; tmux send-keys -t "$t" C-s; fi
+        log "delivered to $t fam=${FAM[$t]} busy=$b p0=$p0"
+        PEND[$t]=''; LAST[$t]=$ts; LACT[$t]=$ts
+      fi
+    elif [ "$role" = kimi-seat ] && [ $((ts-${LACT[$t]})) -ge 1800 ] && ! busy "$t"; then
+      tmux send-keys -t "$t" -l "[mail-wake, idle tick] 30 min without new mail. Order your next act by the directionality at the head of frame/VECTORS-BOARD-20261004.md."; sleep 1; tmux send-keys -t "$t" Enter; LACT[$t]=$ts
+    fi
+  done
+  sleep 20
+done
