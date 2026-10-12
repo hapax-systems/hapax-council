@@ -2330,6 +2330,56 @@ def _elided_hunk_line_range(elided: str) -> tuple[int, int] | None:
     return (start, int(last.group(1)) + max(last_count, 1) - 1)
 
 
+_NOTE_LOG_HEADING = "## Session log"
+_NOTE_LOG_MARKER = (
+    "[session log elided — historical task-log context, NOT REVIEWED for this packet; {} lines]\n"
+)
+
+
+def _elide_note_history(text: str) -> tuple[str, dict[str, Any] | None]:
+    """Elide linked-note session-log history; mandatory content stays byte-for-byte.
+
+    A linked task note's mandatory content — frontmatter (authority, scope, exit
+    and review contract), title, body prose — is never trimmed by packet shaping:
+    no other packet block carries those fields, so cutting them would silently
+    strip the review's contract rather than shape its evidence. Only the
+    historical session log is elidable, behind a visible not-reviewed marker.
+    Each note in a multi-note join elides its own log independently.
+    """
+
+    heading = re.compile(r"(?m)^## Session log[ \t]*$")
+    boundary = re.compile(r"(?m)^(#{1,2} )")
+    pieces: list[str] = []
+    elided_chars = 0
+    elided_lines = 0
+    pos = 0
+    found = False
+    while (match := heading.search(text, pos)) is not None:
+        found = True
+        next_section = boundary.search(text, match.end())
+        end = next_section.start() if next_section is not None else len(text)
+        body = text[match.end() : end]
+        lines = [line for line in body.splitlines() if line.strip()]
+        pieces.append(text[pos : match.end()])
+        pieces.append("\n" + _NOTE_LOG_MARKER.format(len(lines)))
+        elided_chars += len(body)
+        elided_lines += len(lines)
+        pos = end
+    if not found:
+        return text, None
+    pieces.append(text[pos:])
+    shaped = "".join(pieces)
+    declaration = {
+        "component": "linked cc-task note",
+        "kind": "session_log_history",
+        "elided_chars": elided_chars,
+        "lines": elided_lines,
+        "line_range": None,
+        "boundary_cut": False,
+    }
+    return shaped, declaration
+
+
 def _shape_text_component(label: str, text: str, budget: int) -> tuple[str, dict[str, Any] | None]:
     """Truncate one packet component to a char budget, marking the cut not-reviewed."""
 
@@ -2361,6 +2411,12 @@ def _elision_sentence(record: Mapping[str, Any]) -> str:
             if not record.get("boundary_cut"):
                 sentence += " (cut begins inside a hunk; range is outer bounds)"
         return sentence + " — NOT REVIEWED"
+    if record.get("kind") == "session_log_history":
+        return (
+            f"- {record.get('component')}: session log elided — {record.get('elided_chars')} chars, "
+            f"{record.get('lines')} lines of historical task-log context NOT REVIEWED; "
+            "authority/scope/exit/review contract preserved whole"
+        )
     return (
         f"- {record.get('component')}: truncated at {record.get('kept_chars')} of "
         f"{record.get('total_chars')} chars — content beyond char {record.get('kept_chars')} "
@@ -2495,7 +2551,8 @@ def _fit_prompts_to_binding_ceiling(
 
     One packet for all seats (per-seat divergence would split the quorum's
     shared evidence basis). The binding seat is the smallest seated prompt
-    ceiling. Components shrink in sacrifice order — task note, then PR body,
+    ceiling. Components shrink in sacrifice order — task-note session-log
+    history (the note's mandatory contract is never trimmed), then PR body,
     then diff — one sacrifice per pass with a full re-measure between passes, so
     a residual overshoot is absorbed by another cheap cut before the diff is
     ever touched (shape_diff's balanced per-file allocation is a deep-truncation
@@ -2565,7 +2622,25 @@ def _fit_prompts_to_binding_ceiling(
             # every component is under its own cap can still sum past a seat ceiling
             # (the #5045 shape), and cap-derived budgets would never cut anything.
             budget = len(inputs[component]) - overshoot - _DECLARATION_MARGIN_CHARS
-            if component == "diff":
+            if component == "task_note_text":
+                # The note's only elidable content is its session-log history; the
+                # mandatory contract (authority/scope/exit/review fields) is carried
+                # by no other packet block and is never trimmed — an unshapable note
+                # refuses rather than dropping the contract.
+                shaped_note, note_declaration = _elide_note_history(inputs[component])
+                if note_declaration is None or len(shaped_note) >= len(inputs[component]):
+                    continue  # no elidable history; mandatory note content is never trimmed
+                inputs[component] = shaped_note
+                note_declaration["total_chars"] = original_sizes[component]
+                note_declaration["kept_chars"] = len(shaped_note)
+                note_declaration["elided_chars"] = original_sizes[component] - len(shaped_note)
+                for index, existing in enumerate(declarations):
+                    if existing.get("component") == "linked cc-task note":
+                        declarations[index] = note_declaration
+                        break
+                else:
+                    declarations.append(note_declaration)
+            elif component == "diff":
                 budget = max(budget, _MIN_SHAPED_DIFF_CHARS)
                 if len(inputs["diff"]) <= _MIN_SHAPED_DIFF_CHARS:
                     continue  # already at the floor; nothing left to sacrifice
@@ -2575,7 +2650,7 @@ def _fit_prompts_to_binding_ceiling(
                 inputs["diff"] = shaped
                 declarations.extend(diff_declarations)
             else:
-                label = "linked cc-task note" if component == "task_note_text" else "PR body"
+                label = "PR body"
                 shaped, text_declaration = _shape_text_component(label, inputs[component], budget)
                 if text_declaration is None or len(shaped) >= len(inputs[component]):
                     continue  # nothing to cut, or the declaration costs more than the cut saves

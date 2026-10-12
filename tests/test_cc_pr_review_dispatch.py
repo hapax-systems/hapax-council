@@ -120,6 +120,7 @@ def _write_task(
     assigned_to: str = "zeta",
     exit_predicate: str = "dispatcher creates a review-team dossier",
     extra_frontmatter: str = "",
+    body_suffix: str = "",
 ) -> Path:
     path = vault / "active" / f"{task_id}.md"
     path.write_text(
@@ -143,7 +144,7 @@ exit_predicate: "{exit_predicate}"
 
 # {task_id}
 
-Acceptance evidence belongs here.
+Acceptance evidence belongs here.{body_suffix}
 """,
         encoding="utf-8",
     )
@@ -1431,27 +1432,55 @@ class TestApply:
         assert all(excerpt in prompt for _, _, prompt in reviewers.invocations)
         binding_size = min(len(prompt.encode()) for _, _, prompt in reviewers.invocations)
 
-        # One byte over the smallest seated ceiling no longer refuses outright: the
-        # packet shapes — task note and PR body shrink behind visible not-reviewed
-        # declarations — while the complete definition excerpt stays verbatim.
+        # One byte over the smallest seated ceiling, with a note that has no
+        # session-log history: the note's mandatory contract is never trimmed
+        # and nothing else can absorb the overshoot, so the packet refuses
+        # rather than silently dropping contract fields (the Crow 150752Z
+        # byte-mapping gap, pinned red-first at the pre-fix truncation).
         ceiling["value"] = binding_size - 1
         result, _, reviewers, note = _review(tmp_path / "over")
+        assert result["status"] == "prompt_capacity_exceeded"
+        assert result["packet_shaping"]["status"] == "refused"
+        assert result["packet_shaping"]["binding_prompt_limit_bytes"] == binding_size - 1
+        assert "linked cc-task note" not in {
+            d["component"] for d in result["packet_shaping"]["evidence_elided"]
+        }
+        assert not reviewers.invocations
+        assert "authority_case: CASE-TEST" in note.read_text(encoding="utf-8")
+
+        # The same family of overshoot with elidable session-log history shapes:
+        # the history drops behind a visible not-reviewed marker while the
+        # mandatory contract and the complete definition excerpt stay verbatim
+        # in every seated prompt, each inside its own ceiling. The ceiling sits
+        # above the post-elision floor (baseline plus marker/block overhead)
+        # but below the with-history packet, so only history elision can fit it.
+        ceiling["value"] = binding_size + 4_000
+        log_suffix = "\n\n## Session log\n\n" + ("Historical session narrative. " * 400)
+        result, _, reviewers, note = _review(
+            tmp_path / "over-log", task_kwargs={"body_suffix": log_suffix}
+        )
         assert result["status"] == "dispatched"
         assert reviewers.invocations
         assert all(excerpt in prompt for _, _, prompt in reviewers.invocations)
         assert all("Evidence not reviewed" in prompt for _, _, prompt in reviewers.invocations)
+        assert all("authority_case: CASE-TEST" in prompt for _, _, prompt in reviewers.invocations)
+        assert all(
+            "[session log elided — historical task-log context, NOT REVIEWED" in prompt
+            for _, _, prompt in reviewers.invocations
+        )
+        assert all(
+            "Historical session narrative" not in prompt
+            for _, _, prompt in reviewers.invocations
+        )
         dossier = yaml.safe_load(
             (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
         )
         shaping = dossier["packet_shaping"]
         assert shaping["status"] == "shaped"
-        assert shaping["binding_prompt_limit_bytes"] == binding_size - 1
+        assert shaping["binding_prompt_limit_bytes"] == binding_size + 4_000
         assert shaping["shaped_prompt_bytes_by_seat"]
-        assert {d["component"] for d in shaping["evidence_elided"]} <= {
-            "linked cc-task note",
-            "PR body",
-            "diff",
-        }
+        assert {d["component"] for d in shaping["evidence_elided"]} == {"linked cc-task note"}
+        assert all(d["kind"] == "session_log_history" for d in shaping["evidence_elided"])
         for seat_id, _, prompt in reviewers.invocations:
             assert len(prompt.encode()) <= ceiling["value"], seat_id
 
@@ -1543,11 +1572,22 @@ class TestApply:
                     "line_range": (30, 598),
                     "boundary_cut": False,
                 },
+                {
+                    "component": "linked cc-task note",
+                    "kind": "session_log_history",
+                    "elided_chars": 16_400,
+                    "lines": 214,
+                },
             ]
         )
         assert block.startswith("# Evidence not reviewed")
         assert "linked cc-task note: truncated at 100 of 900 chars" in block
         assert "PR diff, shared/foo.py: 5317 diff chars elided" in block
+        assert (
+            "linked cc-task note: session log elided — 16400 chars, 214 lines of "
+            "historical task-log context NOT REVIEWED" in block
+        )
+        assert "authority/scope/exit/review contract preserved whole" in block
         assert "NOT REVIEWED" in block
         assert dispatch._render_evidence_elided_block([]) == ""
 
@@ -1556,13 +1596,14 @@ class TestApply:
     ) -> tuple[dict[str, Any], RecordingReviewers, Path, dict[str, int]]:
         # The #5045 shape: a synthetic diff with the production packet's exact
         # measured characteristics — 3 files, 4 hunks, exactly 42,911 bytes —
-        # plus a synthetic task note sized in bytes. The note content is filler
-        # standing in for the archived forge-s2 row (8,833 B); larger sizes
-        # force the packet past the glm measured ceiling. The packet's vendored
-        # ancestor (PR #5045 at 897dbcc2; original fixture sha256 cc993d3c066ee
-        # 7ddf4ddc739c9a3dcf43cf3c8b21b39f3a4f6c22cc5030d7bee, later same-length-
-        # substituted c1504051…) was replaced by the generator per seat order
-        # 2026-10-11T06:45:30Z; the generated bytes are pinned:
+        # plus a synthetic task note sized in bytes. The note's mandatory
+        # contract is the fixture frontmatter/body; the bulk lands under a
+        # "## Session log" heading standing in for the archived forge-s2 row's
+        # historical log. The packet's vendored ancestor (PR #5045 at 897dbcc2;
+        # original fixture sha256 cc993d3c066e7ddf4ddc739c9a3dcf43cf3c8b21b39f
+        # 3a4f6c22cc5030d7bee, later same-length-substituted c1504051…) was
+        # replaced by the generator per seat order 2026-10-11T06:45:30Z; the
+        # generated bytes are pinned:
         diff = _synth_5045_shaped_diff()
         assert (
             sha256(diff.encode("utf-8")).hexdigest()
@@ -1573,7 +1614,9 @@ class TestApply:
         note = _write_task(vault)
         base = note.read_text(encoding="utf-8")
         filler = "Forge review-chain session narrative filler. "
-        note.write_text((base + "\n\n" + filler * note_bytes)[:note_bytes], encoding="utf-8")
+        note.write_text(
+            (base + "\n\n## Session log\n\n" + filler * note_bytes)[:note_bytes], encoding="utf-8"
+        )
         assert len(note.read_bytes()) == note_bytes
         gh = FakeGh(files=["scripts/gh-forge", "sdlc/github.py", "tests/test_gh_forge_shim.py"])
         gh.diff = diff
@@ -1644,6 +1687,37 @@ class TestApply:
             assert review["diff_full_bytes"] == 42_911
             assert review["diff_delivered_bytes"] == 42_911
         assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_5045_note_history_elision_preserves_mandatory_contract(self, tmp_path: Path) -> None:
+        # The note's only elidable content is its session-log history: shaping
+        # must keep the mandatory contract byte-for-byte in every seated prompt
+        # (authority/scope/exit/review fields and body prose are carried by no
+        # other packet block) and mark the elided history as not-reviewed.
+        result, reviewers, note, seat_limits = self._run_5045_shape(tmp_path, 17_000)
+        assert result["status"] == "dispatched"
+        assert reviewers.invocations
+        for seat_id, _, prompt in reviewers.invocations:
+            assert len(prompt.encode("utf-8")) <= seat_limits[seat_id], seat_id
+            assert "authority_case: CASE-TEST" in prompt
+            assert "parent_spec: docs/spec.md" in prompt
+            assert 'exit_predicate: "dispatcher creates a review-team dossier"' in prompt
+            assert "Acceptance evidence belongs here." in prompt
+            assert "[session log elided — historical task-log context, NOT REVIEWED" in prompt
+            assert "Forge review-chain session narrative filler" not in prompt
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        note_declarations = [
+            d
+            for d in dossier["packet_shaping"]["evidence_elided"]
+            if d["component"] == "linked cc-task note"
+        ]
+        assert len(note_declarations) == 1
+        declaration = note_declarations[0]
+        assert declaration["kind"] == "session_log_history"
+        assert declaration["elided_chars"] > 0
+        assert declaration["kept_chars"] < declaration["total_chars"]
+        assert not declaration["boundary_cut"]
 
     def test_failed_definition_inclusion_retries_on_later_finding(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
