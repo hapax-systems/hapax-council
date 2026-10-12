@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from shared.task_note_lock import projected_path_lock
+
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Mapping, Sequence
 
@@ -33,6 +35,13 @@ BottleneckKind = Literal[
 
 DEFAULT_TRACE_DIR = Path(os.path.expanduser("~/.cache/hapax/post-merge-traces"))
 DEFAULT_LEDGER_PATH = DEFAULT_TRACE_DIR / "merge-queue-lineage.jsonl"
+FAILED_MERGE_GROUP_CONCLUSIONS = {
+    "failure",
+    "timed_out",
+    "startup_failure",
+    "cancelled",
+    "action_required",
+}
 DEFAULT_SUMMARY_PATH = DEFAULT_TRACE_DIR / "merge-queue-summary.json"
 DEFAULT_MAX_RECORDS = 200
 
@@ -638,19 +647,87 @@ def read_jsonl_records(path: Path) -> list[MergeQueueLineageRecord]:
     return records
 
 
+def merge_lineage_record(
+    prior: MergeQueueLineageRecord, incoming: MergeQueueLineageRecord
+) -> MergeQueueLineageRecord:
+    """Compose observations without erasing admission evidence for this run.
+
+    Current PR snapshots in the ordinary collector cannot supersede a source
+    binding observed with a live queue entry. A later successful attempt cannot
+    erase a failed attempt, and a generic cancellation reason cannot erase the
+    queue bot's observed removal. Both writers use this same merge boundary.
+    """
+    for key in ("merge_group_run_id", "pr_number", "synthetic_queue_branch", "synthetic_queue_sha"):
+        before, after = getattr(prior, key), getattr(incoming, key)
+        if before is not None and after is not None and before != after:
+            raise ValueError(f"merge_group_lineage_identity_conflict:{key}")
+    updates = {key: getattr(incoming, key) for key in incoming.model_fields_set}
+    bindings = [
+        reason for reason in prior.lifecycle_reasons if reason.startswith("autoqueue_source_head:")
+    ]
+    incoming_bindings = {
+        reason
+        for reason in incoming.lifecycle_reasons
+        if reason.startswith("autoqueue_source_head:")
+    }
+    if bindings:
+        if incoming_bindings - set(bindings):
+            raise ValueError("merge_group_lineage_source_binding_conflict")
+        updates["pr_head_sha"] = prior.pr_head_sha
+        updates["lifecycle_reasons"] = list(dict.fromkeys([*incoming.lifecycle_reasons, *bindings]))
+        for key in ("pr_number", "synthetic_queue_branch", "synthetic_queue_sha"):
+            updates[key] = getattr(prior, key)
+    if (prior.cancellation_requeue_reason or "").startswith("queue_bot_removed:"):
+        updates["cancellation_requeue_reason"] = prior.cancellation_requeue_reason
+    if prior.run_conclusion in FAILED_MERGE_GROUP_CONCLUSIONS:
+        # Detail from a later attempt must not be attributed to the failed one.
+        if (
+            incoming.run_attempt != prior.run_attempt
+            or incoming.run_conclusion not in FAILED_MERGE_GROUP_CONCLUSIONS
+        ):
+            for key in (
+                "run_started_at",
+                "queue_hold_seconds",
+                "job_durations",
+                "slowest_job",
+                "setup_duration_seconds",
+                "test_duration_seconds",
+                "bottleneck",
+            ):
+                updates[key] = getattr(prior, key)
+        updates["pr_remained_open_after_success"] = prior.pr_remained_open_after_success
+        for key in (
+            "run_status",
+            "run_conclusion",
+            "run_outcome",
+            "run_attempt",
+            "run_completed_at",
+        ):
+            updates[key] = getattr(prior, key)
+    return prior.model_copy(update=updates)
+
+
 def write_jsonl_records(
     path: Path,
     records: list[MergeQueueLineageRecord],
     *,
     max_records: int = DEFAULT_MAX_RECORDS,
 ) -> None:
-    """Merge records into a bounded JSONL ledger, keyed by run id."""
+    """Serialize both producers' read/merge/replace under the existing path lock."""
+    with projected_path_lock(None, [path]):
+        _write_jsonl_records_locked(path, records, max_records=max_records)
+
+
+def _write_jsonl_records_locked(
+    path: Path, records: list[MergeQueueLineageRecord], *, max_records: int
+) -> None:
     max_records = max(1, max_records)
     merged: dict[int, MergeQueueLineageRecord] = {
         record.merge_group_run_id: record for record in read_jsonl_records(path)
     }
     for record in records:
-        merged[record.merge_group_run_id] = record
+        prior = merged.get(record.merge_group_run_id)
+        merged[record.merge_group_run_id] = merge_lineage_record(prior, record) if prior else record
     kept = sorted(
         merged.values(),
         key=lambda item: item.queue_entry_time or item.observed_at,
@@ -1107,6 +1184,7 @@ __all__ = [
     "DEFAULT_MAX_RECORDS",
     "DEFAULT_QUARANTINE_PATH",
     "DEFAULT_SUMMARY_PATH",
+    "FAILED_MERGE_GROUP_CONCLUSIONS",
     "FAILURE_CONCLUSIONS",
     "HEALTHY_MAX_ENTRIES",
     "STORM_MAX_ENTRIES",
@@ -1122,6 +1200,7 @@ __all__ = [
     "reconcile_flake_quarantines",
     "lift_quarantine",
     "merge_failure_rate",
+    "merge_lineage_record",
     "open_quarantine",
     "plan_merge_batches",
     "pr_failure_counts",

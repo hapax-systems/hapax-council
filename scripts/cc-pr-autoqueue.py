@@ -85,12 +85,14 @@ from github_pr_status import (  # noqa: E402
 from shared.merge_queue_lineage import (  # noqa: E402
     DEFAULT_LEDGER_PATH,
     DEFAULT_QUARANTINE_PATH,
+    FAILED_MERGE_GROUP_CONCLUSIONS,
     FleetThrottlePolicy,
     MergeQueueLineageRecord,
     ThrottleDecision,
     active_quarantined_pr_numbers,
     bisection_plan_for_failed_runs,
     decide_fleet_throttle,
+    merge_lineage_record,
     parse_datetime,
     read_jsonl_records,
     read_quarantine,
@@ -259,7 +261,6 @@ DEFAULT_STORM_FAILED_MERGE_GROUP_THRESHOLD = 1
 DEFAULT_STORM_RECENT_RUN_LIMIT = 20
 STORM_MAX_ENTRIES_TO_BUILD = 1
 STEADY_MAX_ENTRIES_TO_BUILD = 6
-FAILED_MERGE_GROUP_CONCLUSIONS = {"failure", "timed_out", "startup_failure", "cancelled"}
 
 # Shared-file epic serialization — single-lane affinity (CASE-SBCL-CLOG-COORD-001).
 # The CLOG/Trainyard cockpit epic is a parallel dependency DAG whose branches all
@@ -5392,6 +5393,7 @@ def _observe_merge_groups(
         "unresolved": [],
         "runs_truncated": False,
         "removals_truncated": [],
+        "unqueried_prs": [pr.number for pr in prs[100:]],
     }
     if not prs:
         evidence["unresolved"] = ["no_examined_prs"]
@@ -5452,7 +5454,8 @@ def _observe_merge_groups(
         if (
             not isinstance(runs_payload, dict)
             or not isinstance(runs_payload.get("workflow_runs"), list)
-            or not isinstance(runs_payload.get("total_count"), int)
+            or type(runs_payload.get("total_count")) is not int
+            or runs_payload["total_count"] < len(runs_payload["workflow_runs"])
         ):
             raise ValueError("run_page_malformed")
     except (
@@ -5469,9 +5472,16 @@ def _observe_merge_groups(
     runs = runs_payload["workflow_runs"]
     evidence["runs_truncated"] = runs_payload["total_count"] > len(runs)
     evidence["observed_run_count"] = len(runs)
+    if evidence["runs_truncated"]:
+        # A bounded ledger is not a coverage proof for the omitted run history.
+        for pr in prs:
+            unknown(pr, "runs_truncated")
     by_pr = {pr.number: pr for pr in prs}
     valid_histories: dict[int, dict[str, Any]] = {}
     for pr in prs:
+        if pr.number in evidence["unqueried_prs"]:
+            unknown(pr, "pr_query_limit")
+            continue
         history = histories.get(f"pr_{pr.number}")
         if (
             not pr.head_sha
@@ -5494,6 +5504,7 @@ def _observe_merge_groups(
             continue
         if timeline["pageInfo"]["hasPreviousPage"]:
             evidence["removals_truncated"].append(pr.number)
+            unknown(pr, "removals_truncated")
         valid_histories[pr.number] = history
 
     retained = {record.merge_group_run_id: record for record in records}
@@ -5502,7 +5513,7 @@ def _observe_merge_groups(
         if not isinstance(run, dict) or run.get("event") != "merge_group":
             for pr in prs:
                 unknown(pr, "run_page_malformed")
-            break
+            continue
         branch = run.get("head_branch") or ""
         match = (
             re.fullmatch(r"gh-readonly-queue/(.+)/pr-(\d+)-([0-9a-f]{40})", branch)
@@ -5516,6 +5527,19 @@ def _observe_merge_groups(
                 unknown(pr, "run_identity_missing")
             continue
         base, number = match.group(1), int(match.group(2))
+        status, conclusion = run.get("status"), run.get("conclusion")
+        terminal = FAILED_MERGE_GROUP_CONCLUSIONS | {"success", "neutral", "skipped"}
+        if not (
+            status == "completed"
+            and isinstance(conclusion, str)
+            and conclusion in terminal
+            or isinstance(status, str)
+            and status in {"queued", "in_progress", "requested", "waiting", "pending"}
+            and conclusion is None
+        ):
+            for pr in prs:
+                unknown(pr, f"run_outcome_malformed:{run_id}")
+            continue
         prior = retained.get(run_id)
         source_sha = None
         reasons: list[str] = []
@@ -5565,21 +5589,12 @@ def _observe_merge_groups(
             lifecycle_reasons=reasons,
         )
         if prior is not None:
-            # Preserve job/timing detail collected by the existing producer.
-            updated = prior.model_copy(
-                update={key: getattr(updated, key) for key in updated.model_fields_set}
-            )
-            if prior.run_conclusion in FAILED_MERGE_GROUP_CONCLUSIONS:
-                # A rerun at the same source head does not erase the failed act.
-                updated = updated.model_copy(
-                    update={
-                        "run_status": prior.run_status,
-                        "run_conclusion": prior.run_conclusion,
-                        "run_outcome": prior.run_outcome,
-                        "run_attempt": prior.run_attempt,
-                        "run_completed_at": prior.run_completed_at,
-                    }
-                )
+            try:
+                updated = merge_lineage_record(prior, updated)
+            except ValueError:
+                for pr in prs:
+                    unknown(pr, f"retained_identity_conflict:{run_id}")
+                continue
         observed.append(updated)
     retained.update({record.merge_group_run_id: record for record in observed})
     # Removal events identify the *synthetic* commit, not the source commit.
