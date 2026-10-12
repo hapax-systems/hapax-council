@@ -20,6 +20,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
 
@@ -287,3 +289,75 @@ def test_verify_auto_enable_fails_when_marked_unit_not_enabled(tmp_path: Path) -
     )
     assert res.returncode == 1, (res.stdout, res.stderr)
     assert "test-auto.timer" in res.stderr
+
+
+@pytest.mark.parametrize("changed", ["unit", "script", "both"])
+@pytest.mark.parametrize("cumulative", [False, True])
+def test_mailwake_staged_source_preserves_active_transient(
+    tmp_path: Path, changed: str, cumulative: bool
+) -> None:
+    """The existing deployer must be safe on the FIRST merge, before any upgrade.
+
+    Main has never carried the PR's former deployable paths. Model the merge
+    against main, not a source-author commit whose parent is an unmerged PR.
+    """
+    name = "hapax-lanes-mailwake.service"
+    staged_unit = Path("systemd/units/hapax-lanes-mailwake.service.md")
+    staged_script = Path("systemd/scripts/hapax-lanes-mailwake")
+    repo, baseline = _make_repo(tmp_path, {"test-peer.service": SVC_MANUAL})
+    paths = {
+        "unit": [staged_unit],
+        "script": [staged_script],
+        "both": [staged_unit, staged_script],
+    }[changed]
+    for relative in paths:
+        dest = repo / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes((REPO_ROOT / relative).read_bytes())
+    with (repo / "systemd/units/test-peer.service").open("a") as f:
+        f.write("# unrelated admitted change\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "source publication")
+    sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    installed = tmp_path / "home/.config/systemd/user" / name
+    installed.parent.mkdir(parents=True)
+    installed.write_text("existing local unit; preserve exact bytes\n")
+    launcher = tmp_path / "home/.local/bin/hapax-lanes-mailwake"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("existing launcher; preserve exact bytes\n")
+    bin_dir, calls = _make_fake_systemctl(tmp_path)
+    state = tmp_path / "transient-state"
+    state.write_text("Transient=yes ActiveState=active legacy-process-unchanged\n")
+    stub = bin_dir / "systemctl"
+    original = stub.read_text()
+    stub.write_text(
+        original.replace(
+            'case "$args" in',
+            f'''case "$args" in
+              *"restart {name}"*|*"start {name}"*|*"stop {name}"*|*"enable "*"{name}"*|*"disable "*"{name}"*)
+                printf 'runtime changed\\n' > '{state}' ;;
+            esac
+            case "$args" in''',
+        )
+    )
+    args = ["--since", baseline, sha] if cumulative else [sha]
+    res = _run(
+        args,
+        repo=repo,
+        bin_dir=bin_dir,
+        tmp_path=tmp_path,
+        extra_env={"FAKE_IS_ACTIVE_QUIET_RC": "0"},
+    )
+    assert res.returncode == 0, res.stderr
+    assert state.read_text() == "Transient=yes ActiveState=active legacy-process-unchanged\n"
+    assert installed.read_text() == "existing local unit; preserve exact bytes\n"
+    assert launcher.read_text() == "existing launcher; preserve exact bytes\n"
+    assert not (installed.parent / staged_unit.name).exists()
+    assert "restart test-peer.service" in calls.read_text()
+    coverage = _run(["--report-coverage", sha], repo=repo, bin_dir=bin_dir, tmp_path=tmp_path)
+    assert coverage.returncode == 0, coverage.stderr
+
+
+def test_mailwake_has_no_automatically_deployable_source_paths():
+    assert not (REPO_ROOT / "scripts/hapax-lanes-mailwake").exists()
+    assert not (REPO_ROOT / "systemd/units/hapax-lanes-mailwake.service").exists()

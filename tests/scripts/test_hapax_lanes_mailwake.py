@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts/hapax-lanes-mailwake"
-UNIT = ROOT / "systemd/units/hapax-lanes-mailwake.service"
+SCRIPT = ROOT / "systemd/scripts/hapax-lanes-mailwake"
+UNIT = ROOT / "systemd/units/hapax-lanes-mailwake.service.md"
 
 FAKE_TMUX = r"""
 import json, os, signal, sys, time
@@ -28,13 +28,15 @@ if a[0] == "list-sessions":
     p = root / "cycles"
     n = int(p.read_text()) + 1 if p.exists() else 0
     p.write_text(str(n))
-    if n == 1:
-        for mailbox, names in cfg.get("mail", {}).items():
+    mail = cfg.get("mail", {}) if n == 1 else {}
+    mail = {**mail, **cfg.get("mail_by_cycle", {}).get(str(n), {})}
+    if mail:
+        for mailbox, names in mail.items():
             d = root / "bus" / mailbox
             d.mkdir(parents=True, exist_ok=True)
             for name in names:
                 (d / name).write_text("---\npriority: p0\n---\nRead this.\n")
-    if (root / "heartbeat").exists():
+    if (root / "heartbeat").is_file():
         with (root / "heartbeats.jsonl").open("a") as f:
             f.write((root / "heartbeat").read_text())
     if cfg.get("hang_list") and n:
@@ -55,17 +57,30 @@ if bad.get("hang") == a[0] and (a[0] != "send-keys" or "-l" in a):
 if bad.get("fail") == a[0]:
     sys.exit(1)
 paste = root / ("paste-" + str(index))
+text = paste.read_text() if paste.exists() else bad.get("input", "")
+if paste.exists():
+    if bad.get("interfere"):
+        text += " user typed something"
+    if bad.get("whitespace_edit") == "remove":
+        text = text.replace(" ", "")
+    if bad.get("whitespace_edit") == "append":
+        text += " "
+    if bad.get("whitespace_edit") == "insert":
+        text = text.replace("Read new", "Read  new")
+codex = key.startswith("hapax-fugu-") or bad.get("command") == "bash"
 if a[0] == "list-panes":
     command = bad.get("command", "codex" if key.startswith("hapax-fugu-") else "kimi-code")
     ident = "%999" if paste.exists() and bad.get("replace") else "%" + str(index + 100)
-    print(f"{ident}|{command}|2|5|{bad.get('mode', 0)}")
+    print(f"{ident}|{command}|2|{(2 if codex else 5) + len(text)}|{bad.get('mode', 0)}")
     if bad.get("multiple"):
         print("%999|bash|0|0|0")
 elif a[0] == "capture-pane":
-    text = paste.read_text() if paste.exists() else bad.get("input", "")
-    if paste.exists() and bad.get("interfere"):
-        text += " user typed something"
-    if key.startswith("hapax-fugu-") or bad.get("command") == "bash":
+    if bad.get("wrapped") and (paste.exists() or bad.get("input")):
+        if codex:
+            print("ready\n\n› " + text[:12] + "\n  " + text[12:] + "\n")
+        else:
+            print("ready\n ╭────────────────╮\n │ > " + text[:12] + " │\n │ " + text[12:] + " │\n ╰────────────────╯")
+    elif codex:
         print("ready\n\n› " + text + "\n\n")
     elif bad.get("multiline"):
         print("ready\n ╭────────────╮\n │ >          │\n │ user draft │\n ╰────────────╯")
@@ -78,6 +93,8 @@ elif a[0] == "capture-pane":
 elif a[0] == "send-keys":
     if "-l" in a:
         paste.write_text(a[-1])
+        if bad.get("protect_after"):
+            (root / "protection.md").write_text("Protected: `" + key + "`\n")
     elif a[-1] == "Enter":
         if bad.get("enter_fail"):
             paste.unlink()
@@ -86,7 +103,8 @@ elif a[0] == "send-keys":
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             time.sleep(60)
         with (root / "submitted.jsonl").open("a") as f:
-            f.write(json.dumps({"target": key, "text": paste.read_text(), "at": time.monotonic()}) + "\n")
+            f.write(json.dumps({"target": key, "text": paste.read_text(), "at": time.monotonic(),
+                                "cycle": int((root / "cycles").read_text())}) + "\n")
         paste.unlink()
 else:
     raise AssertionError(a)
@@ -108,9 +126,12 @@ def run_wake(tmp_path):
     sleeper.chmod(0o755)
     dater = bindir / "date"
     dater.write_text(
-        f"#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\n"
+        f"#!{sys.executable}\nimport json,os,sys\nfrom pathlib import Path\n"
         "if sys.argv[1:] == ['+%s']:\n"
-        " print(1700000000 + int((Path(os.environ['FAKE_ROOT'])/'cycles').read_text())*180)\n"
+        " root=Path(os.environ['FAKE_ROOT'])\n"
+        " cfg=json.loads((root/'config.json').read_text())\n"
+        " n=int((root/'cycles').read_text())\n"
+        " print(1700000000 + cfg.get('clock_by_cycle', {}).get(str(n), n*180))\n"
         "else:\n os.execv('/usr/bin/date', ['date', *sys.argv[1:]])\n"
     )
     dater.chmod(0o755)
@@ -125,12 +146,12 @@ def run_wake(tmp_path):
         "HAPAX_SESSION_PROTECTION_FILE": str(tmp_path / "protection.md"),
     }
 
-    def run(config, cycles=2, timeout=12):
+    def run(config, cycles=2, timeout=12, args=None, extra_env=None, expected_rc=0):
         (tmp_path / "config.json").write_text(json.dumps(config))
-        command = ["bash", str(SCRIPT), "--cycles", str(cycles)]
+        command = ["bash", str(SCRIPT), *(args if args is not None else ["--cycles", str(cycles)])]
         with subprocess.Popen(
             command,
-            env=env,
+            env={**env, **(extra_env or {})},
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -144,8 +165,13 @@ def run_wake(tmp_path):
                 process.communicate()
                 raise
             result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
-        assert result.returncode == 0, result.stderr + result.stdout
-        calls = [json.loads(x) for x in (tmp_path / "calls.jsonl").read_text().splitlines()]
+        assert result.returncode == expected_rc, result.stderr + result.stdout
+        call_file = tmp_path / "calls.jsonl"
+        calls = (
+            [json.loads(x) for x in call_file.read_text().splitlines()]
+            if call_file.exists()
+            else []
+        )
         submitted = tmp_path / "submitted.jsonl"
         deliveries = (
             [json.loads(x) for x in submitted.read_text().splitlines()]
@@ -304,7 +330,8 @@ def test_protected_and_review_sessions_are_untouched(run_wake):
 def test_unit_uses_reviewed_source_and_restarts_on_failure():
     unit = UNIT.read_text()
     assert (
-        "ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-lanes-mailwake" in unit
+        "ExecStart=%h/.cache/hapax/source-activation/worktree/systemd/scripts/hapax-lanes-mailwake"
+        in unit
     )
     assert "Restart=on-failure" in unit
     assert "Environment=" not in unit and "ExecStartPre=" not in unit
@@ -338,3 +365,121 @@ def test_hung_discovery_is_bounded_and_heartbeats(run_wake):
     assert not delivered
     assert "command=list-sessions" in result.stderr
     assert json.loads((path / "heartbeat").read_text())["cycle"] == 2
+
+
+@pytest.mark.parametrize("family", ["glmcp", "fugu"])
+@pytest.mark.parametrize("edit", ["remove", "append", "insert", "draft"])
+def test_whitespace_changes_are_not_empty_or_our_payload(run_wake, family, edit):
+    run, _ = run_wake
+    bad = {"input": "   "} if edit == "draft" else {"whitespace_edit": edit}
+    mailbox = "fugu-bad" if family == "fugu" else "bad"
+    cfg = {
+        "targets": [f"hapax-{family}-bad"],
+        "bad": bad,
+        "mail": {mailbox: ["20261012T170000Z-dev1-work.md"]},
+    }
+    _, calls, delivered = run(cfg, cycles=3)
+    assert not delivered
+    sends = [c for c in calls if c["args"][0] == "send-keys"]
+    assert len(sends) == (0 if edit == "draft" else 1)
+    assert all("-l" in c["args"] for c in sends)
+
+
+@pytest.mark.parametrize("family", ["glmcp", "fugu"])
+@pytest.mark.parametrize("draft", [False, True])
+def test_wrapped_input_remains_untouched_or_held(run_wake, family, draft):
+    run, _ = run_wake
+    mailbox = "fugu-bad" if family == "fugu" else "bad"
+    cfg = {
+        "targets": [f"hapax-{family}-bad"],
+        "bad": {"wrapped": True, "input": "a sufficiently long draft" if draft else ""},
+        "mail": {mailbox: ["20261012T170000Z-dev1-work.md"]},
+    }
+    _, calls, delivered = run(cfg, cycles=3)
+    assert not delivered
+    sends = [c for c in calls if c["args"][0] == "send-keys"]
+    assert len(sends) == (0 if draft else 1)
+    assert all("-l" in c["args"] for c in sends)
+
+
+def test_protection_added_after_paste_holds_enter(run_wake):
+    run, path = run_wake
+    result, calls, delivered = run(config("bad", "good", bad={"protect_after": True}), cycles=3)
+    assert [d["target"] for d in delivered] == ["hapax-glmcp-good"]
+    sends = [c for c in calls if c["args"][0] == "send-keys" and c["args"][2] == "%100"]
+    assert len(sends) == 1 and "-l" in sends[0]["args"]
+    assert "hapax-glmcp-bad" in json.loads((path / "heartbeat").read_text())["held_targets"]
+    assert "reconcile uncertain submission before recovery" in result.stderr
+
+
+@pytest.mark.parametrize("bad", [{"interfere": True}, {"enter_fail": True}, {"hang": "send-keys"}])
+def test_persistent_hold_is_visible_every_cycle(run_wake, bad):
+    run, path = run_wake
+    result, _, _ = run(config("bad", "good", bad=bad), cycles=3)
+    observed = [json.loads(x) for x in (path / "heartbeats.jsonl").read_text().splitlines()]
+    observed.append(json.loads((path / "heartbeat").read_text()))
+    assert all(h["held_targets"] == ["hapax-glmcp-bad"] for h in observed)
+    assert all(h["status"] == "held" for h in observed)
+    assert result.stderr.count("still held target=hapax-glmcp-bad") == 3
+    assert (
+        "inspect receiving pane and reconcile uncertain submission before recovery" in result.stderr
+    )
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_heartbeat_distinguishes_failed_discovery_from_idle(run_wake, failed):
+    run, path = run_wake
+    run({"targets": [], "fail_list": failed}, cycles=2)
+    h = json.loads((path / "heartbeat").read_text())
+    assert h["targets"] == 0
+    assert h["discovery_complete"] is not failed
+    assert h["status"] == ("discovery_failed" if failed else "ready")
+
+
+def test_pending_mail_coalesces_until_exact_cooldown_boundary(run_wake):
+    run, _ = run_wake
+    cfg = config("good")
+    cfg["mail_by_cycle"] = {str(n): {"good": [f"20261012T17000{n}Z-dev1-more.md"]} for n in (2, 3)}
+    cfg["clock_by_cycle"] = {"1": 180, "2": 200, "3": 299, "4": 300, "5": 480}
+    _, _, delivered = run(cfg, cycles=5)
+    assert [d["cycle"] for d in delivered] == [1, 4]
+
+
+def test_heartbeat_write_failure_exits_with_repair_action(run_wake):
+    run, path = run_wake
+    (path / "not-a-directory").write_text("preserve")
+    result, _, _ = run(
+        {"targets": []},
+        expected_rc=1,
+        extra_env={"HAPAX_MAILWAKE_HEARTBEAT": str(path / "not-a-directory" / "heartbeat")},
+    )
+    assert "heartbeat write failed; restore cache binding" in result.stderr
+    assert (path / "not-a-directory").read_text() == "preserve"
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "11", "garbage"])
+def test_invalid_timeout_is_rejected_before_tmux(run_wake, value):
+    run, _ = run_wake
+    result, calls, _ = run(
+        {"targets": []}, expected_rc=2, extra_env={"HAPAX_MAILWAKE_TMUX_TIMEOUT_SECONDS": value}
+    )
+    assert "must be >0 and <=10" in result.stderr
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--cycles"],
+        ["--cycles", "0"],
+        ["--cycles", "-1"],
+        ["--cycles", "x"],
+        ["--cycles", "1", "extra"],
+        ["--bad", "1"],
+    ],
+)
+def test_invalid_cycles_are_rejected_before_tmux(run_wake, args):
+    run, _ = run_wake
+    result, calls, _ = run({"targets": []}, args=args, expected_rc=2)
+    assert "usage:" in result.stderr
+    assert not calls
