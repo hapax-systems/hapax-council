@@ -4,7 +4,7 @@ This repository is published by Hapax Research Lab. Public repository surfaces a
 
 ## Disclosure path
 
-Send security disclosures to hrl-han@hapaxresearch.com, the address on the lab's contact page. Attach Sigstore-signed disclosure artifacts when applicable. The commitment that covers this address is on that page:
+Send security disclosures to hrl-han@hapaxresearch.com, the address on the lab's contact page. An unsigned message is enough. If you sign an artifact with Sigstore, keyless signing is public: the signer's identity and the artifact's hash enter Rekor's log permanently. The commitment that covers this address is on that page:
 
   https://hapaxresearch.com/about/#contact
 

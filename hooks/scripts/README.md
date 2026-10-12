@@ -38,6 +38,7 @@ rather than the dirty canonical checkout. See
 | `safe-stash-guard.sh` | Bash | BLOCK `git stash` that would discard work |
 | `session-context.sh` | session | ADVISORY: session context on start |
 | `session-name-enforcement.sh` | Bash | BLOCK Bash commands referencing unknown session names (zeta, sigma, etc.) |
+| `session-standing-rulings.sh` | session | ADVISORY: the operator's standing rulings, quoted from their stored records; kept as its own short output so the model is shown it whole. Recheck: `uv run pytest tests/hooks/test_session_standing_rulings.py` (pins the bytes, the citations, the size and the executable bit) |
 | `session-summary.sh` | session | ADVISORY: session summary on stop |
 | `subagent-git-safety.sh` | SubagentStop | ADVISORY: remind parent sessions to preserve subagent-produced git state before worktree cleanup. |
 | `skill-trigger-advisory.sh` | session | ADVISORY: suggest skills matching context |

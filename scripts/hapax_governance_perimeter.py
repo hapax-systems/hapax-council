@@ -51,6 +51,7 @@ GOVERNANCE_HOOK_KEYWORDS = re.compile(
 OPERATIONAL_HOOKS = frozenset(
     {
         "session-context.sh",
+        "session-standing-rulings.sh",
         "session-summary.sh",
         "conductor-pre.sh",
         "conductor-post.sh",
