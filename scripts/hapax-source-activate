@@ -1518,7 +1518,7 @@ sync_dependency_environment() {
     if ! manifest_entry="$(git -C "$source_root" ls-tree --name-only "$origin_sha" -- pyproject.toml)"; then
         dependency_check_json='{"status":"failed","reason":"committed manifest inspection failed"}'
         dependency_sync_status="failed"
-        dependency_sync_message="committed manifest inspection failed"
+        dependency_sync_message="committed manifest inspection failed; receipt: $CURRENT_JSON; next action: admitted release owner must preserve the hold, repair candidate Git readability, then rerun governed activation"
         write_receipt "failed" "not_started" "2" "$dependency_sync_message"
         echo "hapax-source-activate: $dependency_sync_message" >&2
         exit 2
@@ -1654,7 +1654,7 @@ try:
     require(result["expectation_sha256"] == expectation_sha, "expectation SHA256 mismatch")
     expected = json.loads(raw)
     result["expected"] = expected
-    require(expected["schema_version"] == 1, "unsupported dependency expectation")
+    require(expected["schema_version"] == 2, "unsupported dependency expectation")
     source_identity(expected)
     expected_packages = identities(expected["distributions"])
     require(
@@ -1701,6 +1701,47 @@ try:
     )
     identity, sites = interpreter_identity(executable)
     result["observed"]["interpreter"] = identity
+    # Schema 2 binds real .pth artifacts, not just advisory direct_url metadata.
+    # This measured route supports path-only editables; executable editable hooks
+    # require a separately reviewed representation, never execution as a shortcut.
+    bindings = expected["editable_bindings"]
+    require(
+        isinstance(bindings, dict) and set(bindings) == set(expected_editable),
+        "incomplete editable binding expectation",
+    )
+    pth_files = expected["pth_files"]
+    require(isinstance(pth_files, dict), "missing complete pth expectation")
+    for relative, sha in pth_files.items():
+        path = Path(relative)
+        require(
+            not path.is_absolute()
+            and ".." not in path.parts
+            and (root / ".venv" / path).parent in map(Path, sites)
+            and path.suffix == ".pth"
+            and not path.name.startswith(".")
+            and re.fullmatch(r"[0-9a-f]{64}", sha) is not None,
+            "invalid accepted pth artifact",
+        )
+    binding_targets, binding_paths = {}, set()
+    for name, binding in bindings.items():
+        relative = binding["path"]
+        require(
+            relative in pth_files and relative not in binding_paths,
+            "unbound or shared editable pth artifact",
+        )
+        binding_paths.add(relative)
+        targets = binding["targets"]
+        require(isinstance(targets, list) and targets, "missing editable targets")
+        binding_targets[name] = []
+        for target in targets:
+            target = Path(target)
+            require(
+                not target.is_absolute()
+                and ".." not in target.parts
+                and (root / target).is_relative_to(root / expected["editable"][name]),
+                "editable target escapes its declared source",
+            )
+            binding_targets[name].append(root / target)
     require(
         identity == expected["interpreter"], "interpreter/ABI/platform differs from accepted input"
     )
@@ -1798,6 +1839,36 @@ try:
     result["observed"]["editable"] = editable
     require(observed_packages == expected_packages, "complete distribution inventory mismatch")
     require(editable == expected_editable, "editable source binding mismatch")
+    observed_pth = {}
+    for site_path in sites:
+        for path in sorted(Path(site_path).glob("*.pth")):
+            require(
+                not path.is_symlink()
+                and path.is_file()
+                and path.resolve().is_relative_to(environment.resolve()),
+                "pth artifact is aliased or escapes environment",
+            )
+            observed_pth[str(path.relative_to(environment))] = digest(path)
+    result["observed"]["pth_files"] = observed_pth
+    require(observed_pth == pth_files, "actual pth artifact inventory/hash mismatch")
+    observed_bindings = {}
+    for name, binding in bindings.items():
+        targets = binding_targets[name]
+        for target in targets:
+            require(
+                target.is_dir() and target.resolve(strict=True) == target,
+                "editable target missing or aliased",
+            )
+        path = environment / binding["path"]
+        # Compare literal absolute lines. No import, eval, site.addsitedir, or
+        # candidate startup code is executed, even when metadata looks correct.
+        lines = path.read_text(encoding="utf-8").splitlines()
+        require(
+            lines == [str(target) for target in targets],
+            "actual editable pth targets differ from accepted source",
+        )
+        observed_bindings[name] = {"path": binding["path"], "targets": lines}
+    result["observed"]["editable_bindings"] = observed_bindings
     native_files = {}
     for relative in expected["native_files"]:
         path = environment / relative
@@ -1821,7 +1892,7 @@ PY
             dependency_check_json='{"status":"failed","reason":"inspection returned no result"}'
         fi
         dependency_sync_status="failed"
-        dependency_sync_message="candidate dependency comparison refused; see dependency_check"
+        dependency_sync_message="candidate dependency comparison refused; receipt: $CURRENT_JSON (dependency_check); next action: admitted release owner must preserve the hold, repair or rebind the independently accepted expectation/candidate, then rerun governed activation"
         write_receipt "failed" "not_started" "$rc" "$dependency_sync_message"
         echo "hapax-source-activate: $dependency_sync_message" >&2
         exit "$rc"

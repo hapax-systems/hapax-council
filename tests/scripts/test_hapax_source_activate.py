@@ -4822,7 +4822,7 @@ def _dependency_candidate(tmp_path: Path) -> tuple[Path, Path, dict, dict]:
     proof.write_text('{"fixture": "independently prepared package proof"}\n')
     interpreter = Path(sys.executable).resolve()
     expectation = {
-        "schema_version": 1,
+        "schema_version": 2,
         "head": head,
         "candidate_path": str(candidate),
         "interpreter": {
@@ -4857,6 +4857,23 @@ def _dependency_candidate(tmp_path: Path) -> tuple[Path, Path, dict, dict]:
         "evidence": [
             {"path": str(proof), "sha256": hashlib.sha256(proof.read_bytes()).hexdigest()}
         ],
+    }
+    site_relative = f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+    expectation["editable_bindings"] = {
+        name: {"path": f"{site_relative}/fixture{i}.pth", "targets": [relative]}
+        for i, (name, relative) in enumerate(
+            [
+                ("activation-fixture", "."),
+                ("agent-gov", "packages/agentgov/src"),
+                ("context-canon", "packages/context-canon/src"),
+            ]
+        )
+    }
+    expectation["pth_files"] = {
+        binding["path"]: hashlib.sha256(
+            (str(candidate / binding["targets"][0]) + "\n").encode()
+        ).hexdigest()
+        for binding in expectation["editable_bindings"].values()
     }
     expected_path = tmp_path / "state" / "dependency-expectations" / f"{head}.json"
     _write(expected_path, json.dumps(expectation))
@@ -4895,6 +4912,25 @@ def _dependency_candidate(tmp_path: Path) -> tuple[Path, Path, dict, dict]:
             if name in editable:
                 destination = root / editable[name]
                 destination.mkdir(parents=True, exist_ok=True)
+                target = destination if name == "activation-fixture" else destination / "src"
+                target.mkdir(parents=True, exist_ok=True)
+                binding = site / f"fixture{i}.pth"
+                binding.write_text(str(target) + "\\n")
+                if name == "agent_gov":
+                    if fault == "binding-wrong": binding.write_text("/private/preparation/tree\\n")
+                    if fault == "binding-missing": binding.unlink()
+                    if fault == "binding-code":
+                        binding.write_text("import pathlib; pathlib.Path(" + repr(str(root / "hook-ran")) + ").touch()\\n")
+                    if fault == "binding-extra": (site / "unaccepted.pth").write_text("/unaccepted\\n")
+                    if fault == "binding-alias":
+                        other = root / "other.pth"
+                        other.write_bytes(binding.read_bytes())
+                        binding.unlink()
+                        binding.symlink_to(other)
+                    if fault == "target-missing": target.rmdir()
+                    if fault == "target-alias":
+                        target.rmdir()
+                        target.symlink_to(root.parent)
                 if fault == "editable": destination = pathlib.Path("/private/preparation/tree")
                 (info / "direct_url.json").write_text(json.dumps({"url": destination.as_uri(),
                                                                  "dir_info": {"editable": True}}))
@@ -5094,6 +5130,16 @@ def test_dependency_postimage_accepts_exact_inventory_and_editable_relocation(
     assert "--locked" in calls[0]["argv"]
     assert (tmp_path / "state" / "last-success-sha").read_text().strip() == expectation["head"]
     assert receipt["activation_executable_sha256"]
+    assert receipt["dependency_check"]["observed"]["pth_files"] == expectation["pth_files"]
+    assert receipt["dependency_check"]["observed"]["editable_bindings"] == {
+        name: {
+            "path": binding["path"],
+            "targets": [
+                str(Path(expectation["candidate_path"]) / target) for target in binding["targets"]
+            ],
+        }
+        for name, binding in expectation["editable_bindings"].items()
+    }
 
 
 @pytest.mark.parametrize("drift", [False, True])
@@ -5182,3 +5228,124 @@ def test_dependency_postimage_git_inspection_failure_cannot_mean_no_manifest(
     receipt = _current_receipt(tmp_path)
     assert receipt["status"] == "failed"
     assert receipt["dependency_check"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("same_head", [False, True])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "binding-wrong",
+        "binding-missing",
+        "binding-code",
+        "binding-extra",
+        "binding-alias",
+        "target-missing",
+        "target-alias",
+    ],
+)
+def test_dependency_actual_editable_binding_refuses_correct_metadata(
+    tmp_path: Path, same_head: bool, fault: str
+) -> None:
+    canonical, _, expectation, env = _dependency_candidate(tmp_path)
+    candidate = Path(expectation["candidate_path"])
+    if same_head:
+        first = _run_activate(tmp_path, canonical, env_overrides=env)
+        assert first.returncode == 0, first.stderr
+        (tmp_path / "health-record.txt").unlink()
+        binding = candidate / ".venv" / expectation["editable_bindings"]["agent-gov"]["path"]
+        target = candidate / "packages/agentgov/src"
+        if fault == "binding-wrong":
+            binding.write_text("/private/preparation/tree\n")
+        elif fault == "binding-missing":
+            binding.unlink()
+        elif fault == "binding-code":
+            binding.write_text(
+                f"import pathlib; pathlib.Path({str(candidate / 'hook-ran')!r}).touch()\n"
+            )
+        elif fault == "binding-extra":
+            (binding.parent / "unaccepted.pth").write_text("/unaccepted\n")
+        elif fault == "binding-alias":
+            other = candidate / "other.pth"
+            other.write_bytes(binding.read_bytes())
+            binding.unlink()
+            binding.symlink_to(other)
+        elif fault == "target-missing":
+            target.rmdir()
+        elif fault == "target-alias":
+            target.rmdir()
+            target.symlink_to(candidate.parent)
+        calls = (tmp_path / "uv-record.txt").read_bytes()
+    else:
+        env["HAPAX_TEST_DEPENDENCY_FAULT"] = fault
+    before = _published_activation_state(tmp_path)
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert not (tmp_path / "health-record.txt").exists()
+    assert not (candidate / "hook-ran").exists()
+    assert _published_activation_state(tmp_path) == before
+    receipt = _current_receipt(tmp_path)
+    assert receipt["dependency_check"]["status"] == "failed"
+    assert receipt["health_probes"]["status"] == "not_started"
+    # The metadata is still correct in every case; it cannot witness actual binding.
+    site = (candidate / ".venv" / expectation["editable_bindings"]["agent-gov"]["path"]).parent
+    direct = json.loads((site / "fixture1.dist-info/direct_url.json").read_text())
+    assert direct["url"] == (candidate / "packages/agentgov").as_uri()
+    if same_head:
+        assert (tmp_path / "uv-record.txt").read_bytes() == calls
+
+
+@pytest.mark.parametrize("fault", ["binding-wrong", "binding-code"])
+def test_dependency_actual_binding_rejects_hash_bound_wrong_semantics(
+    tmp_path: Path, fault: str
+) -> None:
+    import hashlib
+
+    canonical, path, expectation, env = _dependency_candidate(tmp_path)
+    candidate = Path(expectation["candidate_path"])
+    content = (
+        "/private/preparation/tree\n"
+        if fault == "binding-wrong"
+        else f"import pathlib; pathlib.Path({str(candidate / 'hook-ran')!r}).touch()\n"
+    )
+    artifact = expectation["editable_bindings"]["agent-gov"]["path"]
+    expectation["pth_files"][artifact] = hashlib.sha256(content.encode()).hexdigest()
+    _publish_test_expectation(path, expectation, env)
+    env["HAPAX_TEST_DEPENDENCY_FAULT"] = fault
+    before = _published_activation_state(tmp_path)
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert (
+        "actual editable pth targets differ"
+        in _current_receipt(tmp_path)["dependency_check"]["reason"]
+    )
+    assert not (candidate / "hook-ran").exists()
+    assert not (tmp_path / "health-record.txt").exists()
+    assert _published_activation_state(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "fault", ["schema", "missing", "unbound", "artifact-escape", "target-escape"]
+)
+def test_dependency_actual_binding_refuses_incomplete_preparation(
+    tmp_path: Path, fault: str
+) -> None:
+    canonical, path, expectation, env = _dependency_candidate(tmp_path)
+    if fault == "schema":
+        expectation["schema_version"] = 1
+    elif fault == "missing":
+        expectation["editable_bindings"].pop("agent-gov")
+    elif fault == "unbound":
+        expectation["editable_bindings"]["agent-gov"]["path"] = "unbound.pth"
+    elif fault == "artifact-escape":
+        expectation["pth_files"]["../outside.pth"] = "0" * 64
+    elif fault == "target-escape":
+        expectation["editable_bindings"]["agent-gov"]["targets"] = ["../old-release"]
+    _publish_test_expectation(path, expectation, env)
+    before = _published_activation_state(tmp_path)
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert not (tmp_path / "uv-record.txt").exists()
+    assert not (tmp_path / "health-record.txt").exists()
+    assert _published_activation_state(tmp_path) == before
+    assert "next action: admitted release owner must preserve the hold" in result.stderr
+    assert str(tmp_path / "state/current.json") in result.stderr
