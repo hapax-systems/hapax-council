@@ -2241,16 +2241,30 @@ def _diff_span_weight(path: str) -> int:
     return 2
 
 
-def truncate_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> str:
+def shape_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> tuple[str, list[dict[str, Any]]]:
+    """Balanced per-file diff excerpting plus a not-reviewed record per elision."""
+
     if len(diff) <= limit:
-        return diff
+        return diff, []
     marker = (
         f"[diff truncated to balanced per-file excerpts at {limit} chars — "
         "fetch the full diff via the REST pull diff endpoint]\n"
     )
     starts = [match.start() for match in re.finditer(r"(?m)^diff --git ", diff)]
     if not starts:
-        return diff[:limit] + "\n" + marker
+        record = {
+            "component": "diff",
+            "file": None,
+            "kept_chars": limit,
+            "total_chars": len(diff),
+            "elided_chars": len(diff) - limit,
+            "line_range": None,
+            "boundary_cut": True,
+        }
+        shaped = (
+            diff[:limit] + "\n" + marker + "[not reviewed: content beyond this cut was not shown]\n"
+        )
+        return shaped, [record]
     spans = [
         diff[start : starts[index + 1] if index + 1 < len(starts) else len(diff)]
         for index, start in enumerate(starts)
@@ -2259,23 +2273,116 @@ def truncate_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> str:
     weights = [_diff_span_weight(_diff_span_path(span)) for span in spans]
     total_weight = max(1, sum(weights))
     chunks: list[str] = [marker]
+    records: list[dict[str, Any]] = []
     for span, weight in zip(spans, weights, strict=True):
         file_budget = max(1, (body_budget * weight) // total_weight)
         if len(span) <= file_budget:
             chunks.append(span)
-        else:
-            first_line = span.splitlines()[0] if span.splitlines() else "diff --git <unknown>"
-            chunks.append(
-                span[:file_budget]
-                + f"\n[file diff truncated at {file_budget} chars for {first_line}]\n"
-            )
-    return "\n".join(chunks)
+            continue
+        first_line = span.splitlines()[0] if span.splitlines() else "diff --git <unknown>"
+        elided_span = span[file_budget:]
+        line_range = _elided_hunk_line_range(elided_span)
+        records.append(
+            {
+                "component": "diff",
+                "file": _diff_span_path(span) or first_line,
+                "kept_chars": file_budget,
+                "total_chars": len(span),
+                "elided_chars": len(elided_span),
+                "line_range": line_range,
+                "boundary_cut": elided_span.lstrip("\n").startswith(("diff --git ", "@@")),
+            }
+        )
+        chunks.append(
+            span[:file_budget]
+            + f"\n[file diff truncated at {file_budget} chars for {first_line}]\n"
+            + "[not reviewed: this file's diff beyond the cut was not shown to this review seat]\n"
+        )
+    return "\n".join(chunks), records
+
+
+def truncate_diff(diff: str, limit: int = MAX_DIFF_CHARS) -> str:
+    return shape_diff(diff, limit)[0]
 
 
 def truncate_context(text: str, limit: int = MAX_TASK_NOTE_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n[context truncated at {limit} chars]\n"
+
+
+_DIFF_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+# Below this a shaped diff is no longer a review of the diff; refuse instead.
+_MIN_SHAPED_DIFF_CHARS = 2_000
+# Headroom for the declaration bytes a shrink itself adds to every prompt.
+_DECLARATION_MARGIN_CHARS = 512
+
+
+def _elided_hunk_line_range(elided: str) -> tuple[int, int] | None:
+    """New-file line span covered by the hunk headers inside an elided region."""
+
+    hunks = list(_DIFF_HUNK_HEADER_RE.finditer(elided))
+    if not hunks:
+        return None
+    first, last = hunks[0], hunks[-1]
+    start = int(first.group(1))
+    last_count = int(last.group(2)) if last.group(2) is not None else 1
+    return (start, int(last.group(1)) + max(last_count, 1) - 1)
+
+
+def _shape_text_component(label: str, text: str, budget: int) -> tuple[str, dict[str, Any] | None]:
+    """Truncate one packet component to a char budget, marking the cut not-reviewed."""
+
+    if budget >= len(text):
+        return text, None
+    kept = text[:budget] if budget > 0 else ""
+    record = {
+        "component": label,
+        "kept_chars": max(budget, 0),
+        "total_chars": len(text),
+        "elided_chars": len(text) - max(budget, 0),
+        "line_range": None,
+        "boundary_cut": True,
+    }
+    kept += (
+        f"\n[not reviewed: {label} truncated at {max(budget, 0)} of {len(text)} chars; "
+        "content beyond this point was not shown to this review seat]\n"
+    )
+    return kept, record
+
+
+def _elision_sentence(record: Mapping[str, Any]) -> str:
+    if record.get("component") == "diff":
+        where = str(record.get("file") or "<unparsed file>")
+        sentence = f"- PR diff, {where}: {record.get('elided_chars')} diff chars elided"
+        line_range = record.get("line_range")
+        if line_range:
+            sentence += f", spanning new-file lines {line_range[0]}-{line_range[1]}"
+            if not record.get("boundary_cut"):
+                sentence += " (cut begins inside a hunk; range is outer bounds)"
+        return sentence + " — NOT REVIEWED"
+    return (
+        f"- {record.get('component')}: truncated at {record.get('kept_chars')} of "
+        f"{record.get('total_chars')} chars — content beyond char {record.get('kept_chars')} "
+        "NOT REVIEWED"
+    )
+
+
+def _render_evidence_elided_block(declarations: list[Mapping[str, Any]]) -> str:
+    """Trusted prompt block enumerating everything the shaping elided."""
+
+    if not declarations:
+        return ""
+    lines = [
+        "# Evidence not reviewed (packet shaped to the binding seat prompt ceiling)",
+        "",
+        "This packet was reduced to fit the smallest seated prompt ceiling. The",
+        "content named below was elided and was NOT reviewed. Do not treat silence",
+        "on it as acceptance and do not claim coverage of it in findings.",
+        "",
+    ]
+    lines.extend(_elision_sentence(record) for record in declarations)
+    return "\n".join(lines) + "\n\n"
 
 
 def render_untrusted_block(label: str, text: str, *, limit: int = MAX_TASK_NOTE_CHARS) -> str:
@@ -2327,6 +2434,7 @@ def render_reviewer_prompt(
     prior_file_excerpts: str = "",
     diff_source: str = "",
     comparison_base: str = "",
+    evidence_elided_block: str = "",
 ) -> str:
     prior_block = ""
     if prior_criticals:
@@ -2373,9 +2481,128 @@ Apply EVERY lens charter below. Address every checklist item explicitly (pass / 
 
 {charters}
 
-{prior_block}{prior_file_excerpts}{render_untrusted_block("PR diff", diff, limit=MAX_DIFF_CHARS + 500)}
-
+{prior_block}{prior_file_excerpts}{render_untrusted_block("PR diff", diff, limit=MAX_DIFF_CHARS + 500)}{evidence_elided_block}
 {REVIEWER_OUTPUT_CONTRACT}"""
+
+
+def _fit_prompts_to_binding_ceiling(
+    constitution: Any,
+    seat_prompt_limits: dict[str, int],
+    prompt_inputs: dict[str, Any],
+    reviewer_source_excerpts: str,
+) -> tuple[list[str] | None, dict[str, Any], dict[str, Any]]:
+    """Render prompts that fit every seated ceiling, shaping evidence if needed.
+
+    One packet for all seats (per-seat divergence would split the quorum's
+    shared evidence basis). The binding seat is the smallest seated prompt
+    ceiling. Components shrink in sacrifice order — task note, then PR body,
+    then diff — one sacrifice per pass with a full re-measure between passes, so
+    a residual overshoot is absorbed by another cheap cut before the diff is
+    ever touched (shape_diff's balanced per-file allocation is a deep-truncation
+    tool: pointing it at a tiny shortfall would starve whole files). Each cut
+    emits a visible not-reviewed declaration; source excerpts never shrink
+    (complete-definition-or-refuse). Returns ``(prompts, shaped_inputs,
+    record)``; prompts is None when the packet is unshapable within the diff
+    floor, and the record then carries the shaped measurements so the refusal
+    narrows.
+    """
+
+    seats = list(constitution.seats)
+    binding_seat = min(seat_prompt_limits, key=lambda seat_id: seat_prompt_limits[seat_id])
+    binding_limit = seat_prompt_limits[binding_seat]
+
+    def _render_all(inputs: dict[str, Any], elided_block: str) -> list[str]:
+        return [
+            render_reviewer_prompt(
+                seat=seat,
+                prior_file_excerpts=reviewer_source_excerpts,
+                evidence_elided_block=elided_block,
+                **inputs,
+            )
+            for seat in seats
+        ]
+
+    def _sizes(prompts: list[str]) -> dict[str, int]:
+        return {
+            seat.id: len(prompt.encode("utf-8"))
+            for seat, prompt in zip(seats, prompts, strict=True)
+        }
+
+    def _fits(sizes: dict[str, int]) -> bool:
+        return all(size <= seat_prompt_limits[seat_id] for seat_id, size in sizes.items())
+
+    inputs = dict(prompt_inputs)
+    original_sizes = {
+        component: len(inputs[component]) for component in ("task_note_text", "pr_body", "diff")
+    }
+    declarations: list[dict[str, Any]] = []
+    prompts = _render_all(inputs, "")
+    full_sizes = _sizes(prompts)
+    record: dict[str, Any] = {
+        "binding_seat": binding_seat,
+        "binding_prompt_limit_bytes": binding_limit,
+        "prompt_bytes_by_seat": full_sizes,
+        "evidence_elided": declarations,
+    }
+    if _fits(full_sizes):
+        record["status"] = "fit"
+        record["shaped_prompt_bytes_by_seat"] = dict(full_sizes)
+        return prompts, inputs, record
+
+    while True:
+        sizes = _sizes(prompts)
+        if _fits(sizes):
+            record["status"] = "shaped"
+            record["shaped_prompt_bytes_by_seat"] = sizes
+            record["evidence_elided"] = declarations
+            return prompts, inputs, record
+        overshoot = max(sizes[binding_seat] - binding_limit, 0)
+        applied = False
+        for component in ("task_note_text", "pr_body", "diff"):
+            # Shrink this component by the overshoot plus a margin that absorbs the
+            # declaration bytes the cut itself adds back into the prompt. The budget
+            # derives from the component's CURRENT size, not its cap: a packet whose
+            # every component is under its own cap can still sum past a seat ceiling
+            # (the #5045 shape), and cap-derived budgets would never cut anything.
+            budget = len(inputs[component]) - overshoot - _DECLARATION_MARGIN_CHARS
+            if component == "diff":
+                budget = max(budget, _MIN_SHAPED_DIFF_CHARS)
+                if len(inputs["diff"]) <= _MIN_SHAPED_DIFF_CHARS:
+                    continue  # already at the floor; nothing left to sacrifice
+                shaped, diff_declarations = shape_diff(inputs["diff"], budget)
+                if len(shaped) >= len(inputs["diff"]):
+                    continue
+                inputs["diff"] = shaped
+                declarations.extend(diff_declarations)
+            else:
+                label = "linked cc-task note" if component == "task_note_text" else "PR body"
+                shaped, text_declaration = _shape_text_component(label, inputs[component], budget)
+                if text_declaration is None or len(shaped) >= len(inputs[component]):
+                    continue  # nothing to cut, or the declaration costs more than the cut saves
+                inputs[component] = shaped
+                text_declaration["total_chars"] = original_sizes[component]
+                text_declaration["elided_chars"] = (
+                    original_sizes[component] - text_declaration["kept_chars"]
+                )
+                for index, existing in enumerate(declarations):
+                    if existing.get("component") == label:
+                        declarations[index] = text_declaration
+                        break
+                else:
+                    declarations.append(text_declaration)
+            prompts = _render_all(inputs, _render_evidence_elided_block(declarations))
+            applied = True
+            break  # one sacrifice per pass: re-measure before cutting anything else
+        if not applied:
+            break  # nothing left to sacrifice at any size; the checks below refuse
+    sizes = _sizes(prompts)
+    record["shaped_prompt_bytes_by_seat"] = sizes
+    record["evidence_elided"] = declarations
+    if _fits(sizes):
+        record["status"] = "shaped"
+        return prompts, inputs, record
+    record["status"] = "refused"
+    return None, inputs, record
 
 
 def render_artifact_reviewer_prompt(
@@ -4008,10 +4235,19 @@ def _default_send_runner(cmd: list[str]) -> None:
 def _review_registry_and_route_blocks(
     registry_path: Path | None,
     route_blocked_families: dict[str, tuple[str, ...]] | None,
+    diff_capacity_receipt_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, tuple[str, ...]]]:
     """The effective review roster and its route-blocked families (injected ones win)."""
 
     registry = review_team.load_lens_registry(registry_path)
+    try:
+        receipt = review_team.load_diff_capacity_receipt(diff_capacity_receipt_path)
+    except OSError as exc:
+        raise review_team.DiffCapacityConfigError(
+            f"diff-capacity receipt unreadable at "
+            f"{diff_capacity_receipt_path or review_team.DEFAULT_DIFF_CAPACITY_RECEIPT_PATH}: {exc}"
+        ) from exc
+    review_team.validate_diff_capacity_receipt(registry, receipt)
     platform_registry = (
         None
         if route_blocked_families is not None
@@ -4045,6 +4281,7 @@ def review_pr(
     wake_dir: Path = DEFAULT_WAKE_DIR,
     send_runner: Any = None,
     registry_path: Path | None = None,
+    diff_capacity_receipt_path: Path | None = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
     route: ListingRoute | None = None,
@@ -4064,8 +4301,19 @@ def review_pr(
     now_iso = now_iso or datetime.now(UTC).isoformat(timespec="seconds")
     try:
         registry, effective_route_blocked_families = _review_registry_and_route_blocks(
-            registry_path, route_blocked_families
+            registry_path, route_blocked_families, diff_capacity_receipt_path
         )
+    except review_team.DiffCapacityConfigError as exc:
+        return {
+            "status": "diff_capacity_config_invalid",
+            "pr": pr_number,
+            "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
+            "next_action": (
+                "repair registry.yaml diff_capacity to the vendored receipt ceilings "
+                "(config/review-lenses/diff-capacity-receipt.yaml) or ship a new "
+                "receipt with a remeasurement, then retry"
+            ),
+        }
     except review_team.PlatformCapabilityRegistryError as exc:
         return {
             "status": "route_gate_unavailable",
@@ -4433,42 +4681,36 @@ def _apply_review(
         "diff": diff,
         "prior_criticals": redacted_prior_criticals,
     }
-    if reviewer_source_excerpts:
-        try:
-            prompt_headroom = min(
-                review_team.seat_diff_capacity(seat.id, registry)["prompt_limit_bytes"]
-                - len(
-                    render_reviewer_prompt(
-                        seat=seat, prior_file_excerpts="", **prompt_inputs
-                    ).encode()
-                )
-                for seat in constitution.seats
-            )
-        except (review_team.DiffCapacityConfigError, KeyError) as exc:
-            return {
-                "status": "diff_capacity_config_invalid",
-                "pr": pr_number,
-                "reason": str(exc),
-                "next_action": "repair the declared seat prompt capacity and retry",
-            }
-        excerpt_bytes = len(reviewer_source_excerpts.encode())
-        if excerpt_bytes > prompt_headroom:
-            return {
-                "status": "prompt_capacity_exceeded",
-                "pr": pr_number,
-                "reason": "Complete source evidence exceeds a seated measured prompt ceiling",
-                "excerpt_bytes": excerpt_bytes,
-                "available_bytes": prompt_headroom,
-                "next_action": "split the PR or reconstitute with eligible seats",
-            }
-    prompts = [
-        render_reviewer_prompt(
-            seat=seat,
-            prior_file_excerpts=reviewer_source_excerpts,
-            **prompt_inputs,
-        )
-        for seat in constitution.seats
-    ]
+    seat_prompt_limits: dict[str, int] = {}
+    try:
+        for seat in constitution.seats:
+            seat_prompt_limits[seat.id] = review_team.seat_diff_capacity(seat.id, registry)[
+                "prompt_limit_bytes"
+            ]
+    except (review_team.DiffCapacityConfigError, KeyError) as exc:
+        return {
+            "status": "diff_capacity_config_invalid",
+            "pr": pr_number,
+            "reason": str(exc),
+            "next_action": "repair the declared seat prompt capacity and retry",
+        }
+    prompts, shaped_inputs, packet_shaping = _fit_prompts_to_binding_ceiling(
+        constitution, seat_prompt_limits, prompt_inputs, reviewer_source_excerpts
+    )
+    if prompts is None:
+        return {
+            "status": "prompt_capacity_exceeded",
+            "pr": pr_number,
+            "reason": (
+                "Packet exceeds a seated measured prompt ceiling even after "
+                "evidence shaping (task note, PR body, diff floor)"
+            ),
+            "excerpt_bytes": len(reviewer_source_excerpts.encode()),
+            "packet_shaping": packet_shaping,
+            "next_action": "split the PR or reconstitute with eligible seats",
+        }
+    prompt_inputs = shaped_inputs
+    diff = prompt_inputs["diff"]
     task_hash: str | None = None
     task_hash_source_task_id: str | None = None
     task_hash_source_note: str | None = None
@@ -4555,6 +4797,10 @@ def _apply_review(
             "excerpts": prior_evidence_records,
             "changed_source_excerpts": changed_source_evidence_records,
         }
+        # What the reviewers actually received after packet shaping: the binding
+        # (smallest seated) ceiling, per-seat prompt bytes before/after shaping,
+        # and every visible not-reviewed elision (review-packet-ceiling-fit-20261006).
+        dossier["packet_shaping"] = packet_shaping
         if task_hash:
             dossier["review_task_hash"] = task_hash
             dossier["review_task_hash_source_task_id"] = task_hash_source_task_id
@@ -4801,6 +5047,7 @@ def review_artifact(
     wake_dir: Path = DEFAULT_WAKE_DIR,
     send_runner: Any = None,
     registry_path: Path | None = None,
+    diff_capacity_receipt_path: Path | None = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
@@ -4835,8 +5082,19 @@ def review_artifact(
 
     try:
         registry, route_blocks = _review_registry_and_route_blocks(
-            registry_path, route_blocked_families
+            registry_path, route_blocked_families, diff_capacity_receipt_path
         )
+    except review_team.DiffCapacityConfigError as exc:
+        return {
+            "status": "diff_capacity_config_invalid",
+            "task_id": task_id,
+            "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
+            "next_action": (
+                "repair registry.yaml diff_capacity to the vendored receipt ceilings "
+                "(config/review-lenses/diff-capacity-receipt.yaml) or ship a new "
+                "receipt with a remeasurement, then retry"
+            ),
+        }
     except review_team.PlatformCapabilityRegistryError as exc:
         return {
             "status": "route_gate_unavailable",

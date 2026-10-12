@@ -86,6 +86,9 @@ from shared.quota_spend_ledger import (  # noqa: E402
 from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES  # noqa: E402
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
+DEFAULT_DIFF_CAPACITY_RECEIPT_PATH = (
+    REPO_ROOT / "config" / "review-lenses" / "diff-capacity-receipt.yaml"
+)
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 
 #: Dossier filename suffix; the dossier lives beside the task note.
@@ -687,6 +690,84 @@ def seat_diff_capacity(seat_id: str, registry: Mapping[str, Any]) -> dict[str, A
             f"review diff_capacity seat {seat_id} lacks measurement citation"
         )
     return dict(entry)
+
+
+def load_diff_capacity_receipt(path: Path | None = None) -> dict[str, Any]:
+    """The vendored diff-capacity receipt (measured ceilings for registry seats)."""
+
+    receipt_path = path or DEFAULT_DIFF_CAPACITY_RECEIPT_PATH
+    loaded = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(loaded, dict)
+        or loaded.get("receipt_schema") != 1
+        or loaded.get("receipt_id") != "diff-capacity-receipt"
+    ):
+        raise DiffCapacityConfigError(
+            f"diff-capacity receipt at {receipt_path} is not a diff-capacity-receipt mapping"
+        )
+    return loaded
+
+
+def validate_diff_capacity_receipt(registry: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    """Configured seat capacity must not exceed the receipt's measured ceilings.
+
+    The registry cites its own measurement artifacts, but a citation is not a
+    cross-check: this pins the vendored receipt's independently recorded numbers
+    against what the registry configures, for every seat both name. A seat the
+    receipt does not name keeps its in-registry citation as its only evidence
+    (new measurements ship receipt and registry together).
+    """
+
+    measured_at = receipt.get("measured_at")
+    if not isinstance(measured_at, str) or not measured_at.strip():
+        raise DiffCapacityConfigError("diff-capacity receipt lacks measured_at")
+    sources = receipt.get("sources")
+    if not isinstance(sources, Mapping) or not sources:
+        raise DiffCapacityConfigError("diff-capacity receipt sources missing/malformed")
+    for name, source in sources.items():
+        if not isinstance(source, Mapping) or not isinstance(source.get("file"), str):
+            raise DiffCapacityConfigError(f"diff-capacity receipt source {name} malformed")
+        sha = source.get("sha256")
+        if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+            raise DiffCapacityConfigError(f"diff-capacity receipt source {name} lacks sha256")
+    receipt_seats = receipt.get("seats")
+    if not isinstance(receipt_seats, Mapping) or not receipt_seats:
+        raise DiffCapacityConfigError("diff-capacity receipt seats missing/malformed")
+    for seat_id, entry in receipt_seats.items():
+        if not isinstance(entry, Mapping):
+            raise DiffCapacityConfigError(f"diff-capacity receipt seat {seat_id} malformed")
+        limit = entry.get("limit_bytes")
+        prompt_limit = entry.get("prompt_limit_bytes")
+        if (
+            type(limit) is not int
+            or limit <= 0
+            or type(prompt_limit) is not int
+            or prompt_limit <= 0
+        ):
+            raise DiffCapacityConfigError(f"diff-capacity receipt seat {seat_id} limits malformed")
+        if entry.get("status") not in {"measured", "unmeasured"}:
+            raise DiffCapacityConfigError(f"diff-capacity receipt seat {seat_id} status invalid")
+    capacity = registry.get("diff_capacity")
+    if not isinstance(capacity, Mapping):
+        return  # seat_diff_capacity owns the missing-config error path
+    configured_seats = capacity.get("seats")
+    if not isinstance(configured_seats, Mapping):
+        return
+    for seat_id, configured in configured_seats.items():
+        if seat_id not in receipt_seats or not isinstance(configured, Mapping):
+            continue
+        measured = receipt_seats[seat_id]
+        for field in ("limit_bytes", "prompt_limit_bytes"):
+            value = configured.get(field)
+            if type(value) is not int:
+                continue  # seat_diff_capacity owns the type error path
+            if value > measured[field]:
+                raise DiffCapacityConfigError(
+                    f"review diff_capacity seat {seat_id} configures {field} {value} "
+                    f"above the receipted {measured[field]} "
+                    f"(measured_at {measured_at}); lower the registry to the measured "
+                    "ceiling or remeasure and ship a new receipt"
+                )
 
 
 def _matches(path: str, pattern: str) -> bool:

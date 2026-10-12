@@ -67,6 +67,49 @@ def _make_vault(tmp_path: Path) -> Path:
     return vault
 
 
+def _synth_5045_shaped_diff() -> str:
+    """Deterministic synthetic stand-in for the PR #5045 review packet at head
+    897dbcc2 (vendored ancestor sha256 cc993d3c066ee7ddf4ddc739c9a3dcf43cf3c8b2
+    1b39f3a4f6c22cc5030d7bee, replaced per seat order 2026-10-11T06:45:30Z):
+    same measured characteristics — 3 files, 2+1+1 hunks, 1,142 additions with
+    context and deletions interleaved, exactly 42,911 bytes — generated so the
+    capacity anchor needs no vendored bytes. Output is pinned by sha256 at the
+    use site."""
+    files = (
+        ("scripts/gh-forge", 2),
+        ("sdlc/github.py", 1),
+        ("tests/test_gh_forge_shim.py", 1),
+    )
+    target_bytes = 42_911
+    plus_per_hunk = 286
+    lines: list[str] = []
+    plus_indexes: list[int] = []
+    for file_index, (path, hunk_count) in enumerate(files, start=1):
+        lines += [
+            f"diff --git a/{path} b/{path}",
+            f"index 897dbcc{file_index}..f36ecb4{file_index} 100644",
+            f"--- a/{path}",
+            f"+++ b/{path}",
+        ]
+        for hunk_index in range(1, hunk_count + 1):
+            lines.append(
+                f"@@ -{100 * file_index + hunk_index},20"
+                f" +{200 * file_index + hunk_index},300 @@ synth {path} hunk {hunk_index}"
+            )
+            lines.append(f" unchanged {path} context before hunk {hunk_index}")
+            lines.append(f"-retired {path} line {hunk_index}")
+            for i in range(1, plus_per_hunk + 1):
+                plus_indexes.append(len(lines))
+                lines.append(f"+synth {file_index}.{hunk_index}.{i:03d}")
+    base_bytes = sum(len(line.encode("utf-8")) + 1 for line in lines)
+    pad, extra = divmod(target_bytes - base_bytes, len(plus_indexes))
+    for position, index in enumerate(plus_indexes):
+        lines[index] += "x" * (pad + extra if position == len(plus_indexes) - 1 else pad)
+    diff = "".join(f"{line}\n" for line in lines)
+    assert len(diff.encode("utf-8")) == target_bytes
+    return diff
+
+
 def _write_task(
     vault: Path,
     task_id: str = "task-a",
@@ -1386,12 +1429,42 @@ class TestApply:
         assert result["status"] == "dispatched"
         assert reviewers.invocations
         assert all(excerpt in prompt for _, _, prompt in reviewers.invocations)
-        full_size = max(len(prompt.encode()) for _, _, prompt in reviewers.invocations)
+        binding_size = min(len(prompt.encode()) for _, _, prompt in reviewers.invocations)
 
-        ceiling["value"] = full_size - 1
-        result, _, reviewers, _ = _review(tmp_path / "over")
+        # One byte over the smallest seated ceiling no longer refuses outright: the
+        # packet shapes — task note and PR body shrink behind visible not-reviewed
+        # declarations — while the complete definition excerpt stays verbatim.
+        ceiling["value"] = binding_size - 1
+        result, _, reviewers, note = _review(tmp_path / "over")
+        assert result["status"] == "dispatched"
+        assert reviewers.invocations
+        assert all(excerpt in prompt for _, _, prompt in reviewers.invocations)
+        assert all("Evidence not reviewed" in prompt for _, _, prompt in reviewers.invocations)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        shaping = dossier["packet_shaping"]
+        assert shaping["status"] == "shaped"
+        assert shaping["binding_prompt_limit_bytes"] == binding_size - 1
+        assert shaping["shaped_prompt_bytes_by_seat"]
+        assert {d["component"] for d in shaping["evidence_elided"]} <= {
+            "linked cc-task note",
+            "PR body",
+            "diff",
+        }
+        for seat_id, _, prompt in reviewers.invocations:
+            assert len(prompt.encode()) <= ceiling["value"], seat_id
+
+        # A ceiling under the fixed prompt overhead is unshapable even with maximal
+        # shaping: refuse, dispatch nothing, and record the measurements that
+        # narrowed the refusal.
+        ceiling["value"] = 5_000
+        result, _, reviewers, _ = _review(tmp_path / "unshapable")
         assert result["status"] == "prompt_capacity_exceeded"
+        assert result["packet_shaping"]["status"] == "refused"
+        assert result["packet_shaping"]["prompt_bytes_by_seat"]
         assert not reviewers.invocations
+
         ceiling["value"] = 1_000_000
         monkeypatch.setattr(
             dispatch,
@@ -1411,6 +1484,166 @@ class TestApply:
         assert result["status"] == "source_evidence_incomplete"
         assert "shared/foo.py:target" in result["refusals"][0]["definitions"]
         assert not reviewers.invocations
+
+    def test_registry_above_receipt_ceiling_refuses_dispatch(self, tmp_path: Path) -> None:
+        registry = yaml.safe_load(
+            (REPO_ROOT / "config" / "review-lenses" / "registry.yaml").read_text(encoding="utf-8")
+        )
+        registry["diff_capacity"]["seats"]["glm-1"]["prompt_limit_bytes"] = 70_200
+        over_path = tmp_path / "registry-over-receipt.yaml"
+        over_path.write_text(yaml.safe_dump(registry), encoding="utf-8")
+        result, _, reviewers, _ = _review(tmp_path, registry_path=over_path)
+        assert result["status"] == "diff_capacity_config_invalid"
+        assert "glm-1" in result["reason"]
+        assert "70200" in result["reason"]
+        assert "receipt" in result["next_action"]
+        assert not reviewers.invocations
+
+    def test_shape_diff_declares_elided_spans_not_reviewed(self) -> None:
+        diff = (
+            "diff --git a/shared/foo.py b/shared/foo.py\n"
+            "--- a/shared/foo.py\n"
+            "+++ b/shared/foo.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            " context\n"
+            "-removed\n"
+            "+added\n"
+            "diff --git a/shared/bar.py b/shared/bar.py\n"
+            "--- a/shared/bar.py\n"
+            "+++ b/shared/bar.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            " context\n"
+            "+added\n"
+        )
+        shaped, records = dispatch.shape_diff(diff, limit=120)
+        assert shaped != diff
+        assert (
+            "[not reviewed: this file's diff beyond the cut was not shown to this review seat]"
+            in shaped
+        )
+        assert records
+        assert all(r["component"] == "diff" for r in records)
+        assert all(r["file"] and r["elided_chars"] > 0 for r in records)
+        assert any(r["line_range"] for r in records)
+        assert dispatch.truncate_diff(diff, limit=120) == shaped
+
+    def test_evidence_elided_block_names_every_elision(self) -> None:
+        block = dispatch._render_evidence_elided_block(
+            [
+                {
+                    "component": "linked cc-task note",
+                    "kept_chars": 100,
+                    "total_chars": 900,
+                    "elided_chars": 800,
+                },
+                {
+                    "component": "diff",
+                    "file": "shared/foo.py",
+                    "elided_chars": 5317,
+                    "line_range": (30, 598),
+                    "boundary_cut": False,
+                },
+            ]
+        )
+        assert block.startswith("# Evidence not reviewed")
+        assert "linked cc-task note: truncated at 100 of 900 chars" in block
+        assert "PR diff, shared/foo.py: 5317 diff chars elided" in block
+        assert "NOT REVIEWED" in block
+        assert dispatch._render_evidence_elided_block([]) == ""
+
+    def _run_5045_shape(
+        self, tmp_path: Path, note_bytes: int
+    ) -> tuple[dict[str, Any], RecordingReviewers, Path, dict[str, int]]:
+        # The #5045 shape: a synthetic diff with the production packet's exact
+        # measured characteristics — 3 files, 4 hunks, exactly 42,911 bytes —
+        # plus a synthetic task note sized in bytes. The note content is filler
+        # standing in for the archived forge-s2 row (8,833 B); larger sizes
+        # force the packet past the glm measured ceiling. The packet's vendored
+        # ancestor (PR #5045 at 897dbcc2; original fixture sha256 cc993d3c066ee
+        # 7ddf4ddc739c9a3dcf43cf3c8b21b39f3a4f6c22cc5030d7bee, later same-length-
+        # substituted c1504051…) was replaced by the generator per seat order
+        # 2026-10-11T06:45:30Z; the generated bytes are pinned:
+        diff = _synth_5045_shaped_diff()
+        assert (
+            sha256(diff.encode("utf-8")).hexdigest()
+            == "485905ce9fe30a7921fb30dac7982eca3280e63685ac9e2634235168c94db91a"  # pragma: allowlist secret
+        ), "synthetic #5045 packet drifted; re-pin deliberately, never silently"
+        assert len(diff.encode("utf-8")) == 42_911
+        vault = _make_vault(tmp_path)
+        note = _write_task(vault)
+        base = note.read_text(encoding="utf-8")
+        filler = "Forge review-chain session narrative filler. "
+        note.write_text((base + "\n\n" + filler * note_bytes)[:note_bytes], encoding="utf-8")
+        assert len(note.read_bytes()) == note_bytes
+        gh = FakeGh(files=["scripts/gh-forge", "sdlc/github.py", "tests/test_gh_forge_shim.py"])
+        gh.diff = diff
+        reviewers = RecordingReviewers()
+        result = dispatch.review_pr(
+            42,
+            repo="owner/repo",
+            repo_root=REPO_ROOT,
+            vault_root=vault,
+            apply=True,
+            gh_runner=gh,
+            reviewer_runner=reviewers,
+            wake_dir=tmp_path / "wake",
+            send_runner=lambda cmd: None,
+            now_iso="2026-06-11T21:00:00+00:00",
+            route_blocked_families={},
+        )
+        registry = dispatch.review_team.load_lens_registry()
+        seat_limits = {
+            seat_id: dispatch.review_team.seat_diff_capacity(seat_id, registry)[
+                "prompt_limit_bytes"
+            ]
+            for seat_id, _, _ in reviewers.invocations
+        }
+        return result, reviewers, note, seat_limits
+
+    def test_5045_sized_packet_dispatches_within_seated_ceilings(self, tmp_path: Path) -> None:
+        # At the archived production sizes the packet renders inside the smallest
+        # seated measured ceiling (glm-1, 70,199 bytes) and dispatches whole: the
+        # #5045 capacity failure is gone, with nothing elided.
+        result, reviewers, note, seat_limits = self._run_5045_shape(tmp_path, 8_833)
+        assert result["status"] == "dispatched"
+        assert reviewers.invocations
+        for seat_id, _, prompt in reviewers.invocations:
+            assert len(prompt.encode("utf-8")) <= seat_limits[seat_id], seat_id
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        shaping = dossier["packet_shaping"]
+        assert shaping["binding_seat"] == "glm-1"
+        assert shaping["binding_prompt_limit_bytes"] == 70_199
+        assert shaping["status"] == "fit"
+        assert shaping["evidence_elided"] == []
+        for review in dossier["reviewers"]:
+            assert review["diff_full_bytes"] == 42_911
+            assert review["diff_delivered_bytes"] == 42_911
+        assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_5045_diff_with_oversize_note_shapes_and_keeps_diff_whole(self, tmp_path: Path) -> None:
+        # The same #5045 diff bytes with a note grown past the glm ceiling: the
+        # packet shapes — the note elides behind a visible not-reviewed declaration
+        # in every prompt — while the diff stays whole and every seated prompt
+        # stays inside its own measured ceiling.
+        result, reviewers, note, seat_limits = self._run_5045_shape(tmp_path, 17_000)
+        assert result["status"] == "dispatched"
+        assert reviewers.invocations
+        for seat_id, _, prompt in reviewers.invocations:
+            assert len(prompt.encode("utf-8")) <= seat_limits[seat_id], seat_id
+        assert all("Evidence not reviewed" in prompt for _, _, prompt in reviewers.invocations)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        shaping = dossier["packet_shaping"]
+        assert shaping["status"] == "shaped"
+        assert shaping["binding_seat"] == "glm-1"
+        assert {d["component"] for d in shaping["evidence_elided"]} == {"linked cc-task note"}
+        for review in dossier["reviewers"]:
+            assert review["diff_full_bytes"] == 42_911
+            assert review["diff_delivered_bytes"] == 42_911
+        assert dossier["review_team_verdict"] == "quorum-accept"
 
     def test_failed_definition_inclusion_retries_on_later_finding(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
