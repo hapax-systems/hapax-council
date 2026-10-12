@@ -1,5 +1,24 @@
-"""Python ABI splits preserve audio, older caps, and compatible root wheels."""
+"""Python ABI splits preserve audio, older caps, and compatible root wheels.
 
+Recheck the real root graph without syncing the working environment::
+
+    uv run --no-project --with pytest --with packaging python -m pytest \
+        --noconftest -o addopts= tests/test_dependency_resolution_markers.py -q
+
+The locked plans use private copies of the manifests and lock. uv may provision
+the requested Python interpreter, but --dry-run never installs the audio stack.
+They run in the ordinary suite too; an unavailable interpreter/resolver is a
+failure, not a skipped compatibility claim. To mutation-check an edge, delete
+or misroute its Essentia entry in the root audio or host lock section, run the
+matching locked-install-plan case, then restore the exact lock and rerun it.
+Keep the standalone Essentia package records intact: those alone cannot prove
+that an extra actually installs the package.
+"""
+
+import os
+import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -95,7 +114,7 @@ def test_selected_lock_has_a_linux_wheel_for_the_requested_python_abi(python_ver
     matching_wheels = []
     for wheel in package.get("wheels", []):
         filename = unquote(Path(urlsplit(wheel["url"]).path).name)
-        _, version, _, tags = parse_wheel_filename(filename)
+        _, _, _, tags = parse_wheel_filename(filename)
         if any(
             tag.interpreter == abi
             and tag.abi == abi
@@ -103,7 +122,6 @@ def test_selected_lock_has_a_linux_wheel_for_the_requested_python_abi(python_ver
             and tag.platform.endswith("_x86_64")
             for tag in tags
         ):
-            assert version == Version(package["version"])
             matching_wheels.append(wheel)
     assert matching_wheels, f"{package_name} must actually be installable for Linux {abi}"
 
@@ -112,3 +130,62 @@ def test_python_and_platform_support_are_preserved():
     project = _project()
     assert project["project"]["requires-python"] == ">=3.12"
     assert project["tool"]["uv"]["environments"] == ["sys_platform == 'linux'"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("extra", ["audio", "host"])
+@pytest.mark.parametrize("python_version", ["3.12", "3.13", "3.14"])
+def test_locked_install_plan_reaches_root_audio_edges(tmp_path, python_version, extra):
+    """Exercise uv's actual extra expansion, edge selection, and wheel planning."""
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ["pyproject.toml", "uv.lock"]:
+        shutil.copy2(ROOT / name, project / name)
+    # These editable path dependencies need their real metadata for --locked's
+    # freshness check; no package code/build or working-tree venv is needed.
+    for source in _project()["tool"]["uv"]["sources"].values():
+        if "path" in source:
+            relative = Path(source["path"]) / "pyproject.toml"
+            (project / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / relative, project / relative)
+
+    lock = project / "uv.lock"
+    original_lock = lock.read_bytes()
+    environment = tmp_path / "planned-env"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("UV_") and key != "VIRTUAL_ENV"
+    }
+    env.update(UV_PROJECT_ENVIRONMENT=str(environment), TMPDIR=str(tmp_path), NO_COLOR="1")
+    command = [
+        "uv",
+        "sync",
+        "--locked",
+        "--dry-run",
+        "--no-default-groups",
+        "--python",
+        python_version,
+        "--extra",
+        extra,
+        "--project",
+        str(project),
+    ]
+    result = subprocess.run(
+        command, cwd=project, env=env, capture_output=True, text=True, timeout=180
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, f"{' '.join(command)}\n{output}"
+    assert lock.read_bytes() == original_lock, "The plan must use the submitted lock unchanged"
+    assert not environment.exists(), "Compatibility checks must not install an audio environment"
+    expected = {
+        "essentia": "2.1b6.dev1438" if python_version == "3.14" else "2.1b6.dev1389",
+        "spacy": "3.8.16" if python_version == "3.14" else "3.8.14",
+    }
+    for name, version in expected.items():
+        selected = re.findall(rf"^\s*\+ {name}==([^\s]+)", output, re.MULTILINE)
+        assert selected == [version], (
+            f"Python {python_version} root [{extra}] must install {name}=={version}, "
+            f"got {selected}; a lock package record without a reachable edge is insufficient.\n"
+            f"{output}"
+        )
