@@ -102,6 +102,7 @@ def _capability(**overrides: object) -> RouteCapabilityState:
             "public": False,
             "provider_spend": False,
         },
+        "branch_write_authority": True,
         "freshness_ok": True,
         "freshness_errors": (),
         "telemetry_quota_source": "manual",
@@ -3548,3 +3549,144 @@ def test_policy_sources_explicit_path_bypasses_live_resolution(
     assert sources.quota_ledger is not None
     assert sources.quota_ledger.ledger_id != "quota-spend-ledger-live-ignored"
     assert sources.quota_ledger_source == "explicit"
+
+
+def test_source_mutation_refuses_when_branch_write_authority_unknown() -> None:
+    request = _request(capability=_capability(branch_write_authority=None))
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.route_policy_green is False
+    assert "branch_authority_unknown" in decision.reason_codes
+
+
+def test_source_mutation_refuses_when_branch_write_authority_absent() -> None:
+    request = _request(capability=_capability(branch_write_authority=False))
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.route_policy_green is False
+    assert "branch_authority_absent" in decision.reason_codes
+
+
+def test_source_mutation_launches_with_branch_write_authority() -> None:
+    request = _request(capability=_capability(branch_write_authority=True))
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+    assert "policy_launch" in decision.reason_codes
+
+
+def test_branch_authority_gate_ignores_non_source_surfaces() -> None:
+    request = _request(
+        mutation_surface="vault_docs",
+        mutation_scope_refs=("docs/runbooks/agent-instruction-binding.md",),
+        capability=_capability(branch_write_authority=None),
+    )
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.LAUNCH
+    assert decision.route_policy_green is True
+
+
+def test_registry_routes_derive_branch_write_authority_from_tool_access() -> None:
+    sources = load_dispatch_policy_sources(quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES)
+    writable = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="codex",
+        mode="headless",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("codex.headless.full"),
+        quota_ledger=sources.quota_ledger,
+        now=NOW,
+    )
+    read_only = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="glmcp",
+        mode="review",
+        profile="direct",
+        task_fields=_task_fields(),
+        registry=_registry_with_fresh_route("glmcp.review.direct"),
+        quota_ledger=sources.quota_ledger,
+        now=NOW,
+    )
+
+    assert writable.capability is not None
+    assert writable.capability.branch_write_authority is True
+    assert read_only.capability is not None
+    assert read_only.capability.branch_write_authority is False
+
+
+def _paid_gateway_request(**overrides: object) -> DispatchRequest:
+    payload = {
+        "platform": "api",
+        "mode": "headless",
+        "profile": "provider_gateway",
+        "route_id": "api.headless.provider_gateway",
+        "mutation_surface": "provider_spend",
+        "capability": _capability(
+            route_id="api.headless.provider_gateway",
+            capacity_pool="api_paid_spend",
+            paid_provider="google",
+            paid_profile="frontier-fast",
+            mutability={
+                "vault_docs": False,
+                "source": False,
+                "runtime": True,
+                "public": False,
+                "provider_spend": True,
+            },
+            branch_write_authority=True,
+        ),
+    }
+    payload.update(overrides)
+    return _request(**payload)
+
+
+def test_paid_route_without_quota_ledger_fails_closed() -> None:
+    request = _paid_gateway_request(quota=None)
+
+    decision = evaluate_dispatch_policy(request, now=NOW)
+
+    assert decision.action is DispatchAction.REFUSE
+    assert decision.route_policy_green is False
+    assert "paid_route_ledger_unavailable" in decision.reason_codes
+
+
+def test_paid_route_decisions_are_independent_of_payg_fallback_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def decide(quota: QuotaSpendState | None) -> tuple[DispatchAction, tuple[str, ...]]:
+        decision = evaluate_dispatch_policy(_paid_gateway_request(quota=quota), now=NOW)
+        return decision.action, decision.reason_codes
+
+    refusing = _quota(available=False, load_error="quota ledger absent")
+    launching = _quota(
+        paid_api_budget_state="active",
+        paid_route_eligibility_state="eligible_active_budget",
+        evidence_refs=("tb-20260510-anthropic-api-steady-state",),
+    )
+
+    monkeypatch.delenv("HAPAX_GLMCP_REVIEW_PAYG_FALLBACK", raising=False)
+    refuse_baseline = decide(refusing)
+    missing_baseline = decide(None)
+    launch_baseline = decide(launching)
+    for value in ("0", "1"):
+        monkeypatch.setenv("HAPAX_GLMCP_REVIEW_PAYG_FALLBACK", value)
+        assert decide(refusing) == refuse_baseline
+        assert decide(None) == missing_baseline
+        assert decide(launching) == launch_baseline
+
+    assert refuse_baseline[0] is DispatchAction.REFUSE
+    assert "paid_route_ledger_unavailable" in refuse_baseline[1]
+    assert missing_baseline[0] is DispatchAction.REFUSE
+    assert "paid_route_ledger_unavailable" in missing_baseline[1]
+    assert launch_baseline[0] is DispatchAction.LAUNCH

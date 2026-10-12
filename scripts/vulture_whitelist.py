@@ -7,6 +7,12 @@ vulture cannot see. Do not use this as a baseline for ordinary dead code.
 """
 
 from agents.content_programmer.grounding_runner import ProgrammeSequenceGroundingRunner
+from agents.coordinator.capability_evidence import (
+    CapabilityEvidenceReport as _CapabilityEvidenceReport,
+)
+from agents.coordinator.capability_evidence import (
+    produce_capability_evidence as _produce_capability_evidence,
+)
 from agents.payment_processors.x402.models import Accept, SettlementResponse
 from agents.studio_compositor.final_frame_classifier import (
     classify_final_frame as _classify_final_frame,
@@ -5561,3 +5567,12 @@ _ = (
 # calls both as publish_vault_artifact.<name>; vulture cannot see that path yet.
 pipeline_state
 drop_to_inbox
+
+# NO-STALL U3a lands the capability-evidence producer ahead of its runtime wiring:
+# U3b (separately authorized) connects the coordinator observer to
+# produce_capability_evidence and reads CapabilityEvidenceReport.usable_routes.
+# Until that caller merges, vulture cannot see the production path.
+_ = (
+    _CapabilityEvidenceReport.usable_routes,
+    _produce_capability_evidence,
+)
