@@ -1,84 +1,197 @@
-L="$HOME/Documents/Personal/30-areas/hapax/lanebus"
+#!/usr/bin/env bash
+# v2 predecessor is preserved byte-for-byte in this file's first commit.
+# Source-only publication: install/start only through separately admitted release.
+# Bindings: PERSONAL_VAULT_PATH / HAPAX_LANEBUS_DIR, XDG_CACHE_HOME,
+# HAPAX_MAILWAKE_HEARTBEAT, HAPAX_SESSION_PROTECTION_FILE. --cycles N bounds
+# offline probes; normal service operation has no cycle limit.
+set -uo pipefail
+L="${HAPAX_LANEBUS_DIR:-${PERSONAL_VAULT_PATH:-$HOME/Documents/Personal}/30-areas/hapax/lanebus}"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/hapax"
+HEARTBEAT="${HAPAX_MAILWAKE_HEARTBEAT:-$CACHE/lanes-mailwake-heartbeat.json}"
+PROTECTION="${HAPAX_SESSION_PROTECTION_FILE:-$CACHE/relay/session-protection.md}"
+TMUX_TIMEOUT="${HAPAX_MAILWAKE_TMUX_TIMEOUT_SECONDS:-2}"
 MAIL_RE='^[0-9]{8}T[0-9]{6}Z-[^/]+\.md$'
-declare -A SEEN PEND LAST LACT FAM
-log(){ echo "$(date -u +%FT%TZ) $*"; }
-sessions(){
-  tmux list-sessions -F '#{session_name}' 2>/dev/null |
-    grep -E '^hapax-(kimi|glmcp|fugu)-' |
-    grep -v -E 'review|frozen|protected' || true
+declare -A SEEN PEND LAST FAM UNCERTAIN
+log(){ printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
+
+# timeout owns the child process group; even an ignored TERM gets a bounded KILL.
+# Never log the captured pane, command output, mail content or a credential.
+tm(){
+  local target=$1 rc; shift
+  timeout --kill-after=1 "$TMUX_TIMEOUT" tmux "$@" 2>/dev/null && return 0
+  rc=$?
+  log "tmux failed target=$target command=$1 status=$rc; skipped"
+  return "$rc"
 }
 family_of(){
   case "$1" in
-    hapax-kimi-*)  echo kimi ;;
+    hapax-kimi-*) echo kimi ;;
     hapax-glmcp-*) echo glmcp ;;
-    hapax-fugu-*)  echo fugu ;;
-    *)             echo '' ;;
+    hapax-fugu-*) echo fugu ;;
+    *) return 1 ;;
   esac
 }
 role_of(){
-  local t=$1 f r
-  f=$(family_of "$t"); r=${t#hapax-$f-}
-  [ "$f" = fugu ] && r="fugu-$r"
+  local f r
+  f=$(family_of "$1") || return 1
+  r=${1#hapax-$f-}
+  [ "$f" != fugu ] || r="fugu-$r"
   printf '%s' "$r"
 }
-inbox_dirs(){
-  if [ "$1" = kimi-seat ]; then echo "dev1 $1"; else echo "$1"; fi
+inbox_dirs(){ printf '%s\n' "$1"; }
+allowed(){
+  local role
+  [[ "$1" =~ ^hapax-(kimi|glmcp|fugu)-[a-z0-9][a-z0-9-]*$ ]] || return 1
+  case "$1" in *review*|*frozen*|*protected*) return 1 ;; esac
+  role=$(role_of "$1") || return 1
+  if [ -e "$PROTECTION" ]; then
+    [ -r "$PROTECTION" ] || return 1
+    # Same authored protection registry as the existing launchers. Narrow on a
+    # role or full-session mention; never clear or override protection here.
+    if grep -Fq -- "\`$role\`" "$PROTECTION" || grep -Fq -- "\`$1\`" "$PROTECTION"; then
+      return 1
+    fi
+  fi
+}
+sessions(){
+  local names t
+  names=$(tm estate list-sessions -F '#{session_name}') || return 1
+  while IFS= read -r t; do allowed "$t" && printf '%s\n' "$t"; done <<<"$names"
+  return 0
 }
 lsd(){
   local d f b
   for d in $(inbox_dirs "$1"); do
     for f in "$L/$d"/*.md; do
       [ -f "$f" ] || continue
-      b=$(basename "$f")
-      echo "$b" | grep -qE "$MAIL_RE" || continue
-      echo "$b" | grep -q 'host-recovery' && continue
-      echo "$b" | grep -q '\.tmp\.' && continue
-      echo "$d/$b"
+      b=${f##*/}
+      [[ "$b" =~ $MAIL_RE ]] || continue
+      case "$b" in *host-recovery*|*.tmp.*) continue ;; esac
+      printf '%s/%s\n' "$d" "$b"
     done
-  done | sort -u
+  done | LC_ALL=C sort -u
 }
-busy(){ tmux capture-pane -p -t "$1" 2>/dev/null | tail -8 | grep -q -E 'hinking|elapsed|Using |Running|Preparing|Ran a command'; }
+init_target(){
+  SEEN[$1]=$(lsd "$(role_of "$1")"); PEND[$1]=''; LAST[$1]=0
+  FAM[$1]=$(family_of "$1"); UNCERTAIN[$1]=0
+}
+
+# Each snapshot identifies one pane (not whichever pane becomes active later).
+# A shell, copy mode, a split session, unknown UI or unreadable pane is ineligible.
+snapshot(){
+  local t=$1 meta extra
+  meta=$(tm "$t" list-panes -s -t "=$t" -F '#{pane_id}|#{pane_current_command}|#{cursor_y}|#{cursor_x}|#{pane_in_mode}') || return 1
+  [[ "$meta" != *$'\n'* ]] || return 1
+  IFS='|' read -r PANE COMMAND ROW COL MODE extra <<<"$meta"
+  [[ "$PANE" =~ ^%[0-9]+$ && "$ROW" =~ ^[0-9]+$ && "$COL" =~ ^[0-9]+$ && "$MODE" = 0 && -z "$extra" ]] || return 1
+  case "${FAM[$t]}:$COMMAND" in kimi:kimi|kimi:kimi-code|glmcp:kimi|glmcp:kimi-code|fugu:codex) ;; *) return 1 ;; esac
+  FRAME=$(tm "$t" capture-pane -p -t "$PANE") || return 1
+  [ -n "$FRAME" ] || return 1
+  # Kimi's idle footer contains 'thinking: max'; that is not an active turn.
+  ! tail -8 <<<"$FRAME" | grep -qE 'Thinking|thinking(…|\.\.\.)|elapsed|Using |Running|Preparing|Ran a command|[Ii]nterrupt|[Cc]ancel'
+}
+input_matches(){
+  local expected=$1 actual
+  if [[ "$COMMAND" = kimi* ]]; then
+    # Only the input box containing the cursor counts. Join wrapped content
+    # without whitespace to compare our exact payload; any extra text refuses.
+    actual=$(awk -v row="$((ROW+1))" '
+      {line[NR]=$0}
+      END {
+        top=row-1
+        while(top>0 && line[top] !~ /^[[:space:]]*╭─+╮[[:space:]]*$/) top--
+        if(!top) exit 1
+        bottom=row+1
+        while(bottom<=NR && line[bottom] !~ /^[[:space:]]*╰─+╯[[:space:]]*$/) bottom++
+        if(bottom>NR || row<=top || row>=bottom) exit 1
+        for(i=top+1;i<bottom;i++) {
+          s=line[i]
+          if(s !~ /^[[:space:]]*│.*│[[:space:]]*$/) exit 1
+          sub(/^[[:space:]]*│ /,"",s); sub(/[[:space:]]*│[[:space:]]*$/,"",s)
+          if(i==top+1) {if(s !~ /^>/) exit 1; sub(/^> ?/,"",s)}
+          gsub(/[[:space:]]/,"",s); printf "%s",s
+        }
+      }' <<<"$FRAME") || return 1
+  else
+    # Codex/fugu: accept only an unwrapped prompt followed by an empty line.
+    # Wrapped/unknown input remains untouched for a separately observed sender.
+    actual=$(sed -n "$((ROW+1))p" <<<"$FRAME")
+    [[ "$actual" =~ ^[[:space:]]*›[[:space:]] ]] || return 1
+    [[ -z "$(sed -n "$((ROW+2))p" <<<"$FRAME" | tr -d '[:space:]')" ]] || return 1
+    actual=${actual#*›}; actual=$(tr -d '[:space:]' <<<"$actual")
+  fi
+  expected=$(tr -d '[:space:]' <<<"$expected")
+  [ "$actual" = "$expected" ]
+}
 idle(){
-  local t=$1 c1 c2
-  tmux display-message -p -t "$t" '#{pane_current_command}' 2>/dev/null | grep -q . || return 1
-  c1=$(tmux capture-pane -p -t "$t" 2>/dev/null | tail -12); [ -n "$c1" ] || return 1
-  sleep 1
-  c2=$(tmux capture-pane -p -t "$t" 2>/dev/null | tail -12)
-  [ "$c1" = "$c2" ] && ! busy "$t"
+  local t=$1 first pane
+  snapshot "$t" && input_matches '' || return 1
+  first=$FRAME; pane=$PANE
+  sleep 0.2
+  snapshot "$t" && input_matches '' || return 1
+  [ "$FRAME" = "$first" ] && [ "$PANE" = "$pane" ]
 }
-init_target(){ SEEN[$1]=$(lsd "$(role_of "$1")"); PEND[$1]=''; LAST[$1]=0; LACT[$1]=$(date +%s); }
-for t in $(sessions); do FAM[$t]=$(family_of "$t"); init_target "$t"; done
-tgts=''
-for k in "${!FAM[@]}"; do tgts="$tgts $k"; done
-log "v2 up: families=kimi,glmcp,fugu targets='${tgts:- none}'"
-while true; do
-  for t in $(sessions); do
-    [ -n "${FAM[$t]:-}" ] || { FAM[$t]=$(family_of "$t"); init_target "$t"; log "target added: $t"; }
-    role=$(role_of "$t")
-    now=$(lsd "$role")
-    new=$(comm -13 <(echo "${SEEN[$t]}") <(echo "$now") | grep -v -E "/[0-9TZ]+-${role}-" || true)
-    SEEN[$t]=$now
-    p0=0; for f in $new; do head -20 "$L/$f" 2>/dev/null | grep -q '^priority: p0' && p0=1; done
-    [ -n "$new" ] && PEND[$t]=$(printf '%s\n%s' "${PEND[$t]}" "$new" | grep -v '^$' | sort -u)
-    ts=$(date +%s)
-    if [ -n "${PEND[$t]}" ]; then
-      ok=0
-      if [ "${FAM[$t]}" = fugu ]; then
-        [ $((ts-${LAST[$t]})) -ge 120 ] && idle "$t" && ok=1
-      else
-        { [ $p0 = 1 ] || [ $((ts-${LAST[$t]})) -ge 120 ]; } && ok=1
-      fi
-      if [ $ok = 1 ]; then
-        msg="[mail-wake] New mail for you: $(echo "${PEND[$t]}" | head -6 | tr '\n' ' ')$( [ $(echo "${PEND[$t]}" | wc -l) -gt 6 ] && echo '(+more)') (paths under ~/Documents/Personal/30-areas/hapax/lanebus/). Read each to the end; a p0 comes before your current step."
-        b=0; busy "$t" && b=1
-        tmux send-keys -t "$t" -l "$msg"; sleep 1; tmux send-keys -t "$t" Enter
-        if [ "${FAM[$t]}" != fugu ] && [ $b = 1 ]; then sleep 2; tmux send-keys -t "$t" C-s; fi
-        log "delivered to $t fam=${FAM[$t]} busy=$b p0=$p0"
-        PEND[$t]=''; LAST[$t]=$ts; LACT[$t]=$ts
-      fi
-    elif [ "$role" = kimi-seat ] && [ $((ts-${LACT[$t]})) -ge 1800 ] && ! busy "$t"; then
-      tmux send-keys -t "$t" -l "[mail-wake, idle tick] 30 min without new mail. Order your next act by the directionality at the head of frame/VECTORS-BOARD-20261004.md."; sleep 1; tmux send-keys -t "$t" Enter; LACT[$t]=$ts
+deliver(){
+  local t=$1 msg=$2 pane
+  allowed "$t" && idle "$t" || return 1
+  pane=$PANE
+  # Once paste is attempted its outcome may be ambiguous. Do not retry, clear
+  # the input, press C-s or send Enter to a different pane after any uncertainty.
+  UNCERTAIN[$t]=1
+  tm "$t" send-keys -t "$pane" -l "$msg" || return 1
+  sleep 1
+  allowed "$t" && snapshot "$t" && [ "$PANE" = "$pane" ] && input_matches "$msg" || {
+    log "submission held target=$t: pane/input changed after paste; inspect receiving pane"
+    return 1
+  }
+  tm "$t" send-keys -t "$pane" Enter || return 1
+  UNCERTAIN[$t]=0
+  log "submitted to $t fam=${FAM[$t]}; receiving-end uptake unobserved"
+}
+heartbeat(){
+  local cycle=$1 count=$2 tmp
+  mkdir -p "$(dirname "$HEARTBEAT")" || return 1
+  tmp=$(mktemp "${HEARTBEAT}.XXXXXX") || return 1
+  printf '{"observed_at":"%s","cycle":%s,"targets":%s}\n' "$(date -u +%FT%T.%NZ)" "$cycle" "$count" >"$tmp" && mv -f -- "$tmp" "$HEARTBEAT"
+}
+main(){
+  local limit=0 cycle=0 count targets t role now new name ts msg
+  if [ "$#" -gt 0 ]; then
+    if [ "$#" != 2 ] || [ "$1" != --cycles ] || ! [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+      log 'usage: hapax-lanes-mailwake [--cycles POSITIVE_INTEGER]'; return 2
     fi
+    limit=$2
+  fi
+  if ! [[ "$TMUX_TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk -v n="$TMUX_TIMEOUT" 'BEGIN {exit !(n>0 && n<=10)}'; then
+    log 'HAPAX_MAILWAKE_TMUX_TIMEOUT_SECONDS must be >0 and <=10'; return 2
+  fi
+  targets=$(sessions) || targets=''
+  for t in $targets; do init_target "$t"; done
+  log 'mailwake up: families=kimi,glmcp,fugu; existing mail baselined'
+  while true; do
+    count=0
+    targets=$(sessions) || targets=''
+    for t in $targets; do
+      count=$((count+1))
+      [ -n "${FAM[$t]:-}" ] || { init_target "$t"; log "target added: $t"; }
+      role=$(role_of "$t"); now=$(lsd "$role")
+      new=$(LC_ALL=C comm -13 <(printf '%s\n' "${SEEN[$t]}") <(printf '%s\n' "$now"))
+      SEEN[$t]=$now
+      while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        [[ "${name##*/}" =~ ^[0-9]{8}T[0-9]{6}Z-${role}- ]] && continue
+        PEND[$t]=1
+      done <<<"$new"
+      ts=$(date +%s)
+      if [ -n "${PEND[$t]}" ] && [ "${UNCERTAIN[$t]}" = 0 ] && [ $((ts-${LAST[$t]})) -ge 120 ]; then
+        msg="[mail-wake] Read new incoming mail in lanebus/$role/ to the end."
+        if deliver "$t" "$msg"; then PEND[$t]=''; LAST[$t]=$ts; fi
+      fi
+    done
+    cycle=$((cycle+1))
+    heartbeat "$cycle" "$count" || { log 'heartbeat write failed; restore cache binding'; return 1; }
+    [ "$limit" = 0 ] || [ "$cycle" -lt "$limit" ] || break
+    sleep 20
   done
-  sleep 20
-done
+}
+main "$@"
