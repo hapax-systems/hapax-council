@@ -7929,3 +7929,121 @@ mutation_scope_refs:
         assert "0001| ## Linked task note" in prompt
         assert "historical dispatch log entry" not in prompt
         assert "Active contract with unicode" in prompt
+
+    def test_joined_mandatory_contracts_render_whole_beyond_per_note_bound(self) -> None:
+        first = self._note(body="FIRST-CONTRACT-TAIL\n" + ("a" * 6_800) + "\n", session_log=None)
+        second = self._note(
+            body="SECOND-CONTRACT-TAIL\n" + ("b" * 1_900) + "\n",
+            session_log=None,
+            name="task-note-boot-two-20261012.md",
+        )
+        rendered = dispatch.render_task_note_block("Linked cc-task note", first + "\n\n" + second)
+        # Each note fits its own 7_500 bound; the join exceeds it, so the second
+        # note's contract must still render whole — no silent aggregate truncation.
+        assert "FIRST-CONTRACT-TAIL" in rendered
+        assert "SECOND-CONTRACT-TAIL" in rendered
+        assert ("b" * 80) in rendered
+        assert "[context truncated at" not in rendered
+
+    def test_mismatched_fence_delimiter_does_not_close_and_expose_history(self) -> None:
+        body = (
+            "Fence opened with backticks and info string:\n\n"
+            "```text\n"
+            "fenced-body-line\n"
+            "~~~\n"
+            "## Session log\n"
+            "MANDATORY-AFTER-FAKE-CLOSE\n"
+            "```\n"
+            "final-tail-line\n"
+        )
+        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-MISMATCH\n"
+        rendered = dispatch.render_task_note_block(
+            "Linked cc-task note", self._note(body, session_log)
+        )
+        # A tilde line does not close a backtick fence: the in-fence Session log
+        # heading is body content, and its mandatory text survives whole.
+        assert "fenced-body-line" in rendered
+        assert "MANDATORY-AFTER-FAKE-CLOSE" in rendered
+        assert "final-tail-line" in rendered
+        assert "REAL-LOG-AFTER-MISMATCH" not in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_shorter_closing_fence_does_not_close_four_backtick_opener(self) -> None:
+        body = (
+            "Four-backtick fence:\n\n"
+            "````text\n"
+            "fenced-inner\n"
+            "```\n"
+            "## Session log\n"
+            "MANDATORY-AFTER-SHORT-CLOSE\n"
+            "````\n"
+            "final-line\n"
+        )
+        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-SHORT-CLOSE\n"
+        rendered = dispatch.render_task_note_block(
+            "Linked cc-task note", self._note(body, session_log)
+        )
+        # A three-backtick line cannot close a four-backtick fence.
+        assert "fenced-inner" in rendered
+        assert "MANDATORY-AFTER-SHORT-CLOSE" in rendered
+        assert "final-line" in rendered
+        assert "REAL-LOG-AFTER-SHORT-CLOSE" not in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_session_log_elision_terminator_is_fence_aware(self) -> None:
+        session_log = (
+            "- 2026-10-12T00:00:00Z zeta: EARLY-HISTORY-LINE\n\n"
+            "```\n"
+            "## fenced heading inside history\n"
+            "```\n\n"
+            "LATE-HISTORY-AFTER-FENCE\n"
+        )
+        note = self._note(body="Active body before the log.\n", session_log=session_log)
+        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
+        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        # A heading inside a closed fence inside the log is history, not a
+        # terminator: elision continues past it instead of leaking later history.
+        assert "EARLY-HISTORY-LINE" not in rendered
+        assert "## fenced heading inside history" not in rendered
+        assert "LATE-HISTORY-AFTER-FENCE" not in rendered
+        assert "KEPT-AFTER-LOG" in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_unclosed_fence_inside_session_log_keeps_rest_mandatory(self) -> None:
+        session_log = (
+            "- 2026-10-12T00:00:00Z zeta: EARLY-HISTORY-LINE\n\n```\nHISTORY-AFTER-UNCLOSED\n"
+        )
+        note = self._note(body="Active body before the log.\n", session_log=session_log)
+        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
+        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        # Elision stops at an unclosed fence: the rest stays mandatory rather
+        # than silently dropping content that may be contract-bearing.
+        assert "EARLY-HISTORY-LINE" not in rendered
+        assert "HISTORY-AFTER-UNCLOSED" in rendered
+        assert "KEPT-AFTER-LOG" in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_dispatcher_preamble_not_charged_to_first_note_bound(self) -> None:
+        preamble = "# Dispatcher preamble\n\n" + ("p" * 7_400) + "\n\n"
+        note = self._note(body="SMALL-NOTE-BODY\n", session_log=None)
+        rendered = dispatch.render_task_note_block("Linked cc-task note", preamble + note)
+        # Text before the first linked-note header is dispatcher preamble, not
+        # mandatory content charged to the first note's bound.
+        assert "# Dispatcher preamble" in rendered
+        assert "SMALL-NOTE-BODY" in rendered
+        assert "[context truncated at" not in rendered
+
+    def test_joined_whole_note_bound_refuses_naming_bound_and_next_action(self) -> None:
+        notes = [
+            self._note(
+                body=f"NOTE-{index}-TAIL\n" + ("n" * 4_300) + "\n",
+                session_log=None,
+                name=f"task-note-boot-{index}-20261012.md",
+            )
+            for index in range(15)
+        ]
+        with pytest.raises(dispatch.TaskNoteContextOverflow, match="60000") as excinfo:
+            dispatch.render_task_note_block("Linked cc-task note", "\n\n".join(notes))
+        message = str(excinfo.value)
+        assert "next action" in message
+        assert "split the PR" in message

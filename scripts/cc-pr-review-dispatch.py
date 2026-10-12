@@ -2296,6 +2296,30 @@ def _neutralize_markdown_fences(text: str) -> str:
     return text.replace("```", "<BACKTICK_FENCE>").replace("~~~", "<TILDE_FENCE>")
 
 
+_FENCE_BACKTICK_OPEN_RE = re.compile(r"^`{3,}[^`]*$")
+_FENCE_TILDE_OPEN_RE = re.compile(r"^~{3,}")
+
+
+def _fence_opener(stripped: str) -> tuple[str, int] | None:
+    if _FENCE_BACKTICK_OPEN_RE.match(stripped):
+        return ("`", len(stripped) - len(stripped.lstrip("`")))
+    if _FENCE_TILDE_OPEN_RE.match(stripped):
+        return ("~", len(stripped) - len(stripped.lstrip("~")))
+    return None
+
+
+def _fence_closes(stripped: str, fence: tuple[str, int]) -> bool:
+    char, length = fence
+    return stripped == char * len(stripped) and len(stripped) >= length
+
+
+def _find_fence_close(lines: list[str], start: int, fence: tuple[str, int]) -> int | None:
+    for index in range(start, len(lines)):
+        if _fence_closes(lines[index].strip(), fence):
+            return index
+    return None
+
+
 class TaskNoteContextOverflow(Exception):
     """Linked cc-task note mandatory content cannot fit the task-context bound."""
 
@@ -2303,18 +2327,23 @@ class TaskNoteContextOverflow(Exception):
 def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROMPT_CHARS) -> str:
     """Render linked cc-task notes with the active contract whole or not at all.
 
-    The bound applies per linked note, not to the joined text, so a second note's
-    mandatory content survives even when it starts beyond the first note's budget —
-    a blind character prefix over the join is a candidate, not coverage proof.
+    The bound applies per linked note, not to the joined text: text before the
+    first ``## Linked task note:`` header is dispatcher preamble and is not
+    charged to the first note's budget. The joined notes carry a separate
+    whole-note bound (MAX_TASK_NOTE_CHARS): a join over it refuses with the
+    bound and the next action instead of truncating a later note's contract.
 
     Only each note's historical session log is elidable: its ``## Session log``
     section is replaced by a visible not-reviewed marker while the frontmatter
     (active authority, scope and exit contract), body prose, diffs, charters,
     review instructions and acceptance-bearing content stay byte-for-byte. A
     ``## Session log`` line inside a fenced block is body content, not a section
-    boundary; an unclosed fence leaves the rest of the note mandatory (elide
-    less, never more). A note whose mandatory content alone exceeds ``limit``
-    refuses with the bound and the next action instead of truncating.
+    boundary. Fences track the opening delimiter character and length: a valid
+    closer repeats the character on a bare fence line at least as long, so a
+    mismatched or shorter fence line stays body content, and an unclosed fence
+    leaves the rest of the note mandatory (elide less, never more). A note whose
+    mandatory content alone exceeds ``limit`` refuses with the bound and the
+    next action instead of truncating.
     """
 
     def refuse_if_over(rendered: list[str], start: int, name: str) -> None:
@@ -2329,29 +2358,48 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
 
     lines = text.split("\n")
     out: list[str] = []
-    in_fence = False
-    note_start = 0
+    fence: tuple[str, int] | None = None
+    note_start: int | None = None
     note_name = "linked cc-task note"
     i = 0
     while i < len(lines):
         line = lines[i]
         stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            in_fence = not in_fence
+        if fence is not None:
+            if _fence_closes(stripped, fence):
+                fence = None
             out.append(line)
             i += 1
             continue
-        if not in_fence and line.startswith("## Linked task note: "):
-            refuse_if_over(out, note_start, note_name)
+        fence = _fence_opener(stripped)
+        if fence is not None:
+            out.append(line)
+            i += 1
+            continue
+        if line.startswith("## Linked task note: "):
+            if note_start is not None:
+                refuse_if_over(out, note_start, note_name)
             note_start = len(out)
             note_name = stripped
             out.append(line)
             i += 1
             continue
-        if not in_fence and stripped == "## Session log":
+        if stripped == "## Session log":
             j = i + 1
             dropped = 0
-            while j < len(lines) and not (lines[j].startswith("# ") or lines[j].startswith("## ")):
+            while j < len(lines):
+                inner_line = lines[j]
+                inner_stripped = inner_line.strip()
+                opener = _fence_opener(inner_stripped)
+                if opener is not None:
+                    close = _find_fence_close(lines, j + 1, opener)
+                    if close is None:
+                        break
+                    dropped += close - j + 1
+                    j = close + 1
+                    continue
+                if inner_line.startswith("# ") or inner_line.startswith("## "):
+                    break
                 dropped += 1
                 j += 1
             out.append(line)
@@ -2364,8 +2412,16 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
             continue
         out.append(line)
         i += 1
-    refuse_if_over(out, note_start, note_name)
-    return render_untrusted_block(label, "\n".join(out), limit=limit)
+    refuse_if_over(out, note_start if note_start is not None else 0, note_name)
+    joined = "\n".join(out)
+    if len(joined) > MAX_TASK_NOTE_CHARS:
+        raise TaskNoteContextOverflow(
+            f"linked cc-task notes join to {len(joined)} chars after session-log "
+            f"elision, over the {MAX_TASK_NOTE_CHARS}-char whole-note bound; next "
+            "action: split the PR so each linked note's active contract rides its "
+            "own review packet"
+        )
+    return render_untrusted_block(label, joined, limit=MAX_TASK_NOTE_CHARS)
 
 
 def _task_note_capacity_refusal(
