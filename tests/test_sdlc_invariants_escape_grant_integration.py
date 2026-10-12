@@ -101,6 +101,12 @@ def coord_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HAPAX_COORD_DIR", str(coord))
     # keep the shim's "grant honored" ledger out of the operator's real cache
     monkeypatch.setenv("HAPAX_METHODOLOGY_LEDGER", str(tmp_path / "methodology.jsonl"))
+    # Post-#5130 the shim resolves its module binding through the activation
+    # worktree and treats a host's live activation as authoritative; pin it to
+    # the repo under test so a live release without this branch's grant
+    # semantics can't shadow the code under test (same pin as the codex
+    # headless / claude reviewer hook tests).
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
     env = dict(os.environ)
     return coord, env
 
