@@ -7714,6 +7714,10 @@ mutation_scope_refs:
         )
         return path
 
+    def _render(self, body: str, session_log: str | None, suffix: str = "") -> str:
+        note = self._note(body=body, session_log=session_log) + suffix
+        return dispatch.render_task_note_block("Linked cc-task note", note)
+
     def test_session_log_elided_visible_mandatory_preserved_beyond_cap(self) -> None:
         tail_marker = "MANDATORY-TAIL-BEYOND-CANDIDATE-CAP"
         filler = "x" * 5_800
@@ -7722,9 +7726,7 @@ mutation_scope_refs:
         session_log = "\n".join(
             f"- 2026-10-12T0{i}:00:00Z zeta: {log_canary} entry {i}" for i in range(4)
         )
-        rendered = dispatch.render_task_note_block(
-            "Linked cc-task note", self._note(body, session_log)
-        )
+        rendered = self._render(body, session_log)
         # Mandatory content survives whole, including beyond the 7_500 candidate cap.
         assert tail_marker in rendered
         assert filler[:80] in rendered
@@ -7747,38 +7749,55 @@ mutation_scope_refs:
         assert "next action" in message
         assert "session-log history is already elided" in message
 
-    def test_pr_and_artifact_renderers_share_the_rule(self) -> None:
+    @pytest.mark.parametrize("terminator", ["", "##\tAcceptance", "#\tTimeline", "##"])
+    @pytest.mark.parametrize("renderer", ["note-block", "pr-prompt", "artifact-prompt"])
+    def test_active_contract_survives_all_renderers_and_terminator_forms(
+        self, renderer: str, terminator: str
+    ) -> None:
         note = self._note(
             body="Active body kept by both renderers.\n",
-            session_log="- 2026-10-12T00:00:00Z zeta: BOTH-RENDERERS-LOG-CANARY\n",
+            session_log="- 2026-10-12T00:00:00Z zeta: RENDERER-LOG-CANARY\n",
         )
-        common = dict(
-            task_id="task-note-boot",
-            team_class="t2_standard",
-            lenses=("tests-cover-the-diff",),
-            charters="# tests-cover-the-diff\n",
-            task_note_text=note,
-        )
-        pr_prompt = dispatch.render_reviewer_prompt(
-            seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
-            pr_info=self._pr_info(),
-            pr_body="body",
-            diff="diff --git a/shared/foo.py b/shared/foo.py\n",
-            prior_criticals=[],
-            **common,
-        )
-        artifact_prompt = dispatch.render_artifact_reviewer_prompt(
-            seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
-            head_sha="c" * 40,
-            manifest=[{"path": "shared/foo.py"}],
-            lineage={"grants": []},
-            contents={"shared/foo.py": "def foo():\n    return 1\n"},
-            **common,
-        )
-        for prompt in (pr_prompt, artifact_prompt):
-            assert "Active body kept by both renderers." in prompt
-            assert "BOTH-RENDERERS-LOG-CANARY" not in prompt
-            assert "[session log elided:" in prompt
+        if terminator:
+            note += f"\n{terminator}\n\nMANDATORY-ACCEPTANCE-CANARY\n"
+        if renderer == "note-block":
+            rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        else:
+            common = dict(
+                task_id="task-note-boot",
+                team_class="t2_standard",
+                lenses=("tests-cover-the-diff",),
+                charters="# tests-cover-the-diff\n",
+                task_note_text=note,
+            )
+            if renderer == "pr-prompt":
+                rendered = dispatch.render_reviewer_prompt(
+                    seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
+                    pr_info=self._pr_info(),
+                    pr_body="body",
+                    diff="diff --git a/shared/foo.py b/shared/foo.py\n",
+                    prior_criticals=[],
+                    **common,
+                )
+            else:
+                rendered = dispatch.render_artifact_reviewer_prompt(
+                    seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
+                    head_sha="c" * 40,
+                    manifest=[{"path": "shared/foo.py"}],
+                    lineage={"grants": []},
+                    contents={"shared/foo.py": "def foo():\n    return 1\n"},
+                    **common,
+                )
+        # Every renderer shares the rule, and every ATX H1/H2 terminator form
+        # — space-separated, tab-separated or bare — ends the elision so
+        # acceptance-bearing content after it survives instead of eliding.
+        assert "Active body kept by both renderers." in rendered
+        assert "RENDERER-LOG-CANARY" not in rendered
+        assert "[session log elided:" in rendered
+        if terminator:
+            assert terminator in rendered
+            assert "MANDATORY-ACCEPTANCE-CANARY" in rendered
+            assert rendered.count("[session log elided:") == 1
 
     def test_review_pr_refuses_oversized_mandatory_note(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -7825,8 +7844,7 @@ mutation_scope_refs:
         assert "next_action" in result
 
     def test_note_without_session_log_elides_nothing(self) -> None:
-        note = self._note(body="No log section here.\n", session_log=None)
-        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        rendered = self._render("No log section here.\n", None)
         assert "No log section here." in rendered
         assert "[session log elided" not in rendered
 
@@ -7854,20 +7872,52 @@ mutation_scope_refs:
         assert "SECOND-LOG" not in rendered
         assert rendered.count("[session log elided:") == 2
 
-    def test_session_log_heading_inside_fence_is_not_a_boundary(self) -> None:
-        body = (
-            "Example documentation fence:\n\n```\n## Session log\n"
-            "FENCED-SESSION-LOG-TEXT\n```\n\nReal body continues.\n"
-        )
-        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-LINE\n"
-        rendered = dispatch.render_task_note_block(
-            "Linked cc-task note", self._note(body, session_log)
-        )
-        # The fenced heading is body content, not a section boundary.
-        assert "FENCED-SESSION-LOG-TEXT" in rendered
-        assert "Real body continues." in rendered
-        # The real session log after the fence still elides, exactly once.
-        assert "REAL-LOG-LINE" not in rendered
+    @pytest.mark.parametrize(
+        ("body", "kept"),
+        [
+            pytest.param(
+                "Example documentation fence:\n\n```\n## Session log\n"
+                "FENCED-SESSION-LOG-TEXT\n```\n\nReal body continues.\n",
+                ("FENCED-SESSION-LOG-TEXT", "Real body continues."),
+                id="fenced-session-log-heading",
+            ),
+            pytest.param(
+                "Fence opened with backticks and info string:\n\n"
+                "```text\nfenced-body-line\n~~~\n## Session log\n"
+                "MANDATORY-AFTER-FAKE-CLOSE\n```\nfinal-tail-line\n",
+                ("fenced-body-line", "MANDATORY-AFTER-FAKE-CLOSE", "final-tail-line"),
+                id="mismatched-delimiter-does-not-close",
+            ),
+            pytest.param(
+                "Four-backtick fence:\n\n````text\nfenced-inner\n```\n"
+                "## Session log\nMANDATORY-AFTER-SHORT-CLOSE\n````\nfinal-line\n",
+                ("fenced-inner", "MANDATORY-AFTER-SHORT-CLOSE", "final-line"),
+                id="shorter-close-does-not-close",
+            ),
+            pytest.param(
+                "Fence with indented content:\n\n```text\n    ```\n"
+                "EXAMPLE-AFTER-INDENTED-CLOSER\n```\nFINAL-BODY-LINE\n",
+                ("EXAMPLE-AFTER-INDENTED-CLOSER", "FINAL-BODY-LINE"),
+                id="indented-fence-line-is-not-a-closer",
+            ),
+            pytest.param(
+                "Indented code example:\n\n    ## Session log\n"
+                "    EXAMPLE-INDENTED-LOG-LINE\n\nReal body continues.\n",
+                ("EXAMPLE-INDENTED-LOG-LINE", "Real body continues."),
+                id="indented-heading-is-literal-text",
+            ),
+        ],
+    )
+    def test_body_level_structures_never_open_or_fake_close_an_elision(
+        self, body: str, kept: tuple[str, ...]
+    ) -> None:
+        rendered = self._render(body, "- 2026-10-12T00:00:00Z zeta: REAL-LOG-CANARY\n")
+        # Fences, mismatched or too-short closers, indented closers and indented
+        # code examples are body content, not section boundaries: none of them
+        # opens an elision region, and the real session log still elides once.
+        for marker in kept:
+            assert marker in rendered
+        assert "REAL-LOG-CANARY" not in rendered
         assert rendered.count("[session log elided:") == 1
 
     def test_complete_packet_utf8_bytes_under_every_seated_ceiling(self) -> None:
@@ -7945,77 +7995,62 @@ mutation_scope_refs:
         assert ("b" * 80) in rendered
         assert "[context truncated at" not in rendered
 
-    def test_mismatched_fence_delimiter_does_not_close_and_expose_history(self) -> None:
-        body = (
-            "Fence opened with backticks and info string:\n\n"
-            "```text\n"
-            "fenced-body-line\n"
-            "~~~\n"
-            "## Session log\n"
-            "MANDATORY-AFTER-FAKE-CLOSE\n"
-            "```\n"
-            "final-tail-line\n"
+    @pytest.mark.parametrize(
+        ("session_log", "history"),
+        [
+            pytest.param(
+                "- 2026-10-12T00:00:00Z zeta: EARLY-HISTORY-LINE\n\n"
+                "```\n## fenced heading inside history\n```\n\nLATE-HISTORY-AFTER-FENCE\n",
+                (
+                    "EARLY-HISTORY-LINE",
+                    "## fenced heading inside history",
+                    "LATE-HISTORY-AFTER-FENCE",
+                ),
+                id="fenced-heading-inside-log-is-history",
+            ),
+            pytest.param(
+                "- 2026-10-12T00:00:00Z zeta: EARLY-TILDE-HISTORY\n\n"
+                "~~~\n## tilde-fenced heading inside history\n~~~\n\n"
+                "LATE-HISTORY-AFTER-TILDE-FENCE\n",
+                (
+                    "EARLY-TILDE-HISTORY",
+                    "tilde-fenced heading inside history",
+                    "LATE-HISTORY-AFTER-TILDE-FENCE",
+                ),
+                id="tilde-fenced-heading-inside-log-is-history",
+            ),
+            pytest.param(
+                "- 2026-10-12T00:00:00Z zeta: EARLY-ENTRY\n\n### history subsection\n"
+                "SUBSECTION-HISTORY-LINE\n\nsetext paragraph in history\n---\n\n"
+                "LATE-HISTORY-LINE\n",
+                ("EARLY-ENTRY", "SUBSECTION-HISTORY-LINE", "LATE-HISTORY-LINE"),
+                id="level3-and-setext-inside-log-are-history",
+            ),
+        ],
+    )
+    def test_only_structural_atx_h1_h2_end_the_elided_log(
+        self, session_log: str, history: tuple[str, ...]
+    ) -> None:
+        rendered = self._render(
+            "Active body before the log.\n",
+            session_log,
+            "\n## Next section\n\nKEPT-AFTER-LOG\n",
         )
-        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-MISMATCH\n"
-        rendered = dispatch.render_task_note_block(
-            "Linked cc-task note", self._note(body, session_log)
-        )
-        # A tilde line does not close a backtick fence: the in-fence Session log
-        # heading is body content, and its mandatory text survives whole.
-        assert "fenced-body-line" in rendered
-        assert "MANDATORY-AFTER-FAKE-CLOSE" in rendered
-        assert "final-tail-line" in rendered
-        assert "REAL-LOG-AFTER-MISMATCH" not in rendered
-        assert rendered.count("[session log elided:") == 1
-
-    def test_shorter_closing_fence_does_not_close_four_backtick_opener(self) -> None:
-        body = (
-            "Four-backtick fence:\n\n"
-            "````text\n"
-            "fenced-inner\n"
-            "```\n"
-            "## Session log\n"
-            "MANDATORY-AFTER-SHORT-CLOSE\n"
-            "````\n"
-            "final-line\n"
-        )
-        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-SHORT-CLOSE\n"
-        rendered = dispatch.render_task_note_block(
-            "Linked cc-task note", self._note(body, session_log)
-        )
-        # A three-backtick line cannot close a four-backtick fence.
-        assert "fenced-inner" in rendered
-        assert "MANDATORY-AFTER-SHORT-CLOSE" in rendered
-        assert "final-line" in rendered
-        assert "REAL-LOG-AFTER-SHORT-CLOSE" not in rendered
-        assert rendered.count("[session log elided:") == 1
-
-    def test_session_log_elision_terminator_is_fence_aware(self) -> None:
-        session_log = (
-            "- 2026-10-12T00:00:00Z zeta: EARLY-HISTORY-LINE\n\n"
-            "```\n"
-            "## fenced heading inside history\n"
-            "```\n\n"
-            "LATE-HISTORY-AFTER-FENCE\n"
-        )
-        note = self._note(body="Active body before the log.\n", session_log=session_log)
-        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
-        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
-        # A heading inside a closed fence inside the log is history, not a
-        # terminator: elision continues past it instead of leaking later history.
-        assert "EARLY-HISTORY-LINE" not in rendered
-        assert "## fenced heading inside history" not in rendered
-        assert "LATE-HISTORY-AFTER-FENCE" not in rendered
+        # A heading inside a closed fence, deeper ATX levels and setext
+        # underlines inside the log are history, not terminators: elision
+        # continues past them; the structural terminator after the log still
+        # ends it and later mandatory content survives.
+        for marker in history:
+            assert marker not in rendered
         assert "KEPT-AFTER-LOG" in rendered
         assert rendered.count("[session log elided:") == 1
 
     def test_unclosed_fence_inside_session_log_keeps_rest_mandatory(self) -> None:
-        session_log = (
-            "- 2026-10-12T00:00:00Z zeta: EARLY-HISTORY-LINE\n\n```\nHISTORY-AFTER-UNCLOSED\n"
+        rendered = self._render(
+            "Active body before the log.\n",
+            "- 2026-10-12T00:00:00Z zeta: EARLY-HISTORY-LINE\n\n```\nHISTORY-AFTER-UNCLOSED\n",
+            "\n## Next section\n\nKEPT-AFTER-LOG\n",
         )
-        note = self._note(body="Active body before the log.\n", session_log=session_log)
-        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
-        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
         # Elision stops at an unclosed fence: the rest stays mandatory rather
         # than silently dropping content that may be contract-bearing.
         assert "EARLY-HISTORY-LINE" not in rendered
@@ -8080,72 +8115,10 @@ mutation_scope_refs:
         assert "REAL-LOG-AFTER-FRONTMATTER" not in rendered
         assert rendered.count("[session log elided:") == 1
 
-    def test_indented_fence_line_inside_fence_is_not_a_closer(self) -> None:
-        body = (
-            "Fence with indented content:\n\n"
-            "```text\n"
-            "    ```\n"
-            "EXAMPLE-AFTER-INDENTED-CLOSER\n"
-            "```\n"
-            "FINAL-BODY-LINE\n"
-        )
-        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-INDENT\n"
-        rendered = dispatch.render_task_note_block(
-            "Linked cc-task note", self._note(body, session_log)
-        )
-        # A four-space-indented fence line is indented-code content, not a
-        # closer: the enclosing fence stays open and later structure stays real.
-        assert "EXAMPLE-AFTER-INDENTED-CLOSER" in rendered
-        assert "FINAL-BODY-LINE" in rendered
-        assert "REAL-LOG-AFTER-INDENT" not in rendered
-        assert rendered.count("[session log elided:") == 1
-
-    def test_indented_session_log_heading_in_code_example_is_not_a_boundary(self) -> None:
-        body = (
-            "Indented code example:\n\n"
-            "    ## Session log\n"
-            "    EXAMPLE-INDENTED-LOG-LINE\n"
-            "\n"
-            "Real body continues.\n"
-        )
-        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-EXAMPLE\n"
-        rendered = dispatch.render_task_note_block(
-            "Linked cc-task note", self._note(body, session_log)
-        )
-        # An indented Session log heading inside a code example is literal
-        # content: no elision may start there.
-        assert "EXAMPLE-INDENTED-LOG-LINE" in rendered
-        assert "Real body continues." in rendered
-        assert "REAL-LOG-AFTER-EXAMPLE" not in rendered
-        assert rendered.count("[session log elided:") == 1
-
-    def test_level3_and_setext_lines_inside_session_log_stay_history(self) -> None:
-        session_log = (
-            "- 2026-10-12T00:00:00Z zeta: EARLY-ENTRY\n\n"
-            "### history subsection\n"
-            "SUBSECTION-HISTORY-LINE\n\n"
-            "setext paragraph in history\n"
-            "---\n\n"
-            "LATE-HISTORY-LINE\n"
-        )
-        note = self._note(body="Active body.\n", session_log=session_log)
-        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
-        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
-        # Concrete terminator disposition: only structural ATX level-1/2
-        # headings end the log. Level-3+ headings and setext underlines occur
-        # inside history; treating them as terminators would reclassify
-        # legitimate history as post-log mandatory content.
-        assert "EARLY-ENTRY" not in rendered
-        assert "SUBSECTION-HISTORY-LINE" not in rendered
-        assert "LATE-HISTORY-LINE" not in rendered
-        assert "KEPT-AFTER-LOG" in rendered
-        assert rendered.count("[session log elided:") == 1
-
     def test_setext_underline_after_paragraph_is_not_frontmatter(self) -> None:
-        body = "Setext heading paragraph\n---\n\nBody after the setext heading.\n"
-        session_log = "- 2026-10-12T00:00:00Z zeta: SETEXT-TEST-LOG\n"
-        rendered = dispatch.render_task_note_block(
-            "Linked cc-task note", self._note(body, session_log)
+        rendered = self._render(
+            "Setext heading paragraph\n---\n\nBody after the setext heading.\n",
+            "- 2026-10-12T00:00:00Z zeta: SETEXT-TEST-LOG\n",
         )
         # Frontmatter opens only at note start (after the linked-note header);
         # a setext underline after a body paragraph stays ordinary content and
@@ -8154,56 +8127,6 @@ mutation_scope_refs:
         assert "Body after the setext heading." in rendered
         assert "SETEXT-TEST-LOG" not in rendered
         assert rendered.count("[session log elided:") == 1
-
-    def test_tab_separated_and_empty_h1_h2_terminate_session_log_elision(self) -> None:
-        for terminator in ("##\tAcceptance", "#\tTimeline", "##"):
-            session_log = "- 2026-10-12T00:00:00Z zeta: TAB-EMPTY-HISTORY\n"
-            note = self._note(body="Active body.\n", session_log=session_log)
-            note += f"\n{terminator}\n\nMANDATORY-ACCEPTANCE-CANARY\n"
-            rendered = dispatch.render_task_note_block("Linked cc-task note", note)
-            # ATX H1/H2 written with a tab separator or empty at end of
-            # line is still a structural terminator: acceptance-bearing
-            # content after it survives instead of being elided as history.
-            assert "TAB-EMPTY-HISTORY" not in rendered, terminator
-            assert terminator in rendered, terminator
-            assert "MANDATORY-ACCEPTANCE-CANARY" in rendered, terminator
-            assert rendered.count("[session log elided:") == 1, terminator
-
-    def test_tab_and_empty_h1_h2_terminators_cover_both_prompt_renderers(self) -> None:
-        common = dict(
-            task_id="task-note-boot",
-            team_class="t2_standard",
-            lenses=("tests-cover-the-diff",),
-            charters="# tests-cover-the-diff\n",
-        )
-        for terminator in ("##\tAcceptance", "#\tTimeline", "##"):
-            note = self._note(
-                body="Active body kept by both renderers.\n",
-                session_log="- 2026-10-12T00:00:00Z zeta: RENDERER-LOG-CANARY\n",
-            )
-            note += f"\n{terminator}\n\nMANDATORY-ACCEPTANCE-CANARY\n"
-            pr_prompt = dispatch.render_reviewer_prompt(
-                seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
-                pr_info=self._pr_info(),
-                pr_body="body",
-                diff="diff --git a/shared/foo.py b/shared/foo.py\n",
-                prior_criticals=[],
-                task_note_text=note,
-                **common,
-            )
-            artifact_prompt = dispatch.render_artifact_reviewer_prompt(
-                seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
-                head_sha="c" * 40,
-                manifest=[{"path": "shared/foo.py"}],
-                lineage={"grants": []},
-                contents={"shared/foo.py": "def foo():\n    return 1\n"},
-                task_note_text=note,
-                **common,
-            )
-            for prompt in (pr_prompt, artifact_prompt):
-                assert "MANDATORY-ACCEPTANCE-CANARY" in prompt, terminator
-                assert "RENDERER-LOG-CANARY" not in prompt, terminator
-                assert "[session log elided:" in prompt, terminator
 
     def test_unclosed_frontmatter_keeps_whole_note_mandatory(self) -> None:
         note = (
@@ -8230,9 +8153,7 @@ mutation_scope_refs:
             "\t## Acceptance\n"
             "TAB-INDENTED-HISTORY-LINE\n"
         )
-        note = self._note(body=body, session_log=session_log)
-        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
-        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        rendered = self._render(body, session_log, "\n## Next section\n\nKEPT-AFTER-LOG\n")
         # A leading tab makes a line indented-code content under the
         # CommonMark indentation rule: it can neither open the session-log
         # section in body prose nor terminate the elision from inside history.
@@ -8243,32 +8164,11 @@ mutation_scope_refs:
         assert "KEPT-AFTER-LOG" in rendered
         assert rendered.count("[session log elided:") == 1
 
-    def test_closed_tilde_fence_inside_session_log_stays_history(self) -> None:
-        session_log = (
-            "- 2026-10-12T00:00:00Z zeta: EARLY-TILDE-HISTORY\n\n"
-            "~~~\n"
-            "## tilde-fenced heading inside history\n"
-            "~~~\n\n"
-            "LATE-HISTORY-AFTER-TILDE-FENCE\n"
-        )
-        note = self._note(body="Active body before the log.\n", session_log=session_log)
-        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
-        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
-        # A correctly opened and closed tilde fence inside the log is dropped
-        # wholesale as history, and the structural terminator after it still
-        # ends the elision.
-        assert "EARLY-TILDE-HISTORY" not in rendered
-        assert "tilde-fenced heading inside history" not in rendered
-        assert "LATE-HISTORY-AFTER-TILDE-FENCE" not in rendered
-        assert "KEPT-AFTER-LOG" in rendered
-        assert rendered.count("[session log elided:") == 1
-
-        body_fence = "Body before fence.\n\n~~~\n## Session log\n- FENCED-LOG-LINE\n~~~\n\nBody after fence.\n"
-        rendered_body = dispatch.render_task_note_block(
-            "Linked cc-task note", self._note(body=body_fence, session_log=None)
-        )
+    def test_closed_tilde_fence_at_body_level_is_content(self) -> None:
+        body = "Body before fence.\n\n~~~\n## Session log\n- FENCED-LOG-LINE\n~~~\n\nBody after fence.\n"
+        rendered = self._render(body, None)
         # At body level a closed tilde fence is content: the session-log
         # heading inside it never opens an elision region.
-        assert "FENCED-LOG-LINE" in rendered_body
-        assert "Body after fence." in rendered_body
-        assert "[session log elided:" not in rendered_body
+        assert "FENCED-LOG-LINE" in rendered
+        assert "Body after fence." in rendered
+        assert "[session log elided:" not in rendered
