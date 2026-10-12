@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import json
 import logging
 import os
 import signal
 import sys
-from datetime import datetime
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
+
+from agents.session_conductor.lifecycle import ProcessIdentity, process_identity, watch_owner
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +28,7 @@ PID_DIR = Path.home() / ".cache" / "hapax" / "conductor"
 STATE_DIR = Path("/dev/shm")
 SOCK_DIR = Path(f"/run/user/{os.getuid()}")
 
-PARENT_WATCHDOG_INTERVAL = 30  # seconds
+PARENT_WATCHDOG_INTERVAL = 1  # seconds; bounded cleanup after the native lane exits
 
 
 def _pid_file(role: str) -> Path:
@@ -45,6 +49,30 @@ def _sock_path(role: str) -> Path:
 
 
 def cmd_start(args: argparse.Namespace) -> None:
+    # Keep the lock inode: unlinking it permits a second writer to lock a new one.
+    # It covers PID/socket/state and relay writes, including final shutdown.
+    PID_DIR.mkdir(parents=True, exist_ok=True)
+    with (PID_DIR / f"conductor-{args.role}.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log.info("Conductor already owns role %s; leaving it untouched", args.role)
+            return
+        _run_conductor(args)
+
+
+def _run_conductor(args: argparse.Namespace) -> None:
+    if (args.owner_pid is None) != (args.owner_start_ticks is None):
+        raise ValueError("owner-pid and owner-start-ticks must be supplied together")
+    if args.owner_pid is not None:
+        owner = ProcessIdentity(args.owner_pid, args.owner_start_ticks)
+    elif os.environ.get("HAPAX_AGENT_INTERFACE") == "codex":
+        raise ValueError("Codex conductor requires an observed native process owner")
+    else:
+        owner = process_identity(os.getppid())
+    if owner is None or process_identity(owner.pid) != owner:
+        raise ValueError("conductor owner is gone or unobserved; no sidecar started")
+
     from agents._log_setup import configure_logging
 
     configure_logging(agent=f"session-conductor-{args.role}")
@@ -63,9 +91,13 @@ def cmd_start(args: argparse.Namespace) -> None:
     topology = load_topology()
 
     state = SessionState(
-        session_id=f"{args.role}-{os.getpid()}",
+        session_id=args.session_id or f"conductor-{args.role}-{os.getpid()}",
+        session_id_kind=args.session_id_kind if args.session_id else "conductor",
+        native_session_id=args.native_session_id,
+        owner_pid=owner.pid,
+        owner_start_ticks=owner.start_ticks,
         pid=os.getpid(),
-        started_at=datetime.now(),
+        started_at=datetime.now(UTC),
     )
 
     registry = RuleRegistry()
@@ -101,9 +133,34 @@ def cmd_start(args: argparse.Namespace) -> None:
     log.info("Session conductor started (role=%s, pid=%d)", args.role, os.getpid())
 
     loop = asyncio.new_event_loop()
+    stop_requested = False
 
     def _handle_sigterm(signum: int, frame: object) -> None:
+        nonlocal stop_requested
         log.info("Received signal %d — shutting down", signum)
+        stop_requested = True
+        server.shutdown()
+
+    previous_term = signal.signal(signal.SIGTERM, _handle_sigterm)
+    previous_int = signal.signal(signal.SIGINT, _handle_sigterm)
+
+    async def _main() -> None:
+        if stop_requested:
+            return
+        watcher = asyncio.create_task(
+            watch_owner(owner, server.shutdown, interval=PARENT_WATCHDOG_INTERVAL)
+        )
+        try:
+            await server.start()
+        finally:
+            watcher.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher
+
+    try:
+        loop.run_until_complete(_main())
+    finally:
+        # Every exit path, including owner death, publishes the same final state.
         for rule in registry._rules:
             if hasattr(rule, "write_final_status"):
                 rule.write_final_status()  # type: ignore[attr-defined]
@@ -116,31 +173,6 @@ def cmd_start(args: argparse.Namespace) -> None:
             state.save(state_path)
         except OSError:
             log.exception("Failed to save state during shutdown")
-        server.shutdown()
-
-    signal.signal(signal.SIGTERM, _handle_sigterm)
-    signal.signal(signal.SIGINT, _handle_sigterm)
-
-    parent_pid = os.getppid()
-
-    async def _watchdog() -> None:
-        """Shutdown if parent process dies."""
-        while True:
-            await asyncio.sleep(PARENT_WATCHDOG_INTERVAL)
-            try:
-                os.kill(parent_pid, 0)  # Signal 0 checks existence
-            except ProcessLookupError:
-                log.warning("Parent process %d gone — shutting down", parent_pid)
-                server.shutdown()
-                return
-
-    async def _main() -> None:
-        asyncio.create_task(_watchdog())
-        await server.start()
-
-    try:
-        loop.run_until_complete(_main())
-    finally:
         # Cleanup
         try:
             pid_file.unlink(missing_ok=True)
@@ -151,6 +183,8 @@ def cmd_start(args: argparse.Namespace) -> None:
         except OSError:
             pass
         loop.close()
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +233,10 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     summary = {
         "session_id": raw.get("session_id"),
+        "session_id_kind": raw.get("session_id_kind", "conductor"),
+        "native_session_id": raw.get("native_session_id"),
+        "owner_pid": raw.get("owner_pid"),
+        "owner_start_ticks": raw.get("owner_start_ticks"),
         "pid": raw.get("pid"),
         "started_at": raw.get("started_at"),
         "epic_phase": raw.get("epic_phase"),
@@ -229,7 +267,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
 
-    sub.add_parser("start", help="Start the conductor daemon")
+    start = sub.add_parser("start", help="Start the conductor daemon")
+    start.add_argument("--session-id")
+    start.add_argument("--session-id-kind", choices=("lane", "native"), default="native")
+    start.add_argument("--native-session-id")
+    start.add_argument("--owner-pid", type=int)
+    start.add_argument("--owner-start-ticks", type=int)
     sub.add_parser("stop", help="Stop the conductor daemon (send SIGTERM)")
     sub.add_parser("status", help="Print JSON status summary from /dev/shm")
 

@@ -9,6 +9,8 @@ if [ -f "$SCRIPT_DIR/agent-role.sh" ]; then
 fi
 
 INPUT="$(cat)"
+# Codex's Stop is per turn, including callers that invoke this hook directly.
+[ "${HAPAX_AGENT_INTERFACE:-}" = "codex" ] && exit 0
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && exit 0
 

@@ -12,14 +12,28 @@ INPUT="$(cat)"
 SESSION_ID="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && exit 0
 
-COUNCIL_DIR="$HOME/.cache/hapax/source-activation/worktree"
-if [ ! -d "$COUNCIL_DIR/.git" ]; then
-    COUNCIL_DIR="$HOME/projects/hapax-council"
-fi
+# Use the same source tree as the executing hook (.git may be a worktree file).
+COUNCIL_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PID_DIR="$HOME/.cache/hapax/conductor"
 
 ROLE="$(hapax_effective_role 2>/dev/null || true)"
 { [ -z "$ROLE" ] || [ "$ROLE" = "roleless" ]; } && exit 0
+
+START_ARGS=(--session-id "$SESSION_ID" --session-id-kind native)
+if [ "${HAPAX_AGENT_INTERFACE:-}" = "codex" ]; then
+    # Capture before systemd/uv detach. Neither their PID nor this short-lived
+    # hook's parent is necessarily the native lane. No observation, no launch.
+    if ! OWNER="$(python3 -I "$COUNCIL_DIR/agents/session_conductor/lifecycle.py" "$$")"; then
+        echo "conductor-start: native Codex owner unobserved; no sidecar started. Next action: verify the hook's native process ancestry." >&2
+        exit 0
+    fi
+    read -r OWNER_PID OWNER_START_TICKS <<< "$OWNER"
+    START_ARGS+=(--owner-pid "$OWNER_PID" --owner-start-ticks "$OWNER_START_TICKS"
+        --native-session-id "$SESSION_ID")
+    if [ -n "${HAPAX_SESSION_ID:-}" ]; then
+        START_ARGS+=(--session-id "$HAPAX_SESSION_ID" --session-id-kind lane)
+    fi
+fi
 
 # Don't launch if already running for this role
 if [ -f "$PID_DIR/conductor-${ROLE}.pid" ]; then
@@ -35,7 +49,7 @@ systemd-run --user --scope --quiet \
     --description="Session Conductor ($ROLE) for $SESSION_ID" \
     "$HOME/.local/bin/uv" run \
     --directory "$COUNCIL_DIR" \
-    python -m agents.session_conductor --role "$ROLE" start \
+    python -m agents.session_conductor --role "$ROLE" start "${START_ARGS[@]}" \
     &>/dev/null &
 
 # Wait for socket to appear (up to 3 seconds)

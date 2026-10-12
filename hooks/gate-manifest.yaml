@@ -207,7 +207,6 @@ runtimes:
           - cargo-check-rust.sh
       Stop:
         - session-summary.sh
-        - conductor-stop.sh
 
   vibe:
     source: "scripts/hapax-vibe"
