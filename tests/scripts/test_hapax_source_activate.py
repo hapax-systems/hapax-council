@@ -4505,48 +4505,6 @@ def test_activation_normalizes_matching_active_config_aliases(tmp_path: Path) ->
     assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [new_sha]
 
 
-def test_activation_syncs_active_source_dependencies_before_deploy(tmp_path: Path) -> None:
-    canonical, origin, new_sha = _make_repos(tmp_path)
-    dep_seed = tmp_path / "dep-seed"
-    _git(tmp_path, "clone", str(origin), str(dep_seed))
-    _git(dep_seed, "config", "user.email", "source-activate@example.test")
-    _git(dep_seed, "config", "user.name", "Source Activate")
-    _write(dep_seed / "pyproject.toml", '[project]\nname = "activation-fixture"\nversion = "0"\n')
-    _write(dep_seed / "uv.lock", "version = 1\n")
-    _git(dep_seed, "add", "pyproject.toml", "uv.lock")
-    _git(dep_seed, "commit", "-m", "add dependency manifest")
-    _git(dep_seed, "push", "origin", "main")
-    latest_sha = _git(dep_seed, "rev-parse", "HEAD")
-    assert latest_sha != new_sha
-
-    uv_record = tmp_path / "uv-record.txt"
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_uv = fake_bin / "uv"
-    fake_uv.write_text(
-        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$PWD|$*" >> "$HAPAX_FAKE_UV_RECORD"\nexit 0\n',
-        encoding="utf-8",
-    )
-    fake_uv.chmod(0o755)
-
-    result = _run_activate(
-        tmp_path,
-        canonical,
-        env_overrides={
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "HAPAX_FAKE_UV_RECORD": str(uv_record),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert uv_record.read_text(encoding="utf-8").splitlines() == [
-        f"{tmp_path / 'state' / 'releases' / latest_sha}|sync --all-extras --quiet"
-    ]
-    assert (tmp_path / "deploy-record.txt").read_text(encoding="utf-8").splitlines() == [latest_sha]
-    receipt = _current_receipt(tmp_path)
-    assert receipt["dependency_sync"]["status"] == "success"
-
-
 def test_activation_records_configured_frame_freshness_probe(tmp_path: Path) -> None:
     canonical, _origin, _new_sha = _make_repos(tmp_path)
     frame = tmp_path / "latest-frame.jpg"
@@ -4838,3 +4796,389 @@ def test_a_release_without_a_venv_skips_the_reprovision(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert not record.exists()
     assert not (tmp_path / "state" / "gate0b-reprovision-last.json").exists()
+
+
+# PR5143: exercise the real activation entry with a synthetic, private environment.
+# No provider, package download, production interpreter install or DSP run occurs.
+def _dependency_candidate(tmp_path: Path) -> tuple[Path, Path, dict, dict]:
+    import hashlib
+    import platform
+    import sysconfig
+
+    canonical, origin, _ = _make_repos(tmp_path)
+    first = _run_activate(tmp_path, canonical)
+    assert first.returncode == 0, first.stderr
+    seed = tmp_path / "seed"
+    _write(seed / "pyproject.toml", '[project]\nname = "activation-fixture"\nversion = "0"\n')
+    _write(seed / "uv.lock", "version = 1\n")
+    _write(seed / ".python-version", platform.python_version() + "\n")
+    _write(seed / ".gitignore", ".venv\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "dependency candidate")
+    _git(seed, "push", "origin", "main")
+    head = _git(seed, "rev-parse", "HEAD")
+    candidate = tmp_path / "state" / "releases" / head
+    proof = tmp_path / "accepted-package-proof.json"
+    proof.write_text('{"fixture": "independently prepared package proof"}\n')
+    interpreter = Path(sys.executable).resolve()
+    expectation = {
+        "schema_version": 1,
+        "head": head,
+        "candidate_path": str(candidate),
+        "interpreter": {
+            "executable": str(interpreter),
+            "sha256": hashlib.sha256(interpreter.read_bytes()).hexdigest(),
+            "version": platform.python_version(),
+            "soabi": sysconfig.get_config_var("SOABI"),
+            "platform": sysconfig.get_platform(),
+            "machine": platform.machine(),
+            "libc": list(platform.libc_ver()),
+        },
+        "files": {
+            name: hashlib.sha256((seed / name).read_bytes()).hexdigest()
+            for name in ("pyproject.toml", "uv.lock", ".python-version")
+        },
+        "distributions": [
+            {"name": "activation-fixture", "version": "0"},
+            {"name": "agent_gov", "version": "1"},
+            {"name": "context.canon", "version": "2"},
+            {"name": "native-package", "version": "3"},
+        ],
+        "editable": {
+            "activation-fixture": ".",
+            "agent-gov": "packages/agentgov",
+            "context-canon": "packages/context-canon",
+        },
+        "native_files": {
+            f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/native-payload.bin": hashlib.sha256(
+                b"native-proof-payload"
+            ).hexdigest()
+        },
+        "evidence": [
+            {"path": str(proof), "sha256": hashlib.sha256(proof.read_bytes()).hexdigest()}
+        ],
+    }
+    expected_path = tmp_path / "state" / "dependency-expectations" / f"{head}.json"
+    _write(expected_path, json.dumps(expectation))
+    fake_bin = tmp_path / "dependency-bin"
+    _write(
+        fake_bin / "uv",
+        f"#!{sys.executable}\n"
+        + textwrap.dedent("""\
+        import json, os, pathlib, sys
+        root = pathlib.Path.cwd()
+        with open(os.environ["HAPAX_FAKE_UV_RECORD"], "a") as f:
+            f.write(json.dumps({"cwd": str(root), "argv": sys.argv[1:],
+                               "uv_env": sorted(k for k in os.environ if k.startswith("UV_"))}) + "\\n")
+        venv = root / ".venv"
+        (venv / "bin").mkdir(parents=True, exist_ok=True)
+        (venv / "bin" / "python").symlink_to(pathlib.Path(sys.executable).resolve())
+        (venv / "pyvenv.cfg").write_text("include-system-site-packages = false\\n")
+        site = venv / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+        site.mkdir(parents=True)
+        (site / "native-payload.bin").write_bytes(b"native-proof-payload")
+        for i in range(int(os.environ.get("HAPAX_TEST_LARGE_NATIVE", "0"))):
+            (site / (f"native-{i:04d}-" + "x" * 100 + ".bin")).write_bytes(b"native-proof-payload")
+        editable = {"activation-fixture": ".", "agent_gov": "packages/agentgov",
+                    "context.canon": "packages/context-canon"}
+        packages = [("activation-fixture", "0"), ("agent_gov", "1"), ("context.canon", "2"),
+                    ("native-package", "3")]
+        fault = os.environ.get("HAPAX_TEST_DEPENDENCY_FAULT", "")
+        if fault == "missing": packages.pop()
+        if fault == "extra": packages.append(("unreviewed", "9"))
+        if fault == "version": packages[-1] = ("native-package", "99")
+        if fault == "duplicate": packages.append(("native_package", "3"))
+        for i, (name, version) in enumerate(packages):
+            info = site / f"fixture{i}.dist-info"
+            info.mkdir()
+            (info / "METADATA").write_text(f"Metadata-Version: 2.1\\nName: {name}\\nVersion: {version}\\n")
+            if name in editable:
+                destination = root / editable[name]
+                destination.mkdir(parents=True, exist_ok=True)
+                if fault == "editable": destination = pathlib.Path("/private/preparation/tree")
+                (info / "direct_url.json").write_text(json.dumps({"url": destination.as_uri(),
+                                                                 "dir_info": {"editable": True}}))
+        if fault in ("pyproject.toml", "uv.lock", ".python-version"):
+            with (root / fault).open("a") as f: f.write("# unreviewed sync rewrite\\n")
+        if fault == "abi":
+            python = venv / "bin" / "python"
+            python.unlink()
+            python.write_text("#!" + sys.executable + "\\nimport json,subprocess,sys\\n"
+                              + "value=json.loads(subprocess.check_output([" + repr(sys.executable)
+                              + ",*sys.argv[1:]],text=True))\\nvalue['soabi']='unreviewed'\\nprint(json.dumps(value))\\n")
+            python.chmod(0o755)
+        if fault == "native": (site / "native-payload.bin").write_bytes(b"different-payload")
+        if fault == "inspection": (venv / "bin" / "python").unlink()
+        if fault == "head":
+            import subprocess
+            subprocess.run(["git", "checkout", "--detach", "HEAD^"], check=True, capture_output=True)
+        """),
+        executable=True,
+    )
+    health = fake_bin / "curl"
+    _write(
+        health,
+        '#!/usr/bin/env bash\nprintf called >> "$HAPAX_TEST_HEALTH_RECORD"\n',
+        executable=True,
+    )
+    env = {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "HAPAX_FAKE_UV_RECORD": str(tmp_path / "uv-record.txt"),
+        "HAPAX_SOURCE_ACTIVATE_DEPENDENCY_EXPECTATION_SHA256": hashlib.sha256(
+            expected_path.read_bytes()
+        ).hexdigest(),
+        "HAPAX_SOURCE_ACTIVATE_HTTP_PROBES": "http://fixture.invalid/health",
+        "HAPAX_TEST_HEALTH_RECORD": str(tmp_path / "health-record.txt"),
+    }
+    return canonical, expected_path, expectation, env
+
+
+def _publish_test_expectation(path: Path, expectation: dict, env: dict) -> None:
+    import hashlib
+
+    path.write_text(json.dumps(expectation))
+    env["HAPAX_SOURCE_ACTIVATE_DEPENDENCY_EXPECTATION_SHA256"] = hashlib.sha256(
+        path.read_bytes()
+    ).hexdigest()
+
+
+def _published_activation_state(tmp_path: Path) -> dict:
+    """Public bindings and prior environment must be byte/target identical on refusal."""
+    import hashlib
+
+    alias = tmp_path / "active-source"
+    result = {"active_target": os.readlink(alias)}
+    for root in (tmp_path / "home", alias / ".venv"):
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink():
+                result[str(path)] = ("link", os.readlink(path))
+            elif path.is_file():
+                result[str(path)] = (
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                    path.stat().st_mode,
+                )
+    for name in ("deploy-record.txt", "state/last-success-sha", "reprovision-args.txt"):
+        path = tmp_path / name
+        result[name] = path.read_bytes() if path.exists() else None
+    return result
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "pyproject.toml",
+        "uv.lock",
+        ".python-version",
+        "missing",
+        "extra",
+        "version",
+        "duplicate",
+        "editable",
+        "inspection",
+        "head",
+        "native",
+        "abi",
+    ],
+)
+def test_dependency_postimage_refuses_sync_success_drift(tmp_path: Path, fault: str) -> None:
+    canonical, _, _, env = _dependency_candidate(tmp_path)
+    before = _published_activation_state(tmp_path)
+    env["HAPAX_TEST_DEPENDENCY_FAULT"] = fault
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert _published_activation_state(tmp_path) == before
+    assert not (tmp_path / "health-record.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["dependency_check"]["status"] == "failed"
+    assert receipt["dependency_check"]["expected"]
+    assert receipt["dependency_check"]["reason"]
+    assert receipt["health_probes"]["status"] == "not_started"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing",
+        "invalid",
+        "digest",
+        "head",
+        "candidate_path",
+        "soabi",
+        "files",
+        "evidence",
+        "duplicate",
+        "empty",
+        "editable_escape",
+    ],
+)
+def test_dependency_postimage_refuses_unbound_input_before_sync(tmp_path: Path, fault: str) -> None:
+    canonical, path, expectation, env = _dependency_candidate(tmp_path)
+    before = _published_activation_state(tmp_path)
+    if fault == "head":
+        expectation["head"] = "0" * 40
+    elif fault == "candidate_path":
+        expectation["candidate_path"] = str(tmp_path / "old-candidate")
+    elif fault == "soabi":
+        expectation["interpreter"]["soabi"] = "wrong-abi"
+    elif fault == "files":
+        expectation["files"]["uv.lock"] = "0" * 64
+    elif fault == "evidence":
+        Path(expectation["evidence"][0]["path"]).unlink()
+    elif fault == "duplicate":
+        expectation["distributions"].append({"name": "native_package", "version": "3"})
+    elif fault == "empty":
+        expectation["distributions"] = []
+    elif fault == "editable_escape":
+        expectation["editable"]["agent-gov"] = "../../old-release"
+    _publish_test_expectation(path, expectation, env)
+    if fault == "missing":
+        path.unlink()
+    elif fault == "invalid":
+        import hashlib
+
+        path.write_text("{")
+        env["HAPAX_SOURCE_ACTIVATE_DEPENDENCY_EXPECTATION_SHA256"] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+    elif fault == "digest":
+        env["HAPAX_SOURCE_ACTIVATE_DEPENDENCY_EXPECTATION_SHA256"] = "0" * 64
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert not (tmp_path / "uv-record.txt").exists()
+    assert not (tmp_path / "health-record.txt").exists()
+    assert _published_activation_state(tmp_path) == before
+    assert _current_receipt(tmp_path)["dependency_check"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("mode", ["normal", "skip-deploy", "disabled-sync"])
+def test_dependency_postimage_flags_do_not_discharge_comparison(tmp_path: Path, mode: str) -> None:
+    canonical, _, _, env = _dependency_candidate(tmp_path)
+    before = _published_activation_state(tmp_path)
+    env["HAPAX_TEST_DEPENDENCY_FAULT"] = "extra"
+    if mode == "disabled-sync":
+        env["HAPAX_SOURCE_ACTIVATE_SYNC_DEPS"] = "0"
+    result = _run_activate(
+        tmp_path,
+        canonical,
+        extra_args=["--skip-deploy"] if mode == "skip-deploy" else [],
+        env_overrides=env,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert _published_activation_state(tmp_path) == before
+    assert not (tmp_path / "health-record.txt").exists()
+
+
+def test_dependency_postimage_accepts_exact_inventory_and_editable_relocation(
+    tmp_path: Path,
+) -> None:
+    canonical, _, expectation, env = _dependency_candidate(tmp_path)
+    # Ambient overrides must not redirect sync into an active/foreign environment.
+    env["UV_PROJECT_ENVIRONMENT"] = str(tmp_path / "active-source" / ".venv")
+    env["UV_PYTHON"] = "/wrong/interpreter"
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode == 0, result.stderr
+    receipt = _current_receipt(tmp_path)
+    assert receipt["dependency_check"]["status"] == "success"
+    assert receipt["dependency_check"]["expected"]["head"] == expectation["head"]
+    assert receipt["dependency_check"]["observed"]["distributions"] == {
+        "activation-fixture": "0",
+        "agent-gov": "1",
+        "context-canon": "2",
+        "native-package": "3",
+    }
+    calls = [json.loads(line) for line in (tmp_path / "uv-record.txt").read_text().splitlines()]
+    assert len(calls) == 1
+    assert calls[0]["cwd"] == expectation["candidate_path"]
+    assert calls[0]["uv_env"] == []
+    assert "--locked" in calls[0]["argv"]
+    assert (tmp_path / "state" / "last-success-sha").read_text().strip() == expectation["head"]
+    assert receipt["activation_executable_sha256"]
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_dependency_postimage_same_head_checks_without_syncing_active(
+    tmp_path: Path, drift: bool
+) -> None:
+    canonical, _, _, env = _dependency_candidate(tmp_path)
+    first = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert first.returncode == 0, first.stderr
+    (tmp_path / "health-record.txt").unlink()
+    if drift:
+        metadata = next((tmp_path / "active-source" / ".venv").rglob("fixture3.dist-info/METADATA"))
+        metadata.write_text(metadata.read_text().replace("Version: 3", "Version: 99"))
+    before = _published_activation_state(tmp_path)
+    calls = (tmp_path / "uv-record.txt").read_bytes()
+    second = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert (second.returncode != 0) == drift, second.stderr
+    assert (tmp_path / "uv-record.txt").read_bytes() == calls
+    assert _published_activation_state(tmp_path) == before
+    if drift:
+        assert not (tmp_path / "health-record.txt").exists()
+    else:
+        assert _current_receipt(tmp_path)["status"] == "no_op"
+        assert _current_receipt(tmp_path)["dependency_sync"]["status"] == "verified_no_sync"
+
+
+def test_dependency_postimage_refuses_candidate_environment_alias(tmp_path: Path) -> None:
+    canonical, _, expectation, env = _dependency_candidate(tmp_path)
+    candidate = Path(expectation["candidate_path"])
+    _git(canonical, "fetch", "origin", "main")
+    _git(canonical, "worktree", "add", "--detach", str(candidate), expectation["head"])
+    prior = tmp_path / "active-source" / ".venv"
+    prior.mkdir()
+    _write(prior / "sentinel", "prior environment")
+    (candidate / ".venv").symlink_to(prior)
+    before = _published_activation_state(tmp_path)
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode != 0, result.stderr
+    assert not (tmp_path / "uv-record.txt").exists()
+    assert _published_activation_state(tmp_path) == before
+
+
+def test_dependency_postimage_full_native_evidence_survives_receipt_transport(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    canonical, path, expectation, env = _dependency_candidate(tmp_path)
+    for i in range(900):
+        relative = (
+            f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/native-{i:04d}-"
+            + "x" * 100
+            + ".bin"
+        )
+        expectation["native_files"][relative] = hashlib.sha256(b"native-proof-payload").hexdigest()
+    _publish_test_expectation(path, expectation, env)
+    env["HAPAX_TEST_LARGE_NATIVE"] = "900"
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode == 0, result.stderr
+    receipt = _current_receipt(tmp_path)
+    assert receipt["dependency_check"]["observed"]["native_files"] == expectation["native_files"]
+    assert receipt["status"] == "completed"
+
+
+def test_dependency_postimage_git_inspection_failure_cannot_mean_no_manifest(
+    tmp_path: Path,
+) -> None:
+    canonical, _, _, env = _dependency_candidate(tmp_path)
+    real_git = shutil.which("git")
+    assert real_git is not None
+    fake_git = tmp_path / "dependency-bin" / "git"
+    _write(
+        fake_git,
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *pyproject.toml* && ( "$*" == *cat-file* || "$*" == *ls-tree* ) ]]; then\n'
+        '    echo "fixture Git inspection failure" >&2\n    exit 74\nfi\n'
+        f'exec {shlex.quote(real_git)} "$@"\n',
+        executable=True,
+    )
+    before = _published_activation_state(tmp_path)
+    result = _run_activate(tmp_path, canonical, env_overrides=env)
+    assert result.returncode != 0, result.stderr
+    assert _published_activation_state(tmp_path) == before
+    assert not (tmp_path / "uv-record.txt").exists()
+    assert not (tmp_path / "health-record.txt").exists()
+    receipt = _current_receipt(tmp_path)
+    assert receipt["status"] == "failed"
+    assert receipt["dependency_check"]["status"] == "failed"

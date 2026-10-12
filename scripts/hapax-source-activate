@@ -55,6 +55,8 @@ candidate_tracked_drift_detected=0
 active_source_target=""
 dependency_sync_status="not_started"
 dependency_sync_message=""
+dependency_check_json='{"status":"not_started"}'
+activation_executable_sha256="$(sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1)"
 health_probe_status="not_started"
 health_probe_message=""
 live_window_status="not_checked"
@@ -151,7 +153,7 @@ write_receipt() {
         "$quarantined_tracked_count" "$quarantined_tracked_path" \
         "$quarantined_tracked_status" \
         "$quarantined_symlink_count" "$runtime_profile_link_count" \
-        "$FORCE" "$FORCE_AUTHORITY" <<'PY'
+        "$FORCE" "$FORCE_AUTHORITY" "$activation_executable_sha256" 3< <(printf '%s' "$dependency_check_json") <<'PY'
 from __future__ import annotations
 
 import json
@@ -198,7 +200,10 @@ from pathlib import Path
     runtime_profile_link_count,
     force,
     force_authority,
+    activation_executable_sha256,
 ) = sys.argv[1:]
+with os.fdopen(3) as dependency_input:
+    dependency_check = json.load(dependency_input)
 
 record = {
     "schema_version": 1,
@@ -221,6 +226,8 @@ record = {
     "active_source_path": active_worktree,
     "active_source_target": active_source_target,
     "candidate_source_path": candidate_worktree,
+    "activation_executable_sha256": activation_executable_sha256,
+    "dependency_check": dependency_check,
     "dependency_sync": {
         "status": dependency_sync_status,
         "message": dependency_sync_message,
@@ -1505,38 +1512,322 @@ link_canonical_runtime_profiles "$candidate_worktree"
 
 sync_dependency_environment() {
     local source_root="${1:-$ACTIVE_WORKTREE}"
-    if [[ "${HAPAX_SOURCE_ACTIVATE_SYNC_DEPS:-1}" != "1" ]]; then
-        dependency_sync_status="skipped_by_flag"
-        dependency_sync_message="HAPAX_SOURCE_ACTIVATE_SYNC_DEPS disabled"
-        return 0
+    # Non-Python releases have no dependency environment. Use the committed tree,
+    # not an absent working file, to decide whether this boundary is applicable.
+    local manifest_entry
+    if ! manifest_entry="$(git -C "$source_root" ls-tree --name-only "$origin_sha" -- pyproject.toml)"; then
+        dependency_check_json='{"status":"failed","reason":"committed manifest inspection failed"}'
+        dependency_sync_status="failed"
+        dependency_sync_message="committed manifest inspection failed"
+        write_receipt "failed" "not_started" "2" "$dependency_sync_message"
+        echo "hapax-source-activate: $dependency_sync_message" >&2
+        exit 2
     fi
-    if [[ ! -f "$source_root/pyproject.toml" ]]; then
+    if [[ "$manifest_entry" != "pyproject.toml" ]]; then
         dependency_sync_status="skipped_no_pyproject"
-        dependency_sync_message="active source has no pyproject.toml"
+        dependency_sync_message="reviewed source has no pyproject.toml"
         return 0
     fi
-    if ! command -v uv >/dev/null 2>&1; then
+    local rc=0
+    dependency_check_json="$(python3 - "$source_root" "$origin_sha" "$STATE_DIR" \
+        "$ACTIVE_WORKTREE" "${HAPAX_SOURCE_ACTIVATE_SYNC_DEPS:-1}" \
+        "${HAPAX_SOURCE_ACTIVATE_DEPENDENCY_EXPECTATION_SHA256:-}" <<'PY'
+# This is a comparison at the existing activation boundary, not an acceptor.
+# The admitted release owner supplies dependency-expectations/<merged-head>.json
+# and its SHA256 in the service environment after normal independent acceptance.
+# No expectation is generated from the candidate being checked.
+import hashlib
+import importlib.metadata
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+root_arg, head, state, active_arg, sync_enabled, expectation_sha = sys.argv[1:]
+root = Path(root_arg)
+active = Path(active_arg)
+result = {"status": "failed", "reason": "inspection incomplete", "expected": {}, "observed": {}}
+
+
+def require(condition, reason):
+    if not condition:
+        raise ValueError(reason)
+
+
+def digest(path):
+    with Path(path).open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def normalized(name):
+    require(
+        isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name),
+        "invalid distribution name",
+    )
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def identities(rows):
+    require(isinstance(rows, list) and rows, "missing complete distribution expectation")
+    values = {}
+    for row in rows:
+        name = normalized(row["name"])
+        require(name not in values, "duplicate distribution: " + name)
+        version = row["version"]
+        require(isinstance(version, str) and bool(version.strip()), "invalid distribution version")
+        values[name] = version
+    return values
+
+
+# -I -S avoids candidate site hooks and imports while identifying its interpreter.
+identity_code = """import json, platform, sys, sysconfig
+from pathlib import Path
+print(json.dumps({"executable": str(Path(sys.executable).resolve()),
+"version": platform.python_version(), "soabi": sysconfig.get_config_var("SOABI"),
+"platform": sysconfig.get_platform(), "machine": platform.machine(),
+"libc": list(platform.libc_ver()),
+"site_paths": sorted(set(sysconfig.get_path(k, vars={"base": sys.argv[1], "platbase": sys.argv[1]}) for k in ("purelib", "platlib")))}))"""
+clean_env = {
+    key: value
+    for key, value in os.environ.items()
+    if not key.startswith(("UV_", "PYTHON")) and key != "VIRTUAL_ENV"
+}
+
+
+def interpreter_identity(executable):
+    output = subprocess.run(
+        [str(executable), "-I", "-S", "-c", identity_code, str(root / ".venv")],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=clean_env,
+    )
+    identity = json.loads(output.stdout)
+    sites = identity.pop("site_paths")
+    identity["sha256"] = digest(identity["executable"])
+    return identity, sites
+
+
+def source_identity(expected):
+    observed = result["observed"]
+    observed["candidate_path"] = str(root.resolve(strict=True))
+    observed["head"] = subprocess.check_output(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+    ).strip()
+    require(
+        expected["candidate_path"] == observed["candidate_path"],
+        "candidate path differs from accepted input",
+    )
+    require(
+        expected["head"] == head == observed["head"], "candidate head differs from accepted input"
+    )
+    require(
+        set(expected["files"]) == {"pyproject.toml", "uv.lock", ".python-version"},
+        "incomplete reviewed source hashes",
+    )
+    observed["files"] = {name: digest(root / name) for name in expected["files"]}
+    require(
+        observed["files"] == expected["files"],
+        "manifest/lock/python-version differs from reviewed bytes",
+    )
+    for name, sha in expected["files"].items():
+        committed = subprocess.check_output(["git", "-C", str(root), "show", head + ":" + name])
+        require(
+            hashlib.sha256(committed).hexdigest() == sha,
+            "source hash is not bound to reviewed head: " + name,
+        )
+
+
+try:
+    require(
+        re.fullmatch(r"[0-9a-f]{64}", expectation_sha) is not None,
+        "missing accepted expectation SHA256 binding",
+    )
+    expectation_path = Path(state) / "dependency-expectations" / (head + ".json")
+    raw = expectation_path.read_bytes()
+    result["expectation_path"] = str(expectation_path)
+    result["expectation_sha256"] = hashlib.sha256(raw).hexdigest()
+    require(result["expectation_sha256"] == expectation_sha, "expectation SHA256 mismatch")
+    expected = json.loads(raw)
+    result["expected"] = expected
+    require(expected["schema_version"] == 1, "unsupported dependency expectation")
+    source_identity(expected)
+    expected_packages = identities(expected["distributions"])
+    require(
+        isinstance(expected["evidence"], list) and expected["evidence"],
+        "missing accepted preparation evidence",
+    )
+    for evidence in expected["evidence"]:
+        require(Path(evidence["path"]).is_absolute(), "evidence path must be absolute")
+        require(
+            digest(evidence["path"]) == evidence["sha256"], "preparation evidence hash mismatch"
+        )
+    expected_editable = {}
+    for name, relative in expected["editable"].items():
+        name = normalized(name)
+        require(
+            name in expected_packages and name not in expected_editable,
+            "unbound/duplicate editable distribution",
+        )
+        relative = Path(relative)
+        require(
+            not relative.is_absolute() and ".." not in relative.parts,
+            "editable path escapes release",
+        )
+        destination = root / relative
+        require(
+            destination.resolve().is_relative_to(root.resolve()), "editable path escapes release"
+        )
+        expected_editable[name] = destination.resolve().as_uri()
+    # Native proof is reused only when its actual candidate payload hashes match.
+    require(isinstance(expected["native_files"], dict), "missing native payload expectation")
+    for relative in expected["native_files"]:
+        require(
+            not Path(relative).is_absolute() and ".." not in Path(relative).parts,
+            "native path escapes environment",
+        )
+    executable = Path(expected["interpreter"]["executable"])
+    require(
+        executable.is_absolute() and str(executable.resolve(strict=True)) == str(executable),
+        "interpreter path is not canonical",
+    )
+    require(
+        digest(executable) == expected["interpreter"]["sha256"],
+        "interpreter bytes differ before execution",
+    )
+    identity, sites = interpreter_identity(executable)
+    result["observed"]["interpreter"] = identity
+    require(
+        identity == expected["interpreter"], "interpreter/ABI/platform differs from accepted input"
+    )
+    environment = root / ".venv"
+    require(not environment.is_symlink(), "candidate environment is a symlink")
+    require(
+        environment.resolve().is_relative_to(root.resolve()),
+        "candidate environment escapes release",
+    )
+    for directory in [
+        environment / "bin",
+        environment / "lib",
+        environment / "lib64",
+        *map(Path, sites),
+    ]:
+        require(
+            directory.resolve().is_relative_to(environment.resolve()),
+            "candidate environment directory escapes release",
+        )
+    if (environment / "pyvenv.cfg").exists():
+        require(
+            (environment / "pyvenv.cfg").resolve().is_relative_to(environment.resolve()),
+            "candidate environment config escapes release",
+        )
+    same_active = root.resolve() == active.resolve()
+    if not same_active:
+        require(
+            environment.resolve() != (active / ".venv").resolve(),
+            "candidate shares prior active environment",
+        )
+    # Never sync the prior active environment, including same-head/no-op invocations.
+    # A disabled sync still has to pass the complete actual comparison below.
+    if same_active or sync_enabled != "1":
+        result["sync_status"] = "verified_no_sync"
+    else:
+        uv = shutil.which("uv")
+        require(uv is not None, "uv executable not found")
+        subprocess.run(
+            [
+                uv,
+                "sync",
+                "--all-extras",
+                "--quiet",
+                "--locked",
+                "--python",
+                identity["executable"],
+                "--project",
+                str(root),
+            ],
+            cwd=root,
+            env=clean_env,
+            stdout=sys.stderr,
+            check=True,
+        )
+        result["sync_status"] = "success"
+    # This comparison MUST remain before health probes and source promotion.
+    source_identity(expected)
+    require(not environment.is_symlink(), "post-sync environment is a symlink")
+    candidate_python = environment / "bin" / "python"
+    require(
+        candidate_python.resolve(strict=True) == executable
+        and digest(candidate_python) == expected["interpreter"]["sha256"],
+        "post-sync interpreter path/bytes mismatch",
+    )
+    observed_identity, observed_sites = interpreter_identity(candidate_python)
+    result["observed"]["interpreter"] = observed_identity
+    require(
+        observed_identity == expected["interpreter"] and observed_sites == sites,
+        "post-sync interpreter/ABI/platform mismatch",
+    )
+    cfg = (environment / "pyvenv.cfg").read_text()
+    require(
+        re.search(r"(?im)^include-system-site-packages\s*=\s*false\s*$", cfg),
+        "candidate includes unaccounted system packages",
+    )
+    rows, editable = [], {}
+    for site_path in sites:
+        site = Path(site_path)
+        require(
+            site.is_dir() and site.resolve().is_relative_to(environment.resolve()),
+            "candidate site path missing or escapes environment",
+        )
+        for distribution in importlib.metadata.distributions(path=[str(site)]):
+            name = normalized(distribution.metadata["Name"])
+            rows.append({"name": name, "version": distribution.version})
+            direct = distribution.read_text("direct_url.json")
+            if direct:
+                direct = json.loads(direct)
+                if direct.get("dir_info", {}).get("editable") is True:
+                    require(name not in editable, "duplicate editable distribution")
+                    editable[name] = direct["url"]
+    result["observed"]["distribution_rows"] = rows
+    observed_packages = identities(rows)
+    result["observed"]["distributions"] = observed_packages
+    result["observed"]["editable"] = editable
+    require(observed_packages == expected_packages, "complete distribution inventory mismatch")
+    require(editable == expected_editable, "editable source binding mismatch")
+    native_files = {}
+    for relative in expected["native_files"]:
+        path = environment / relative
+        require(
+            path.resolve().is_relative_to(environment.resolve()),
+            "native payload escapes environment",
+        )
+        native_files[relative] = digest(path)
+    result["observed"]["native_files"] = native_files
+    require(native_files == expected["native_files"], "native payload differs from retained proof")
+    result["status"] = "success"
+    result["reason"] = "actual candidate matches prebound dependency expectation"
+except Exception as exc:
+    result["reason"] = type(exc).__name__ + ": " + str(exc)
+print(json.dumps(result, sort_keys=True))
+sys.exit(0 if result["status"] == "success" else 2)
+PY
+    )" || rc=$?
+    if [[ "$rc" != "0" ]]; then
+        if [[ -z "$dependency_check_json" ]]; then
+            dependency_check_json='{"status":"failed","reason":"inspection returned no result"}'
+        fi
         dependency_sync_status="failed"
-        dependency_sync_message="uv executable not found"
-        write_receipt "failed" "not_started" "127" "dependency sync failed"
-        echo "hapax-source-activate: dependency sync failed — uv executable not found" >&2
-        exit 127
-    fi
-    if (
-        cd "$source_root"
-        uv sync --all-extras --quiet
-    ); then
-        dependency_sync_status="success"
-        dependency_sync_message="uv sync --all-extras --quiet completed"
-        echo "hapax-source-activate: dependency environment synced"
-    else
-        rc=$?
-        dependency_sync_status="failed"
-        dependency_sync_message="uv sync --all-extras --quiet failed"
-        write_receipt "failed" "not_started" "$rc" "dependency sync failed"
-        echo "hapax-source-activate: dependency sync failed for ${origin_sha:0:8}" >&2
+        dependency_sync_message="candidate dependency comparison refused; see dependency_check"
+        write_receipt "failed" "not_started" "$rc" "$dependency_sync_message"
+        echo "hapax-source-activate: $dependency_sync_message" >&2
         exit "$rc"
     fi
+    dependency_sync_status="$(printf '%s' "$dependency_check_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sync_status"])')"
+    dependency_sync_message="actual candidate matches prebound dependency expectation"
 }
 
 sync_dependency_environment "$candidate_worktree"
