@@ -1198,6 +1198,10 @@ NOT_A_TASK_NOTE_WRITER = {
     "shared/research_desk.py": "reads active request notes; writes no files in this queue slice",
     "shared/cc_task_root.py": "resolver only",
     "hooks/scripts/sense_reissue_capture.py": "writes its own capture JSONL",
+    "hooks/scripts/write_stamp_ahead_guard.py": (
+        "refuses a Write whose stamp is ahead of the clock; reads the vault root only to scope "
+        "its check and writes only its near-miss JSONL under ~/.cache/hapax"
+    ),
     "hooks/scripts/cc-task-root.sh": "resolver only",
     "hooks/scripts/session-context.sh": "read-only session banner",
     "hooks/scripts/pr-release-gate.sh": "read-only release precheck",
