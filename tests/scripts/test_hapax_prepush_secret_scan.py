@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "hapax-prepush-secret-scan"
+SCRIPT = Path(__file__).resolve().parents[1] / "fixtures" / "prepush_secret_scan.py"
 ZERO = "0" * 40
 
 
