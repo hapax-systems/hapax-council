@@ -206,6 +206,21 @@ def test_parse_feed_refuses_dtd_and_entity_declarations_before_parsing() -> None
         parse_feed(entity_only, "rss-b", "https://source-b.example/feed")
 
 
+def test_parse_feed_reports_malformed_xml_as_a_parse_failure() -> None:
+    truncated = b"<rss version='2.0'><channel><item><title>snip"
+    with pytest.raises(ValueError, match="not well-formed XML") as excinfo:
+        parse_feed(truncated, "rss-b", "https://source-b.example/feed")
+    assert "check or replace the source feed URL" in str(excinfo.value)
+
+
+def test_parse_feed_rejects_a_feed_that_is_neither_rss_nor_atom() -> None:
+    with pytest.raises(ValueError, match="neither an RSS 2.0 nor an Atom feed") as excinfo:
+        parse_feed(
+            b"<html><body>not a feed</body></html>", "rss-b", "https://source-b.example/feed"
+        )
+    assert "RSS or Atom feed URL" in str(excinfo.value)
+
+
 # ---------------------------------------------------- no outward act, ever
 
 

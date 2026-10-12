@@ -139,13 +139,18 @@ def parse_feed(body: bytes, source_id: str, feed_url: str) -> list[SensedItem]:
     try:
         root = ElementTree.fromstring(body)
     except ElementTree.ParseError as exc:
-        raise ValueError(f"{feed_url}: feed is not well-formed XML ({exc})") from exc
+        raise ValueError(
+            f"{feed_url}: feed is not well-formed XML ({exc}); check or replace the source feed URL"
+        ) from exc
     host = _feed_host(feed_url)
     if root.tag == f"{ATOM_NS}feed":
         return _parse_atom(root, source_id, feed_url, host)
     channel = root if root.tag == "channel" else root.find("channel")
     if channel is None:
-        raise ValueError(f"{feed_url}: neither an RSS 2.0 nor an Atom feed")
+        raise ValueError(
+            f"{feed_url}: neither an RSS 2.0 nor an Atom feed; point the source at the "
+            "site's RSS or Atom feed URL"
+        )
     items: list[SensedItem] = []
     for node in channel.findall("item"):
         title = _child_text(node, "title")
