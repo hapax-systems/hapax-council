@@ -30,11 +30,18 @@
 
 set -euo pipefail
 
-COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# Child identity is authored below; the caller contributes only declared host bindings.
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}}"
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)" || exit 9
+LANE_ENVIRONMENT="$COUNCIL_DIR/scripts/lane_environment.py"
+LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || exit 9
+eval "$LANE_RESET"
+export HAPAX_COUNCIL_DIR="$COUNCIL_DIR"
+
 
 usage() {
   cat <<'EOF'
-usage: hapax-claude [--role alpha|…|theta | dev|dev2|…] [--cd DIR]
+usage: hapax-claude [--session-id ID] [--role alpha|…|theta | dev|dev2|…] [--cd DIR]
                     [--terminal none|tmux|foot] [--force] [--task TASK_ID|--readonly]
                     [--result-json PATH] [--continue] [--] [claude args...]
 
@@ -92,8 +99,17 @@ RESULT_JSON=""
 READONLY=0
 CLAUDE_EXTRA=()
 
+EXPLICIT_SESSION_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --session-id)
+      EXPLICIT_SESSION_ID="${2:?--session-id requires a value}"
+      shift 2
+      ;;
+    --session-id=*)
+      EXPLICIT_SESSION_ID="${1#*=}"
+      shift
+      ;;
     --role|--session|--name)
       ROLE="${2:-}"
       shift 2
@@ -410,8 +426,7 @@ fi
 mint_uuid() {
   cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || true
 }
-SESSION_UUID="$(mint_uuid)"
-[ -n "$SESSION_UUID" ] || SESSION_UUID="$ROLE-$$-$(date -u +%s)"
+SESSION_UUID="$(python3 -I "$LANE_ENVIRONMENT" session-id "$EXPLICIT_SESSION_ID")"
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
 export CLAUDE_ROLE="$ROLE"
@@ -675,7 +690,7 @@ for arg in "${CLAUDE_EXTRA[@]}"; do
   esac
 done
 if [ "$pin_harness_session" -eq 1 ]; then
-  HARNESS_SESSION_ID="$(mint_uuid)"
+  HARNESS_SESSION_ID="$SESSION_UUID"
   if [ -z "$HARNESS_SESSION_ID" ]; then
     echo "hapax-claude: could not mint a session id (no /proc/sys/kernel/random/uuid, no uuidgen); the witness falls back to this workdir's transcripts (next: install util-linux)" >&2
   fi
@@ -750,17 +765,6 @@ done
 # the runner. It raises the soft limit to min(hard, 65536) and never lowers one
 # that is already higher.
 NOFILE_TARGET_MAX=65536
-NOFILE_RAISE='nofile_target='"$NOFILE_TARGET_MAX"'
-nofile_hard="$(ulimit -Hn)"
-if [ "$nofile_hard" != unlimited ] && [ "$nofile_hard" -lt "$nofile_target" ]; then
-  nofile_target="$nofile_hard"
-fi
-nofile_soft="$(ulimit -Sn)"
-if [ "$nofile_soft" != unlimited ] && [ "$nofile_soft" -lt "$nofile_target" ]; then
-  ulimit -Sn "$nofile_target" 2>/dev/null ||
-    echo "hapax-claude: could not raise the soft open-file limit from $nofile_soft to $nofile_target" >&2
-fi'
-eval "$NOFILE_RAISE"
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 
@@ -782,7 +786,9 @@ RUNNER="$(mktemp "$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE-XXXXXX.sh")"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
-  printf '%s\n' "$NOFILE_RAISE"
+  printf 'LANE_RESET="$(python3 -I %q shell)" || exit 9\n' "$LANE_ENVIRONMENT"
+  printf '%s\n' 'eval "$LANE_RESET"'
+  printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
   printf 'unset %s HAPAX_CLAUDE_READY_TIMEOUT\n' "${PARENT_IDENTITY_VARS[*]}"

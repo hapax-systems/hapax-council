@@ -3,7 +3,14 @@
 
 set -euo pipefail
 
-COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# Child identity is authored below; the caller contributes only declared host bindings.
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}}"
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)" || exit 9
+LANE_ENVIRONMENT="$COUNCIL_DIR/scripts/lane_environment.py"
+LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || exit 9
+eval "$LANE_RESET"
+export HAPAX_COUNCIL_DIR="$COUNCIL_DIR"
+
 ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
 if [ -f "$ROLE_HELPER" ]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
@@ -14,14 +21,14 @@ fi
 usage() {
   cat <<'EOF'
 usage: hapax-codex [--session cx-color] [--slot alpha|beta|delta|epsilon] [--cd DIR]
-                   [--task TASK_ID] [--bootstrap FILE] [--task-gate]
+                   [--session-id ID] [--task TASK_ID] [--bootstrap FILE] [--task-gate]
                    [--execution-route ROUTE_OR_LEAF]
                    [--terminal none|tmux|foot] [--force] [--no-claim]
                    [--] [codex args...]
 
 Defaults:
   - no approval gates: Codex runs with --dangerously-bypass-approvals-and-sandbox
-  - Codex thread identity defaults to CODEX_THREAD_NAME or cx-blue
+  - Codex thread name comes from --session (default: cx-blue)
   - worktree slot is inferred from cwd when --slot is omitted
   - worktree selected from the slot when --cd is omitted
   - terminal is none: exec Codex in the current terminal
@@ -736,7 +743,15 @@ if missing_dirs or missing_exec or missing_bins or auth_error:
     print("remote preflight failed: missing_dirs="+json.dumps(missing_dirs)+" missing_executables="+json.dumps(missing_exec)+" missing_binaries="+json.dumps(missing_bins)+" auth_error="+json.dumps(auth_error)+"; next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then verify required paths before retrying", file=sys.stderr)
     sys.exit(1)
 sys.exit(0)'
-REMOTE_EXEC_PY='import base64,json,os,shutil,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"]); os.environ.update(p.get("env",{})); os.environ.pop("CODEX_ACCESS_TOKEN",None); os.environ.pop("CODEX_HOME",None); os.environ.pop("CODEX_API_KEY",None); os.environ.pop("OPENAI_API_KEY",None); proof=p.get("proof_file",""); cgroup="";
+REMOTE_EXEC_PY='import base64,json,os,shutil,socket,sys; p=json.loads(base64.b64decode(os.environ["HAPAX_REMOTE_PAYLOAD"])); os.chdir(p["workdir"])
+import runpy
+source_root=os.environ.get("HAPAX_COUNCIL_DIR",os.path.expanduser("~/.cache/hapax/source-activation/worktree"))
+lane=runpy.run_path(os.path.join(source_root,"scripts/lane_environment.py"))
+child_env=lane["clean_environment"](os.environ)
+child_env.update(p.get("env",{}))
+os.environ.clear(); os.environ.update(child_env)
+lane["raise_nofile"]()
+os.environ.pop("CODEX_ACCESS_TOKEN",None); os.environ.pop("CODEX_HOME",None); os.environ.pop("CODEX_API_KEY",None); os.environ.pop("OPENAI_API_KEY",None); proof=p.get("proof_file",""); cgroup="";
 try:
     cgroup=open("/proc/self/cgroup",encoding="utf-8").read()
 except OSError:
@@ -909,8 +924,17 @@ FORCE=0
 EXECUTION_ROUTE="codex.headless.full"
 CODEX_EXTRA=()
 
+EXPLICIT_SESSION_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --session-id)
+      EXPLICIT_SESSION_ID="${2:?--session-id requires a value}"
+      shift 2
+      ;;
+    --session-id=*)
+      EXPLICIT_SESSION_ID="${1#*=}"
+      shift
+      ;;
     --execution-route)
       EXECUTION_ROUTE="${2:?--execution-route requires a registry route}"
       shift 2
@@ -1110,7 +1134,7 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:
 
 # Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="$(normalize_session_uuid "${HAPAX_SESSION_ID:-}")"
+SESSION_UUID="$(python3 -I "$LANE_ENVIRONMENT" session-id "$EXPLICIT_SESSION_ID")"
 TMUX_NAME="hapax-codex-$SESSION"
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""
@@ -1234,7 +1258,10 @@ export HAPAX_AGENT_ROLE="$SESSION"
 export HAPAX_AGENT_SLOT="$SLOT"
 export HAPAX_WORKTREE_ROLE="$SLOT"
 export HAPAX_SESSION_ID="$SESSION_UUID"
-export CLAUDE_ROLE="${CLAUDE_ROLE:-$SESSION}"
+if [ -n "$TASK_ID" ]; then
+  export HAPAX_METHODOLOGY_DISPATCH_TASK="$TASK_ID"
+fi
+export CLAUDE_ROLE="$SESSION"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
 export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
@@ -1483,7 +1510,7 @@ if ! RUNNER="$(mktemp "$RUNNER_TEMPLATE")"; then
 fi
 umask "$RUNNER_UMASK"
 chmod 700 "$RUNNER"
-CHILD_ARGS=(--execution-route "$EXECUTION_ROUTE" --session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
+CHILD_ARGS=(--session-id "$SESSION_UUID" --execution-route "$EXECUTION_ROUTE" --session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
 if [ "$FORCE" -eq 1 ]; then
   CHILD_ARGS+=(--force)
 fi
@@ -1511,6 +1538,9 @@ if [ -n "$DISPATCH_HOST" ]; then
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
+    printf 'LANE_RESET="$(python3 -I %q shell)" || exit 9\n' "$LANE_ENVIRONMENT"
+    printf '%s\n' 'eval "$LANE_RESET"'
+    printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
     printf 'DISPATCH_HOST=%q\n' "$DISPATCH_HOST"
     printf 'RELAY_RETIRE=%q\n' "$RELAY_RETIRE"
     printf 'SESSION=%q\n' "$SESSION"
@@ -1560,12 +1590,12 @@ else
   {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
+    printf 'LANE_RESET="$(python3 -I %q shell)" || exit 9\n' "$LANE_ENVIRONMENT"
+    printf '%s\n' 'eval "$LANE_RESET"'
+    printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
     printf 'trap '\''%q %q --reason "clean exit (codex)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
-    # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
-    # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
-    printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
     printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
     printf 'export HAPAX_SOURCE_ACTIVATE_WORKTREE=%q\n' "$EXECUTION_SOURCE_ROOT"
     if [ -n "${HAPAX_PLATFORM_CAPABILITY_REGISTRY:-}" ]; then

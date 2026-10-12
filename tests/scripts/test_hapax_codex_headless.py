@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,7 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HAPAX_COUNCIL_DIR", str(REPO_ROOT))
     monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
     monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
@@ -264,6 +266,7 @@ def test_resolve_local_codex_bin_skips_directory_candidates(tmp_path: Path) -> N
 def _write_descriptor_runtime(path: Path) -> None:
     # The launcher now requires a provisioned registry/resolver before provider calls.
     (path / "scripts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(REPO_ROOT / "scripts/lane_environment.py", path / "scripts/lane_environment.py")
     for directory in ("shared", "config"):
         (path / directory).symlink_to(REPO_ROOT / directory, target_is_directory=True)
     runtime = Path(sys.executable).parent.parent
@@ -317,11 +320,11 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     activation = tmp_path / "configured-activation" if activation_override else default_activation
     if case == "advance_activation":
         initial_release = tmp_path / "initial-release"
-        _write_descriptor_runtime(initial_release)
+        _write_minimal_council(initial_release, tmp_path / "retire.log")
         activation.parent.mkdir(parents=True, exist_ok=True)
         activation.symlink_to(initial_release, target_is_directory=True)
     else:
-        _write_descriptor_runtime(activation)
+        _write_minimal_council(activation, tmp_path / "retire.log")
     # The activated identity resolver is now an actual launch dependency. Keep
     # it provisioned while independently varying only the lifecycle observer.
     # Never poison the shared source symlink used by the resolver fixture.
@@ -1019,6 +1022,11 @@ def test_codex_headless_cancels_wrapper_group(
 fi
 """
         )
+        startup_hook.write_text(
+            startup_hook.read_text()
+            .replace('"$HAPAX_TEST_STARTING"', shlex.quote(str(starting)))
+            .replace('"$HAPAX_TEST_CANCEL"', shlex.quote(str(cancel)))
+        )
         env.update(
             BASH_ENV=str(startup_hook),
             HAPAX_TEST_LAUNCHER=str(SCRIPT),
@@ -1239,7 +1247,6 @@ exit 0
     )
 
     assert result.returncode == 0, result.stderr
-    assert "ignoring inherited CODEX_ACCESS_TOKEN" in result.stderr
     assert codex_called.exists()
 
 
@@ -1774,6 +1781,8 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
         ssh_log,
         remove_workdir_on_worktree=workdir,
     )
+
+    _write_executable(bin_dir / "codex", "exit 0\n")
 
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -3182,7 +3191,16 @@ exit 0
     env["HAPAX_SESSION_ID"] = sid
 
     result = subprocess.run(
-        [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
+        [
+            str(SCRIPT),
+            "--session-id",
+            sid,
+            "--task",
+            "task-x",
+            "--force",
+            "cx-amber",
+            "governed prompt",
+        ],
         capture_output=True,
         text=True,
         env=env,

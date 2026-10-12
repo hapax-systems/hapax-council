@@ -8,6 +8,14 @@
 
 set -euo pipefail
 
+# Child identity is authored below; the caller contributes only declared host bindings.
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}}"
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)" || exit 9
+LANE_ENVIRONMENT="$COUNCIL_DIR/scripts/lane_environment.py"
+LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || exit 9
+eval "$LANE_RESET"
+export HAPAX_COUNCIL_DIR="$COUNCIL_DIR"
+
 # Secrets come from the FileStore through the one shared helper, never from pass.
 # Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
 # The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
@@ -20,7 +28,7 @@ _hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf
 
 usage() {
   cat <<'EOF'
-usage: hapax-glmcp-claude [--check] [claude args...]
+usage: hapax-glmcp-claude [--check] [--session-id ID] [claude args...]
 
 Runs Claude Code with GLM Coding Plan environment variables for this invocation.
 The Z.ai API key is read from the reins FileStore at runtime.
@@ -53,6 +61,22 @@ check_only=false
 if [[ "${1:-}" == "--check" ]]; then
   check_only=true
   shift
+fi
+
+EXPLICIT_SESSION_ID=""
+CLAUDE_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session-id) EXPLICIT_SESSION_ID="${2:?--session-id requires a value}"; shift 2 ;;
+    --session-id=*) EXPLICIT_SESSION_ID="${1#*=}"; shift ;;
+    *) CLAUDE_ARGS+=("$1"); shift ;;
+  esac
+done
+HAPAX_SESSION_ID="$(python3 -I "$LANE_ENVIRONMENT" session-id "$EXPLICIT_SESSION_ID")"
+export HAPAX_SESSION_ID
+export HAPAX_AGENT_INTERFACE=glmcp
+if [ -n "$EXPLICIT_SESSION_ID" ]; then
+  CLAUDE_ARGS+=(--session-id "$EXPLICIT_SESSION_ID")
 fi
 
 default_secret_entry="glmcp/api-key"
@@ -192,4 +216,4 @@ fi
 export ANTHROPIC_AUTH_TOKEN="$auth_token"
 unset auth_token
 
-exec claude "$@"
+exec claude "${CLAUDE_ARGS[@]}"

@@ -5561,3 +5561,14 @@ _ = (
 # calls both as publish_vault_artifact.<name>; vulture cannot see that path yet.
 pipeline_state
 drop_to_inbox
+
+# The extensionless hapax-methodology-dispatch imports these directly. Both
+# Codex remote runners also call them through runpy's result dictionary.
+from scripts.lane_environment import (  # noqa: E402
+    clean_environment as _lane_clean_environment,
+)
+from scripts.lane_environment import (  # noqa: E402
+    raise_nofile as _lane_raise_nofile,
+)
+
+_ = (_lane_clean_environment, _lane_raise_nofile)

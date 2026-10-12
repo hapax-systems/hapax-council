@@ -67,6 +67,7 @@ from executor_contract import (  # noqa: E402
     capabilities_payload,
     supports_route,
 )
+from lane_environment import clean_environment, raise_nofile  # noqa: E402
 
 from shared.capability_adapter_protocol import (
     AgyAdapter,
@@ -1505,7 +1506,12 @@ def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
     is available. cpu.idle + the cpuset inherit to every descendant. No-op + run
     un-sliced when systemd-run/the slice is unavailable, so dispatch never fails
     on the fence."""
-    base_env = dict(os.environ) if env is None else env
+    # Callers supply only newly authored launch bindings. Never pass the
+    # dispatcher's identity, credentials or messaging channels to a lane.
+    base_env = clean_environment(os.environ)
+    if env is not None:
+        base_env.update(env)
+    raise_nofile()
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return subprocess.call(list(args), env=base_env)  # don't probe/create scopes in tests
     explicit_env = {
@@ -1729,7 +1735,7 @@ def launch_claude_headless(
             str(Path.home() / ".local" / "bin" / "hapax-claude-headless"),
         )
     )
-    env = os.environ.copy()
+    env = {}
     # Never propagate the dispatcher's own session id: each lane mints its own
     # per-spawn HAPAX_SESSION_ID so two same-role re-dispatched lanes never share a
     # claim key (reform-identity-coherence cluster 11, AC1).
@@ -1791,11 +1797,11 @@ def launch_claude_interactive(
     # Always hand the lane a scrubbed env: drop any inherited HAPAX_SESSION_ID so it
     # mints its own per-spawn id (reform-identity-coherence cluster 11, AC1).
     # hapax-claude pins the freshly minted id into its tmux runner script.
-    env = os.environ.copy()
+    env = clean_environment(os.environ)
     env.pop("HAPAX_SESSION_ID", None)
     if status in {"claimed", "in_progress"}:
         env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
-    return subprocess.call(args, env=env)
+    return _sliced_call(args, env)
 
 
 def normalize_profile(platform: str, profile: str) -> str:
@@ -2103,7 +2109,7 @@ def launch_codex_headless(
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
     args.extend([lane, prompt])
-    env = os.environ.copy()
+    env = {}
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     if lifecycle_receipt is not None:
         env["HAPAX_NATIVE_LIFECYCLE_RECEIPT"] = str(lifecycle_receipt)
@@ -2111,7 +2117,9 @@ def launch_codex_headless(
     if local_fallback_allowed:
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
         # only supplies the default local fallback when the env is otherwise unset.
-        env.setdefault("HAPAX_DISPATCH_HOST_FALLBACK", "local")
+        env["HAPAX_DISPATCH_HOST_FALLBACK"] = os.environ.get(
+            "HAPAX_DISPATCH_HOST_FALLBACK", "local"
+        )
     return _sliced_call(args, env)
 
 
@@ -2163,7 +2171,7 @@ def launch_vibe_headless(
             file=sys.stderr,
         )
         return 9
-    env = os.environ.copy()
+    env = {}
     env["VIBE_ACTIVE_MODEL"] = str(descriptor.model_id)
     return _sliced_call(args, env)
 

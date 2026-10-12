@@ -30,13 +30,24 @@
 #   hapax-glmcp <role> --terminal none   run in the current terminal
 set -euo pipefail
 
-ROLE="${1:?usage: hapax-glmcp <role> [--continue] [--terminal none]}"
+# Child identity is authored below; the caller contributes only declared host bindings.
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}}"
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)" || exit 9
+LANE_ENVIRONMENT="$COUNCIL_DIR/scripts/lane_environment.py"
+LANE_RESET="$(python3 -I "$LANE_ENVIRONMENT" shell)" || exit 9
+eval "$LANE_RESET"
+export HAPAX_COUNCIL_DIR="$COUNCIL_DIR"
+
+ROLE="${1:?usage: hapax-glmcp <role> [--session-id ID] [--continue] [--terminal none]}"
 shift || true
 
+EXPLICIT_SESSION_ID=""
 CONTINUE=0
 TERMINAL="tmux"
 while [ $# -gt 0 ]; do
   case "$1" in
+    --session-id) EXPLICIT_SESSION_ID="${2:?--session-id needs a value}"; shift ;;
+    --session-id=*) EXPLICIT_SESSION_ID="${1#*=}" ;;
     --continue|-c) CONTINUE=1 ;;
     --terminal) TERMINAL="${2:?--terminal needs a value}"; shift ;;
     *) echo "hapax-glmcp: unknown arg $1" >&2; exit 2 ;;
@@ -46,10 +57,9 @@ done
 
 KIMI_BIN="${KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 SESSION="hapax-glmcp-$ROLE"
-SESSION_UUID="$(cat /proc/sys/kernel/random/uuid)"
+SESSION_UUID="$(python3 -I "$LANE_ENVIRONMENT" session-id "$EXPLICIT_SESSION_ID")"
 # The installed entrypoint follows the governed activated release, never main's
 # mutable checkout. Resolve the link once so a launch uses one release throughout.
-COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/.cache/hapax/source-activation/worktree}"
 if [ ! -r "$COUNCIL_DIR/scripts/lib/secret.sh" ] || \
    [ ! -x "$COUNCIL_DIR/hooks/scripts/kimi-hook-adapter.sh" ] || \
    [ ! -x "$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh" ]; then
@@ -57,6 +67,7 @@ if [ ! -r "$COUNCIL_DIR/scripts/lib/secret.sh" ] || \
   exit 9
 fi
 COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)"
+export HAPAX_COUNCIL_DIR="$COUNCIL_DIR"
 . "$COUNCIL_DIR/scripts/lib/secret.sh"
 WORKDIR="${HAPAX_GLMCP_WORKDIR:-$HOME}"
 MODEL="${HAPAX_GLMCP_MODEL:-glm-5.3}"
@@ -158,6 +169,9 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
+  printf 'LANE_RESET="$(python3 -I %q shell)" || exit 9\n' "$LANE_ENVIRONMENT"
+  printf '%s\n' 'eval "$LANE_RESET"'
+  printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
   printf 'export KIMI_CODE_HOME=%q\n' "$GLM_HOME"
