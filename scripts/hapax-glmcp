@@ -18,7 +18,7 @@
 # launcher is the agentic-lane path while the claude binary blocks glm ids.
 #
 # Secret handling: mirrors hapax-glmcp-claude — the Z.ai key is read from
-# `pass glmcp/api-key` at spawn and is NEVER written to durable disk. The
+# `hapax-secret glmcp/api-key` at spawn and is NEVER written to durable disk. The
 # lane's KIMI_CODE_HOME (which kimi requires to hold provider credentials in
 # its config.toml) is rendered fresh into $XDG_RUNTIME_DIR (per-user tmpfs,
 # mode 700) on every launch; kimi sessions/logs under it are tmpfs-volatile
@@ -47,7 +47,17 @@ done
 KIMI_BIN="${KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 SESSION="hapax-glmcp-$ROLE"
 SESSION_UUID="$(cat /proc/sys/kernel/random/uuid)"
-COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# The installed entrypoint follows the governed activated release, never main's
+# mutable checkout. Resolve the link once so a launch uses one release throughout.
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/.cache/hapax/source-activation/worktree}"
+if [ ! -r "$COUNCIL_DIR/scripts/lib/secret.sh" ] || \
+   [ ! -x "$COUNCIL_DIR/hooks/scripts/kimi-hook-adapter.sh" ] || \
+   [ ! -x "$COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh" ]; then
+  echo "hapax-glmcp: activated launcher dependencies unavailable at $COUNCIL_DIR. Next action: restore the governed activated release before launching." >&2
+  exit 9
+fi
+COUNCIL_DIR="$(cd -- "$COUNCIL_DIR" && pwd -P)"
+. "$COUNCIL_DIR/scripts/lib/secret.sh"
 WORKDIR="${HAPAX_GLMCP_WORKDIR:-$HOME}"
 MODEL="${HAPAX_GLMCP_MODEL:-glm-5.3}"
 BASE_URL="${HAPAX_GLMCP_OPENAI_BASE_URL:-https://api.z.ai/api/coding/paas/v4}"
@@ -57,13 +67,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   exit 12
 fi
 
-command -v pass >/dev/null 2>&1 || { echo "hapax-glmcp: pass not on PATH" >&2; exit 3; }
-ZAI_KEY="$(pass show glmcp/api-key 2>/dev/null | sed -n '1p')" || {
-  echo "hapax-glmcp: failed to read pass entry 'glmcp/api-key'" >&2; exit 5; }
-if [ -z "$ZAI_KEY" ]; then
-  echo "hapax-glmcp: pass entry 'glmcp/api-key' returned an empty first line" >&2
-  exit 6
-fi
+ZAI_KEY="$(hapax_secret_or_fail glmcp/api-key)" || exit 5
 
 printf '%s\n' "$ROLE" >"$HOME/.cache/hapax/session-role-$SESSION_UUID" 2>/dev/null || true
 
@@ -74,8 +78,19 @@ mkdir -p "$GLM_HOME"
 chmod 700 "$RUNTIME_BASE/kimi-glm" "$GLM_HOME" 2>/dev/null || true
 (
   umask 077
-  cat >"$GLM_HOME/config.toml" <<EOF
-default_permission_mode = "auto"
+  # JSON strings are TOML-compatible basic strings; quote paths and secret
+  # values instead of interpolating them into TOML or a shell command.
+  ZAI_KEY="$ZAI_KEY" python3 - "$GLM_HOME/config.toml" "$BASE_URL" "$MODEL" \
+    "$COUNCIL_DIR/hooks/scripts/kimi-hook-adapter.sh" <<'PYCONFIG'
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+path, base_url, model, adapter = sys.argv[1:]
+quote = json.dumps
+config = f"""default_permission_mode = "auto"
 default_plan_mode = false
 merge_all_available_skills = true
 default_model = "zai/glm-5.3"
@@ -89,23 +104,32 @@ max_steps_per_turn = 0
 
 [providers.zai]
 type = "openai"
-base_url = "$BASE_URL"
-api_key = "$ZAI_KEY"
+base_url = {quote(base_url)}
+api_key = {quote(os.environ["ZAI_KEY"])}
 
 [models."zai/glm-5.3"]
 provider = "zai"
-model = "$MODEL"
+model = {quote(model)}
 max_context_size = 200000
 capabilities = [ "thinking", "tool_use" ]
 display_name = "GLM-5.3 (Z.ai Coding Plan)"
-
+"""
+# Kimi Code 2.1.1 supports all four Codex parity events. No matcher means
+# all tools (including MCP) and both SessionStart startup/resume sources.
+# https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html
+for event in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
+    config += f"""
 [[hooks]]
-event = "PreToolUse"
-matcher = "^(Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*)\$"
-command = "bash $HOME/.kimi-code/hooks/kimi-hook-adapter.sh"
+event = {quote(event)}
+command = {quote(shlex.join(["bash", adapter]))}
 timeout = 30
-EOF
+"""
+config_path = Path(path)
+config_path.write_text(config)
+config_path.chmod(0o600)
+PYCONFIG
 )
+unset ZAI_KEY
 ln -sfn "$HOME/.kimi-code/mcp.json" "$GLM_HOME/mcp.json"
 ln -sfn "$HOME/.kimi-code/AGENTS.md" "$GLM_HOME/AGENTS.md"
 if [ -d "$HOME/.kimi-code/workspace-trust" ] && [ ! -e "$GLM_HOME/workspace-trust" ]; then
