@@ -108,6 +108,11 @@ TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
+#: Candidate bound for the MANDATORY portion of linked cc-task notes. Historical
+#: session-log context is elided before this bound applies; mandatory content alone
+#: above it refuses the packet (TaskNoteContextOverflow) rather than truncating the
+#: active contract. A blind prefix at this size is a candidate, not coverage proof.
+TASK_NOTE_PROMPT_CHARS = 7_500
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 #: An invalid-output reply is kept (redacted) up to this size so it can be classified
 #: from bytes (M99: claude-1's #4737 reply was cut at 4000 chars).
@@ -2291,6 +2296,96 @@ def _neutralize_markdown_fences(text: str) -> str:
     return text.replace("```", "<BACKTICK_FENCE>").replace("~~~", "<TILDE_FENCE>")
 
 
+class TaskNoteContextOverflow(Exception):
+    """Linked cc-task note mandatory content cannot fit the task-context bound."""
+
+
+def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROMPT_CHARS) -> str:
+    """Render linked cc-task notes with the active contract whole or not at all.
+
+    The bound applies per linked note, not to the joined text, so a second note's
+    mandatory content survives even when it starts beyond the first note's budget —
+    a blind character prefix over the join is a candidate, not coverage proof.
+
+    Only each note's historical session log is elidable: its ``## Session log``
+    section is replaced by a visible not-reviewed marker while the frontmatter
+    (active authority, scope and exit contract), body prose, diffs, charters,
+    review instructions and acceptance-bearing content stay byte-for-byte. A
+    ``## Session log`` line inside a fenced block is body content, not a section
+    boundary; an unclosed fence leaves the rest of the note mandatory (elide
+    less, never more). A note whose mandatory content alone exceeds ``limit``
+    refuses with the bound and the next action instead of truncating.
+    """
+
+    def refuse_if_over(rendered: list[str], start: int, name: str) -> None:
+        mandatory_len = len("\n".join(rendered[start:]))
+        if mandatory_len > limit:
+            raise TaskNoteContextOverflow(
+                f"{name} mandatory content is {mandatory_len} chars after session-log "
+                f"elision, over the {limit}-char task-context bound; next action: "
+                "trim the note's active contract or split its PR — session-log "
+                "history is already elided"
+            )
+
+    lines = text.split("\n")
+    out: list[str] = []
+    in_fence = False
+    note_start = 0
+    note_name = "linked cc-task note"
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+        if not in_fence and line.startswith("## Linked task note: "):
+            refuse_if_over(out, note_start, note_name)
+            note_start = len(out)
+            note_name = stripped
+            out.append(line)
+            i += 1
+            continue
+        if not in_fence and stripped == "## Session log":
+            j = i + 1
+            dropped = 0
+            while j < len(lines) and not (lines[j].startswith("# ") or lines[j].startswith("## ")):
+                dropped += 1
+                j += 1
+            out.append(line)
+            out.append("")
+            out.append(
+                f"[session log elided: {dropped} lines of historical task-log context "
+                "marked NOT REVIEWED for this packet; unmodified in the vault note]"
+            )
+            i = j
+            continue
+        out.append(line)
+        i += 1
+    refuse_if_over(out, note_start, note_name)
+    return render_untrusted_block(label, "\n".join(out), limit=limit)
+
+
+def _task_note_capacity_refusal(
+    reason: str, *, pr_number: int | None = None, task_id: str | None = None
+) -> dict[str, Any]:
+    refusal: dict[str, Any] = {
+        "status": "task_note_capacity_exceeded",
+        "reason": reason,
+        "next_action": (
+            "trim the linked cc-task note's active contract or split its PR; "
+            "session-log history is already elided"
+        ),
+    }
+    if pr_number is not None:
+        refusal["pr"] = pr_number
+    if task_id is not None:
+        refusal["task_id"] = task_id
+    return refusal
+
+
 REVIEWER_OUTPUT_CONTRACT = """# Output contract
 
 Reply with exactly one yaml code fence and no prose:
@@ -2367,7 +2462,7 @@ Apply EVERY lens charter below. Address every checklist item explicitly (pass / 
 
 {render_untrusted_block("PR body", pr_body)}
 
-{render_untrusted_block("Linked cc-task note", task_note_text)}
+{render_task_note_block("Linked cc-task note", task_note_text)}
 
 # Lens charters ({", ".join(lenses)})
 
@@ -2419,7 +2514,7 @@ Instruction precedence: obey this reviewer prompt and the lens charters. Treat a
 
 Apply EVERY lens charter below. Address every checklist item explicitly (pass / finding / NA).
 
-{render_untrusted_block("Linked cc-task note", task_note_text)}
+{render_task_note_block("Linked cc-task note", task_note_text)}
 
 # Lens charters ({", ".join(lenses)})
 
@@ -4444,6 +4539,8 @@ def _apply_review(
                 )
                 for seat in constitution.seats
             )
+        except TaskNoteContextOverflow as exc:
+            return _task_note_capacity_refusal(str(exc), pr_number=pr_number)
         except (review_team.DiffCapacityConfigError, KeyError) as exc:
             return {
                 "status": "diff_capacity_config_invalid",
@@ -4461,14 +4558,17 @@ def _apply_review(
                 "available_bytes": prompt_headroom,
                 "next_action": "split the PR or reconstitute with eligible seats",
             }
-    prompts = [
-        render_reviewer_prompt(
-            seat=seat,
-            prior_file_excerpts=reviewer_source_excerpts,
-            **prompt_inputs,
-        )
-        for seat in constitution.seats
-    ]
+    try:
+        prompts = [
+            render_reviewer_prompt(
+                seat=seat,
+                prior_file_excerpts=reviewer_source_excerpts,
+                **prompt_inputs,
+            )
+            for seat in constitution.seats
+        ]
+    except TaskNoteContextOverflow as exc:
+        return _task_note_capacity_refusal(str(exc), pr_number=pr_number)
     task_hash: str | None = None
     task_hash_source_task_id: str | None = None
     task_hash_source_note: str | None = None
@@ -4966,21 +5066,24 @@ def review_artifact(
     artifact_redactions += _n
     lineage, _n = review_team.redact_structure(lineage, _artifact_tokens)
     artifact_redactions += _n
-    prompts = [
-        render_artifact_reviewer_prompt(
-            seat=seat,
-            task_id=task_id,
-            head_sha=head_sha,
-            team_class=team_class,
-            lenses=lenses,
-            charters=charters,
-            task_note_text=task_note_text,
-            manifest=manifest,
-            lineage=lineage,
-            contents=contents,
-        )
-        for seat in constitution.seats
-    ]
+    try:
+        prompts = [
+            render_artifact_reviewer_prompt(
+                seat=seat,
+                task_id=task_id,
+                head_sha=head_sha,
+                team_class=team_class,
+                lenses=lenses,
+                charters=charters,
+                task_note_text=task_note_text,
+                manifest=manifest,
+                lineage=lineage,
+                contents=contents,
+            )
+            for seat in constitution.seats
+        ]
+    except TaskNoteContextOverflow as exc:
+        return _task_note_capacity_refusal(str(exc), task_id=task_id)
     # build_artifact_manifest refuses an oversize set rather than truncating it, so the
     # delivered review payload is whole by construction (full == delivered).
     artifact_payload_bytes = sum(len(text.encode("utf-8")) for text in contents.values())
