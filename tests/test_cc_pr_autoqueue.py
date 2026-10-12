@@ -10668,6 +10668,71 @@ def test_egress_revalidation_plumbs_changed_files_into_the_coverage_bound(tmp_pa
     )
 
 
+@pytest.mark.parametrize("state", ["MISSING", "SKIPPED", "FAILURE", "PENDING", "STALE", "SUCCESS"])
+def test_explicit_root_release_requires_successful_current_dependency_witness(state: str) -> None:
+    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+
+    rollup = [] if state == "MISSING" else [_check("test", state)]
+    if state == "STALE":
+        rollup = [
+            {**_check("test"), "completedAt": "2026-10-12T18:00:00Z"},
+            {**_check("test", "SKIPPED"), "completedAt": "2026-10-12T19:00:00Z"},
+        ]
+    verified = set(autoqueue.summarize_checks(rollup).verified_passed)
+    blockers = autoqueue._release_auto_arm_current_evidence_blockers(
+        _egress_armed_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS) | verified,
+        changed_files=("pyproject.toml", "uv.lock", "tests/test_dependency_resolution_markers.py"),
+    )
+    if state == "SUCCESS":
+        assert not blockers, blockers
+    else:
+        assert "test" not in verified
+        assert "needs_mitigation:audio_or_live_egress_sensitive:test" in blockers
+
+
+@pytest.mark.parametrize("current_head", ["sha-5143", "sha-new-head"])
+def test_root_dependency_release_boundary_rechecks_the_current_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, current_head: str
+) -> None:
+    from shared.release_gate import LIVE_EGRESS_MITIGATION_CHECKS
+
+    vault = _make_vault(tmp_path)
+    note = _write_task(
+        vault,
+        task_id="root-dependency-head-binding",
+        pr=5143,
+        branch="fix/root-dependency",
+        extra_frontmatter={
+            **_eligible_arm_extra(),
+            "release_authorized": True,
+            "release_authorized_head_sha": "sha-5143",
+            "stage": "S7_RELEASE",
+            "risk_flags": {"audio_or_live_egress_sensitive": True},
+        },
+    )
+    _write_governance_review_dossier(vault, note.stem, 5143)
+    task = next(task for task in autoqueue.load_task_notes(vault) if task.task_id == note.stem)
+    pr = autoqueue._parse_pr(_pr(5143, branch="fix/root-dependency", files=["pyproject.toml"]))
+    assert pr is not None
+    # Only the transport is simulated. The real current-row, release-head and
+    # evidence/coverage functions execute, including explicit authorization.
+    monkeypatch.setattr(
+        autoqueue,
+        "fetch_pr_release_evidence",
+        lambda *args, **kwargs: (True, current_head, set(LIVE_EGRESS_MITIGATION_CHECKS) | {"test"}),
+    )
+    blocker = autoqueue._release_head_boundary_blocker(
+        autoqueue.Decision(pr=pr, task=task, tasks=(task,), action="queue"),
+        repo="owner/repo",
+        repo_root=tmp_path,
+    )
+    if current_head == "sha-5143":
+        assert blocker is None, blocker
+    else:
+        assert blocker == "current_pr_head_mismatch:current=sha-new-head:expected=sha-5143"
+
+
 @pytest.mark.parametrize("rest_blocked", [False, True], ids=["rest_healthy", "rest_blocked"])
 def test_release_gate_rejects_graphql_mitigation_failure_beyond_first_100(
     tmp_path: Path, rest_blocked: bool

@@ -196,7 +196,8 @@ def test_ci_runs_python_prod_optional_dependency_witness_for_dependency_changes(
     witness_command = (
         "uv run --frozen \\\n"
         "            --extra ci --extra audio --extra tui --extra studio --extra rerank \\\n"
-        "            pytest tests/test_python_prod_dependency_constraints.py -q -rs"
+        "            pytest tests/test_python_prod_dependency_constraints.py "
+        "tests/test_dependency_resolution_markers.py -q -rs"
     )
     assert "Run python-prod optional dependency witness" in test_full_shard_block
     assert "matrix.shard == 1" in test_full_shard_block
@@ -264,6 +265,12 @@ def test_ci_docs_only_filter_executes_python_prod_witness_decision(tmp_path: Pat
         "python_prod_dependency_witness": "true",
     }
     assert run_filter(["uv.lock"])["python_prod_dependency_witness"] == "true"
+    assert (
+        run_filter(["tests/test_dependency_resolution_markers.py"])[
+            "python_prod_dependency_witness"
+        ]
+        == "true"
+    )
     assert (
         run_filter(["tests/test_python_prod_dependency_constraints.py"])[
             "python_prod_dependency_witness"
