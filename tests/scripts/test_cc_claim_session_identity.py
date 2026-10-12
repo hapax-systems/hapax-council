@@ -135,6 +135,9 @@ def _claim(
     else:
         env.update(_dispatch_env(task_id))
         _install_gate0b_claim_publication_root(home)
+    from tests.scripts.test_cc_claim import _holder_fixture_env
+
+    env.update(_holder_fixture_env(home, role="epsilon", session_id=session_id or ""))
     return subprocess.run(
         ["bash", str(SCRIPT), task_id],
         env=env,
@@ -175,10 +178,10 @@ def test_pid_shaped_session_id_is_refused_as_claim_key(tmp_path: Path) -> None:
     _write_task(home, "task-pid")
     # The exact shape the pre-fix launcher fallback minted: <role>-$$.
     result = _claim(home, "task-pid", session_id="epsilon-12345", legacy=True)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 8, result.stderr
 
     cache = home / ".cache" / "hapax"
-    assert (cache / "cc-active-task-epsilon").read_text(encoding="utf-8") == "task-pid\n"
+    assert not (cache / "cc-active-task-epsilon").exists()
     assert not list(cache.glob("cc-active-task-epsilon-*")), (
         "a pid-shaped session id must never key a claim file"
     )
@@ -196,12 +199,12 @@ def test_pid_shaped_session_id_is_refused_as_claim_key(tmp_path: Path) -> None:
     assert "session=epsilon-12345" not in note_text
 
 
-def test_no_session_id_still_claims_legacy_only(tmp_path: Path) -> None:
+def test_no_session_id_cannot_prove_a_holder_even_in_legacy_mode(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _write_task(home, "task-bare")
     result = _claim(home, "task-bare", session_id=None, legacy=True)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 8, result.stderr
 
     cache = home / ".cache" / "hapax"
-    assert (cache / "cc-active-task-epsilon").read_text(encoding="utf-8") == "task-bare\n"
+    assert not (cache / "cc-active-task-epsilon").exists()
     assert not list(cache.glob("cc-active-task-epsilon-*"))

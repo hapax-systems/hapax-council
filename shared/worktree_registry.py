@@ -22,13 +22,21 @@ follow-through (fresh) ``merging`` lane; the checkout reap keeps the branch + PR
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
 import re
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import uuid
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,6 +74,10 @@ class WorktreeRecord:
     pinned: bool = False
     host: str | None = None
     note: str | None = None
+    # Published by the launcher before claim/workload admission. Heartbeats do
+    # not create or renew this identity. Missing/legacy/pending is UNKNOWN.
+    executor: dict[str, object] | None = None
+    executor_history: list[dict[str, object]] | None = None
 
 
 def _record_from_json(raw: str) -> WorktreeRecord:
@@ -83,6 +95,8 @@ def _record_from_json(raw: str) -> WorktreeRecord:
         pinned=bool(d.get("pinned", False)),
         host=d.get("host"),
         note=d.get("note"),
+        executor=d.get("executor"),
+        executor_history=d.get("executor_history"),
     )
 
 
@@ -91,6 +105,113 @@ def _record_to_json(rec: WorktreeRecord) -> str:
     d["created_at"] = rec.created_at.isoformat()
     d["last_heartbeat"] = rec.last_heartbeat.isoformat()
     return json.dumps(d, indent=2, sort_keys=True)
+
+
+@dataclass(frozen=True)
+class HolderObservation:
+    """One bounded observation, not a lease renewal or permission to release."""
+
+    state: Literal["PRESENT", "ABSENT", "UNKNOWN"]
+    reason: str
+    next_action: str
+    fingerprint: str = ""
+
+
+def _process_identity(pid: int) -> tuple[str, int, int]:
+    fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+    return fields[0], int(fields[1]), int(fields[19])
+
+
+def observe_holder(
+    record: WorktreeRecord | None,
+    *,
+    role: str,
+    session_id: str,
+    caller_pid: int | None = None,
+) -> HolderObservation:
+    """Join a lane binding to its committed local executor and kernel identity.
+
+    The audit omits ``caller_pid``: it observes the holder, never substitutes
+    itself. Claim callers supply their actual process PID and must descend from
+    the recorded executor root. No relay age, session text in argv, or launch
+    parent's survival is evidence. A foreign host needs a separately admitted
+    observation binding; this producer/observer supports the local host only.
+    """
+
+    def unknown(reason: str) -> HolderObservation:
+        return HolderObservation(
+            "UNKNOWN",
+            reason,
+            "preserve the claim; reconcile the current executor publication with the "
+            "coordinating seat through the declared launcher",
+        )
+
+    if record is None or not role or not session_id:
+        return unknown("holder_binding_missing")
+    if record.role != role or record.session_id != session_id:
+        return unknown("holder_binding_mismatch")
+    entry = record.executor
+    if not isinstance(entry, dict) or entry.get("state") != "committed":
+        return unknown("executor_not_committed")
+    pid, start = entry.get("pid"), entry.get("start_ticks")
+    if (
+        type(pid) is not int
+        or pid <= 1
+        or type(start) is not int
+        or start <= 0
+        or not isinstance(entry.get("attempt_id"), str)
+        or not entry["attempt_id"]
+    ):
+        return unknown("executor_tuple_invalid")
+    if entry.get("host") != socket.gethostname():
+        return unknown("authoritative_host_unavailable")
+    try:
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return unknown("host_identity_unreadable")
+    if not boot or entry.get("boot_id") != boot:
+        return unknown("executor_boot_mismatch")
+    fingerprint = hashlib.sha256(
+        json.dumps([record.path, role, session_id, entry], sort_keys=True).encode()
+    ).hexdigest()
+    try:
+        state, _parent, observed_start = _process_identity(pid)
+    except FileNotFoundError:
+        # ENOENT from a single proc read is insufficient: a disappearing stat
+        # file or inaccessible proc mount must not turn uncertainty into release.
+        try:
+            _process_identity(os.getpid())
+            if Path(f"/proc/{pid}").exists():
+                return unknown("executor_observation_incomplete")
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return HolderObservation("ABSENT", "executor_exited", "", fingerprint)
+        except (OSError, ValueError, IndexError):
+            return unknown("executor_observation_unavailable")
+        return unknown("executor_observation_raced")
+    except (OSError, ValueError, IndexError):
+        return unknown("executor_observation_unavailable")
+    if observed_start != start:
+        return unknown("executor_pid_reused")
+    if state in {"Z", "X", "x"}:
+        return unknown("executor_exit_not_reaped")
+    if caller_pid is not None:
+        seen: set[int] = set()
+        current = caller_pid
+        try:
+            while current > 1 and current not in seen and len(seen) < 256:
+                if current == pid:
+                    break
+                seen.add(current)
+                _state, current, _start = _process_identity(current)
+            else:
+                return unknown("caller_root_mismatch")
+            # Recheck the exact root after walking the caller's ancestry.
+            if _process_identity(pid)[2] != start:
+                return unknown("executor_pid_reused")
+        except (OSError, ValueError, IndexError):
+            return unknown("caller_root_unreadable")
+    return HolderObservation("PRESENT", "executor_alive", "", fingerprint)
 
 
 def _now(now: datetime | None) -> datetime:
@@ -148,7 +269,7 @@ def load(path: str) -> WorktreeRecord | None:
     return _read_record(path)[0]
 
 
-def save(rec: WorktreeRecord) -> None:
+def _save_unlocked(rec: WorktreeRecord) -> None:
     rp = record_path(rec.path)
     data = _record_to_json(rec)
     fd, tmp = tempfile.mkstemp(dir=str(rp.parent), prefix=".wt-", suffix=".tmp")
@@ -159,6 +280,242 @@ def save(rec: WorktreeRecord) -> None:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+class HolderProofError(RuntimeError):
+    """Preserve the binding; repair through the declared launcher."""
+
+
+_holder_locks = threading.local()
+
+
+@contextmanager
+def holder_lock(path: str, *, role: str | None = None):
+    """Registry record/role -> claim role -> task note, bounded and reentrant.
+
+    The role key also excludes duplicate roots in distinct worktrees. Ordinary
+    metadata writers need only the record key and cannot change its executor.
+    """
+    keys = {str(record_path(path)) + ".lock"}
+    if role:
+        keys.add(
+            str(registry_dir() / ("role-" + hashlib.sha256(role.encode()).hexdigest() + ".lock"))
+        )
+    held = getattr(_holder_locks, "held", {})
+    if keys <= held.keys():
+        yield
+        return
+    if held:
+        raise HolderProofError("holder_lock_order: preserve and retry separately")
+    fds = {}
+    try:
+        deadline = time.monotonic() + 30
+        for key in sorted(keys):
+            fd = os.open(key, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+            fds[key] = fd
+            metadata = os.fstat(fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_nlink != 1
+            ):
+                raise HolderProofError("holder_lock_unsafe: preserve and repair registry lock")
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise HolderProofError(
+                            "holder_lock_busy: preserve and retry after publisher completes"
+                        ) from None
+                    time.sleep(0.05)
+        _holder_locks.held = fds
+        yield
+    finally:
+        _holder_locks.held = {}
+        for fd in reversed(list(fds.values())):
+            os.close(fd)
+
+
+def save(rec: WorktreeRecord) -> None:
+    with holder_lock(rec.path):
+        current, corrupt = _read_record(rec.path)
+        if corrupt:
+            raise CorruptRecordError("preserve corrupt registry record")
+        if current and current.executor is not None:
+            rec.executor = current.executor
+            rec.executor_history = current.executor_history
+            rec.role, rec.session_id = current.role, current.session_id
+        _save_unlocked(rec)
+
+
+def _launch_record(path: str, role: str, session_id: str) -> WorktreeRecord:
+    for rp in registry_dir().glob("*.json"):
+        try:
+            other = _record_from_json(rp.read_text())
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise HolderProofError(
+                "executor_registry_unreadable: preserve and reconcile registry"
+            ) from exc
+        if other.role == role and rp != record_path(path):
+            raise HolderProofError(
+                "role_already_bound: reconcile the existing lane record before moving worktrees"
+            )
+    current, corrupt = _read_record(path)
+    if corrupt:
+        raise HolderProofError("executor_record_corrupt: preserve and repair registry")
+    if current and current.executor is not None:
+        old = observe_holder(current, role=current.role or "", session_id=current.session_id or "")
+        if old.state != "ABSENT":
+            raise HolderProofError(
+                f"executor_already_{old.state.lower()}: {old.reason}; preserve and reconcile the existing executor"
+            )
+    elif current and current.session_id:
+        raise HolderProofError("executor_legacy_unknown: preserve and reconcile legacy binding")
+    now = datetime.now(UTC)
+    rec = current or WorktreeRecord(path=path, created_at=now, last_heartbeat=now)
+    if rec.executor:
+        rec.executor_history = [*(rec.executor_history or []), rec.executor]
+    rec.role, rec.session_id = role, session_id
+    return rec
+
+
+def _argv_hash(argv: list[str]) -> str:
+    return hashlib.sha256(b"\0".join(os.fsencode(arg) for arg in argv) + b"\0").hexdigest()
+
+
+def begin_executor(
+    path: str, *, role: str, session_id: str, producer_pid: int, bootstrap_argv: list[str]
+) -> str:
+    """Persist pending intent BEFORE the existing launcher spawns its child."""
+    with holder_lock(path, role=role):
+        rec = _launch_record(path, role, session_id)
+        rec.executor = dict(
+            state="pending",
+            attempt_id=uuid.uuid4().hex,
+            host=socket.gethostname(),
+            boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            producer_pid=producer_pid,
+            producer_start_ticks=_process_identity(producer_pid)[2],
+            bootstrap_argv_sha256=_argv_hash(bootstrap_argv),
+        )
+        _save_unlocked(rec)
+        return rec.executor["attempt_id"]
+
+
+def commit_executor(
+    path: str, *, role: str, session_id: str, attempt_id: str, producer_pid: int, pid: int
+) -> WorktreeRecord:
+    """Independently observe the exact pending bootstrap at its launch boundary."""
+    with holder_lock(path, role=role):
+        rec = load(path)
+        entry = rec.executor if rec else None
+        if (
+            not rec
+            or rec.role != role
+            or rec.session_id != session_id
+            or not isinstance(entry, dict)
+            or entry.get("state") != "pending"
+            or entry.get("attempt_id") != attempt_id
+            or entry.get("producer_pid") != producer_pid
+            or entry.get("producer_start_ticks") != _process_identity(producer_pid)[2]
+        ):
+            raise HolderProofError("bootstrap_pending_mismatch: preserve pending attempt")
+        state, parent, start = _process_identity(pid)
+        if pid == producer_pid or parent != producer_pid or state in {"Z", "X", "x"}:
+            raise HolderProofError("bootstrap_identity_mismatch: preserve pending attempt")
+        deadline = time.monotonic() + 5
+        while True:
+            argv_hash = hashlib.sha256(Path(f"/proc/{pid}/cmdline").read_bytes()).hexdigest()
+            current_state, current_parent, current_start = _process_identity(pid)
+            if (
+                current_start != start
+                or current_parent != producer_pid
+                or current_state in {"Z", "X", "x"}
+            ):
+                raise HolderProofError("bootstrap_identity_changed: preserve pending attempt")
+            if argv_hash == entry.get("bootstrap_argv_sha256"):
+                break
+            if time.monotonic() >= deadline:
+                raise HolderProofError("bootstrap_identity_mismatch: preserve pending attempt")
+            time.sleep(0.01)
+        entry.update(state="committed", pid=pid, start_ticks=start)
+        _save_unlocked(rec)
+        return rec
+
+
+def publish_executor(path: str, *, role: str, session_id: str, pid: int) -> WorktreeRecord:
+    """Observe the local exec-preserved launcher root before claim/worker exec.
+
+    This direct binding does not spawn. Its helper independently observes the
+    still-running launcher shell; the headless spawning binding uses begin and
+    commit around the actual child instead of publishing its waiting parent.
+    """
+    with holder_lock(path, role=role):
+        rec = _launch_record(path, role, session_id)
+        state, _parent, start = _process_identity(pid)
+        if state in {"Z", "X", "x"}:
+            raise HolderProofError("executor_not_running")
+        rec.executor = dict(
+            state="pending",
+            attempt_id=uuid.uuid4().hex,
+            host=socket.gethostname(),
+            boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            pid=pid,
+            start_ticks=start,
+            bootstrap_argv_sha256=hashlib.sha256(
+                Path(f"/proc/{pid}/cmdline").read_bytes()
+            ).hexdigest(),
+        )
+        _save_unlocked(rec)
+        if _process_identity(pid)[2] != start:
+            raise HolderProofError("executor_changed_before_commit: preserve pending publication")
+        rec.executor["state"] = "committed"
+        _save_unlocked(rec)
+        return rec
+
+
+def await_executor(path: str, *, role: str, session_id: str, timeout: float = 30) -> None:
+    """The bootstrap owns its bounded wait; parent death after commit is irrelevant."""
+    deadline = time.monotonic() + timeout
+    with holder_lock(path, role=role):
+        rec = load(path)
+        attempt = rec.executor.get("attempt_id") if rec and isinstance(rec.executor, dict) else None
+    if not attempt:
+        raise HolderProofError("bootstrap_pending_missing: preserve and reconcile launcher")
+    while True:
+        with holder_lock(path, role=role):
+            rec = load(path)
+            entry = rec.executor if rec else None
+            if (
+                not isinstance(entry, dict)
+                or entry.get("attempt_id") != attempt
+                or rec.role != role
+                or rec.session_id != session_id
+            ):
+                raise HolderProofError("bootstrap_attempt_changed: preserve and reconcile launcher")
+            if entry.get("state") == "committed":
+                if entry.get("pid") != os.getpid():
+                    raise HolderProofError("bootstrap_root_mismatch: this child was not committed")
+                with claimed_holder(path, role=role, session_id=session_id, caller_pid=os.getpid()):
+                    return
+            if entry.get("state") != "pending" or time.monotonic() >= deadline:
+                raise HolderProofError(
+                    "bootstrap_pending_timeout: preserve pending attempt; reconcile launcher"
+                )
+        time.sleep(0.02)
+
+
+@contextmanager
+def claimed_holder(path: str, *, role: str, session_id: str, caller_pid: int):
+    with holder_lock(path, role=role):
+        proof = observe_holder(load(path), role=role, session_id=session_id, caller_pid=caller_pid)
+        if proof.state != "PRESENT":
+            raise HolderProofError(
+                f"holder_{proof.state.lower()}: {proof.reason}. Next action: {proof.next_action}"
+            )
+        yield proof
 
 
 def register(
@@ -211,6 +568,8 @@ def register(
         created_at=created,
         last_heartbeat=last_heartbeat if last_heartbeat is not None else ts,
         host=host if host is not None else (existing.host if existing else None),
+        executor=existing.executor if existing else None,
+        executor_history=existing.executor_history if existing else None,
     )
     save(rec)
     return rec
@@ -238,11 +597,13 @@ def set_status(path: str, status: Status, *, pinned: bool = True) -> WorktreeRec
 
 
 def deregister(path: str) -> None:
-    rp = record_path(path)
-    try:
-        rp.unlink()
-    except FileNotFoundError:
-        pass
+    with holder_lock(path):
+        rec, corrupt = _read_record(path)
+        if corrupt or (rec is not None and (rec.executor or rec.executor_history)):
+            raise HolderProofError(
+                "holder_record_retained: preserve executor lineage; reconcile the holder before deregistration"
+            )
+        record_path(path).unlink(missing_ok=True)
 
 
 def list_records() -> list[WorktreeRecord]:

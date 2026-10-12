@@ -403,6 +403,13 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
         timeout=15,
     )
 
+    if remote:
+        assert result.returncode == 8, result.stderr
+        assert "holder_transport_unsupported" in result.stderr
+        assert not list((cache / "codex-headless/cx-amber").glob("native-*.jsonl"))
+        assert receipt.read_text() == predecessor if case == "preexisting" else not receipt.exists()
+        return
+
     assert result.returncode == child_exit, result.stderr
     streams = list((cache / "codex-headless/cx-amber").glob("native-*.jsonl"))
     assert len(streams) == 1
@@ -465,7 +472,9 @@ def _init_primary_council_repo(path: Path) -> None:
     )
 
 
-def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> None:
+def test_codex_headless_runs_on_appendix_via_remote_payload_holds_without_remote_holder(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -519,6 +528,8 @@ exit 0
     env["CODEX_API_KEY"] = "ambient-codex-api-key-must-not-reach-worker"
     env["OPENAI_API_KEY"] = "ambient-openai-api-key-must-not-reach-worker"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -527,49 +538,15 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "exec --dangerously-bypass-approvals-and-sandbox" in args_file.read_text(
-        encoding="utf-8"
-    )
-    launched_env = env_file.read_text(encoding="utf-8")
-    assert "LOGOS_BASE_URL=http://192.168.68.85:8051/api" in launched_env
-    assert "HAPAX_DISPATCH_HOST=local" in launched_env
-    assert "CODEX_ACCESS_TOKEN_PRESENT=yes" not in launched_env
-    assert "CODEX_HOME_PRESENT=yes" not in launched_env
-    assert "CODEX_API_KEY_PRESENT=yes" not in launched_env
-    assert "OPENAI_API_KEY_PRESENT=yes" not in launched_env
-    proofs = list(
-        (home / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
-            "*cx-amber-task-x-headless-remote.json"
-        )
-    )
-    assert len(proofs) == 1
-    assert '"platform": "codex-headless"' in proofs[0].read_text(encoding="utf-8")
-    proof = json.loads(proofs[0].read_text(encoding="utf-8"))
-    assert proof["role"] == "cx-amber"
-    assert proof["task_id"] == "task-x"
-    assert proof["session_id"]
-    assert proof["claim_materialized"] is True
-    assert proof["claim_epoch_verified"] is True
-    sid = proof["session_id"]
-    assert (cache / f"session-role-{sid}").read_text(encoding="utf-8") == "cx-amber\n"
-    assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
-    legacy_epoch, _, legacy_task = (
-        (cache / "cc-claim-epoch-cx-amber").read_text(encoding="utf-8").strip().partition(" ")
-    )
-    session_epoch, _, session_task = (
-        (cache / f"cc-claim-epoch-cx-amber-{sid}")
-        .read_text(encoding="utf-8")
-        .strip()
-        .partition(" ")
-    )
-    assert legacy_epoch == "1234567890"
-    assert session_epoch == "1234567890"
-    assert legacy_task == "task-x"
-    assert session_task == "task-x"
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not args_file.exists()
 
 
-def test_codex_headless_remote_uses_configured_codex_binary(tmp_path: Path) -> None:
+def test_codex_headless_remote_uses_configured_codex_binary_holds_without_remote_holder(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -612,6 +589,8 @@ exit 0
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
     env["HAPAX_CODEX_BIN_PATH"] = str(configured_codex)
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -620,22 +599,14 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "exec --dangerously-bypass-approvals-and-sandbox" in configured_args.read_text(
-        encoding="utf-8"
-    )
-    assert not path_marker.exists()
-    proofs = list(
-        (home / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
-            "*cx-amber-task-x-headless-remote.json"
-        )
-    )
-    assert len(proofs) == 1
-    proof = json.loads(proofs[0].read_text(encoding="utf-8"))
-    assert proof["argv0"] == str(configured_codex)
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
 
 
-def test_codex_headless_remote_no_claim_without_epoch_fails_closed(tmp_path: Path) -> None:
+def test_codex_headless_remote_no_claim_without_epoch_fails_closed_holds_without_remote_holder(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -669,6 +640,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -677,14 +650,14 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 78
-    assert "without a matching local cc-claim epoch" in result.stderr
-    assert not ssh_log.exists()
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
     assert not args_file.exists()
-    assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_no_claim_with_orphan_epoch_fails_closed(
+def test_codex_headless_remote_no_claim_with_orphan_epoch_fails_closed_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -719,6 +692,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -727,11 +702,11 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 78
-    assert "without a matching local cc-claim epoch" in result.stderr
-    assert not ssh_log.exists()
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
     assert not args_file.exists()
-    assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
+    assert not ssh_log.exists()
 
 
 @pytest.mark.parametrize("predecessor", ["file", "symlink", "dangling"])
@@ -1039,6 +1014,25 @@ fi
             # The native group must still differ from this launcher's group.
             start_new_session=True,
         )
+        if cancel_at == "starting":
+            eventually(starting.exists)
+            assert not wrapper_ready.exists()
+            assert not native_ready.exists()
+            cancel.touch()
+            _, err = process.communicate(timeout=10)
+            assert process.returncode == 143, err
+            # Cancellation before commitment must preserve pending evidence,
+            # and must never execute the provider command.
+            registry = Path(
+                env.get("HAPAX_WORKTREE_REGISTRY_DIR", str(home / ".cache/hapax/worktree-registry"))
+            )
+            records = list(registry.glob("*.json"))
+            assert len(records) == 1
+            assert json.loads(records[0].read_text())["executor"]["state"] == "pending"
+            assert not wrapper_ready.exists()
+            assert not native_ready.exists()
+            assert peer.poll() is None
+            return
         eventually(wrapper_ready.exists)
         native_identity = json.loads(native_ready.read_text())
         wrapper_identity = json.loads(wrapper_ready.read_text())
@@ -1393,7 +1387,9 @@ exit 0
     assert used_token.read_text(encoding="utf-8").strip() == ""
 
 
-def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
+def test_codex_headless_creates_missing_remote_default_worktree_holds_without_remote_holder(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -1432,6 +1428,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1440,28 +1438,15 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-        "preflight",
-        "worktree",
-        "preflight",
-        "preflight",
-        "exec",
-    ]
-    assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
-    branch = subprocess.run(
-        ["git", "-C", str(workdir), "rev-parse", "--abbrev-ref", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert branch == "codex/cx-amber"
-    assert "exec --dangerously-bypass-approvals-and-sandbox" in args_file.read_text(
-        encoding="utf-8"
-    )
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not args_file.exists()
+    assert not pwd_file.exists()
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_refuses_if_claim_revoked_before_exec_payload(
+def test_codex_headless_remote_refuses_if_claim_revoked_before_exec_payload_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1504,6 +1489,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1512,17 +1499,11 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 78
-    assert "without a matching local cc-claim epoch" in result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-        "preflight",
-        "worktree",
-        "preflight",
-        "preflight",
-    ]
-    assert preflight_count.read_text(encoding="utf-8").strip() == "3"
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
     assert not args_file.exists()
-    assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
+    assert not ssh_log.exists()
 
 
 def test_codex_headless_refuses_without_task_before_remote_bootstrap(tmp_path: Path) -> None:
@@ -1607,7 +1588,9 @@ exit 99
     assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_saved_auth_preflight_refuses_after_claim(tmp_path: Path) -> None:
+def test_codex_headless_remote_saved_auth_preflight_refuses_after_claim_holds_without_remote_holder(
+    tmp_path: Path,
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -1639,6 +1622,8 @@ exit 0
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
     env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(home / "missing-access-token")
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1647,15 +1632,14 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
-    assert "remote Codex auth preflight failed" in result.stderr
-    assert "codex_saved_auth_login_required" in result.stderr
-    assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
-    assert claim_log.read_text(encoding="utf-8") == "task-x\n"
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not claim_log.exists()
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_saved_auth_preflight_rejects_unaccepted_login_after_claim(
+def test_codex_headless_remote_saved_auth_preflight_rejects_unaccepted_login_after_claim_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1688,6 +1672,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1696,18 +1682,18 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
-    assert "remote Codex auth preflight failed" in result.stderr
-    assert "codex_saved_auth_login_required" in result.stderr
-    assert claim_log.read_text(encoding="utf-8") == "task-x\n"
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not claim_log.exists()
+    assert not ssh_log.exists()
 
 
 @pytest.mark.parametrize(
     "auth_message",
     ["Please log in", "required to log in", "NOT LOGGED IN"],
 )
-def test_codex_headless_remote_saved_auth_preflight_classifies_login_required_variants(
+def test_codex_headless_remote_saved_auth_preflight_classifies_login_required_variants_holds_without_remote_holder(
     tmp_path: Path,
     auth_message: str,
 ) -> None:
@@ -1741,6 +1727,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1749,14 +1737,14 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
-    assert "remote Codex auth preflight failed" in result.stderr
-    assert "codex_saved_auth_login_required" in result.stderr
-    assert claim_log.read_text(encoding="utf-8") == "task-x\n"
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not claim_log.exists()
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
+def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1783,6 +1771,8 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
     env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1791,16 +1781,13 @@ def test_codex_headless_remote_bootstrap_refuses_missing_explicit_workdir(
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
-    assert "remote worktree bootstrap failed" in result.stderr
-    assert "explicit" in result.stderr
-    assert "next action:" in result.stderr
-    assert "verify" in result.stderr
-    assert "HAPAX_CODEX_CREATE_WORKTREE" in result.stderr
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation(
+def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1829,6 +1816,8 @@ def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation(
     env["HAPAX_CODEX_CREATE_WORKTREE"] = "0"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1837,13 +1826,13 @@ def test_codex_headless_remote_bootstrap_refuses_disabled_worktree_creation(
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
-    assert "remote worktree bootstrap failed" in result.stderr
-    assert "disabled" in result.stderr
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_bootstrap_reports_missing_remote_council(
+def test_codex_headless_remote_bootstrap_reports_missing_remote_council_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1872,6 +1861,8 @@ def test_codex_headless_remote_bootstrap_reports_missing_remote_council(
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1880,10 +1871,10 @@ def test_codex_headless_remote_bootstrap_reports_missing_remote_council(
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
-    assert "remote worktree bootstrap failed" in result.stderr
-    assert "council checkout" in result.stderr
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not ssh_log.exists()
 
 
 def test_codex_headless_live_pid_blocks_remote_bootstrap_before_ssh(tmp_path: Path) -> None:
@@ -1942,7 +1933,7 @@ exit 99
     assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_preflight_reports_missing_codex_binary(
+def test_codex_headless_remote_preflight_reports_missing_codex_binary_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -1971,6 +1962,8 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -1979,16 +1972,13 @@ def test_codex_headless_remote_preflight_reports_missing_codex_binary(
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight"]
-    assert "remote Codex auth preflight failed" in result.stderr
-    assert "missing_binaries" in result.stderr
-    assert "codex" in result.stderr
-    assert "next action:" in result.stderr
-    assert "HAPAX_DISPATCH_HOST_FALLBACK=local" in result.stderr
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_bootstrap_reports_missing_git(
+def test_codex_headless_remote_bootstrap_reports_missing_git_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -2017,6 +2007,8 @@ def test_codex_headless_remote_bootstrap_reports_missing_git(
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -2025,13 +2017,13 @@ def test_codex_headless_remote_bootstrap_reports_missing_git(
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
-    assert "remote worktree bootstrap failed" in result.stderr
-    assert "git binary missing" in result.stderr
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_bootstrap_uses_existing_branch_when_present(
+def test_codex_headless_remote_bootstrap_uses_existing_branch_when_present_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -2067,6 +2059,8 @@ exit 0
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -2075,25 +2069,14 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-        "preflight",
-        "worktree",
-        "preflight",
-        "preflight",
-        "exec",
-    ]
-    assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
-    branch = subprocess.run(
-        ["git", "-C", str(workdir), "rev-parse", "--abbrev-ref", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert branch == "codex/cx-amber"
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not pwd_file.exists()
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
+def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -2182,6 +2165,8 @@ exit 0
     env["CODEX_API_KEY"] = "ambient-codex-api-key-must-not-reach-ssh"
     env["OPENAI_API_KEY"] = "ambient-openai-api-key-must-not-reach-ssh"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -2190,26 +2175,14 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-        "preflight",
-        "worktree",
-        "preflight",
-        "preflight",
-        "exec",
-    ]
-    assert preflight_count.read_text(encoding="utf-8").strip() == "3"
-    assert token_file.read_text(encoding="utf-8").strip() == rotated_token
-    assert used_token.read_text(encoding="utf-8").strip() == ""
-    assert ssh_env_log.read_text(encoding="utf-8").splitlines() == [
-        "preflight token= home= codex_api= openai_api=",
-        "preflight token= home= codex_api= openai_api=",
-        "preflight token= home= codex_api= openai_api=",
-        "exec token= home= codex_api= openai_api=",
-    ]
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not used_token.exists()
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_preflight_does_not_materialize_token_handoff(
+def test_codex_headless_remote_preflight_does_not_materialize_token_handoff_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -2282,6 +2255,8 @@ PY
     env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -2290,19 +2265,11 @@ PY
         timeout=10,
     )
 
-    try:
-        if handoff_path_log.exists():
-            Path(handoff_path_log.read_text(encoding="utf-8").strip()).unlink(missing_ok=True)
-    finally:
-        assert result.returncode == 0, result.stderr
-        assert not handoff_path_log.exists()
-        assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-            "preflight",
-            "worktree",
-            "preflight",
-            "preflight",
-            "exec",
-        ]
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not handoff_path_log.exists()
+    assert not ssh_log.exists()
 
 
 def test_codex_headless_remote_token_cleanup_surface_is_retired() -> None:
@@ -2661,7 +2628,7 @@ def test_codex_headless_remote_preflight_does_not_fork_for_token_cleanup(
     assert not handoff.exists()
 
 
-def test_codex_headless_claim_failure_does_not_create_remote_bearer_handoff(
+def test_codex_headless_claim_failure_does_not_create_remote_bearer_handoff_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -2704,6 +2671,8 @@ def test_codex_headless_claim_failure_does_not_create_remote_bearer_handoff(
     env["HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE"] = str(token_file)
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -2712,8 +2681,9 @@ def test_codex_headless_claim_failure_does_not_create_remote_bearer_handoff(
         timeout=10,
     )
 
-    assert result.returncode == 42
-    assert "token handoff" not in result.stderr
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
     assert not ssh_log.exists()
 
 
@@ -2773,7 +2743,8 @@ def test_codex_headless_malicious_session_id_does_not_escape_tmp(
             timeout=10,
         )
 
-        assert result.returncode == 42
+        assert result.returncode == 8, result.stderr
+        assert "holder_transport_unsupported" in result.stderr
         assert not ssh_log.exists()
         assert not list(Path("/tmp").glob(f"{leak_prefix}-*"))
     finally:
@@ -2997,7 +2968,7 @@ def test_codex_headless_remote_exec_claim_guards_precede_missing_codex(
     assert "remote Codex binary is unavailable" not in epoch_result.stderr
 
 
-def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
+def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -3026,6 +2997,8 @@ def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -3034,13 +3007,13 @@ def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
-    assert "remote worktree bootstrap failed" in result.stderr
-    assert "not a git worktree" in result.stderr
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_bootstrap_falls_back_to_head_for_missing_base_ref(
+def test_codex_headless_remote_bootstrap_falls_back_to_head_for_missing_base_ref_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -3050,7 +3023,7 @@ def test_codex_headless_remote_bootstrap_falls_back_to_head_for_missing_base_ref
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
-    primary_head = subprocess.run(
+    subprocess.run(
         ["git", "-C", str(primary), "rev-parse", "HEAD"],
         check=True,
         capture_output=True,
@@ -3082,6 +3055,8 @@ exit 0
     env["HAPAX_CODEX_WORKTREE_BASE"] = "refs/heads/does-not-exist"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -3090,25 +3065,14 @@ exit 0
         timeout=10,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == [
-        "preflight",
-        "worktree",
-        "preflight",
-        "preflight",
-        "exec",
-    ]
-    assert pwd_file.read_text(encoding="utf-8").strip() == str(workdir)
-    worktree_head = subprocess.run(
-        ["git", "-C", str(workdir), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert worktree_head == primary_head
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not pwd_file.exists()
+    assert not ssh_log.exists()
 
 
-def test_codex_headless_remote_bootstrap_reports_git_worktree_add_failure(
+def test_codex_headless_remote_bootstrap_reports_git_worktree_add_failure_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
@@ -3137,6 +3101,8 @@ def test_codex_headless_remote_bootstrap_reports_git_worktree_add_failure(
     env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
     env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
         capture_output=True,
@@ -3145,10 +3111,10 @@ def test_codex_headless_remote_bootstrap_reports_git_worktree_add_failure(
         timeout=10,
     )
 
-    assert result.returncode == 75
-    assert ssh_log.read_text(encoding="utf-8").splitlines() == ["preflight", "worktree"]
-    assert "remote worktree bootstrap failed" in result.stderr
-    assert "git worktree add failed" in result.stderr
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not ssh_log.exists()
 
 
 def test_codex_headless_prefers_session_keyed_claim_over_stale_legacy(
@@ -3173,6 +3139,8 @@ exit 0
 """,
     )
 
+    claim_log = tmp_path / "resume.log"
+    _write_executable(workdir / "scripts/cc-claim", f'printf "%s\\n" "$1" > "{claim_log}"\n')
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
@@ -3191,6 +3159,8 @@ exit 0
 
     assert result.returncode == 0, result.stderr
     assert args_file.exists()
+
+    assert claim_log.read_text().strip() == "task-x"
 
 
 def test_codex_headless_blocks_retired_relay_without_force(tmp_path: Path) -> None:
@@ -3543,3 +3513,46 @@ exit 0
     assert result.returncode == 0, result.stderr
     assert (pid_dir / "cx-amber.pid").read_text(encoding="utf-8") == "999999\n"
     assert not retire_log.exists()
+
+
+def test_headless_actual_child_is_committed_before_claim_and_worker(tmp_path):
+    home = tmp_path / "home"
+    (home / "projects/hapax-mcp").mkdir(parents=True)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    bin_dir = tmp_path / "bin"
+    witness = tmp_path / "holder.json"
+    worker_pid = tmp_path / "worker-pid"
+    _write_executable(bin_dir / "codex", f'echo "$$" > {worker_pid}\n')
+    claim = tree / "scripts/cc-claim"
+    claim.parent.mkdir()
+    claim.write_text(
+        "#!/usr/bin/env python3\n"
+        + "import os,sys,json\n"
+        + f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        + "from shared import worktree_registry as wr\n"
+        + f"r = wr.load({str(tree)!r})\n"
+        + 'p = wr.observe_holder(r, role=os.environ["HAPAX_AGENT_NAME"], session_id=os.environ["HAPAX_SESSION_ID"], caller_pid=os.getpid())\n'
+        + 'assert p.state == "PRESENT", p\n'
+        + f'open({str(witness)!r}, "w").write(json.dumps(r.executor))\n'
+    )
+    claim.chmod(0o755)
+    env = dict(
+        os.environ,
+        HOME=str(home),
+        PATH=f"{bin_dir}:{os.environ['PATH']}",
+        HAPAX_COUNCIL_DIR=str(REPO_ROOT),
+        HAPAX_CODEX_HEADLESS_ALLOW="1",
+        HAPAX_CODEX_HEADLESS_WORKDIR=str(tree),
+    )
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "holder-child", "--force", "cx-test", "fixture"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    proof = json.loads(witness.read_text())
+    assert proof["state"] == "committed"
+    assert proof["pid"] == int(worker_pid.read_text())

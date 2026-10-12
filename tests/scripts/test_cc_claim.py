@@ -117,6 +117,7 @@ _AMBIENT_IDENTITY_ENV = (
     "CODEX_SESSION_NAME",
     "CODEX_SESSION",
     "CODEX_ROLE",
+    "CODEX_THREAD_ID",
     "CLAUDE_ROLE",
     "CLAUDE_CODE_SESSION_ID",
     "HAPAX_SESSION_ID",
@@ -182,6 +183,15 @@ def _claim(
         install_gate0b = not legacy and dispatch
     if install_gate0b:
         _install_gate0b_claim_publication_root(home)
+    recovery_only = any(
+        a in {"--recover-claim-publications", "--rehydrate-activation-cache"}
+        for a in (extra_args or [])
+    )
+    if not recovery_only and (not extra_env or "HAPAX_WORKTREE_REGISTRY_DIR" not in extra_env):
+        values = extra_env or {}
+        fixture_role = values.get("HAPAX_AGENT_NAME", values.get("HAPAX_AGENT_ROLE", "cx-test"))
+        fixture_session = values.get("HAPAX_SESSION_ID", session_id or "")
+        env.update(_holder_fixture_env(home, role=fixture_role, session_id=fixture_session))
     if extra_env:
         env.update(extra_env)
     argv = ["bash", str(SCRIPT)]
@@ -345,6 +355,8 @@ def test_rehydrate_refusal_branches_leave_every_file_unchanged(
     else:
         detail = str(roots.claim_transaction_root) if task_id == "bounded" else task_id
         expected = f"cc-claim: HOLD — {reason} ({detail}). Next action: {remedy}.\n"
+    if "--recover-claim-publications" in options:
+        expected = "cc-claim: claim_mode_conflict. Next action: name exactly one claim, refresh, release or recovery mode; preserve the current publication.\n"
     assert result.stderr == expected
     assert result.stdout == ""
     assert set(tmp_path.rglob("*")) == tree_before
@@ -447,6 +459,8 @@ def test_default_claim_expired_claim_hold_names_governed_release_path(
     assert result.returncode == 7
     assert "expired claim" in result.stderr
     assert "Manual Stale-Lease Release runbook" in result.stderr
+    assert "operator approval" not in result.stderr
+    assert "--refresh-lease" in result.stderr and "--release-lease" in result.stderr
     assert str(stale) in result.stderr
     assert str(cache / "cc-claim-epoch-cx-test") in result.stderr
     assert str(cache / "cc-claim-dispatch-cx-test.json") in result.stderr
@@ -625,7 +639,7 @@ def test_explicit_killswitch_uses_legacy_writer_with_warning(tmp_path: Path) -> 
     home = tmp_path / "home"
     note = _write_task(home, "active", "legacy-explicit")
 
-    result = _claim(home, "legacy-explicit", legacy=True, dispatch=False, session_id=None)
+    result = _claim(home, "legacy-explicit", legacy=True, dispatch=False, session_id=_SESSION_ID)
 
     assert result.returncode == 0, result.stderr
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in result.stderr
@@ -807,7 +821,7 @@ def test_default_claim_holds_legacy_existing_cache_before_rewrite(
         "legacy-before-canon",
         legacy=True,
         dispatch=False,
-        session_id=None,
+        session_id=_SESSION_ID,
     )
 
     result = _claim(home, "legacy-before-canon")
@@ -1164,7 +1178,7 @@ def test_explicit_read_only_intake_without_parent_spec_allows_claim(
         tags=["intake", "read-only"],
     )
 
-    result = _claim(home, "intake-only", legacy=True, dispatch=False, session_id=None)
+    result = _claim(home, "intake-only", legacy=True, dispatch=False, session_id=_SESSION_ID)
 
     assert result.returncode == 0, result.stderr
     assert "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1" in result.stderr
@@ -2660,6 +2674,7 @@ def test_cc_claims_preflight_and_hold_delegate_to_shared_sdlc_claim(tmp_path: Pa
     source = SCRIPT.read_text(encoding="utf-8")
     program = (
         _DELEGATION_PRELUDE
+        + "\nrefresh_snapshot = None\nClaimResidueArchiveHold = RuntimeError\n"
         + _cc_claim_block(source, "try:\n    binding = ClaimDispatchBinding.create(\n")
         + _cc_claim_block(source, "try:\n    try:\n        install = load_claim_publication_")
     )
@@ -3333,3 +3348,136 @@ def test_governed_recovery_still_holds_a_note_that_no_longer_belongs_to_the_clai
 
     assert recovered.returncode == 8, recovered.stdout + recovered.stderr
     assert reason in recovered.stdout + recovered.stderr
+
+
+def _holder_fixture_env(home, *, pid=None, role="cx-test", session_id=_SESSION_ID):
+    import socket
+
+    from shared import worktree_registry as wr
+
+    root = home.parent / (home.name + "-holder-registry")
+    root.mkdir(parents=True, exist_ok=True)
+    rp = root / (wr._slug(str(REPO_ROOT)) + ".json")
+    if pid is None and rp.exists():
+        old = wr._record_from_json(rp.read_text())
+        if old.role == role and old.session_id == session_id:
+            return {"HAPAX_WORKTREE_REGISTRY_DIR": str(root)}
+    pid = os.getpid() if pid is None else pid
+    now = datetime.now(UTC)
+    rec = wr.WorktreeRecord(
+        path=str(REPO_ROOT),
+        created_at=now,
+        last_heartbeat=now,
+        role=role,
+        session_id=session_id,
+        executor=dict(
+            state="committed",
+            attempt_id="fixture",
+            host=socket.gethostname(),
+            boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            pid=pid,
+            start_ticks=wr._process_identity(pid)[2],
+        ),
+    )
+    (root / (wr._slug(str(REPO_ROOT)) + ".json")).write_text(wr._record_to_json(rec))
+    return {"HAPAX_WORKTREE_REGISTRY_DIR": str(root)}
+
+
+def test_claim_rejects_duplicate_executor_even_for_same_session(tmp_path):
+    home = tmp_path / "home"
+    task = "duplicate-root"
+    note = _write_task(home, "active", task)
+    before = note.read_bytes()
+    with subprocess.Popen(["sleep", "30"]) as sibling:
+        try:
+            result = _claim(home, task, extra_env=_holder_fixture_env(home, pid=sibling.pid))
+        finally:
+            sibling.terminate()
+            sibling.wait()
+    assert result.returncode == 8, result.stdout + result.stderr
+    assert "caller_root_mismatch" in result.stderr
+    assert note.read_bytes() == before
+
+
+def test_holder_refresh_and_release_expired_lease_keep_predecessor(tmp_path):
+    home = tmp_path / "home"
+    task = "expired-holder"
+    note = _write_task(home, "active", task)
+    env = _holder_fixture_env(home)
+    first = _claim(home, task, extra_env=env)
+    assert first.returncode == 0, first.stderr
+    roots = default_claim_publication_roots(home=home)
+    transactions = Path(roots.claim_transaction_root)
+    prior = {str(p): p.read_bytes() for p in transactions.rglob("*") if p.is_file()}
+    cache = home / ".cache/hapax"
+    old_epoch = (cache / "cc-claim-epoch-cx-test").read_text()
+    for p in cache.glob("cc-active-task-*"):
+        os.utime(p, (1, 1))
+    refresh = _claim(home, task, extra_env=env, extra_args=["--refresh-lease"])
+    assert refresh.returncode == 0, refresh.stderr
+    assert "holder_refresh" in note.read_text()
+    assert int((cache / "cc-claim-epoch-cx-test").read_text().split()[0]) > int(
+        old_epoch.split()[0]
+    )
+    assert all(Path(p).read_bytes() == v for p, v in prior.items())
+    for p in cache.glob("cc-active-task-*"):
+        os.utime(p, (1, 1))
+    release = _claim(home, task, extra_env=env, extra_args=["--release-lease"])
+    assert release.returncode == 0, release.stderr
+    assert "status: offered" in note.read_text()
+    assert not list(cache.glob("cc-active-task-*"))
+    readmes = [p.read_text() for p in note.parent.parent.rglob("README.md")]
+    assert any("shape: holder_refresh" in s for s in readmes)
+    assert any("shape: holder_release" in s for s in readmes)
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "--release-lease",
+        "--return-claim",
+        "--release-claim-residue",
+        "--recover-claim-publications",
+        "--rehydrate-activation-cache",
+    ],
+)
+def test_conflicting_holder_modes_preserve_claim(tmp_path, other):
+    home = tmp_path / "home"
+    task = "holder-mode-conflict"
+    _write_task(home, "active", task)
+    assert _claim(home, task).returncode == 0
+    before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+    result = _claim(home, task, extra_args=["--refresh-lease", other])
+    assert result.returncode == 1
+    assert "claim_mode_conflict" in result.stderr
+    assert all(p.read_bytes() == b for p, b in before.items())
+
+
+@pytest.mark.parametrize("mode", ["--refresh-lease", "--release-lease"])
+@pytest.mark.parametrize("fault", ["root", "role"])
+def test_expired_holder_actions_refuse_nonholder_without_mutation(tmp_path, mode, fault):
+    home = tmp_path / "home"
+    task = "nonholder-expired"
+    _write_task(home, "active", task)
+    env = _holder_fixture_env(home)
+    assert _claim(home, task, extra_env=env).returncode == 0
+    cache = home / ".cache/hapax"
+    for marker in cache.glob("cc-active-task-*"):
+        os.utime(marker, (1, 1))
+    with subprocess.Popen(["sleep", "30"]) as sibling:
+        try:
+            if fault == "root":
+                env = _holder_fixture_env(home, pid=sibling.pid)
+            else:
+                env["HAPAX_AGENT_ROLE"] = "cx-other"
+                env["HAPAX_AGENT_NAME"] = "cx-other"
+            before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+            result = _claim(home, task, extra_env=env, extra_args=[mode])
+        finally:
+            sibling.terminate()
+            sibling.wait()
+    assert result.returncode == 8, result.stdout + result.stderr
+    assert (
+        "caller_root_mismatch" if fault == "root" else "holder_binding_mismatch"
+    ) in result.stderr
+    assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())

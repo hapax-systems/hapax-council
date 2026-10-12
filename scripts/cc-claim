@@ -36,6 +36,8 @@ force=false
 recover_claim_publications_only=false
 release_claim_residue_only=false
 return_claim=false
+refresh_lease=false
+release_lease=false
 rehydrate_activation_cache_only=false
 # Default mode publishes through the admitted Gate-0B claim-publication path.
 # The legacy note/cache writer is available only as an explicit slice-1 fallback.
@@ -48,6 +50,8 @@ usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim --rehydrate-activation-cache <task_id>
        cc-claim --release-claim-residue <task_id>
        cc-claim --return-claim <task_id>
+       cc-claim --refresh-lease <task_id>
+       cc-claim --release-lease <task_id>
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
 Every --dispatch-* option requires one VALUE from the dispatcher receipt.
@@ -66,6 +70,7 @@ if [[ "${HAPAX_GATE0B_CLAIM_PUBLICATION_OFF:-}" == "1" ]]; then
   canon_enforced="0"
   echo "cc-claim: WARNING - HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1; using legacy claim writer. Next action: use only for an operator-authorized emergency fallback, verify the legacy claim/close result, then unset the killswitch and repair the admitted Gate-0B claim-publication path before normal work resumes." >&2
 fi
+claim_modes=0
 task_id=""
 dispatch_message_id="${HAPAX_CLAIM_DISPATCH_MESSAGE_ID:-}"
 dispatch_binding_hash="${HAPAX_CLAIM_DISPATCH_BINDING_HASH:-}"
@@ -76,11 +81,17 @@ dispatch_authority_case="${HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE:-}"
 dispatch_idempotency_key="${HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --recover-claim-publications|--rehydrate-activation-cache|--release-claim-residue|--return-claim|--refresh-lease|--release-lease)
+      claim_modes=$((claim_modes + 1)) ;;
+  esac
+  case "$1" in
     --force) force=true; shift ;;
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
     --rehydrate-activation-cache) rehydrate_activation_cache_only=true; shift ;;
     --release-claim-residue) release_claim_residue_only=true; shift ;;
     --return-claim) release_claim_residue_only=true; return_claim=true; shift ;;
+    --refresh-lease) refresh_lease=true; shift ;;
+    --release-lease) release_claim_residue_only=true; release_lease=true; shift ;;
     --dispatch-message-id) require_option_value "$1" "${2:-}"; dispatch_message_id="$2"; shift 2 ;;
     --dispatch-binding-hash) require_option_value "$1" "${2:-}"; dispatch_binding_hash="$2"; shift 2 ;;
     --dispatch-platform) require_option_value "$1" "${2:-}"; dispatch_platform="$2"; shift 2 ;;
@@ -93,6 +104,10 @@ while [[ $# -gt 0 ]]; do
     *) task_id="$1"; shift ;;
   esac
 done
+if (( claim_modes > 1 )); then
+  echo "cc-claim: claim_mode_conflict. Next action: name exactly one claim, refresh, release or recovery mode; preserve the current publication." >&2
+  exit 1
+fi
 if [[ "$rehydrate_activation_cache_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$force" == "true" ) ]]; then
   echo "cc-claim: activation_cache_usage_invalid: supply one task id without --force or --recover-claim-publications. Next action: rerun cc-claim --rehydrate-activation-cache <task_id>." >&2
   exit 1
@@ -298,13 +313,15 @@ vault_root_check="$CC_TASK_ROOT"
 # Governed release of this role's claim residue for one task (M166-M173). It runs before the
 # lease scan, because the residue it releases is what that scan and the claim path hold on.
 if [[ "$release_claim_residue_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" "$return_claim" <<'PYEOF'
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$CC_TASK_ROOT" "$role" "$task_id" "$return_claim" "$release_lease" "$session_id" <<'PYEOF'
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 repo_root, vault_root, role, task_id = Path(sys.argv[1]).resolve(), Path(sys.argv[2]), *sys.argv[3:5]
 returning = sys.argv[5] == "true"
+releasing_holder = sys.argv[6] == "true"
+session_id = sys.argv[7]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -318,9 +335,24 @@ from shared.sdlc_claim import (  # noqa: E402
 
 roots = default_claim_publication_roots(home=Path.home())
 try:
+    if releasing_holder:
+        import os
+        from shared.worktree_registry import claimed_holder
+        from shared.sdlc_claim import resolve_applied_claim_publication, transition_holder_claim
+        with claimed_holder(str(Path.cwd().resolve()), role=role, session_id=session_id, caller_pid=os.getpid()) as observed:
+            expected = resolve_applied_claim_publication(vault_root=vault_root, cache_dir=Path(roots.claim_cache_dir), role=role, session_id=session_id, task_id=task_id, transaction_root=Path(roots.claim_transaction_root), receipt_root=Path(roots.claim_receipt_root), lock_root=Path(roots.claim_lock_root))
+            released = transition_holder_claim(expected=expected, holder_path=str(Path.cwd().resolve()), observed=observed, action='holder_release', caller_pid=os.getpid(), vault_root=vault_root, transaction_root=Path(roots.claim_transaction_root), lock_root=Path(roots.claim_lock_root), observed_at=datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ'))
+        print(f'cc-claim: holder_release {task_id}; archived predecessor to {released.archive_dir}')
+        sys.exit(0)
     # --return-claim: the holder returns its own unstarted claim to offered; else the governed
     # release of residue that no live claim owns.
-    released = (return_claim if returning else release_claim_residue)(
+    from contextlib import ExitStack
+    import os
+    from shared.worktree_registry import claimed_holder
+    with ExitStack() as holder_guard:
+        if returning:
+            holder_guard.enter_context(claimed_holder(str(Path.cwd().resolve()), role=role, session_id=session_id, caller_pid=os.getpid()))
+        released = (return_claim if returning else release_claim_residue)(
         vault_root=vault_root,
         cache_dir=Path(roots.claim_cache_dir),
         transaction_root=Path(roots.claim_transaction_root),
@@ -329,6 +361,9 @@ try:
         task_id=task_id,
         observed_at=datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
     )
+except RuntimeError as exc:
+    print(f"cc-claim: HOLD {exc}", file=sys.stderr)
+    sys.exit(8)
 except ClaimResidueArchiveHold as exc:
     print(f"cc-claim: {exc.message}", file=sys.stderr)
     sys.exit(8)
@@ -395,6 +430,9 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   existing_task="$(head -n1 "$cf" | tr -d '[:space:]' || true)"
   cf_mtime="$(stat -c %Y "$cf" 2>/dev/null || echo "$now_epoch")"
   if (( now_epoch - cf_mtime > lease_ttl )); then
+    if [[ "$refresh_lease" == "true" && "$existing_task" == "$task_id" ]]; then
+      continue  # The exact holder and epoch are checked under locks below.
+    fi
     if [[ "$canon_enforced" == "1" && "$cf" == "$legacy_claim_file" && -n "$session_claim_file" && -f "$session_claim_file" ]]; then
       session_existing_task="$(head -n1 "$session_claim_file" | tr -d '[:space:]' || true)"
       session_cf_mtime="$(stat -c %Y "$session_claim_file" 2>/dev/null || echo 0)"
@@ -423,9 +461,9 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
       epoch_file="$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
       dispatch_file="$HOME/.cache/hapax/cc-claim-dispatch-$claim_key.json"
       if [[ -n "$existing_task" ]]; then
-        echo "cc-claim: HOLD — expired claim '$cf' requires exact stale-lease release before canonical claim publication. Next action: with operator approval, run the Manual Stale-Lease Release runbook using claim_file='$cf' and task_id='$existing_task'; archive/remove only '$cf', '$epoch_file', and '$dispatch_file', then rerun cc-claim." >&2
+        echo "cc-claim: HOLD — expired claim '$cf'. Next action: the current holder runs cc-claim --refresh-lease '$existing_task' or cc-claim --release-lease '$existing_task'. Another actor uses the governed Manual Stale-Lease Release runbook for this exact task/session/epoch: '$cf', '$epoch_file', '$dispatch_file'; preserve the journal." >&2
       else
-        echo "cc-claim: HOLD — expired claim '$cf' requires exact stale-lease release before canonical claim publication. Next action: inspect '$cf' to recover the task id, then with operator approval run the Manual Stale-Lease Release runbook for claim_file='$cf'; archive/remove only '$cf', '$epoch_file', and '$dispatch_file', then rerun cc-claim." >&2
+        echo "cc-claim: HOLD — expired claim '$cf'. Next action: inspect '$cf' to recover the task id, then use governed recovery for '$cf', '$epoch_file', '$dispatch_file'; preserve all evidence." >&2
       fi
       shopt -u nullglob
       exit 7
@@ -519,7 +557,7 @@ claim_epoch="$(date +%s)"
   "$canon_enforced" "$HOME/.cache/hapax" "$claim_epoch" \
   "$dispatch_message_id" "$dispatch_binding_hash" "$dispatch_platform" \
   "$dispatch_mode" "$dispatch_profile" "$dispatch_authority_case" \
-  "$dispatch_idempotency_key" "${HAPAX_CHARTER_KEEP_TASK:-}" <<'PYEOF'
+  "$dispatch_idempotency_key" "${HAPAX_CHARTER_KEEP_TASK:-}" "$refresh_lease" <<'PYEOF'
 import hashlib
 import json
 import re
@@ -549,6 +587,8 @@ claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
     dispatch_idempotency_key,
 ) = (sys.argv[9:16] if len(sys.argv) >= 16 else ("", "", "", "", "", "", ""))
 charter_keep = sys.argv[16].strip() if len(sys.argv) > 16 else ""
+refresh_lease = sys.argv[17] == "true"
+refresh_snapshot = None
 
 
 def _write_charter_sidecar() -> None:
@@ -570,6 +610,20 @@ def _write_charter_sidecar() -> None:
 
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
+
+# One producer proof serves claim, resume and refresh. Keep its exclusion
+# through publication so relaunch cannot invalidate the check mid-transaction.
+import atexit
+import os
+from contextlib import ExitStack
+from shared.worktree_registry import claimed_holder, HolderProofError
+holder_stack = ExitStack()
+atexit.register(holder_stack.close)
+try:
+    holder_observed = holder_stack.enter_context(claimed_holder(str(Path.cwd().resolve()), role=role, session_id=session_id, caller_pid=os.getpid()))
+except (HolderProofError, OSError, ValueError) as exc:
+    print(f'cc-claim: HOLD {exc}', file=sys.stderr)
+    sys.exit(8)
 
 from shared.charter_claim import child_may_mint, sidecar_belongs_to  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
@@ -1037,11 +1091,16 @@ if canon_enforced:
                 file=sys.stderr,
             )
             sys.exit(8)
-        print(
-            f"cc-claim: applied publication already owns task '{task_id}' for role '{role}' "
-            f"(receipt={applied.receipt.receipt_hash})"
-        )
-        sys.exit(0)
+        if refresh_lease:
+            refresh_snapshot = applied
+            claim_epoch = max(claim_epoch, applied.intent.claim_epoch + 1)
+        else:
+            print(f"cc-claim: applied publication already owns task '{task_id}' for role '{role}' (receipt={applied.receipt.receipt_hash})")
+            sys.exit(0)
+
+if refresh_lease and refresh_snapshot is None:
+    print('cc-claim: HOLD holder_refresh_missing: resolve the current applied publication first', file=sys.stderr)
+    sys.exit(8)
 
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 if claim_mode is None:
@@ -1430,6 +1489,10 @@ else:
     log_line = f"- {now} {role} {resumed} (cc-claim{session_suffix})\n"
     result_message = f"cc-claim: resumed task '{task_id}' for role '{role}'"
 
+if refresh_snapshot is not None:
+    log_line = f"- {now} {role} holder_refresh (cc-claim --refresh-lease; predecessor={refresh_snapshot.receipt.publication_id}; epoch={claim_epoch}{session_suffix})\n"
+    result_message = f"cc-claim: refreshed holder lease '{task_id}' for role '{role}'"
+
 text = re.sub(
     r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
 )
@@ -1683,8 +1746,11 @@ try:
             "install artifacts.",
             file=sys.stderr,
         )
+    if refresh_snapshot is not None:
+        from shared.sdlc_claim import transition_holder_claim
+        transition_holder_claim(expected=refresh_snapshot, holder_path=str(Path.cwd().resolve()), observed=holder_observed, action='holder_refresh', caller_pid=os.getpid(), vault_root=path.parent.parent, transaction_root=transaction_root, lock_root=lock_root, observed_at=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
-except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
+except (ClaimPublicationError, ClaimResidueArchiveHold, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
     print(claim_publication_hold_message(exc, intent_ref=intent.intent_ref), file=sys.stderr)
     sys.exit(8)
 

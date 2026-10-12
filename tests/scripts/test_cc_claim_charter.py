@@ -132,6 +132,15 @@ def _claim(
             "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY": f"coord-{task_id}",
         }
     )
+    from tests.scripts.test_cc_claim import _holder_fixture_env
+
+    env.update(
+        _holder_fixture_env(
+            home,
+            role=(extra_env or {}).get("HAPAX_AGENT_NAME", _ROLE),
+            session_id=(extra_env or {}).get("HAPAX_SESSION_ID", _SESSION_ID),
+        )
+    )
     if extra_env:
         env.update(extra_env)
     if install_gate0b:
@@ -278,7 +287,12 @@ def test_unit_claim_holds_when_charter_has_no_live_lease_sidecars_for_this_role(
     (cache / f"cc-claim-dispatch-{_ROLE}.json").unlink(missing_ok=True)
 
     _write_unit(home, "unit-a", ["shared/cx/unit-a.py"])
-    unit = _claim(home, "unit-a", extra_env={"HAPAX_SESSION_ID": "session-b"}, install_gate0b=False)
+    unit = _claim(
+        home,
+        "unit-a",
+        extra_env={"HAPAX_SESSION_ID": "bbbbbbbb-1111-2222-3333-444455556666"},
+        install_gate0b=False,
+    )
 
     assert unit.returncode == 8
     assert "has no live lease sidecars" in unit.stderr
@@ -362,6 +376,10 @@ def _run_gate(
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for key in (
+        "CODEX_THREAD_NAME",
+        "CODEX_SESSION_NAME",
+        "CODEX_SESSION",
+        "CODEX_ROLE",
         "HAPAX_AGENT_ROLE",
         "HAPAX_AGENT_NAME",
         "HAPAX_SESSION_ID",

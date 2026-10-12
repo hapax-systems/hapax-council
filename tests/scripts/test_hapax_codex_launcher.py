@@ -1092,7 +1092,7 @@ exit 77
     assert not args_file.exists()
 
 
-def test_appendix_codex_remote_preflight_strips_auth_env_before_first_ssh(
+def test_appendix_codex_remote_preflight_strips_auth_env_before_first_ssh_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     env, args_file, env_file = _env_with_fake_codex(tmp_path)
@@ -1106,6 +1106,8 @@ def test_appendix_codex_remote_preflight_strips_auth_env_before_first_ssh(
     env["CODEX_API_KEY"] = "codex-api-secret"
     env["OPENAI_API_KEY"] = "openai-api-secret"
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [
             str(LAUNCHER),
@@ -1125,22 +1127,10 @@ def test_appendix_codex_remote_preflight_strips_auth_env_before_first_ssh(
         timeout=5,
     )
 
-    assert result.returncode == 0, result.stderr
-    ssh_env_text = ssh_env_log.read_text(encoding="utf-8")
-    assert "token-secret" not in ssh_env_text
-    assert "codex-home-secret" not in ssh_env_text
-    assert "codex-api-secret" not in ssh_env_text
-    assert "openai-api-secret" not in ssh_env_text
-    assert "CODEX_ACCESS_TOKEN=\n" in ssh_env_text
-    assert "CODEX_HOME=\n" in ssh_env_text
-    assert "CODEX_API_KEY=\n" in ssh_env_text
-    assert "OPENAI_API_KEY=\n" in ssh_env_text
-    assert "mcp list" in args_file.read_text(encoding="utf-8")
-    launched_env = env_file.read_text(encoding="utf-8")
-    assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in launched_env
-    assert "CODEX_HOME_PRESENT=\n" in launched_env
-    assert "CODEX_API_KEY_PRESENT=\n" in launched_env
-    assert "OPENAI_API_KEY_PRESENT=\n" in launched_env
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not args_file.exists()
 
 
 def test_appendix_codex_remote_preflight_does_not_leave_handoff_before_relay_guard(
@@ -1183,7 +1173,7 @@ def test_appendix_codex_remote_preflight_does_not_leave_handoff_before_relay_gua
     assert not args_file.exists()
 
 
-def test_appendix_codex_remote_handoff_cleaned_when_ssh_fails_before_exec(
+def test_appendix_codex_remote_handoff_cleaned_when_ssh_fails_before_exec_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     env, args_file, _env_file = _env_with_fake_codex(tmp_path)
@@ -1196,6 +1186,8 @@ def test_appendix_codex_remote_handoff_cleaned_when_ssh_fails_before_exec(
     env["HAPAX_SESSION_ID"] = session_id
     _clear_handoff_glob(session_id)
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [
             str(LAUNCHER),
@@ -1215,9 +1207,9 @@ def test_appendix_codex_remote_handoff_cleaned_when_ssh_fails_before_exec(
         timeout=5,
     )
 
-    assert result.returncode == 255
-    assert count_file.read_text(encoding="utf-8").strip() == "3"
-    assert not list(Path("/tmp").glob(f"hapax-codex-token-{session_id}-*"))
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
     assert not args_file.exists()
 
 
@@ -1255,8 +1247,8 @@ def test_appendix_codex_remote_handoff_sanitizes_session_id_before_path(
             timeout=5,
         )
 
-        assert result.returncode == 255
-        assert count_file.read_text(encoding="utf-8").strip() == "3"
+        assert result.returncode == 8, result.stderr
+        assert "holder_transport_unsupported" in result.stderr
         assert not list(Path("/tmp").glob(f"{leak_prefix}-*"))
         assert not args_file.exists()
     finally:
@@ -1264,7 +1256,7 @@ def test_appendix_codex_remote_handoff_sanitizes_session_id_before_path(
             leaked.unlink(missing_ok=True)
 
 
-def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
+def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     env, args_file, env_file = _env_with_fake_codex(tmp_path)
@@ -1277,6 +1269,8 @@ def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
     env["HAPAX_DISPATCH_LOGOS_URL"] = f"http://podium.invalid/api; touch {exploit}"
     env["HAPAX_FAKE_SSH_REMOTE_CMDS"] = str(remote_cmds)
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [
             str(LAUNCHER),
@@ -1296,28 +1290,15 @@ def test_appendix_codex_exec_uses_remote_payload_without_shell_interpolation(
         timeout=5,
     )
 
-    assert result.returncode == 0, result.stderr
-    commands = remote_cmds.read_text(encoding="utf-8").splitlines()
-    assert commands
-    assert all(command.startswith("bash -c ") for command in commands)
-    assert all(not command.startswith("HAPAX_REMOTE_PAYLOAD=") for command in commands)
-    assert all("$'" not in command for command in commands)
-    assert not exploit.exists()
-    assert "mcp list" in args_file.read_text(encoding="utf-8")
-    launched_env = env_file.read_text(encoding="utf-8")
-    assert f"LOGOS_BASE_URL=http://podium.invalid/api; touch {exploit}" in launched_env
-    proofs = list(
-        (Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
-            "*cx-red-no-task-remote.json"
-        )
-    )
-    assert len(proofs) == 1
-    proof = proofs[0].read_text(encoding="utf-8")
-    assert '"requested_host": "appendix"' in proof
-    assert '"platform": "codex"' in proof
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not args_file.exists()
 
 
-def test_appendix_codex_exec_uses_remote_configured_codex_binary(tmp_path: Path) -> None:
+def test_appendix_codex_exec_uses_remote_configured_codex_binary_holds_without_remote_holder(
+    tmp_path: Path,
+) -> None:
     env, _path_args_file, _path_env_file = _env_with_fake_codex(tmp_path)
     _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
@@ -1380,6 +1361,8 @@ exit 0
     env["HAPAX_DISPATCH_HOST"] = "appendix"
     env["HAPAX_CODEX_BIN_PATH"] = str(configured_codex)
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [
             str(LAUNCHER),
@@ -1399,20 +1382,9 @@ exit 0
         timeout=5,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "mcp list" in configured_args.read_text(encoding="utf-8")
-    assert not path_marker.exists()
-    launched_env = configured_env.read_text(encoding="utf-8")
-    assert "HAPAX_DISPATCH_HOST=local" in launched_env
-    assert "CODEX_ACCESS_TOKEN_PRESENT=\n" in launched_env
-    proofs = list(
-        (Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs").glob(
-            "*cx-red-no-task-remote.json"
-        )
-    )
-    assert len(proofs) == 1
-    proof = json.loads(proofs[0].read_text(encoding="utf-8"))
-    assert proof["argv0"] == str(configured_codex)
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
 
 
 def test_launcher_scrubs_mcp_tokens_from_codex_session_env(tmp_path: Path) -> None:
@@ -2227,10 +2199,12 @@ printf '%s\\n' -- "$@" >> {tmux_args}
     _assert_remain_on_exit_set_after_new_session(tmux_args)
 
 
-def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex(tmp_path: Path) -> None:
+def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex_holds_without_remote_holder(
+    tmp_path: Path,
+) -> None:
     env, args_file, env_file = _env_with_fake_codex(tmp_path)
     _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
-    task_note = _write_active_task(env, "demo-task")
+    _write_active_task(env, "demo-task")
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
     _write_fake_ssh_eval(tmp_path / "bin")
     env["HAPAX_DISPATCH_HOST"] = "appendix"
@@ -2255,6 +2229,8 @@ esac
     )
     fake_tmux.chmod(0o755)
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [
             str(LAUNCHER),
@@ -2276,38 +2252,16 @@ esac
         timeout=5,
     )
 
-    assert result.returncode == 0, result.stderr
-    task_text = task_note.read_text(encoding="utf-8")
-    assert "status: claimed" in task_text
-    assert "assigned_to: cx-amber" in task_text
-    assert result.stdout.strip() == "hapax-codex-cx-amber"
-    new_session = _new_session_args(tmux_args)
-    assert new_session[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
-    runner = Path(new_session[-1])
-    runner_text = runner.read_text(encoding="utf-8")
-    assert "\nssh " in runner_text
-    assert "bash" in runner_text
-    assert "exec /" not in runner_text
-
-    runner_result = subprocess.run(
-        [str(runner)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=5,
-    )
-
-    assert runner_result.returncode == 0, runner_result.stderr
-    assert not runner.exists()
-    assert "Bootstrap file:" in args_file.read_text(encoding="utf-8")
-    launched_env = env_file.read_text(encoding="utf-8")
-    assert "LOGOS_BASE_URL=http://192.168.68.85:8051/api" in launched_env
-    proof_root = Path(env["HOME"]) / ".cache" / "hapax" / "orchestration" / "dispatch-host-proofs"
-    assert list(proof_root.glob("*cx-amber-demo-task-local.json"))
-    assert list(proof_root.glob("*cx-amber-demo-task-remote.json"))
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not args_file.exists()
+    assert not tmux_args.exists()
 
 
-def test_terminal_none_remote_reruns_saved_auth_preflight_after_claim(tmp_path: Path) -> None:
+def test_terminal_none_remote_reruns_saved_auth_preflight_after_claim_holds_without_remote_holder(
+    tmp_path: Path,
+) -> None:
     env, args_file, _env_file = _env_with_fake_codex(tmp_path)
     _write_codex_access_token(Path(env["HOME"]), exp=int(time.time()) + 3600)
     (Path(env["HOME"]) / "projects" / "hapax-mcp").mkdir(parents=True)
@@ -2329,6 +2283,8 @@ exit 0
     )
     claim_script.chmod(0o755)
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [
             str(LAUNCHER),
@@ -2350,16 +2306,14 @@ exit 0
         timeout=5,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert claim_log.read_text(encoding="utf-8").strip() == "demo-task"
-    kinds = [
-        _remote_command_kind(line) for line in remote_cmds.read_text(encoding="utf-8").splitlines()
-    ]
-    assert kinds == ["preflight", "preflight", "preflight", "exec"]
-    assert "--dangerously-bypass-approvals-and-sandbox" in args_file.read_text(encoding="utf-8")
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not args_file.exists()
+    assert not claim_log.exists()
 
 
-def test_terminal_tmux_remote_runner_refuses_handoff_when_self_delete_fails(
+def test_terminal_tmux_remote_runner_refuses_handoff_when_self_delete_fails_holds_without_remote_holder(
     tmp_path: Path,
 ) -> None:
     env, args_file, _env_file = _env_with_fake_codex(tmp_path)
@@ -2395,6 +2349,8 @@ esac
     )
     fake_tmux.chmod(0o755)
 
+    claim_cache = Path(env["HOME"]) / ".cache/hapax"
+    claim_before = {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()}
     result = subprocess.run(
         [
             str(LAUNCHER),
@@ -2416,25 +2372,11 @@ esac
         timeout=5,
     )
 
-    assert result.returncode == 0, result.stderr
-    runner = Path(_new_session_args(tmux_args)[-1])
-    try:
-        runner_result = subprocess.run(
-            [str(runner)],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=5,
-        )
-
-        assert runner_result.returncode == 70
-        assert "failed to delete remote Codex runner" in runner_result.stderr
-        assert runner.exists()
-        assert len(remote_cmds.read_text(encoding="utf-8").splitlines()) == 2
-        assert not list(Path("/tmp").glob(f"hapax-codex-token-{session_id}-*"))
-        assert not args_file.exists()
-    finally:
-        runner.unlink(missing_ok=True)
+    assert result.returncode == 8, result.stderr
+    assert "holder_transport_unsupported" in result.stderr
+    assert {p: p.read_bytes() for p in claim_cache.glob("cc-*") if p.is_file()} == claim_before
+    assert not args_file.exists()
+    assert not tmux_args.exists()
 
 
 def test_terminal_tmux_allows_assigned_ready_state_task(tmp_path: Path) -> None:
@@ -3208,3 +3150,47 @@ esac
     assert result.returncode == 0, result.stderr
     assert tmux_message.read_text() == "Use the tmux route when it exists."
     assert not foot_log.exists()
+
+
+def test_launcher_commits_actual_root_before_claim_and_exec(tmp_path):
+    env, args_file, _ = _env_with_fake_codex(tmp_path)
+    tree = tmp_path / "tree"
+    (tree / "scripts").mkdir(parents=True)
+    claim = tree / "scripts/cc-claim"
+    witness = tmp_path / "claim-holder.json"
+    claim.write_text(
+        "#!/usr/bin/env python3\n"
+        + "import os,sys,json\n"
+        + f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        + "from shared import worktree_registry as wr\n"
+        + f"r = wr.load({str(tree)!r})\n"
+        + 'p = wr.observe_holder(r, role=os.environ["HAPAX_AGENT_NAME"], session_id=os.environ["HAPAX_SESSION_ID"], caller_pid=os.getpid())\n'
+        + 'assert p.state == "PRESENT", p\n'
+        + f'open({str(witness)!r}, "w").write(json.dumps(r.executor))\n'
+    )
+    claim.chmod(0o755)
+    _write_active_task(env, "holder-order")
+    result = subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-test",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(tree),
+            "--task",
+            "holder-order",
+            "--",
+            "mcp",
+            "list",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    proof = json.loads(witness.read_text())
+    assert proof["state"] == "committed"
+    assert args_file.exists()

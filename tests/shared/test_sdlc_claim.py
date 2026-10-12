@@ -6314,3 +6314,455 @@ def test_independent_role_claims_publish_across_synthetic_task_store_churn(
         phase_list == ["created", "projecting", "postimage_complete", "applied"]
         for phase_list in phases.values()
     )
+
+
+def _holder_transition_fixture(tmp_path, monkeypatch):
+    from shared import worktree_registry as wr
+
+    fixture = _applied_publication(tmp_path)
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    record = wr.publish_executor(
+        str(tmp_path / "tree"),
+        role=fixture.intent.role,
+        session_id=fixture.intent.session_id,
+        pid=os.getpid(),
+    )
+    expected = resolve_applied_claim_publication(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        role=fixture.intent.role,
+        session_id=fixture.intent.session_id,
+        task_id=fixture.intent.task_id,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+    )
+    observed = wr.observe_holder(record, role=record.role, session_id=record.session_id)
+    return fixture, record, expected, observed
+
+
+@pytest.mark.parametrize("action", ["holder_refresh", "holder_release"])
+def test_holder_transition_archives_own_publication_without_spending_predecessor(
+    tmp_path, monkeypatch, action
+):
+    fixture, record, expected, observed = _holder_transition_fixture(tmp_path, monkeypatch)
+    before = _tree_snapshot(fixture.transactions)
+    released = sdlc_claim.transition_holder_claim(
+        expected=expected,
+        holder_path=record.path,
+        observed=observed,
+        action=action,
+        caller_pid=os.getpid(),
+        vault_root=fixture.vault,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        observed_at="20261012T200000Z",
+    )
+    assert released.shape == action
+    assert len(released.archived) == 6
+    assert _tree_snapshot(fixture.transactions) == before
+    assert not (fixture.cache / "cc-active-task-cx-red").exists()
+    text = fixture.intent.note_path.read_text()
+    assert ("status: offered" in text) == (action == "holder_release")
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert all(r.state == "released" for r in results)
+
+
+@pytest.mark.parametrize("change", ["epoch", "executor", "note"])
+def test_holder_transition_refuses_stale_observation_without_mutation(
+    tmp_path, monkeypatch, change
+):
+    from shared import worktree_registry as wr
+
+    fixture, record, expected, observed = _holder_transition_fixture(tmp_path, monkeypatch)
+    if change == "epoch":
+        (fixture.cache / "cc-claim-epoch-cx-red").write_text("9999999999\n")
+    elif change == "executor":
+        record.executor["attempt_id"] = "relaunch"
+        wr._save_unlocked(record)
+    else:
+        fixture.intent.note_path.write_text(fixture.intent.note_path.read_text() + "\nnew carry\n")
+    before = (
+        _tree_snapshot(fixture.cache),
+        fixture.intent.note_path.read_bytes(),
+        _tree_snapshot(fixture.transactions),
+    )
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold, match="holder_"):
+        sdlc_claim.transition_holder_claim(
+            expected=expected,
+            holder_path=record.path,
+            observed=observed,
+            action="holder_release",
+            caller_pid=os.getpid(),
+            vault_root=fixture.vault,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            observed_at="20261012T200000Z",
+        )
+    assert (
+        _tree_snapshot(fixture.cache),
+        fixture.intent.note_path.read_bytes(),
+        _tree_snapshot(fixture.transactions),
+    ) == before
+
+
+def test_audit_absence_archives_as_third_party_and_never_as_holder(tmp_path, monkeypatch):
+    from shared import worktree_registry as wr
+
+    fixture, record, expected, _ = _holder_transition_fixture(tmp_path, monkeypatch)
+    with subprocess.Popen(["sleep", "30"]) as child:
+        record.executor["pid"] = child.pid
+        record.executor["start_ticks"] = wr._process_identity(child.pid)[2]
+        wr._save_unlocked(record)
+        child.terminate()
+        child.wait()
+    observed = wr.observe_holder(record, role=record.role, session_id=record.session_id)
+    assert observed.state == "ABSENT"
+    released = sdlc_claim.transition_holder_claim(
+        expected=expected,
+        holder_path=record.path,
+        observed=observed,
+        action="audit_absent",
+        caller_pid=None,
+        vault_root=fixture.vault,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        observed_at="20261012T200000Z",
+        audit_work_check=lambda: None,
+    )
+    assert released.shape == "audit_absent"
+    assert len(released.archived) == 6
+    assert (
+        "codex-claim-audit observed the exact executor absent"
+        in fixture.intent.note_path.read_text()
+    )
+    assert "--return-claim" not in fixture.intent.note_path.read_text()
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert all(r.state == "released" for r in results)
+
+
+@pytest.mark.parametrize("change", ["epoch", "executor", "note"])
+def test_audit_rechecks_epoch_after_locked_work_inspection_before_any_note_effect(
+    tmp_path, monkeypatch, change
+):
+    from shared import worktree_registry as wr
+    from shared.task_note_lock import held_by_current_thread
+
+    fixture, record, expected, _ = _holder_transition_fixture(tmp_path, monkeypatch)
+    with subprocess.Popen(["sleep", "30"]) as child:
+        record.executor["pid"] = child.pid
+        record.executor["start_ticks"] = wr._process_identity(child.pid)[2]
+        wr._save_unlocked(record)
+        child.terminate()
+        child.wait()
+    observed = wr.observe_holder(record, role=record.role, session_id=record.session_id)
+    before = fixture.intent.note_path.read_bytes()
+    epoch = fixture.cache / "cc-claim-epoch-cx-red"
+
+    def concurrent_change():
+        assert held_by_current_thread()
+        if change == "epoch":
+            epoch.write_text("9999999999 task-alpha\n")
+        elif change == "executor":
+            record.executor["attempt_id"] = "replacement-after-inspection"
+            wr._save_unlocked(record)
+        else:
+            fixture.intent.note_path.write_bytes(before + b"\nnew carry\n")
+        return None
+
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold):
+        sdlc_claim.transition_holder_claim(
+            expected=expected,
+            holder_path=record.path,
+            observed=observed,
+            action="audit_absent",
+            caller_pid=None,
+            vault_root=fixture.vault,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            observed_at="20261012T200000Z",
+            audit_work_check=concurrent_change,
+        )
+    assert fixture.intent.note_path.read_bytes() == (
+        before + b"\nnew carry\n" if change == "note" else before
+    )
+    assert (fixture.cache / "cc-active-task-cx-red").read_text() == "task-alpha\n"
+    if change == "epoch":
+        assert epoch.read_text() == "9999999999 task-alpha\n"
+
+
+@pytest.mark.parametrize("action", ["holder_refresh", "holder_release", "audit_absent"])
+def test_interrupted_holder_archive_recovers_original_typed_transition(
+    tmp_path, monkeypatch, action
+):
+    from shared import worktree_registry as wr
+
+    fixture, record, expected, observed = _holder_transition_fixture(tmp_path, monkeypatch)
+    if action == "audit_absent":
+        with subprocess.Popen(["sleep", "30"]) as child:
+            record.executor["pid"] = child.pid
+            record.executor["start_ticks"] = wr._process_identity(child.pid)[2]
+            wr._save_unlocked(record)
+            child.terminate()
+            child.wait()
+        observed = wr.observe_holder(record, role=record.role, session_id=record.session_id)
+    before = _tree_snapshot(fixture.transactions)
+    original = sdlc_claim._archive_verified
+    calls = 0
+
+    def interrupt(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise _Killed
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", interrupt)
+    with pytest.raises(_Killed):
+        sdlc_claim.transition_holder_claim(
+            expected=expected,
+            holder_path=record.path,
+            observed=observed,
+            action=action,
+            caller_pid=os.getpid() if action != "audit_absent" else None,
+            vault_root=fixture.vault,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            observed_at="20261012T200000Z",
+            audit_work_check=lambda: None,
+        )
+    monkeypatch.setattr(sdlc_claim, "_archive_verified", original)
+    result = sdlc_claim.release_claim_residue(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        role=fixture.intent.role,
+        task_id=fixture.intent.task_id,
+        observed_at="20261012T200001Z",
+    )
+    assert result.shape == action
+    assert len(result.archived) == 6
+    assert _tree_snapshot(fixture.transactions) == before
+    recovered = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert all(r.state == "released" for r in recovered)
+
+
+@pytest.mark.parametrize("successor", ["renewal", "relaunch"])
+@pytest.mark.parametrize("order", ["successor_first", "audit_first"])
+def test_holder_successor_and_audit_serialize_both_orderings(
+    tmp_path, monkeypatch, successor, order
+):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+
+    from shared import worktree_registry as wr
+
+    fixture, record, expected, _ = _holder_transition_fixture(tmp_path, monkeypatch)
+    with subprocess.Popen(["sleep", "30"]) as child:
+        record.executor["pid"] = child.pid
+        record.executor["start_ticks"] = wr._process_identity(child.pid)[2]
+        wr._save_unlocked(record)
+        child.terminate()
+        child.wait()
+    observed = wr.observe_holder(record, role=record.role, session_id=record.session_id)
+    assert observed.state == "ABSENT"
+    entered = Event()
+
+    def renew_or_relaunch():
+        entered.set()
+        with wr.holder_lock(record.path, role=record.role):
+            current = wr.publish_executor(
+                record.path, role=record.role, session_id=record.session_id, pid=os.getpid()
+            )
+            if successor == "renewal":
+                proof = wr.observe_holder(current, role=record.role, session_id=record.session_id)
+                return sdlc_claim.transition_holder_claim(
+                    expected=expected,
+                    holder_path=record.path,
+                    observed=proof,
+                    action="holder_refresh",
+                    caller_pid=os.getpid(),
+                    vault_root=fixture.vault,
+                    transaction_root=fixture.transactions,
+                    lock_root=fixture.locks,
+                    observed_at="20261012T200001Z",
+                )
+            return current
+
+    def audit(work=lambda: None):
+        return sdlc_claim.transition_holder_claim(
+            expected=expected,
+            holder_path=record.path,
+            observed=observed,
+            action="audit_absent",
+            caller_pid=None,
+            vault_root=fixture.vault,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            observed_at="20261012T200000Z",
+            audit_work_check=work,
+        )
+
+    if order == "successor_first":
+        renew_or_relaunch()
+        before = (_tree_snapshot(fixture.cache), fixture.intent.note_path.read_bytes())
+        with pytest.raises(sdlc_claim.ClaimResidueArchiveHold, match="holder_proof_changed"):
+            audit()
+        assert (_tree_snapshot(fixture.cache), fixture.intent.note_path.read_bytes()) == before
+    else:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = None
+
+            def work():
+                nonlocal future
+                future = pool.submit(renew_or_relaunch)
+                assert entered.wait(2)
+                with pytest.raises(TimeoutError):
+                    future.result(timeout=0.1)
+                return None
+
+            released = audit(work)
+            assert released.shape == "audit_absent"
+            if successor == "renewal":
+                with pytest.raises(
+                    sdlc_claim.ClaimResidueArchiveHold, match="holder_epoch_changed"
+                ):
+                    future.result(timeout=5)
+            else:
+                future.result(timeout=5)
+        assert "status: offered" in fixture.intent.note_path.read_text()
+        assert not list(fixture.cache.glob("cc-active-task-*"))
+    current = wr.load(record.path)
+    assert current.executor["pid"] == os.getpid()
+    assert current.executor_history[-1] == record.executor
+    assert (
+        wr.observe_holder(current, role=record.role, session_id=record.session_id).state
+        == "PRESENT"
+    )
+
+
+def test_audit_cannot_release_a_present_holder_even_with_absent_snapshot(tmp_path, monkeypatch):
+    fixture, record, expected, observed = _holder_transition_fixture(tmp_path, monkeypatch)
+    from dataclasses import replace
+
+    before = (_tree_snapshot(fixture.cache), fixture.intent.note_path.read_bytes())
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold, match="holder_proof_changed"):
+        sdlc_claim.transition_holder_claim(
+            expected=expected,
+            holder_path=record.path,
+            observed=replace(observed, state="ABSENT"),
+            action="audit_absent",
+            caller_pid=None,
+            vault_root=fixture.vault,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            observed_at="20261012T200000Z",
+            audit_work_check=lambda: None,
+        )
+    assert (_tree_snapshot(fixture.cache), fixture.intent.note_path.read_bytes()) == before
+
+
+def test_holder_release_recovers_crash_before_note_effect_without_relabeling(tmp_path, monkeypatch):
+    fixture, record, expected, observed = _holder_transition_fixture(tmp_path, monkeypatch)
+    original = Path.replace
+    before = fixture.intent.note_path.read_bytes()
+
+    def interrupt(path, target):
+        if target == fixture.intent.note_path:
+            raise _Killed
+        return original(path, target)
+
+    kwargs = dict(
+        expected=expected,
+        holder_path=record.path,
+        observed=observed,
+        action="holder_release",
+        caller_pid=os.getpid(),
+        vault_root=fixture.vault,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+    )
+    monkeypatch.setattr(Path, "replace", interrupt)
+    with pytest.raises(_Killed):
+        sdlc_claim.transition_holder_claim(**kwargs, observed_at="20261012T200000Z")
+    assert fixture.intent.note_path.read_bytes() == before
+    monkeypatch.setattr(Path, "replace", original)
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold, match="note"):
+        sdlc_claim.release_claim_residue(
+            vault_root=fixture.vault,
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            role=fixture.intent.role,
+            task_id=fixture.intent.task_id,
+            observed_at="20261012T200001Z",
+        )
+    released = sdlc_claim.transition_holder_claim(**kwargs, observed_at="20261012T200002Z")
+    assert released.shape == "holder_release"
+    assert "200000Z" in released.archive_dir.name
+    assert len(released.archived) == 6
+    assert "status: offered" in fixture.intent.note_path.read_text()
+
+
+@pytest.mark.parametrize("started", ["status", "branch", "pr"])
+def test_holder_release_cannot_park_started_work_without_custody(tmp_path, monkeypatch, started):
+    fixture, record, _, observed = _holder_transition_fixture(tmp_path, monkeypatch)
+    text = fixture.intent.note_path.read_text()
+    if started == "status":
+        text = text.replace("status: claimed", "status: in_progress")
+    elif started == "branch":
+        text = text.replace("\n---\n", "\nbranch: retained-unpushed-repair\n---\n", 1)
+    else:
+        text = text.replace("\n---\n", "\npr: 5079\npr_repo: hapax-systems/hapax-council\n---\n", 1)
+    fixture.intent.note_path.write_text(text)
+    expected = resolve_applied_claim_publication(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        role=fixture.intent.role,
+        session_id=fixture.intent.session_id,
+        task_id=fixture.intent.task_id,
+        transaction_root=fixture.transactions,
+        receipt_root=tmp_path / "receipts",
+        lock_root=fixture.locks,
+    )
+    before = (
+        _tree_snapshot(fixture.cache),
+        _tree_snapshot(fixture.vault),
+        _tree_snapshot(fixture.transactions),
+    )
+    with pytest.raises(sdlc_claim.ClaimResidueArchiveHold, match="holder_release_custody_required"):
+        sdlc_claim.transition_holder_claim(
+            expected=expected,
+            holder_path=record.path,
+            observed=observed,
+            action="holder_release",
+            caller_pid=os.getpid(),
+            vault_root=fixture.vault,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            observed_at="20261012T200000Z",
+        )
+    assert (
+        _tree_snapshot(fixture.cache),
+        _tree_snapshot(fixture.vault),
+        _tree_snapshot(fixture.transactions),
+    ) == before

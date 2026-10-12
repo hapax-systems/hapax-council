@@ -976,6 +976,17 @@ if [[ -f "$PID_FILE" ]]; then
   fi
 fi
 
+# This producer proves local kernel identities. A remote supervisor needs its
+# own declared observation binding; session text and copied epochs cannot stand in.
+if [[ -n "$DISPATCH_HOST_REQUESTED" ]]; then
+  if dispatch_host_is_local "$DISPATCH_HOST_REQUESTED"; then
+    DISPATCH_HOST_REQUESTED=""
+  else
+    echo "hapax-codex-headless: HOLD holder_transport_unsupported. Next action: reconcile the remote producer through the coordinating seat; preserve the current claim." >&2
+    exit 8
+  fi
+fi
+
 if [[ -n "$DISPATCH_HOST_REQUESTED" && -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
   prove_local_fallback_before_claim
   [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
@@ -1063,11 +1074,11 @@ if [[ -z "$DISPATCH_HOST_REQUESTED" && -z "$DISPATCH_HOST" ]]; then
     prove_local_codex_exec_auth "$CODEX_BIN"
     LOCAL_FALLBACK_AUTH_PROVEN=1
   fi
-  if [[ -z "$CLAIMED_TASK" && "$CLAIM_TASK" -eq 1 ]]; then
-    [[ -x "$WORKDIR/scripts/cc-claim" ]] || { echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2; exit 14; }
-    (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CODEX_TASK")
-    CLAIMED_TASK="$CODEX_TASK"
+  if [[ "$CLAIM_TASK" -eq 1 && ! -x "$WORKDIR/scripts/cc-claim" ]]; then
+    echo "hapax-codex-headless: missing cc-claim in $WORKDIR" >&2
+    exit 14
   fi
+  # Claim/resume runs in the committed child, before its exec below.
 fi
 
 if [[ -n "$DISPATCH_HOST" ]]; then
@@ -1227,6 +1238,37 @@ if [[ -n "$DISPATCH_HOST" ]]; then
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
 fi
 
+# One existing registry producer, used by both Codex launch bindings. Pending
+# intent precedes fork; the actual child waits before claim and exec. The
+# supervisor's PID is provenance, never the executor it is about to spawn.
+HOLDER_PYTHON="$(command -v python3)"
+HOLDER_BOOTSTRAP='import os, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+from shared.worktree_registry import await_executor, HolderProofError
+root, path, role, sid, claim, task, executable, *args = sys.argv[1:]
+try:
+    await_executor(path, role=role, session_id=sid)
+except (HolderProofError, OSError, ValueError) as exc:
+    print(f"hapax-codex-headless: HOLD {exc}", file=sys.stderr)
+    sys.exit(8)
+if claim == "1":
+    result = subprocess.run([path + "/scripts/cc-claim", task], cwd=path, stdout=sys.stderr)
+    if result.returncode:
+        sys.exit(result.returncode)
+os.execv(executable, [executable, *args])'
+HOLDER_ARGV=("$HOLDER_PYTHON" -I -c "$HOLDER_BOOTSTRAP" "$EXECUTION_SOURCE_ROOT" "$WORKDIR" "$SESSION" "$SESSION_UUID" "$CLAIM_TASK" "$CODEX_TASK" "$CODEX_BIN" "${CODEX_ARGS[@]}")
+HOLDER_ATTEMPT="$("$HOLDER_PYTHON" -I - "$EXECUTION_SOURCE_ROOT" "$WORKDIR" "$SESSION" "$SESSION_UUID" "$$" "${HOLDER_ARGV[@]}" <<'PYHOLDER'
+import sys
+sys.path.insert(0, sys.argv[1])
+from shared.worktree_registry import begin_executor, HolderProofError
+try:
+    print(begin_executor(sys.argv[2], role=sys.argv[3], session_id=sys.argv[4], producer_pid=int(sys.argv[5]), bootstrap_argv=sys.argv[6:]))
+except (HolderProofError, OSError, ValueError) as exc:
+    print(f'hapax-codex-headless: HOLD {exc}', file=sys.stderr)
+    sys.exit(8)
+PYHOLDER
+)"
+
 # A signal between fork and recording $! must not strand the new child.
 # Record requests here; do not ignore signals in the child at launch.
 PENDING_CANCEL=""
@@ -1242,13 +1284,28 @@ if [[ -n "$DISPATCH_HOST" ]]; then
     -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" "$REMOTE_EXEC_COMMAND" \
     </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 else
-  "$CODEX_BIN" "${CODEX_ARGS[@]}" </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
+  "${HOLDER_ARGV[@]}" </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 fi
 CODEX_PID=$!
 CODEX_PGID="$CODEX_PID"
 if [[ "$MONITOR_WAS_SET" == 0 ]]; then
   set +m
 fi
+# A queued cancellation owns the bootstrap child, before provider admission.
+case "$PENDING_CANCEL" in
+  TERM) cancel_native_child TERM 15 ;;
+  INT) cancel_native_child INT 2 ;;
+esac
+"$HOLDER_PYTHON" -I - "$EXECUTION_SOURCE_ROOT" "$WORKDIR" "$SESSION" "$SESSION_UUID" "$HOLDER_ATTEMPT" "$$" "$CODEX_PID" <<'PYHOLDER'
+import sys
+sys.path.insert(0, sys.argv[1])
+from shared.worktree_registry import commit_executor, HolderProofError
+try:
+    commit_executor(sys.argv[2], role=sys.argv[3], session_id=sys.argv[4], attempt_id=sys.argv[5], producer_pid=int(sys.argv[6]), pid=int(sys.argv[7]))
+except (HolderProofError, OSError, ValueError) as exc:
+    print(f'hapax-codex-headless: HOLD {exc}; pending attempt and logs preserved', file=sys.stderr)
+    sys.exit(8)
+PYHOLDER
 echo "$CODEX_PID" >"$PID_FILE"
 trap 'cancel_native_child TERM 15' TERM
 trap 'cancel_native_child INT 2' INT
