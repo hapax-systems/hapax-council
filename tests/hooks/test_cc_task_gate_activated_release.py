@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
+
+from shared.governance.coord_capabilities import mint_escape_grant, write_grant_file
 
 HOOKS = Path(__file__).resolve().parents[2] / "hooks" / "scripts"
 
@@ -217,3 +221,78 @@ def test_available_lock_module_error_is_not_missing_infrastructure(tmp_path):
     assert result.returncode == 2, result.stderr
     assert "could not be stamped" in result.stderr
     assert "module_root_unavailable" not in result.stderr
+
+
+@pytest.mark.parametrize("activation", ["incomplete", "dangling"])
+def test_signed_escape_grant_denied_with_broken_activation_and_usable_override(
+    tmp_path, activation
+):
+    """An authentic grant cannot authorize importing a stale fallback verifier."""
+    gate = _deployed_gate(tmp_path)
+    override = tmp_path / "stale-override"
+    module = override / "shared/governance/coord_capabilities.py"
+    module.parent.mkdir(parents=True)
+    shutil.copy2(HOOKS.parents[1] / "shared/governance/coord_capabilities.py", module)
+    (override / "shared/__init__.py").touch()
+    (module.parent / "__init__.py").touch()
+    key = b"isolated-signed-grant-activation-test-key"
+    key_file = tmp_path / "grant-key"
+    key_file.write_bytes(key)
+    grants = tmp_path / "grants"
+    grants.mkdir()
+    grant = mint_escape_grant(
+        grantor="operator",
+        scope="cc-task-gate",
+        reason="fixture",
+        ttl_s=3600,
+        key=key,
+        now=time.time(),
+    )
+    write_grant_file(grant, grants / f"{grant.grant_id}.grant")
+    ledger = tmp_path / "methodology.jsonl"
+    env = {
+        "HOME": str(tmp_path),
+        "PATH": "/usr/bin:/bin",
+        "XDG_CACHE_HOME": str(tmp_path / "xdg"),
+        "HAPAX_COORD_REPO_ROOT": str(override),
+        "HAPAX_COORD_GRANT_DIR": str(grants),
+        "HAPAX_COORD_GRANT_KEY": str(key_file),
+        "HAPAX_METHODOLOGY_LEDGER": str(ledger),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    script = (
+        f"SCRIPT_DIR={shlex.quote(str(gate.parent))}\n"
+        f". {shlex.quote(str(gate.parent / 'escape-grant.sh'))}\n"
+        "if escape_grant_allows cc-task-gate; then echo ALLOW; else echo DENY; fi\n"
+    )
+
+    def invoke():
+        return subprocess.run(
+            ["bash", "-c", script],
+            env=env,
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    control = invoke()
+    assert control.returncode == 0, control.stderr
+    assert control.stdout.strip() == "ALLOW", control.stderr
+    assert any(
+        json.loads(line).get("kind") == "escape_grant_honored"
+        for line in ledger.read_text().splitlines()
+    )
+    ledger.unlink()
+    alias = tmp_path / "xdg/hapax/source-activation/worktree"
+    alias.parent.mkdir(parents=True)
+    if activation == "incomplete":
+        (alias / "shared").mkdir(parents=True)
+    else:
+        alias.symlink_to(tmp_path / "removed-release", target_is_directory=True)
+    assert not (alias / "shared/governance/coord_capabilities.py").exists()
+    denied = invoke()
+    assert denied.returncode == 0, denied.stderr
+    assert denied.stdout.strip() == "DENY", denied.stderr
+    rows = ledger.read_text().splitlines() if ledger.exists() else []
+    assert not any(json.loads(line).get("kind") == "escape_grant_honored" for line in rows)

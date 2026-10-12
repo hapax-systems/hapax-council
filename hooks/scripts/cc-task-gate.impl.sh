@@ -1508,8 +1508,9 @@ PYEOF
       # is outside the precise mutation_scope_refs is still allowed. When it
       # is inside the charter_scope, the recorded units are consulted: an
       # edit a unit covers is that unit's work, and an edit no unit covers is
-      # written down as a breach. If the report cannot be written, the edit
-      # stops.
+      # written down as a breach. An unavailable charter module is the named,
+      # ledgered advisory INV-5 substrate failure. With the module available,
+      # a report-write failure stops the edit.
       _charter_shared_top="$(_cc_gate_repo_root shared/charter_claim.py)" || exit 0
       if ! python3 - "$note_path" "$edit_path" "$HOME/.cache/hapax" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" "$_charter_shared_top" <<'PYEOF'
 import json
