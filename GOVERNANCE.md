@@ -7,11 +7,10 @@
 - [Axiom registry](https://github.com/hapax-systems/hapax-constitution/blob/main/axioms/registry.yaml)
 - [Implications](https://github.com/hapax-systems/hapax-constitution/tree/main/axioms/implications/)
 - [Precedents](https://github.com/hapax-systems/hapax-constitution/tree/main/axioms/precedents/)
-- [Axiom registry as Wiki](https://github.com/hapax-systems/hapax-constitution/wiki)
 
 ## Operator
 
-Oudepode The Operator. Single operator, single workstation. The same rules apply across the constellation.
+Single operator, single workstation. The same rules apply across the constellation.
 
 ## Inter-repo position
 
