@@ -18,7 +18,13 @@ from typing import Any
 
 import yaml
 
-from shared.quota_spend_ledger import PAID_CAPACITY_POOLS, QuotaMeasurement, QuotaSpendLedger
+from shared.quota_spend_ledger import (
+    GLMCP_LANE_ROUTE_ID,
+    PAID_CAPACITY_POOLS,
+    QuotaMeasurement,
+    QuotaSpendLedger,
+    glmcp_lane_quota_snapshot,
+)
 from shared.quota_wall import CLAUDE_HEADLESS_ROLES
 
 MEASUREMENT_TTL = timedelta(hours=1)
@@ -346,7 +352,7 @@ def read_receipt_measurements(receipts: Path, family: str) -> list[QuotaMeasurem
         "glm": ("*glm*quota-wall*.yaml", "*glmcp-quota-admission*.yaml"),
         "agy": ("*agy-quota-admission*.yaml", "*agy*quota-wall*.yaml"),
     }
-    rows = []
+    rows = read_glmcp_plan_receipt(receipts) if family == "glm" else []
     latest_admission = None
     for path in sorted({p for pattern in patterns[family] for p in receipts.glob(pattern)}):
         data = receipt_fields(path)
@@ -407,6 +413,122 @@ def read_receipt_measurements(receipts: Path, family: str) -> list[QuotaMeasurem
             )
         )
     return rows
+
+
+def glmcp_plan_measurements(payload: Any, *, at: datetime, source: str) -> list[QuotaMeasurement]:
+    """Project the monitor's token windows; nextResetTime is Unix milliseconds.
+
+    Observed monitor contract: TOKENS_LIMIT unit=3/number=5 is five hours;
+    unit=6/number=1 is seven days. TIME_LIMIT is a separate tool allowance.
+    Never retain provider text, identifiers, or unknown fields.
+    """
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        raise ValueError("plan_usage_unavailable")
+    data = payload.get("data")
+    limits = data.get("limits") if isinstance(data, dict) else None
+    if not isinstance(limits, list):
+        raise ValueError("plan_windows_missing")
+    windows = {}
+    for limit in limits:
+        if not isinstance(limit, dict) or limit.get("type") != "TOKENS_LIMIT":
+            continue
+        unit, count = limit.get("unit"), limit.get("number")
+        if type(unit) is not int or type(count) is not int:
+            raise ValueError("plan_window_invalid")
+        name = {(3, 5): "five_hour", (6, 1): "weekly"}.get((unit, count))
+        if name is None:
+            continue
+        used = number(limit.get("percentage"))
+        reset_ms = limit.get("nextResetTime")
+        reset = instant(reset_ms / 1000) if type(reset_ms) in (int, float) else None
+        hours = WINDOW_HOURS[name]
+        if (
+            name in windows
+            or used is None
+            or not 0 <= used <= 100
+            or reset is None
+            or not at < reset <= at + timedelta(hours=hours)
+        ):
+            raise ValueError("plan_window_invalid")
+        windows[name] = (used, reset, hours)
+    if set(windows) != {"five_hour", "weekly"}:
+        raise ValueError("plan_windows_missing")
+    rows = []
+    for name in ("weekly", "five_hour"):
+        used, reset, hours = windows[name]
+        fresh_until = min(at + timedelta(minutes=15), reset)
+        common = {
+            "observed_at": at,
+            "resets_at": reset,
+            "measurement_fresh_until": fresh_until,
+            "source": source,
+            "window": f"{hours * 60}m",
+        }
+        rows.append(
+            QuotaMeasurement(
+                capacity_id=f"glm.subscription.{name}",
+                quantity=used,
+                unit="percent_used",
+                label="observed",
+                **common,
+            )
+        )
+        rows.append(
+            QuotaMeasurement(
+                capacity_id=f"glm.subscription.{name}.even_pace",
+                quantity=100 * (1 - (reset - at).total_seconds() / (hours * 3600)),
+                unit="percent_used",
+                label="derived",
+                **common,
+            )
+        )
+    return rows
+
+
+def read_glmcp_plan_receipt(receipts: Path) -> list[QuotaMeasurement]:
+    path = receipts / "glmcp-plan-usage.yaml"
+    if not path.is_file():
+        return []
+    data = receipt_fields(path)
+    source = source_ref(path, "glmcp_plan_usage")
+    contract = {
+        "schema": "hapax.glmcp_quota_admission.v1",
+        "provider": "z_ai-glm-coding-plan",
+        "route_id": GLMCP_LANE_ROUTE_ID,
+        "capacity_pool": "subscription_quota",
+        "billing_mode": "coding_plan_subscription",
+        "endpoint": "https://api.z.ai/api/monitor/usage/quota/limit",
+        "supported_tool": "hapax-glmcp-quota-admission",
+        "payg_fallback": False,
+        "secret_value_persisted": False,
+    }
+    at = instant(data.get("observed_at"))
+    if (
+        any(data.get(k) != v for k, v in contract.items())
+        or at is None
+        or data.get("status") != "plan_usage_observed"
+    ):
+        return [
+            measurement("glm.subscription.plan", reason="plan_usage_unavailable", source=source)
+        ]
+    limits = []
+    for name, unit, count in (("five_hour", 3, 5), ("weekly", 6, 1)):
+        reset = instant(data.get(f"{name}_resets_at"))
+        limits.append(
+            {
+                "type": "TOKENS_LIMIT",
+                "unit": unit,
+                "number": count,
+                "percentage": data.get(f"{name}_used_percent"),
+                "nextResetTime": reset.timestamp() * 1000 if reset else None,
+            }
+        )
+    try:
+        return glmcp_plan_measurements(
+            {"success": True, "data": {"limits": limits}}, at=at, source=source
+        )
+    except ValueError:
+        return [measurement("glm.subscription.plan", reason="plan_window_invalid", source=source)]
 
 
 def claude_rate_limit_windows(info: Any) -> dict[str, tuple[float, datetime]]:
@@ -1227,6 +1349,13 @@ def enrich_ledger(
         row.update(stage=stage, next_act=next_act, owner=owner)
         all_measurements.extend(measures)
     payload["freeze"] = freeze_predicate(all_measurements, now=now)
+    if any(r.route_id == GLMCP_LANE_ROUTE_ID for r in registry.routes):
+        payload["quota_snapshots"] = [
+            row for row in payload["quota_snapshots"] if row["route_id"] != GLMCP_LANE_ROUTE_ID
+        ]
+        payload["quota_snapshots"].append(
+            glmcp_lane_quota_snapshot(readings.get("glm", []), now=now).model_dump(mode="json")
+        )
     return QuotaSpendLedger.model_validate(payload)
 
 

@@ -928,6 +928,10 @@ def platform_routes(
     routes: dict[str, list[PlatformCapabilityRoute]] = {}
     for route in registry_routes:
         platform = route.platform.value
+        # This platform probe runs the review-seat wrapper. It cannot observe
+        # interactive lanes, whose quota admission comes from their plan meter.
+        if platform == "glmcp" and route.route_id != "glmcp.review.direct":
+            continue
         if platform in BINARY_BY_PLATFORM:
             routes.setdefault(platform, []).append(route)
     return routes

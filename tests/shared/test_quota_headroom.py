@@ -457,7 +457,10 @@ def test_schema_v1_migration_and_old_reader_projection(tmp_path):
     assert v2.schema_version == 2
     v1 = v2.schema_v1_payload()
     assert v1["schema_version"] == 1 and "freeze" not in v1 and "operator_reports" not in v1
-    assert len(v1["quota_snapshots"]) == len(base.quota_snapshots)
+    assert len(v1["quota_snapshots"]) == len(base.quota_snapshots) + 1
+    assert {row["route_id"] for row in v1["quota_snapshots"]} == {
+        row.route_id for row in base.quota_snapshots
+    } | {"glmcp.interactive.lane"}
     expected = {
         "quota_snapshot_schema",
         "snapshot_id",

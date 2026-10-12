@@ -219,6 +219,17 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "Visible kimi lanes bind tasks through cc-claim in-lane (HAPAX_METHODOLOGY_DISPATCH_TASK).",
     ),
+    ("glmcp", "interactive", "lane"): PlatformPath(
+        "glmcp",
+        "interactive",
+        "lane",
+        "scripts/hapax-glmcp-quota-admission launch <lane> --terminal <tmux|none>",
+        "GLM-5.3 Kimi Code interactive lane on the Z.ai Coding Plan",
+        True,
+        "Pace preflight invokes scripts/hapax-glmcp (#5131) only with fresh plan headroom; "
+        "subscription only, no PAYG fallback. Identity is the Kimi wire model field per turn. "
+        "Declaration only; headless worker dispatch is not admitted by this path.",
+    ),
     ("codex", "headless", "full"): PlatformPath(
         "codex",
         "headless",

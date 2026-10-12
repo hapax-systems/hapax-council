@@ -96,6 +96,51 @@ uv run pytest \
   tests/test_review_team.py::test_gemini_review_family_uses_agy_wrapper_not_legacy_cli
 ```
 
+## GLM Coding Plan interactive lanes
+
+`glmcp.interactive.lane` declares GLM-5.3 on the Kimi Code harness. Its declared
+path is `scripts/hapax-glmcp-quota-admission launch <lane> --terminal <tmux|none>`,
+which checks plan pace before calling the versioned `scripts/hapax-glmcp` from
+PR #5131. The account binding is `hapax-secret glmcp-api-key` through the shared
+FileStore resolver. The wrapper pins `glm-5.3` and the Coding Plan endpoint;
+it has no PAYG or alternate-model path. Actual identity must be read from the
+Kimi wire record's `model` field per turn, with its native session identity.
+The registry retains capability/activation holds and a
+`frontier_review_required` authority ceiling; declaration is not seat acceptance.
+The existing `glmcp.json` platform receipt names only `glmcp.review.direct`:
+its review-wrapper probe supplies no evidence for the interactive lane. The
+lane's quota admission uses its own plan-pace receipt below.
+
+The existing telemetry writer calls `observe-plan` once per ordinary scheduled
+invocation, bounded to 25 seconds. The producer performs only a GET to
+`https://api.z.ai/api/monitor/usage/quota/limit`, without redirects or ambient
+HTTP proxies, and resolves the key inside the process. It projects only the
+five-hour and weekly token-window percentages and reset times, plus derived
+even-pace lines, into `glmcp-plan-usage.yaml` on the existing receipt surface.
+`--check`, `--skip-receipts`, and timestamp replay perform no monitor call. Errors publish a hold
+without provider/credential error text. A failed scheduled child invalidates
+the prior observation, including when it times out before writing.
+
+For a window of length H, the line at observation time T is
+`100 * (1 - (reset - T) / H)`. Weekly usage strictly above that line holds new
+launches. Either window at 100%, missing/incomplete windows, future observations,
+expired resets, and observations at least 15 minutes old also hold. `check-launch`
+uses the actual clock, ignoring the observation-replay `--now` flag. Resets from
+the monitor are epoch milliseconds; fractional seconds survive the receipt and
+ledger round trip. The existing `exhausted` admission state represents the pace
+hold with reason `weekly_above_even_pace`; it does not claim a provider refusal.
+Running lanes are untouched. Direct callers of `scripts/hapax-glmcp` must adopt
+this preflight; changing the registry alone does not intercept those callers.
+
+Numeric measurements use the existing ledger schema 2. The schema-1 compatibility
+projection omits them and cannot supply lane admission. At release, verify all
+live readers accept schema 2 before enabling the existing
+`HAPAX_QUOTA_LEDGER_LIVE_SCHEMA=2` binding. Then read back one actual scheduled
+snapshot's observation time, both percentages/resets, line, and admission result,
+and check `hapax-methodology-dispatch --list-platform-paths`. Source tests and a
+manual GET do not establish scheduled activation. The registry's GLM path is an
+interactive declaration; this change does not add a headless worker adapter.
+
 ## Reaching the Opus Route (signed route-authority receipts)
 
 `--policy-rollback` is **retired** (#3792). It is now a deprecated no-op alias

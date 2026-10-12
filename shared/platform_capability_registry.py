@@ -78,6 +78,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "codex.headless.spark",
         "agy.review.direct",
         "glmcp.review.direct",
+        "glmcp.interactive.lane",
         "local_tool.local.worker",
         "vibe.headless.full",
     }
