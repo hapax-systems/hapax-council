@@ -107,11 +107,17 @@ KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 MAX_DIFF_CHARS = 80_000
+#: Aggregate bound on the JOINED linked cc-task notes after session-log elision
+#: (render_task_note_block's whole-note bound). A join over it refuses the
+#: packet (TaskNoteContextOverflow) rather than truncating a later note's
+#: active contract.
 MAX_TASK_NOTE_CHARS = 60_000
-#: Candidate bound for the MANDATORY portion of linked cc-task notes. Historical
-#: session-log context is elided before this bound applies; mandatory content alone
-#: above it refuses the packet (TaskNoteContextOverflow) rather than truncating the
-#: active contract. A blind prefix at this size is a candidate, not coverage proof.
+#: Per-note bound for the MANDATORY portion of each linked cc-task note; it is
+#: one of the two linked-note bounds together with MAX_TASK_NOTE_CHARS above,
+#: not a sole cap. Historical session-log context is elided before this bound
+#: applies; mandatory content alone above it refuses the packet
+#: (TaskNoteContextOverflow) rather than truncating the active contract. A
+#: blind prefix at this size is a candidate, not coverage proof.
 TASK_NOTE_PROMPT_CHARS = 7_500
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 #: An invalid-output reply is kept (redacted) up to this size so it can be classified
@@ -2313,9 +2319,23 @@ def _fence_closes(stripped: str, fence: tuple[str, int]) -> bool:
     return stripped == char * len(stripped) and len(stripped) >= length
 
 
+def _structural_text(line: str) -> str | None:
+    """Return line content when its indentation still permits Markdown structure.
+
+    Four or more leading spaces (or a leading tab after them) make the line
+    indented-code content: headings and fence lines in it are literal text,
+    never structural. None marks such non-structural lines.
+    """
+    dedented = line.lstrip(" ")
+    if len(line) - len(dedented) > 3 or dedented.startswith("\t"):
+        return None
+    return dedented
+
+
 def _find_fence_close(lines: list[str], start: int, fence: tuple[str, int]) -> int | None:
     for index in range(start, len(lines)):
-        if _fence_closes(lines[index].strip(), fence):
+        structural = _structural_text(lines[index])
+        if structural is not None and _fence_closes(structural, fence):
             return index
     return None
 
@@ -2344,6 +2364,26 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
     leaves the rest of the note mandatory (elide less, never more). A note whose
     mandatory content alone exceeds ``limit`` refuses with the bound and the
     next action instead of truncating.
+
+    Structure follows CommonMark's indentation rule: only a line with at most
+    three leading spaces and no leading tab can carry Markdown structure. A
+    deeper-indented line is indented-code content, so a ``## Session log``
+    heading or fence-looking line inside it is literal text, never a boundary
+    or fence edge.
+
+    Frontmatter is mandatory wholesale: the raw ``---`` that opens it — only at
+    note start or after the linked-note header, allowing blank lines between —
+    begins a pass-through region that ends at the next raw ``---``. Everything
+    inside, including indented headings and fence-looking lines within YAML
+    block scalars such as an exit predicate, is YAML content that can neither
+    open fences nor elide session-log material; the authority case, mutation
+    scope and exit predicate survive byte-for-byte. YAML that never closes
+    keeps the whole note mandatory (elide less, never more).
+
+    The session-log section ends only at a structural ATX H1/H2 heading.
+    Deeper ATX levels and setext underlines stay history: real cc-task session
+    logs carry them as log content, so treating them as boundaries would
+    reclassify legitimate history as mandatory.
     """
 
     def refuse_if_over(rendered: list[str], start: int, name: str) -> None:
@@ -2359,20 +2399,40 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
     lines = text.split("\n")
     out: list[str] = []
     fence: tuple[str, int] | None = None
+    in_frontmatter = False
+    awaiting_frontmatter = True
     note_start: int | None = None
     note_name = "linked cc-task note"
     i = 0
     while i < len(lines):
         line = lines[i]
-        stripped = line.strip()
+        if in_frontmatter:
+            if line == "---":
+                in_frontmatter = False
+            out.append(line)
+            i += 1
+            continue
+        structural = _structural_text(line)
         if fence is not None:
-            if _fence_closes(stripped, fence):
+            if structural is not None and _fence_closes(structural, fence):
                 fence = None
             out.append(line)
             i += 1
             continue
-        fence = _fence_opener(stripped)
+        if structural is None:
+            awaiting_frontmatter = False
+            out.append(line)
+            i += 1
+            continue
+        fence = _fence_opener(structural)
         if fence is not None:
+            awaiting_frontmatter = False
+            out.append(line)
+            i += 1
+            continue
+        if line == "---" and awaiting_frontmatter:
+            in_frontmatter = True
+            awaiting_frontmatter = False
             out.append(line)
             i += 1
             continue
@@ -2380,26 +2440,29 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
             if note_start is not None:
                 refuse_if_over(out, note_start, note_name)
             note_start = len(out)
-            note_name = stripped
+            note_name = structural
+            awaiting_frontmatter = True
             out.append(line)
             i += 1
             continue
-        if stripped == "## Session log":
+        if structural == "## Session log":
+            awaiting_frontmatter = False
             j = i + 1
             dropped = 0
             while j < len(lines):
                 inner_line = lines[j]
-                inner_stripped = inner_line.strip()
-                opener = _fence_opener(inner_stripped)
-                if opener is not None:
-                    close = _find_fence_close(lines, j + 1, opener)
-                    if close is None:
+                inner_structural = _structural_text(inner_line)
+                if inner_structural is not None:
+                    opener = _fence_opener(inner_structural)
+                    if opener is not None:
+                        close = _find_fence_close(lines, j + 1, opener)
+                        if close is None:
+                            break
+                        dropped += close - j + 1
+                        j = close + 1
+                        continue
+                    if inner_structural.startswith("# ") or inner_structural.startswith("## "):
                         break
-                    dropped += close - j + 1
-                    j = close + 1
-                    continue
-                if inner_line.startswith("# ") or inner_line.startswith("## "):
-                    break
                 dropped += 1
                 j += 1
             out.append(line)
@@ -2410,6 +2473,8 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
             )
             i = j
             continue
+        if line.strip() != "":
+            awaiting_frontmatter = False
         out.append(line)
         i += 1
     refuse_if_over(out, note_start if note_start is not None else 0, note_name)

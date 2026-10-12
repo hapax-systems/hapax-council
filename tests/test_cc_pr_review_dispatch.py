@@ -8047,3 +8047,262 @@ mutation_scope_refs:
         message = str(excinfo.value)
         assert "next action" in message
         assert "split the PR" in message
+
+    def test_indented_session_log_inside_frontmatter_block_scalar_is_mandatory(self) -> None:
+        note = (
+            "## Linked task note: task-note-boot-20261012.md\n\n"
+            "---\n"
+            "type: cc-task\n"
+            "task_id: task-note-boot\n"
+            "exit_predicate: |\n"
+            "  predicate line one\n"
+            "  ## Session log\n"
+            "  predicate line two after the embedded heading\n"
+            "authority_case: REQ-embedded-frontmatter\n"
+            "mutation_scope_refs:\n"
+            "- scripts/cc-pr-review-dispatch.py\n"
+            "---\n\n"
+            "# Active contract body\n\n"
+            "MANDATORY-BODY-LINE\n\n"
+            "## Session log\n\n"
+            "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-FRONTMATTER\n"
+        )
+        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        # The entire frontmatter is mandatory: an indented Session log heading
+        # inside the exit_predicate block scalar must not trigger elision of
+        # the predicate remainder, authority_case, scope refs or the closer.
+        assert "predicate line one" in rendered
+        assert "predicate line two after the embedded heading" in rendered
+        assert "authority_case: REQ-embedded-frontmatter" in rendered
+        assert "mutation_scope_refs:" in rendered
+        assert "MANDATORY-BODY-LINE" in rendered
+        # The real session log after the frontmatter and body still elides, once.
+        assert "REAL-LOG-AFTER-FRONTMATTER" not in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_indented_fence_line_inside_fence_is_not_a_closer(self) -> None:
+        body = (
+            "Fence with indented content:\n\n"
+            "```text\n"
+            "    ```\n"
+            "EXAMPLE-AFTER-INDENTED-CLOSER\n"
+            "```\n"
+            "FINAL-BODY-LINE\n"
+        )
+        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-INDENT\n"
+        rendered = dispatch.render_task_note_block(
+            "Linked cc-task note", self._note(body, session_log)
+        )
+        # A four-space-indented fence line is indented-code content, not a
+        # closer: the enclosing fence stays open and later structure stays real.
+        assert "EXAMPLE-AFTER-INDENTED-CLOSER" in rendered
+        assert "FINAL-BODY-LINE" in rendered
+        assert "REAL-LOG-AFTER-INDENT" not in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_indented_session_log_heading_in_code_example_is_not_a_boundary(self) -> None:
+        body = (
+            "Indented code example:\n\n"
+            "    ## Session log\n"
+            "    EXAMPLE-INDENTED-LOG-LINE\n"
+            "\n"
+            "Real body continues.\n"
+        )
+        session_log = "- 2026-10-12T00:00:00Z zeta: REAL-LOG-AFTER-EXAMPLE\n"
+        rendered = dispatch.render_task_note_block(
+            "Linked cc-task note", self._note(body, session_log)
+        )
+        # An indented Session log heading inside a code example is literal
+        # content: no elision may start there.
+        assert "EXAMPLE-INDENTED-LOG-LINE" in rendered
+        assert "Real body continues." in rendered
+        assert "REAL-LOG-AFTER-EXAMPLE" not in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_level3_and_setext_lines_inside_session_log_stay_history(self) -> None:
+        session_log = (
+            "- 2026-10-12T00:00:00Z zeta: EARLY-ENTRY\n\n"
+            "### history subsection\n"
+            "SUBSECTION-HISTORY-LINE\n\n"
+            "setext paragraph in history\n"
+            "---\n\n"
+            "LATE-HISTORY-LINE\n"
+        )
+        note = self._note(body="Active body.\n", session_log=session_log)
+        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
+        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        # Concrete terminator disposition: only structural ATX level-1/2
+        # headings end the log. Level-3+ headings and setext underlines occur
+        # inside history; treating them as terminators would reclassify
+        # legitimate history as post-log mandatory content.
+        assert "EARLY-ENTRY" not in rendered
+        assert "SUBSECTION-HISTORY-LINE" not in rendered
+        assert "LATE-HISTORY-LINE" not in rendered
+        assert "KEPT-AFTER-LOG" in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_setext_underline_after_paragraph_is_not_frontmatter(self) -> None:
+        body = "Setext heading paragraph\n---\n\nBody after the setext heading.\n"
+        session_log = "- 2026-10-12T00:00:00Z zeta: SETEXT-TEST-LOG\n"
+        rendered = dispatch.render_task_note_block(
+            "Linked cc-task note", self._note(body, session_log)
+        )
+        # Frontmatter opens only at note start (after the linked-note header);
+        # a setext underline after a body paragraph stays ordinary content and
+        # the real session log still elides.
+        assert "Setext heading paragraph" in rendered
+        assert "Body after the setext heading." in rendered
+        assert "SETEXT-TEST-LOG" not in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_exact_packet_proof_reproduces_measured_5118_and_5140_packets(self) -> None:
+        """Byte-exact reproduction of the offline packet proofs for #5118 and this PR.
+
+        Measured offline (real registry, real vault notes, merge-base diffs) on
+        2026-10-12: #5118 at head 6444550e7 — diff 39,193 B / 968 lines, prior
+        excerpts 6,425 B / 292 lines, note block 5,483 B / 110 lines, packet
+        60,723 B, tightest seat glm-1 (70,199) headroom 9,476 B. This PR's
+        round-2 bytes against merge-base a4768d884 at measurement — diff
+        45,778 B / 995 lines including 15 backtick-fence and 3 tilde-fence
+        sequences (fence neutralization expands each by 13/10 B), note block
+        4,811 B, packet 60,586 B, tightest seat muse-1 (95,534) headroom
+        34,948 B. The fixtures below reproduce those component sizes
+        deterministically, so the constituted packet must equal the recorded
+        totals and fit every seat the registry seats for each PR. Registry or
+        charter drift changes these totals: re-measure and re-record rather
+        than loosening the equality.
+        """
+        registry = dispatch.review_team.load_lens_registry()
+        lenses = ("tests-cover-the-diff", "exit-predicate-adequacy", "doc-claims-recheck")
+        charters = "\n\n".join(dispatch.review_team.charter_text(lens) for lens in lenses)
+
+        def sized_diff(total_bytes: int, total_lines: int, fences: int = 0, tildes: int = 0) -> str:
+            header = "diff --git a/shared/mod.py b/shared/mod.py\n@@ -10,4 +10,4 @@\n"
+            fill = total_lines - len(header.splitlines())
+            prefixes = ["+ fence marker ``` "] * fences + ["+ fence marker ~~~ "] * tildes
+            prefixes += ["+ evidence filler "] * (fill - len(prefixes))
+            fixed = len(header.encode()) + sum(len(p.encode()) + 1 for p in prefixes)
+            width, remainder = divmod(total_bytes - fixed, fill)
+            diff = "".join(
+                [header]
+                + [
+                    prefix + "y" * (width + (1 if index < remainder else 0)) + "\n"
+                    for index, prefix in enumerate(prefixes)
+                ]
+            )
+            assert len(diff.encode()) == total_bytes and len(diff.splitlines()) == total_lines
+            return diff
+
+        def sized_excerpts(total_bytes: int) -> str:
+            excerpts = "## shared/foo.py:1 (target)\n0001| def target(expected_argument):\n"
+            unit = "0002| return evidence\n"
+            excerpts += unit * ((total_bytes - len(excerpts)) // len(unit) + 1)
+            return excerpts[: total_bytes - 1] + "\n"
+
+        def padded_note(lines: int, width: int, remainder: int, log_entries: int, name: str) -> str:
+            session_log = "\n".join(
+                f"- 2026-10-12T00:{entry:02d}:00:00Z zeta: historical dispatch log entry "
+                f"number {entry:03d} kept for the byte-proof composition"
+                for entry in range(log_entries)
+            )
+            body = "SEED-LINE\n" + "".join(
+                f"body-proof line {index:03d} "
+                + "y" * (width + (remainder if index == lines - 1 else 0))
+                + "\n"
+                for index in range(lines)
+            )
+            return self._note(body=body, session_log=session_log, name=name)
+
+        def prove(
+            *,
+            pr_number: int,
+            head_sha: str,
+            files: tuple[str, ...],
+            note: str,
+            diff: str,
+            excerpts: str,
+            expected_block: tuple[int, int],
+            expected_packet: int,
+        ) -> None:
+            block = dispatch.render_task_note_block("n", note)
+            assert len(block.encode()) == expected_block[0], (
+                f"note block {len(block.encode())} B != recorded {expected_block[0]} B"
+            )
+            assert len(block.split("\n")) == expected_block[1]
+            prompt = dispatch.render_reviewer_prompt(
+                seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
+                pr_info=dispatch.PRInfo(
+                    number=pr_number,
+                    title=f"PR {pr_number}",
+                    body="body",
+                    base_ref="main",
+                    base_sha="0" * 40,
+                    head_ref=f"feat/{pr_number}",
+                    head_sha=head_sha,
+                    changed_file_count=len(files),
+                    is_draft=False,
+                    files=files,
+                ),
+                task_id="proof",
+                team_class="t2_standard",
+                lenses=lenses,
+                charters=charters,
+                pr_body="body",
+                task_note_text=note,
+                diff=diff,
+                prior_criticals=[],
+                prior_file_excerpts=excerpts,
+            )
+            packet_bytes = len(prompt.encode("utf-8"))
+            assert packet_bytes == expected_packet, (
+                f"packet {packet_bytes} B != recorded {expected_packet} B: the renderer "
+                "no longer reproduces the measured #5140/#5118 packet composition"
+            )
+            inputs = dispatch.ConstitutionInputs({}, frozenset(), {}, None, {})
+            formed, _substitution, error = dispatch.constitute_with_substitution(
+                "t2_standard",
+                "claude",
+                registry,
+                inputs,
+                {},
+                pr_number=pr_number,
+                diff_bytes=len(diff.encode()),
+            )
+            assert error is None and formed is not None
+            ceilings = {
+                seat.id: dispatch.review_team.seat_diff_capacity(seat.id, registry)[
+                    "prompt_limit_bytes"
+                ]
+                for seat in formed.seats
+            }
+            assert ceilings
+            for seat_id, ceiling in ceilings.items():
+                assert packet_bytes <= ceiling, f"{seat_id}: {packet_bytes} > {ceiling}"
+            assert "0001| ## Linked task note" in prompt
+            assert "[session log elided:" in prompt
+
+        prove(
+            pr_number=5118,
+            head_sha="6444550e71223d83e17bca2b974d421161eb4f90",  # pragma: allowlist secret
+            files=(
+                "scripts/cc-pr-review-dispatch.py",
+                "tests/test_cc_pr_review_dispatch_rest_budget.py",
+            ),
+            note=padded_note(
+                80, 31, 24, 9, "review-dispatch-scan-spends-the-account-rest-budget-20261011.md"
+            ),
+            diff=sized_diff(39_193, 968),
+            excerpts=sized_excerpts(6_425),
+            expected_block=(5_483, 110),
+            expected_packet=60_723,
+        )
+        prove(
+            pr_number=5140,
+            head_sha="c" * 40,
+            files=("scripts/cc-pr-review-dispatch.py", "tests/test_cc_pr_review_dispatch.py"),
+            note=padded_note(62, 37, 39, 9, "review-packet-task-context-bootstrap-20261012.md"),
+            diff=sized_diff(45_778, 995, fences=15, tildes=3),
+            excerpts="",
+            expected_block=(4_811, 92),
+            expected_packet=60_586,
+        )
