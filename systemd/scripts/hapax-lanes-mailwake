@@ -41,23 +41,39 @@ role_of(){
 }
 inbox_dirs(){ printf '%s\n' "$1"; }
 allowed(){
-  local role
+  local role rc=0
   [[ "$1" =~ ^hapax-(kimi|glmcp|fugu)-[a-z0-9][a-z0-9-]*$ ]] || return 1
   case "$1" in *review*|*frozen*|*protected*) return 1 ;; esac
   role=$(role_of "$1") || return 1
-  if [ -e "$PROTECTION" ]; then
-    [ -r "$PROTECTION" ] || return 1
+  if [ -e "$PROTECTION" ] || [ -L "$PROTECTION" ]; then
+    # Non-regular files can be readable yet fail (directories) or block (FIFOs).
+    # A dangling symlink is a broken binding, not an absent optional registry.
+    if [ ! -f "$PROTECTION" ] || [ ! -r "$PROTECTION" ]; then
+      log 'protection registry unreadable; restore a readable regular protection registry at the declared binding'
+      return 2
+    fi
     # Same authored protection registry as the existing launchers. Narrow on a
     # role or full-session mention; never clear or override protection here.
-    if grep -Fq -- "\`$role\`" "$PROTECTION" || grep -Fq -- "\`$1\`" "$PROTECTION"; then
-      return 1
-    fi
+    grep -Fq -e "\`$role\`" -e "\`$1\`" -- "$PROTECTION" 2>/dev/null || rc=$?
+    case "$rc" in
+      0) return 1 ;; # Protected.
+      1) ;; # A completed read with no match.
+      *) log 'protection registry unreadable; restore a readable regular protection registry at the declared binding'; return 2 ;;
+    esac
   fi
 }
 sessions(){
-  local names t
+  local names t rc
   names=$(tm estate list-sessions -F '#{session_name}') || return 1
-  while IFS= read -r t; do allowed "$t" && printf '%s\n' "$t"; done <<<"$names"
+  while IFS= read -r t; do
+    if allowed "$t"; then
+      printf '%s\n' "$t"
+    else
+      rc=$?
+      # Failure to classify protection is incomplete discovery, not idle health.
+      [ "$rc" != 2 ] || return 2
+    fi
+  done <<<"$names"
   return 0
 }
 lsd(){

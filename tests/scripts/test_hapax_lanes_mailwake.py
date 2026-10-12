@@ -44,7 +44,7 @@ if a[0] == "list-sessions":
         time.sleep(60)
     if cfg.get("fail_list") and n:
         sys.exit(1)
-    print("\n".join(cfg["targets"]))
+    print("\n".join(cfg.get("targets_by_cycle", {}).get(str(n), cfg["targets"])))
     sys.exit(0)
 key = target.lstrip("=")
 if key.startswith("%"):
@@ -95,6 +95,8 @@ elif a[0] == "send-keys":
         paste.write_text(a[-1])
         if bad.get("protect_after"):
             (root / "protection.md").write_text("Protected: `" + key + "`\n")
+        if bad.get("registry_error_after"):
+            (root / "protection.md").mkdir()
     elif a[-1] == "Enter":
         if bad.get("enter_fail"):
             paste.unlink()
@@ -118,6 +120,18 @@ def run_wake(tmp_path):
     fake = bindir / "tmux"
     fake.write_text(f"#!{sys.executable}\n" + FAKE_TMUX)
     fake.chmod(0o755)
+    grep = bindir / "grep"
+    grep.write_text(
+        f"#!{sys.executable}\nimport json,os,sys\nfrom pathlib import Path\n"
+        "root=Path(os.environ['FAKE_ROOT'])\n"
+        "cfg=json.loads((root/'config.json').read_text())\n"
+        "if cfg.get('registry_read_failure') and sys.argv[-1] == os.environ['HAPAX_SESSION_PROTECTION_FILE']:\n"
+        " (root/'registry-read-failed').write_text('injected read failure')\n"
+        " print('private-registry-content-must-not-be-logged', file=sys.stderr)\n"
+        " sys.exit(2)\n"
+        "os.execv('/usr/bin/grep', ['grep', *sys.argv[1:]])\n"
+    )
+    grep.chmod(0o755)
     # Preserve the real one-second paste/Enter gap; shorten only cycle/stability waits.
     sleeper = bindir / "sleep"
     sleeper.write_text(
@@ -148,6 +162,11 @@ def run_wake(tmp_path):
 
     def run(config, cycles=2, timeout=12, args=None, extra_env=None, expected_rc=0):
         (tmp_path / "config.json").write_text(json.dumps(config))
+        for mailbox, names in config.get("startup_mail", {}).items():
+            directory = tmp_path / "bus" / mailbox
+            directory.mkdir(parents=True, exist_ok=True)
+            for name in names:
+                (directory / name).write_text("---\npriority: p0\n---\nExisting mail.\n")
         command = ["bash", str(SCRIPT), *(args if args is not None else ["--cycles", str(cycles)])]
         with subprocess.Popen(
             command,
@@ -483,3 +502,65 @@ def test_invalid_cycles_are_rejected_before_tmux(run_wake, args):
     result, calls, _ = run({"targets": []}, args=args, expected_rc=2)
     assert "usage:" in result.stderr
     assert not calls
+
+
+@pytest.mark.parametrize("failure", ["directory", "grep_error", "fifo", "broken_symlink"])
+def test_protection_registry_read_failure_holds_receivers(run_wake, failure):
+    run, path = run_wake
+    registry = path / "protection.md"
+    cfg = config("good")
+    if failure == "directory":
+        registry.mkdir()
+    elif failure == "fifo":
+        os.mkfifo(registry)
+    elif failure == "broken_symlink":
+        registry.symlink_to(path / "missing-registry")
+    else:
+        registry.write_text("Ordinary readable file before an injected I/O failure.\n")
+        cfg["registry_read_failure"] = True
+    result, calls, delivered = run(cfg, cycles=3)
+    if failure == "grep_error":
+        assert (path / "registry-read-failed").exists(), "fault injection must execute"
+    assert not delivered
+    assert not any(c["args"][0] == "send-keys" for c in calls)
+    assert "protection registry unreadable" in result.stderr
+    assert "restore a readable regular protection registry" in result.stderr
+    assert "private-registry-content-must-not-be-logged" not in result.stderr
+    h = json.loads((path / "heartbeat").read_text())
+    assert h["discovery_complete"] is False
+    assert h["status"] == "discovery_failed"
+
+
+def test_registry_error_after_paste_holds_submission(run_wake):
+    run, path = run_wake
+    result, calls, delivered = run(config("bad", bad={"registry_error_after": True}), cycles=3)
+    assert not delivered
+    sends = [c for c in calls if c["args"][0] == "send-keys"]
+    assert len(sends) == 1 and "-l" in sends[0]["args"]
+    assert "restore a readable regular protection registry" in result.stderr
+    assert json.loads((path / "heartbeat").read_text())["held_targets"] == ["hapax-glmcp-bad"]
+
+
+def test_existing_startup_mail_is_baselined_without_touching_input(run_wake):
+    run, _ = run_wake
+    cfg = config("good")
+    cfg["mail"] = {}
+    cfg["startup_mail"] = {"good": ["20261012T160000Z-dev1-existing.md"]}
+    _, calls, delivered = run(cfg, cycles=3)
+    assert not delivered
+    assert not any(c["args"][0] == "send-keys" for c in calls)
+
+
+def test_newly_discovered_target_baselines_then_receives_only_new_mail(run_wake):
+    run, _ = run_wake
+    cfg = config("old", "new")
+    cfg["mail"] = {}
+    cfg["startup_mail"] = {"new": ["20261012T160000Z-dev1-existing.md"]}
+    cfg["targets_by_cycle"] = {"0": ["hapax-glmcp-old"], "1": ["hapax-glmcp-old"]}
+    cfg["mail_by_cycle"] = {"3": {"new": ["20261012T180000Z-dev1-new.md"]}}
+    result, calls, delivered = run(cfg, cycles=4)
+    assert "target added: hapax-glmcp-new" in result.stderr
+    assert [(d["target"], d["cycle"]) for d in delivered] == [("hapax-glmcp-new", 3)]
+    sends = [c for c in calls if c["args"][0] == "send-keys"]
+    assert len(sends) == 2
+    assert all(c["args"][2] == "%101" for c in sends)
