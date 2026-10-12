@@ -2304,6 +2304,8 @@ def _neutralize_markdown_fences(text: str) -> str:
 
 _FENCE_BACKTICK_OPEN_RE = re.compile(r"^`{3,}[^`]*$")
 _FENCE_TILDE_OPEN_RE = re.compile(r"^~{3,}")
+_FENCE_BACKTICK_CLOSE_RE = re.compile(r"^(`{3,})[ \t]*$")
+_FENCE_TILDE_CLOSE_RE = re.compile(r"^(~{3,})[ \t]*$")
 _ATX_H1_H2_BOUNDARY_RE = re.compile(r"^#{1,2}(?:[ \t].*)?$")
 
 
@@ -2317,7 +2319,9 @@ def _fence_opener(stripped: str) -> tuple[str, int] | None:
 
 def _fence_closes(stripped: str, fence: tuple[str, int]) -> bool:
     char, length = fence
-    return stripped == char * len(stripped) and len(stripped) >= length
+    closer = _FENCE_BACKTICK_CLOSE_RE if char == "`" else _FENCE_TILDE_CLOSE_RE
+    match = closer.match(stripped)
+    return match is not None and len(match.group(1)) >= length
 
 
 def _structural_text(line: str) -> str | None:
@@ -2360,11 +2364,12 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
     review instructions and acceptance-bearing content stay byte-for-byte. A
     ``## Session log`` line inside a fenced block is body content, not a section
     boundary. Fences track the opening delimiter character and length: a valid
-    closer repeats the character on a bare fence line at least as long, so a
-    mismatched or shorter fence line stays body content, and an unclosed fence
-    leaves the rest of the note mandatory (elide less, never more). A note whose
-    mandatory content alone exceeds ``limit`` refuses with the bound and the
-    next action instead of truncating.
+    closer repeats the character on a fence line at least as long, optionally
+    followed by trailing spaces or tabs (CommonMark), so a mismatched or shorter
+    fence line stays body content, and an unclosed fence leaves the rest of the
+    note mandatory (elide less, never more). A note whose mandatory content
+    alone exceeds ``limit`` refuses with the bound and the next action instead
+    of truncating.
 
     Structure follows CommonMark's indentation rule: only a line with at most
     three leading spaces and no leading tab can carry Markdown structure. A

@@ -7718,6 +7718,35 @@ mutation_scope_refs:
         note = self._note(body=body, session_log=session_log) + suffix
         return dispatch.render_task_note_block("Linked cc-task note", note)
 
+    @classmethod
+    def _prompt_rendered(cls, renderer: str, note: str) -> str:
+        if renderer == "note-block":
+            return dispatch.render_task_note_block("Linked cc-task note", note)
+        common = dict(
+            task_id="task-note-boot",
+            team_class="t2_standard",
+            lenses=("tests-cover-the-diff",),
+            charters="# tests-cover-the-diff\n",
+            task_note_text=note,
+        )
+        if renderer == "pr-prompt":
+            return dispatch.render_reviewer_prompt(
+                seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
+                pr_info=cls._pr_info(),
+                pr_body="body",
+                diff="diff --git a/shared/foo.py b/shared/foo.py\n",
+                prior_criticals=[],
+                **common,
+            )
+        return dispatch.render_artifact_reviewer_prompt(
+            seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
+            head_sha="c" * 40,
+            manifest=[{"path": "shared/foo.py"}],
+            lineage={"grants": []},
+            contents={"shared/foo.py": "def foo():\n    return 1\n"},
+            **common,
+        )
+
     def test_session_log_elided_visible_mandatory_preserved_beyond_cap(self) -> None:
         tail_marker = "MANDATORY-TAIL-BEYOND-CANDIDATE-CAP"
         filler = "x" * 5_800
@@ -7760,34 +7789,7 @@ mutation_scope_refs:
         )
         if terminator:
             note += f"\n{terminator}\n\nMANDATORY-ACCEPTANCE-CANARY\n"
-        if renderer == "note-block":
-            rendered = dispatch.render_task_note_block("Linked cc-task note", note)
-        else:
-            common = dict(
-                task_id="task-note-boot",
-                team_class="t2_standard",
-                lenses=("tests-cover-the-diff",),
-                charters="# tests-cover-the-diff\n",
-                task_note_text=note,
-            )
-            if renderer == "pr-prompt":
-                rendered = dispatch.render_reviewer_prompt(
-                    seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
-                    pr_info=self._pr_info(),
-                    pr_body="body",
-                    diff="diff --git a/shared/foo.py b/shared/foo.py\n",
-                    prior_criticals=[],
-                    **common,
-                )
-            else:
-                rendered = dispatch.render_artifact_reviewer_prompt(
-                    seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
-                    head_sha="c" * 40,
-                    manifest=[{"path": "shared/foo.py"}],
-                    lineage={"grants": []},
-                    contents={"shared/foo.py": "def foo():\n    return 1\n"},
-                    **common,
-                )
+        rendered = self._prompt_rendered(renderer, note)
         # Every renderer shares the rule, and every ATX H1/H2 terminator form
         # — space-separated, tab-separated or bare — ends the elision so
         # acceptance-bearing content after it survives instead of eliding.
@@ -8056,6 +8058,40 @@ mutation_scope_refs:
         assert "EARLY-HISTORY-LINE" not in rendered
         assert "HISTORY-AFTER-UNCLOSED" in rendered
         assert "KEPT-AFTER-LOG" in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    @pytest.mark.parametrize(
+        ("fence", "trailing"),
+        [
+            pytest.param("```", "  ", id="backtick-spaces"),
+            pytest.param("```", "\t", id="backtick-tab"),
+            pytest.param("~~~", "  ", id="tilde-spaces"),
+            pytest.param("~~~", "\t", id="tilde-tab"),
+        ],
+    )
+    @pytest.mark.parametrize("renderer", ["note-block", "pr-prompt", "artifact-prompt"])
+    def test_valid_whitespace_fence_closer_keeps_mandatory_acceptance(
+        self, renderer: str, fence: str, trailing: str
+    ) -> None:
+        session_log = (
+            "- 2026-10-12T00:00:00Z zeta: EARLY-HISTORY-ENTRY\n\n"
+            f"{fence}text\nFENCED-HISTORY-EXAMPLE\n{fence}{trailing}\n\n"
+            "## Acceptance\n\nMANDATORY-ACCEPTANCE-CANARY\n\n"
+            f"{fence}\nSECOND-FENCED-EXAMPLE\n{fence}\n"
+        )
+        note = self._note(body="Active body before the log.\n", session_log=session_log)
+        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
+        rendered = self._prompt_rendered(renderer, note)
+        # A closing fence may carry trailing horizontal whitespace (CommonMark):
+        # the historical fence closes at its own closer, the elision then ends at
+        # ## Acceptance, and neither the acceptance canary nor the later fenced
+        # example is swallowed by a farther-mistaken close.
+        assert "## Acceptance" in rendered
+        assert "MANDATORY-ACCEPTANCE-CANARY" in rendered
+        assert "SECOND-FENCED-EXAMPLE" in rendered
+        assert "KEPT-AFTER-LOG" in rendered
+        assert "EARLY-HISTORY-ENTRY" not in rendered
+        assert "FENCED-HISTORY-EXAMPLE" not in rendered
         assert rendered.count("[session log elided:") == 1
 
     def test_dispatcher_preamble_not_charged_to_first_note_bound(self) -> None:
