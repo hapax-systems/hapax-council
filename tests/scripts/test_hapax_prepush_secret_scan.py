@@ -183,6 +183,25 @@ def test_lockfile_integrity_requires_exact_structure(tmp_path, name, case):
     else:
         assert result.returncode == 1, result.stderr
         assert "Base64 High Entropy String" in result.stderr
+    assert "Remedy:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("name", ["package-lock.json", "pnpm-lock.yaml"])
+@pytest.mark.parametrize(
+    "last_symbol",
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",  # pragma: allowlist secret
+)
+def test_lockfile_integrity_padding_bits(name, last_symbol):
+    """Compare every final base64 symbol against an independent encoding round trip."""
+    scanner = runpy.run_path(str(SCRIPT))
+    original = base64.b64encode(hashlib.sha512(b"registry fixture").digest()).decode()
+    encoded = original[:-3] + last_symbol + "=="
+    text = _lock_fixture(name).replace(original, encoded)
+    canonical = base64.b64encode(base64.b64decode(encoded, validate=True)).decode() == encoded
+    value = "sha512-" + encoded
+    expected = text.replace(value, "A" * len(value)) if canonical else text
+    assert scanner["lockfile_detector_text"](name, text) == expected
 
 
 def test_lockfile_parser_unavailable_refuses(tmp_path, monkeypatch):
@@ -1239,6 +1258,41 @@ def clean_detector(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     return bin_dir
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError, subprocess.TimeoutExpired])
+def test_detector_unavailable_refuses(tmp_path, clean_detector, monkeypatch, capsys, failure):
+    """An unavailable detector must refuse without leaking its exception payload."""
+    repo = _repo(tmp_path)
+    tip = _commit(repo, "probe.txt", "ordinary content\n")
+    scanner = runpy.run_path(str(SCRIPT))
+    monkeypatch.chdir(repo)
+    original_run = subprocess.run
+    invocations = []
+    private_detail = "synthetic detector exception payload"
+
+    def unavailable(cmd, *args, **kwargs):
+        if cmd[0] != str(clean_detector / "detect-secrets"):
+            return original_run(cmd, *args, **kwargs)
+        invocations.append(kwargs["cwd"])
+        assert kwargs["timeout"] == 600
+        if failure is FileNotFoundError:
+            raise FileNotFoundError(private_detail)
+        raise subprocess.TimeoutExpired(cmd, 600, output=private_detail, stderr=private_detail)
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    with pytest.raises(SystemExit) as error:
+        scanner["scan_with_detector"](tip, ["probe.txt"], {"probe.txt": [(1, "ordinary content")]})
+    assert error.value.code == 3
+    diagnostic = capsys.readouterr()
+    assert not diagnostic.out
+    assert "REFUSED [detector-unavailable]" in diagnostic.err
+    assert failure.__name__ in diagnostic.err
+    assert "unscanned content: probe.txt" in diagnostic.err
+    assert "Remedy:" in diagnostic.err and "retry" in diagnostic.err
+    assert "Traceback" not in diagnostic.err and private_detail not in diagnostic.err
+    assert len(invocations) == 1
+    assert not invocations[0].exists()
 
 
 def _publish_base(repo: Path, tmp_path: Path) -> Path:
