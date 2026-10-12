@@ -185,7 +185,16 @@ normalize_shell_event() {
      elif ($ti | type) == "object" then
        ($ti.command // $ti.cmd // $ti.shell_command // $ti.arguments.command // $ti.args.command // "")
      else "" end | tostring) as $command |
-    (.tool_output // .tool_response.output // .tool_response.stdout // .tool_response // "" |
+    # Native tool_response may be any JSON value; index only object responses.
+    # Null means absent, but false and empty strings are complete output values.
+    (.tool_response as $response |
+     if .tool_output != null then .tool_output
+     elif ($response | type) == "object" then
+       if $response.output != null then $response.output
+       elif $response.stdout != null then $response.stdout
+       else $response end
+     elif $response != null then $response
+     else "" end |
      if type == "string" then . else @json end) as $tool_output |
     {
       hook_event_name: $event,
