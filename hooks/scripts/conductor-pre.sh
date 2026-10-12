@@ -18,15 +18,13 @@ ROLE="$(hapax_effective_role 2>/dev/null || true)"
 SOCK="/run/user/$(id -u)/conductor-${ROLE}.sock"
 [ -S "$SOCK" ] || exit 0  # No conductor = allow all
 
-# Build event JSON safely with jq (no string interpolation)
-TOOL_NAME="$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)"
-TOOL_INPUT="$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null)"
-EVENT="$(jq -cn \
-    --arg event_type "pre_tool_use" \
-    --arg tool_name "$TOOL_NAME" \
-    --arg session_id "$SESSION_ID" \
-    --argjson tool_input "$TOOL_INPUT" \
-    '{event_type: $event_type, tool_name: $tool_name, tool_input: $tool_input, session_id: $session_id}')"
+# Keep tool data on stdin: a single argv string cannot exceed MAX_ARG_STRLEN.
+EVENT="$(printf '%s' "$INPUT" | jq -c '{
+    event_type: "pre_tool_use",
+    tool_name: (.tool_name // ""),
+    tool_input: (.tool_input // {}),
+    session_id: (.session_id // "")
+}')"
 
 RESPONSE="$(echo "$EVENT" | timeout 2 socat - UNIX-CONNECT:"$SOCK" 2>/dev/null)" || exit 0
 
