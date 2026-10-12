@@ -229,6 +229,9 @@ class TestEscapeGrant:
         env = dict(os.environ)
         env["HAPAX_COORD_GRANT_DIR"] = str(grant_dir)
         env["HAPAX_COORD_GRANT_KEY"] = str(key)
+        # Grants are session-bound (escape-grants-bind-to-the-minting-session-20261011):
+        # this lane's session must match the session the grant was minted for.
+        env["HAPAX_SESSION_ID"] = "stale-test-session"
         return env
 
     def _drop_grant(self, tmp_path: Path, *, scope: str) -> None:
@@ -241,6 +244,7 @@ class TestEscapeGrant:
             ttl_s=3600,
             key=self._KEY,
             now=time.time(),
+            session="stale-test-session",
         )
         write_grant_file(grant, grant_dir / f"{grant.grant_id}.grant")
 

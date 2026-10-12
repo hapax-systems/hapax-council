@@ -202,10 +202,13 @@ class EscapeGrant:
 
     escape-grants-bind-to-the-minting-session-20261011: the grant also carries
     the minting ``session`` (plus optional narrowing ``paths`` and a best-effort
-    minting ``role``) in its SIGNED payload. ``session == ""`` is the legacy
-    UNBOUND shape — still parseable (enforcement lands in a later slice). An
-    unbound grant signs the PRE-binding payload, so grants minted before this
-    slice verify unchanged; a bound grant's signature covers its binding fields.
+    minting ``role``) in its SIGNED payload, so it releases only the session
+    that minted it. ``session == ""`` is the legacy UNBOUND shape — still
+    parseable, but verification refuses it with ``NEXT_ACTION: re-mint with
+    your session``. An unbound grant signs the PRE-binding payload, so grants
+    minted before the binding existed stay byte-identical on disk; since slice
+    2 the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION`` instead of
+    minting that shape.
     """
 
     grant_id: str
@@ -215,7 +218,7 @@ class EscapeGrant:
     issued_at: float
     expires_at: float
     signature: str
-    session: str = ""  # minting session; "" = unbound (legacy)
+    session: str = ""  # minting session; "" = unbound (legacy) → refused
     paths: tuple[str, ...] = ()  # optional narrowing; () = any path
     role: str = ""  # minting role, signed for attribution only
 
@@ -258,8 +261,11 @@ def mint_escape_grant(
 
     ``session``/``paths``/``role`` are folded into the signature when the grant
     is BOUND (any of them non-default) — rebinding or re-attributing a minted
-    grant then fails verification. An unbound grant signs the pre-binding
-    payload, so it verifies identically before and after this slice.
+    grant then fails verification. An unbound grant signs the PRE-binding
+    payload (byte-identical to a mint from before the binding existed), and
+    verification refuses it with ``NEXT_ACTION: re-mint with your session``;
+    since slice 2 the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION``
+    instead of minting the unbound shape.
     """
     fields: dict[str, object] = {
         "grant_id": secrets.token_hex(16),
@@ -325,14 +331,15 @@ def read_grant_file(path: str | Path) -> EscapeGrant | None:
         return None
 
 
+#: Surfaced when a mechanically valid grant is refused ONLY by its session/path
+#: binding — the narrow next action is a fresh, session-bound mint.
+GRANT_REBIND_NEXT_ACTION = "re-mint with your session"
+
+
 def _grant_mechanically_valid(
     grant: EscapeGrant | None, *, key: bytes, now: float, gate: str | None
 ) -> bool:
-    """Signature, expiry and gate coverage — the mechanically checkable legs.
-
-    Session/path binding is deliberately NOT checked here; it composes in
-    :func:`verify_escape_grant`.
-    """
+    """The pre-binding contract: signature + expiry + scope only."""
     if grant is None:
         return False
     if not _verify_sig(grant._signing_payload(), grant.signature, key):
@@ -351,21 +358,27 @@ def verify_escape_grant(
     session: str | None = None,
     path: str | None = None,
 ) -> bool:
-    """True iff the grant's signature matches, it is unexpired, and it covers ``gate``.
+    """True iff the grant's signature matches, it is unexpired, covers ``gate``,
+    and is bound to THIS session.
 
-    Pure: signature + expiry + scope only — no network, no daemon. This is what
-    makes the escape daemon-independent (NEW-2 / INV-4).
-
-    ``session`` and ``path`` narrow which grants are honored (the minting session
-    and named paths); this slice plumbs the kwargs through the API and CLI, and
-    the binding enforcement follows in slice 3 of
-    escape-grants-bind-to-the-minting-session-20261011.
+    Session binding (escape-grants-bind-to-the-minting-session-20261011): an
+    unbound grant (``session == ""`` — a legacy pre-binding file; since slice 2
+    the INV-3/4/5 auto-mint binds to ``ESCAPE_AUTO_MINT_SESSION`` and no longer
+    mints that shape) is refused with ``NEXT_ACTION: re-mint with your
+    session``, as is a caller that supplies no session or a different one. A
+    grant with narrowing ``paths`` releases only those paths when the caller
+    supplies a ``path`` (no ``path`` argument + paths on the grant → allow).
+    Pure: signature + expiry + scope + binding — no network, no daemon (NEW-2 / INV-4).
     """
     if grant is None:
         return False
-    # Session/path enforcement lands in slice 3 (escape-grants-bind-to-the-
-    # minting-session-20261011); this slice carries the plumbing only.
-    return _grant_mechanically_valid(grant, key=key, now=now, gate=gate)
+    if not _grant_mechanically_valid(grant, key=key, now=now, gate=gate):
+        return False
+    if not grant.session:
+        return False
+    if session is None or session != grant.session:
+        return False
+    return not (grant.paths and path is not None and path not in grant.paths)
 
 
 # --- AVWitnessReceipt (AVSDLC Tier-C: independent runtime-witness evidence) ----
@@ -595,9 +608,9 @@ def main(argv: list[str] | None = None) -> int:
     vg = sub.add_parser("verify-grant")
     vg.add_argument("--file", required=True)
     vg.add_argument("--gate", default=None)
-    vg.add_argument("--key-file", dest="key_file", required=True)
     vg.add_argument("--session", default=None)
     vg.add_argument("--path", default=None)
+    vg.add_argument("--key-file", dest="key_file", required=True)
 
     md = sub.add_parser("mint-dispatch")
     md.add_argument("--task", required=True)
@@ -649,7 +662,13 @@ def main(argv: list[str] | None = None) -> int:
         ok = verify_escape_grant(
             grant, key=key, now=now, gate=args.gate, session=args.session, path=args.path
         )
-        print(json.dumps({"valid": ok, "grant_id": grant.grant_id if grant else None}))
+        result: dict[str, object] = {"valid": ok, "grant_id": grant.grant_id if grant else None}
+        if not ok and _grant_mechanically_valid(grant, key=key, now=now, gate=args.gate):
+            # Well-signed, unexpired, covering — refused ONLY by the session/path
+            # binding: the narrow next action is a fresh, session-bound mint.
+            result["next_action"] = GRANT_REBIND_NEXT_ACTION
+            print(f"NEXT_ACTION: {GRANT_REBIND_NEXT_ACTION}", file=sys.stderr)
+        print(json.dumps(result))
         return 0 if ok else 1
 
     if args.cmd == "mint-dispatch":
