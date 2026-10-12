@@ -8154,3 +8154,121 @@ mutation_scope_refs:
         assert "Body after the setext heading." in rendered
         assert "SETEXT-TEST-LOG" not in rendered
         assert rendered.count("[session log elided:") == 1
+
+    def test_tab_separated_and_empty_h1_h2_terminate_session_log_elision(self) -> None:
+        for terminator in ("##\tAcceptance", "#\tTimeline", "##"):
+            session_log = "- 2026-10-12T00:00:00Z zeta: TAB-EMPTY-HISTORY\n"
+            note = self._note(body="Active body.\n", session_log=session_log)
+            note += f"\n{terminator}\n\nMANDATORY-ACCEPTANCE-CANARY\n"
+            rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+            # ATX H1/H2 written with a tab separator or empty at end of
+            # line is still a structural terminator: acceptance-bearing
+            # content after it survives instead of being elided as history.
+            assert "TAB-EMPTY-HISTORY" not in rendered, terminator
+            assert terminator in rendered, terminator
+            assert "MANDATORY-ACCEPTANCE-CANARY" in rendered, terminator
+            assert rendered.count("[session log elided:") == 1, terminator
+
+    def test_tab_and_empty_h1_h2_terminators_cover_both_prompt_renderers(self) -> None:
+        common = dict(
+            task_id="task-note-boot",
+            team_class="t2_standard",
+            lenses=("tests-cover-the-diff",),
+            charters="# tests-cover-the-diff\n",
+        )
+        for terminator in ("##\tAcceptance", "#\tTimeline", "##"):
+            note = self._note(
+                body="Active body kept by both renderers.\n",
+                session_log="- 2026-10-12T00:00:00Z zeta: RENDERER-LOG-CANARY\n",
+            )
+            note += f"\n{terminator}\n\nMANDATORY-ACCEPTANCE-CANARY\n"
+            pr_prompt = dispatch.render_reviewer_prompt(
+                seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
+                pr_info=self._pr_info(),
+                pr_body="body",
+                diff="diff --git a/shared/foo.py b/shared/foo.py\n",
+                prior_criticals=[],
+                task_note_text=note,
+                **common,
+            )
+            artifact_prompt = dispatch.render_artifact_reviewer_prompt(
+                seat=dispatch.review_team.Seat(id="codex-1", family="codex"),
+                head_sha="c" * 40,
+                manifest=[{"path": "shared/foo.py"}],
+                lineage={"grants": []},
+                contents={"shared/foo.py": "def foo():\n    return 1\n"},
+                task_note_text=note,
+                **common,
+            )
+            for prompt in (pr_prompt, artifact_prompt):
+                assert "MANDATORY-ACCEPTANCE-CANARY" in prompt, terminator
+                assert "RENDERER-LOG-CANARY" not in prompt, terminator
+                assert "[session log elided:" in prompt, terminator
+
+    def test_unclosed_frontmatter_keeps_whole_note_mandatory(self) -> None:
+        note = (
+            "## Linked task note: task-note-boot-20261012.md\n\n"
+            "---\n"
+            "type: cc-task\n"
+            "task_id: task-note-boot\n"
+            "exit_predicate: |\n"
+            "  predicate line one\n"
+            "  ## Session log\n"
+            "  LOG-LINE-INSIDE-UNCLOSED-FRONTMATTER\n"
+        )
+        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        # YAML that never closes keeps the whole note mandatory: nothing in an
+        # unclosed frontmatter region is treated as a session-log boundary.
+        assert "LOG-LINE-INSIDE-UNCLOSED-FRONTMATTER" in rendered
+        assert "predicate line one" in rendered
+        assert "[session log elided:" not in rendered
+
+    def test_leading_tab_indentation_is_indented_code_not_structure(self) -> None:
+        body = "Active body.\n\n\t## Session log\n\nTABBED-HEADING-IS-LITERAL-TEXT\n"
+        session_log = (
+            "- 2026-10-12T00:00:00Z zeta: EARLY-ENTRY\n\n"
+            "\t## Acceptance\n"
+            "TAB-INDENTED-HISTORY-LINE\n"
+        )
+        note = self._note(body=body, session_log=session_log)
+        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
+        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        # A leading tab makes a line indented-code content under the
+        # CommonMark indentation rule: it can neither open the session-log
+        # section in body prose nor terminate the elision from inside history.
+        assert "TABBED-HEADING-IS-LITERAL-TEXT" in rendered
+        assert "\t## Session log" in rendered
+        assert "TAB-INDENTED-HISTORY-LINE" not in rendered
+        assert "EARLY-ENTRY" not in rendered
+        assert "KEPT-AFTER-LOG" in rendered
+        assert rendered.count("[session log elided:") == 1
+
+    def test_closed_tilde_fence_inside_session_log_stays_history(self) -> None:
+        session_log = (
+            "- 2026-10-12T00:00:00Z zeta: EARLY-TILDE-HISTORY\n\n"
+            "~~~\n"
+            "## tilde-fenced heading inside history\n"
+            "~~~\n\n"
+            "LATE-HISTORY-AFTER-TILDE-FENCE\n"
+        )
+        note = self._note(body="Active body before the log.\n", session_log=session_log)
+        note += "\n## Next section\n\nKEPT-AFTER-LOG\n"
+        rendered = dispatch.render_task_note_block("Linked cc-task note", note)
+        # A correctly opened and closed tilde fence inside the log is dropped
+        # wholesale as history, and the structural terminator after it still
+        # ends the elision.
+        assert "EARLY-TILDE-HISTORY" not in rendered
+        assert "tilde-fenced heading inside history" not in rendered
+        assert "LATE-HISTORY-AFTER-TILDE-FENCE" not in rendered
+        assert "KEPT-AFTER-LOG" in rendered
+        assert rendered.count("[session log elided:") == 1
+
+        body_fence = "Body before fence.\n\n~~~\n## Session log\n- FENCED-LOG-LINE\n~~~\n\nBody after fence.\n"
+        rendered_body = dispatch.render_task_note_block(
+            "Linked cc-task note", self._note(body=body_fence, session_log=None)
+        )
+        # At body level a closed tilde fence is content: the session-log
+        # heading inside it never opens an elision region.
+        assert "FENCED-LOG-LINE" in rendered_body
+        assert "Body after fence." in rendered_body
+        assert "[session log elided:" not in rendered_body

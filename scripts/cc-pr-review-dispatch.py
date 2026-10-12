@@ -2304,6 +2304,7 @@ def _neutralize_markdown_fences(text: str) -> str:
 
 _FENCE_BACKTICK_OPEN_RE = re.compile(r"^`{3,}[^`]*$")
 _FENCE_TILDE_OPEN_RE = re.compile(r"^~{3,}")
+_ATX_H1_H2_BOUNDARY_RE = re.compile(r"^#{1,2}(?:[ \t].*)?$")
 
 
 def _fence_opener(stripped: str) -> tuple[str, int] | None:
@@ -2380,7 +2381,10 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
     scope and exit predicate survive byte-for-byte. YAML that never closes
     keeps the whole note mandatory (elide less, never more).
 
-    The session-log section ends only at a structural ATX H1/H2 heading.
+    The session-log section ends only at a structural ATX H1/H2 heading, in
+    every form that can carry one: space- or tab-separated, or an empty
+    heading at end of line. A terminator written ``##\\t`` or a bare ``##``
+    still ends the log, so acceptance-bearing content after it survives.
     Deeper ATX levels and setext underlines stay history: real cc-task session
     logs carry them as log content, so treating them as boundaries would
     reclassify legitimate history as mandatory.
@@ -2461,7 +2465,7 @@ def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROM
                         dropped += close - j + 1
                         j = close + 1
                         continue
-                    if inner_structural.startswith("# ") or inner_structural.startswith("## "):
+                    if _ATX_H1_H2_BOUNDARY_RE.match(inner_structural):
                         break
                 dropped += 1
                 j += 1
