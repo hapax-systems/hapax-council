@@ -7,7 +7,7 @@
 #   - Never runs on main (direct pushes)
 #   - Skips if the failing commit was itself an [auto-fix] (loop prevention)
 #   - Does not checkout or execute PR-head code from this privileged workflow
-#   - Labels PR "needs-human" with failure categories for governed follow-up
+#   - Labels PR "needs-repair" with failure categories for governed follow-up
 #   - Concurrency group prevents racing with itself
 #
 # Portability:
@@ -115,7 +115,7 @@ jobs:
           CATEGORIES: ${{ steps.classify.outputs.categories || 'unknown' }}
         run: |
           set -euo pipefail
-          gh pr edit "$PR_NUMBER" --add-label "needs-human" --repo "$GH_REPO" || true
+          gh pr edit "$PR_NUMBER" --add-label "needs-repair" --repo "$GH_REPO" || true
           gh pr comment "$PR_NUMBER" \
             --repo "$GH_REPO" \
             --body "Auto-fix classified CI failure categories as \`${CATEGORIES}\`. Privileged workflow auto-mutation is disabled; route this through governed remediation." || true

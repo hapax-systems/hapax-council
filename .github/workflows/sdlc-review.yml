@@ -60,7 +60,7 @@ jobs:
           NEXT=$((CURRENT_ROUND + 1))
 
           if [ "$NEXT" -ge 3 ]; then
-            gh pr edit "$PR" --add-label "needs-human"
+            gh pr edit "$PR" --add-label "needs-repair"
             gh pr comment "$PR" --body "## ⚠️ Review Escalation
 
             This PR has been through $NEXT review rounds without approval. Human review needed."
