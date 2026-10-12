@@ -14,7 +14,7 @@
 # a chaos test that proves a hand-written grant still unblocks a lane with no
 # daemon present at all.
 #
-# Mint a grant with:   scripts/coord-grant-mint --scope <gate> --reason "<why>"
+# Mint a grant with:   scripts/coord-grant-mint --scope <gate> --session <session-id> --reason "<why>"
 # The operator (root) may also hand-write the grant file directly when the kernel
 # is down (a cognition-path write, always allowed) — escape never depends on the
 # kernel.
@@ -71,17 +71,42 @@ _escape_grant_repo_root() {
   printf '%s\n' "$r"
 }
 
+# The minting-session env chain, mirroring agent-role.sh hapax_session_id()
+# (guarded: the sourcing shim may not have sourced agent-role.sh).
+_escape_grant_session() {
+  if declare -F hapax_session_id >/dev/null 2>&1; then
+    hapax_session_id
+    return 0
+  fi
+  local v
+  for v in HAPAX_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_SESSION CODEX_THREAD_ID CODEX_THREAD_NAME; do
+    if [[ -n "${!v:-}" ]]; then
+      printf '%s' "${!v}"
+      return 0
+    fi
+  done
+  return 0
+}
+
 # Record that a grant was honored (the audit's "recorded" property). Best-effort;
 # never blocks the allow decision.
 _escape_grant_ledger() {
-  local gate="$1" file="$2" json="${3:-}" gid role
+  local gate="$1" file="$2" session="$3" json="${4:-}" gid role
   gid="$(printf '%s' "$json" \
     | python3 -c 'import sys,json; print(json.load(sys.stdin).get("grant_id") or "")' \
     2>/dev/null || printf '')"
   role="$(hapax_effective_role 2>/dev/null || echo unknown)"
   mkdir -p "$(dirname "$HAPAX_METHODOLOGY_LEDGER")" 2>/dev/null || true
-  printf '{"ts":"%s","kind":"escape_grant_honored","gate":"%s","grant_id":"%s","grant_file":"%s","role":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$gate" "$gid" "$file" "$role" \
+  # JSON-encode every value (encoding repair, 2026-10-12): session/role come
+  # from env chains, gate from the caller, grant_id/grant_file from the grant
+  # — any may carry quotes, backslashes or newlines, and the ledger's parsers
+  # json-decode each physical line. Values pass as argv (never interpolated
+  # into the format) so json.dumps preserves them exactly; the compact
+  # separators keep the established line shape. Best-effort as before: no
+  # python3 → no line, never a corrupt one (the shim already requires python3
+  # to verify the grant at all).
+  python3 -c 'import json,sys,time; print(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "kind": "escape_grant_honored", "gate": sys.argv[1], "grant_id": sys.argv[2], "grant_file": sys.argv[3], "session": sys.argv[4], "role": sys.argv[5]}, separators=(",", ":")))' \
+    "$gate" "$gid" "$file" "$session" "$role" \
     >>"$HAPAX_METHODOLOGY_LEDGER" 2>/dev/null || true
 }
 
@@ -98,7 +123,8 @@ escape_grant_allows() {
   [[ -d "$HAPAX_COORD_GRANT_DIR" ]] || return 1
   [[ -f "$HAPAX_COORD_GRANT_KEY" ]] || return 1
   command -v python3 >/dev/null 2>&1 || return 1
-  local root out f _ng found=1
+  local root out f _ng found=1 session
+  session="$(_escape_grant_session)"
   root="$(_escape_grant_repo_root)"
   [[ -n "$root" ]] || return 1
   _ng="$(shopt -p nullglob 2>/dev/null || printf 'shopt -u nullglob')"
@@ -107,7 +133,7 @@ escape_grant_allows() {
     # verify-grant exits 0 iff the signature is valid, unexpired, AND covers gate.
     if out="$(cd "$root" && python3 -m shared.governance.coord_capabilities \
       verify-grant --file "$f" --gate "$gate" --key-file "$HAPAX_COORD_GRANT_KEY" 2>/dev/null)"; then
-      _escape_grant_ledger "$gate" "$f" "$out"
+      _escape_grant_ledger "$gate" "$f" "$session" "$out"
       found=0
       break
     fi
