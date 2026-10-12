@@ -8306,3 +8306,154 @@ mutation_scope_refs:
             expected_block=(4_811, 92),
             expected_packet=60_586,
         )
+
+    def test_exact_packet_proof_reproduces_measured_5139_refused_packet(self) -> None:
+        """Byte-exact reproduction of the offline packet proof for the refused #5139 packet.
+
+        The normal scan refused PR #5139 twice on 2026-10-12 (17:19:37Z and 17:38:36Z,
+        service journal): status prompt_capacity_exceeded, excerpt_bytes 1167,
+        available_bytes -12168, next_action "split the PR or reconstitute with eligible
+        seats". Offline reproduction at head 0240c94d against the installed release
+        (ea20724ea) matches: prior-critical source excerpts 1,167 B exactly, github-rest
+        diff truncated to 53,518 B / 1,201 lines (12 backtick fences), installed note
+        block 8,934 B, packet 82,374 B on the tightest seat glm-1 (70,199) for headroom
+        -12,175 — within 7 B of the journal's -12,168, the residual being PR-body
+        free-text drift between the journal state and the measurement state.
+
+        With this PR's renderer the same note renders at 5,570 B (3,364 B smaller) and
+        the real-field headroom improves to -8,829 — still beyond the tightest seated
+        ceiling, so the honest outcome remains refusal, not elision: complete source
+        evidence must fit a real seat ceiling or the dispatch refuses. The canonical
+        fixtures below (synthetic PR identity fields, like the #5118/#5140 proofs) pin
+        the component sizes — diff 53,518 B / 1,201 lines / 12 fences, excerpts 1,167 B,
+        note block 5,570 B / 92 lines — the per-seat packets without excerpts, the
+        minimum seated headroom -1,279, and the excerpt admission predicate
+        (1,167 > -1,279) that reproduces the journal refusal. Registry, charter or
+        PR-body drift changes these totals: re-measure and re-record rather than
+        loosening the equality or the ceilings.
+        """
+        registry = dispatch.review_team.load_lens_registry()
+        files = (
+            "docs/runbooks/autoqueue-failed-merge-groups.md",
+            "scripts/cc-pr-autoqueue.py",
+            "shared/merge_queue_lineage.py",
+            "tests/test_cc_pr_autoqueue.py",
+        )
+        lenses = dispatch.review_team.lenses_for_files(files, registry)
+        charters = "\n\n".join(dispatch.review_team.charter_text(lens) for lens in lenses)
+
+        def sized_diff(total_bytes: int, total_lines: int, fences: int = 0) -> str:
+            header = "diff --git a/shared/mod.py b/shared/mod.py\n@@ -10,4 +10,4 @@\n"
+            fill = total_lines - len(header.splitlines())
+            prefixes = ["+ fence marker ``` "] * fences
+            prefixes += ["+ evidence filler "] * (fill - len(prefixes))
+            fixed = len(header.encode()) + sum(len(p.encode()) + 1 for p in prefixes)
+            width, remainder = divmod(total_bytes - fixed, fill)
+            diff = "".join(
+                [header]
+                + [
+                    prefix + "y" * (width + (1 if index < remainder else 0)) + "\n"
+                    for index, prefix in enumerate(prefixes)
+                ]
+            )
+            assert len(diff.encode()) == total_bytes and len(diff.splitlines()) == total_lines
+            return diff
+
+        def sized_excerpts(total_bytes: int) -> str:
+            excerpts = "## shared/foo.py:1 (target)\n0001| def target(expected_argument):\n"
+            unit = "0002| return evidence\n"
+            excerpts += unit * ((total_bytes - len(excerpts)) // len(unit) + 1)
+            return excerpts[: total_bytes - 1] + "\n"
+
+        def padded_note(lines: int, width: int, remainder: int, log_entries: int, name: str) -> str:
+            session_log = "\n".join(
+                f"- 2026-10-12T00:{entry:02d}:00:00Z zeta: historical dispatch log entry "
+                f"number {entry:03d} kept for the byte-proof composition"
+                for entry in range(log_entries)
+            )
+            body = "SEED-LINE\n" + "".join(
+                f"body-proof line {index:03d} "
+                + "y" * (width + (remainder if index == lines - 1 else 0))
+                + "\n"
+                for index in range(lines)
+            )
+            return self._note(body=body, session_log=session_log, name=name)
+
+        note = padded_note(
+            62, 49, 36, 9, "autoqueue-requeues-a-head-whose-merge-group-run-failed-20260916.md"
+        )
+        diff = sized_diff(53_518, 1_201, fences=12)
+        excerpts = sized_excerpts(1_167)
+
+        block = dispatch.render_task_note_block("n", note)
+        assert len(block.encode()) == 5_570, (
+            f"note block {len(block.encode())} B != recorded 5,570 B"
+        )
+        assert len(block.split("\n")) == 92
+
+        inputs = dispatch.ConstitutionInputs({}, frozenset(), {}, None, {})
+        formed, _substitution, error = dispatch.constitute_with_substitution(
+            "t1_critical",
+            "codex",
+            registry,
+            inputs,
+            {"claude": ("claude_review_route_specific_quota_receipt_absent",)},
+            pr_number=5139,
+        )
+        assert error is None and formed is not None
+
+        def render(seat: dispatch.review_team.Seat, prior_file_excerpts: str) -> str:
+            return dispatch.render_reviewer_prompt(
+                seat=seat,
+                pr_info=dispatch.PRInfo(
+                    number=5139,
+                    title="PR 5139",
+                    body="body",
+                    base_ref="main",
+                    base_sha="0" * 40,
+                    head_ref="feat/5139",
+                    head_sha="0240c94d7562fd871a7af732478d37db74b56209",  # pragma: allowlist secret
+                    changed_file_count=len(files),
+                    is_draft=False,
+                    files=files,
+                ),
+                task_id="proof",
+                team_class="t1_critical",
+                lenses=lenses,
+                charters=charters,
+                pr_body="body",
+                task_note_text=note,
+                diff=diff,
+                prior_criticals=[],
+                prior_file_excerpts=prior_file_excerpts,
+            )
+
+        expected_headroom = {"gemini-1": -1_279, "glm-1": -1_279, "codex-1": 319_863}
+        expected_packet = {"gemini-1": 71_484, "glm-1": 71_478, "codex-1": 71_482}
+        headroom = None
+        prompt = ""
+        for seat in formed.seats:
+            prompt = render(seat, "")
+            packet_bytes = len(prompt.encode("utf-8"))
+            assert packet_bytes == expected_packet[seat.id], (
+                f"{seat.id}: packet {packet_bytes} B != recorded {expected_packet[seat.id]} B: the "
+                "renderer no longer reproduces the measured #5139 refused-packet composition"
+            )
+            ceiling = dispatch.review_team.seat_diff_capacity(seat.id, registry)[
+                "prompt_limit_bytes"
+            ]
+            seat_headroom = ceiling - packet_bytes
+            assert seat_headroom == expected_headroom[seat.id], (
+                f"{seat.id}: headroom {seat_headroom} != recorded {expected_headroom[seat.id]}"
+            )
+            headroom = seat_headroom if headroom is None else min(headroom, seat_headroom)
+        # The tightest seated ceiling is already overdrawn without any excerpts, so the
+        # dispatch's excerpt admission predicate reproduces the journal refusal: the
+        # required 1,167 B of prior-critical source evidence cannot be admitted and the
+        # packet is refused whole rather than elided into a ceiling.
+        excerpt_bytes = len(excerpts.encode())
+        assert excerpt_bytes == 1_167
+        assert headroom == -1_279
+        assert excerpt_bytes > headroom
+        assert "0001| ## Linked task note" in prompt
+        assert "[session log elided:" in prompt
