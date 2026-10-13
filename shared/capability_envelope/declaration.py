@@ -92,6 +92,34 @@ class DeclaredFile(BaseModel):
     target: RelativePath
 
 
+class UnitSection(BaseModel):
+    """Limits supplied by admission, in bytes and seconds; no implicit host defaults."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    memory_high: int = Field(gt=0)
+    memory_max: int = Field(gt=0)
+    memory_swap_max: int = Field(ge=0)
+    runtime_max_sec: int = Field(gt=0)
+    oom_policy: Literal["kill"] = "kill"
+    restart: Literal["no"] = "no"
+
+
+class DeclaredChannel(BaseModel):
+    """Additional channels, alongside the existing typed imports and spool.
+
+    Files and Unix endpoints appear under /channels/<name>. Network endpoints require
+    the separately governed egress gate; naming one does not make that gate exist.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: Name
+    kind: Literal["mount", "unix", "network"]
+    source: Path | None = None
+    endpoint: str | None = None
+
+
 class EnvelopeDeclaration(BaseModel):
     """What a capability job may see. Every import defaults to off."""
 
@@ -110,3 +138,5 @@ class EnvelopeDeclaration(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     spool: Path | None = None
     billing_surface: BillingSurface = "subscription"
+    unit: UnitSection | None = None
+    channels: tuple[DeclaredChannel, ...] = ()

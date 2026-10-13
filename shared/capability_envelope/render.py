@@ -17,11 +17,12 @@ Isolation is by construction, not by trusting harness flags:
 - **The environment is cleared.** Only a fixed base, the harness config variables and the
   declared variables are set.
 
-Harness flags are a second layer and never the only one. ``--bare`` is refused unless the
-declaration names API billing: Claude's bare mode does not read ``CLAUDE_CODE_OAUTH_TOKEN``, so it
-changes the billing surface, which must never happen implicitly.
+Subscription execution refuses until the complete invocation has an admitted billing
+qualification. No flag blacklist, executable name or route label establishes that
+qualification. API declarations permit source rendering, never implicit spend authority.
 
-Egress is not narrowed here; network egress is the fabric's R9 gate.
+Network namespaces are private. Declared Unix endpoints are mounted explicitly;
+network egress requires the separately governed R9 gate and otherwise refuses.
 """
 
 from __future__ import annotations
@@ -140,13 +141,37 @@ class RenderedEnvelope(BaseModel):
 
 def _refuse(decl: EnvelopeDeclaration) -> None:
     profile = _PROFILES[decl.harness]
-    if "--bare" in decl.argv and decl.billing_surface != "api":
+    if decl.unit is None:
+        raise EnvelopeRefusal("unit limits are required; next action: declare the unit section")
+    if decl.unit.memory_high > decl.unit.memory_max:
         raise EnvelopeRefusal(
-            "--bare needs declared API billing: Claude's bare mode does not read "
-            "CLAUDE_CODE_OAUTH_TOKEN, so it switches the billing surface; next action: set "
-            "billing_surface='api' in the declaration, or drop --bare and rely on the envelope"
+            "memory_high exceeds memory_max; next action: correct the unit limits"
         )
+    names: set[str] = set()
+    for channel in decl.channels:
+        if channel.kind == "network":
+            raise EnvelopeRefusal(
+                "network egress has no admitted gate binding; next action: supply an admitted "
+                "Unix endpoint or wait for the egress-gate work"
+            )
+        if channel.name in names or channel.source is None or channel.endpoint is not None:
+            raise EnvelopeRefusal("invalid channel; next action: name a unique source binding")
+        names.add(channel.name)
+        if channel.kind == "unix" and not channel.source.is_socket():
+            raise EnvelopeRefusal("Unix endpoint is not a socket; next action: correct its binding")
+        if channel.source.resolve() in (Path("/"), Path.home()):
+            raise EnvelopeRefusal(
+                "channel binds a whole host root/home; next action: narrow its source"
+            )
     for key in decl.env:
+        if key in {
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+        } or key in dict(profile.config_env):
+            raise EnvelopeRefusal("config environment override; next action: use declared imports")
         if _SECRET_ENV_RE.search(key):
             raise EnvelopeRefusal(
                 f"env {key} looks like a credential, and env values appear in the carrier argv; "
@@ -161,6 +186,16 @@ def _refuse(decl: EnvelopeDeclaration) -> None:
         raise EnvelopeRefusal(
             f"no MCP renderer for harness {decl.harness}; next action: drop the MCP servers or "
             "add the harness's MCP config format to the envelope renderer with its tests"
+        )
+    # Route auth_surface and model/effort receipts do not qualify the full
+    # argv/config/env/credential shape. Keep subscription execution held until
+    # existing onboarding/admission supplies that binding; no basename exemption.
+    if decl.billing_surface != "api":
+        raise EnvelopeRefusal(
+            "billing qualification unavailable for subscription execution (including --bare "
+            "and unknown flags); next action: have the existing harness onboarding owner "
+            "qualify the complete argv/config/env/credential shape through execution admission; "
+            "do not substitute API billing. An API declaration is not spend authority"
         )
 
 
@@ -242,9 +277,30 @@ def _placeholder(run_home: Path, target: str, *, directory: bool) -> None:
         path.touch()
 
 
-def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
+def _environment(decl: EnvelopeDeclaration) -> dict[str, str]:
+    """The fixed base plus explicitly declared variables; shared by render and readback."""
+    env = {
+        "HOME": JOB_HOME,
+        "USER": os.environ.get("USER", "job"),
+        "LOGNAME": os.environ.get("USER", "job"),
+        "LANG": "C.UTF-8",
+        "TERM": "dumb",
+        "NO_COLOR": "1",
+    }
+    path_dirs = list(_BASE_PATH)
+    for binary in decl.binaries:
+        parent = str(binary.absolute().parent)
+        if parent not in path_dirs:
+            path_dirs.append(parent)
+    for var, rel in _PROFILES[decl.harness].config_env:
+        env[var] = f"{JOB_HOME}/{rel}"
+    env["PATH"] = ":".join(path_dirs)
+    env.update(decl.env)
+    return env
+
+
+def _render_bwrap(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
     """Build the carrier argv for one run. ``run_root`` must not exist yet (create-once)."""
-    _refuse(decl)
     profile = _PROFILES[decl.harness]
     try:
         run_root.mkdir(parents=True, exist_ok=False)
@@ -265,6 +321,7 @@ def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
         "bwrap",
         "--unshare-pid",
         "--unshare-ipc",
+        "--unshare-net",
         "--unshare-uts",
         "--unshare-cgroup-try",
         "--hostname",
@@ -281,32 +338,20 @@ def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
         elif os.path.isdir(link):
             a += ["--ro-bind", link, link]
     for name in _ETC_ALLOW:
-        a += ["--ro-bind-try", f"/etc/{name}", f"/etc/{name}"]
-    a += ["--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve"]
+        if Path(f"/etc/{name}").exists():
+            a += ["--ro-bind", f"/etc/{name}", f"/etc/{name}"]
     a += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
-    a += ["--bind", str(run_home), JOB_HOME]
+    a += ["--ro-bind", str(run_home), JOB_HOME]
 
-    env: dict[str, str] = {
-        "HOME": JOB_HOME,
-        "USER": os.environ.get("USER", "job"),
-        "LOGNAME": os.environ.get("USER", "job"),
-        "LANG": "C.UTF-8",
-        "TERM": "dumb",
-        "NO_COLOR": "1",
-    }
-    path_dirs = list(_BASE_PATH)
+    env = _environment(decl)
     for binary in decl.binaries:
         resolved = binary.resolve()
         a += ["--ro-bind", str(resolved), str(resolved)]
         if binary.absolute() != resolved:
             a += ["--ro-bind", str(resolved), str(binary.absolute())]
-        parent = str(binary.absolute().parent)
-        if parent not in path_dirs:
-            path_dirs.append(parent)
 
-    for var, rel in profile.config_env:
+    for _var, rel in profile.config_env:
         _placeholder(run_home, rel, directory=True)
-        env[var] = f"{JOB_HOME}/{rel}"
     if decl.harness == "claude":
         settings, state = _claude_config(decl)
         config_dir = run_home / ".claude"
@@ -336,14 +381,14 @@ def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
         masked = _masks(workdir, decl.declared_work_files)
         for rel in masked:
             if (workdir / rel).is_dir():
-                a += ["--tmpfs", f"{JOB_WORK}/{rel}"]
+                a += ["--tmpfs", f"{JOB_WORK}/{rel}", "--remount-ro", f"{JOB_WORK}/{rel}"]
             else:
                 a += ["--ro-bind", str(empty), f"{JOB_WORK}/{rel}"]
     if decl.spool is not None:
         a += ["--bind", str(decl.spool.resolve()), JOB_SPOOL]
+    for channel in decl.channels:
+        a += ["--ro-bind", str(channel.source.resolve()), f"/channels/{channel.name}"]
 
-    env["PATH"] = ":".join(path_dirs)
-    env.update(decl.env)
     a += ["--clearenv"]
     for key, value in env.items():
         a += ["--setenv", key, value]
@@ -360,6 +405,13 @@ def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
         "mcp_servers": [s.name for s in decl.mcp_servers],
     }
     return RenderedEnvelope(argv=tuple(a), run_root=run_root, masked=tuple(masked), facts=facts)
+
+
+def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
+    """Render the T2 filesystem carrier; outer-unit enforcement remains a separate binding."""
+    decl = EnvelopeDeclaration.model_validate(decl.model_dump())
+    _refuse(decl)
+    return _render_bwrap(decl, run_root=run_root.absolute())
 
 
 class EnvelopeCarrierError(RuntimeError):
