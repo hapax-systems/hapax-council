@@ -1,61 +1,8 @@
 """Purchased capacity uses real admission, never a simulated subscription wall."""
 
-import json
 from decimal import Decimal
 
 import pytest
-
-from tests.scripts.test_hapax_glmcp_reviewer import (
-    GLMCP_PAYG_BUDGET_ID,
-    _clean_env,
-    _live_payg_setup,
-    _load_module,
-)
-
-
-def setup_bundle(monkeypatch, tmp_path, model="glm-5.3"):
-    m = _load_module()
-    _clean_env(monkeypatch)
-    path, receipts, _ = _live_payg_setup(m, monkeypatch, tmp_path)
-    now = m.datetime.now(m.UTC).replace(microsecond=0)
-    data = json.loads(path.read_text())
-    budget = next(b for b in data["transition_budgets"] if b["budget_id"] == GLMCP_PAYG_BUDGET_ID)
-    budget.update(
-        total_cap_usd="10",
-        daily_cap_usd="10",
-        per_task_cap_usd="10",
-        profiles_allowed=["glmcp-bundle-support"],
-        task_classes_allowed=["bounded-support"],
-        quality_floors_allowed=["deterministic_ok"],
-        reason_subscription_path_not_used="operator purchased separate capacity; plan available",
-        prepaid_bundle={
-            "endpoint": "https://api.z.ai/api/paas/v4",
-            "secret_source": "filestore:glmcp/api-key",  # pragma: allowlist secret -- entry name
-            "account_binding_ref": "fixture-account-key-binding",
-            "balance_evidence_ref": "fixture-provider-bundle-balance",
-            "no_cash_fallback_evidence_ref": "fixture-provider-stop-observation",
-            "observed_at": now.isoformat(),
-            "fresh_until": (now + m.timedelta(minutes=15)).isoformat(),
-            "model_token_limits": {"glm-5.3": 1000000, "glm-5.3-flash": 1000000},
-            "model_available_tokens": {"glm-5.3": 120000000, "glm-5.3-flash": 100000000},
-            "cash_fallback_allowed": False,
-        },
-    )
-    data["transition_budgets"] = [budget] + [
-        b for b in data["transition_budgets"] if b["budget_id"] != GLMCP_PAYG_BUDGET_ID
-    ]
-    data["spend_receipts"] = []
-    data["artifact_provenance"] = []
-    path.write_text(json.dumps(data))
-    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_BILLING_MODE", "prepaid_bundle")
-    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", model)
-    return m, path, receipts
-
-
-def edit_budget(path, edit):
-    data = json.loads(path.read_text())
-    edit(data["transition_budgets"][0])
-    path.write_text(json.dumps(data))
 
 
 def test_flash_has_own_list_price_and_no_subscription_promotion():
@@ -73,6 +20,7 @@ def test_bundle_declarations_remain_unqualified_support(model, profile):
 
     registry = load_platform_capability_registry()
     route = registry.require("glmcp.receipt_only." + profile)
+    assert "requires accepted stages 2/3" in route.launcher
     assert route.sanctioned_wrapper == "scripts/hapax-glmcp-reviewer"
     assert route.execution_descriptor.model_id.value == "z_ai-" + model
     assert route.execution_descriptor.effort.value == "max"

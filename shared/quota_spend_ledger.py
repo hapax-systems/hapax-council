@@ -1405,6 +1405,7 @@ def evaluate_paid_route_eligibility(
                 if s.bundle_account_ref == bundle.account_binding_ref
             ]
             if any(s.is_frozen_refused() or s.is_unreconciled_overdue(when) for s in spends):
+                admission_blocks.append("bundle account has frozen or overdue spend")
                 continue
             tokens = sum(
                 s.actual_tokens if s.actual_tokens is not None else (s.reserved_tokens or 0)
@@ -1414,6 +1415,7 @@ def evaluate_paid_route_eligibility(
             if tokens + (request.reserved_tokens or 0) > bundle.model_token_limits.get(
                 request.prepaid_model, 0
             ):
+                admission_blocks.append("bundle account model token allowance exhausted")
                 continue
             remaining = min(
                 remaining, budget.total_cap_usd - sum(s.cost_against_cap() for s in spends)
