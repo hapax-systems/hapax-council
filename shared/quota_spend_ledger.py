@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -205,6 +205,17 @@ GLMCP_PAYG_PRICES_USD_PER_MTOK = {
     }
     for model in ("glm-5.3", "glm-5.2")
 }
+# Separate purchased SKU; this does not admit Flash to the subscription review seat.
+# https://docs.z.ai/guides/overview/pricing, checked 2026-10-13.
+GLMCP_PAYG_PRICES_USD_PER_MTOK["glm-5.3-flash"] = {
+    "input": Decimal("0.15"),
+    "cached_input": Decimal("0.03"),
+    "output": Decimal("0.50"),
+}
+ZAI_BUNDLE_ROUTES = {
+    "glm-5.3": "glmcp.receipt_only.api_frontier",
+    "glm-5.3-flash": "glmcp.receipt_only.flash",
+}
 # Chat-template tokens the provider adds around the messages; generous so the bound holds.
 GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE = 256
 GLMCP_PAYG_COST_QUANTUM = Decimal("0.000001")
@@ -292,6 +303,7 @@ class ModelId(StrEnum):
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     Z_AI_GLM_5_3 = "z_ai-glm-5.3"
+    Z_AI_GLM_5_3_FLASH = "z_ai-glm-5.3-flash"
     KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
@@ -406,6 +418,50 @@ PROVIDER_BALANCE_FIELDS = (
 )
 
 
+class PrepaidBundle(StrictModel):
+    """Evidence required for the initial finite purchased-capacity allowance.
+
+    References must come from admitted account/key, balance and provider stop
+    observations. A local budget or an operator purchase report alone cannot
+    establish that the provider will refuse cash rollover.
+    """
+
+    endpoint: Literal["https://api.z.ai/api/paas/v4"]
+    secret_source: Literal["filestore:glmcp/api-key"]
+    account_binding_ref: str = Field(min_length=1)
+    balance_evidence_ref: str = Field(min_length=1)
+    no_cash_fallback_evidence_ref: str = Field(min_length=1)
+    observed_at: datetime
+    fresh_until: datetime
+    model_token_limits: dict[
+        Literal["glm-5.3", "glm-5.3-flash"], Annotated[int, Field(strict=True, gt=0, le=1000000)]
+    ] = Field(min_length=1)
+    model_available_tokens: dict[
+        Literal["glm-5.3", "glm-5.3-flash"], Annotated[int, Field(strict=True, gt=0)]
+    ] = Field(min_length=1)
+    cash_fallback_allowed: Literal[False]
+
+    @model_validator(mode="after")
+    def _bounded_evidence(self) -> Self:
+        _require_aware(self.observed_at, "observed_at")
+        _require_aware(self.fresh_until, "fresh_until")
+        if not 0 < (self.fresh_until - self.observed_at).total_seconds() <= 900:
+            raise ValueError("bundle balance and stop evidence must expire within 15 minutes")
+        if any(
+            v > self.model_available_tokens.get(k, 0) for k, v in self.model_token_limits.items()
+        ):
+            raise ValueError("bundle model limit exceeds observed available tokens")
+        _reject_private_or_identity_refs(
+            [
+                self.account_binding_ref,
+                self.balance_evidence_ref,
+                self.no_cash_fallback_evidence_ref,
+            ],
+            "bundle evidence",
+        )
+        return self
+
+
 class TransitionBudget(StrictModel):
     """Time-boxed paid/API authority. Dates and caps are gates, not hints."""
 
@@ -437,6 +493,8 @@ class TransitionBudget(StrictModel):
     provider_balance_observed_at: datetime | None = None
     provider_balance_covers_spend_before: datetime | None = None
     provider_balance_evidence_ref: str | None = None
+    prepaid_bundle: PrepaidBundle | None = None
+    bounded_task_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _budget_contract(self) -> Self:
@@ -445,6 +503,11 @@ class TransitionBudget(StrictModel):
         if self.expires_at <= self.created_at:
             raise ValueError(f"{self.budget_id} expires_at must be after created_at")
         balance = self.provider_balance_usd
+        if self.prepaid_bundle is not None:
+            if balance is not None:
+                raise ValueError("prepaid tokens cannot be represented as a cash balance")
+            if max(self.total_cap_usd, self.per_task_cap_usd, self.daily_cap_usd) > 10:
+                raise ValueError("initial bundle allowance is at most 10 USD equivalent")
         observed = self.provider_balance_observed_at
         covers = self.provider_balance_covers_spend_before
         evidence = self.provider_balance_evidence_ref
@@ -513,6 +576,10 @@ class TransitionBudget(StrictModel):
         # Budgets without provider balance evidence dump exactly as before the fields existed,
         # so governance records carry over byte-identical through the telemetry writer.
         payload = handler(self)
+        if payload.get("prepaid_bundle") is None:
+            payload.pop("prepaid_bundle", None)
+        if payload.get("bounded_task_id") is None:
+            payload.pop("bounded_task_id", None)
         for key in PROVIDER_BALANCE_FIELDS:
             if payload.get(key) is None:
                 payload.pop(key, None)
@@ -534,7 +601,9 @@ class TransitionBudget(StrictModel):
 
     def matches_request(self, request: PaidRouteRequest) -> bool:
         return (
-            request.provider in self.providers_allowed
+            (self.prepaid_bundle is not None) == (request.prepaid_model is not None)
+            and (request.paid_primary_model is None or self.bounded_task_id == request.task_id)
+            and request.provider in self.providers_allowed
             and request.profile in self.profiles_allowed
             and request.task_class in self.task_classes_allowed
             and request.quality_floor in self.quality_floors_allowed
@@ -578,9 +647,30 @@ class SpendReceipt(StrictModel):
     reconciliation_reason: str | None = None
     artifact_refs: tuple[str, ...] = Field(default=())
     support_artifact_authority: SupportArtifactAuthority = SupportArtifactAuthority.NONE
+    cost_basis: Literal["list_price_equivalent"] | None = None
+    bundle_account_ref: str | None = None
+    reserved_tokens: int | None = Field(default=None, strict=True, gt=0)
+    actual_tokens: int | None = Field(default=None, strict=True, ge=0)
 
     @model_validator(mode="after")
     def _receipt_contract(self) -> Self:
+        if self.cost_basis is not None:
+            if not self.bundle_account_ref or self.reserved_tokens is None:
+                raise ValueError("bundle spend requires account binding and token reservation")
+            if self.model_or_engine not in ZAI_BUNDLE_ROUTES:
+                raise ValueError("bundle spend requires the exact purchased model")
+            if self.route_id != ZAI_BUNDLE_ROUTES[self.model_or_engine]:
+                raise ValueError("bundle model and support route disagree")
+            if (
+                self.support_artifact_authority
+                is not SupportArtifactAuthority.SUPPORT_NON_AUTHORITATIVE
+            ):
+                raise ValueError("bundle output is support only, not independent acceptance")
+        elif any(
+            v is not None
+            for v in (self.bundle_account_ref, self.reserved_tokens, self.actual_tokens)
+        ):
+            raise ValueError("bundle metering requires list_price_equivalent cost basis")
         _require_aware(self.created_at, "created_at")
         if self.reconcile_by is not None:
             _require_aware(self.reconcile_by, "reconcile_by")
@@ -645,6 +735,9 @@ class SpendReceipt(StrictModel):
         payload = handler(self)
         if payload.get("task_hash") is None:
             payload.pop("task_hash", None)
+        for key in ("cost_basis", "bundle_account_ref", "reserved_tokens", "actual_tokens"):
+            if payload.get(key) is None:
+                payload.pop(key, None)
         return payload
 
     def cost_against_cap(self) -> Decimal:
@@ -922,9 +1015,19 @@ class PaidRouteRequest(StrictModel):
     quality_floor: str = Field(min_length=1)
     estimated_cost_usd: Decimal = Field(gt=Decimal("0"))
     capacity_pool: CapacityPool = CapacityPool.API_PAID_SPEND
+    prepaid_model: Literal["glm-5.3", "glm-5.3-flash"] | None = None
+    paid_primary_model: Literal["glm-5.3", "glm-5.3-flash"] | None = None
+    reserved_tokens: int | None = Field(default=None, strict=True, gt=0)
 
     @model_validator(mode="after")
     def _paid_route_request_contract(self) -> Self:
+        model = self.prepaid_model or self.paid_primary_model
+        if self.prepaid_model and self.paid_primary_model:
+            raise ValueError("paid primary and strict purchased-only modes are mutually exclusive")
+        if (model is None) != (self.reserved_tokens is None):
+            raise ValueError("a bundle request needs both model and token reservation")
+        if model and self.route_id != ZAI_BUNDLE_ROUTES[model]:
+            raise ValueError("bundle request model and route disagree")
         if self.capacity_pool.value not in PAID_CAPACITY_POOLS:
             raise ValueError("paid route eligibility can only evaluate paid/API capacity pools")
         if any(
@@ -1265,8 +1368,56 @@ def evaluate_paid_route_eligibility(
         )
 
     cap_eligible: list[tuple[TransitionBudget, Decimal]] = []
+    admission_blocks: list[str] = []
     for budget in unexpired:
         remaining = ledger._budget_remaining_usd(budget)
+        bounded_model = request.prepaid_model or request.paid_primary_model
+        if bounded_model:
+            episode = [
+                s
+                for s in ledger.spend_receipts
+                if s.task_id == request.task_id and s.cost_basis == "list_price_equivalent"
+            ]
+            if any(s.is_frozen_refused() or s.is_unreconciled_overdue(when) for s in episode):
+                admission_blocks.append("paid episode has frozen or overdue spend")
+                continue
+            used = sum(
+                s.actual_tokens if s.actual_tokens is not None else (s.reserved_tokens or 0)
+                for s in episode
+                if s.model_or_engine == bounded_model
+            )
+            if used + (request.reserved_tokens or 0) > 1000000:
+                admission_blocks.append("paid episode model token allowance exhausted")
+                continue
+            remaining = min(remaining, Decimal("10") - sum(s.cost_against_cap() for s in episode))
+        if request.paid_primary_model and budget.provider_balance_usd is None:
+            admission_blocks.append("paid primary requires proven existing funded balance")
+            continue
+        bundle = budget.prepaid_bundle
+        if bundle is not None:
+            if not bundle.observed_at <= when < bundle.fresh_until:
+                admission_blocks.append("strict bundle admission evidence expired or future-dated")
+                continue
+            # Account-wide across budget ids: renewing a budget cannot reset the finite trial.
+            spends = [
+                s
+                for s in ledger.spend_receipts
+                if s.bundle_account_ref == bundle.account_binding_ref
+            ]
+            if any(s.is_frozen_refused() or s.is_unreconciled_overdue(when) for s in spends):
+                continue
+            tokens = sum(
+                s.actual_tokens if s.actual_tokens is not None else (s.reserved_tokens or 0)
+                for s in spends
+                if s.model_or_engine == request.prepaid_model
+            )
+            if tokens + (request.reserved_tokens or 0) > bundle.model_token_limits.get(
+                request.prepaid_model, 0
+            ):
+                continue
+            remaining = min(
+                remaining, budget.total_cap_usd - sum(s.cost_against_cap() for s in spends)
+            )
         daily_remaining = budget.daily_cap_usd - ledger._budget_spent_today_usd(budget, when)
         task_remaining = budget.per_task_cap_usd - ledger._budget_spent_for_task_usd(
             budget,
@@ -1282,10 +1433,10 @@ def evaluate_paid_route_eligibility(
         cap_eligible.append((budget, limiting_remaining - request.estimated_cost_usd))
 
     if not cap_eligible:
-        blocking.append("matching TransitionBudget cap exhausted")
+        blocking.extend(admission_blocks or ["matching TransitionBudget cap exhausted"])
         return PaidRouteEligibility(
             eligible=False,
-            state="refused_exhausted_budget",
+            state="refused_paid_admission" if admission_blocks else "refused_exhausted_budget",
             blocking_reasons=tuple(blocking),
             evidence_refs=tuple(b.budget_id for b in unexpired),
         )

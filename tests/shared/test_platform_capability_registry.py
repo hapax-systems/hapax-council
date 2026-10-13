@@ -208,11 +208,13 @@ def test_registry_route_ids_match_dispatcher_platform_paths() -> None:
         for route in dispatcher.PLATFORM_PATHS.values()
     }
 
-    # Review-seat routes (mode=review, e.g. glmcp.review.direct) are non-launchable
+    # Review seats and receipt-only support candidates are non-launchable
     # capability rows — admitted/observed but never spawned through a PLATFORM_PATHS
     # launcher — so they are registry-only, not dispatcher launchers.
     launchable_routes = {
-        route_id for route_id, route in registry.route_map().items() if route.mode != "review"
+        route_id
+        for route_id, route in registry.route_map().items()
+        if route.mode not in {"review", "receipt_only"}
     }
     assert launchable_routes == dispatcher_routes
 

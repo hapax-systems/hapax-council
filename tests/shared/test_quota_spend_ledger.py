@@ -991,9 +991,8 @@ def test_successful_task_scoped_glmcp_payg_review_spend_counts_the_glm_5_3_defau
 
 
 def test_glmcp_model_ids_name_one_structured_identity_each() -> None:
-    assert (
-        set(GLMCP_MODEL_IDS) == set(GLMCP_ADMISSION_MODELS) == set(GLMCP_PAYG_PRICES_USD_PER_MTOK)
-    )
+    assert set(GLMCP_MODEL_IDS) == set(GLMCP_ADMISSION_MODELS)
+    assert set(GLMCP_PAYG_PRICES_USD_PER_MTOK) == set(GLMCP_ADMISSION_MODELS) | {"glm-5.3-flash"}
     assert {ModelId(value) for value in GLMCP_MODEL_IDS.values()} == {
         ModelId.Z_AI_GLM_5_3,
         ModelId.Z_AI_GLM_5_2,

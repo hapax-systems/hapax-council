@@ -692,6 +692,8 @@
         "gemini-3.5-flash",
         "z_ai-glm-5",
         "z_ai-glm-5.2",
+        "z_ai-glm-5.3",
+        "z_ai-glm-5.3-flash",
         "kimi-code/k3",
         "unknown"
       ]

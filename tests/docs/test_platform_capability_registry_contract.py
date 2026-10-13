@@ -32,7 +32,7 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
 REGISTRY_BYTE_PIN = (
-    "b7680b6f12e2a7990393374a007fee55813a767002e88842db7539919713d537"  # pragma: allowlist secret
+    "9f9396d0b171821e8cb5cdd85d2fb8836c61d0d8065026175e9ccae5e212b1f1"  # pragma: allowlist secret
 )
 
 
@@ -343,6 +343,15 @@ def test_seed_registry_records_dimensional_scores_with_evidence() -> None:
     for route in registry["routes"]:
         scores = route["capability_scores"]
         assert set(scores) >= {"grounding", "source_editing", "test_authoring"}
+        if route["mode"] == "receipt_only":
+            assert route["route_state"] == "blocked"
+            assert route["worker_tier"] == "read_only_sidecar"
+            assert not route["tool_state"]
+            for score in scores.values():
+                assert score["score"] == score["confidence"] == 0
+                assert not score["evidence_refs"]
+                assert score["observed_at"] is None
+            continue
         for score in scores.values():
             assert 0 <= score["score"] <= 5
             assert 0 <= score["confidence"] <= 5
@@ -881,7 +890,8 @@ def test_runtime_registry_rejects_extra_route_rows_not_declared() -> None:
     from shared.platform_capability_registry import PlatformCapabilityRegistry
 
     payload = _json(REGISTRY)
-    extra_route = {**payload["routes"][0], "route_id": "api.headless.full", "profile": "full"}
+    base = next(r for r in payload["routes"] if r["route_id"] == "api.headless.api_frontier")
+    extra_route = {**base, "route_id": "api.headless.full", "profile": "full"}
     payload["routes"] = [*payload["routes"], extra_route]
 
     with pytest.raises(ValidationError, match="not declared in required_route_ids"):

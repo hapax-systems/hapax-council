@@ -27,6 +27,8 @@
     "codex.headless.spark",
     "agy.review.direct",
     "glmcp.review.direct",
+    "glmcp.receipt_only.api_frontier",
+    "glmcp.receipt_only.flash",
     "local_tool.local.worker",
     "vibe.headless.full"
   ],
@@ -333,6 +335,430 @@
     }
   ],
   "routes": [
+    {
+      "registry_schema": 1,
+      "route_id": "glmcp.receipt_only.api_frontier",
+      "platform": "glmcp",
+      "mode": "receipt_only",
+      "profile": "api_frontier",
+      "launcher": "scripts/hapax-glmcp-reviewer (HAPAX_GLMCP_REVIEW_BILLING_MODE=capped_paid_primary; HAPAX_GLMCP_REVIEW_MODEL=glm-5.3)",
+      "sanctioned_wrapper": "scripts/hapax-glmcp-reviewer",
+      "summary": "Purchased glm-5.3 bounded support candidate",
+      "notes": "Explicit bounded paid-primary support through the existing adapter. capped_paid_primary requires a funded budget bound to the task, with locked reservation and reconciliation; bundle deduction remains unverified. Separate prepaid_bundle mode requires fresh model-specific bundle and no-cash-rollover evidence. Both enforce the finite episode limit of 1M tokens/model and 10 USD equivalent total, preserve any tighter existing caps, and never simulate Coding Plan exhaustion or switch modes. No worker or review-quorum promotion. Independent acceptance and governed activation remain required.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "matching_paid_mode_budget_admission_required",
+        "independent_task_fit_acceptance_required"
+      ],
+      "model_or_engine": "z_ai:glm-5.3",
+      "execution_descriptor": {
+        "model_id": "z_ai-glm-5.3",
+        "effort": "max",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "auth_surface": "api_key",
+      "capacity_pool": "api_paid_spend",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "none",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_training_unknown",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "public_release_without_gate",
+          "independent-review",
+          "authoritative_acceptance"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "unknown"
+      },
+      "telemetry": {
+        "quota_source": "ledger",
+        "cost_source": "ledger",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_resource_evidence_absent"
+            ]
+          },
+          "provider_docs": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "provider_docs_evidence_absent"
+            ]
+          }
+        }
+      },
+      "known_unknowns": [
+        "Provider-effective effort and installed-route context ceiling unobserved.",
+        "Same-account purchased-bundle attribution remains unverified; strict purchased-only mode additionally requires balance and no-cash-rollover evidence.",
+        "Useful support output and independent task-fit acceptance remain unobserved."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [],
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar",
+      "paid_provider": "z_ai",
+      "paid_profile": "glmcp-bundle-support"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "glmcp.receipt_only.flash",
+      "platform": "glmcp",
+      "mode": "receipt_only",
+      "profile": "flash",
+      "launcher": "scripts/hapax-glmcp-reviewer (HAPAX_GLMCP_REVIEW_BILLING_MODE=capped_paid_primary; HAPAX_GLMCP_REVIEW_MODEL=glm-5.3-flash)",
+      "sanctioned_wrapper": "scripts/hapax-glmcp-reviewer",
+      "summary": "Purchased glm-5.3-flash bounded support candidate",
+      "notes": "Explicit bounded paid-primary support through the existing adapter. capped_paid_primary requires a funded budget bound to the task, with locked reservation and reconciliation; bundle deduction remains unverified. Separate prepaid_bundle mode requires fresh model-specific bundle and no-cash-rollover evidence. Both enforce the finite episode limit of 1M tokens/model and 10 USD equivalent total, preserve any tighter existing caps, and never simulate Coding Plan exhaustion or switch modes. No worker or review-quorum promotion. Independent acceptance and governed activation remain required.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "matching_paid_mode_budget_admission_required",
+        "independent_task_fit_acceptance_required"
+      ],
+      "model_or_engine": "z_ai:glm-5.3-flash",
+      "execution_descriptor": {
+        "model_id": "z_ai-glm-5.3-flash",
+        "effort": "max",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "auth_surface": "api_key",
+      "capacity_pool": "api_paid_spend",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "none",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_training_unknown",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "deterministic_ok"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "public_release_without_gate",
+          "independent-review",
+          "authoritative_acceptance"
+        ]
+      },
+      "context_limits": {
+        "max_context_class": "unknown"
+      },
+      "telemetry": {
+        "quota_source": "ledger",
+        "cost_source": "ledger",
+        "resource_source": "local_probe"
+      },
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_capability_evidence_absent"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "quota_telemetry_unknown"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_resource_evidence_absent"
+            ]
+          },
+          "provider_docs": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "provider_docs_evidence_absent"
+            ]
+          }
+        }
+      },
+      "known_unknowns": [
+        "Provider-effective effort and installed-route context ceiling unobserved.",
+        "Same-account purchased-bundle attribution remains unverified; strict purchased-only mode additionally requires balance and no-cash-rollover evidence.",
+        "Useful support output and independent task-fit acceptance remain unobserved."
+      ],
+      "capability_scores": {
+        "grounding": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [],
+      "approval_posture": "default_deny_enable_latch",
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar",
+      "paid_provider": "z_ai",
+      "paid_profile": "glmcp-bundle-support"
+    },
     {
       "registry_schema": 1,
       "route_id": "api.headless.api_frontier",

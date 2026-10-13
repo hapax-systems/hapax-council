@@ -5599,3 +5599,9 @@ _ = (
     _ds_parse_hn_search,
     _ds_load_sources,
 )
+
+# Pydantic invokes this validator during PrepaidBundle.model_validate; the
+# bundle admission and producer tests exercise its freshness/balance effects.
+from shared.quota_spend_ledger import PrepaidBundle  # noqa: E402
+
+PrepaidBundle._bounded_evidence
