@@ -4,9 +4,11 @@
 Subcommands:
   inventory [--json]   the transcript paths on this host: declared path, real path, kind, file count and bytes
   backup [--dry-run]   restic backup of every real path, tagged tier1-transcripts, credential files excluded
-  verify               open this host's newest tier1-transcripts snapshot and count the files under every path; exit 1,
-                       with a remedy, on a missing, symlinked, empty or dropped path, a dropped harness path, a
-                       credential file, or a snapshot older than --max-age-hours (default 26)
+  verify [--scope all|local|pulled|retention]
+                       independent verdicts and exit bits: local custody=1, pulled custody=2, retention=4;
+                       zero passes, combined failures sum the bits (e.g. local + pulled = 3).
+                       Local custody counts this host's newest tier1-transcripts snapshot and checks its age
+                       against --max-age-hours (default 26). Retention checks cleanupPeriodDays >= 3650 read-only.
 
 Windows hosts: on the host that HAPAX_TRANSCRIPT_WINDOWS_PULLER names, backup also pulls each host in
 HAPAX_TRANSCRIPT_WINDOWS_HOSTS over SSH, as a tar stream of its table paths (credentials excluded by name), into a
@@ -304,15 +306,16 @@ def _nodes(env: dict[str, str], snapshot_id: str) -> Iterator[dict]:
             continue
 
 
-def cmd_verify(args: argparse.Namespace) -> int:
+def _verify_local(args: argparse.Namespace, env: dict[str, str]) -> int:
     host = socket.gethostname()
-    env = _restic_env()
     res = tc.resolve_paths(Path.home())
     snapshots = sorted(
         json.loads(_restic_json(env, "snapshots", "--tag", tc.SNAPSHOT_TAG, "--host", host)) or [],
         key=lambda s: s["time"],
     )
     if not snapshots:
+        for problem in res.problems:
+            print(f"FAIL local: {problem}", file=sys.stderr)
         print(
             f"hapax-transcript-custody: no {tc.SNAPSHOT_TAG} snapshot for {host}; {tc.REMEDY}",
             file=sys.stderr,
@@ -355,13 +358,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
     )
     for p, c in sorted(current.items()):
         print(f"  {c.files:>9} files  {c.node_type or 'ABSENT':<8} {p}")
-    # Every host checks that each Windows host has a present, fresh snapshot, so a puller that silently pulls nothing
-    # (its hostname differs from the unit's puller name, say) still fails somewhere. The puller also checks contents.
-    pulled = set(_windows_hosts())
-    windows_failed = sum(
-        _verify_windows(env, h, args.max_age_hours, contents=h in pulled)
-        for h in _windows_all_hosts()
-    )
     if failures:
         for failure in failures:
             print(f"FAIL {failure}", file=sys.stderr)
@@ -374,7 +370,71 @@ def cmd_verify(args: argparse.Namespace) -> int:
         f"hapax-transcript-custody: snapshot {cur.get('short_id')} holds every transcript path, none empty or "
         "dropped, no credential"
     )
-    return 1 if windows_failed else 0
+    return 0
+
+
+def _retention_problems(home: Path) -> list[str]:
+    """Read-only retention check; missing/invalid settings never inherit a safe default."""
+    problems = []
+    for profile in tc.claude_config_dirs(home):
+        settings = profile / "settings.json"
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            days = data.get("cleanupPeriodDays") if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            days = None
+        if type(days) not in (int, float) or not 3650 <= days < float("inf"):
+            problems.append(f"retention: {settings} must set cleanupPeriodDays >= 3650")
+    return problems
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Keep custody and retention failures independently visible, including read failures.
+
+    --scope permits separate invocations; the default runs every check even when
+    another scope fails. The final JSON record and exit bitmask preserve each verdict.
+    """
+    verdicts = dict.fromkeys(("local", "pulled", "retention"), "not_checked")
+    exit_code = 0
+    env = None
+    for scope, bit in (("local", 1), ("pulled", 2), ("retention", 4)):
+        if args.scope not in ("all", scope):
+            continue
+        try:
+            if scope == "retention":
+                failures = _retention_problems(Path.home())
+                for failure in failures:
+                    print(f"FAIL {failure}", file=sys.stderr)
+                failed = bool(failures)
+            else:
+                if env is None:
+                    env = _restic_env()
+                if scope == "local":
+                    failed = bool(_verify_local(args, env))
+                else:
+                    # Every host checks pulled-host freshness; only the puller checks contents.
+                    pulled = set(_windows_hosts())
+                    failed = False
+                    for host in _windows_all_hosts():
+                        try:
+                            result = _verify_windows(
+                                env, host, args.max_age_hours, contents=host in pulled
+                            )
+                        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                            print(
+                                f"FAIL pulled: {host}: unreadable: {exc}; {tc.WINDOWS_REMEDY}",
+                                file=sys.stderr,
+                            )
+                            result = 1
+                        failed = bool(result) or failed
+        except (OSError, ValueError, subprocess.SubprocessError, SystemExit) as exc:
+            print(f"FAIL {scope}: unreadable: {exc}; {tc.REMEDY}", file=sys.stderr)
+            failed = True
+        verdicts[scope] = "fail" if failed else "pass"
+        if failed:
+            exit_code |= bit
+    print(json.dumps({"verdicts": verdicts, "exit_code": exit_code}))
+    return exit_code
 
 
 def _tar_listing(env: dict[str, str], snapshot: dict) -> list[dict]:
@@ -506,6 +566,12 @@ def main(argv: list[str] | None = None) -> int:
     bak = sub.add_parser("backup")
     bak.add_argument("--dry-run", action="store_true")
     ver = sub.add_parser("verify")
+    ver.add_argument(
+        "--scope",
+        choices=("all", "local", "pulled", "retention"),
+        default="all",
+        help="check independently; exit bits: local=1, pulled=2, retention=4 (default: all)",
+    )
     ver.add_argument(
         "--max-age-hours",
         type=float,
