@@ -796,6 +796,7 @@ def test_claim_sweep_entrypoints_preserve_other_roles(
     tmp_path: Path, entrypoint: str, sweep_enabled: str
 ) -> None:
     claims, family = _sweep_claim_family(tmp_path)
+    journal_env = _claim_sweep_journal(tmp_path)
     if entrypoint == "explicit":
         args = ("--sweep-stale-claims",)
     else:
@@ -812,17 +813,21 @@ def test_claim_sweep_entrypoints_preserve_other_roles(
         tmp_path,
         *args,
         extra_env={
+            **journal_env,
             "HAPAX_CC_CLAIMS_DIR": str(claims),
             "HAPAX_DISPATCH_CLAIM_SWEEP": sweep_enabled,
         },
     )
 
     assert {path: path.read_bytes() for path in family} == family
-    if entrypoint == "explicit" or sweep_enabled == "1":
+    if entrypoint == "explicit":
         assert "cross_role_claim_cleanup_unavailable" in result.stderr
         assert "next action:" in result.stderr
+        _assert_claim_sweep_audit(tmp_path, task_id="*", claims=claims)
     else:
         assert "cc-claim sweep:" not in result.stderr
+        assert not (tmp_path / "ledger" / "claim-ledger.jsonl").exists()
+        assert not (tmp_path / "journal.jsonl").exists()
     if entrypoint == "valid-dispatch":
         assert result.returncode == 0, result.stderr
         assert "eligible: requested" in result.stdout
@@ -831,6 +836,137 @@ def test_claim_sweep_entrypoints_preserve_other_roles(
     if entrypoint == "invalid-dispatch":
         assert "missing required AuthorityCase/ISAP fields" in result.stderr
     assert "reaped" not in result.stdout.lower()
+
+
+def _claim_sweep_journal(tmp_path: Path, *, fail: bool = False) -> dict[str, str]:
+    logger = _write(
+        tmp_path / "bin" / "logger",
+        f"#!{sys.executable}\nimport os, pathlib, sys\n"
+        + (
+            "sys.exit(1)\n"
+            if fail
+            else "assert sys.argv[1:4] == ['-t', 'hapax-methodology-dispatch', '--']\n"
+            "with pathlib.Path(os.environ['TEST_SWEEP_JOURNAL']).open('a') as f:\n"
+            "    f.write(sys.argv[4] + '\\n')\n"
+        ),
+    )
+    logger.chmod(0o755)
+    return {
+        "PATH": f"{logger.parent}:{os.environ['PATH']}",
+        "TEST_SWEEP_JOURNAL": str(tmp_path / "journal.jsonl"),
+        "HAPAX_AGENT_NAME": "sweep-caller",
+    }
+
+
+def _assert_claim_sweep_audit(tmp_path: Path, *, task_id: str, claims: Path) -> None:
+    assert (tmp_path / "ledger" / "claim-ledger.jsonl").is_file()
+    assert (tmp_path / "journal.jsonl").is_file()
+    entries = (tmp_path / "ledger" / "claim-ledger.jsonl").read_text().splitlines()
+    journal = (tmp_path / "journal.jsonl").read_text().splitlines()
+    assert len(entries) == len(journal) == 1
+    row = json.loads(entries[0])
+    assert json.loads(journal[0]) == row
+    assert row["claim_type"] == "sweep_hold"
+    assert row["lane_id"] == row["role"] == "*"  # no unlocked per-role inspection
+    assert row["task_id"] == task_id
+    assert row["file"] == str(claims / "cc-active-task-*")
+    assert row["caller"] == "sweep-caller"
+    assert row["reason"] == "cross_role_claim_cleanup_unavailable"
+    assert datetime.now(UTC) - datetime.fromisoformat(row["timestamp"]) < timedelta(minutes=1)
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "failure", "refused", "optout", "replay", "journal-failure"]
+)
+def test_claim_sweep_preserves_live_idle_role_across_dispatch(tmp_path: Path, outcome: str) -> None:
+    claims, family = _sweep_claim_family(tmp_path)
+    old = datetime.now(UTC).timestamp() - 7 * 3600
+    for path in family:
+        os.utime(path, (old, old))
+    incumbent = _task(
+        tmp_path / "tasks", "incumbent", "kind: build", status="claimed", assigned_to="gamma"
+    )
+    family[incumbent] = incumbent.read_bytes()
+    _worktree(tmp_path / "worktree")
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "requested",
+        f"kind: build\nauthority_case: CASE-TEST-001\nparent_spec: {spec}",
+    )
+    launch = _write(
+        tmp_path / "bin" / "hapax-codex",
+        "#!/bin/sh\n" + ("exit 1\n" if outcome == "failure" else "exit 0\n"),
+    )
+    launch.chmod(0o755)
+    env = {
+        **_claim_sweep_journal(tmp_path, fail=outcome == "journal-failure"),
+        "HAPAX_CC_CLAIMS_DIR": str(claims),
+        "HAPAX_DISPATCH_CLAIM_SWEEP": "0" if outcome == "optout" else "1",
+        "HAPAX_METHODOLOGY_CODEX_HEADLESS": str(launch),
+        "XDG_CACHE_HOME": str(tmp_path / "cache"),
+    }
+    args = (
+        "--task",
+        "requested",
+        "--lane",
+        "cx-green",
+        "--platform",
+        "codex",
+        "--launch",
+        "--idempotency-key",
+        "sweep-test",
+    )
+    (tmp_path / "home" / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True)
+    if outcome != "refused":
+        mq_db, message_id = _maybe_write_durable_mq_binding(tmp_path, args)
+        assert message_id is not None
+        env.update(HAPAX_RELAY_MQ_DB=str(mq_db), HAPAX_METHODOLOGY_DISPATCH_MESSAGE_ID=message_id)
+    child = subprocess.Popen(
+        [sys.executable, "-c", "print('ready', flush=True); input()"],
+        env={**os.environ, "HAPAX_SESSION_ID": "9b6ba5ca-513c-41aa-9900-d3026b42aad1"},
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None and child.stdout.readline() == "ready\n"
+        result = _run(tmp_path, *args, extra_env=env, durable_mq=False)
+        if outcome == "replay":
+            assert result.returncode == 0, result.stderr
+            result = _run(tmp_path, *args, extra_env=env, durable_mq=False)
+        assert result.returncode == (
+            10 if outcome == "refused" else 1 if outcome == "failure" else 0
+        ), result.stderr
+        assert all(path.is_file() for path in family), "dispatch removed an incumbent's claim"
+        assert {path: path.read_bytes() for path in family} == family
+        if outcome in {"success", "replay"}:
+            _assert_claim_sweep_audit(tmp_path, task_id="requested", claims=claims)
+        elif outcome == "journal-failure":
+            assert "claim_sweep_audit_failed" in result.stderr
+            assert (tmp_path / "ledger" / "claim-ledger.jsonl").is_file()
+            assert not (tmp_path / "journal.jsonl").exists()
+        else:
+            assert "cc-claim sweep:" not in result.stderr
+            assert not (tmp_path / "ledger" / "claim-ledger.jsonl").exists()
+            assert not (tmp_path / "journal.jsonl").exists()
+    finally:
+        child.communicate("done\n", timeout=5)
+
+
+@pytest.mark.parametrize("sink", ["journal", "ledger"])
+def test_claim_sweep_reports_audit_failure_without_success_claim(tmp_path: Path, sink: str) -> None:
+    if sink == "ledger":
+        (tmp_path / "ledger" / "claim-ledger.jsonl").mkdir(parents=True)
+    result = _run(
+        tmp_path,
+        "--sweep-stale-claims",
+        extra_env=_claim_sweep_journal(tmp_path, fail=sink == "journal"),
+    )
+    assert result.returncode == 10
+    assert "claim_sweep_audit_failed" in result.stderr
+    assert "repair journal/claim-ledger delivery" in result.stderr
+    assert not (tmp_path / "journal.jsonl").exists()
 
 
 def test_lane_active_task_lease_reads_session_keyed_claim(tmp_path: Path) -> None:

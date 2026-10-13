@@ -765,14 +765,48 @@ def sweep_stale_claims(
     return ClaimSweepHold()
 
 
-def run_claim_sweep(task_root: Path, *, notify: bool = True) -> ClaimSweepHold:
-    """Return a bounded cleanup hold without inventory or external notification.
+def run_claim_sweep(task_root: Path, *, notify: bool = True, task_id: str = "*") -> ClaimSweepHold:
+    """Record the bounded cleanup decision without inventory or external notification.
 
     ``notify`` is retained for caller compatibility and is ignored while cleanup
     is held. It never authorizes an external notification.
     """
+    from shared.orchestration_ledger import WorkClaim, record_claim
+    from shared.session_identity import identity_stamp
+
     claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
-    return sweep_stale_claims(claims_dir, task_root / "active")
+    hold = sweep_stale_claims(claims_dir, task_root / "active")
+    identity = identity_stamp(os.environ)
+    # This is a fleet-wide hold before inspection, not an observed claim identity.
+    # Wildcards retain that scope; task_id names the triggering dispatch, if any.
+    decision = WorkClaim(
+        lane_id="*",
+        timestamp=datetime.now(UTC).isoformat(),
+        task_id=task_id,
+        claim_type="sweep_hold",
+        notes=hold.next_action,
+        file=str(claims_dir / "cc-active-task-*"),
+        role="*",
+        caller=identity["role"] or "unknown",
+        reason=hold.reason_code,
+    )
+    try:
+        record_claim(decision)
+        subprocess.run(
+            ["logger", "-t", "hapax-methodology-dispatch", "--", decision.model_dump_json()],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Cleanup stays held. An audit outage must not turn an already successful
+        # worker launch into a failed dispatch that a caller might launch again.
+        print(
+            f"cc-claim sweep: claim_sweep_audit_failed ({type(exc).__name__}); "
+            "next action: repair journal/claim-ledger delivery; cleanup remains held",
+            file=sys.stderr,
+        )
+    return hold
 
 
 def report_claim_sweep_hold(hold: ClaimSweepHold) -> None:
@@ -2340,11 +2374,6 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # Cleanup is held independently of dispatch admission. Report the bounded
-    # hold and continue normal task/claim/route checks, including no-launch calls.
-    if os.environ.get("HAPAX_DISPATCH_CLAIM_SWEEP", "1") != "0":
-        report_claim_sweep_hold(run_claim_sweep(task_root))
-
     if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
         if args.platform == "agy":
             reason = (
@@ -2853,6 +2882,14 @@ def main(argv: list[str] | None = None) -> int:
                 return 10
         else:
             rc = run_platform_launch()
+
+        # Validation, refusal and idempotent replay do not admit fleet cleanup.
+        if (
+            rc == 0
+            and not (dispatch_launch and dispatch_launch.replayed)
+            and os.environ.get("HAPAX_DISPATCH_CLAIM_SWEEP", "1") != "0"
+        ):
+            report_claim_sweep_hold(run_claim_sweep(task_root, task_id=args.task))
 
         if not args.no_receipt:
             write_receipt(
