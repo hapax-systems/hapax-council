@@ -4302,7 +4302,7 @@
       "launcher": "scripts/hapax-agy-reviewer (review seat: blind-review prompt on stdin -> agy --print sandboxed YAML verdict on stdout)",
       "sanctioned_wrapper": "scripts/hapax-agy-reviewer",
       "summary": "Agy universal-harness review seat (Antigravity CLI; entitlement engines include Gemini, Claude, and GPT-OSS)",
-      "notes": "Measured 2026-10-13: /usr/bin/agy -> ~/.local/bin/agy, version 1.3.4. Catalog: Gemini 4 Argon, Gemini 3.8 Flash, Claude Opus/Sonnet 5.5 (low/medium/high); GPT-OSS 120B medium; no Gemini 3.1 Pro. Argon low won the three-tier smoke/two-PR blind comparison; other tiers stay measurement-only. Evidence: 30-areas/hapax/frame/seat-handoff-20261012/cx-gapsig-argon-20261013/. Read-only review admission still requires fresh platform evidence and a production hapax.agy_quota_admission.v1 receipt projected by the telemetry writer.",
+      "notes": "agy 1.3.4, 2026-10-13: /usr/bin/agy -> ~/.local/bin/agy. Catalog: Gemini 4 Argon/3.8 Flash, Claude Opus/Sonnet 5.5 (low/medium/high), GPT-OSS 120B medium; no 3.1 Pro. Requires fresh platform and writer-projected production quota receipts.",
       "route_state": "blocked",
       "blocked_reasons": [
         "agy_review_seat_receipt_admission_required",
@@ -4503,8 +4503,8 @@
         }
       },
       "known_unknowns": [
-        "Fresh Argon production admission, installed activation and independent qualification remain unobserved.",
-        "The tier comparison covers two PRs. Native JSON omitted served-model identity; only requested model and binary identity were observed.",
+        "Activation, production admission and qualification unobserved.",
+        "Two PRs; served identity unobserved.",
         "The agy harness exposes multiple provider engines; this route is a universal-harness review seat and must not be treated as a local-private execution path.",
         "This route is not a worker lane and does not authorize source, runtime, provider-spend, public, or governance-authority mutations."
       ],
