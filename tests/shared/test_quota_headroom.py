@@ -1616,3 +1616,88 @@ def test_routable_comes_from_this_ledgers_own_fresh_admission():
     assert claude_stage(fresh, NOW) == "routable"
     assert claude_stage(fresh, NOW + timedelta(minutes=20)) != "routable"  # admission expired
     assert claude_stage(base, NOW) != "routable"  # the fixture's claude.headless.full is exhausted
+
+
+@pytest.mark.parametrize(
+    "hours,used,allowed,line",
+    [
+        (0, 1.9, True, 2.0),
+        (10, 7.9, True, 8.0),
+        (10, 8.0, False, 8.0),
+        (10, 8.1, False, 8.0),
+        (167, 99.9, True, 100.0),
+        (167, 100, False, 100.0),
+    ],
+)
+def test_codex_weekly_pace_matches_existing_pool_definition(hours, used, allowed, line):
+    from shared import quota_headroom as headroom
+
+    at = datetime(2031, 2, 3, 4, tzinfo=UTC) + timedelta(hours=hours)
+    row = headroom.evidence(
+        "codex.subscription.weekly",
+        at=at,
+        reset=datetime(2031, 2, 10, 4, tzinfo=UTC),
+        quantity=used,
+        unit="percent_used",
+        window="10080m",
+        label="observed",
+    )
+    decision = headroom.codex_weekly_pace([row], now=at)
+    existing = runpy.run_path(str(ROOT / "scripts/hapax-claude-pool-pace"))
+    assert decision["line_percent"] == existing["weekly_line_percent"](row) == line
+    assert decision["allowed"] is allowed
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"measurement_fresh_until": NOW}, "weekly_meter_stale"),
+        (
+            {
+                "observed_at": NOW - timedelta(hours=2),
+                "measurement_fresh_until": NOW + timedelta(hours=1),
+            },
+            "weekly_meter_stale",
+        ),
+        ({"observed_at": NOW + timedelta(seconds=1)}, "weekly_meter_stale"),
+        ({"resets_at": NOW}, "weekly_window_invalid"),
+        ({"resets_at": None}, "weekly_window_invalid"),
+        ({"resets_at": NOW + timedelta(days=8)}, "weekly_window_invalid"),
+        ({"window": "300m"}, "weekly_window_invalid"),
+        ({"unit": "credits"}, "weekly_meter_invalid"),
+        ({"label": "derived"}, "weekly_meter_invalid"),
+        ({"quantity": -1}, "weekly_meter_invalid"),
+    ],
+)
+def test_codex_weekly_pace_unknown_is_unavailable(change, reason):
+    from shared import quota_headroom as headroom
+
+    row = headroom.evidence(
+        "codex.subscription.weekly",
+        at=NOW,
+        reset=NOW + timedelta(days=6),
+        quantity=1,
+        unit="percent_used",
+        window="10080m",
+        label="observed",
+    ).model_copy(update=change)
+    decision = headroom.codex_weekly_pace([row], now=NOW)
+    assert decision["allowed"] is False
+    assert decision["reason"] == reason
+
+
+def test_codex_weekly_pace_does_not_grow_allowance_without_a_new_observation():
+    from shared import quota_headroom as headroom
+
+    row = headroom.evidence(
+        "codex.subscription.weekly",
+        at=NOW,
+        reset=NOW + timedelta(hours=158),
+        quantity=8.1,
+        unit="percent_used",
+        window="10080m",
+        label="observed",
+    )
+    decision = headroom.codex_weekly_pace([row], now=NOW + timedelta(minutes=50))
+    assert decision["line_percent"] == 8.0
+    assert decision["allowed"] is False

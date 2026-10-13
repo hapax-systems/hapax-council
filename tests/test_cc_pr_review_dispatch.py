@@ -58,6 +58,8 @@ def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     # Wall evidence reads the operator's local traces; tests read an empty home unless they
     # write one, so no test depends on (or spends 45 s scanning) this host's live quota walls.
     monkeypatch.setattr(dispatch, "WALL_TRACE_HOME", tmp_path / "wall-home", raising=False)
+    # Existing unrelated dispatch fixtures have a fresh, under-line Codex meter.
+    _write_codex_weekly_wall(tmp_path / "wall-home", at="2026-06-11T21:00:00Z", used_percent=1.0)
 
 
 def _make_vault(tmp_path: Path) -> Path:
@@ -4077,7 +4079,8 @@ class TestFamilyOutageDegradation:
             capture_output=True,
             text=True,
             cwd=REPO_ROOT,
-            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+            # Fixture receipts must not trigger scans of the host's subscription traces.
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT), "HOME": str(tmp_path)},
         )
         assert result.returncode == 0, result.stderr
         return QuotaSpendLedger.model_validate(json.loads(out.read_text(encoding="utf-8")))
@@ -5734,6 +5737,7 @@ payg_fallback: false
 
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
+        _write_codex_weekly_wall(dispatch.WALL_TRACE_HOME, at=now, used_percent=1)
         state.write_text(json.dumps({"claude": now}), encoding="utf-8")
         result, _, _, note = _review(
             tmp_path,
@@ -5762,6 +5766,7 @@ payg_fallback: false
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
+        _write_codex_weekly_wall(dispatch.WALL_TRACE_HOME, at=now, used_percent=1)
         state.write_text(json.dumps({"claude": now}), encoding="utf-8")
         real_update = dispatch.update_family_outage
 
@@ -5803,6 +5808,7 @@ payg_fallback: false
     ) -> None:
         state, ledger = self._isolate_state(monkeypatch, tmp_path)
         now = "2026-06-12T21:00:00+00:00"
+        _write_codex_weekly_wall(dispatch.WALL_TRACE_HOME, at=now, used_percent=1)
         state.write_text(json.dumps({"claude": now}), encoding="utf-8")
         kwargs = {
             "now_iso": now,
@@ -7646,3 +7652,104 @@ class TestRouteAdmissionBasisRecording:
 
     def test_missing_observed_at_receipt_records_no_basis(self, tmp_path: Path) -> None:
         assert self._basis_from_receipt_text(tmp_path, self._receipt_text(observed_at="")) == {}
+
+
+class TestCodexReviewPace:
+    @pytest.mark.parametrize("used", [8.0, 8.1])
+    def test_at_or_over_line_never_seats_or_latches_outage(self, tmp_path, used, monkeypatch):
+        monkeypatch.setattr(
+            dispatch, "record_wall_outage", lambda *a, **k: pytest.fail("pace is not a wall")
+        )
+        _write_codex_weekly_wall(
+            dispatch.WALL_TRACE_HOME,
+            at=_WALL_NOW,
+            resets_at="2026-06-18T11:00:00+00:00",
+            used_percent=used,
+        )
+        result, _, reviewers, note = _review(tmp_path)
+        assert "codex" not in {family for _, family, _ in reviewers.invocations}
+        exclusion = result["plan"]["family_substitution"]["excluded_for_pace"]["codex"]
+        assert exclusion["reason"] == "pace_line_reached"
+        assert exclusion["line_percent"] == 8.0
+        dossier = yaml.safe_load((note.parent / "task-a.review-dossier.yaml").read_text())
+        assert (
+            "family_unavailable_for_pace:codex:pace_line_reached" in dossier["constitution_notes"]
+        )
+        assert "codex" not in (
+            json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text())
+            if dispatch.FAMILY_OUTAGE_STATE.exists()
+            else {}
+        )
+        assert not dispatch.DEGRADED_MERGES_LEDGER.exists()
+
+    @pytest.mark.parametrize("state", ["missing", "stale", "unreadable"])
+    def test_unknown_meter_never_seats(self, tmp_path, state):
+        path = _write_codex_weekly_wall(dispatch.WALL_TRACE_HOME, used_percent=1)
+        if state == "missing":
+            path.unlink()
+        elif state == "unreadable":
+            path.write_text('{"token_count": broken}\n')
+        result, _, reviewers, _ = _review(tmp_path)
+        assert "codex" not in {family for _, family, _ in reviewers.invocations}
+        assert (
+            result["plan"]["family_substitution"]["excluded_for_pace"]["codex"]["reason"]
+            == {
+                "missing": "weekly_meter_missing",
+                "stale": "weekly_meter_stale",
+                "unreadable": "weekly_meter_unreadable",
+            }[state]
+        )
+        assert "codex" not in (
+            json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text())
+            if dispatch.FAMILY_OUTAGE_STATE.exists()
+            else {}
+        )
+
+    def test_under_line_seats_and_next_review_reads_new_usage(self, tmp_path):
+        path = _write_codex_weekly_wall(
+            dispatch.WALL_TRACE_HOME,
+            at=_WALL_NOW,
+            resets_at="2026-06-18T11:00:00+00:00",
+            used_percent=7.9,
+        )
+        first, _, first_reviewers, _ = _review(tmp_path, force=True)
+        assert "codex" in {family for _, family, _ in first_reviewers.invocations}
+        assert first["plan"]["family_substitution"]["excluded_for_pace"] == {}
+        event = json.loads(path.read_text())
+        event["payload"]["rate_limits"]["primary"]["used_percent"] = 8.0
+        path.write_text(json.dumps(event) + "\n")
+        second, _, reviewers, _ = _review(tmp_path, force=True)
+        assert "codex" not in {family for _, family, _ in reviewers.invocations}
+        assert second["plan"]["family_substitution"]["excluded_for_pace"]["codex"]
+
+    def test_absence_cannot_downgrade_t1_or_issue_acceptance(self, tmp_path, monkeypatch):
+        _write_codex_weekly_wall(dispatch.WALL_TRACE_HOME, used_percent=1).unlink()
+        monkeypatch.setattr(
+            dispatch, "_apply_review", lambda **kwargs: pytest.fail("absence cannot admit")
+        )
+        result, _, reviewers, note = _review(tmp_path, task_kwargs={"risk_tier": "T1"})
+        assert result["status"] == "constitution_blocked"
+        assert "codex" in result["plan"]["constitution_error"]
+        assert reviewers.invocations == []
+        assert not (note.parent / "task-a.review-dossier.yaml").exists()
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        assert "codex" not in (
+            json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text())
+            if dispatch.FAMILY_OUTAGE_STATE.exists()
+            else {}
+        )
+
+    def test_absence_is_not_a_vote_or_artifact_acceptance(self, tmp_path):
+        _write_codex_weekly_wall(dispatch.WALL_TRACE_HOME, used_percent=1).unlink()
+        reviewers = RecordingReviewers(
+            replies={f: "" for f in ("claude", "codex", "gemini", "glm", "muse", "vibe", "local")}
+        )
+        result, reviewers, note, _ = _review_artifact(tmp_path, reviewer_runner=reviewers)
+        assert "codex" not in {family for _, family, _ in reviewers.invocations}
+        assert result["dossier"]["review_team_verdict"] == "no-quorum"
+        assert not (note.parent / "vault-row.acceptance.yaml").exists()
+        assert "codex" not in (
+            json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text())
+            if dispatch.FAMILY_OUTAGE_STATE.exists()
+            else {}
+        )
