@@ -356,6 +356,239 @@ def _request(**overrides: object) -> PaidRouteRequest:
     return PaidRouteRequest.model_validate(payload)
 
 
+def _support_case(mode="prepaid", model="glm-5.3"):
+    """Minimal public inputs: one support budget/receipt plus one unrelated budget.
+
+    No governed-base edits, model_construct or unvalidated model copies. Each
+    test passes the plain payload through QuotaSpendLedger.model_validate.
+    """
+    payload = dict(
+        ledger_id="synthetic-support-contract",
+        captured_at="2026-05-17T07:59:30Z",
+        authority_source="isap:quota-spend-ledger-20260509",
+        generated_from=["synthetic-contract-fixture"],
+        consumer_permission_after="private_capacity_routing_tests_only",
+        paid_api_budget_freshness_ttl_s=120,
+        evidence_refs=["synthetic-contract-fixture"],
+        transition_budgets=[],
+        spend_receipts=[],
+    )
+    budget_id = _add_glmcp_payg_budget(payload)
+    budget = payload["transition_budgets"][-1]
+    budget.update(total_cap_usd="10", daily_cap_usd="10", bounded_task_id="support-test")
+    # Cross-budget aggregation tests move the receipt here; it cannot admit support.
+    payload["transition_budgets"].insert(
+        0, dict(budget, budget_id="tb-20260517-unrelated", bounded_task_id=None)
+    )
+    request = _request(
+        route_id="glmcp.receipt_only." + ("flash" if model.endswith("flash") else "api_frontier"),
+        task_id="support-test",
+        provider="z_ai",
+        profile="glmcp-review-direct",
+        task_class="independent-review",
+        quality_floor="frontier_review_required",
+        capacity_pool="api_paid_spend",
+        reserved_tokens=100,
+        **{mode + "_model": model},
+    )
+    if mode == "prepaid":
+        budget["prepaid_bundle"] = dict(
+            endpoint="https://api.z.ai/api/paas/v4",
+            secret_source="filestore:glmcp/api-key",  # pragma: allowlist secret -- entry name
+            account_binding_ref="synthetic-account",
+            balance_evidence_ref="synthetic-balance",
+            no_cash_fallback_evidence_ref="synthetic-stop",
+            cash_fallback_allowed=False,
+            observed_at="2026-05-17T07:55:00Z",
+            fresh_until="2026-05-17T08:05:00Z",
+            model_token_limits={model: 1000},
+            model_available_tokens={model: 2000000},
+        )
+    else:
+        budget.update(
+            provider_balance_usd="10",
+            provider_balance_observed_at="2026-05-17T07:00:00Z",
+            provider_balance_covers_spend_before="2026-05-17T07:00:00Z",
+            provider_balance_evidence_ref="synthetic-funded-balance",
+        )
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id="support-test")
+    spend = payload["spend_receipts"][-1]
+    spend.update(
+        route_id=request.route_id,
+        model_or_engine=model,
+        model_id="z_ai-" + model,
+        cost_basis="list_price_equivalent",
+        bundle_account_ref="synthetic-account",
+        reserved_tokens=100,
+        support_artifact_authority="support_non_authoritative",
+    )
+    return payload, request
+
+
+@pytest.mark.parametrize("mode", ["prepaid", "paid_primary"])
+@pytest.mark.parametrize("model", ["glm-5.3", "glm-5.3-flash"])
+def test_support_admission_requires_explicit_synthetic_binding(mode, model):
+    payload, request = _support_case(mode, model)
+    result = evaluate_paid_route_eligibility(
+        QuotaSpendLedger.model_validate(payload), request, now=NOW
+    )
+    assert result.eligible
+    assert result.cap_remaining_usd == Decimal("0.95")  # Existing tighter $2/task cap.
+    base = load_quota_spend_ledger()
+    assert all(
+        b.prepaid_bundle is None and b.bounded_task_id is None for b in base.transition_budgets
+    )
+    # Even borrowing every old budget's selectors cannot grant either new mode.
+    for budget in base.transition_budgets:
+        old_selectors = PaidRouteRequest.model_validate(
+            dict(
+                request.model_dump(),
+                provider=budget.providers_allowed[0],
+                profile=budget.profiles_allowed[0],
+                task_class=budget.task_classes_allowed[0],
+                quality_floor=budget.quality_floors_allowed[0],
+            )
+        )
+        assert not budget.matches_request(old_selectors)
+
+
+@pytest.mark.parametrize("budget_mode", ["prepaid", "paid_primary"])
+def test_support_budget_mode_cannot_cross_billing_surface(budget_mode):
+    payload, _ = _support_case(budget_mode)
+    _, request = _support_case("paid_primary" if budget_mode == "prepaid" else "prepaid")
+    result = evaluate_paid_route_eligibility(
+        QuotaSpendLedger.model_validate(payload), request, now=NOW
+    )
+    assert not result.eligible
+    assert result.state == "refused_no_matching_budget"
+
+
+@pytest.mark.parametrize("cached_tokens,expected", [(0, "0.65"), (1000000, "0.53")])
+def test_flash_has_own_price_without_subscription_promotion(cached_tokens, expected):
+    assert "glm-5.3-flash" not in GLMCP_ADMISSION_MODELS
+    assert glmcp_payg_usage_cost_usd(
+        model="glm-5.3-flash",
+        prompt_tokens=1000000,
+        cached_tokens=cached_tokens,
+        completion_tokens=1000000,
+    ) == Decimal(expected)
+
+
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("unfunded", "paid primary requires proven existing funded balance"),
+        ("task", "no matching TransitionBudget"),
+        ("expired", "strict bundle admission evidence expired or future-dated"),
+        ("future", "strict bundle admission evidence expired or future-dated"),
+        ("episode_frozen", "paid episode has frozen or overdue spend"),
+        ("episode_overdue", "paid episode has frozen or overdue spend"),
+        ("episode_tokens", "paid episode model token allowance exhausted"),
+        ("episode_dollars", "matching TransitionBudget cap exhausted"),
+        ("account_frozen", "bundle account has frozen or overdue spend"),
+        ("account_overdue", "bundle account has frozen or overdue spend"),
+        ("account_tokens", "bundle account model token allowance exhausted"),
+        ("account_dollars", "matching TransitionBudget cap exhausted"),
+    ],
+)
+def test_support_admission_reports_exact_block(case, reason):
+    paid = case in {"unfunded", "task"} or case.startswith("episode")
+    payload, request = _support_case("paid_primary" if paid else "prepaid")
+    budget, spend = payload["transition_budgets"][-1], payload["spend_receipts"][-1]
+    if case == "unfunded":
+        for key in list(budget):
+            if key.startswith("provider_balance"):
+                del budget[key]
+    elif case == "task":
+        budget["bounded_task_id"] = "different-task"
+    elif case in {"expired", "future"}:
+        budget["prepaid_bundle"].update(
+            observed_at="2026-05-17T07:45:00Z" if case == "expired" else "2026-05-17T08:01:00Z",
+            fresh_until="2026-05-17T08:00:00Z" if case == "expired" else "2026-05-17T08:10:00Z",
+        )
+    else:
+        # Different budget/task exposes account/episode aggregation beyond per-budget gates.
+        spend["budget_id"] = payload["transition_budgets"][0]["budget_id"]
+        if case.startswith("account"):
+            spend["task_id"] = "another-task"
+        if case.endswith("frozen"):
+            spend["reconciliation_state"] = "frozen_refused"
+            spend.update(
+                reconciled_at="2026-05-17T07:59:30Z",
+                reconciliation_reason="synthetic-integrity-review",
+            )
+        elif case.endswith("overdue"):
+            spend["reconcile_by"] = "2026-05-17T07:59:30Z"
+        elif case.endswith("tokens"):
+            spend["reserved_tokens"] = 1000000 if case.startswith("episode") else 1000
+        elif case.endswith("dollars"):
+            spend["estimated_cost_usd"] = "10"
+            if case.startswith("episode"):
+                budget.update(
+                    provider_balance_usd="100",
+                    total_cap_usd="100",
+                    per_task_cap_usd="20",
+                    daily_cap_usd="20",
+                )
+    result = evaluate_paid_route_eligibility(
+        QuotaSpendLedger.model_validate(payload), request, now=NOW
+    )
+    assert not result.eligible
+    assert reason in result.blocking_reasons
+    assert result.next_actions
+    assert result.model_dump(mode="json")["next_actions"] == list(result.next_actions)
+    action = " ".join(result.next_actions)
+    assert "next action:" in action
+    if "expired" in reason:
+        assert "refresh" in action and "admitted producer" in action
+    if "frozen" in reason:
+        assert "governed reconciliation" in action
+
+
+@pytest.mark.parametrize(
+    "section,field,value",
+    [
+        ("bundle", "fresh_until", "2026-05-17T08:20:00Z"),
+        ("bundle", "model_available_tokens", {"glm-5.3": 10}),
+        ("bundle", "model_token_limits", {"glm-5.3": 1000001}),
+        ("bundle", "cash_fallback_allowed", True),
+        ("budget", "provider_balance_usd", "1"),
+        ("budget", "total_cap_usd", "11"),
+        ("spend", "bundle_account_ref", None),
+        ("spend", "reserved_tokens", None),
+        ("spend", "model_or_engine", "glm-5.2"),
+        ("spend", "route_id", "glmcp.review.direct"),
+        ("spend", "support_artifact_authority", "none"),
+        ("spend", "cost_basis", None),
+        ("request", "paid_primary_model", "glm-5.3"),
+        ("request", "reserved_tokens", None),
+        ("request", "route_id", "glmcp.review.direct"),
+    ],
+)
+def test_support_contract_rejects_unsafe_record(section, field, value):
+    payload, request = _support_case()
+    budget = payload["transition_budgets"][-1]
+    records = dict(
+        bundle=budget["prepaid_bundle"],
+        budget=budget,
+        spend=payload["spend_receipts"][-1],
+        request=request.model_dump(mode="json"),
+    )
+    if section == "budget" and field == "provider_balance_usd":
+        cash = _support_case("paid_primary")[0]["transition_budgets"][-1]
+        budget.update({k: v for k, v in cash.items() if k.startswith("provider_balance")})
+        value = "10"
+    records[section][field] = value
+    with pytest.raises(ValidationError) as exc:
+        if section == "request":
+            PaidRouteRequest.model_validate(records[section])
+        else:
+            QuotaSpendLedger.model_validate(payload)
+
+    if field not in {"model_token_limits", "cash_fallback_allowed"}:
+        assert "next action:" in str(exc.value)
+
+
 @pytest.mark.parametrize(
     "field",
     ("route_id", "provider", "profile", "task_class", "quality_floor"),
@@ -991,9 +1224,8 @@ def test_successful_task_scoped_glmcp_payg_review_spend_counts_the_glm_5_3_defau
 
 
 def test_glmcp_model_ids_name_one_structured_identity_each() -> None:
-    assert (
-        set(GLMCP_MODEL_IDS) == set(GLMCP_ADMISSION_MODELS) == set(GLMCP_PAYG_PRICES_USD_PER_MTOK)
-    )
+    assert set(GLMCP_MODEL_IDS) == set(GLMCP_ADMISSION_MODELS)
+    assert set(GLMCP_PAYG_PRICES_USD_PER_MTOK) == set(GLMCP_ADMISSION_MODELS) | {"glm-5.3-flash"}
     assert {ModelId(value) for value in GLMCP_MODEL_IDS.values()} == {
         ModelId.Z_AI_GLM_5_3,
         ModelId.Z_AI_GLM_5_2,
@@ -2461,3 +2693,73 @@ def test_spend_receipt_meters_effort_and_structured_model_id() -> None:
     assert metered.model_id is ModelId.CLAUDE_OPUS_4_8
     assert metered.effort is Effort.XHIGH
     assert metered.model_or_engine == base.model_or_engine  # free-text identity retained alongside
+
+
+@pytest.mark.parametrize("route", ["glmcp.receipt_only.api_frontier", "glmcp.receipt_only.flash"])
+@pytest.mark.parametrize("tokens", [None, 100])
+def test_support_route_cannot_omit_paid_mode(route, tokens):
+    # The exploit needs no synthetic support ledger: reject the incomplete public request.
+    with pytest.raises(ValidationError, match="next action"):
+        _request(route_id=route, reserved_tokens=tokens)
+
+
+@pytest.mark.parametrize("mode", ["prepaid", "paid_primary"])
+@pytest.mark.parametrize("state", ["pending", "frozen_refused", "settled_by_provider_balance"])
+def test_support_actual_tokens_require_reconciled_usage(mode, state):
+    payload, request = _support_case(mode)
+    spend = payload["spend_receipts"][-1]
+    spend.update(reserved_tokens=1000000, actual_tokens=0, reconciliation_state=state)
+    if state != "pending":
+        spend.update(reconciled_at="2026-05-17T07:59:30Z", reconciliation_reason="fixture-review")
+    with pytest.raises(ValidationError, match="actual tokens.*next action"):
+        QuotaSpendLedger.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "mode,scope", [("prepaid", "episode"), ("paid_primary", "episode"), ("prepaid", "account")]
+)
+def test_support_reservation_only_released_after_reconciliation(mode, scope):
+    payload, request = _support_case(mode)
+    spend = payload["spend_receipts"][-1]
+    spend["reserved_tokens"] = 1000000
+    if scope == "account":
+        spend["task_id"] = "different-task"
+    before = QuotaSpendLedger.model_validate(payload)
+    assert not evaluate_paid_route_eligibility(before, request, now=NOW).eligible
+    spend.update(
+        actual_tokens=0,
+        actual_cost_usd="0",
+        cap_remaining_usd="10",
+        reconciliation_state="reconciled",
+        reconciled_at="2026-05-17T07:59:30Z",
+        reconciliation_reason="fixture-usage-reconciliation",
+    )
+    after = QuotaSpendLedger.model_validate(payload)
+    assert evaluate_paid_route_eligibility(after, request, now=NOW).eligible
+    assert after.spend_receipts[-1].model_dump(mode="json")["actual_tokens"] == 0
+
+
+@pytest.mark.parametrize(
+    "section,field",
+    [("transition_budgets", "bounded_task_id"), ("spend_receipts", "bundle_account_ref")],
+)
+@pytest.mark.parametrize(
+    "value", ["fixture@example.invalid", "/private/fixture", "~/private/fixture"]
+)
+def test_support_new_refs_use_existing_privacy_contract(section, field, value):
+    payload, _ = _support_case()
+    payload[section][-1][field] = value
+    with pytest.raises(ValidationError, match="refs.*next action"):
+        QuotaSpendLedger.model_validate(payload)
+
+
+@pytest.mark.parametrize("mode", ["prepaid", "paid_primary"])
+@pytest.mark.parametrize("binding", [None, "another-task"])
+def test_support_both_modes_require_exact_task_binding(mode, binding):
+    payload, request = _support_case(mode)
+    payload["transition_budgets"][-1]["bounded_task_id"] = binding
+    decision = evaluate_paid_route_eligibility(
+        QuotaSpendLedger.model_validate(payload), request, now=NOW
+    )
+    assert not decision.eligible
+    assert "no matching TransitionBudget" in decision.blocking_reasons
