@@ -1,7 +1,9 @@
 # Capability envelope: declared imports, default off
 
-`shared/capability_envelope` runs a harness (Claude Code, Codex, agy, grok, kimi, Vibe, opencode, Muse) so that
-nothing reaches the job unless its declaration names it. That rules out:
+`shared/capability_envelope` renders one declared execution surface into T1/T2/T3 carriers.
+The existing T2 executor remains the only implemented execution path. Subscription shapes
+without complete billing qualification refuse; API rendering does not authorize spend.
+The scrub carrier excludes undeclared imports at the documented filesystem boundaries:
 - instruction-file walk-up (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, …);
 - user or project memory;
 - MCP autoload;
@@ -15,24 +17,25 @@ Design: `frame/capability-dispatch-fabric-placement-20260925/DESIGN.md` v1.3 §3
 
 ## Use
 
+The following is a source-rendering example using a synthetic command and an explicit
+API billing declaration. It performs no launch or provider call. Actual subscription
+harness commands remain held until the existing onboarding owner supplies a qualification
+binding the complete argv/config/env/credential shape through execution admission.
+Neither an API label nor a rendered artifact authorizes spend.
+
 ```python
 from pathlib import Path
-from shared.capability_envelope import CredentialBind, DeclaredHook, EnvelopeDeclaration, execute, render
+from shared.capability_envelope import EnvelopeDeclaration, UnitSection, render
 
 decl = EnvelopeDeclaration(
     harness="claude",
-    argv=(str(claude_exe), "-p", "--model", model),
-    binaries=(claude_package_dir,),
-    credentials=(CredentialBind(source=Path.home() / ".claude/.credentials.json",
-                                target=".claude/.credentials.json"),),
-    hooks=(DeclaredHook(name="gate", event="PreToolUse", script=gate_script),),  # optional
-    workdir=checkout,                      # optional; mounted read-only at /work
-    declared_work_files=("AGENTS.md",),    # optional; everything else in MASKED_NAMES is covered
-    spool=spool_dir,                       # optional; the job's only writable output, at /spool
+    argv=("/usr/bin/true",),
+    billing_surface="api",  # Explicit synthetic fixture, not a billing fallback.
+    unit=UnitSection(memory_high=536870912, memory_max=1073741824,
+                     memory_swap_max=0, runtime_max_sec=600),
 )
-rendered = render(decl, run_root=fresh_dir)    # fresh_dir must not exist: a job home is never reused
-result = execute(rendered, stdin=prompt, timeout=600)
-record = rendered.facts                          # declaration and argv sha256, masked paths
+rendered = render(decl, run_root=Path("fresh-run"), carrier="t1")
+record = rendered.facts  # Source rendering only; fresh-run must not exist.
 ```
 
 ## What the carrier does (T2, bubblewrap), and how to recheck each claim
@@ -51,8 +54,12 @@ expand. `HAPAX_ENVELOPE_REQUIRE_BWRAP=1` makes a sandbox that cannot be built fa
 
 ## Refusals (each narrows; the message names the next action)
 
-- `--bare` without `billing_surface="api"`. Claude's bare mode does not read `CLAUDE_CODE_OAUTH_TOKEN`, so it would
-  switch billing implicitly.
+- Any unqualified subscription invocation, including `--bare`, unknown flags, configuration overrides and
+  shell wrappers. Complete execution-shape qualification remains with the existing harness onboarding owner;
+  changing the billing label is not a remedy or spend authorization.
+- Missing/nonpositive unit bounds, MemoryHigh above MemoryMax, or a restart policy other than `no`.
+- Duplicate/missing channel bindings, a Unix channel whose source is not a socket, whole-root/home channels,
+  network channels without an admitted egress gate, or reserved config environment overrides.
 - An `env` key that looks like a credential. Env values appear in the carrier argv, so use a `CredentialBind` file.
 - Hooks or MCP servers for a harness whose config format the renderer does not yet render (today, anything but
   Claude).
@@ -66,8 +73,20 @@ Recheck: `HAPAX_ENVELOPE_REQUIRE_BWRAP=1 uv run pytest tests/capability_envelope
 
 ## Not covered here
 
-- **Network egress:** shared with the host (the fabric's R9 gate).
-- **Memory and time ceilings, and the T1 and T3 carriers:** row `capability-fabric-envelope-unit-and-oci-carrier-20260925`.
+- **Network egress:** private network namespaces; network endpoint declarations refuse until an admitted
+  egress gate exists. Declared Unix socket endpoints are explicit read-only mounts.
+- **Memory and time ceilings:** the declaration must supply finite unit limits. T1 renders them as
+  `systemd-run --user` properties; T3 returns the same required outer-unit properties alongside a rootless
+  OCI 1.2.1 spec. Bare T2 carries these facts but does not enforce cgroup limits.
+- **Activation:** this source implementation executes only T2. T1/T3 launch refuses before consuming
+  the dispatch message until independent acceptance and governed executor admission. ID enrolment,
+  image qualification, recursive read-only support and runtime C1–C10 remain separate holds.
+- **Conformance:** all required isolation flags/namespaces must occur exactly once; additions, removals,
+  host namespace paths and contradictory settings refuse. Generated home contents must match the exact
+  generated files and declared empty mountpoints, including directories. No-follow descriptor reads
+  reject symlinks, changed contents, new entries and concurrent replacements during readback. This
+  observes render/pre-dispatch state; it does not freeze host files after return. The launcher must retain
+  exclusive bundle custody through activation; this source check is not a live containment witness.
 
 ## Tests
 
