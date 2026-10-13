@@ -35,7 +35,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -137,6 +137,11 @@ class RenderedEnvelope(BaseModel):
     run_root: Path
     masked: tuple[str, ...]
     facts: dict[str, Any]
+    carrier: Literal["t1", "t2", "t3"] = "t2"
+    unit_properties: tuple[str, ...] = ()
+    channel_bytes: bytes = b""
+    oci_spec: dict[str, Any] | None = None
+    oci_ids: tuple[int, int, int, int] | None = None
 
 
 def _refuse(decl: EnvelopeDeclaration) -> None:
@@ -407,11 +412,78 @@ def _render_bwrap(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvel
     return RenderedEnvelope(argv=tuple(a), run_root=run_root, masked=tuple(masked), facts=facts)
 
 
-def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
-    """Render the T2 filesystem carrier; outer-unit enforcement remains a separate binding."""
+def render(
+    decl: EnvelopeDeclaration,
+    *,
+    run_root: Path,
+    carrier: Literal["t1", "t2", "t3"] = "t2",
+    oci_uid: int | None = None,
+    oci_gid: int | None = None,
+    oci_launcher_uid: int | None = None,
+    oci_launcher_gid: int | None = None,
+) -> RenderedEnvelope:
+    """Render, never launch, a declared envelope. T3 IDs are explicit enrolment bindings.
+
+    T1 wraps the T2 filesystem carrier in a transient user service. T3 emits an OCI
+    bundle plus the same required outer-unit properties; execution belongs to the
+    separately admitted launcher. It is never implicitly run via a container daemon.
+    """
+    from shared.capability_envelope.carriers import make_oci_spec, unit_properties
+
     decl = EnvelopeDeclaration.model_validate(decl.model_dump())
     _refuse(decl)
-    return _render_bwrap(decl, run_root=run_root.absolute())
+    if carrier not in ("t1", "t2", "t3"):
+        raise EnvelopeRefusal("unknown carrier; next action: select t1, t2 or t3")
+    ids = (oci_uid, oci_gid, oci_launcher_uid, oci_launcher_gid)
+    if carrier == "t3" and (
+        any(type(value) is not int or not 0 < value < 2**32 - 1 for value in ids)
+        or oci_uid == oci_launcher_uid
+        or oci_gid == oci_launcher_gid
+    ):
+        raise EnvelopeRefusal(
+            "OCI needs subordinate uid/gid bindings; next action: supply enrolled IDs"
+        )
+    run_root = run_root.absolute()
+    rendered = _render_bwrap(decl, run_root=run_root)
+    properties = unit_properties(decl)
+    changes: dict[str, Any] = {"carrier": carrier, "unit_properties": properties}
+    if carrier == "t1":
+        changes["argv"] = (
+            "systemd-run",
+            "--user",
+            "--wait",
+            "--pipe",
+            "--collect",
+            *(f"--property={p}" for p in properties),
+            "--",
+            *rendered.argv,
+        )
+    elif carrier == "t3":
+        changes["oci_spec"] = make_oci_spec(rendered, ids)
+        changes["oci_ids"] = ids
+        changes["argv"] = ()
+    rendered = rendered.model_copy(update=changes)
+    channel_bytes = check_conformance(decl, rendered)
+    facts = {
+        **rendered.facts,
+        "carrier": carrier,
+        "channels_sha256": hashlib.sha256(channel_bytes).hexdigest(),
+        "unit_properties": properties,
+        "argv_sha256": hashlib.sha256("\0".join(rendered.argv).encode()).hexdigest(),
+    }
+    if carrier == "t3":
+        raw = (json.dumps(rendered.oci_spec, indent=2) + "\n").encode()
+        (run_root / "config.json").write_bytes(raw)
+        facts["oci_spec_sha256"] = hashlib.sha256(raw).hexdigest()
+    return rendered.model_copy(update={"channel_bytes": channel_bytes, "facts": facts})
+
+
+def check_conformance(decl: EnvelopeDeclaration, rendered: RenderedEnvelope) -> bytes:
+    """Byte-compare the declaration's normalized channels with the actual carrier."""
+    from shared.capability_envelope.carriers import check_surface
+
+    _refuse(decl)
+    return check_surface(decl, rendered)
 
 
 class EnvelopeCarrierError(RuntimeError):
@@ -427,6 +499,11 @@ def execute(
     itself fails (a nonzero exit whose stderr is bubblewrap's), for example without unprivileged
     user namespaces or when a declared binary is not inside the job.
     """
+    if rendered.carrier != "t2":
+        raise EnvelopeCarrierError(
+            "execute only admits the existing T2 carrier; next action: use the governed "
+            "launcher for unit/OCI activation after independent acceptance"
+        )
     carrier = shutil.which(rendered.argv[0])
     if carrier is None:
         raise EnvelopeCarrierError(
