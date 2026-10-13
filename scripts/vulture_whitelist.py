@@ -5605,3 +5605,4 @@ _ = (
 from shared.quota_spend_ledger import PrepaidBundle  # noqa: E402
 
 PrepaidBundle._bounded_evidence
+PrepaidBundle._limits_with_recovery

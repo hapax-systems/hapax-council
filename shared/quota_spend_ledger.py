@@ -21,6 +21,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    field_validator,
     model_serializer,
     model_validator,
 )
@@ -441,6 +442,18 @@ class PrepaidBundle(StrictModel):
     ] = Field(min_length=1)
     cash_fallback_allowed: Literal[False]
 
+    @field_validator("cash_fallback_allowed", "model_token_limits", mode="wrap")
+    @classmethod
+    def _limits_with_recovery(cls, value: Any, handler: Any) -> Any:
+        try:
+            return handler(value)
+        except ValidationError as exc:
+            raise ValueError(
+                "bundle allowance requires strict positive token limits at most 1000000 and "
+                "cash_fallback_allowed=false; next action: restore the admitted allowance "
+                "and disabled cash fallback; do not increase caps"
+            ) from exc
+
     @model_validator(mode="after")
     def _bounded_evidence(self) -> Self:
         _require_aware(self.observed_at, "observed_at")
@@ -694,7 +707,7 @@ class SpendReceipt(StrictModel):
                 raise ValueError(
                     "bundle output is support only, not independent acceptance; next action: retain support_non_authoritative output and obtain independent acceptance separately"
                 )
-        elif any(
+        elif self.route_id in ZAI_BUNDLE_ROUTES.values() or any(
             v is not None
             for v in (self.bundle_account_ref, self.reserved_tokens, self.actual_tokens)
         ):

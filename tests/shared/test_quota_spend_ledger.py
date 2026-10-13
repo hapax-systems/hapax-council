@@ -30,6 +30,7 @@ from shared.quota_spend_ledger import (
     ModelId,
     PaidApiBudgetState,
     PaidRouteRequest,
+    PrepaidBundle,
     Quantization,
     QuotaSpendLedger,
     QuotaSpendLedgerError,
@@ -585,8 +586,44 @@ def test_support_contract_rejects_unsafe_record(section, field, value):
         else:
             QuotaSpendLedger.model_validate(payload)
 
-    if field not in {"model_token_limits", "cash_fallback_allowed"}:
-        assert "next action:" in str(exc.value)
+    assert "next action:" in str(exc.value)
+
+
+@pytest.mark.parametrize("model", ["glm-5.3", "glm-5.3-flash"])
+@pytest.mark.parametrize(
+    "mode,scope", [("prepaid", "account"), ("prepaid", "episode"), ("paid_primary", "episode")]
+)
+def test_support_receipt_cannot_omit_all_metering(model, mode, scope):
+    payload, request = _support_case(mode, model)
+    spend = payload["spend_receipts"][-1]
+    spend["budget_id"] = payload["transition_budgets"][0]["budget_id"]
+    if scope == "account":
+        spend.update(task_id="another-task", reserved_tokens=1000000)
+        reason = "bundle account model token allowance exhausted"
+    else:
+        spend["estimated_cost_usd"] = "10"
+        reason = "matching TransitionBudget cap exhausted"
+    result = evaluate_paid_route_eligibility(
+        QuotaSpendLedger.model_validate(payload), request, now=NOW
+    )
+    assert not result.eligible and reason in result.blocking_reasons
+    for field in ("cost_basis", "bundle_account_ref", "reserved_tokens", "actual_tokens"):
+        spend.pop(field, None)
+    with pytest.raises(ValidationError, match="next action:"):
+        SpendReceipt.model_validate(spend)
+    with pytest.raises(ValidationError, match="next action:"):
+        evaluate_paid_route_eligibility(QuotaSpendLedger.model_validate(payload), request, now=NOW)
+
+
+@pytest.mark.parametrize(
+    "field", ["account_binding_ref", "balance_evidence_ref", "no_cash_fallback_evidence_ref"]
+)
+@pytest.mark.parametrize("value", ["person@example.invalid", "/tmp/private", "~/private"])
+def test_support_bundle_refs_reject_private_values(field, value):
+    bundle = _support_case()[0]["transition_budgets"][-1]["prepaid_bundle"]
+    bundle[field] = value
+    with pytest.raises(ValidationError, match="next action:"):
+        PrepaidBundle.model_validate(bundle)
 
 
 @pytest.mark.parametrize(
