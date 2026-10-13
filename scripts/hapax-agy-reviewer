@@ -11,15 +11,24 @@ import sys
 import tempfile
 from pathlib import Path
 
-DEFAULT_MODEL = "gemini-3.1-pro-high"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.quota_spend_ledger import (  # noqa: E402
+    AGY_ADMISSION_LEGACY_MODEL,
+    AGY_ADMISSION_MODEL,
+    AGY_ADMISSION_MODELS,
+)
+
+DEFAULT_MODEL = AGY_ADMISSION_MODEL
 DEFAULT_PRINT_TIMEOUT = "20m0s"
 DEFAULT_AGY_BIN = "/usr/bin/agy"
 PINNED_REVIEW_MODEL = DEFAULT_MODEL
-LEGACY_REVIEW_MODEL = "gemini-3.1-pro-preview"
-# Live agy 1.1.13 names the 3.1 Pro seat gemini-3.1-pro-high / -low. The old
-# preview id is still accepted as the same seat and rewritten to high; the
-# rewrite is pinned by test_agy_reviewer_accepts_legacy_review_model_id.
-PINNED_REVIEW_MODELS = frozenset({DEFAULT_MODEL, LEGACY_REVIEW_MODEL})
+LEGACY_REVIEW_MODEL = AGY_ADMISSION_LEGACY_MODEL
+# Preserve the registry base descriptor's compatibility alias. This is a
+# declared binding, not evidence that the installed catalog accepts the model.
+PINNED_REVIEW_MODELS = AGY_ADMISSION_MODELS
 # The seeded token makes the sandbox worth attacking: the dossier is untrusted
 # text and tool permissions are skipped, so a prompt-injected review could read
 # the token back out. Anything this long out of the token file is secret
