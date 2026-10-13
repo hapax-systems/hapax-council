@@ -21,6 +21,7 @@ from shared.capability_envelope.render import (
     EnvelopeCarrierError,
     EnvelopeRefusal,
     RenderedEnvelope,
+    check_conformance,
     execute,
     render,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "OpenWatch",
     "RenderedEnvelope",
     "UnitSection",
+    "check_conformance",
     "execute",
     "find_tokens",
     "render",
