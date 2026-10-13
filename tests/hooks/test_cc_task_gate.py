@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2111,6 +2112,178 @@ class TestVaultScopeAnchoringAndOwnNote:
             home=tmp_path,
         )
         assert result.returncode == 0, f"own-note edit blocked: {result.stderr}"
+
+    @pytest.mark.parametrize("tool", ["Edit", "Write"])
+    @pytest.mark.parametrize("session_id", [None, "own-session"])
+    def test_current_claimer_can_maintain_own_note(
+        self, tmp_path: Path, tool: str, session_id: str | None
+    ) -> None:
+        _, note = _make_vault(tmp_path, status="pr_open", assigned="alpha")
+        key = f"alpha-{session_id}" if session_id else "alpha"
+        _write_session_claim(tmp_path, key, "test-001")
+        before = note.read_bytes()
+        result = _run_hook(
+            {
+                "tool_name": tool,
+                "tool_input": {
+                    "file_path": str(note),
+                    "content": before.decode() + "\n- retained publication evidence\n",
+                },
+            },
+            home=tmp_path,
+            extra_env={"HAPAX_SESSION_ID": session_id} if session_id else {},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "own claimed-task note" in result.stderr
+        assert note.read_bytes() == before  # This is a gate decision, not the Write itself.
+
+    @pytest.mark.parametrize(
+        "invalid",
+        [
+            "unclaimed",
+            "other-note",
+            "wrong-owner",
+            "wrong-session",
+            "empty-claim",
+            "offered",
+            "wrong-task-id",
+            "wrong-note-type",
+        ],
+    )
+    def test_existing_governance_write_requires_current_own_claim(
+        self, tmp_path: Path, invalid: str
+    ) -> None:
+        _, note = _make_vault(
+            tmp_path,
+            status="offered" if invalid == "offered" else "pr_open",
+            assigned="beta" if invalid == "wrong-owner" else "alpha",
+        )
+        if invalid != "unclaimed":
+            _write_session_claim(
+                tmp_path,
+                "alpha-other-session" if invalid == "wrong-session" else "alpha-own-session",
+                "" if invalid == "empty-claim" else "test-001",
+            )
+        if invalid == "wrong-session":
+            # The same-role legacy pointer must not lend another session custody.
+            _write_claim(tmp_path, "alpha", "test-001")
+        if invalid == "other-note":
+            _, note = _make_vault(tmp_path, status="pr_open", assigned="alpha", task_id="other")
+        if invalid == "wrong-task-id":
+            note.write_text(note.read_text().replace("task_id: test-001", "task_id: other"))
+        if invalid == "wrong-note-type":
+            note.write_text(note.read_text().replace("type: cc-task", "type: hapax-request"))
+        before = note.read_bytes()
+        result = _run_hook(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(note), "content": before.decode() + "\nchange\n"},
+            },
+            home=tmp_path,
+            extra_env={"HAPAX_SESSION_ID": "own-session"},
+        )
+        assert result.returncode == 2, result.stderr
+        assert "BLOCKED" in result.stderr
+        assert "own claimed-task note — allowed" not in result.stderr
+        assert note.read_bytes() == before
+
+    @pytest.mark.parametrize("helper_state", ["absent", "unreadable", "crashes"])
+    @pytest.mark.parametrize("custody", ["valid", "wrong-owner", "offered"])
+    def test_claimed_own_write_custody_with_unavailable_bootstrap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, helper_state: str, custody: str
+    ) -> None:
+        # Stage the real closure; no installed helper or real claim is touched.
+        closure = tmp_path / "gate"
+        closure.mkdir()
+        for name in (HOOK.name, "agent-role.sh", "escape-grant.sh", "cc-task-root.sh"):
+            shutil.copy2(HOOK.parent / name, closure / name)
+        helper = closure / "cc-task-gate-bootstrap.py"
+        if helper_state == "unreadable":
+            shutil.copy2(HOOK.parent / helper.name, helper)
+            helper.chmod(0)
+            assert not os.access(helper, os.R_OK), "fixture requires an unreadable helper"
+        elif helper_state == "crashes":
+            helper.write_text("import sys\nsys.stdin.read()\nraise RuntimeError('fixture')\n")
+        else:
+            assert not helper.exists()
+        monkeypatch.setattr(sys.modules[__name__], "HOOK", closure / HOOK.name)
+        _, note = _make_vault(
+            tmp_path,
+            status="offered" if custody == "offered" else "pr_open",
+            assigned="beta" if custody == "wrong-owner" else "alpha",
+        )
+        _write_session_claim(tmp_path, "alpha-own-session", "test-001")
+        before = note.read_bytes()
+        result = _run_hook(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(note), "content": before.decode() + "\nchange\n"},
+            },
+            home=tmp_path,
+            extra_env={"HAPAX_SESSION_ID": "own-session"},
+        )
+        assert result.returncode == (0 if custody == "valid" else 2), result.stderr
+        if custody == "valid":
+            assert "own claimed-task note — allowed" in result.stderr
+        elif custody == "wrong-owner":
+            assert "assigned to 'beta', not 'alpha'" in result.stderr
+        else:
+            assert "'offered' state, not claimed" in result.stderr
+        # Claimed maintenance never invokes the create-only bootstrap helper.
+        assert "FAILING OPEN" not in result.stderr
+        assert not (tmp_path / ".cache/hapax/methodology-emergency-ledger.jsonl").exists()
+        assert note.read_bytes() == before
+
+    def test_own_write_rejects_claim_change_between_lookups(self, tmp_path: Path) -> None:
+        _, note = _make_vault(tmp_path, status="pr_open", assigned="alpha")
+        _, next_note = _make_vault(
+            tmp_path, status="pr_open", assigned="alpha", task_id="next-task"
+        )
+        # If the reconciliation guard is removed, the later claim otherwise has
+        # sufficient scope and authority to admit this target. This makes the
+        # rejection attributable to the actual guard, not a later scope failure.
+        next_note.write_text(next_note.read_text().replace("  - /tmp/x", f"  - {note}"))
+        (tmp_path / "parent-spec.md").write_text("Fixture authority.\n")
+        _write_session_claim(tmp_path, "alpha-own-session", "test-001")
+        marker = tmp_path / ".cache/hapax/cc-active-task-alpha-own-session"
+        reads = tmp_path / "claim-reads"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        real_head = shutil.which("head")
+        assert real_head is not None
+        head = bin_dir / "head"
+        # Switch only this synthetic marker AFTER returning the first lookup's
+        # bytes. No sleeps: the two reads deterministically see different claims.
+        head.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            f'{shlex.quote(real_head)} "$@"\n'
+            f'if [[ "${{@: -1}}" == {shlex.quote(str(marker))} ]]; then\n'
+            f"  printf 'read\\n' >> {shlex.quote(str(reads))}\n"
+            f"  printf 'next-task\\n' > {shlex.quote(str(marker))}\n"
+            "fi\n"
+        )
+        head.chmod(0o755)
+        before = note.read_bytes(), next_note.read_bytes()
+        result = _run_hook(
+            {
+                "tool_name": "Write",
+                "tool_input": {
+                    "file_path": str(note),
+                    "content": before[0].decode() + "\nchange\n",
+                },
+            },
+            home=tmp_path,
+            extra_env={
+                "HAPAX_SESSION_ID": "own-session",
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            },
+        )
+        assert reads.read_text().splitlines() == ["read", "read"]
+        assert marker.read_text() == "next-task\n"
+        assert result.returncode == 2, result.stderr
+        assert "own-note Write does not match the current session claim" in result.stderr
+        assert "own claimed-task note — allowed" not in result.stderr
+        assert (note.read_bytes(), next_note.read_bytes()) == before
 
     def test_vault_relative_scope_ref_resolves_against_vault_root(self, tmp_path: Path) -> None:
         # A vault-relative scope ref (`20-projects/hapax-cc-tasks/`) must resolve

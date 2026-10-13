@@ -539,6 +539,42 @@ if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
   exit 0
 fi
 
+# Resolve the same active note for bootstrap deferral and the normal claim gate.
+_cc_gate_task_note() {
+  local id="$1" candidate
+  [[ -n "$id" ]] || return 1
+  for candidate in "$CC_TASK_ROOT/active/$id-"*.md "$CC_TASK_ROOT/active/$id.md"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# An existing own-note Write is maintenance, not unclaimed create-only intake.
+# This is only a candidate: the ordinary gate still checks the current claim,
+# resolved target, assignment and mutable status before allowing it. Use the
+# current session's exact claim key; a same-role legacy pointer cannot confer
+# another session's custody. Legacy claims remain usable when no session is set.
+_cc_gate_own_write_candidate() {
+  [[ "$tool_name" == "Write" && -n "$edit_path" ]] || return 1
+  local key marker id note edit_real note_real
+  key="$(hapax_agent_claim_key 2>/dev/null)" || return 1
+  marker="$HOME/.cache/hapax/cc-active-task-$key"
+  [[ -f "$marker" ]] || return 1
+  id="$(head -n1 "$marker" | tr -d '[:space:]')"
+  [[ -n "$id" && "$id" != */* ]] || return 1
+  note="$(_cc_gate_task_note "$id")" || return 1
+  edit_real="$(realpath -m -- "$edit_path")" || return 1
+  note_real="$(realpath -m -- "$note")" || return 1
+  [[ "$edit_real" == "$note_real" ]]
+}
+_claimed_note_write=false
+if _cc_gate_own_write_candidate; then
+  _claimed_note_write=true
+fi
+
 # --- 3b. Unclaimed governance-intake bootstrap allowance ---
 # The task gate must not deadlock the lifecycle it enforces. A session without
 # a claim may create a new request or offered cc-task note, but only through a
@@ -594,7 +630,9 @@ _bootstrap_infra_failopen() {
   return 0
 }
 
-if [[ ! -r "$_bootstrap_helper" ]]; then
+if [[ "$_claimed_note_write" == "true" ]]; then
+  : # Defer to the normal own-claim checks below; this is not an allow verdict.
+elif [[ ! -r "$_bootstrap_helper" ]]; then
   # Absent/unreadable (e.g. a concurrent hooks-doctor redeploy briefly unlinked
   # it). Don't exec python on it — that would surface as rc==2 and historically
   # fail closed. Go straight to the INV-5 fail-open handler.
@@ -765,16 +803,7 @@ fi
 
 # --- 6. Locate task note in vault ---
 vault_root="$CC_TASK_ROOT"
-note_path=""
-for candidate in "$vault_root/active/$task_id-"*.md; do
-  if [[ -f "$candidate" ]]; then
-    note_path="$candidate"
-    break
-  fi
-done
-if [[ -z "$note_path" && -f "$vault_root/active/$task_id.md" ]]; then
-  note_path="$vault_root/active/$task_id.md"
-fi
+note_path="$(_cc_gate_task_note "$task_id" || true)"
 # Defect-3 (vault-nfs-mount-boot-race-and-gate-fail-closed-20261003): a MISSING
 # vault SUBSTRATE fails OPEN with a loud alert (INV-5 — a blocked lane must still
 # think/act and repair the mount), NOT fail-closed-stuck. The 2026-10-03 reboot
@@ -821,14 +850,27 @@ fi
 # against the RESOLVED note_path for THIS claimed task only — a DIFFERENT task's note
 # stays fully gated. Mirrors policy_decide's _is_own_task_note allow (section 5b) and
 # precedes status/authority/scope so a claimer can maintain its own note even across
-# a reconciler-unassign race or a terminal status.
+# a reconciler-unassign race or a terminal status for Edit. Write must also prove
+# current custody and a mutable status, below: deferring bootstrap is not authority.
+_own_claimed_note=false
 if [[ -n "$edit_path" ]]; then
   _edit_real="$(realpath -m -- "$edit_path" 2>/dev/null || echo "$edit_path")"
   _note_real="$(realpath -m -- "$note_path" 2>/dev/null || echo "$note_path")"
   if [[ "$_edit_real" == "$_note_real" ]]; then
-    echo "cc-task-gate: own claimed-task note — allowed (governance bookkeeping): $edit_path" >&2
-    exit 0
+    _own_claimed_note=true
+    if [[ "$tool_name" != "Write" ]]; then
+      echo "cc-task-gate: own claimed-task note — allowed (governance bookkeeping): $edit_path" >&2
+      exit 0
+    fi
   fi
+fi
+if [[ "$_claimed_note_write" == "true" && "$_own_claimed_note" != "true" ]] \
+  || [[ "$tool_name" == "Write" && "$_own_claimed_note" == "true" && "$_claimed_note_write" != "true" ]]; then
+  _emit_block <<EOF
+cc-task-gate: BLOCKED — own-note Write does not match the current session claim.
+  Next action: reconcile this session's claim through cc-claim before retrying.
+EOF
+  exit 2
 fi
 
 # --- 7. Parse frontmatter via python (jq doesn't do YAML) ---
@@ -843,7 +885,7 @@ fi
 # backwards-compatible alias.
 # Output format:
 # status assigned blocked authority parent_spec route_schema stage impl src docs runtime scope_refs
-parse_output="$(python3 - "$note_path" <<'PYEOF'
+parse_output="$(python3 - "$note_path" "$task_id" "$_claimed_note_write" <<'PYEOF'
 import sys
 from pathlib import Path
 
@@ -959,6 +1001,15 @@ while idx < len(lines):
             continue
         break
     fields[key] = "\x1f".join(items)
+if sys.argv[3] == "true" and (
+    fields.get("type") != "cc-task" or fields.get("task_id") != sys.argv[2]
+):
+    print(
+        "cc-task-gate: BLOCKED — own-note Write has a mismatched claimed note identity. "
+        "Next action: reconcile the task identity through cc-claim.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 status = fields.get("status", "")
 assigned = fields.get("assigned_to", "")
 blocked_reason = fields.get("blocked_reason", "")
@@ -1073,6 +1124,11 @@ EOF
     exit 2
     ;;
 esac
+
+if [[ "$_claimed_note_write" == "true" && "$_own_claimed_note" == "true" ]]; then
+  echo "cc-task-gate: own claimed-task note — allowed (governance bookkeeping): $edit_path" >&2
+  exit 0
+fi
 
 # --- 10. AuthorityCase validation (SDLC Reform Slice 2) ---
 # `authority_case` is canonical for current cc-tasks. Missing authority on a
