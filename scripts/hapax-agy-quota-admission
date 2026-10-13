@@ -21,6 +21,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.quota_spend_ledger import AGY_ADMISSION_MODEL  # noqa: E402
+
 DEFAULT_REVIEWER_COMMAND = REPO_ROOT / "scripts" / "hapax-agy-reviewer"
 DEFAULT_RECEIPT_DIR = Path(
     os.environ.get(
@@ -34,7 +39,7 @@ PROVIDER = "google-antigravity-cli-agy"
 ROUTE_ID = "agy.review.direct"
 CAPACITY_POOL = "subscription_quota"
 SUPPORTED_TOOL = "hapax-agy-reviewer"
-MODEL = "gemini-3.1-pro-high"
+MODEL = AGY_ADMISSION_MODEL
 BILLING_MODE = "operator_session_subscription"
 SECRET_SOURCE = "agy:operator-session"
 DEFAULT_STALE_AFTER_SECONDS = 900
