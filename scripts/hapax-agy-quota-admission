@@ -8,9 +8,7 @@ or output content. Positive receipts are consumed by
 ``scripts/hapax-quota-telemetry-writer`` before ``agy.review.direct`` can be
 treated as a live review family.
 
-An explicit --measurement-model instead produces non-admitting measurement
-evidence. It preserves the schema but sets positive_admission false and includes
-measurement metadata that production receipt consumers reject.
+--measurement-model produces purpose-marked, non-admitting evidence.
 """
 
 from __future__ import annotations

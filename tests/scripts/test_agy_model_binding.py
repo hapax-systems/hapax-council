@@ -20,6 +20,16 @@ CONSUMERS = [
 ]
 
 
+def test_former_engine_receipt_cannot_admit_argon():
+    from shared.quota_spend_ledger import _is_agy_admission_evidence_ref
+
+    prefix = "relay-receipt:agy-quota-admission-fixture.yaml:witness:argon-fixture:supported_tool:hapax-agy-reviewer:"
+    suffix = ":observed_at:2026-10-13T21:00:00Z:fresh_until:2026-10-13T21:15:00Z"
+    assert _is_agy_admission_evidence_ref(prefix + "model:gemini-4-argon-low" + suffix)
+    assert not _is_agy_admission_evidence_ref(prefix + "model:gemini-3.1-pro-high" + suffix)
+    assert not _is_agy_admission_evidence_ref(prefix + "model:gemini-3.1-pro-preview" + suffix)
+
+
 def _registry():
     payload = json.loads(REGISTRY.read_text())
     route = next(r for r in payload["routes"] if r["route_id"] == "agy.review.direct")
@@ -28,7 +38,7 @@ def _registry():
         v
         for v in route["descriptor_variants"]
         if v["knobs_override"].get("model_id", base) == base
-        and v["knobs_override"].get("effort") == "high"
+        and v["knobs_override"].get("effort") == route["execution_descriptor"]["effort"]
     )
     return payload, route, variant
 

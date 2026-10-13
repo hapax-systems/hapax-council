@@ -4302,15 +4302,15 @@
       "launcher": "scripts/hapax-agy-reviewer (review seat: blind-review prompt on stdin -> agy --print sandboxed YAML verdict on stdout)",
       "sanctioned_wrapper": "scripts/hapax-agy-reviewer",
       "summary": "Agy universal-harness review seat (Antigravity CLI; entitlement engines include Gemini, Claude, and GPT-OSS)",
-      "notes": "Live /usr/bin/agy CLI review harness. This is the agy reviewer family, not the retired Antigrav GUI/legacy hapax-antigrav surface and not a mutating worker lane. Gemini is an engine reachable through agy, not a capability family name. Local probe observed agy 1.0.10, eight agy models, and exact-output success with Gemini 3.1 Pro (Low); Gemini 3.5 Flash (Low) was reachable but did not obey the exact-token smoke prompt. scripts/hapax-agy-reviewer pins the review model to gemini-3.1-pro-preview and rejects ambient or explicit non-pinned model overrides so the route-backed gemini family cannot silently execute a different engine. Admission is intentionally partial and fail-closed: a fresh agy platform-capability receipt with observed CLI/wrapper evidence clears agy_review_seat_receipt_admission_required, but observed platform quota evidence and generic fresh quota snapshots do not clear route_specific_quota_receipt_absent. Route quota admission requires a fresh short-lived hapax.agy_quota_admission.v1 receipt from scripts/hapax-agy-quota-admission, which runs and validates a sanctioned scripts/hapax-agy-reviewer smoke without persisting prompt or output content, followed by scripts/hapax-quota-telemetry-writer so the live quota ledger records agy.review.direct as fresh.",
+      "notes": "Measured 2026-10-13: /usr/bin/agy -> ~/.local/bin/agy, version 1.3.4. Catalog: Gemini 4 Argon, Gemini 3.8 Flash, Claude Opus/Sonnet 5.5 (low/medium/high); GPT-OSS 120B medium; no Gemini 3.1 Pro. Argon low won the three-tier smoke/two-PR blind comparison; other tiers stay measurement-only. Evidence: 30-areas/hapax/frame/seat-handoff-20261012/cx-gapsig-argon-20261013/. Read-only review admission still requires fresh platform evidence and a production hapax.agy_quota_admission.v1 receipt projected by the telemetry writer.",
       "route_state": "blocked",
       "blocked_reasons": [
         "agy_review_seat_receipt_admission_required",
         "route_specific_quota_receipt_absent"
       ],
-      "model_or_engine": "agy-universal-harness",
+      "model_or_engine": "gemini-4-argon",
       "execution_descriptor": {
-        "model_id": "gemini-3.1-pro-preview",
+        "model_id": "gemini-4-argon",
         "effort": "low",
         "context_mode": "standard",
         "fast_mode": "off",
@@ -4325,9 +4325,7 @@
           },
           "score_delta": {},
           "scores_inherited_from": null,
-          "blocked_reasons": [
-            "measurement_only"
-          ]
+          "blocked_reasons": []
         },
         {
           "variant_id": "agy@gemini-4-argon-medium",
@@ -4386,11 +4384,14 @@
         {
           "variant_id": "agy@gemini-3.1-pro-high",
           "knobs_override": {
-            "effort": "high"
+            "effort": "high",
+            "model_id": "gemini-3.1-pro-preview"
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": []
+          "blocked_reasons": [
+            "absent_from_observed_catalog"
+          ]
         },
         {
           "variant_id": "agy@claude-sonnet-4.6-thinking",
@@ -4502,8 +4503,8 @@
         }
       },
       "known_unknowns": [
-        "No durable route-specific quota or spend receipt exists yet; the route remains blocked until admission plumbing records account-live quota evidence.",
-        "Only Gemini 3.1 Pro (Low) passed an exact-output smoke prompt; Gemini 3.5 Flash (Low) was reachable but answered about CLI docs instead of the exact token.",
+        "Fresh Argon production admission, installed activation and independent qualification remain unobserved.",
+        "The tier comparison covers two PRs. Native JSON omitted served-model identity; only requested model and binary identity were observed.",
         "The agy harness exposes multiple provider engines; this route is a universal-harness review seat and must not be treated as a local-private execution path.",
         "This route is not a worker lane and does not authorize source, runtime, provider-spend, public, or governance-authority mutations."
       ],

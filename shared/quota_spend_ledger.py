@@ -60,7 +60,7 @@ AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
 
 
 def _agy_review_model_binding() -> tuple[str, str]:
-    """Read the high-effort variant of the declared base model, never select by availability.
+    """Read the declared base model/effort variant, never select by availability.
 
     The base descriptor supplies the compatibility alias. Catalog availability
     and review-family qualification remain separate admission requirements.
@@ -73,14 +73,15 @@ def _agy_review_model_binding() -> tuple[str, str]:
             raise ValueError("expected one agy review route")
         route = routes[0]
         base = route["execution_descriptor"]["model_id"]
+        effort = route["execution_descriptor"]["effort"]
         variants = [
             v
             for v in route["descriptor_variants"]
             if v["knobs_override"].get("model_id", base) == base
-            and v["knobs_override"].get("effort") == "high"
+            and v["knobs_override"].get("effort") == effort
         ]
         if len(variants) != 1 or variants[0]["blocked_reasons"]:
-            raise ValueError("expected one unblocked high-effort base-model variant")
+            raise ValueError("expected one unblocked base-model/effort variant")
         variant_id = variants[0]["variant_id"]
         if not variant_id.startswith("agy@"):
             raise ValueError("expected an agy CLI variant")
@@ -91,7 +92,7 @@ def _agy_review_model_binding() -> tuple[str, str]:
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ValueError(
             "agy review registry binding unavailable or ambiguous; repair the governed "
-            "agy.review.direct base-model/high-effort variant in "
+            "agy.review.direct base-model/effort variant in "
             "config/platform-capability-registry.json; no model fallback"
         ) from exc
 
@@ -363,6 +364,7 @@ class ModelId(StrEnum):
     QWEN3_5_9B = "qwen3.5-9b"
     MISTRAL_MEDIUM_3_5 = "mistral-medium-3.5"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    GEMINI_4_ARGON = "gemini-4-argon"
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"

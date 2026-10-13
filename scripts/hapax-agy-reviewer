@@ -212,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "hapax-agy-reviewer: review model is pinned to "
             f"{PINNED_REVIEW_MODEL} for registry family traceability "
-            f"(the retired id {LEGACY_REVIEW_MODEL} names the same seat)",
+            f"(the registry base alias {LEGACY_REVIEW_MODEL} names the same seat)",
             file=sys.stderr,
         )
         return 64

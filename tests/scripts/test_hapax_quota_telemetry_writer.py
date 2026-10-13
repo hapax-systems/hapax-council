@@ -4646,7 +4646,7 @@ def _agy_admission(
     observed_at: str,
     stale_after_seconds: int = 900,
     evidence_ref: str = "agy-gemini31pro-smoke-witness",
-    model: str = "gemini-3.1-pro-preview",
+    model: str = "gemini-4-argon",
     name: str = "agy-quota-admission.yaml",
     secret_value_persisted: str = "false",
 ) -> None:
@@ -6665,7 +6665,7 @@ def test_fresh_agy_admission_receipt_marks_agy_fresh(tmp_path: Path) -> None:
     assert any(
         "witness:agy-gemini31pro-smoke-witness" in ref
         and "supported_tool:hapax-agy-reviewer" in ref
-        and "model:gemini-3.1-pro-preview" in ref
+        and "model:gemini-4-argon" in ref
         for ref in agy_snapshot["evidence_refs"]
     )
     assert "receipt-bounded" in agy_snapshot["operator_visible_reason"]
@@ -6673,7 +6673,7 @@ def test_fresh_agy_admission_receipt_marks_agy_fresh(tmp_path: Path) -> None:
     assert summary["agy_admissions"] == 1
 
 
-@pytest.mark.parametrize("model", ["gemini-3.1-pro-high", "gemini-3.1-pro-preview"])
+@pytest.mark.parametrize("model", ["gemini-4-argon-low", "gemini-4-argon"])
 def test_agy_admission_accepts_either_pinned_model_id(tmp_path: Path, model: str) -> None:
     """agy renamed the seat; a receipt minted under either id is the same seat."""
 
@@ -8031,7 +8031,7 @@ provider: google-antigravity-cli-agy
 capacity_pool: subscription_quota
 route_id: agy.review.direct
 supported_tool: hapax-agy-reviewer
-model: gemini-3.1-pro-preview
+model: gemini-4-argon
 observed_at: 2026-06-09T23:55:00Z
 stale_after_seconds: 900
 evidence_ref: agy-gemini31pro-smoke-witness
