@@ -150,7 +150,17 @@ def test_observe_success_records_the_reviewer_default_glm_5_3(tmp_path: Path) ->
     assert fields["endpoint"] == "https://api.z.ai/api/paas/v4"
 
 
-def test_observe_success_rejects_payg_without_quota_wall_witness(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "extra",
+    [
+        (),
+        ("--primary-error-class", "quota_exhausted"),
+        ("--quota-wall-evidence-ref", "quota-wall.yaml"),
+    ],
+)
+def test_observe_success_rejects_payg_without_quota_wall_witness(
+    tmp_path: Path, extra: tuple[str, ...]
+) -> None:
     result, receipt_dir = _run(
         tmp_path,
         "observe-success",
@@ -162,6 +172,7 @@ def test_observe_success_rejects_payg_without_quota_wall_witness(tmp_path: Path)
         "https://api.z.ai/api/paas/v4",
         "--model",
         "glm-5.2",
+        *extra,
     )
 
     assert result.returncode == 2

@@ -1195,6 +1195,17 @@ def _require_payg_spend_gate(*, estimated_cost_usd: Decimal) -> PaygSpendGate:
             "scripts/hapax-quota-telemetry-writer --json"
         )
     budget = resolved.ledger.budget_by_id(decision.budget_id)
+    # A caller may narrow the existing gate to an explicitly authorized budget/case.
+    # This runs under the spend lock before reservation and before the paid request.
+    for env_name, observed in (
+        ("HAPAX_GLMCP_REVIEW_REQUIRED_BUDGET_ID", budget.budget_id),
+        ("HAPAX_GLMCP_REVIEW_REQUIRED_AUTHORITY_CASE", budget.authority_case),
+    ):
+        required = os.environ.get(env_name)
+        if required is not None and required != observed:
+            raise ApiError(
+                "PAYG fallback refused: selected budget/case differs from caller binding"
+            )
     return PaygSpendGate(
         state=decision.state,
         budget_id=decision.budget_id,

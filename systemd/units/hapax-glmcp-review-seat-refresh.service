@@ -15,9 +15,9 @@ Type=oneshot
 # blocked (measured 2026-10-03T01:22-01:25Z; see
 # 30-areas/hapax/frame/GLM-ADMISSION-PRODUCER-20261003.md). This unit deliberately sets NEITHER
 # HAPAX_COUNCIL NOR HAPAX_GLMCP_SEAT_ROOT_OVERRIDE, so the wrapper's root guard pins the tree.
-# The reviewer reads glmcp/api-key from the FileStore (hapax-secrets.env). PAYG fallback is pinned
-# OFF inside the wrapper, so a quota wall never mints a receipt for a call the Coding Plan did not
-# serve; and the admission is minted only after a round trip that exits 0 with non-empty output.
+# The reviewer reads glmcp/api-key from the FileStore (hapax-secrets.env). The wrapper pins
+# Coding Plan first; a fresh quota wall may use the admitted PAYG budget. PAYG admission
+# requires that attempt's reconciled spend receipt (Crow ruling 20261013T224102Z).
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-glmcp-review-seat-refresh
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
