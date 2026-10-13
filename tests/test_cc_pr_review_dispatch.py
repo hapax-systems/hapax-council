@@ -6626,6 +6626,38 @@ def _seed_seat_output_latch(family: str = "glm") -> None:
 
 
 class TestWalledFamilySubstitution:
+    def test_later_served_window_removes_only_the_superseded_review_wall(self) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime(2026, 10, 13, 7, tzinfo=UTC)
+        spent = dispatch.quota_headroom.evidence(
+            "claude.subscription.weekly",
+            at=now - timedelta(hours=2),
+            reset=now + timedelta(days=5),
+            quantity=100,
+            unit="percent_used",
+            window="10080m",
+            label="observed",
+            source="fixture:spent",
+        )
+        successor = spent.model_copy(
+            update={
+                "observed_at": now - timedelta(minutes=10),
+                "resets_at": now + timedelta(days=7),
+                "quantity": 2,
+                "details": {"subscription_served": 1},
+            }
+        )
+        assert dispatch._wall_evidence([spent, successor], now, "claude") is None
+        # A separate shorter window remains binding and supplies the actual wall evidence.
+        other = spent.model_copy(
+            update={"capacity_id": "claude.subscription.five_hour", "window": "300m"}
+        )
+        wall = dispatch._wall_evidence([other, spent, successor], now, "claude")
+        assert wall is not None
+        assert wall["capacity_id"] == other.capacity_id
+        assert wall["resets_at"] == other.resets_at.isoformat()
+
     def test_tests_never_read_the_hosts_live_wall_traces(self, tmp_path: Path) -> None:
         assert tmp_path / "wall-home" == dispatch.WALL_TRACE_HOME
 
