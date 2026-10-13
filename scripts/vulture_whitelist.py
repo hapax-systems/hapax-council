@@ -5599,3 +5599,9 @@ _ = (
     _ds_parse_hn_search,
     _ds_load_sources,
 )
+
+# Called by the extensionless scripts/hapax-agy-reviewer and
+# scripts/hapax-agy-quota-admission explicit measurement paths.
+from shared.quota_spend_ledger import agy_measurement_model as _agy_measurement_model  # noqa: E402
+
+_ = _agy_measurement_model

@@ -4318,6 +4318,42 @@
       },
       "descriptor_variants": [
         {
+          "variant_id": "agy@gemini-4-argon-low",
+          "knobs_override": {
+            "model_id": "gemini-4-argon",
+            "effort": "low"
+          },
+          "score_delta": {},
+          "scores_inherited_from": null,
+          "blocked_reasons": [
+            "measurement_only"
+          ]
+        },
+        {
+          "variant_id": "agy@gemini-4-argon-medium",
+          "knobs_override": {
+            "model_id": "gemini-4-argon",
+            "effort": "medium"
+          },
+          "score_delta": {},
+          "scores_inherited_from": null,
+          "blocked_reasons": [
+            "measurement_only"
+          ]
+        },
+        {
+          "variant_id": "agy@gemini-4-argon-high",
+          "knobs_override": {
+            "model_id": "gemini-4-argon",
+            "effort": "high"
+          },
+          "score_delta": {},
+          "scores_inherited_from": null,
+          "blocked_reasons": [
+            "measurement_only"
+          ]
+        },
+        {
           "variant_id": "agy@gemini-3.5-flash-low",
           "knobs_override": {
             "model_id": "gemini-3.5-flash",
