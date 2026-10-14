@@ -5624,6 +5624,8 @@ from shared.platform_capability_registry import (  # noqa: E402
     resolve_subscription_pool_binding as _resolve_subscription_pool_binding,
 )
 
-_SubscriptionPoolBinding._distinct_relative_paths
-_resolve_subscription_pool_binding
-_claude_config_dir_for_env
+_ = (
+    _SubscriptionPoolBinding._distinct_relative_paths,
+    _resolve_subscription_pool_binding,
+    _claude_config_dir_for_env,
+)

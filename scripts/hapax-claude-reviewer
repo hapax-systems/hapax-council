@@ -213,9 +213,10 @@ def _pool_binding(root: Path) -> dict:
         binding, release = resolved["effective"], resolved["release"]
     except (ValueError, TypeError, KeyError) as exc:
         raise ValueError("malformed pool binding from the selected release resolver") from exc
-    if release is not None and binding != release:
-        # HAPAX_PLATFORM_CAPABILITY_REGISTRY points at a declaration that unbinds or rebinds the
-        # route against the release's own: never run on a pool the release did not declare.
+    if binding != release:
+        # HAPAX_PLATFORM_CAPABILITY_REGISTRY points at a declaration that binds, unbinds or
+        # rebinds the route against the release's own: never run on a pool the release did not
+        # declare, including when the release declares none.
         raise ValueError(
             f"the registry override's pool binding for {REVIEW_EXECUTION_ROUTE} differs from the "
             "release's declaration; next action: unset HAPAX_PLATFORM_CAPABILITY_REGISTRY or "

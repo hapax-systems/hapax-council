@@ -2208,6 +2208,55 @@ def test_two_pools_never_share_a_path() -> None:
         PlatformCapabilityRegistry.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("receipt_dir", ".cache/hapax/relay//receipts-max-2"),
+        ("receipt_dir", "./.cache/hapax/relay/receipts-max-2/"),
+        ("headless_dir", ".cache/hapax/relay/receipts-max-2/headless"),
+        ("durable_sink_root", ".cache/hapax"),
+    ],
+)
+def test_two_pools_never_share_a_path_in_another_spelling_or_by_nesting(
+    field: str, value: str
+) -> None:
+    """A reading found under one pool's dir is that pool's: a second pool may not reach the same
+    directory by a different spelling, nor sit inside (or around) one of the first pool's dirs."""
+    payload, _route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    headless["subscription_pool_binding"] = {
+        "pool": "max-3",
+        "config_home": ".claude-max-3",
+        "receipt_dir": ".cache/hapax/relay/receipts-max-3",
+        "headless_dir": ".cache/hapax/claude-headless-max-3",
+        "pace_activation": ".cache/hapax/claude-pool-pace-max-3/activation.json",
+        "durable_sink_root": ".cache/hapax/stage0-durable-sink-max-3",
+        field: value,
+    }
+    headless["native_load_set"]["native_home"] = ".claude-max-3"
+    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
+
+    with pytest.raises(ValidationError, match="share the path"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_two_pools_with_disjoint_paths_are_accepted() -> None:
+    payload, _route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    headless["subscription_pool_binding"] = {
+        "pool": "max-3",
+        "config_home": ".claude-max-3",
+        "receipt_dir": ".cache/hapax/relay/receipts-max-3",
+        "headless_dir": ".cache/hapax/claude-headless-max-3",
+        "pace_activation": ".cache/hapax/claude-pool-pace-max-3/activation.json",
+        "durable_sink_root": ".cache/hapax/stage0-durable-sink-max-3",
+    }
+    headless["native_load_set"]["native_home"] = ".claude-max-3"
+    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
+
+    PlatformCapabilityRegistry.model_validate(payload)
+
+
 def test_an_unreadable_registry_never_resolves_to_unbound(tmp_path: Path) -> None:
     from shared.platform_capability_registry import (
         PlatformCapabilityRegistryError,

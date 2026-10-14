@@ -648,8 +648,9 @@ def evidence_by_route(
 def _declared_pool_bindings() -> dict | None:
     """The registry's route pool bindings; None when unreadable.
 
-    Unreadable skips nothing: every route is attempted, the admission writer refuses each one
-    (it cannot tell bound from unbound either), and the run surfaces as a failed mint (exit 5).
+    ``main`` refuses an unreadable registry before observing (exit 7). ``mint`` called on its own
+    skips nothing on None: every route is attempted and the admission writer refuses each one (it
+    cannot tell bound from unbound either), so the mint fails rather than widening.
     """
     from shared.platform_capability_registry import (
         PlatformCapabilityRegistryError,
@@ -933,6 +934,28 @@ def main(argv: list[str] | None = None) -> int:
         print("invalid --now; expected ISO-8601 UTC", file=sys.stderr)
         return 2
     route_ids = tuple(args.route_ids or DEFAULT_ROUTE_IDS)
+    # Unreadable bindings cannot tell a route bound to another pool from an unbound one, so any
+    # probe could spend this pool's request for a route it cannot vouch for. Refuse before
+    # observing, as a broken instrument (exit 7, outside SuccessExitStatus), never as no evidence.
+    pool_bindings = _declared_pool_bindings()
+    if pool_bindings is None:
+        hint = (
+            "the registry's subscription pool bindings could not be read, so no route can be "
+            "told bound from unbound; nothing is probed or minted. Next action: repair "
+            "config/platform-capability-registry.json (or the HAPAX_PLATFORM_CAPABILITY_REGISTRY "
+            "override), then rerun"
+        )
+        if args.json:
+            print(json.dumps({"verdict": "pool_bindings_unreadable", "hint": hint}, indent=1))
+        else:
+            print("account-live: pool_bindings_unreadable")
+            print(f"  {hint}", file=sys.stderr)
+        return 7
+    eligible_route_ids = [
+        route_id
+        for route_id in route_ids
+        if _bound_to_another_pool(route_id, pool_bindings) is None
+    ]
 
     verdict, evidence, found = observe_all(
         now=now,
@@ -951,11 +974,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     # A route bound to another subscription pool is never minted here (see ``mint``), so it never
     # buys a probe either: spending this pool's request for a route it cannot vouch for is waste.
-    pool_bindings = _declared_pool_bindings()
     routes_missing_passive_evidence = [
         route_id
         for route_id, route_evidence in by_route.items()
-        if route_evidence is None and _bound_to_another_pool(route_id, pool_bindings) is None
+        if route_evidence is None and route_id in eligible_route_ids
     ]
     # Read the quantity before spending a request on it. An unreadable source narrows:
     # it never triggers a quantity probe on its own.
@@ -975,9 +997,11 @@ def main(argv: list[str] | None = None) -> int:
         reading_at is None or (now - reading_at).total_seconds() > args.quantity_max_age_seconds
     )
     probe_report: dict | None = None
+    # A stale quantity alone buys a probe only when some requested route is this pool's: with
+    # none, no receipt this run writes could carry the reading.
     if (
         verdict != "walled"
-        and (routes_missing_passive_evidence or quantity["stale"])
+        and (routes_missing_passive_evidence or (quantity["stale"] and eligible_route_ids))
         and args.probe
         and not args.dry_run
     ):

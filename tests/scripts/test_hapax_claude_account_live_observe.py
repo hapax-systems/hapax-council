@@ -856,6 +856,37 @@ def test_the_account_1_observer_unit_stays_green_with_the_review_route_bound_to_
     assert not any("review-opus" in name and "pool" in name for name in minted(tmp_path))
 
 
+def test_an_unreadable_registry_is_a_broken_instrument_never_a_probe(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Unreadable bindings cannot tell bound from unbound: probing would spend this pool's request
+    for a route bound elsewhere. Refuse first, outside SuccessExitStatus, with nothing minted."""
+    corrupt = tmp_path / "registry.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(corrupt))
+
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
+
+    assert rc == 7
+    assert rc not in OBSERVER_UNIT_SUCCESS_EXIT_STATUS
+    assert payload["verdict"] == "pool_bindings_unreadable"
+    assert calls == []
+    assert minted(tmp_path) == []
+
+
+def test_no_quantity_probe_when_every_requested_route_is_another_pools(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """A stale quantity alone may not buy account 1's request when the only requested route is
+    max-2's: no receipt this run writes could carry the reading."""
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, "--route-id", "claude.review.opus")
+
+    assert calls == []
+    assert payload["quantity"]["stale"] is True
+    assert payload.get("probe") is None
+    assert minted(tmp_path) == []
+
+
 def test_the_account_1_observer_pace_hold_stays_green_with_the_review_route_skipped(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:

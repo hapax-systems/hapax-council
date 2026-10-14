@@ -1193,6 +1193,28 @@ def test_review_refuses_an_override_that_rebinds_the_route_to_another_pool(tmp_p
     assert not argv_path.exists()
 
 
+def test_review_refuses_an_override_that_binds_a_route_the_release_leaves_unbound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The override alone may never choose the billed pool: a release that declares no pool and
+    an override that declares one differ, and are refused like any other difference."""
+    module = _load_wrapper("reviewer_release_unbound")
+    resolved = {
+        "effective": {"pool": "max-3", "config_dir": "/srv/example-home/.claude-max-3"},
+        "release": None,
+    }
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout=json.dumps(resolved), stderr=""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="differs from the release's declaration"):
+        module._pool_binding(REPO_ROOT)
+
+
 def test_the_bound_world_tests_run_on_the_real_registry() -> None:
     """Guard (desk condition 1): an unbound-registry fixture from the family-selection tests must
     never reach these tests, which pin the real binding's refusals."""

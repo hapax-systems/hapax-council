@@ -1240,9 +1240,12 @@ class PlatformCapabilityRegistry(StrictModel):
                     )
 
         # One pool name is one set of paths, and no two pools share a path: a reading found in a
-        # pool's dir is that pool's and no other's.
+        # pool's dir is that pool's and no other's. Paths are compared normalized, and a path
+        # nested in (or around) another pool's is shared too.
+        from pathlib import PurePosixPath
+
         pools: dict[str, SubscriptionPoolBinding] = {}
-        claimed: dict[str, str] = {}
+        claimed: list[tuple[PurePosixPath, str]] = []
         for route in self.routes:
             binding = route.subscription_pool_binding
             if binding is None:
@@ -1260,11 +1263,16 @@ class PlatformCapabilityRegistry(StrictModel):
                 binding.pace_activation,
                 binding.durable_sink_root,
             ):
-                owner = claimed.setdefault(path, binding.pool)
-                if owner != binding.pool:
-                    raise ValueError(
-                        f"subscription pools {owner!r} and {binding.pool!r} share the path {path!r}"
-                    )
+                candidate = PurePosixPath(path)
+                for held, owner in claimed:
+                    if owner != binding.pool and (
+                        candidate == held or held in candidate.parents or candidate in held.parents
+                    ):
+                        raise ValueError(
+                            f"subscription pools {owner!r} and {binding.pool!r} share the path "
+                            f"{path!r}"
+                        )
+                claimed.append((candidate, binding.pool))
 
         return self
 
