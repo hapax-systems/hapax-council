@@ -2360,6 +2360,8 @@ class TestQuotaIsReadNotHardcoded:
         module["observe_quota"].__globals__["QUOTA_LEDGER_LIVE"] = _quota_ledger_fresh_for(
             tmp_path, {"claude.headless.full": "fresh"}
         )
+        # The declared pools resolve under the real HOME; pin them, or a scan reads live pool dirs.
+        module["observe_quota"].__globals__["_subscription_pool_bindings"] = lambda: {}
         return module
 
     def test_a_fresh_positive_receipt_is_observed(self, tmp_path: Path) -> None:
@@ -2437,6 +2439,126 @@ class TestQuotaIsReadNotHardcoded:
         assert result.status.value == "observed"
 
 
+class _ClaudeRoute(_Route):
+    class _Platform:
+        value = "claude"
+
+    platform = _Platform()
+
+
+class TestQuotaIsObservedOnlyFromTheRoutesDeclaredPool:
+    """claude.review.opus bills max-2 (subscription_pool_binding). Its quota is observed only from a
+    fresh receipt in max-2's own receipt dir that names max-2; the shared relay dir is the default
+    pool's, and a receipt there, or one naming another pool, never observes the bound route."""
+
+    NOW = datetime(2026, 9, 1, 23, 15, 0, tzinfo=UTC)
+    REVIEW = "claude.review.opus"
+
+    def _module(self, tmp_path: Path, *, bindings: object = "declared"):
+        from shared.platform_capability_registry import ResolvedSubscriptionPool
+
+        shared_dir = tmp_path / "shared"
+        pool_dir = tmp_path / "pool-max-2"
+        shared_dir.mkdir()
+        pool_dir.mkdir()
+        binding = ResolvedSubscriptionPool(
+            route_id=self.REVIEW,
+            pool="max-2",
+            config_dir=tmp_path / "config-max-2",
+            receipt_dir=pool_dir,
+            headless_dir=tmp_path / "headless-max-2",
+            pace_activation=tmp_path / "pace-max-2" / "activation.json",
+            durable_sink_root=tmp_path / "durable-max-2",
+        )
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        module_globals = module["observe_quota"].__globals__
+        module_globals["QUOTA_RECEIPT_DIR"] = shared_dir
+        module_globals["QUOTA_LEDGER_LIVE"] = _quota_ledger_fresh_for(
+            tmp_path, {self.REVIEW: "fresh", "claude.headless.full": "fresh"}
+        )
+        resolved = {self.REVIEW: binding} if bindings == "declared" else bindings
+        module_globals["_subscription_pool_bindings"] = lambda: resolved
+        return module, shared_dir, pool_dir
+
+    def _observe(self, module, route_id: str):  # noqa: ANN001, ANN202
+        return module["observe_quota"]("claude", [_ClaudeRoute(route_id)], now=self.NOW)
+
+    def test_a_pool_receipt_in_the_pool_dir_is_observed_and_names_the_pool(
+        self, tmp_path: Path
+    ) -> None:
+        module, _shared, pool_dir = self._module(tmp_path)
+        _quota_receipt(
+            pool_dir / "claude-quota-admission-r.yaml", route_id=self.REVIEW, pool="max-2"
+        )
+
+        result = self._observe(module, self.REVIEW)
+
+        assert result.status.value == "observed", result.reason_codes
+        assert f"platform-capability-registry:{self.REVIEW}:quota:observed" in result.evidence_refs
+        assert (
+            f"platform-capability-registry:{self.REVIEW}:quota:pool:max-2" in result.evidence_refs
+        )
+
+    def test_a_bound_routes_receipt_in_the_shared_dir_is_not_observed(self, tmp_path: Path) -> None:
+        """The unsafe case: an account-1 reading in the shared dir never stands for max-2."""
+        module, shared_dir, _pool = self._module(tmp_path)
+        _quota_receipt(shared_dir / "claude-quota-admission-r.yaml", route_id=self.REVIEW)
+        _quota_receipt(
+            shared_dir / "claude-quota-admission-p.yaml", route_id=self.REVIEW, pool="max-2"
+        )
+
+        result = self._observe(module, self.REVIEW)
+
+        assert result.status.value == "unobservable"
+        assert "account_live_quota_receipt_absent" in result.reason_codes
+
+    @pytest.mark.parametrize("pool", [None, "max-3"])
+    def test_a_pool_dir_receipt_naming_no_or_another_pool_is_not_observed(
+        self, tmp_path: Path, pool: str | None
+    ) -> None:
+        module, _shared, pool_dir = self._module(tmp_path)
+        overrides: dict[str, object] = {"route_id": self.REVIEW}
+        if pool is not None:
+            overrides["pool"] = pool
+        _quota_receipt(pool_dir / "claude-quota-admission-r.yaml", **overrides)
+
+        result = self._observe(module, self.REVIEW)
+
+        assert result.status.value == "unobservable"
+
+    def test_an_unbound_routes_receipt_in_a_pool_dir_is_not_observed(self, tmp_path: Path) -> None:
+        """max-2's own headless reading never vouches for the account-1 headless route."""
+        module, _shared, pool_dir = self._module(tmp_path)
+        _quota_receipt(pool_dir / "claude-quota-admission-h.yaml", route_id="claude.headless.full")
+
+        result = self._observe(module, "claude.headless.full")
+
+        assert result.status.value == "unobservable"
+
+    def test_an_unbound_routes_shared_receipt_is_still_observed(self, tmp_path: Path) -> None:
+        module, shared_dir, _pool = self._module(tmp_path)
+        _quota_receipt(
+            shared_dir / "claude-quota-admission-h.yaml", route_id="claude.headless.full"
+        )
+
+        result = self._observe(module, "claude.headless.full")
+
+        assert result.status.value == "observed", result.reason_codes
+        assert not any(":quota:pool:" in ref for ref in result.evidence_refs)
+
+    def test_unreadable_bindings_observe_no_claude_route(self, tmp_path: Path) -> None:
+        module, shared_dir, pool_dir = self._module(tmp_path, bindings=None)
+        _quota_receipt(
+            shared_dir / "claude-quota-admission-h.yaml", route_id="claude.headless.full"
+        )
+        _quota_receipt(
+            pool_dir / "claude-quota-admission-r.yaml", route_id=self.REVIEW, pool="max-2"
+        )
+
+        assert self._observe(module, "claude.headless.full").status.value == "unobservable"
+        assert self._observe(module, self.REVIEW).status.value == "unobservable"
+
+
 class _WrapperRoute:
     def __init__(self, route_id: str, sanctioned_wrapper: str) -> None:
         self.route_id = route_id
@@ -2462,6 +2584,7 @@ class TestQuotaIsPerRouteAndLedgerBacked:
         module["observe_quota"].__globals__["QUOTA_LEDGER_LIVE"] = ledger or (
             tmp_path / "no-such-ledger.json"
         )
+        module["observe_quota"].__globals__["_subscription_pool_bindings"] = lambda: {}
         return module
 
     def test_one_routes_receipt_does_not_observe_its_siblings(self, tmp_path: Path) -> None:

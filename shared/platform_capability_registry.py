@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -907,6 +907,73 @@ class NativeLoadSet(StrictModel):
     source_refs: list[str] = Field(min_length=1)
 
 
+#: The Claude CLI's own default config dir, relative to HOME: the pool every unbound Claude
+#: route runs on. A declared pool binding names a different one; it never restates the default.
+CLAUDE_DEFAULT_CONFIG_HOME = ".claude"
+#: The shared relay receipt dir, relative to HOME, that the default pool's producers write. A bound
+#: pool keeps its own receipts apart from it, so one pool's reading can never stand for another's.
+SHARED_RELAY_RECEIPT_HOME = ".cache/hapax/relay/receipts"
+
+
+class SubscriptionPoolBinding(StrictModel):
+    """The one subscription pool a Claude route bills, stated rather than inherited.
+
+    Every path is relative to HOME. ``config_home`` is what the route's launcher sets as
+    ``CLAUDE_CONFIG_DIR``; the other four are where that pool's own readings live: its admission
+    receipts, its headless traces, its pace activation marker and its durable pace-ledger root.
+    A reading admits the route only when all five are this pool's.
+    """
+
+    pool: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$")
+    config_home: str = Field(min_length=1)
+    receipt_dir: str = Field(min_length=1)
+    headless_dir: str = Field(min_length=1)
+    pace_activation: str = Field(min_length=1)
+    durable_sink_root: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _distinct_relative_paths(self) -> Self:
+        from pathlib import PurePosixPath
+
+        if re.search(r"(?:^|-)(?:account|billing|customer|invoice|payment)", self.pool):
+            raise ValueError("pool names a pool, never a billing or account identifier")
+        paths = {
+            "config_home": self.config_home,
+            "receipt_dir": self.receipt_dir,
+            "headless_dir": self.headless_dir,
+            "pace_activation": self.pace_activation,
+            "durable_sink_root": self.durable_sink_root,
+        }
+        for name, value in paths.items():
+            path = PurePosixPath(value)
+            if path.is_absolute() or ".." in path.parts or str(path) in {"", "."}:
+                raise ValueError(f"subscription pool {name} must be a path inside HOME")
+        normalized = {name: str(PurePosixPath(value)) for name, value in paths.items()}
+        if len(set(normalized.values())) != len(normalized):
+            raise ValueError("subscription pool paths must be distinct")
+        if normalized["config_home"] == CLAUDE_DEFAULT_CONFIG_HOME:
+            raise ValueError(
+                "a pool binding names a non-default config home; an unbound route already "
+                "runs on the CLI default"
+            )
+        if normalized["receipt_dir"] == SHARED_RELAY_RECEIPT_HOME:
+            raise ValueError("a bound pool keeps its receipts outside the shared relay dir")
+        return self
+
+
+@dataclass(frozen=True)
+class ResolvedSubscriptionPool:
+    """A route's declared pool binding with its paths resolved under one HOME."""
+
+    route_id: str
+    pool: str
+    config_dir: Path
+    receipt_dir: Path
+    headless_dir: Path
+    pace_activation: Path
+    durable_sink_root: Path
+
+
 class PlatformCapabilityRoute(StrictModel):
     registry_schema: Literal[1] = 1
     route_id: str
@@ -922,6 +989,7 @@ class PlatformCapabilityRoute(StrictModel):
     model_or_engine: str | None
     execution_descriptor: ExecutionDescriptor
     native_load_set: NativeLoadSet | None = None
+    subscription_pool_binding: SubscriptionPoolBinding | None = None
     descriptor_variants: list[DescriptorVariant] = Field(default_factory=list)
     paid_provider: str | None = None
     paid_profile: str | None = None
@@ -970,6 +1038,26 @@ class PlatformCapabilityRoute(StrictModel):
                 "agentic-trust observation evidence cannot carry a supply policy effect: "
                 + ", ".join(offending_evidence)
             )
+
+        if self.subscription_pool_binding is not None:
+            if (
+                self.platform is not Platform.CLAUDE
+                or self.auth_surface is not AuthSurface.SUBSCRIPTION
+                or self.capacity_pool is not CapacityPool.SUBSCRIPTION_QUOTA
+            ):
+                raise ValueError(
+                    "subscription_pool_binding is valid only on a Claude subscription route"
+                )
+            load_set = self.native_load_set
+            if (
+                load_set is None
+                or load_set.home_env != "CLAUDE_CONFIG_DIR"
+                or load_set.native_home != self.subscription_pool_binding.config_home
+            ):
+                raise ValueError(
+                    "a pool-bound route's native_load_set must name the same config home "
+                    "through CLAUDE_CONFIG_DIR"
+                )
 
         if self.route_state is RouteState.BLOCKED and not self.blocked_reasons:
             raise ValueError("blocked routes must declare blocked_reasons")
@@ -1149,6 +1237,33 @@ class PlatformCapabilityRegistry(StrictModel):
                         f"variant {variant.variant_id!r} on {route.route_id} inherits scores from "
                         f"unknown route_id {ref!r}; scores_inherited_from must name a registry route "
                         "(or be null to inherit the variant's own route)"
+                    )
+
+        # One pool name is one set of paths, and no two pools share a path: a reading found in a
+        # pool's dir is that pool's and no other's.
+        pools: dict[str, SubscriptionPoolBinding] = {}
+        claimed: dict[str, str] = {}
+        for route in self.routes:
+            binding = route.subscription_pool_binding
+            if binding is None:
+                continue
+            prior = pools.setdefault(binding.pool, binding)
+            if prior != binding:
+                raise ValueError(
+                    f"subscription pool {binding.pool!r} is declared with different paths "
+                    f"on {route.route_id}"
+                )
+            for path in (
+                binding.config_home,
+                binding.receipt_dir,
+                binding.headless_dir,
+                binding.pace_activation,
+                binding.durable_sink_root,
+            ):
+                owner = claimed.setdefault(path, binding.pool)
+                if owner != binding.pool:
+                    raise ValueError(
+                        f"subscription pools {owner!r} and {binding.pool!r} share the path {path!r}"
                     )
 
         return self
@@ -1948,6 +2063,69 @@ def load_platform_capability_registry(
         raise PlatformCapabilityRegistryError(
             f"invalid platform capability registry at {path}: {exc}"
         ) from exc
+
+
+def resolve_subscription_pool_bindings(
+    path: Path | None = None,
+    *,
+    home: Path | None = None,
+) -> dict[str, ResolvedSubscriptionPool]:
+    """Every route's declared subscription pool, with its paths under ``home``.
+
+    Reads the static declaration only; receipts never change which pool a route bills. A route
+    missing from the result is unbound and runs on the CLI default config dir. Raises
+    ``PlatformCapabilityRegistryError`` when the registry cannot be read: a caller that cannot
+    tell whether a route is bound must refuse rather than assume it is not.
+
+    The default path is the one ``shared/capability_execution.py`` resolves the execution
+    descriptor from (``HAPAX_PLATFORM_CAPABILITY_REGISTRY``, else the checked-in registry), so
+    a process takes its model and its billed pool from one declaration.
+    """
+
+    if path is None:
+        path = Path(
+            os.environ.get("HAPAX_PLATFORM_CAPABILITY_REGISTRY") or PLATFORM_CAPABILITY_REGISTRY
+        )
+    try:
+        registry = PlatformCapabilityRegistry.model_validate(_load_json_object(path))
+    except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+        raise PlatformCapabilityRegistryError(
+            f"invalid platform capability registry at {path}: {exc}"
+        ) from exc
+    root = Path.home() if home is None else home
+    return {
+        route.route_id: ResolvedSubscriptionPool(
+            route_id=route.route_id,
+            pool=binding.pool,
+            config_dir=root / binding.config_home,
+            receipt_dir=root / binding.receipt_dir,
+            headless_dir=root / binding.headless_dir,
+            pace_activation=root / binding.pace_activation,
+            durable_sink_root=root / binding.durable_sink_root,
+        )
+        for route in registry.routes
+        if (binding := route.subscription_pool_binding) is not None
+    }
+
+
+def resolve_subscription_pool_binding(
+    route_id: str,
+    path: Path | None = None,
+    *,
+    home: Path | None = None,
+) -> ResolvedSubscriptionPool | None:
+    """One route's declared pool, or None when the route is unbound (see the plural form)."""
+
+    return resolve_subscription_pool_bindings(path, home=home).get(normalize_route_id(route_id))
+
+
+def claude_config_dir_for_env(env: Mapping[str, str], *, home: Path | None = None) -> Path:
+    """The config dir, and so the subscription pool, a Claude CLI child of ``env`` runs on."""
+
+    configured = (env.get("CLAUDE_CONFIG_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return (Path.home() if home is None else home) / CLAUDE_DEFAULT_CONFIG_HOME
 
 
 def _apply_route_authority_receipts_from_dir(

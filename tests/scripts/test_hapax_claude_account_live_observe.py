@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -113,6 +114,9 @@ def _durable_sink_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(obs.PROBE_ENV_SCRUBBED) + ["ANTHROPIC_MODEL"]:
         monkeypatch.delenv(name, raising=False)
+    # These tests are the account-1 observer unit: no CLAUDE_CONFIG_DIR, so the CLI default
+    # pool. A session running the suite must not lend them its own config dir.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
 
 def probe_stream(monkeypatch, *records):
@@ -350,7 +354,10 @@ def test_probe_windows_reach_the_ledger_reader(
     )
     monkeypatch.setattr(obs.subprocess, "run", _REAL_SUBPROCESS_RUN)
     receipts = mint(event, tmp_path, route_ids=obs.DEFAULT_ROUTE_IDS)
-    assert all(r["returncode"] == 0 for r in receipts), receipts
+    attempted = [r for r in receipts if "skipped" not in r]
+    assert attempted and all(r["returncode"] == 0 for r in attempted), receipts
+    # The account-1 observer never mints the max-2-bound review route.
+    assert [r["route_id"] for r in receipts if r.get("skipped")] == ["claude.review.opus"]
     rows = {
         row.capacity_id: row
         for row in read_claude_wall_and_spend(
@@ -628,8 +635,10 @@ def test_a_failed_quantity_probe_keeps_the_passive_admission(
     assert calls == [NOW]
     assert (payload["verdict"], rc) == ("served", 7)
     assert payload["probe"]["outcome"] == "probe_failed"
-    assert len(minted(tmp_path)) == 3
+    # headless and interactive; the review route bills max-2 and is skipped here.
+    assert len(minted(tmp_path)) == 2
     assert any("interactive-full" in name for name in minted(tmp_path))
+    assert not any("review-opus" in name for name in minted(tmp_path))
 
 
 def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
@@ -647,10 +656,8 @@ def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
     broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
     assert calls == [NOW] and rc == 7
-    assert payload["probe"]["requested_for_routes"] == [
-        "claude.review.opus",
-        "claude.interactive.full",
-    ]
+    # The max-2-bound review route never buys an account-1 probe.
+    assert payload["probe"]["requested_for_routes"] == ["claude.interactive.full"]
     assert len(minted(tmp_path)) == 1
     assert "headless-full" in minted(tmp_path)[0]
 
@@ -809,3 +816,146 @@ def test_a_refused_reading_never_suppresses_a_route_probe(monkeypatch, tmp_path:
     stream.write_text("".join(json.dumps(r) + "\n" for r in records))
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
     assert payload["quantity"]["stale"] is False and calls == [NOW]
+
+
+# --- The declared subscription pool (claude.review.opus -> max-2) ------------------------------
+
+#: hapax-claude-account-live-observe.service's SuccessExitStatus=0 3 4.
+OBSERVER_UNIT_SUCCESS_EXIT_STATUS = {0, 3, 4}
+
+
+def test_the_bound_world_tests_run_on_the_real_registry() -> None:
+    """Guard (desk condition 1): the unbound-registry fixture of the family-selection test files
+    must never reach the binding tests below, which pin the real declaration's behaviour."""
+    from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+    assert "HAPAX_PLATFORM_CAPABILITY_REGISTRY" not in os.environ
+    binding = resolve_subscription_pool_binding("claude.review.opus")
+    assert binding is not None and binding.pool == "max-2"
+
+
+def test_the_account_1_observer_unit_stays_green_with_the_review_route_bound_to_max_2(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """The Crow's binding test: with the binding present, the account-1 observer (no
+    CLAUDE_CONFIG_DIR) skips the max-2 route instead of failing its mint, so the unit stays inside
+    SuccessExitStatus; it mints its own routes and never the review route."""
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    window_receipt(tmp_path, NOW - timedelta(minutes=10))
+
+    rc, payload, _calls = run_main(monkeypatch, tmp_path, capsys)
+
+    assert rc in OBSERVER_UNIT_SUCCESS_EXIT_STATUS, payload
+    review = next(r for r in payload["receipts"] if r["route_id"] == "claude.review.opus")
+    assert review == {
+        "route_id": "claude.review.opus",
+        "skipped": "route-bound-to-another-pool",
+        "route_pool": "max-2",
+    }
+    assert any("headless-full" in name for name in minted(tmp_path))
+    assert not any("review-opus" in name and "pool" in name for name in minted(tmp_path))
+
+
+def test_the_account_1_observer_pace_hold_stays_green_with_the_review_route_skipped(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Over account 1's line, its own routes are pace-refused (exit 3 each) and the review route
+    is skipped, not attempted: still ``pace_held`` and exit 0, not a failed mint (exit 5)."""
+    sink_root = tmp_path / "durable"
+    sink_root.mkdir()
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(sink_root))
+    pace_receipts = tmp_path / "pace-receipts"
+    pace_receipts.mkdir()
+    over = run_writer(
+        pace_receipts,
+        "--probe-environment-scrubbed",
+        "--seven-day-used-percent",
+        "90",
+        "--seven-day-resets-at",
+        "2026-09-25T22:00:00Z",
+    )
+    assert over.returncode == 0, over.stderr
+    marker = tmp_path / "activation.json"
+    marker.write_text(
+        json.dumps({"activated_at": "2026-09-24T18:00:00Z", "by": "seat", "reason": "t"}) + "\n",
+        encoding="utf-8",
+    )
+    observation = obs.Observation(
+        kind="served",
+        at=obs._parse_ts("2026-09-24T18:06:36Z"),
+        source="claude-cli-stream-json",
+        model="claude-opus-5",
+        scrubbed_env=tuple(obs.PROBE_ENV_SCRUBBED),
+        windows={
+            "seven_day": (90.0, obs._parse_ts("2026-09-25T22:00:00Z")),
+            "five_hour": (8.0, obs._parse_ts("2026-09-24T21:30:00Z")),
+        },
+        subscription_served=True,
+    )
+
+    rc, payload, _calls = run_main(
+        monkeypatch,
+        tmp_path,
+        capsys,
+        "--pace-receipt-dir",
+        str(pace_receipts),
+        "--pace-headless-glob",
+        str(tmp_path / "no-headless" / "*" / "output.jsonl"),
+        "--pace-activation",
+        str(marker),
+        probe_result=observation,
+    )
+
+    assert (rc, payload["verdict"]) == (0, "pace_held")
+    assert any(r.get("skipped") == "route-bound-to-another-pool" for r in payload["receipts"])
+    assert minted(tmp_path) == []
+
+
+def test_the_max_2_observer_mints_the_review_route_naming_its_pool(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """Run inside max-2's own chain (as max2-pool.sh does), the observer mints the review route
+    into max-2's receipt dir, and the receipt names max-2."""
+    home = tmp_path / "home"
+    cache = home / ".cache" / "hapax"
+    receipts = cache / "relay" / "receipts-max-2"
+    sink_root = cache / "stage0-durable-sink-max-2"
+    for directory in (home / ".claude-max-2", receipts, sink_root):
+        directory.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / ".claude-max-2"))
+    monkeypatch.setenv(sink_mod.DEFAULT_ROOT_ENV, str(sink_root))
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    monkeypatch.setattr(obs, "probe", lambda now: None)
+
+    rc = obs.main(
+        [
+            "--transcript-glob",
+            str(tmp_path / "projects" / "*" / "*.jsonl"),
+            "--headless-glob",
+            str(cache / "claude-headless-max-2" / "*" / "output.jsonl"),
+            "--receipt-dir",
+            str(receipts),
+            "--pace-receipt-dir",
+            str(receipts),
+            "--pace-headless-glob",
+            str(cache / "claude-headless-max-2" / "*" / "output.jsonl"),
+            "--pace-activation",
+            str(cache / "claude-pool-pace-max-2" / "activation.json"),
+            "--now",
+            iso(NOW),
+            "--max-age-seconds",
+            "1800",
+            "--route-id",
+            "claude.review.opus",
+            "--no-probe",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert rc == 0, payload
+    [review] = payload["receipts"]
+    assert review["returncode"] == 0, review
+    [receipt] = sorted(receipts.glob("*claude-review-opus-pool-max-2-*.yaml"))
+    assert "pool: max-2\n" in receipt.read_text(encoding="utf-8")

@@ -645,6 +645,36 @@ def evidence_by_route(
     return by_route
 
 
+def _declared_pool_bindings() -> dict | None:
+    """The registry's route pool bindings; None when unreadable.
+
+    Unreadable skips nothing: every route is attempted, the admission writer refuses each one
+    (it cannot tell bound from unbound either), and the run surfaces as a failed mint (exit 5).
+    """
+    from shared.platform_capability_registry import (
+        PlatformCapabilityRegistryError,
+        resolve_subscription_pool_bindings,
+    )
+
+    try:
+        return resolve_subscription_pool_bindings()
+    except PlatformCapabilityRegistryError:
+        return None
+
+
+def _bound_to_another_pool(route_id: str, pool_bindings: dict | None) -> str | None:
+    """The route's declared pool when this process is NOT running on it; otherwise None."""
+    from shared.platform_capability_registry import claude_config_dir_for_env
+
+    binding = (pool_bindings or {}).get(route_id)
+    if binding is None:
+        return None
+    running_on = claude_config_dir_for_env(os.environ).expanduser().resolve()
+    if running_on == binding.config_dir.expanduser().resolve():
+        return None
+    return binding.pool
+
+
 def mint(
     evidence: Observation,
     *,
@@ -669,7 +699,21 @@ def mint(
     means a 14-minute-old observation yields 14 fewer minutes of freshness, automatically.
     """
     results: list[dict] = []
+    pool_bindings = _declared_pool_bindings()
     for route_id in route_ids:
+        # A route that bills another subscription pool is not this observer's to mint: its
+        # reading would be this pool's, and the writer would refuse it. Skipped, like a family
+        # mismatch, so it is not an attempt (and the account-1 unit does not exit 5 on it).
+        other_pool = _bound_to_another_pool(route_id, pool_bindings)
+        if other_pool is not None:
+            results.append(
+                {
+                    "route_id": route_id,
+                    "skipped": "route-bound-to-another-pool",
+                    "route_pool": other_pool,
+                }
+            )
+            continue
         route_evidence = evidence
         if evidence_by_route is not None:
             route_evidence = evidence_by_route.get(route_id)
@@ -905,8 +949,13 @@ def main(argv: list[str] | None = None) -> int:
     by_route = (
         evidence_by_route(found, route_ids) if verdict == "served" else dict.fromkeys(route_ids)
     )
+    # A route bound to another subscription pool is never minted here (see ``mint``), so it never
+    # buys a probe either: spending this pool's request for a route it cannot vouch for is waste.
+    pool_bindings = _declared_pool_bindings()
     routes_missing_passive_evidence = [
-        route_id for route_id, route_evidence in by_route.items() if route_evidence is None
+        route_id
+        for route_id, route_evidence in by_route.items()
+        if route_evidence is None and _bound_to_another_pool(route_id, pool_bindings) is None
     ]
     # Read the quantity before spending a request on it. An unreadable source narrows:
     # it never triggers a quantity probe on its own.
