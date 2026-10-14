@@ -76,6 +76,8 @@ class TranscriptPath:
 TRANSCRIPT_PATHS: tuple[TranscriptPath, ...] = (
     TranscriptPath("claude", ".claude/projects"),
     TranscriptPath("claude", ".claude/history.jsonl"),
+    TranscriptPath("claude", ".claude-max-2/projects"),
+    TranscriptPath("claude", ".claude-max-2/history.jsonl"),
     TranscriptPath("codex", ".codex/sessions"),
     TranscriptPath("codex", ".codex/archived_sessions"),
     TranscriptPath("codex", ".codex/history.jsonl"),
@@ -150,6 +152,24 @@ def _dangling_ancestor(home: Path, rel: str) -> Path | None:
     return None
 
 
+def claude_config_dirs(home: Path) -> list[Path]:
+    """Present Claude Code profiles, identified by settings or transcript stores.
+
+    Other applications use the prefix too (e.g. .claude-server-commander); a
+    directory with none of these Claude Code markers is not a config profile.
+    Discovery is independent of TRANSCRIPT_PATHS so new profiles cannot silently
+    escape custody verification.
+    """
+    return sorted(
+        p
+        for p in home.glob(".claude*")
+        if p.is_dir()
+        and any(
+            os.path.lexists(p / marker) for marker in ("settings.json", "projects", "history.jsonl")
+        )
+    )
+
+
 def resolve_paths(home: Path, table: Sequence[TranscriptPath] = TRANSCRIPT_PATHS) -> Resolution:
     """The transcript paths present under ``home``, each resolved to its real path (deduplicated).
 
@@ -159,6 +179,12 @@ def resolve_paths(home: Path, table: Sequence[TranscriptPath] = TRANSCRIPT_PATHS
     """
 
     result = Resolution()
+    declared_claude = {tp.rel for tp in table if tp.harness == "claude"}
+    for profile in claude_config_dirs(home):
+        for name in ("projects", "history.jsonl"):
+            rel = f"{profile.name}/{name}"
+            if rel not in declared_claude:
+                result.problems.append(f"uncovered: ~/{rel} needs a Claude TranscriptPath entry")
     seen: set[str] = set()
     for tp in table:
         dangling = _dangling_ancestor(home, tp.rel)
