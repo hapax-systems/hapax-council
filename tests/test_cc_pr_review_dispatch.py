@@ -687,6 +687,131 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
 
 
 class TestCompletePromptProof:
+    @pytest.fixture
+    def truncated_capacity(self, tmp_path, monkeypatch):
+        files = [f"shared/file_{index}.py" for index in range(101)]
+        gh = FakeGh(files=files, changed_files_count=101)
+        gh.body = "synthetic PR body " * 2200
+        state = {"rest": "healthy", "change_after_diff": None}
+        calls = []
+        monkeypatch.setenv(
+            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            "synthetic-replay-signing-key",
+        )
+        original_run = subprocess.run
+
+        def runner(cmd, **kwargs):
+            if cmd[0] != "gh":
+                return original_run(cmd, **kwargs)
+            calls.append(list(cmd))
+            if cmd == ["gh", "api", "-i", "rate_limit"]:
+                pools = {
+                    "core": {"remaining": 0 if state["rest"] == "blocked" else 3000},
+                    "graphql": {"remaining": 4900},
+                }
+                for pool in pools.values():
+                    pool.update(limit=5000, reset=4_000_000_000)
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"resources": pools}), "")
+            if cmd[:3] == ["gh", "pr", "view"]:
+                payload = json.loads(gh(cmd, **kwargs).stdout)
+                payload["files"] = payload["files"][:100]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:2] == ["gh", "api"]:
+                assert state["rest"] != "blocked", f"ineligible REST recovery: {cmd}"
+                if state["rest"] == "unavailable":
+                    return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+                if cmd[6].endswith("/files"):
+                    if state["rest"] == "files_unavailable":
+                        return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+                    rows = json.loads(gh(cmd, **kwargs).stdout)
+                    if state["rest"] == "truncated":
+                        rows = rows[:100]
+                    page = int(next(x.split("=", 1)[1] for x in cmd if x.startswith("page=")))
+                    return subprocess.CompletedProcess(
+                        cmd, 0, json.dumps(rows[(page - 1) * 100 : page * 100]), ""
+                    )
+            if cmd[:3] == ["gh", "pr", "diff"] and state["change_after_diff"]:
+                if state["change_after_diff"] == "head":
+                    gh.head_sha = "d" * 40
+                elif state["change_after_diff"] == "body":
+                    gh.body += " changed context"
+                else:
+                    gh.files[-1] = "shared/changed.py"
+            return gh(cmd, **kwargs)
+
+        monkeypatch.setattr(dispatch.review_team.subprocess, "run", runner)
+        route = dispatch.ListingRoute("graphql", False, "synthetic healthy pools")
+        result, _, _, note = _review(
+            tmp_path,
+            gh_runner=runner,
+            route=route,
+            now_iso="2030-01-01T00:00:00+00:00",
+        )
+        assert result["status"] == "dispatched", result
+        assert "vibe" in result["dossier"]["family_substitution"]["excluded_for_prompt"]
+        assert result["dossier"]["family_substitution"]["replay_inputs"]["inputs"]["pr_info"][
+            "files"
+        ] == tuple(files)
+        calls.clear()
+        head = gh.head_sha
+
+        def admit():
+            fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+            return dispatch.review_team.review_dossier_validity_blockers(
+                fm,
+                note,
+                pr_head_sha=head,
+                pr_number=42,
+                changed_files=files,
+                changed_file_count=101,
+                outage_state_path=dispatch.FAMILY_OUTAGE_STATE,
+                route_blocked_families={},
+            )
+
+        def scan(reviewers):
+            return dispatch.review_pr(
+                42,
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                vault_root=note.parent.parent,
+                apply=True,
+                gh_runner=runner,
+                reviewer_runner=reviewers,
+                wake_dir=tmp_path / "wake",
+                send_runner=lambda cmd: None,
+                now_iso="2030-01-01T00:00:00+00:00",
+                route_blocked_families={},
+                route=route,
+            )
+
+        return admit, scan, state, calls
+
+    def test_truncated_capacity_public_admission_recovers_complete_files(self, truncated_capacity):
+        admit, _, _, calls = truncated_capacity
+        assert admit() == ()
+        assert any(cmd[:3] == ["gh", "pr", "view"] for cmd in calls)
+        assert any("page=2" in cmd for cmd in calls)
+
+    def test_truncated_capacity_repeated_scan_does_not_redispatch(self, truncated_capacity):
+        _, scan, _, _ = truncated_capacity
+        reviewers = RecordingReviewers()
+        result = scan(reviewers)
+        assert result["status"] == "skipped_fresh"
+        assert reviewers.invocations == []
+
+    @pytest.mark.parametrize("rest", ["blocked", "unavailable", "files_unavailable", "truncated"])
+    def test_truncated_capacity_unavailable_recovery_refuses(self, truncated_capacity, rest):
+        admit, _, state, _ = truncated_capacity
+        state["rest"] = rest
+        assert "review_dossier_capacity_evidence_unavailable" in admit()
+
+    @pytest.mark.parametrize("change", ["head", "body", "files"])
+    def test_truncated_capacity_changed_second_read_refuses(self, truncated_capacity, change):
+        admit, _, state, _ = truncated_capacity
+        assert admit() == ()
+        state["change_after_diff"] = change
+        assert "review_dossier_capacity_evidence_unavailable" in admit()
+
     @pytest.fixture(params=["prompt", "diff"])
     def multi_task_capacity(self, request, tmp_path, monkeypatch):
         vault = _make_vault(tmp_path)
