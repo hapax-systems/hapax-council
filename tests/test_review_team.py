@@ -334,13 +334,34 @@ class TestLensRegistry:
             "gemini-1": 70_205,
             "glm-1": 70_199,
             "muse-1": 95_534,
-            "vibe-1": 22_000,
+            "vibe-1": 21_557,
         }
         registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = "bad"
         with pytest.raises(rt.DiffCapacityConfigError, match="invalid prompt limit"):
             rt.seat_diff_capacity("gemini-1", registry)
         registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = 30_000
         assert rt.seat_diff_capacity("new-family-1", registry)["prompt_limit_bytes"] == 30_000
+
+    def test_substitute_prompt_limits_fit_the_actual_wrapper_framing(self) -> None:
+        import ast
+
+        from shared.review_seat_wrapper import SEAT_PREAMBLE
+
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        for family in ("muse", "vibe"):
+            source = (rt.REPO_ROOT / "scripts" / f"hapax-{family}-reviewer").read_text()
+            ceiling = next(
+                node.value.value
+                for node in ast.parse(source).body
+                if isinstance(node, ast.Assign)
+                and any(
+                    isinstance(t, ast.Name) and t.id == "MAX_PROMPT_BYTES" for t in node.targets
+                )
+            )
+            limit = rt.seat_diff_capacity(f"{family}-1", registry)["prompt_limit_bytes"]
+            wrapped = f"{SEAT_PREAMBLE}\n\n{'x' * limit}\n"
+            assert len(wrapped.encode()) <= ceiling
 
 
 def _load_review_team_module():

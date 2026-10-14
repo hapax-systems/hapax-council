@@ -292,6 +292,150 @@ class RecordingReviewers:
         return self.replies.get(seat.family, self.replies.get(seat.id, GOOD_REPLY))
 
 
+class TestSizeRefusalIsolation:
+    @pytest.mark.parametrize(
+        ("family", "returncode", "stdout", "text"),
+        [
+            ("muse", 0, "", "valid"),
+            ("muse", 1, "", "valid"),
+            ("muse", 69, GOOD_REPLY, "valid"),
+            ("vibe", 69, "", "valid"),
+            ("muse", 69, "", "prefix"),
+            ("muse", 69, "", "under"),
+            ("muse", 69, "", "other"),
+        ],
+    )
+    def test_size_refusal_requires_the_wrapper_signal(self, family, returncode, stdout, text):
+        diagnostic = (
+            "hapax-muse-reviewer: UNSUPPORTED_CLIENT prompt of 130216 bytes exceeds "
+            "the measured muse ceiling of 96000; the constitution substitutes another family"
+        )
+        if text == "prefix":
+            diagnostic = "quoted: " + diagnostic
+        elif text == "under":
+            diagnostic = diagnostic.replace("130216", "96000")
+        elif text == "other":
+            diagnostic = "hapax-muse-reviewer: UNSUPPORTED_CLIENT muse binary not found"
+        assert not dispatch.review_team.is_reviewer_size_refusal(
+            diagnostic, family=family, returncode=returncode, stdout=stdout
+        )
+
+    @pytest.mark.parametrize("family", ["muse", "vibe"])
+    def test_wrapper_size_refusal_never_latches_or_clears_family(self, family, tmp_path):
+        detail = (
+            "muse ceiling of 96000"
+            if family == "muse"
+            else "vibe -p ceiling of 22000 (0 B at 45-87 KB on 2026-09-24)"
+        )
+        diagnostic = (
+            f"hapax-{family}-reviewer: UNSUPPORTED_CLIENT prompt of 130216 bytes exceeds "
+            f"the measured {detail}; the constitution substitutes another family\n"
+        )
+
+        def refused(*_args):
+            raise dispatch.ReviewerProcessError(diagnostic, returncode=69)
+
+        team = dispatch.review_team.Constitution(
+            "t2_standard", 2, (dispatch.review_team.Seat(f"{family}-1", family),), ()
+        )
+        reviews = dispatch.dispatch_reviews(
+            team, ["fixture"], dispatch.review_team.load_lens_registry(), refused
+        )
+        assert reviews[0]["verdict"] == "family_replaced_for_size"
+        state = tmp_path / "outage.json"
+        dispatch.update_family_outage(reviews, "2026-10-14T10:00:00Z", state)
+        assert json.loads(state.read_text()) == {}
+        existing = {family: {"observed_at": "2026-10-14T09:00:00Z"}}
+        state.write_text(json.dumps(existing))
+        dispatch.update_family_outage(reviews, "2026-10-14T10:00:00Z", state)
+        assert json.loads(state.read_text()) == existing
+        dispatch.update_family_outage(
+            [{"family": family, "verdict": "accept"}], "2026-10-14T10:01:00Z", state
+        )
+        assert json.loads(state.read_text()) == {}
+
+    @pytest.mark.parametrize(
+        ("diagnostic", "verdict"),
+        [
+            ("HTTP 503 Service Unavailable", "provider-outage"),
+            ("You've hit your usage limit", "quota-wall"),
+            (
+                "hapax-muse-reviewer: UNSUPPORTED_CLIENT muse binary not found",
+                "reviewer-route-unavailable",
+            ),
+        ],
+    )
+    def test_real_failure_still_latches_family(self, diagnostic, verdict, tmp_path):
+        def failed(*_args):
+            raise dispatch.ReviewerProcessError(diagnostic, returncode=69)
+
+        team = dispatch.review_team.Constitution(
+            "t2_standard", 2, (dispatch.review_team.Seat("muse-1", "muse"),), ()
+        )
+        reviews = dispatch.dispatch_reviews(
+            team, ["fixture"], dispatch.review_team.load_lens_registry(), failed
+        )
+        assert reviews[0]["verdict"] == verdict
+        state = tmp_path / "outage.json"
+        dispatch.update_family_outage(reviews, "2026-10-14T10:00:00Z", state)
+        assert json.loads(state.read_text())["muse"]["observed_at"] == "2026-10-14T10:00:00Z"
+
+    @pytest.mark.parametrize("family", ["muse", "vibe"])
+    def test_oversized_substitute_is_measured_and_never_invoked(
+        self, family, tmp_path, monkeypatch
+    ):
+        render = dispatch.render_reviewer_prompt
+        sizes = {}
+        too_large = False
+
+        def oversized(**kwargs):
+            seat = kwargs["seat"]
+            prompt = render(**kwargs)
+            if too_large and seat.family == family:
+                prompt += "é" * 60_000
+            sizes[seat.id] = len(prompt.encode())
+            return prompt
+
+        monkeypatch.setattr(dispatch, "render_reviewer_prompt", oversized)
+        # These blocks draw substitutes; the second substitute may itself need replacing.
+        blocked = {"gemini": ("fixture",), "glm": ("fixture",)}
+        registry = dispatch.review_team.load_lens_registry()
+        if family == "vibe":
+            blocked["muse"] = ("fixture",)
+            # Vibe must be a prospective seat, ahead of local, to exercise replacement.
+            registry["families"].sort(key=lambda entry: entry["family"] == "local")
+        registry_path = tmp_path / "registry.yaml"
+        registry_path.write_text(yaml.safe_dump(registry))
+        fits, _, fitting_reviewers, _ = _review(
+            tmp_path / "fits", route_blocked_families=blocked, registry_path=registry_path
+        )
+        assert fits["status"] == "dispatched"
+        assert family in {family for _, family, _ in fitting_reviewers.invocations}
+        too_large = True
+        result, _, reviewers, _ = _review(
+            tmp_path / "over", route_blocked_families=blocked, registry_path=registry_path
+        )
+        assert result["status"] == "dispatched"
+        assert family not in {family for _, family, _ in reviewers.invocations}
+        sub = result["dossier"]["family_substitution"]
+        assert sub["prompt_bytes_by_seat"][f"{family}-1"] == sizes[f"{family}-1"]
+        assert family in sub["excluded_for_prompt"]
+        assert f"family_replaced_for_size:{family}" in result["dossier"]["constitution_notes"]
+        assert len({family for _, family, _ in reviewers.invocations}) == 3
+        assert family not in json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text())
+
+    def test_every_candidate_over_capacity_refuses_before_spend(self, tmp_path, monkeypatch):
+        real_capacity = dispatch.review_team.seat_diff_capacity
+
+        def tiny(seat_id, registry):
+            return {**real_capacity(seat_id, registry), "prompt_limit_bytes": 1}
+
+        monkeypatch.setattr(dispatch.review_team, "seat_diff_capacity", tiny)
+        result, _, reviewers, _ = _review(tmp_path)
+        assert result["status"] == "prompt_capacity_exceeded"
+        assert not reviewers.invocations
+
+
 class RaisingReviewers(RecordingReviewers):
     """Stub reviewer runner that fails one family with a local exception."""
 
@@ -341,6 +485,20 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
             dispatch.FAMILY_OUTAGE_STATE = old_dispatch_outage_state
             dispatch.review_team.FAMILY_OUTAGE_STATE = old_review_team_outage_state
     return result, gh, reviewers, note
+
+
+def _allow_large_capacity_for_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reach post-admission provenance, redaction and partial-coverage checks."""
+    real_capacity = dispatch.review_team.seat_diff_capacity
+    monkeypatch.setattr(
+        dispatch.review_team,
+        "seat_diff_capacity",
+        lambda seat_id, registry: {
+            **real_capacity(seat_id, registry),
+            "limit_bytes": 1_000_000,
+            "prompt_limit_bytes": 1_000_000,
+        },
+    )
 
 
 def _make_pr_one_commit_behind_main(tmp_path: Path) -> tuple[Path, str, str, str, str]:
@@ -743,8 +901,10 @@ class TestApply:
     @pytest.mark.parametrize("field", ["diff_source", "comparison_base", "diff_sha256"])
     @pytest.mark.parametrize("truncated", [False, True])
     def test_persisted_dossier_records_refreshed_diff_provenance(
-        self, tmp_path: Path, field: str, truncated: bool
+        self, tmp_path: Path, field: str, truncated: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Exercise provenance after dispatch, independently of the capacity admission gate.
+        _allow_large_capacity_for_coverage(monkeypatch)
         comparison_base = "d" * 40
 
         class LocalDiffGh(FakeGh):
@@ -817,7 +977,11 @@ class TestApply:
         # "the seats saw the whole diff" boundary IS the dispatcher's truncation point.
         assert dispatch.review_team.DIFF_FULL_COVERAGE_MAX_CHARS == dispatch.MAX_DIFF_CHARS
 
-    def test_oversize_diff_marks_seats_partial_and_denies_quorum(self, tmp_path: Path) -> None:
+    def test_oversize_diff_marks_seats_partial_and_denies_quorum(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Coverage must still deny a partial review even with sufficient seat capacity.
+        _allow_large_capacity_for_coverage(monkeypatch)
         gh = FakeGh()
         gh.diff = "diff --git a/shared/foo.py b/shared/foo.py\n" + "".join(
             f"+line {i} of an oversize diff payload\n" for i in range(4000)
@@ -1363,6 +1527,15 @@ class TestApply:
         monkeypatch.setattr(dispatch, "ensure_head_object", lambda *_: True)
         real_capacity = dispatch.review_team.seat_diff_capacity
         ceiling = {"value": 1_000_000}
+        candidate_sizes = []
+        render = dispatch.render_reviewer_prompt
+
+        def capture_prompt(**kwargs):
+            prompt = render(**kwargs)
+            candidate_sizes.append(len(prompt.encode()))
+            return prompt
+
+        monkeypatch.setattr(dispatch, "render_reviewer_prompt", capture_prompt)
 
         def capacity(seat_id: str, registry: dict[str, Any]) -> dict[str, Any]:
             entry = real_capacity(seat_id, registry)
@@ -1386,7 +1559,7 @@ class TestApply:
         assert result["status"] == "dispatched"
         assert reviewers.invocations
         assert all(excerpt in prompt for _, _, prompt in reviewers.invocations)
-        full_size = max(len(prompt.encode()) for _, _, prompt in reviewers.invocations)
+        full_size = min(candidate_sizes)
 
         ceiling["value"] = full_size - 1
         result, _, reviewers, _ = _review(tmp_path / "over")
@@ -7420,6 +7593,7 @@ class TestPacketRedactionWiring:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Redaction runs on the FULL diff before truncate_diff, so a mid-line cut cannot leak it.
+        _allow_large_capacity_for_coverage(monkeypatch)
         _set_tokens(monkeypatch, [_RTOK])
         filler = "".join(f"+filler line {i} ordinary content\n" for i in range(4000))
         assert len(filler) > dispatch.MAX_DIFF_CHARS, "fixture must exceed the truncation budget"
