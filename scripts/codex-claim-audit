@@ -810,24 +810,11 @@ _holder_marker_keys_for_task() {
   done
 }
 
-# Clear every such marker, carrying the PR: a leftover one would refuse the next holder's
-# cc-claim. Fails if any clear fails, so the note stays claimed.
+# One exact applied publication owns the bare and session-qualified sidecars.
+# An additional session marker holds the whole transition; a per-name sweep
+# cannot establish that other session's executor/epoch authority.
 _release_blocked_holder_markers() {
-  local holder="$1" task_id="$2" pr_number="$3" keys key messages="" failed=false
-  keys="$(_holder_marker_keys_for_task "$holder" "$task_id")"
-  if [ -z "$keys" ]; then
-    _clear_claim_cache_for_release "$holder" "$task_id" "capability-blocked" "$pr_number" carry
-    return $?
-  fi
-  while IFS= read -r key; do
-    [ -n "$key" ] || continue
-    if ! _clear_claim_cache_for_release "$key" "$task_id" "capability-blocked" "$pr_number" carry; then
-      failed=true
-    fi
-    messages="${messages}${release_cache_message}"
-  done <<< "$keys"
-  release_cache_message="$messages"
-  [ "$failed" = false ]
+  _clear_claim_cache_for_release "$1" "$2" "capability-blocked" "$3" carry
 }
 
 # ---------------------------------------------------------------------------
@@ -899,87 +886,147 @@ _restore_local_snapshot() {
   fi
 }
 
-_clear_claim_cache_for_release() {
-  local assigned="$1"
-  local task_id="$2"
-  local reason="${3:-released}"
-  local pr_number="${4:-}"
-  # "carry" only after _capability_blocker_for printed RELEASE: the open PR goes to the next holder.
-  local pr_policy="${5:-protect}"
-  release_cache_message=""
-  local claim_file claimed_task audit_tmp
-  claim_file="$CLAIM_CACHE_DIR/cc-active-task-$assigned"
+# The audit observes the same producer as cc-claim; it never claims to be it.
+_holder_audit_for() {
+  local role="$1" task="$2" apply="$3" carry="${4:-false}"
+  local source_root
+  source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  "$source_root/.venv/bin/python" -I - "$source_root" "$role" "$task" "$VAULT_ROOT" "$CLAIM_CACHE_DIR" "$apply" "$DRY_RUN" "$RECONCILE_HOST" "$carry" "$GH_REPO_SLUG" "$GH_CMD" <<'PYHOLDER'
+import json, os, re, subprocess, sys
+from datetime import UTC, datetime
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from shared import worktree_registry as wr
+from shared.gate0b_claim_publication_install import default_claim_publication_roots
+from shared.sdlc_claim import ClaimPublicationError, ClaimResidueArchiveHold, resolve_applied_claim_publication_for_task, transition_holder_claim
+role, task, vault, cache, apply, dry, peer, carry, repo, gh_command = sys.argv[2:]
+# Cache sweeps also pass a session-qualified key; only the UUID suffix is a session.
+role = re.sub(r'-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$', '', role)
+try:
+    binding = json.loads((Path(cache) / f'cc-claim-dispatch-{role}.json').read_text())
+    if binding.get('lane') != role or binding.get('task_id') != task:
+        raise ValueError('claim_binding_mismatch')
+    sid = binding['session_id']
+    records = []
+    for path in wr.registry_dir().glob('*.json'):
+        record = wr._record_from_json(path.read_text())
+        if record.role == role and record.session_id == sid:
+            if wr.record_path(record.path) != path:
+                raise ValueError('executor_record_path_mismatch')
+            records.append(record)
+    if len(records) != 1:
+        raise ValueError('holder_binding_missing_or_ambiguous')
+    record = records[0]
+    observed = wr.observe_holder(record, role=role, session_id=sid)
+    if observed.state != 'ABSENT':
+        print(f'HOLDER_{observed.state}: {task} {observed.reason}; {observed.next_action}')
+        sys.exit(0)
+    roots = default_claim_publication_roots(home=Path.home())
+    expected = resolve_applied_claim_publication_for_task(vault_root=Path(vault), cache_dir=Path(cache), role=role, task_id=task, transaction_root=Path(roots.claim_transaction_root), receipt_root=Path(roots.claim_receipt_root), lock_root=Path(roots.claim_lock_root))
+    def work_check():
+        # No task-only remote deletion. Until an exact-epoch peer transaction is
+        # available, an unknown remote projection narrows this action to hold.
+        if peer:
+            return 'remote_epoch_reconciliation_unavailable'
+        def git(*args):
+            return subprocess.run(['git', '-C', record.path, *args], capture_output=True, text=True, timeout=10)
+        status = git('status', '--porcelain')
+        if status.returncode or status.stdout.strip():
+            return 'uncommitted_paths_or_worktree_unreadable'
+        from shared.sdlc_claim import _release_fields
+        fields = _release_fields(expected.current_task.content.decode())
+        branch = str(fields.get('branch') or '')
+        pr_repo = str(fields.get('pr_repo') or '')
+        if pr_repo and pr_repo.lower() not in {'null','none','~'} and pr_repo != repo:
+            return 'cross_repository_branch'
+        if not branch or branch.lower() in {'null', 'none', '~'}:
+            actual = git('symbolic-ref', '--quiet', '--short', 'HEAD')
+            if actual.returncode:
+                return 'branch_unreadable'
+            branch = actual.stdout.strip()
+        listing = git('worktree', 'list', '--porcelain')
+        if listing.returncode:
+            return 'worktrees_unreadable'
+        trees, tree = {record.path}, ''
+        for line in listing.stdout.splitlines():
+            if line.startswith('worktree '):
+                tree = line[len('worktree '):]
+            elif line == f'branch refs/heads/{branch}' and tree:
+                trees.add(tree)
+        # Protect residual work even when the registered root has exited.
+        ancestors, pid = set(), os.getpid()
+        while pid > 1 and pid not in ancestors:
+            ancestors.add(pid)
+            pid = wr._process_identity(pid)[1]
+        import time
+        deadline = time.monotonic() + 5
+        for proc in Path('/proc').iterdir():
+            if time.monotonic() >= deadline:
+                return 'work_process_inspection_incomplete'
+            if not proc.name.isdigit() or int(proc.name) in ancestors:
+                continue
+            try:
+                if proc.stat().st_uid != os.geteuid():
+                    continue
+                cwd = str((proc / 'cwd').resolve(strict=True))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                # As in U1, incidental census data can protect visible work;
+                # it never proves absence. The committed root's positive
+                # kernel absence remains mandatory and is rechecked under lock.
+                continue
+            if any(cwd == t or cwd.startswith(t + '/') for t in trees):
+                return 'worktree_process_present'
+        for tree in trees:
+            clean = subprocess.run(['git', '-C', tree, 'status', '--porcelain'], capture_output=True, text=True, timeout=10)
+            if clean.returncode or clean.stdout.strip():
+                return 'uncommitted_paths_or_worktree_unreadable'
+        tip = git('rev-parse', '--verify', '--quiet', f'refs/heads/{branch}')
+        remote = git('ls-remote', '--heads', 'origin', f'refs/heads/{branch}')
+        heads = [s.split()[0] for s in remote.stdout.splitlines() if s.strip()]
+        if remote.returncode or len(heads) != 1:
+            return 'remote_unreadable_or_branch_absent'
+        if tip.returncode == 0 and tip.stdout.strip() != heads[0] and git('merge-base', '--is-ancestor', tip.stdout.strip(), heads[0]).returncode:
+            return 'unpushed_commits'
+        if carry != 'true':
+            # One bounded final branch-PR read, only for a positively absent
+            # candidate with clean, pushed work. Existing U1 carry stays distinct.
+            response = subprocess.run([gh_command, 'api', '--method', 'GET', '-H', 'Accept: application/vnd.github+json', f'repos/{repo}/pulls', '-f', f'head={repo.split("/")[0]}:{branch}', '-f', 'state=open', '-f', 'per_page=1', '--jq', '.[0].number // empty'], capture_output=True, text=True, timeout=10)
+            if response.returncode or response.stdout.strip():
+                return 'branch_pr_changed_or_unknown'
+        return None
+    if apply != 'true':
+        print(f'HOLDER_ABSENT: {task}; release requires locked epoch and work inspection')
+        sys.exit(0)
+    result = transition_holder_claim(expected=expected, holder_path=record.path, observed=observed, action='audit_absent', caller_pid=None, vault_root=Path(vault), transaction_root=Path(roots.claim_transaction_root), lock_root=Path(roots.claim_lock_root), observed_at=datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ'), audit_work_check=work_check, audit_carry_pr=carry == 'true', dry_run=dry == 'true')
+    print(f'WOULD_RELEASE: {task}' if dry == 'true' else f'RELEASED: {task} audit_absent; predecessor={result.publication_id} archive={result.archive_dir}')
+except (ClaimPublicationError, ClaimResidueArchiveHold, wr.HolderProofError, OSError, ValueError, subprocess.SubprocessError) as exc:
+    print(f'HOLDER_UNKNOWN: {task} {type(exc).__name__}: {exc}; Next action: preserve claim and reconcile the named executor, epoch or work evidence')
+except Exception as exc:
+    print(f'HOLDER_ERROR: {task} {type(exc).__name__}; Next action: preserve claim and repair the audit observer before retrying')
+PYHOLDER
+}
 
-  # ── PR + BRANCH-HEAD REALITY CHECK (class #5) — gate ALL clear paths ──
-  # Hoisted above the `[ -f "$claim_file" ]` split so it protects the
-  # missing-local-cache path too: a vanished local cache must NOT let the remote
-  # reconcile erase a live open-PR claim (the delta/zeta + appendix-fork surface).
-  if [ "$pr_policy" != "carry" ] \
-    && _reality_check_protects "$task_id" "$assigned" "$pr_number" "claim cache $(basename "$claim_file")"; then
+_clear_claim_cache_for_release() {
+  local assigned="$1" task_id="$2" reason="${3:-released}" pr_number="${4:-}" pr_policy="${5:-protect}"
+  release_cache_message=""
+  release_note_transitioned=false
+  if [ "$pr_policy" != "carry" ] && _reality_check_protects "$task_id" "$assigned" "$pr_number" "claim cache cc-active-task-$assigned"; then
     return 1
   fi
-
-  if [ "$DRY_RUN" = true ]; then
-    if [ -f "$claim_file" ]; then
-      claimed_task=$(sed -n '1p' "$claim_file" 2>/dev/null || true)
-      if [ "$claimed_task" = "$task_id" ]; then
-        release_cache_message="    -> [DRY-RUN] WOULD CLEAR stale claim cache $(basename "$claim_file")\n"
-        if [ -n "$RECONCILE_HOST" ]; then
-          _reconcile_clear_to_host "$assigned" "$task_id" || return 1
-        fi
-        return 0
-      fi
-      cache_mismatch_count=$((cache_mismatch_count + 1))
-      release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
-      return 1
-    fi
-  elif [ -f "$claim_file" ]; then
-    # ── ATOMIC CAPTURE (class #5 TOCTOU) ──
-    # Snapshot the claim by atomic rename BEFORE the (slow) remote reconcile, so
-    # a concurrent cc-claim that re-points this path to a *different* live task
-    # between our read and our delete cannot be erased: we only ever rm the
-    # private snapshot, never the canonical path. A plain read-then-rm here had
-    # the exact TOCTOU the remote path already guards against — mirror it.
-    audit_tmp="$claim_file.audit-claim.$$"
-    if mv -f "$claim_file" "$audit_tmp" 2>/dev/null; then
-      claimed_task=$(sed -n '1p' "$audit_tmp" 2>/dev/null || true)
-      if [ "$claimed_task" != "$task_id" ]; then
-        _restore_local_snapshot "$audit_tmp" "$claim_file"
-        cache_mismatch_count=$((cache_mismatch_count + 1))
-        release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because it names ${claimed_task:-<empty>}\n"
-        return 1
-      fi
-      # Ours. Reconcile the remote first; on failure restore the snapshot so the
-      # claim plane fails closed (a remote mismatch/ssh failure keeps the claim).
-      if [ -n "$RECONCILE_HOST" ]; then
-        if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
-          _restore_local_snapshot "$audit_tmp" "$claim_file"
-          release_cache_message="    -> KEPT claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
-          release_failure_count=$((release_failure_count + 1))
-          release_failure_report="${release_failure_report}  RELEASE_HELD: $(basename "$claim_file") task=${task_id} assigned=${assigned} reason=reconcile_failed\n"
-          return 1
-        fi
-      fi
-      # Remote reconciled (or no reconcile host). Drop only our private snapshot;
-      # a concurrent re-point created a fresh canonical file that we never touch.
-      rm -f "$audit_tmp"
-      _journal_attr "CLEAR" "$(basename "$claim_file")" "${reason} task=${task_id} assigned=${assigned} pr=${pr_number:-none}"
-      release_cache_message="    -> CLEARED stale claim cache $(basename "$claim_file")\n"
-      return 0
-    fi
-    # mv failed → the local cache vanished concurrently; fall through to the
-    # missing-local reconcile path (it fails closed on remote uncertainty).
-  fi
-  if [ -n "$RECONCILE_HOST" ]; then
-    if ! _reconcile_clear_to_host "$assigned" "$task_id"; then
-      release_cache_message="    -> HELD release for missing local claim cache $(basename "$claim_file") because remote reconciliation failed or found a different live claim\n"
-      release_failure_count=$((release_failure_count + 1))
-      release_failure_report="${release_failure_report}  RELEASE_HELD: $(basename "$claim_file") task=${task_id} assigned=${assigned} reason=missing_local_reconcile_failed\n"
-      return 1
-    fi
-  fi
-  release_cache_message="    -> no claim cache $(basename "$claim_file") present\n"
-  return 0
+  local verdict carry=false
+  [ "$pr_policy" != "carry" ] || carry=true
+  verdict="$(_holder_audit_for "$assigned" "$task_id" true "$carry")" || verdict="HOLDER_UNKNOWN: holder observer failed; preserve claim and repair observer"
+  release_cache_message="    -> ${verdict}\n"
+  case "$verdict" in
+    RELEASED:*)
+      release_note_transitioned=true
+      _journal_attr "CLEAR" "cc-active-task-$assigned" "audit_absent task=${task_id} assigned=${assigned} reason=${reason}"
+      return 0 ;;
+    WOULD_RELEASE:*) release_note_transitioned=true; return 0 ;;
+    *) _record_coherence "$verdict"; return 1 ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -1139,15 +1186,6 @@ for note in "$VAULT_ROOT/active/"*.md; do
           if [ "$DRY_RUN" = true ]; then
             capability_report="${capability_report}    -> [DRY-RUN] WOULD RELEASE back to offered; pr and branch stay for the next holder\n"
           else
-            now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            safe_evidence="$(printf '%s' "$blocker_evidence" | sed 's/[&\\]/_/g')"
-            grep -q '^## Session log$' "$note" || printf '\n## Session log\n' >> "$note"
-            # One rewrite (sed -i renames a whole new file), first occurrences only: the frontmatter.
-            sed -i -e "0,/^status:.*/s/^status:.*/status: offered/" \
-              -e "0,/^assigned_to:.*/s/^assigned_to:.*/assigned_to: unassigned/" \
-              -e "0,/^updated_at:.*/s/^updated_at:.*/updated_at: $now_iso/" \
-              -e "0,/^## Session log$/{/^## Session log$/a\\- $now_iso codex-claim-audit released a capability-blocked claim (${assigned}; ${safe_evidence}); pr and branch stay for the next holder
-}" "$note"
             capability_report="${capability_report}    -> RELEASED back to offered for governed redispatch; pr and branch kept\n"
           fi
         else
@@ -1170,17 +1208,14 @@ for note in "$VAULT_ROOT/active/"*.md; do
 
       if [ "$RELEASE" = true ] && [ "$RELEASE_QUOTA_BLOCKED" = true ]; then
         if [ "$DRY_RUN" = true ]; then
-          quota_report="${quota_report}    -> [DRY-RUN] WOULD RELEASE back to offered for governed redispatch\n"
-          _clear_claim_cache_for_release "$assigned" "$task_id" "quota-blocked" "$pr" || true
+          if _clear_claim_cache_for_release "$assigned" "$task_id" "quota-blocked" "$pr"; then
+            quota_report="${quota_report}    -> [DRY-RUN] WOULD RELEASE back to offered for governed redispatch\n"
+          else
+            quota_report="${quota_report}    -> HELD: claim release preflight failed; task note left claimed\n"
+          fi
           quota_report="${quota_report}${release_cache_message}"
         else
           if _clear_claim_cache_for_release "$assigned" "$task_id" "quota-blocked" "$pr"; then
-            now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            safe_evidence="$(printf '%s' "$quota_evidence" | sed 's/[&\\]/_/g')"
-            sed -i "s/^status:.*/status: offered/" "$note"
-            sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
-            sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
-            sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released quota-blocked claim (${assigned}; evidence: ${safe_evidence})" "$note"
             quota_report="${quota_report}    -> RELEASED back to offered for governed redispatch\n"
           else
             quota_report="${quota_report}    -> HELD: claim release preflight failed; task note left claimed\n"
@@ -1207,22 +1242,29 @@ for note in "$VAULT_ROOT/active/"*.md; do
   [ "$pr" != "null" ] && [ -n "$pr" ] && has_pr=true
 
   if [ "$age" -ge "$stale_threshold" ] && [ "$has_pr" = false ]; then
+    if _reality_check_protects "$task_id" "$assigned" "$pr" "aged claim $task_id"; then
+      continue
+    fi
+    holder_inspection="$(_holder_audit_for "$assigned" "$task_id" false)" || holder_inspection="HOLDER_ERROR: holder observer unavailable; Next action: preserve and repair observer"
+    case "$holder_inspection" in
+      HOLDER_PRESENT:*) printf '%s\n' "$holder_inspection"; continue ;;
+      HOLDER_ABSENT:*) ;;
+      *) _record_coherence "$holder_inspection"; continue ;;
+    esac
     phantom_count=$((phantom_count + 1))
     age_h=$((age / 3600))
-    report="${report}  PHANTOM: ${task_id} assigned=${assigned} status=${status} age=${age_h}h pr=${pr} branch=${branch}\n"
+    report="${report}  HOLDER_ABSENT: ${task_id} assigned=${assigned} status=${status} age=${age_h}h pr=${pr} branch=${branch}\n"
 
     if [ "$RELEASE" = true ]; then
       if [ "$DRY_RUN" = true ]; then
-        report="${report}    → [DRY-RUN] WOULD RELEASE back to offered\n"
-        _clear_claim_cache_for_release "$assigned" "$task_id" "phantom" "$pr" || true
+        if _clear_claim_cache_for_release "$assigned" "$task_id" "phantom" "$pr"; then
+          report="${report}    → [DRY-RUN] WOULD RELEASE back to offered\n"
+        else
+          report="${report}    → HELD: claim release preflight failed; task note left claimed\n"
+        fi
         report="${report}${release_cache_message}"
       else
         if _clear_claim_cache_for_release "$assigned" "$task_id" "phantom" "$pr"; then
-          now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          sed -i "s/^status:.*/status: offered/" "$note"
-          sed -i "s/^assigned_to:.*/assigned_to: unassigned/" "$note"
-          sed -i "s/^updated_at:.*/updated_at: $now_iso/" "$note"
-          sed -i "/^## Session log$/a\\- $now_iso codex-claim-audit released phantom claim (${assigned}, ${age_h}h stale)" "$note"
           report="${report}    → RELEASED back to offered\n"
         else
           report="${report}    → HELD: claim release preflight failed; task note left claimed\n"
@@ -1395,7 +1437,7 @@ if [ "$issue_count" -gt 0 ]; then
     printf '%b' "$quota_report"
   fi
   if [ "$phantom_count" -gt 0 ]; then
-    printf "codex-claim-audit: %d phantom claim(s) found\n" "$phantom_count"
+    printf "codex-claim-audit: %d absent-holder claim(s) found\n" "$phantom_count"
     printf '%b' "$report"
   fi
   if [ "$coherence_count" -gt 0 ]; then

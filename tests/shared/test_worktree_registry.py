@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import importlib.machinery
 import importlib.util
+import json
 import os
+import socket
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +13,131 @@ from pathlib import Path
 import pytest
 
 from shared import worktree_registry as wr
+
+
+def _executor_record():
+    fields = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()
+    return {
+        "path": "/fixture/holder",
+        "created_at": _NOW.isoformat(),
+        "last_heartbeat": _NOW.isoformat(),
+        "role": "cx-test",
+        "session_id": "test-session",
+        "executor": {
+            "state": "committed",
+            "attempt_id": "test-attempt",
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+            "start_ticks": int(fields[19]),
+            "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        },
+    }
+
+
+def test_executor_tuple_survives_registry_roundtrip_and_ordinary_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path))
+    data = _executor_record()
+    path = wr.record_path(data["path"])
+    path.write_text(json.dumps(data))
+    record = wr.load(data["path"])
+    assert json.loads(wr._record_to_json(record))["executor"] == data["executor"]
+    wr.heartbeat(data["path"])
+    wr.register(data["path"], role=data["role"], session_id=data["session_id"])
+    assert json.loads(path.read_text())["executor"] == data["executor"]
+
+
+def test_holder_proof_observes_current_root_without_rewriting_registry():
+    data = _executor_record()
+    record = wr._record_from_json(json.dumps(data))
+    before = wr._record_to_json(record)
+    result = wr.observe_holder(record, role="cx-test", session_id="test-session")
+    assert result.state == "PRESENT"
+    assert wr._record_to_json(record) == before
+
+
+@pytest.mark.parametrize("fault", ["missing", "pending", "host", "boot", "reuse", "session"])
+def test_holder_proof_unknown_never_means_absent(fault):
+    data = _executor_record()
+    if fault == "missing":
+        data.pop("executor")
+    elif fault == "pending":
+        data["executor"]["state"] = "pending"
+    elif fault == "host":
+        data["executor"]["host"] = "unreachable-authoritative-host"
+    elif fault == "boot":
+        data["executor"]["boot_id"] = "previous-boot"
+    elif fault == "reuse":
+        data["executor"]["start_ticks"] += 1
+    else:
+        data["session_id"] = "different-session"
+    result = wr.observe_holder(
+        wr._record_from_json(json.dumps(data)), role="cx-test", session_id="test-session"
+    )
+    assert result.state == "UNKNOWN"
+    assert result.next_action
+
+
+def test_holder_absence_requires_completed_process_exit():
+    data = _executor_record()
+    with subprocess.Popen(["sleep", "30"]) as process:
+        data["executor"]["pid"] = process.pid
+        fields = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()
+        data["executor"]["start_ticks"] = int(fields[19])
+        record = wr._record_from_json(json.dumps(data))
+        try:
+            assert (
+                wr.observe_holder(record, role="cx-test", session_id="test-session").state
+                == "PRESENT"
+            )
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+    assert wr.observe_holder(record, role="cx-test", session_id="test-session").state == "ABSENT"
+
+
+def test_same_session_unrelated_caller_root_cannot_claim():
+    data = _executor_record()
+    with subprocess.Popen(["sleep", "30"]) as process:
+        data["executor"]["pid"] = process.pid
+        fields = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()
+        data["executor"]["start_ticks"] = int(fields[19])
+        record = wr._record_from_json(json.dumps(data))
+        try:
+            result = wr.observe_holder(
+                record, role="cx-test", session_id="test-session", caller_pid=os.getpid()
+            )
+            assert result.state == "UNKNOWN"
+            assert result.reason == "caller_root_mismatch"
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+
+def test_holder_unreadable_process_is_unknown(monkeypatch):
+    record = wr._record_from_json(json.dumps(_executor_record()))
+
+    def denied(_pid):
+        raise PermissionError("fixture kernel observation denied")
+
+    monkeypatch.setattr(wr, "_process_identity", denied)
+    result = wr.observe_holder(record, role="cx-test", session_id="test-session")
+    assert result.state == "UNKNOWN"
+    assert result.next_action
+
+
+def test_committed_holder_survives_launch_parent_death(monkeypatch):
+    record = wr._record_from_json(json.dumps(_executor_record()))
+    identity = wr._process_identity(os.getpid())
+
+    def reparented(pid):
+        assert pid == os.getpid(), "the launch parent's survival is not holder evidence"
+        return identity[0], 1, identity[2]
+
+    monkeypatch.setattr(wr, "_process_identity", reparented)
+    result = wr.observe_holder(
+        record, role="cx-test", session_id="test-session", caller_pid=os.getpid()
+    )
+    assert result.state == "PRESENT"
 
 
 def _init_repo(path) -> None:
@@ -1232,3 +1359,268 @@ def test_cli_backfill_preserves_fresh_heartbeat(tmp_path, monkeypatch) -> None:
     assert (
         rec.last_heartbeat == fresh
     )  # fresh heartbeat preserved, NOT moved back to the stale mtime
+
+
+def test_launcher_publishes_pending_before_committed_and_rejects_duplicate(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    seen = []
+    original = wr._save_unlocked
+
+    def record_write(rec):
+        seen.append(rec.executor["state"])
+        original(rec)
+
+    monkeypatch.setattr(wr, "_save_unlocked", record_write)
+    rec = wr.publish_executor(
+        str(tmp_path / "tree"), role="cx-test", session_id="test-session", pid=os.getpid()
+    )
+    assert seen == ["pending", "committed"]
+    assert (
+        wr.observe_holder(
+            rec, role="cx-test", session_id="test-session", caller_pid=os.getpid()
+        ).state
+        == "PRESENT"
+    )
+    before = wr.record_path(rec.path).read_bytes()
+    with pytest.raises(wr.HolderProofError, match="executor_already_present"):
+        wr.publish_executor(rec.path, role="cx-test", session_id="test-session", pid=os.getpid())
+    assert wr.record_path(rec.path).read_bytes() == before
+
+
+def test_stale_registry_writer_cannot_replace_executor(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    rec = wr.publish_executor(
+        str(tmp_path / "tree"), role="cx-test", session_id="test-session", pid=os.getpid()
+    )
+    stale = wr.load(rec.path)
+    stale.executor = None
+    stale.session_id = "other"
+    wr.save(stale)
+    current = wr.load(rec.path)
+    assert current.executor == rec.executor
+    assert current.session_id == rec.session_id
+
+
+def test_same_role_session_cannot_publish_a_second_worktree_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    wr.publish_executor(
+        str(tmp_path / "one"), role="cx-test", session_id="test-session", pid=os.getpid()
+    )
+    with pytest.raises(wr.HolderProofError, match="role_already_bound"):
+        wr.publish_executor(
+            str(tmp_path / "two"), role="cx-test", session_id="test-session", pid=os.getpid()
+        )
+    assert wr.load(str(tmp_path / "two")) is None
+
+
+def test_pending_attempt_cannot_admit_claim_or_wrong_child_commit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    path = str(tmp_path / "tree")
+    attempt = wr.begin_executor(
+        path,
+        role="cx-test",
+        session_id="test-session",
+        producer_pid=os.getpid(),
+        bootstrap_argv=["/definitely/not/the/current/process"],
+    )
+    assert (
+        wr.observe_holder(
+            wr.load(path), role="cx-test", session_id="test-session", caller_pid=os.getpid()
+        ).state
+        == "UNKNOWN"
+    )
+    before = wr.record_path(path).read_bytes()
+    with pytest.raises(wr.HolderProofError, match="bootstrap"):
+        wr.commit_executor(
+            path,
+            role="cx-test",
+            session_id="test-session",
+            attempt_id=attempt,
+            producer_pid=os.getpid(),
+            pid=os.getpid(),
+        )
+    assert wr.record_path(path).read_bytes() == before
+
+
+def test_deregister_cannot_destroy_executor_lineage(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path))
+    record = wr.publish_executor(
+        "/fixture/holder", role="cx-test", session_id="sid", pid=os.getpid()
+    )
+    before = wr.record_path(record.path).read_bytes()
+    with pytest.raises(wr.HolderProofError, match="holder_record_retained"):
+        wr.deregister(record.path)
+    assert wr.record_path(record.path).read_bytes() == before
+
+
+@pytest.mark.parametrize("holder", ["absent", "present", "unknown"])
+def test_reaper_composes_holder_proof_and_retains_retired_lineage(
+    tmp_path, monkeypatch, capsys, holder
+):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    tree, branch = _add_worktree(repo, "holder")
+    cli = _load_cli()
+    monkeypatch.setattr(cli, "CANONICAL", str(repo))
+    monkeypatch.setattr(cli, "SELF", "")
+    monkeypatch.setattr(cli, "_open_pr_branches", lambda: set())
+    monkeypatch.setattr(wr, "live_process_count", lambda _p: 0)
+    monkeypatch.setattr(wr, "is_merged", lambda *_a, **_k: True)
+    with subprocess.Popen(["sleep", "30"]) as process:
+        try:
+            record = wr.publish_executor(
+                str(tree), role="cx-test", session_id="sid", pid=process.pid
+            )
+            if holder == "absent":
+                process.terminate()
+                process.wait(timeout=5)
+            elif holder == "unknown":
+                record.executor["state"] = "pending"
+                wr._save_unlocked(record)
+            before = wr.record_path(str(tree)).read_bytes()
+            assert cli.cmd_protected_paths(argparse.Namespace()) == 0
+            assert str(tree) in capsys.readouterr().out
+            assert cli.cmd_reap(argparse.Namespace(apply=True, min_idle_hours=0.0)) == 0
+            if holder != "absent":
+                assert tree.is_dir()
+                assert wr.record_path(str(tree)).read_bytes() == before
+                assert not list((wr.registry_dir() / "retired").glob("*.json"))
+                return
+            assert not tree.exists()
+            assert wr.load(str(tree)) is None
+            archived = list((wr.registry_dir() / "retired").glob("*.json"))
+            assert len(archived) == 1 and archived[0].read_bytes() == before
+            assert wr._git(str(repo), "rev-parse", "--verify", branch).returncode == 0
+            replacement = wr.publish_executor(
+                str(tmp_path / "new-tree"), role="cx-test", session_id="new-sid", pid=os.getpid()
+            )
+            assert (
+                wr.observe_holder(replacement, role="cx-test", session_id="new-sid").state
+                == "PRESENT"
+            )
+            assert archived[0].read_bytes() == before
+            record.last_heartbeat = datetime.now(UTC)
+            with pytest.raises(wr.HolderProofError, match="holder_record_retired"):
+                wr.save(record)
+            assert wr.load(str(tree)) is None
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+
+
+def test_retirement_rechecks_work_and_executor_before_removal(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    with subprocess.Popen(["sleep", "30"]) as process:
+        record = wr.publish_executor(
+            str(tmp_path / "tree"), role="cx-test", session_id="sid", pid=process.pid
+        )
+        process.terminate()
+        process.wait(timeout=5)
+    before = wr.record_path(record.path).read_bytes()
+    with pytest.raises(wr.HolderProofError, match="worktree_changed"):
+        with wr.retirement_guard(record.path, work_check=lambda: False):
+            pytest.fail("work changed but removal was admitted")
+    assert wr.record_path(record.path).read_bytes() == before
+
+    def relaunch_during_inspection():
+        # Simulate changed evidence at the last read boundary. Production
+        # publishers take these locks; this fault injects a broken writer.
+        record.executor["state"] = "pending"
+        wr._save_unlocked(record)
+        return True
+
+    with pytest.raises(wr.HolderProofError, match="retirement observation changed"):
+        with wr.retirement_guard(record.path, work_check=relaunch_during_inspection):
+            pytest.fail("executor changed but removal was admitted")
+    assert wr.load(record.path).executor["state"] == "pending"
+    assert not list((wr.registry_dir() / "retired").glob("*.json"))
+
+
+def test_retirement_excludes_successor_until_archive_complete(tmp_path, monkeypatch):
+    import concurrent.futures
+    import threading
+
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    with subprocess.Popen(["sleep", "30"]) as process:
+        old = wr.publish_executor(
+            str(tmp_path / "old"), role="cx-test", session_id="old-sid", pid=process.pid
+        )
+        process.terminate()
+        process.wait(timeout=5)
+    attempted = threading.Event()
+
+    def launch():
+        attempted.set()
+        return wr.publish_executor(
+            str(tmp_path / "new"), role="cx-test", session_id="new-sid", pid=os.getpid()
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        with wr.retirement_guard(old.path, work_check=lambda: True):
+            future = pool.submit(launch)
+            assert attempted.wait(2)
+            with pytest.raises(concurrent.futures.TimeoutError):
+                future.result(timeout=0.15)
+            wr.deregister(old.path)
+        successor = future.result(timeout=3)
+    assert successor.session_id == "new-sid"
+    assert wr.load(old.path) is None
+    assert len(list((wr.registry_dir() / "retired").glob("*.json"))) == 1
+
+
+def test_pending_timeout_preserves_attempt_and_never_admits(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    path = str(tmp_path / "tree")
+    wr.begin_executor(
+        path, role="cx-test", session_id="sid", producer_pid=os.getpid(), bootstrap_argv=["fixture"]
+    )
+    before = wr.record_path(path).read_bytes()
+    with pytest.raises(wr.HolderProofError, match="bootstrap_pending_timeout"):
+        wr.await_executor(path, role="cx-test", session_id="sid", timeout=0.01)
+    assert wr.record_path(path).read_bytes() == before
+
+
+def test_real_child_remains_present_after_committed_producer_exits(tmp_path, monkeypatch):
+    import signal
+    import sys
+    import time
+
+    monkeypatch.setenv("HAPAX_WORKTREE_REGISTRY_DIR", str(tmp_path / "registry"))
+    path = str(tmp_path / "tree")
+    ready = tmp_path / "ready"
+    child_code = """import sys,time
+from pathlib import Path
+from shared import worktree_registry as wr
+wr.await_executor(sys.argv[1],role='cx-test',session_id='sid')
+Path(sys.argv[2]).write_text('committed-child')
+time.sleep(30)
+"""
+    producer_code = """import os,subprocess,sys
+from shared import worktree_registry as wr
+path,ready,code=sys.argv[1:]
+argv=[sys.executable,'-c',code,path,ready]
+attempt=wr.begin_executor(path,role='cx-test',session_id='sid',producer_pid=os.getpid(),bootstrap_argv=argv)
+child=subprocess.Popen(argv,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+wr.commit_executor(path,role='cx-test',session_id='sid',attempt_id=attempt,producer_pid=os.getpid(),pid=child.pid)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", producer_code, path, str(ready), child_code],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    record = wr.load(path)
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.read_text() == "committed-child"
+        assert not Path(f"/proc/{record.executor['producer_pid']}").exists()
+        assert wr.observe_holder(record, role="cx-test", session_id="sid").state == "PRESENT"
+    finally:
+        if wr._process_identity(record.executor["pid"])[2] == record.executor["start_ticks"]:
+            os.kill(record.executor["pid"], signal.SIGTERM)

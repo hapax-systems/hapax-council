@@ -17,12 +17,16 @@ Also tests:
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import socket
 import subprocess
 import textwrap
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "codex-claim-audit"
 
@@ -33,11 +37,10 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "codex-claim-audit"
 
 def _make_vault(tmp_path: Path) -> Path:
     """Create a minimal vault structure."""
-    active = tmp_path / "vault" / "active"
-    active.mkdir(parents=True)
-    closed = tmp_path / "vault" / "closed"
-    closed.mkdir(parents=True)
-    return tmp_path / "vault"
+    vault = tmp_path / "fakehome/Documents/Personal/20-projects/hapax-cc-tasks"
+    (vault / "active").mkdir(parents=True)
+    (vault / "closed").mkdir()
+    return vault
 
 
 def _write_task_note(
@@ -103,11 +106,11 @@ def _gh_stub(
         #!/usr/bin/env bash
         # Stub gh for testing
         if [[ "$1" == "api" ]]; then
-            if printf '%s\n' "$@" | grep -q 'repos/.*/pulls/[0-9]'; then
+            if printf '%s\\n' "$@" | grep -q 'repos/.*/pulls/[0-9]'; then
                 echo '{state}'
                 exit 0
             fi
-            if printf '%s\n' "$@" | grep -q 'repos/.*/pulls$'; then
+            if printf '%s\\n' "$@" | grep -q 'repos/.*/pulls$'; then
                 head=""
                 while [[ $# -gt 0 ]]; do
                     if [[ "$1" == "-f" && "$2" == head=* ]]; then head="${{2#head=}}"; shift; fi
@@ -262,6 +265,8 @@ def _run_audit(
     for sub in ("active", "closed"):
         src = vault / sub
         dst = fake_vault / sub
+        if src.resolve() == dst.resolve():
+            continue
         if dst.exists() or dst.is_symlink():
             dst.unlink()
         dst.symlink_to(src)
@@ -281,6 +286,90 @@ def _run_audit(
         env=env,
         cwd=str(tmp_path),
     )
+
+
+@pytest.mark.parametrize(
+    "fault", ["live", "missing", "pending", "host", "boot", "pid_reuse", "session"]
+)
+def test_active_holder_past_six_hours_keeps_exact_claim_publication(
+    tmp_path: Path, fault: str
+) -> None:
+    """Age selects inspection; a live, committed holder is not a phantom."""
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.worktree_registry import _slug
+    from tests.scripts.test_cc_claim import _SESSION_ID, _claim, _write_task
+
+    home = tmp_path / "fakehome"
+    task_id = "continuing-charter"
+    note = _write_task(home, "active", task_id)
+    note.write_text(note.read_text().replace("type: cc-task", "type: cc-task\nclaim_form: charter"))
+    registry = home / ".cache/hapax/worktree-registry"
+    registry.mkdir(parents=True)
+    worktree = str(SCRIPT.parents[1])
+    # The fixture's actual root stays alive through the audit. The independent
+    # observer must not substitute its own PID or synthesize a holder renewal.
+    stat_fields = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()
+    now = datetime.now(UTC)
+    record = {
+        "path": worktree,
+        "role": "cx-test",
+        "session_id": _SESSION_ID,
+        "task_id": task_id,
+        "created_at": now.isoformat(),
+        "last_heartbeat": now.isoformat(),
+        "executor": {
+            "state": "committed",
+            "attempt_id": "test-live-executor",
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+            "start_ticks": int(stat_fields[19]),
+            "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        },
+    }
+    (registry / f"{_slug(worktree)}.json").write_text(json.dumps(record))
+    claimed = _claim(home, task_id, extra_env={"HAPAX_WORKTREE_REGISTRY_DIR": str(registry)})
+    assert claimed.returncode == 0, claimed.stderr
+    rp = registry / f"{_slug(worktree)}.json"
+    if fault == "missing":
+        rp.unlink()
+    elif fault != "live":
+        if fault == "pending":
+            record["executor"]["state"] = "pending"
+        elif fault == "host":
+            record["executor"]["host"] = "unavailable-peer"
+        elif fault == "boot":
+            record["executor"]["boot_id"] = "old-boot"
+        elif fault == "pid_reuse":
+            record["executor"]["start_ticks"] += 1
+        elif fault == "session":
+            record["session_id"] = "different-session"
+        rp.write_text(json.dumps(record))
+    cache = home / ".cache/hapax"
+    roots = default_claim_publication_roots(home=home)
+    protected = [note, *cache.glob("cc-*"), *Path(roots.claim_transaction_root).rglob("*")]
+    before = {p: p.read_bytes() for p in protected if p.is_file()}
+    # Advance the audit's selection clock without changing any published bytes.
+    gh = _gh_stub(tmp_path)
+    date = gh.parent / "date"
+    date.write_text(
+        '#!/usr/bin/env bash\nif [ "$*" = "+%s" ]; then\n'
+        f"  echo {int(now.timestamp()) + 7 * 3600}\n"
+        'else\n  exec /usr/bin/date "$@"\nfi\n'
+    )
+    date.chmod(0o755)
+    result = _run_audit(
+        tmp_path,
+        note.parent.parent,
+        cache,
+        gh_stub_path=gh,
+        extra_env={"HAPAX_WORKTREE_REGISTRY_DIR": str(registry)},
+    )
+    assert all(p.is_file() and p.read_bytes() == data for p, data in before.items()), (
+        "A live holder's note, markers, epochs and publication must stay byte-identical.\n"
+        + result.stdout
+        + result.stderr
+    )
+    assert ("HOLDER_PRESENT" if fault == "live" else "HOLDER_UNKNOWN") in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +428,7 @@ class TestPROpenClaimProtection:
         )
         assert "PR_OPEN_PROTECTED" in result.stdout
 
-    def test_cache_sweep_merged_pr_cleared(self, tmp_path: Path) -> None:
+    def test_cache_sweep_merged_pr_without_holder_proof_is_retained(self, tmp_path: Path) -> None:
         """Cache sweep clears a cache whose PR is MERGED."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -355,7 +444,7 @@ class TestPROpenClaimProtection:
         claim_file = _write_claim_cache(cache_dir, "cx-alpha", "sweep-merged-task")
 
         _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="MERGED")
-        assert not claim_file.exists()
+        assert claim_file.exists()
 
     def test_quota_release_open_pr_protected_before_note_mutation(self, tmp_path: Path) -> None:
         """Quota release must not mutate the note when the task's PR is OPEN."""
@@ -406,7 +495,9 @@ class TestPROpenClaimProtection:
         _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="OPEN")
         assert claim_file.exists()
 
-    def test_orphaned_cache_closed_pr_cleared(self, tmp_path: Path) -> None:
+    def test_orphaned_cache_closed_pr_without_holder_proof_is_retained(
+        self, tmp_path: Path
+    ) -> None:
         """Cache whose note is in closed/ and PR is CLOSED is cleared."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -423,7 +514,7 @@ class TestPROpenClaimProtection:
         claim_file = _write_claim_cache(cache_dir, "cx-oofta", "closed-note-task")
 
         _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="CLOSED")
-        assert not claim_file.exists()
+        assert claim_file.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +595,8 @@ class TestBranchHeadRealityCheck:
             claimed_at="2026-06-10T01:00:00Z",
         )
         claim_file = _write_claim_cache(cache_dir, "cx-red", task_id)
+        repo = _pushed_repo(tmp_path, "cx-red/merged-branch")
+        _canonical_absent_claim(tmp_path, vault, cache_dir, "cx-red", task_id, repo)
         # gh succeeds but the branch has no OPEN PR (open_pr_branch unset).
         gh = _gh_stub(tmp_path, state="CLOSED")
 
@@ -593,7 +686,9 @@ class TestGHFailSafe:
 class TestHostReconciliation:
     """Failure class #4 regression."""
 
-    def test_reconcile_success_clears_remote_then_local(self, tmp_path: Path) -> None:
+    def test_matching_legacy_peer_task_without_holder_proof_preserves_both(
+        self, tmp_path: Path
+    ) -> None:
         """Matching remote claim is cleared before the local claim is removed."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -608,9 +703,16 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _write_claim_cache(cache_dir, "cx-gold", task_id)
         _stub, remote_state, calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -620,13 +722,12 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert result.returncode == 0
-        assert not claim_file.exists()
-        assert not remote_state.exists()  # real remote command actually cleared it
-        assert "RECONCILED" in result.stdout
-        assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
-    def test_local_clear_atomic_against_concurrent_repoint(self, tmp_path: Path) -> None:
+    def test_unknown_holder_never_starts_the_repointing_peer_command(self, tmp_path: Path) -> None:
         """A cc-claim re-point during the reconcile window must not be erased.
 
         Class #5 TOCTOU on the LOCAL clear path: the audit decides task X is
@@ -671,6 +772,13 @@ class TestHostReconciliation:
         )
         stub.chmod(0o755)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -680,12 +788,10 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert claim_file.exists(), (
-            "REGRESSION class #5 TOCTOU: a concurrently re-pointed live claim was "
-            "erased by a read-then-rm local clear (result rc="
-            f"{result.returncode})\nSTDOUT:\n{result.stdout}"
-        )
-        assert claim_file.read_text(encoding="utf-8").strip() == "other-live-task"
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
     def test_reconcile_mismatch_keeps_local_and_note_claimed(self, tmp_path: Path) -> None:
         """A different remote task is a live-claim fork; local release fails closed."""
@@ -701,12 +807,19 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-gold", "phantom-mismatch-task")
+        _write_claim_cache(cache_dir, "cx-gold", "phantom-mismatch-task")
         _stub, remote_state, _calls = _ssh_stub(
             tmp_path, assigned="cx-gold", remote_task="other-live-task"
         )
-        original_note = note.read_text(encoding="utf-8")
+        note.read_text(encoding="utf-8")
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -716,17 +829,12 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert claim_file.exists()
-        # Atomic guard: the re-pointed remote claim is preserved intact, never
-        # erased by a read-then-rm race (the rename-aside restores it).
-        assert remote_state.exists()
-        assert remote_state.read_text(encoding="utf-8").strip() == "other-live-task"
-        assert note.read_text(encoding="utf-8") == original_note
-        assert result.returncode == 2
-        assert "RECONCILE_SKIP" in result.stdout
-        assert "HELD: claim release preflight failed" in result.stdout
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
-    def test_reconcile_absent_remote_allows_local_clear(self, tmp_path: Path) -> None:
+    def test_absent_peer_marker_does_not_supply_holder_proof(self, tmp_path: Path) -> None:
         """Absent remote file is explicitly safe and local stale cache can clear."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -741,9 +849,16 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _write_claim_cache(cache_dir, "cx-gold", task_id)
         _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=None)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -753,8 +868,10 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert not claim_file.exists()
-        assert "RECONCILE_SKIP" in result.stdout
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
     def test_reconcile_ssh_failure_keeps_local_and_note_claimed(self, tmp_path: Path) -> None:
         """ssh read failure must not be collapsed into remote-absent success."""
@@ -770,12 +887,19 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-gold", "phantom-ssh-fails")
+        _write_claim_cache(cache_dir, "cx-gold", "phantom-ssh-fails")
         _stub, remote_state, _calls = _ssh_stub(
             tmp_path, assigned="cx-gold", remote_task="phantom-ssh-fails", read_fails=True
         )
-        original_note = note.read_text(encoding="utf-8")
+        note.read_text(encoding="utf-8")
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -785,22 +909,19 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert claim_file.exists()
-        assert remote_state.exists()  # ssh failed before any mutation
-        assert note.read_text(encoding="utf-8") == original_note
-        assert result.returncode == 2
-        assert "RECONCILE_FAILED" in result.stdout
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
-    def test_missing_local_cache_reconciles_remote_before_note_release(
-        self, tmp_path: Path
-    ) -> None:
+    def test_missing_local_proof_does_not_release_peer_or_note(self, tmp_path: Path) -> None:
         """A vanished local cache must still reconcile appendix before note release."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir(parents=True)
 
         task_id = "phantom-local-missing"
-        note = _write_task_note(
+        _write_task_note(
             vault,
             task_id,
             assigned_to="cx-gold",
@@ -811,6 +932,13 @@ class TestHostReconciliation:
         )
         _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -820,9 +948,10 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert not remote_state.exists()
-        assert "RECONCILED" in result.stdout
-        assert "status: offered" in note.read_text(encoding="utf-8")
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
     def test_missing_local_cache_open_branch_pr_retains_remote(self, tmp_path: Path) -> None:
         """A vanished local cache must NOT erase a live REMOTE open-PR claim.
@@ -839,7 +968,7 @@ class TestHostReconciliation:
         cache_dir.mkdir(parents=True)
 
         task_id = "phantom-missing-but-live-pr"
-        note = _write_task_note(
+        _write_task_note(
             vault,
             task_id,
             assigned_to="cx-gold",
@@ -851,6 +980,13 @@ class TestHostReconciliation:
         _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
         gh = _gh_stub(tmp_path, state="CLOSED", open_pr_branch="cx-gold/live-branch")
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -860,10 +996,10 @@ class TestHostReconciliation:
             gh_stub_path=gh,
         )
 
-        assert remote_state.exists(), "remote claim with an OPEN branch PR must be retained"
-        assert "PR_OPEN_PROTECTED" in result.stdout
-        assert "status: offered" not in note.read_text(encoding="utf-8")
-        assert "RECONCILED" not in result.stdout  # reconcile never reached
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "branch_open_pr" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
     def test_missing_local_cache_gh_indeterminate_retains_remote(self, tmp_path: Path) -> None:
         """Missing local cache + gh down on the branch probe = fail-safe retain."""
@@ -872,7 +1008,7 @@ class TestHostReconciliation:
         cache_dir.mkdir(parents=True)
 
         task_id = "phantom-missing-gh-down"
-        note = _write_task_note(
+        _write_task_note(
             vault,
             task_id,
             assigned_to="cx-gold",
@@ -884,6 +1020,13 @@ class TestHostReconciliation:
         _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
         gh = _gh_stub_failing(tmp_path)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -893,11 +1036,12 @@ class TestHostReconciliation:
             gh_stub_path=gh,
         )
 
-        assert remote_state.exists(), "indeterminate branch PR state must fail-safe retain remote"
-        assert "PR_OPEN_PROTECTED" in result.stdout
-        assert "status: offered" not in note.read_text(encoding="utf-8")
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "branch_pr_indeterminate" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
-    def test_cache_sweep_deletion_uses_host_reconciliation(self, tmp_path: Path) -> None:
+    def test_legacy_cache_sweep_holds_before_peer_mutation(self, tmp_path: Path) -> None:
         """Stale-cache sweep must not bypass host reconciliation."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -910,11 +1054,18 @@ class TestHostReconciliation:
             branch="beta/old-work",
             status="done",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-alpha", "sweep-reconcile-task")
+        _write_claim_cache(cache_dir, "cx-alpha", "sweep-reconcile-task")
         _stub, remote_state, _calls = _ssh_stub(
             tmp_path, assigned="cx-alpha", remote_task="sweep-reconcile-task"
         )
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -924,11 +1075,12 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert not claim_file.exists()
-        assert not remote_state.exists()
-        assert "RECONCILED" in result.stdout
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
-    def test_reconcile_to_self_skips_ssh(self, tmp_path: Path) -> None:
+    def test_legacy_holder_stays_unknown_with_self_reconcile_target(self, tmp_path: Path) -> None:
         """A self-target with no derivable peer (single-host plane) never sshes.
 
         The "never ssh to self" invariant is now structural: peer resolution
@@ -940,7 +1092,7 @@ class TestHostReconciliation:
         cache_dir = tmp_path / "cache"
 
         task_id = "phantom-self-reconcile"
-        note = _write_task_note(
+        _write_task_note(
             vault,
             task_id,
             assigned_to="cx-gold",
@@ -949,10 +1101,17 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _write_claim_cache(cache_dir, "cx-gold", task_id)
         # ssh stub is on PATH; if the self-guard fails, it WOULD be invoked.
         _stub, _remote_state, calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -966,12 +1125,14 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert not calls.exists()  # ssh never called (no non-self peer)
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
         assert "RECONCILED" not in result.stdout
-        assert not claim_file.exists()  # local clear still proceeds
-        assert "status: offered" in note.read_text(encoding="utf-8")
 
-    def test_appendix_self_target_derives_podium_peer(self, tmp_path: Path) -> None:
+    def test_declared_appendix_peer_does_not_substitute_for_holder_proof(
+        self, tmp_path: Path
+    ) -> None:
         """A self-pointing reconcile target must derive the PEER, not skip.
 
         Cross-family review consensus (gemini-1 + codex-1 + claude-1): the unit's
@@ -994,9 +1155,16 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _write_claim_cache(cache_dir, "cx-gold", task_id)
         _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -1013,15 +1181,14 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert result.returncode == 0
-        assert not claim_file.exists()
-        assert "reconciled to hapax-podium" in result.stdout, (
-            "self-target must derive the podium peer, not skip:\n" + result.stdout
-        )
-        assert "RECONCILE_SKIP" not in result.stdout
-        assert not remote_state.exists()  # podium replica actually cleared
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
-    def test_podium_unset_target_derives_appendix_peer(self, tmp_path: Path) -> None:
+    def test_declared_podium_peer_does_not_substitute_for_holder_proof(
+        self, tmp_path: Path
+    ) -> None:
         """With no explicit target, a podium audit derives the appendix peer."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -1036,9 +1203,16 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _write_claim_cache(cache_dir, "cx-gold", task_id)
         _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -1052,12 +1226,12 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert result.returncode == 0
-        assert not claim_file.exists()
-        assert "reconciled to hapax-appendix" in result.stdout, result.stdout
-        assert not remote_state.exists()
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
-    def test_explicit_nonself_reconcile_host_overrides_peer(self, tmp_path: Path) -> None:
+    def test_explicit_peer_does_not_substitute_for_holder_proof(self, tmp_path: Path) -> None:
         """An explicit non-self reconcile target wins over peer derivation."""
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -1072,9 +1246,16 @@ class TestHostReconciliation:
             status="claimed",
             claimed_at="2026-06-10T01:00:00Z",
         )
-        claim_file = _write_claim_cache(cache_dir, "cx-gold", task_id)
+        _write_claim_cache(cache_dir, "cx-gold", task_id)
         _stub, remote_state, _calls = _ssh_stub(tmp_path, assigned="cx-gold", remote_task=task_id)
 
+        before = {
+            p: p.read_bytes()
+            for root in (vault, cache_dir, tmp_path / "remote-cache")
+            if root.exists()
+            for p in root.rglob("*")
+            if p.is_file()
+        }
         result = _run_audit(
             tmp_path,
             vault,
@@ -1091,9 +1272,10 @@ class TestHostReconciliation:
             gh_state="CLOSED",
         )
 
-        assert result.returncode == 0
-        assert not claim_file.exists()
-        assert "reconciled to fake-host" in result.stdout, result.stdout
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "HOLDER_UNKNOWN" in result.stdout
+        assert all(p.is_file() and p.read_bytes() == data for p, data in before.items())
+        assert "RECONCILED" not in result.stdout
 
     def test_dry_run_prevents_all_mutations(self, tmp_path: Path) -> None:
         """--dry-run prevents BOTH cache deletion AND task note mutation."""
@@ -1125,7 +1307,7 @@ class TestHostReconciliation:
         assert note.read_text() == original_note_text, (
             "Dry-run should not mutate the task note via sed"
         )
-        assert "DRY-RUN" in result.stdout
+        assert "HOLDER_UNKNOWN" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1169,11 +1351,12 @@ class TestSessionKeyedLeaseProtection:
         assert session_keyed.exists(), "session-keyed lease must survive"
         assert "CLEARED stale claim cache" not in result.stdout
 
-    def test_session_keyed_stale_lease_still_cleared(self, tmp_path: Path) -> None:
-        """A session-keyed lease whose note is terminal is still swept.
+    def test_session_keyed_legacy_lease_without_holder_proof_is_retained(
+        self, tmp_path: Path
+    ) -> None:
+        """A terminal note does not prove absence for a legacy session-keyed lease.
 
-        The base-role match must not OVER-protect: when the note is done (no
-        live claim), the session-keyed cache is genuinely stale and is cleared.
+        Missing holder evidence remains UNKNOWN and preserves the legacy cache.
         """
         vault = _make_vault(tmp_path)
         cache_dir = tmp_path / "cache"
@@ -1191,8 +1374,8 @@ class TestSessionKeyedLeaseProtection:
 
         result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="CLOSED")
 
-        assert not session_keyed.exists(), "stale session-keyed lease must be cleared"
-        assert "CLEARED stale claim cache" in result.stdout
+        assert session_keyed.exists(), "age and terminal note do not prove executor absence"
+        assert "HOLDER_UNKNOWN" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1212,11 +1395,13 @@ class TestJournalAttribution:
             "journal-test-task",
             assigned_to="cx-delta",
             pr="null",
-            branch="null",
-            status="done",
+            branch="feat/journal",
+            status="claimed",
         )
         _write_claim_cache(cache_dir, "cx-delta", "journal-test-task")
 
+        repo = _pushed_repo(tmp_path, "feat/journal")
+        _canonical_absent_claim(tmp_path, vault, cache_dir, "cx-delta", "journal-test-task", repo)
         result = _run_audit(tmp_path, vault, cache_dir, release=True, gh_state="CLOSED")
         assert "codex-claim-audit[v2]" in result.stdout
 
@@ -1453,6 +1638,7 @@ class TestCapabilityBlockedHolders:
         note.write_text(note.read_text(encoding="utf-8").replace("## Session log\n", ""), "utf-8")
         repo = _pushed_repo(tmp_path, "feat/walled")  # pushed, with no local ref
 
+        _canonical_absent_claim(tmp_path, vault, cache_dir, "lane-a", "walled-task", repo)
         result = _run_blocked_audit(tmp_path, vault, cache_dir, record, repo=repo)  # gh: PR OPEN
 
         assert "CAPABILITY_BLOCKED: walled-task assigned=lane-a" in result.stdout
@@ -1461,7 +1647,8 @@ class TestCapabilityBlockedHolders:
         for line in ("status: offered", "assigned_to: unassigned", "pr: 89", "branch: feat/walled"):
             assert f"\n{line}\n" in text
         assert "## Session log\n- " in text
-        assert "released a capability-blocked claim (lane-a; family=codex" in text
+        assert "codex-claim-audit observed the exact executor absent" in text
+        assert "audit_absent" in text
         # Both markers are gone, so no leftover marker refuses the next holder's claim.
         assert not base.exists()
         assert not keyed.exists()
@@ -1534,6 +1721,7 @@ class TestCapabilityBlockedHolders:
         assert note.read_text(encoding="utf-8") == original
 
         repo = _pushed_repo(tmp_path, "feat/no-end")
+        _canonical_absent_claim(tmp_path, vault, cache_dir, "lane-b", "no-end-task", repo)
         result = _run_blocked_audit(
             tmp_path, vault, cache_dir, _write_family_outage(tmp_path), repo=repo
         )
@@ -1651,6 +1839,8 @@ class TestCapabilityBlockedHolders:
         _write_relay(tmp_path, "lane-f", "codex")
         original = note.read_text(encoding="utf-8")
 
+        if reason is None:
+            _canonical_absent_claim(tmp_path, vault, cache_dir, "lane-f", "item-task", tree)
         record = _write_family_outage(tmp_path)
         result = _run_blocked_audit(tmp_path, vault, cache_dir, record, repo=repo)
 
@@ -1685,7 +1875,8 @@ class TestCapabilityBlockedHolders:
             tmp_path, vault, cache_dir, _write_family_outage(tmp_path), repo=repo
         )
         assert "CAPABILITY_BLOCKED: bound-task assigned=lane-b2" in result.stdout
-        assert "\nassigned_to: unassigned\n" in note.read_text(encoding="utf-8")
+        assert "\nassigned_to: lane-b2\n" in note.read_text(encoding="utf-8")
+        assert "HOLDER_UNKNOWN" in result.stdout
 
     def test_a_session_keyed_marker_alone_is_judged_here(self, tmp_path: Path) -> None:
         # #5124 review (muse major): the keyed-marker branch, with no base marker and no binding.
@@ -1699,7 +1890,8 @@ class TestCapabilityBlockedHolders:
             tmp_path, vault, cache_dir, _write_family_outage(tmp_path), repo=repo
         )
         assert "CAPABILITY_BLOCKED: keyed-task assigned=lane-k" in result.stdout
-        assert "\nassigned_to: unassigned\n" in note.read_text(encoding="utf-8")
+        assert "\nassigned_to: lane-k\n" in note.read_text(encoding="utf-8")
+        assert "HOLDER_UNKNOWN" in result.stdout
 
     def test_a_binding_for_another_task_is_no_evidence_of_host(self, tmp_path: Path) -> None:
         # #5124 review (muse major): only a binding naming this task makes the claim local.
@@ -1888,3 +2080,234 @@ class TestSystemdUnits:
         preset = SCRIPT.parent.parent / "systemd" / "user-preset.d" / "hapax.preset"
         text = preset.read_text()
         assert "codex-claim-audit.timer" in text
+
+
+def _canonical_absent_claim(tmp_path, vault, cache, role, task_id, worktree):
+    """An actual admitted journal and a positively reaped fixture executor."""
+    from shared import sdlc_claim
+    from shared import worktree_registry as wr
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.sdlc_task_store import ClaimDispatchBinding, resolve_task_note
+    from tests.shared.test_sdlc_claim import ClaimFixture, _active_admission_fixture
+
+    note = vault / "active" / (task_id + ".md")
+    after = note.read_text()
+    after = after.replace(
+        "type: cc-task",
+        "type: cc-task\nkind: build\nauthority_case: CASE-CLAIM-001\nparent_spec: /tmp/holder-spec.md\nclaimable: true",
+    )
+    before = re.sub(r"^status:.*$", "status: offered", after, count=1, flags=re.M)
+    before = re.sub(r"^assigned_to:.*$", "assigned_to: unassigned", before, count=1, flags=re.M)
+    before = re.sub(r"^claimed_at:.*$", "claimed_at: null", before, count=1, flags=re.M)
+    note.write_text(before)
+    # Replace only fixture marker/binding seeds, before the observed test begins.
+    cache.mkdir(parents=True, exist_ok=True)
+    for p in cache.glob(f"cc-*-{role}*"):
+        p.unlink()
+    binding = ClaimDispatchBinding.create(
+        task_id=task_id,
+        lane=role,
+        session_id=SESSION,
+        claim_epoch=1720700000,
+        dispatch_message_id="fixture-dispatch",
+        platform="codex",
+        mode="headless",
+        profile="ultra",
+        authority_case="CASE-CLAIM-001",
+        binding_hash="a" * 64,
+        coord_dispatch_idempotency_key="fixture",
+    )
+    intent = sdlc_claim.ClaimPublicationIntent.create(
+        task=resolve_task_note(vault, task_id),
+        cache_dir=cache,
+        note_after=after.encode(),
+        binding=binding,
+    )
+    roots = default_claim_publication_roots(home=tmp_path / "fakehome")
+    fixture = ClaimFixture(
+        intent=intent,
+        vault=vault,
+        cache=cache,
+        transactions=Path(roots.claim_transaction_root),
+        locks=Path(roots.claim_lock_root),
+    )
+    proof_dir = tmp_path / ("admission-" + task_id)
+    proof_dir.mkdir()
+    admission = _active_admission_fixture(proof_dir, fixture)
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        intent,
+        admission.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=Path(roots.claim_receipt_root),
+        lock_root=fixture.locks,
+        now=admission.checked_at,
+    )
+    registry = tmp_path / "fakehome/.cache/hapax/worktree-registry"
+    registry.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC)
+    with subprocess.Popen(["sleep", "30"]) as child:
+        record = wr.WorktreeRecord(
+            path=str(worktree),
+            role=role,
+            session_id=SESSION,
+            task_id=task_id,
+            created_at=now,
+            last_heartbeat=now,
+            executor=dict(
+                state="committed",
+                attempt_id="fixture-admitted-root",
+                pid=child.pid,
+                start_ticks=wr._process_identity(child.pid)[2],
+                host=socket.gethostname(),
+                boot_id=Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            ),
+        )
+        child.terminate()
+        child.wait()
+    (registry / (wr._slug(str(worktree)) + ".json")).write_text(wr._record_to_json(record))
+    return fixture
+
+
+@pytest.mark.parametrize(
+    "work",
+    [
+        "clean",
+        "dirty",
+        "ahead",
+        "pr_unknown",
+        "peer_unknown",
+        "cache_mismatch",
+        "dry_run",
+        "dry_dirty",
+        "other_session_marker",
+    ],
+)
+def test_positive_absence_uses_exact_journal_and_preserves_work_guards(tmp_path, work):
+    vault = tmp_path / "fakehome/Documents/Personal/20-projects/hapax-cc-tasks"
+    (vault / "active").mkdir(parents=True)
+    (vault / "closed").mkdir()
+    cache = tmp_path / "cache"
+    repo = _pushed_repo(tmp_path, "feat/absent")
+    note = _write_task_note(vault, "absent-holder", assigned_to="cx-test", branch="feat/absent")
+    fixture = _canonical_absent_claim(tmp_path, vault, cache, "cx-test", "absent-holder", repo)
+    if work in {"dirty", "dry_dirty"}:
+        (repo / "unsaved").write_text("keep")
+    if work == "ahead":
+        _git(repo, "fetch", "-q", "origin", "feat/absent:feat/absent")
+        _git(repo, "checkout", "-q", "feat/absent")
+        _git(repo, "commit", "-q", "--allow-empty", "-m", "not pushed")
+    if work == "cache_mismatch":
+        (cache / "cc-claim-epoch-cx-test").write_text("99999999 another-task\n")
+    if work == "other_session_marker":
+        (cache / "cc-active-task-cx-test-ffffffff-ffff-ffff-ffff-ffffffffffff").write_text(
+            "absent-holder\n"
+        )
+    before = {p: p.read_bytes() for p in [note, *cache.glob("cc-*")] if p.is_file()}
+    extra = (
+        ["--reconcile-host=unavailable-peer"]
+        if work == "peer_unknown"
+        else (["--dry-run"] if work in {"dry_run", "dry_dirty"} else None)
+    )
+    gh = _gh_stub_failing(tmp_path) if work == "pr_unknown" else _gh_stub(tmp_path)
+    result = _run_audit(tmp_path, vault, cache, gh_stub_path=gh, extra_args=extra)
+    if work == "clean":
+        assert "RELEASED:" in result.stdout, result.stdout + result.stderr
+        assert "status: offered" in note.read_text()
+        assert not list(cache.glob("cc-active-task-*"))
+        archives = list((vault / "_lineage/absent-holder").glob("*/README.md"))
+        assert len(archives) == 1 and "shape: audit_absent" in archives[0].read_text()
+        assert list(fixture.transactions.glob("*/manifest.json"))
+    else:
+        assert all(p.read_bytes() == data for p, data in before.items()), (
+            result.stdout + result.stderr
+        )
+        assert "RELEASED:" not in result.stdout
+        reason = {
+            "dirty": "uncommitted_paths",
+            "ahead": "unpushed_commits",
+            "pr_unknown": "branch_pr_indeterminate",
+            "peer_unknown": "remote_epoch_reconciliation_unavailable",
+            "cache_mismatch": "claim",
+            "dry_run": "WOULD_RELEASE:",
+            "dry_dirty": "uncommitted_paths",
+            "other_session_marker": "other_marker",
+        }[work]
+        assert reason in result.stdout, result.stdout + result.stderr
+        if work != "dry_run":
+            assert "[DRY-RUN] WOULD RELEASE" not in result.stdout
+
+
+def test_audit_rechecks_branch_pr_during_locked_work_inspection(tmp_path):
+    vault = _make_vault(tmp_path)
+    cache = tmp_path / "cache"
+    repo = _pushed_repo(tmp_path, "feat/absent")
+    note = _write_task_note(vault, "late-pr-holder", assigned_to="cx-test", branch="feat/absent")
+    _canonical_absent_claim(tmp_path, vault, cache, "cx-test", "late-pr-holder", repo)
+    gh = _gh_stub(tmp_path)
+    calls = tmp_path / "gh-calls"
+    gh.write_text(f"""#!/usr/bin/env bash
+n=0
+[[ ! -f '{calls}' ]] || read -r n < '{calls}'
+n=$((n+1))
+printf '%s\\n' "$n" > '{calls}'
+if (( n > 2 )); then printf '999\\n'; fi
+exit 0
+""")
+    before = {p: p.read_bytes() for p in [note, *cache.glob("cc-*")] if p.is_file()}
+    result = _run_audit(tmp_path, vault, cache, gh_stub_path=gh)
+    assert all(p.is_file() and p.read_bytes() == data for p, data in before.items()), result.stdout
+    assert "branch_pr_changed_or_unknown" in result.stdout
+    assert 3 <= int(calls.read_text()) <= 5
+
+
+@pytest.mark.parametrize("fault", ["TypeError", "PermissionError"])
+def test_audit_distinguishes_internal_error_from_unknown_holder(tmp_path, fault):
+    vault = _make_vault(tmp_path)
+    cache = tmp_path / "cache"
+    repo = _pushed_repo(tmp_path, "feat/absent")
+    note = _write_task_note(vault, "observer-fault", assigned_to="cx-test", branch="feat/absent")
+    _canonical_absent_claim(tmp_path, vault, cache, "cx-test", "observer-fault", repo)
+    body = SCRIPT.read_text().split("<<'PYHOLDER'\n", 1)[1].split("\nPYHOLDER", 1)[0]
+    body = body.replace(
+        "from shared import worktree_registry as wr",
+        "from shared import worktree_registry as wr\n"
+        f"def broken_observer(*a, **k): raise {fault}('untrusted detail')\n"
+        "wr.observe_holder = broken_observer",
+    )
+    before = {p: p.read_bytes() for p in [note, *cache.glob("cc-*")] if p.is_file()}
+    result = subprocess.run(
+        [
+            str(SCRIPT.parent.parent / ".venv/bin/python"),
+            "-I",
+            "-c",
+            body,
+            str(SCRIPT.parent.parent),
+            "cx-test",
+            "observer-fault",
+            str(vault),
+            str(cache),
+            "true",
+            "false",
+            "",
+            "false",
+            "fixture/repo",
+            "/unused-gh",
+        ],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path / "fakehome"),
+            "HAPAX_WORKTREE_REGISTRY_DIR": str(
+                tmp_path / "fakehome/.cache/hapax/worktree-registry"
+            ),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    prefix = "HOLDER_ERROR:" if fault == "TypeError" else "HOLDER_UNKNOWN:"
+    assert prefix in result.stdout, result.stdout + result.stderr
+    assert "Next action:" in result.stdout
+    if fault == "TypeError":
+        assert "untrusted detail" not in result.stdout
+    assert all(p.is_file() and p.read_bytes() == content for p, content in before.items())

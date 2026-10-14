@@ -5599,3 +5599,31 @@ _ = (
     _ds_parse_hn_search,
     _ds_load_sources,
 )
+
+# Holder proof entrypoints are real calls in embedded Python inside the existing
+# Bash launchers/claim consumer; vulture scans only Python source files.
+# scripts/hapax-codex: direct exec-preserved root publication.
+# scripts/hapax-codex-headless: pending producer, actual-child commit and child barrier.
+# scripts/cc-claim and scripts/codex-claim-audit compose the canonical journal
+# transition for holder refresh/release and third-party positive absence.
+from shared.sdlc_claim import transition_holder_claim as _transition_holder_claim  # noqa: E402
+from shared.worktree_registry import (  # noqa: E402
+    await_executor as _holder_await_executor,
+)
+from shared.worktree_registry import (
+    begin_executor as _holder_begin_executor,
+)
+from shared.worktree_registry import (
+    commit_executor as _holder_commit_executor,
+)
+from shared.worktree_registry import (
+    publish_executor as _holder_publish_executor,
+)
+
+_ = (
+    _holder_await_executor,
+    _holder_begin_executor,
+    _holder_commit_executor,
+    _holder_publish_executor,
+    _transition_holder_claim,
+)

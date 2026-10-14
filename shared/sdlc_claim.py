@@ -5220,6 +5220,9 @@ def _resolve_governed_applied_release(
             "reassigned_task",
             "pipeline_held",
             "returned_claim",
+            "holder_refresh",
+            "holder_release",
+            "audit_absent",
         )
         shapes_found = [shape for shape in shapes if lines.count(f"shape: {shape}") == 1]
         if len(shapes_found) != 1:
@@ -5238,6 +5241,11 @@ def _resolve_governed_applied_release(
             staging_dir=staged,
             present=archived_projections,
         )
+        if shape in {"holder_refresh", "holder_release", "audit_absent"}:
+            metadata = _holder_archive_metadata(lines)
+            if metadata is None:
+                continue
+            expected_lines.append("holder_observation: " + _canonical(metadata).decode("ascii"))
         try:
             archive_names = {path.name for path in archive.iterdir()}
         except OSError:
@@ -7057,6 +7065,9 @@ class ClaimResidueRelease:
         "reassigned_task",
         "pipeline_held",
         "returned_claim",
+        "holder_refresh",
+        "holder_release",
+        "audit_absent",
     ]
     publication_id: str
     archive_dir: Path
@@ -7677,6 +7688,9 @@ def release_claim_residue(
             f"no claim-publication journal of {role} for {task_id}",
             "run the release as the role that claimed the task, naming the task its residue names",
         )
+    resumed = _resume_holder_archive(journals, vault_root=vault_root, lock_root=lock_root)
+    if resumed is not None:
+        return resumed
     with _claim_publication_lock(journals[0].intent, lock_root=lock_root):
         journals = _role_task_journals(transaction_root, role=role, task_id=task_id)
         unfinished = [item for item in journals if item.state not in {"applied", "aborted"}]
@@ -7964,6 +7978,381 @@ def return_claim(
     return ClaimResidueRelease(
         "returned_claim", journal.publication_id, archive_dir, archived, None
     )
+
+
+def _holder_archive_metadata(lines: list[str]) -> dict | None:
+    if not lines or not lines[-1].startswith("holder_observation: "):
+        return None
+    try:
+        data = json.loads(lines[-1].split(": ", 1)[1])
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or set(data) != {
+        "path",
+        "fingerprint",
+        "note_before",
+        "note_after",
+    }:
+        return None
+    if not isinstance(data["path"], str) or not Path(data["path"]).is_absolute():
+        return None
+    if any(
+        not isinstance(data[key], str) or not re.fullmatch("[0-9a-f]{64}", data[key])
+        for key in ("fingerprint", "note_before", "note_after")
+    ):
+        return None
+    return data
+
+
+def _holder_archive_plans(journal, vault_root):
+    """Read only this publication's existing, exact six-sidecar archive plans."""
+    lineage = vault_root / "_lineage" / _safe_lineage_component(journal.intent.task_id)
+    suffix = "-" + _safe_lineage_component(journal.intent.role)
+    residue = _journal_residue(journal, journal.intent.cache_dir)
+    for archive in sorted(lineage.glob("claim-residue-release-*")):
+        if not archive.name.endswith(suffix) or archive.is_symlink():
+            continue
+        try:
+            lines = (archive / "README.md").read_text().splitlines()
+        except (OSError, UnicodeError):
+            continue
+        if f"publication_id: {journal.publication_id}" not in lines:
+            continue
+        metadata = _holder_archive_metadata(lines)
+        if metadata is None:
+            continue
+        stamp = archive.name[len("claim-residue-release-") : -len(suffix)]
+        if not _RELEASE_STAMP_RE.fullmatch(stamp):
+            continue
+        for shape in ("holder_refresh", "holder_release", "audit_absent"):
+            _, staging, _ = _residue_archive_plan(
+                [], journal=journal, vault_root=vault_root, observed_at=stamp
+            )
+            expected = _release_readme_lines(
+                shape=shape,
+                intent=journal.intent,
+                publication_id=journal.publication_id,
+                observed_at=stamp,
+                staging_dir=staging,
+                present=residue,
+            )
+            expected.append("holder_observation: " + _canonical(metadata).decode("ascii"))
+            if lines == expected and _binding_names(
+                staging / "PUBLICATION", journal.publication_id
+            ):
+                yield archive, staging, stamp, shape, metadata
+
+
+def _resume_holder_archive(journals, *, vault_root, lock_root):
+    """Finish an interrupted disposition, never spend its predecessor again.
+
+    Existing README/staged originals remain create-once evidence. Recheck the
+    originating tuple and exact old sidecars under the same locks; a newer
+    executor or epoch stops recovery. Audit cannot acquire holder authority.
+    """
+    from shared import worktree_registry as wr
+
+    candidates = []
+    for journal in journals:
+        if journal.state != "applied":
+            continue
+        residue = _journal_residue(journal, journal.intent.cache_dir)
+        for plan in _holder_archive_plans(journal, vault_root):
+            archive, staging, *_ = plan
+            if all(
+                _file_state(archive / p.path.name) == (p.after, p.after_mode)
+                and _file_state(staging / p.path.name) == (p.after, p.after_mode)
+                for p in residue
+            ):
+                continue  # Completed history cannot acquire new release authority.
+            candidates.append((journal, residue, plan))
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise _release_hold(
+            "holder_archive_ambiguous",
+            "multiple unfinished holder archives",
+            "preserve and reconcile archive lineage",
+        )
+    journal, residue, (archive, staging, stamp, shape, metadata) = candidates[0]
+    intent = journal.intent
+
+    def hold(detail):
+        return _release_hold(
+            "holder_archive_recovery_held",
+            detail,
+            "preserve the original archive and current claim; reconcile the named executor or epoch",
+        )
+
+    with (
+        wr.holder_lock(metadata["path"], role=intent.role),
+        _claim_publication_lock(intent, lock_root=lock_root),
+    ):
+        proof = wr.observe_holder(
+            wr.load(metadata["path"]),
+            role=intent.role,
+            session_id=intent.session_id,
+            caller_pid=None if shape == "audit_absent" else os.getpid(),
+        )
+        required = "ABSENT" if shape == "audit_absent" else "PRESENT"
+        if proof.state != required or proof.fingerprint != metadata["fingerprint"]:
+            raise hold("originating executor changed or is unknown")
+        note_hash = _sha256(intent.note_path.read_bytes())
+        if note_hash != metadata["note_after"]:
+            # Before-note audit interruption needs fresh work/PR/peer reads by
+            # the original audit consumer, which can reuse this exact plan.
+            raise hold(
+                "note is not at the committed disposition; rerun the original holder/audit action"
+            )
+        for p in residue:
+            live, moved, copied = (
+                _file_state(p.path),
+                _file_state(staging / p.path.name),
+                _file_state(archive / p.path.name),
+            )
+            after = (p.after, p.after_mode)
+            absent = (None, None)
+            if (
+                live not in {absent, after}
+                or moved not in {absent, after}
+                or copied not in {absent, after}
+            ):
+                raise hold("a live, staged or archived epoch differs")
+            if live == absent and moved == absent:
+                raise hold("an original projection is unaccounted")
+            if live == after and moved == after:
+                raise hold("a projection was recreated after archival")
+        if _other_live_markers(intent.cache_dir, intent.role, intent.task_id, residue):
+            raise hold("another marker is live")
+        for p in residue:
+            moved = staging / p.path.name
+            copied = archive / p.path.name
+            if copied.exists():
+                continue
+            _archive_verified(p, archive, staging, moved if moved.exists() else None)
+        return ClaimResidueRelease(
+            shape,
+            journal.publication_id,
+            archive,
+            tuple(archive / p.path.name for p in residue),
+            None,
+        )
+
+
+def transition_holder_claim(
+    *,
+    expected: AppliedClaimPublicationSnapshot,
+    holder_path: str,
+    observed,
+    action: Literal["holder_refresh", "holder_release", "audit_absent"],
+    caller_pid: int | None,
+    vault_root: Path,
+    transaction_root: Path,
+    lock_root: Path,
+    observed_at: str,
+    audit_work_check: Callable[[], str | None] | None = None,
+    audit_carry_pr: bool = False,
+    dry_run: bool = False,
+) -> ClaimResidueRelease | None:
+    """Dispose one exact epoch, keeping its receipt and journal immutable.
+
+    Refresh retires the old projections before a NEW admitted publication. A
+    crash then leaves a verified release, never a receipt reused as authority.
+    Voluntary release and positive third-party absence are distinct history.
+    Registry -> role -> note is the shared lock order. The executor and all
+    six claim projections are rechecked while all three exclusions are held.
+    """
+    from shared import worktree_registry as wr
+
+    def hold(reason: str, detail: str = ""):
+        return _release_hold(
+            "holder_" + reason,
+            detail or expected.intent.task_id,
+            "preserve all evidence; reread the current claim and executor, then use the named holder action",
+        )
+
+    if action not in {"holder_refresh", "holder_release", "audit_absent"}:
+        raise hold("action_invalid")
+    if not _RELEASE_STAMP_RE.fullmatch(observed_at):
+        raise hold("stamp_invalid")
+    intent = expected.intent
+    with (
+        wr.holder_lock(holder_path, role=intent.role),
+        _claim_publication_lock(intent, lock_root=lock_root),
+    ):
+        current = wr.load(holder_path)
+        proof = wr.observe_holder(
+            current,
+            role=intent.role,
+            session_id=intent.session_id,
+            caller_pid=caller_pid if action != "audit_absent" else None,
+        )
+        required = "ABSENT" if action == "audit_absent" else "PRESENT"
+        if (
+            observed.state != required
+            or proof.state != required
+            or not observed.fingerprint
+            or proof.fingerprint != observed.fingerprint
+            or (action != "audit_absent" and caller_pid is None)
+        ):
+            raise hold("proof_changed", f"{proof.state}: {proof.reason}")
+        # Snapshot includes exact session, epoch, dispatch and current note;
+        # matching only the task id would erase a renewal of that same task.
+        journals = _role_task_journals(transaction_root, role=intent.role, task_id=intent.task_id)
+        matches = [
+            j
+            for j in journals
+            if j.publication_id == expected.receipt.publication_id
+            and j.state == "applied"
+            and j.intent == intent
+        ]
+        if len(matches) != 1 or any(j.state not in {"applied", "aborted"} for j in journals):
+            raise hold("journal_changed")
+        journal = matches[0]
+        residue = _journal_residue(journal, intent.cache_dir)
+        if len(residue) != 6 or any(_residue_state(p) != "after" for p in residue):
+            raise hold("epoch_changed")
+        if _other_live_markers(intent.cache_dir, intent.role, intent.task_id, residue):
+            raise hold("other_marker")
+        note = expected.current_task.path
+        if _normalized(note) != _normalized(intent.note_path) or _file_state(note) != (
+            expected.current_task.content,
+            expected.current_task.mode,
+        ):
+            raise hold("note_changed")
+        for projection in expected.proof_projections():
+            if _file_state(projection.path) != (projection.before, projection.before_mode):
+                raise hold("proof_file_changed")
+        fields = _release_fields(expected.current_task.content.decode("utf-8"))
+        if (
+            fields is None
+            or fields.get("assigned_to") != intent.role
+            or fields.get("status") not in _OWN_RESUMABLE_STATUSES
+        ):
+            raise hold("note_not_owned")
+        if action == "holder_release" and (
+            fields.get("status") != "claimed"
+            or any(not is_nullish(str(fields.get(key) or "")) for key in ("pr", "branch"))
+        ):
+            raise _release_hold(
+                "holder_release_custody_required",
+                "started work cannot be offered by identity proof alone",
+                "preserve this claim, branch, PR and unpublished work; use the existing "
+                "no-stall-u3-dispatch-over-capacity-20261010 custody path for a preserved "
+                "resumable successor, or finish publication through the normal author path",
+            )
+        if action == "audit_absent":
+            if (
+                not audit_carry_pr
+                and fields.get("pr") is not None
+                and not is_nullish(str(fields["pr"]))
+            ):
+                raise hold("pr_protected")
+            if audit_work_check is None or (reason := audit_work_check()):
+                raise hold(
+                    "work_protected", reason if audit_work_check else "work inspection unavailable"
+                )
+        plans = list(_holder_archive_plans(journal, vault_root))
+        for _archive, _staging, stamp, shape, metadata in plans:
+            if (
+                shape == action
+                and metadata["fingerprint"] == observed.fingerprint
+                and metadata["note_before"] == _sha256(expected.current_task.content)
+            ):
+                observed_at = stamp
+        _, _, taken = _residue_archive_plan(
+            list(residue), journal=journal, vault_root=vault_root, observed_at=observed_at
+        )
+        if taken:
+            raise hold("archive_collision", str(taken[0]))
+        # Repeat after bounded work/remote reads, immediately before effects.
+        proof = wr.observe_holder(
+            wr.load(holder_path),
+            role=intent.role,
+            session_id=intent.session_id,
+            caller_pid=caller_pid if action != "audit_absent" else None,
+        )
+        if proof.state != required or proof.fingerprint != observed.fingerprint:
+            raise hold("executor_changed")
+        if any(_residue_state(p) != "after" for p in residue):
+            raise hold("epoch_changed")
+        if _file_state(note) != (expected.current_task.content, expected.current_task.mode):
+            raise hold("note_changed")
+        if dry_run:
+            return None
+        returned = expected.current_task.content.decode("utf-8")
+        if action != "holder_refresh":
+            at = datetime.strptime(observed_at, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC).isoformat()
+            text = expected.current_task.content.decode("utf-8")
+            returned = _returned_note_text(text, role=intent.role, returned_at=at)
+            old_entry = f"{intent.role} returned the claim to offered (cc-claim --return-claim)"
+            actor = (
+                "codex-claim-audit observed the exact executor absent"
+                if action == "audit_absent"
+                else f"{intent.role} released its own holder lease"
+            )
+            returned = returned.replace(
+                old_entry, f"{actor} ({action}; publication={journal.publication_id})"
+            )
+            after = _release_fields(returned)
+            if (
+                after is None
+                or after.get("status") != "offered"
+                or after.get("assigned_to") != "unassigned"
+            ):
+                raise hold("note_rewrite_unverified")
+        metadata = dict(
+            path=holder_path,
+            fingerprint=observed.fingerprint,
+            note_before=_sha256(expected.current_task.content),
+            note_after=_sha256(returned.encode("utf-8")),
+        )
+        archive, staging, _ = _residue_archive_plan(
+            list(residue), journal=journal, vault_root=vault_root, observed_at=observed_at
+        )
+        archive.mkdir(parents=True, exist_ok=True)
+        staging.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lines = _release_readme_lines(
+            shape=action,
+            intent=intent,
+            publication_id=journal.publication_id,
+            observed_at=observed_at,
+            staging_dir=staging,
+            present=residue,
+        )
+        lines.append("holder_observation: " + _canonical(metadata).decode("ascii"))
+        for target, data in (
+            (staging / "PUBLICATION", journal.publication_id + "\n"),
+            (archive / "README.md", "\n".join(lines) + "\n"),
+        ):
+            try:
+                with target.open("x", encoding="utf-8") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except FileExistsError:
+                if target.is_symlink() or target.read_text() != data:
+                    raise hold("archive_plan_changed") from None
+        if action != "holder_refresh":
+            tmp = note.with_suffix(note.suffix + ".tmp")
+            tmp.write_text(returned, encoding="utf-8")
+            tmp.chmod(expected.current_task.mode)
+            tmp.replace(note)
+        try:
+            archive, archived = _archive_residue(
+                list(residue),
+                journal=journal,
+                vault_root=vault_root,
+                shape=action,
+                observed_at=observed_at,
+                staged={},
+            )
+        except (ClaimResidueArchiveHold, OSError) as exc:
+            raise hold(
+                "archive_incomplete",
+                f"{action} interrupted: {exc}; use --release-claim-residue to recover",
+            ) from exc
+        return ClaimResidueRelease(action, journal.publication_id, archive, archived, None)
 
 
 __all__ = [

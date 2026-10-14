@@ -1275,6 +1275,26 @@ if [ "$codex_exec_auth_preflight_required" -eq 1 ]; then
   fi
 fi
 
+# The final local launcher shell is the executor root: exec preserves its PID
+# and kernel start time. Commit before either claim or worker exec. The outer
+# terminal launcher does not publish a parent PID on behalf of an unseen child.
+if [ -n "$DISPATCH_HOST" ]; then
+  echo "hapax-codex: HOLD holder_transport_unsupported. Next action: use the admitted local launcher or reconcile the remote producer before launch." >&2
+  exit 8
+fi
+if [ "$TERMINAL" = "none" ]; then
+  python3 -I - "$EXECUTION_SOURCE_ROOT" "$WORKDIR" "$SESSION" "$SESSION_UUID" <<'PYHOLDER'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from shared.worktree_registry import HolderProofError, publish_executor
+try:
+    publish_executor(sys.argv[2], role=sys.argv[3], session_id=sys.argv[4], pid=os.getppid())
+except (HolderProofError, OSError, ValueError) as exc:
+    print(f"hapax-codex: HOLD {exc}", file=sys.stderr)
+    sys.exit(8)
+PYHOLDER
+fi
+
 if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   CLAIM_SCRIPT="$WORKDIR/scripts/cc-claim"
   if [ ! -x "$CLAIM_SCRIPT" ]; then
@@ -1282,9 +1302,7 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
     exit 8
   fi
   if [ "$TERMINAL" = "none" ]; then
-    "$CLAIM_SCRIPT" "$TASK_ID"
-  elif [ -n "$DISPATCH_HOST" ]; then
-    "$CLAIM_SCRIPT" "$TASK_ID" >/dev/null
+    (cd "$WORKDIR" && "$CLAIM_SCRIPT" "$TASK_ID")
   else
     preflight_claimable_task "$TASK_ID" "$SESSION"
   fi
