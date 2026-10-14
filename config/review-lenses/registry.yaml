@@ -43,13 +43,16 @@ diff_capacity:
       prompt_limit_bytes: 70199
       status: measured
     muse-1:
+      # measurement-final.json: 95,534 rendered / 95,977 wrapped B; ceiling 96,000.
       limit_bytes: 61494
       prompt_limit_bytes: 95534
       status: measured
     # Vibe's 22 KB wrapper refused even the 40 KB fixture before inference.
     vibe-1:
       limit_bytes: 80000
-      prompt_limit_bytes: 22000  # Wrapper refusal ceiling; no successful 40 KB run.
+      # measurement-final.json limitations: 22,000 wrapped B. Reserve the 443 B
+      # shared.review_seat_wrapper.SEAT_PREAMBLE framing; no successful 40 KB run.
+      prompt_limit_bytes: 21557
       status: unmeasured
 
 # Always-on lenses are the floor, not the ceiling — every PR, every team.

@@ -2930,6 +2930,7 @@ def dispatch_reviews(
         runner_stderr_excerpt = ""
         reviewer_internal_error = False
         reasoning_budget_exhausted = False
+        size_refused = False
         try:
             family_cfg = dict(family_cfgs[seat.family])
             if task_id:
@@ -2943,6 +2944,9 @@ def dispatch_reviews(
             else:
                 reply = str(runner_result)
         except ReviewerProcessError as exc:
+            size_refused = review_team.is_reviewer_size_refusal(
+                exc.stderr, family=seat.family, returncode=exc.returncode, stdout=exc.stdout
+            )
             wrapper_excerpt = reviewer_wrapper_excerpt(exc.stderr)
             LOG.warning(
                 "reviewer %s (%s) process failed rc=%d; wrapper said: %s",
@@ -3048,6 +3052,9 @@ def dispatch_reviews(
                     seat.family,
                 )
                 verdict = "quota-wall"
+            elif size_refused:
+                # A payload-size refusal says nothing about this family's other PRs.
+                verdict = "family_replaced_for_size"
             elif route_unavailable:
                 LOG.warning(
                     "reviewer %s (%s) reviewer route unavailable -> verdict "
@@ -4299,6 +4306,7 @@ def review_pr(
         effective_route_blocked_families=effective_route_blocked_families,
         plan=plan,
         apply=apply,
+        inputs=inputs,
     )
 
 
@@ -4326,6 +4334,7 @@ def _apply_review(
     effective_route_blocked_families: dict[str, tuple[str, ...]],
     plan: dict[str, Any],
     apply: bool,
+    inputs: ConstitutionInputs,
 ) -> dict[str, Any]:
     """Fetch review evidence and dispatch only after the plan branch returns."""
 
@@ -4433,42 +4442,50 @@ def _apply_review(
         "diff": diff,
         "prior_criticals": redacted_prior_criticals,
     }
-    if reviewer_source_excerpts:
-        try:
-            prompt_headroom = min(
-                review_team.seat_diff_capacity(seat.id, registry)["prompt_limit_bytes"]
-                - len(
-                    render_reviewer_prompt(
-                        seat=seat, prior_file_excerpts="", **prompt_inputs
-                    ).encode()
-                )
-                for seat in constitution.seats
-            )
-        except (review_team.DiffCapacityConfigError, KeyError) as exc:
-            return {
-                "status": "diff_capacity_config_invalid",
-                "pr": pr_number,
-                "reason": str(exc),
-                "next_action": "repair the declared seat prompt capacity and retry",
-            }
-        excerpt_bytes = len(reviewer_source_excerpts.encode())
-        if excerpt_bytes > prompt_headroom:
-            return {
-                "status": "prompt_capacity_exceeded",
-                "pr": pr_number,
-                "reason": "Complete source evidence exceeds a seated measured prompt ceiling",
-                "excerpt_bytes": excerpt_bytes,
-                "available_bytes": prompt_headroom,
-                "next_action": "split the PR or reconstitute with eligible seats",
-            }
-    prompts = [
-        render_reviewer_prompt(
-            seat=seat,
+    # Render every candidate, including substitutes, before the final constitution. Keep the
+    # exact bytes we measured for dispatch; a newly seated family must never skip this check.
+    candidate_prompts = {
+        f"{entry['family']}-1": render_reviewer_prompt(
+            seat=review_team.Seat(f"{entry['family']}-1", entry["family"]),
             prior_file_excerpts=reviewer_source_excerpts,
             **prompt_inputs,
         )
-        for seat in constitution.seats
-    ]
+        for entry in review_team.review_family_entries(registry)
+    }
+    try:
+        constitution, substitution, capacity_error = constitute_with_substitution(
+            team_class,
+            writer_family,
+            registry,
+            inputs,
+            effective_route_blocked_families,
+            pr_number=pr_number,
+            diff_bytes=len(pr_diff.encode("utf-8")),
+            prompt_bytes_by_seat={
+                seat_id: len(prompt.encode("utf-8"))
+                for seat_id, prompt in candidate_prompts.items()
+            },
+        )
+    except review_team.DiffCapacityConfigError as exc:
+        return {
+            "status": "diff_capacity_config_invalid",
+            "pr": pr_number,
+            "reason": str(exc),
+            "next_action": "repair the declared seat prompt capacity and retry",
+        }
+    plan["family_substitution"] = substitution
+    if constitution is None:
+        return {
+            "status": "prompt_capacity_exceeded",
+            "pr": pr_number,
+            "reason": capacity_error,
+            "family_substitution": substitution,
+            "next_action": "split the PR or reconstitute with eligible seats",
+        }
+    plan["seats"] = [{"id": seat.id, "family": seat.family} for seat in constitution.seats]
+    plan["quorum_required"] = constitution.quorum_required
+    plan["constitution_notes"] = list(constitution.notes)
+    prompts = [candidate_prompts[seat.id] for seat in constitution.seats]
     task_hash: str | None = None
     task_hash_source_task_id: str | None = None
     task_hash_source_note: str | None = None

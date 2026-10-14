@@ -267,6 +267,7 @@ REVIEWER_VERDICTS = frozenset(
         "provider-outage",
         "reviewer-route-unavailable",
         "reviewer-internal-error",
+        "family_replaced_for_size",
     }
 )
 FAMILY_OUTAGE_VERDICTS = frozenset({"quota-wall", "provider-outage", "reviewer-route-unavailable"})
@@ -512,6 +513,27 @@ def is_provider_outage(
         or (http_429 and provider_detail_outage_terms)
         or (direct_outage and outage_terms)
     )
+
+
+def is_reviewer_size_refusal(text: str, *, family: str, returncode: int, stdout: str) -> bool:
+    """A known wrapper's pre-inference size refusal is local to this review payload.
+
+    Require its exact diagnostic and exit, with no model output. Other unsupported-client,
+    provider and quota failures retain their availability meaning.
+    """
+
+    if returncode != 69 or stdout.strip() or family not in {"muse", "vibe"}:
+        return False
+    match = re.fullmatch(
+        rf"hapax-{family}-reviewer: UNSUPPORTED_CLIENT prompt of ([0-9]{{1,12}}) bytes exceeds "
+        rf"the measured {family}"
+        + (r" -p" if family == "vibe" else "")
+        + r" ceiling of ([0-9]{1,12})"
+        + (r" \(0 B at 45-87 KB on 2026-09-24\)" if family == "vibe" else "")
+        + r"; the constitution substitutes another family",
+        text.strip(),
+    )
+    return bool(match and int(match[1]) > int(match[2]) > 0)
 
 
 def is_reviewer_route_unavailable(
