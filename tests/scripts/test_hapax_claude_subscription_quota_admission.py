@@ -743,6 +743,85 @@ def test_unbound_route_receipt_carries_no_pool(tmp_path: Path, capsys) -> None: 
     assert "-pool-" not in Path(summary["path"]).name
 
 
+def _unbound_reading(receipt_dir: Path) -> list[str]:
+    return [
+        "--receipt-dir",
+        str(receipt_dir),
+        "--route-id",
+        "claude.headless.full",
+        "--evidence-ref",
+        "claude-subscription-headroom-observed-20260708t1400z",
+        "--json",
+    ]
+
+
+@pytest.mark.parametrize("config_home", [".claude-max-2", "some-other-config"])
+def test_unbound_route_refuses_a_shared_dir_receipt_from_another_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, config_home: str
+) -> None:  # noqa: ANN001
+    """An unbound route runs on the CLI default. A reading taken on any other config dir would,
+    in the shared relay dir, pass as the default pool's (account 1's) evidence: refused."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HAPAX_RELAY_RECEIPT_DIR", raising=False)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / config_home))
+    shared = home / ".cache/hapax/relay/receipts"
+
+    rc = _run(_unbound_reading(shared))
+
+    assert rc == 2
+    assert "CLI default config dir" in capsys.readouterr().err
+    assert not shared.exists() or list(shared.iterdir()) == []
+
+
+def test_unbound_route_refuses_the_relocated_shared_dir_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:  # noqa: ANN001
+    """HAPAX_RELAY_RECEIPT_DIR relocates the writer's shared dir; the refusal follows it."""
+    home = tmp_path / "home"
+    relocated = tmp_path / "relocated-relay-receipts"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(relocated))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / ".claude-max-2"))
+
+    rc = _run(_unbound_reading(relocated))
+
+    assert rc == 2
+    assert "CLI default config dir" in capsys.readouterr().err
+    assert not relocated.exists() or list(relocated.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("config_home", "receipt_home"),
+    [
+        (None, ".cache/hapax/relay/receipts"),
+        (".claude", ".cache/hapax/relay/receipts"),
+        (".claude-max-2", ".cache/hapax/relay/receipts-max-2"),
+    ],
+)
+def test_unbound_route_mints_on_the_default_config_dir_or_outside_the_shared_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    config_home: str | None,
+    receipt_home: str,
+) -> None:  # noqa: ANN001
+    """The default pool's own runs mint as before, and the max-2 observer's unbound receipts in
+    its own pool dir (which every reader already refuses for an unbound route) are untouched."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HAPAX_RELAY_RECEIPT_DIR", raising=False)
+    if config_home is None:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / config_home))
+
+    rc = _run(_unbound_reading(home / receipt_home))
+
+    assert rc == 0, capsys.readouterr().err
+    assert "-pool-" not in Path(json.loads(capsys.readouterr().out)["path"]).name
+
+
 def test_the_registry_binds_the_review_route_and_only_it() -> None:
     """The writer reads the real declaration: claude.review.opus bills max-2; the account-1
     routes stay unbound (the CLI default config dir)."""

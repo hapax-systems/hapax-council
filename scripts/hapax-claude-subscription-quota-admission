@@ -208,6 +208,30 @@ def _pool_binding_mismatches(
     return [name for name, matches in checks.items() if not matches]
 
 
+def _shared_dir_reading_off_the_default_pool(
+    args: argparse.Namespace, env: Mapping[str, str]
+) -> bool:
+    """An unbound route's reading, bound for the shared relay dir, taken on a non-default config.
+
+    Readers take an unbound receipt in the shared dir as the default pool's. A pool's own dir is
+    left alone: every reader already refuses an unbound receipt found there.
+    """
+    from shared.platform_capability_registry import (
+        CLAUDE_DEFAULT_CONFIG_HOME,
+        SHARED_RELAY_RECEIPT_HOME,
+        claude_config_dir_for_env,
+    )
+
+    home = Path.home()
+    shared = any(
+        _same_path(args.receipt_dir, candidate)
+        for candidate in (home / SHARED_RELAY_RECEIPT_HOME, DEFAULT_RECEIPT_DIR)
+    )
+    return shared and not _same_path(
+        claude_config_dir_for_env(env), home / CLAUDE_DEFAULT_CONFIG_HOME
+    )
+
+
 VALIDATION_RECOVERY_HINT = (
     "next action: rerun with --help to confirm bounds, pass a sanitized --evidence-ref that names "
     "the account-live observation (never a lane/tmux name), pick an allowed --observation, then "
@@ -487,6 +511,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"{route_id} is bound to subscription pool {pool}; this reading's "
                     f"{', '.join(mismatches)} is not that pool's"
                 )
+        elif _shared_dir_reading_off_the_default_pool(args, os.environ):
+            raise PoolBindingRefused(
+                f"{route_id} declares no subscription pool, so its readings come from the CLI "
+                "default config dir; this reading's config dir is another, and in the shared "
+                "relay dir it would pass as the default pool's evidence"
+            )
         receipt_name = _receipt_name(args, route_id=route_id, observed_at=observed_at, pool=pool)
         windows = _probe_windows(args, observation=observation, observed_at=observed_at)
         path = args.receipt_dir / receipt_name
