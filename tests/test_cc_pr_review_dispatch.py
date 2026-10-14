@@ -8,6 +8,7 @@ produced dossier and admits with it.
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import logging
@@ -294,6 +295,28 @@ class RecordingReviewers:
 
 
 class TestSizeRefusalIsolation:
+    @pytest.mark.parametrize("unavailable", ["outage", "route"])
+    def test_prompt_proof_excludes_only_candidate_families(self, unavailable):
+        registry = dispatch.review_team.load_lens_registry()
+        inputs = dispatch.ConstitutionInputs(
+            outage_families=frozenset({"vibe"}) if unavailable == "outage" else frozenset(),
+            outage_witness={},
+            walls={},
+            wall_error=None,
+            causes={},
+        )
+        _, substitution, error = dispatch.constitute_with_substitution(
+            "t2_standard",
+            "claude",
+            registry,
+            inputs,
+            {"vibe": ("unavailable",)} if unavailable == "route" else {},
+            pr_number=42,
+            prompt_bytes_by_seat={"vibe-1": 100_000},
+        )
+        assert error is None
+        assert "vibe" not in substitution["excluded_for_prompt"]
+
     @pytest.mark.parametrize(
         ("family", "returncode", "stdout", "text"),
         [
@@ -661,6 +684,121 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
     path = tmp_path / "review-lenses-registry.yaml"
     path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
     return path
+
+
+class TestCompletePromptProof:
+    @pytest.mark.parametrize("excess", ["body", "excerpt"])
+    def test_admission_replays_complete_prompt_and_rejects_changed_inputs(
+        self, excess, tmp_path, monkeypatch
+    ):
+        rel = "scripts/hapax-glmcp-reviewer"
+        source = "\n\n".join(
+            f"def {name}():\n"
+            + "\n".join("    # " + "synthetic evidence " * 4 for _ in range(20))
+            + "\n    return True\n"
+            for name in dispatch._REVIEW_SOURCE_EXCERPT_SYMBOLS[rel]
+        )
+        head = TestApply._git_repo_with_commit(tmp_path, rel, source)
+        gh = FakeGh(files=[rel] if excess == "excerpt" else ["shared/foo.py"], head_sha=head)
+        gh.body = "synthetic PR body " * 2200 if excess == "body" else "body" * 3000
+        monkeypatch.setenv(
+            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            "synthetic-replay-signing-key",
+        )
+        original_run = subprocess.run
+
+        def reads(cmd, **kwargs):
+            return gh(cmd, **kwargs) if cmd[0] == "gh" else original_run(cmd, **kwargs)
+
+        monkeypatch.setattr(dispatch.review_team.subprocess, "run", reads)
+        monkeypatch.setattr(dispatch.review_team, "REPO_ROOT", tmp_path)
+        rendered = {}
+        render = dispatch.render_reviewer_prompt
+
+        def remember(**kwargs):
+            prompt = render(**kwargs)
+            rendered.setdefault(kwargs["seat"].id, prompt)
+            return prompt
+
+        monkeypatch.setattr(dispatch, "render_reviewer_prompt", remember)
+        result, _, _, note = _review(
+            tmp_path,
+            repo_root=tmp_path,
+            gh=gh,
+            now_iso="2030-01-01T00:00:00+00:00",
+        )
+        assert result["status"] == "dispatched"
+        dossier = result["dossier"]
+        assert "vibe" in dossier["family_substitution"]["excluded_for_prompt"]
+        fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+        expected = len(rendered["vibe-1"].encode())
+
+        def measure():
+            return dispatch.review_team._live_capacity_evidence(
+                42,
+                head,
+                ("vibe-1",),
+                note_path=note,
+                frontmatter=fm,
+                registry=dispatch.review_team.load_lens_registry(),
+                constituted_at=dossier["constituted_at"],
+                dossier=dossier,
+            )
+
+        assert measure() == (len(gh.diff.encode()), {"vibe-1": expected})
+        saved = copy.deepcopy(dossier)
+        dossier["family_substitution"].pop("replay_inputs")
+        dispatch._sign_public_gate_authority_evidence(dossier)
+        assert measure() is None  # even a signed legacy dossier cannot prove discarded inputs
+        dossier.clear()
+        dossier.update(copy.deepcopy(saved))
+        forged = dossier["family_substitution"]["replay_inputs"]
+        forged["inputs"]["prior_file_excerpts"] += " forged source evidence"
+        forged["sha256"] = dispatch.review_team.prompt_replay_digest(forged["inputs"])
+        assert measure() is None  # the binding is covered by the original signature
+        dossier.clear()
+        dossier.update(saved)
+        # Signature-like keys in untrusted findings are omitted by the existing HMAC
+        # canonicalizer. The input digest must still bind them to the rendered bytes.
+        original = copy.deepcopy(dossier)
+        binding = dossier["family_substitution"]["replay_inputs"]
+        binding["inputs"]["prior_criticals"] = [{"title": "fixture", "signature": "original"}]
+        binding["sha256"] = dispatch.review_team.prompt_replay_digest(binding["inputs"])
+        dispatch._sign_public_gate_authority_evidence(dossier)
+        assert measure() is not None
+        binding["inputs"]["prior_criticals"][0]["signature"] = "forged bytes"
+        assert dispatch.public_gate_receipts.public_gate_authority_evidence_signed(
+            dossier, "synthetic-replay-signing-key"
+        )
+        assert measure() is None
+        dossier.clear()
+        dossier.update(original)
+        # Same head, different rendered input must not validate the old count.
+        gh.body += " changed body"
+        changed = measure()
+        assert changed is None or changed[1]["vibe-1"] != expected
+        gh.body = gh.body.removesuffix(" changed body")
+        gh.head_sha = "d" * 40
+        assert measure() is None
+        gh.head_sha = head
+        os.utime(note, (1_893_456_001, 1_893_456_001))  # one second after constitution
+        assert measure() is None
+
+    def test_replay_binding_keeps_only_redacted_renderer_inputs(self, tmp_path, monkeypatch):
+        canary = "sk-synthetic-replay-canary-1234567890"  # pragma: allowlist secret
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *_: [canary])
+        gh = FakeGh()
+        gh.body = f"body with {canary}"
+        gh.title = f"title with {canary}"
+        gh.diff += f"+removed credential {canary}\n"
+        result, _, reviewers, _ = _review(
+            tmp_path, gh=gh, task_kwargs={"exit_predicate": f"fixture {canary}"}
+        )
+        assert result["status"] == "dispatched"
+        binding = json.dumps(result["dossier"]["family_substitution"]["replay_inputs"])
+        assert canary not in binding
+        assert "[REDACTED:" in binding
+        assert all(canary not in prompt for _, _, prompt in reviewers.invocations)
 
 
 class TestDryRun:

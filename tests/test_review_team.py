@@ -1670,7 +1670,7 @@ class TestSizeReplacementNoteValidity:
             == ()
         )
 
-    def test_live_capacity_evidence_binds_diff_head_and_note(
+    def test_legacy_capacity_evidence_requires_replay_binding(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         c = TestRoutedCapacityReplay().case(tmp_path, monkeypatch)
@@ -1826,6 +1826,8 @@ class TestSizeReplacementNoteValidity:
             )
 
         assert blockers(ceiling + 1) == ()
+        # An invented count is still forged when both counts happen to exceed the cap.
+        assert "review_dossier_prompt_size_unverified:gemini" in blockers(ceiling + 2)
         assert "review_dossier_prompt_size_unverified:gemini" in blockers(ceiling - 1)
         assert "review_dossier_diff_size_unverified" in blockers(ceiling + 1, 10_001)
         assert "review_dossier_capacity_evidence_unavailable" in rt._dossier_validity_blockers(
