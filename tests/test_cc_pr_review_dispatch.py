@@ -687,6 +687,110 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
 
 
 class TestCompletePromptProof:
+    @pytest.fixture(params=["prompt", "diff"])
+    def multi_task_capacity(self, request, tmp_path, monkeypatch):
+        vault = _make_vault(tmp_path)
+        notes = [_write_task(vault, task_id=f"task-{suffix}") for suffix in ("a", "b")]
+        gh = FakeGh()
+        if request.param == "prompt":
+            gh.body = "synthetic PR body " * 2200
+        else:
+            # Isolate diff exclusion without making every candidate exceed its prompt cap.
+            registry = dispatch.review_team.load_lens_registry()
+            registry["diff_capacity"]["seats"]["vibe-1"]["limit_bytes"] = 1024
+            registry["diff_capacity"]["seats"]["vibe-1"]["status"] = "measured"
+            registry_path = tmp_path / "registry.yaml"
+            registry_path.write_text(yaml.safe_dump(registry))
+            monkeypatch.setattr(dispatch.review_team, "DEFAULT_REGISTRY_PATH", registry_path)
+            gh.diff += "+" + "x" * 1024 + "\n"
+        monkeypatch.setenv(
+            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            "synthetic-replay-signing-key",
+        )
+        original_run = subprocess.run
+
+        def reads(cmd, **kwargs):
+            return gh(cmd, **kwargs) if cmd[0] == "gh" else original_run(cmd, **kwargs)
+
+        monkeypatch.setattr(dispatch.review_team.subprocess, "run", reads)
+
+        def scan(reviewers):
+            return dispatch.review_pr(
+                42,
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                vault_root=vault,
+                apply=True,
+                gh_runner=gh,
+                reviewer_runner=reviewers,
+                wake_dir=tmp_path / "wake",
+                send_runner=lambda cmd: None,
+                now_iso="2030-01-01T00:00:00+00:00",
+                route_blocked_families={},
+            )
+
+        result = scan(RecordingReviewers())
+        assert result["status"] == "multi_dispatched"
+        field = "excluded_for_prompt" if request.param == "prompt" else "excluded_for_size"
+        assert all(
+            "vibe" in item["dossier"]["family_substitution"][field] for item in result["results"]
+        )
+
+        def admit(note):
+            fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+            return dispatch.review_team.review_dossier_validity_blockers(
+                fm,
+                note,
+                pr_head_sha=gh.head_sha,
+                pr_number=42,
+                changed_files=gh.files,
+                changed_file_count=len(gh.files),
+                outage_state_path=dispatch.FAMILY_OUTAGE_STATE,
+                route_blocked_families={},
+            )
+
+        return notes, admit, scan
+
+    def test_multi_task_capacity_admits_each_dossier(self, multi_task_capacity):
+        notes, admit, _ = multi_task_capacity
+        assert {note.stem: admit(note) for note in notes} == {"task-a": (), "task-b": ()}
+
+    def test_multi_task_capacity_repeated_scan_does_not_redispatch(self, multi_task_capacity):
+        _, _, scan = multi_task_capacity
+        reviewers = RecordingReviewers()
+        result = scan(reviewers)
+        assert result["status"] == "multi_skipped_fresh"
+        assert reviewers.invocations == []
+
+    def test_multi_task_capacity_rejects_nonmember_dossier(self, multi_task_capacity):
+        notes, admit, _ = multi_task_capacity
+        assert admit(notes[0]) == ()
+        outsider = _write_task(notes[0].parent.parent, task_id="task-c")
+        outsider.write_text(outsider.read_text().replace("status: pr_open", "status: done"))
+        rt = dispatch.review_team
+        dossier = yaml.safe_load(rt.review_dossier_path(notes[0], "task-a").read_text())
+        dossier["task_id"] = "task-c"
+        dispatch._sign_public_gate_authority_evidence(dossier)
+        rt.review_dossier_path(outsider, "task-c").write_text(yaml.safe_dump(dossier))
+        assert "review_dossier_capacity_evidence_unavailable" in admit(outsider)
+
+    @pytest.mark.parametrize("change", ["content", "mtime", "added", "removed"])
+    def test_multi_task_capacity_rejects_changed_peer_note(self, multi_task_capacity, change):
+        notes, admit, _ = multi_task_capacity
+        assert admit(notes[0]) == ()
+        peer = notes[1]
+        if change == "content":
+            stamp = peer.stat()
+            peer.write_text(peer.read_text() + "\nChanged peer context.\n")
+            os.utime(peer, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        elif change == "mtime":
+            os.utime(peer, (1_893_456_001, 1_893_456_001))
+        elif change == "added":
+            _write_task(peer.parent.parent, task_id="task-c")
+        else:
+            peer.unlink()
+        assert "review_dossier_capacity_evidence_unavailable" in admit(notes[0])
+
     @pytest.mark.parametrize("excess", ["body", "excerpt"])
     def test_admission_replays_complete_prompt_and_rejects_changed_inputs(
         self, excess, tmp_path, monkeypatch
