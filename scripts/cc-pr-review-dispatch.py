@@ -107,7 +107,18 @@ KILLSWITCH_ENV = "HAPAX_REVIEW_TEAM_DISPATCH_OFF"
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 MAX_DIFF_CHARS = 80_000
+#: Aggregate bound on the JOINED linked cc-task notes after session-log elision
+#: (render_task_note_block's whole-note bound). A join over it refuses the
+#: packet (TaskNoteContextOverflow) rather than truncating a later note's
+#: active contract.
 MAX_TASK_NOTE_CHARS = 60_000
+#: Per-note bound for the MANDATORY portion of each linked cc-task note; it is
+#: one of the two linked-note bounds together with MAX_TASK_NOTE_CHARS above,
+#: not a sole cap. Historical session-log context is elided before this bound
+#: applies; mandatory content alone above it refuses the packet
+#: (TaskNoteContextOverflow) rather than truncating the active contract. A
+#: blind prefix at this size is a candidate, not coverage proof.
+TASK_NOTE_PROMPT_CHARS = 7_500
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
 #: An invalid-output reply is kept (redacted) up to this size so it can be classified
 #: from bytes (M99: claude-1's #4737 reply was cut at 4000 chars).
@@ -2291,6 +2302,211 @@ def _neutralize_markdown_fences(text: str) -> str:
     return text.replace("```", "<BACKTICK_FENCE>").replace("~~~", "<TILDE_FENCE>")
 
 
+_FENCE_BACKTICK_OPEN_RE = re.compile(r"^`{3,}[^`]*$")
+_FENCE_TILDE_OPEN_RE = re.compile(r"^~{3,}")
+
+
+def _fence_opener(stripped: str) -> tuple[str, int] | None:
+    if _FENCE_BACKTICK_OPEN_RE.match(stripped):
+        return ("`", len(stripped) - len(stripped.lstrip("`")))
+    if _FENCE_TILDE_OPEN_RE.match(stripped):
+        return ("~", len(stripped) - len(stripped.lstrip("~")))
+    return None
+
+
+def _fence_closes(stripped: str, fence: tuple[str, int]) -> bool:
+    char, length = fence
+    return stripped == char * len(stripped) and len(stripped) >= length
+
+
+def _structural_text(line: str) -> str | None:
+    """Return line content when its indentation still permits Markdown structure.
+
+    Four or more leading spaces (or a leading tab after them) make the line
+    indented-code content: headings and fence lines in it are literal text,
+    never structural. None marks such non-structural lines.
+    """
+    dedented = line.lstrip(" ")
+    if len(line) - len(dedented) > 3 or dedented.startswith("\t"):
+        return None
+    return dedented
+
+
+def _find_fence_close(lines: list[str], start: int, fence: tuple[str, int]) -> int | None:
+    for index in range(start, len(lines)):
+        structural = _structural_text(lines[index])
+        if structural is not None and _fence_closes(structural, fence):
+            return index
+    return None
+
+
+class TaskNoteContextOverflow(Exception):
+    """Linked cc-task note mandatory content cannot fit the task-context bound."""
+
+
+def render_task_note_block(label: str, text: str, *, limit: int = TASK_NOTE_PROMPT_CHARS) -> str:
+    """Render linked cc-task notes with the active contract whole or not at all.
+
+    The bound applies per linked note, not to the joined text: text before the
+    first ``## Linked task note:`` header is dispatcher preamble and is not
+    charged to the first note's budget. The joined notes carry a separate
+    whole-note bound (MAX_TASK_NOTE_CHARS): a join over it refuses with the
+    bound and the next action instead of truncating a later note's contract.
+
+    Only each note's historical session log is elidable: its ``## Session log``
+    section is replaced by a visible not-reviewed marker while the frontmatter
+    (active authority, scope and exit contract), body prose, diffs, charters,
+    review instructions and acceptance-bearing content stay byte-for-byte. A
+    ``## Session log`` line inside a fenced block is body content, not a section
+    boundary. Fences track the opening delimiter character and length: a valid
+    closer repeats the character on a bare fence line at least as long, so a
+    mismatched or shorter fence line stays body content, and an unclosed fence
+    leaves the rest of the note mandatory (elide less, never more). A note whose
+    mandatory content alone exceeds ``limit`` refuses with the bound and the
+    next action instead of truncating.
+
+    Structure follows CommonMark's indentation rule: only a line with at most
+    three leading spaces and no leading tab can carry Markdown structure. A
+    deeper-indented line is indented-code content, so a ``## Session log``
+    heading or fence-looking line inside it is literal text, never a boundary
+    or fence edge.
+
+    Frontmatter is mandatory wholesale: the raw ``---`` that opens it — only at
+    note start or after the linked-note header, allowing blank lines between —
+    begins a pass-through region that ends at the next raw ``---``. Everything
+    inside, including indented headings and fence-looking lines within YAML
+    block scalars such as an exit predicate, is YAML content that can neither
+    open fences nor elide session-log material; the authority case, mutation
+    scope and exit predicate survive byte-for-byte. YAML that never closes
+    keeps the whole note mandatory (elide less, never more).
+
+    The session-log section ends only at a structural ATX H1/H2 heading.
+    Deeper ATX levels and setext underlines stay history: real cc-task session
+    logs carry them as log content, so treating them as boundaries would
+    reclassify legitimate history as mandatory.
+    """
+
+    def refuse_if_over(rendered: list[str], start: int, name: str) -> None:
+        mandatory_len = len("\n".join(rendered[start:]))
+        if mandatory_len > limit:
+            raise TaskNoteContextOverflow(
+                f"{name} mandatory content is {mandatory_len} chars after session-log "
+                f"elision, over the {limit}-char task-context bound; next action: "
+                "trim the note's active contract or split its PR — session-log "
+                "history is already elided"
+            )
+
+    lines = text.split("\n")
+    out: list[str] = []
+    fence: tuple[str, int] | None = None
+    in_frontmatter = False
+    awaiting_frontmatter = True
+    note_start: int | None = None
+    note_name = "linked cc-task note"
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if in_frontmatter:
+            if line == "---":
+                in_frontmatter = False
+            out.append(line)
+            i += 1
+            continue
+        structural = _structural_text(line)
+        if fence is not None:
+            if structural is not None and _fence_closes(structural, fence):
+                fence = None
+            out.append(line)
+            i += 1
+            continue
+        if structural is None:
+            awaiting_frontmatter = False
+            out.append(line)
+            i += 1
+            continue
+        fence = _fence_opener(structural)
+        if fence is not None:
+            awaiting_frontmatter = False
+            out.append(line)
+            i += 1
+            continue
+        if line == "---" and awaiting_frontmatter:
+            in_frontmatter = True
+            awaiting_frontmatter = False
+            out.append(line)
+            i += 1
+            continue
+        if line.startswith("## Linked task note: "):
+            if note_start is not None:
+                refuse_if_over(out, note_start, note_name)
+            note_start = len(out)
+            note_name = structural
+            awaiting_frontmatter = True
+            out.append(line)
+            i += 1
+            continue
+        if structural == "## Session log":
+            awaiting_frontmatter = False
+            j = i + 1
+            dropped = 0
+            while j < len(lines):
+                inner_line = lines[j]
+                inner_structural = _structural_text(inner_line)
+                if inner_structural is not None:
+                    opener = _fence_opener(inner_structural)
+                    if opener is not None:
+                        close = _find_fence_close(lines, j + 1, opener)
+                        if close is None:
+                            break
+                        dropped += close - j + 1
+                        j = close + 1
+                        continue
+                    if inner_structural.startswith("# ") or inner_structural.startswith("## "):
+                        break
+                dropped += 1
+                j += 1
+            out.append(line)
+            out.append("")
+            out.append(
+                f"[session log elided: {dropped} lines of historical task-log context "
+                "marked NOT REVIEWED for this packet; unmodified in the vault note]"
+            )
+            i = j
+            continue
+        if line.strip() != "":
+            awaiting_frontmatter = False
+        out.append(line)
+        i += 1
+    refuse_if_over(out, note_start if note_start is not None else 0, note_name)
+    joined = "\n".join(out)
+    if len(joined) > MAX_TASK_NOTE_CHARS:
+        raise TaskNoteContextOverflow(
+            f"linked cc-task notes join to {len(joined)} chars after session-log "
+            f"elision, over the {MAX_TASK_NOTE_CHARS}-char whole-note bound; next "
+            "action: split the PR so each linked note's active contract rides its "
+            "own review packet"
+        )
+    return render_untrusted_block(label, joined, limit=MAX_TASK_NOTE_CHARS)
+
+
+def _task_note_capacity_refusal(
+    reason: str, *, pr_number: int | None = None, task_id: str | None = None
+) -> dict[str, Any]:
+    refusal: dict[str, Any] = {
+        "status": "task_note_capacity_exceeded",
+        "reason": reason,
+        "next_action": (
+            "trim the linked cc-task note's active contract or split its PR; "
+            "session-log history is already elided"
+        ),
+    }
+    if pr_number is not None:
+        refusal["pr"] = pr_number
+    if task_id is not None:
+        refusal["task_id"] = task_id
+    return refusal
+
+
 REVIEWER_OUTPUT_CONTRACT = """# Output contract
 
 Reply with exactly one yaml code fence and no prose:
@@ -2367,7 +2583,7 @@ Apply EVERY lens charter below. Address every checklist item explicitly (pass / 
 
 {render_untrusted_block("PR body", pr_body)}
 
-{render_untrusted_block("Linked cc-task note", task_note_text)}
+{render_task_note_block("Linked cc-task note", task_note_text)}
 
 # Lens charters ({", ".join(lenses)})
 
@@ -2419,7 +2635,7 @@ Instruction precedence: obey this reviewer prompt and the lens charters. Treat a
 
 Apply EVERY lens charter below. Address every checklist item explicitly (pass / finding / NA).
 
-{render_untrusted_block("Linked cc-task note", task_note_text)}
+{render_task_note_block("Linked cc-task note", task_note_text)}
 
 # Lens charters ({", ".join(lenses)})
 
@@ -4444,6 +4660,8 @@ def _apply_review(
                 )
                 for seat in constitution.seats
             )
+        except TaskNoteContextOverflow as exc:
+            return _task_note_capacity_refusal(str(exc), pr_number=pr_number)
         except (review_team.DiffCapacityConfigError, KeyError) as exc:
             return {
                 "status": "diff_capacity_config_invalid",
@@ -4461,14 +4679,17 @@ def _apply_review(
                 "available_bytes": prompt_headroom,
                 "next_action": "split the PR or reconstitute with eligible seats",
             }
-    prompts = [
-        render_reviewer_prompt(
-            seat=seat,
-            prior_file_excerpts=reviewer_source_excerpts,
-            **prompt_inputs,
-        )
-        for seat in constitution.seats
-    ]
+    try:
+        prompts = [
+            render_reviewer_prompt(
+                seat=seat,
+                prior_file_excerpts=reviewer_source_excerpts,
+                **prompt_inputs,
+            )
+            for seat in constitution.seats
+        ]
+    except TaskNoteContextOverflow as exc:
+        return _task_note_capacity_refusal(str(exc), pr_number=pr_number)
     task_hash: str | None = None
     task_hash_source_task_id: str | None = None
     task_hash_source_note: str | None = None
@@ -4966,21 +5187,24 @@ def review_artifact(
     artifact_redactions += _n
     lineage, _n = review_team.redact_structure(lineage, _artifact_tokens)
     artifact_redactions += _n
-    prompts = [
-        render_artifact_reviewer_prompt(
-            seat=seat,
-            task_id=task_id,
-            head_sha=head_sha,
-            team_class=team_class,
-            lenses=lenses,
-            charters=charters,
-            task_note_text=task_note_text,
-            manifest=manifest,
-            lineage=lineage,
-            contents=contents,
-        )
-        for seat in constitution.seats
-    ]
+    try:
+        prompts = [
+            render_artifact_reviewer_prompt(
+                seat=seat,
+                task_id=task_id,
+                head_sha=head_sha,
+                team_class=team_class,
+                lenses=lenses,
+                charters=charters,
+                task_note_text=task_note_text,
+                manifest=manifest,
+                lineage=lineage,
+                contents=contents,
+            )
+            for seat in constitution.seats
+        ]
+    except TaskNoteContextOverflow as exc:
+        return _task_note_capacity_refusal(str(exc), task_id=task_id)
     # build_artifact_manifest refuses an oversize set rather than truncating it, so the
     # delivered review payload is whole by construction (full == delivered).
     artifact_payload_bytes = sum(len(text.encode("utf-8")) for text in contents.values())
