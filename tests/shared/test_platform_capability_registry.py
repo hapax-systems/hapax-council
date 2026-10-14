@@ -70,7 +70,7 @@ AGY_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:agy-quota-admission.yaml:"
     "witness:agy-gemini31pro-smoke-witness:"
     "supported_tool:hapax-agy-reviewer:"
-    "model:gemini-3.1-pro-preview:"
+    "model:gemini-4-argon:"
     "observed_at:2026-05-17T07:59:00Z:"
     "fresh_until:2026-05-17T08:05:00Z"
 )
