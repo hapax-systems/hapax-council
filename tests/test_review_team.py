@@ -7,6 +7,7 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1583,6 +1584,239 @@ class TestSizeReplacementNoteValidity:
             registry=registry,
             route_blocked_families={},
         )
+
+
+_BASE_NOTE = (
+    "---\n"
+    "type: cc-task\n"
+    "task_id: task-x\n"
+    "status: in_progress\n"
+    "pr: 99\n"
+    "pr_repo: hapax-systems/hapax-council\n"
+    "exit_predicate: >-\n"
+    "  the seats read this predicate\n"
+    "---\n\n"
+    "# Task x\n\n"
+    "Body the seats read.\n\n"
+    "## Session log\n"
+    "- 2026-10-14T22:00:00Z dev51: started.\n"
+)
+_DISPOSITIONS = (
+    "release_finding_dispositions:\n"
+    f"- head_sha: {'a' * 40}\n"
+    "  reviewer_id: glm-1\n"
+    "  file: scripts/review_team.py\n"
+    "  line: 2496\n"
+    "  title: a major\n"
+    "  lens: correctness\n"
+    "  disposition: deferred\n"
+    "  source: 30-areas/hapax/lanebus/dev1/20261014T225709Z-dev1-seat-disposition.md\n"
+)
+_CAPACITY_VOID = "review_dossier_capacity_evidence_unavailable"
+
+
+def _with_dispositions(note: str, block: str = _DISPOSITIONS) -> str:
+    """Seat mail lands mid-frontmatter, before ``exit_predicate``, as the release plane writes it."""
+
+    return note.replace("exit_predicate:", block + "exit_predicate:", 1)
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _capacity_blockers(
+    rt, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, current: str, *, recorded=..., mtime: str
+) -> tuple[str, ...]:
+    """Run the public gate on a prompt-excluded dossier whose note now reads ``current``."""
+
+    registry = rt.load_lens_registry()
+    ceiling = rt.seat_diff_capacity("gemini-1", registry)["prompt_limit_bytes"]
+    dossier = _synth(
+        rt,
+        [
+            _review(f"{family}-1", family, diff_full_bytes=9)
+            for family in ("claude", "codex", "glm")
+        ],
+        constitution_notes=("family_replaced_for_size:gemini",),
+    )
+    dossier["family_substitution"] = {
+        "excluded_for_prompt": {
+            "gemini": {"prompt_bytes": ceiling + 1, "prompt_limit_bytes": ceiling}
+        },
+        "prompt_bytes_by_seat": {"gemini-1": ceiling + 1},
+    }
+    if recorded is not ...:  # ... leaves the field absent
+        dossier["constitution_note_sha256"] = recorded
+    note = tmp_path / "task-x.md"
+    note.write_text(current, encoding="utf-8")
+    if mtime == "preserved":  # the edit keeps a pre-constitution mtime: only content can see it
+        before = datetime.fromisoformat(dossier["constituted_at"]).timestamp() - 86_400
+        os.utime(note, (before, before))
+    rt.review_dossier_path(note, "task-x").write_text(yaml.safe_dump(dossier), encoding="utf-8")
+
+    def gh(cmd: list[str], **_kwargs) -> SimpleNamespace:
+        body = "diff text" if "diff" in cmd else json.dumps({"headRefOid": "a" * 40})
+        return SimpleNamespace(returncode=0, stdout=body)
+
+    monkeypatch.setattr(rt.subprocess, "run", gh)
+    return rt.review_dossier_validity_blockers(
+        {"task_id": "task-x", "pr": 99, "pr_repo": "hapax-systems/hapax-council"},
+        note,
+        pr_head_sha="a" * 40,
+        registry=registry,
+        route_blocked_families={},
+    )
+
+
+class TestSeatDispositionKeepsCapacityEvidence:
+    """A seat disposition must not void the capacity evidence of the dossier it names; any
+    other note change still must (CROW-RULING-5164-DISPOSITION-NOTE-EDIT-LOOP-P0)."""
+
+    @pytest.mark.parametrize(
+        "current",
+        [
+            _with_dispositions(_BASE_NOTE),
+            _with_dispositions(_BASE_NOTE, _DISPOSITIONS.replace("deferred", "accepted")),
+            _BASE_NOTE,
+        ],
+        ids=["added", "amended", "unchanged"],
+    )
+    def test_dispositions_only_edit_keeps_capacity_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, current: str
+    ) -> None:
+        rt = _load_review_team_module()
+        blockers = _capacity_blockers(
+            rt, tmp_path, monkeypatch, current, recorded=_sha(_BASE_NOTE), mtime="advanced"
+        )
+        assert _CAPACITY_VOID not in blockers
+
+    @pytest.mark.parametrize("mtime", ["advanced", "preserved"])
+    @pytest.mark.parametrize(
+        "edited",
+        [
+            _BASE_NOTE.replace("status: in_progress", "status: done"),
+            _BASE_NOTE.replace("pr: 99\n", "pr: 99\nblocked_reason: smuggled\n"),
+            _BASE_NOTE.replace("the seats read this predicate", "a different predicate"),
+            _BASE_NOTE.replace("Body the seats read.", "Body changed after dispatch."),
+            _BASE_NOTE + "- 2026-10-14T23:00:00Z dev51: logged.\n",
+            _with_dispositions(_BASE_NOTE, _DISPOSITIONS + "status: done\n"),
+            _BASE_NOTE.replace("exit_predicate: >-\n", "exit_predicate: >-\n" + _DISPOSITIONS),
+        ],
+        ids=[
+            "frontmatter-field",
+            "frontmatter-key-added",
+            "prompt-visible-predicate",
+            "body",
+            "session-log",
+            "key-smuggled-after-block",
+            "block-splits-a-scalar",
+        ],
+    )
+    def test_any_other_note_change_still_voids(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edited: str, mtime: str
+    ) -> None:
+        rt = _load_review_team_module()
+        current = edited if _DISPOSITIONS in edited else _with_dispositions(edited)
+        blockers = _capacity_blockers(
+            rt, tmp_path, monkeypatch, current, recorded=_sha(_BASE_NOTE), mtime=mtime
+        )
+        assert _CAPACITY_VOID in blockers
+
+    @pytest.mark.parametrize(
+        "recorded",
+        ["", "abc", "g" * 64, 123, None],
+        ids=["empty", "short", "non-hex", "int", "null"],
+    )
+    def test_malformed_recorded_hash_voids(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recorded
+    ) -> None:
+        rt = _load_review_team_module()
+        blockers = _capacity_blockers(
+            rt, tmp_path, monkeypatch, _BASE_NOTE, recorded=recorded, mtime="preserved"
+        )
+        assert _CAPACITY_VOID in blockers
+
+    def test_a_line_the_block_swallows_cannot_hide_a_change(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        swallowed = _BASE_NOTE.replace("  the seats read this predicate\n", "")
+        current = _BASE_NOTE.replace(
+            "exit_predicate: >-\n", "exit_predicate: >-\n" + _DISPOSITIONS
+        ).replace("the seats read this predicate", "a different predicate")
+        blockers = _capacity_blockers(
+            rt, tmp_path, monkeypatch, current, recorded=_sha(swallowed), mtime="preserved"
+        )
+        assert _CAPACITY_VOID in blockers
+
+    def test_dossier_without_hash_keeps_the_mtime_rule(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        edited = _with_dispositions(_BASE_NOTE)
+        assert _CAPACITY_VOID in _capacity_blockers(
+            rt, tmp_path, monkeypatch, edited, mtime="advanced"
+        )
+        assert _CAPACITY_VOID not in _capacity_blockers(
+            rt, tmp_path, monkeypatch, edited, mtime="preserved"
+        )
+
+    def test_a_disposition_never_raises_the_prompt_floor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        registry = rt.load_lens_registry()
+        note = tmp_path / "task-x.md"
+        monkeypatch.setattr(
+            rt.subprocess,
+            "run",
+            lambda cmd, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="diff text" if "diff" in cmd else json.dumps({"headRefOid": "a" * 40}),
+            ),
+        )
+
+        def floor(text: str, recorded: str) -> int:
+            note.write_text(text, encoding="utf-8")
+            evidence = rt._live_capacity_evidence(
+                99,
+                "a" * 40,
+                ("gemini-1",),
+                note_path=note,
+                frontmatter={"pr_repo": "hapax-systems/hapax-council"},
+                registry=registry,
+                constituted_at="2026-06-11T20:00:00+00:00",
+                constitution_note_sha256=recorded,
+            )
+            assert evidence is not None
+            return evidence[1]["gemini-1"]
+
+        huge = _DISPOSITIONS + "".join(f"- title: padding {i}\n" for i in range(5_000))
+        assert floor(_with_dispositions(_BASE_NOTE, huge), _sha(_BASE_NOTE)) == floor(
+            _BASE_NOTE, _sha(_BASE_NOTE)
+        )
+        # past the truncation limit the floor takes the smallest block any truncated note renders
+        long_body = _BASE_NOTE + "y" * 70_000 + "\n"
+        smallest = rt._capacity_untrusted_block("Linked cc-task note", "x" * 60_001, 60_000)
+        with_long = floor(long_body, _sha(long_body))
+        short = floor(_BASE_NOTE, _sha(_BASE_NOTE))
+        base_block = rt._capacity_untrusted_block(
+            "Linked cc-task note", f"## Linked task note: task-x.md\n\n{_BASE_NOTE}", 60_000
+        )
+        assert with_long - short == len(smallest.encode()) - len(base_block.encode())
+
+    def test_constitution_hash_removes_only_the_dispositions_key(self) -> None:
+        rt = _load_review_team_module()
+        assert rt.constitution_note_sha256(_BASE_NOTE) == _sha(_BASE_NOTE)
+        assert rt.constitution_note_sha256(_with_dispositions(_BASE_NOTE)) == _sha(_BASE_NOTE)
+        smuggled = _with_dispositions(_BASE_NOTE, _DISPOSITIONS + "status: done\n")
+        assert rt.constitution_note_sha256(smuggled) != _sha(_BASE_NOTE)
+        split = _BASE_NOTE.replace("exit_predicate: >-\n", "exit_predicate: >-\n" + _DISPOSITIONS)
+        assert rt.constitution_note_sha256(split) != _sha(_BASE_NOTE)
+        dossier = _synth(rt, [_review("claude-1", "claude")], constitution_note_sha256="f" * 64)
+        assert dossier["constitution_note_sha256"] == "f" * 64
+        assert "constitution_note_sha256" not in _synth(rt, [_review("claude-1", "claude")])
 
 
 class TestSynthesizeDossier:
