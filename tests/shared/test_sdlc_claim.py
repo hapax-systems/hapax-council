@@ -6314,3 +6314,364 @@ def test_independent_role_claims_publish_across_synthetic_task_store_churn(
         phase_list == ["created", "projecting", "postimage_complete", "applied"]
         for phase_list in phases.values()
     )
+
+
+_REBIND_WORDS = (
+    "please, do not ask me for any permission to do anything like this. If work is stuck it "
+    "needs to go to another capability shape if that shape exists and it is appropriate to "
+    "route. That is always the case. If there is work, it needs to keep moving, everything "
+    "else considered."
+)
+_REBIND_SHA = hashlib.sha256(_REBIND_WORDS.encode()).hexdigest()
+
+
+def _rebind_fixture(tmp_path, monkeypatch):
+    fixture, receipt = _activation_fixture(tmp_path)
+    note = fixture.intent.note_path
+    note.write_text(
+        note.read_text()
+        .replace("status: claimed", "status: pr_open")
+        .replace(
+            "authority_case:",
+            "branch: held-work\npr: 4985\npr_repo: hapax-systems/hapax-council\nauthority_case:",
+            1,
+        )
+    )
+    req = fixture.vault.parent / "hapax-requests" / "active" / "REQ-standing.md"
+    req.parent.mkdir(parents=True)
+    req.write_text(
+        "---\ntype: hapax-request\nrequester: operator\nrequest_id: REQ-standing\n"
+        "status: captured\n---\n# Operator ruling\n\n> " + _REBIND_WORDS + "\n"
+    )
+    relay = fixture.cache / "relay"
+    relay.mkdir()
+    (relay / "cx-red.yaml").write_text("role: cx-red\nstatus: retired\n")
+    monkeypatch.setenv("HAPAX_RELAY_DIR", str(relay))
+    monkeypatch.setattr(
+        sdlc_claim,
+        "_rebind_process_absence",
+        lambda **kw: {"host": "test-host", "processes": "absent"},
+    )
+    args = dict(
+        vault_root=fixture.vault,
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        old_role="cx-red",
+        new_role="cx-new",
+        new_session="new-session",
+        task_id=fixture.intent.task_id,
+        ruling_path=req,
+        ruling_sha256=_REBIND_SHA,
+        receipt_root=tmp_path / "receipts",
+    )
+    return fixture, receipt, args
+
+
+def test_rebind_preserves_started_work_and_archives_before_normal_claim(tmp_path, monkeypatch):
+    fixture, receipt, args = _rebind_fixture(tmp_path, monkeypatch)
+    before = fixture.intent.note_path.read_text()
+    sidecars = {p.name: p.read_bytes() for p in fixture.cache.glob("cc-*")}
+    audit = sdlc_claim.rebind_dead_claim(**args)
+    after = fixture.intent.note_path.read_text()
+    assert after == before.replace("assigned_to: cx-red", "assigned_to: cx-new")
+    assert not list(fixture.cache.glob("cc-*"))  # only ordinary cc-claim may mint the successor
+    event = json.loads(audit.read_text())
+    assert event["old_holder"] == {
+        "role": "cx-red",
+        "session_id": "session-abc",
+        "publication_id": receipt.publication_id,
+    }
+    assert event["new_holder"] == {"role": "cx-new", "session_id": "new-session"}
+    assert event["basis"]["verbatim_sha256"] == _REBIND_SHA
+    assert event["basis"]["verbatim"] == _REBIND_WORDS
+    assert event["death"]["markers"] == "absent"
+    assert event["observed_at"].endswith("Z")
+    for name, content in sidecars.items():
+        assert any(p.read_bytes() == content for p in fixture.vault.rglob(name))
+    assert (audit.parent / "assigned.json").is_file()
+    before = _tree_snapshot(fixture.vault)
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_not_holder"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert _tree_snapshot(fixture.vault) == before
+
+
+@pytest.mark.parametrize(
+    "hazard",
+    [
+        "marker",
+        "session_marker",
+        "other_marker",
+        "relay",
+        "relay_missing",
+        "relay_invalid",
+        "hash",
+        "words",
+        "req_missing",
+        "req_outside",
+        "req_nonoperator",
+        "owner",
+        "status",
+        "duplicate",
+        "sidecar",
+        "pending",
+        "same_role",
+    ],
+)
+def test_rebind_refuses_unsafe_case_without_changing_work(tmp_path, monkeypatch, hazard):
+    fixture, receipt, args = _rebind_fixture(tmp_path, monkeypatch)
+    note = fixture.intent.note_path
+    relay = fixture.cache / "relay" / "cx-red.yaml"
+    if hazard in {"marker", "session_marker", "other_marker"}:
+        suffix = {
+            "marker": "cx-red",
+            "session_marker": "cx-red-session-abc",
+            "other_marker": "cx-other",
+        }[hazard]
+        (fixture.cache / f"cc-active-task-{suffix}").write_text(fixture.intent.task_id + "\n")
+    elif hazard == "relay":
+        relay.write_text("role: cx-red\nstatus: working\n")
+    elif hazard == "relay_missing":
+        relay.unlink()
+    elif hazard == "relay_invalid":
+        relay.write_text("status: [broken\n")
+    elif hazard == "hash":
+        args["ruling_sha256"] = "f" * 64
+    elif hazard == "words":
+        args["ruling_path"].write_text(
+            args["ruling_path"].read_text().replace("everything else", "nothing else")
+        )
+    elif hazard == "req_missing":
+        args["ruling_path"].unlink()
+    elif hazard == "req_outside":
+        args["ruling_path"] = note
+    elif hazard == "req_nonoperator":
+        args["ruling_path"].write_text(
+            args["ruling_path"].read_text().replace("requester: operator", "requester: agent")
+        )
+    elif hazard == "owner":
+        note.write_text(note.read_text().replace("assigned_to: cx-red", "assigned_to: cx-peer"))
+    elif hazard == "status":
+        note.write_text(note.read_text().replace("status: pr_open", "status: closed"))
+    elif hazard == "duplicate":
+        note.write_text(
+            note.read_text().replace(
+                "assigned_to: cx-red", "assigned_to: cx-red\nassigned_to: cx-peer"
+            )
+        )
+    elif hazard == "sidecar":
+        (fixture.cache / "cc-claim-epoch-cx-red").write_text("foreign\n")
+    elif hazard == "pending":
+        manifest = fixture.transactions / receipt.publication_id / "manifest.json"
+        data = json.loads(manifest.read_text())
+        data["state"] = "projecting"
+        manifest.write_text(json.dumps(data))
+    elif hazard == "same_role":
+        args["new_role"] = args["old_role"]
+    before = (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache))
+    with pytest.raises((ClaimPublicationError, sdlc_claim.ClaimResidueArchiveHold)):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
+
+
+def test_rebind_rechecks_after_lock_and_does_not_write_without_audit(tmp_path, monkeypatch):
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    before = (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache))
+
+    def refuse_audit(*a, **kw):
+        raise OSError("audit unavailable")
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", refuse_audit)
+    with pytest.raises(OSError, match="audit unavailable"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert "assigned_to: cx-red" in fixture.intent.note_path.read_text()
+    assert _tree_snapshot(fixture.cache) == before[1]
+
+
+def test_rebind_a_holder_revived_while_waiting_for_lock_refuses(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    original = sdlc_claim._claim_publication_lock
+
+    @contextmanager
+    def revive(*a, **kw):
+        with original(*a, **kw):
+            (fixture.cache / "relay" / "cx-red.yaml").write_text("status: working\n")
+            yield
+
+    monkeypatch.setattr(sdlc_claim, "_claim_publication_lock", revive)
+    before = fixture.intent.note_path.read_bytes()
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_holder_live"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert fixture.intent.note_path.read_bytes() == before
+
+
+def test_rebind_process_live_refuses_before_archiving(tmp_path, monkeypatch):
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+
+    def alive(**kw):
+        raise ClaimPublicationError("claim_rebind_holder_live", "holder process is live")
+
+    monkeypatch.setattr(sdlc_claim, "_rebind_process_absence", alive)
+    before = (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache))
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_holder_live"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
+
+
+@pytest.mark.parametrize("kind", ["pid", "pid_malformed", "tmux", "probe_error"])
+def test_rebind_process_evidence_fails_closed(tmp_path, monkeypatch, kind):
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path))
+    if kind.startswith("pid"):
+        (tmp_path / "cx-dead.pid").write_text(str(os.getpid()) if kind == "pid" else "broken")
+
+    def tmux(*a, **kw):
+        if kind == "probe_error":
+            raise OSError("tmux missing")
+        return subprocess.CompletedProcess(
+            a[0], 0, "hapax-codex-cx-dead\n" if kind == "tmux" else "", ""
+        )
+
+    monkeypatch.setattr(subprocess, "run", tmux)
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_"):
+        sdlc_claim._rebind_process_absence(
+            role="cx-dead", session_id="dead-session", cache_dir=tmp_path
+        )
+
+
+def test_rebind_contradictory_live_relay_refuses(tmp_path, monkeypatch):
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    (fixture.cache / "relay" / "cx-red.yaml").write_text("status: retired\nstate: working\n")
+    before = fixture.intent.note_path.read_bytes()
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_holder_live"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert fixture.intent.note_path.read_bytes() == before
+
+
+def test_rebind_recovers_after_archival_without_erasing_prior_audit(tmp_path, monkeypatch):
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    original = sdlc_claim._copy_verified
+
+    def crash(content, mode, target):
+        if target.name == "note.install":
+            raise OSError("crash before assignment")
+        original(content, mode, target)
+
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", crash)
+    with pytest.raises(OSError, match="crash before assignment"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert "assigned_to: cx-red" in fixture.intent.note_path.read_text()
+    assert not list(fixture.cache.glob("cc-*"))
+    prior = {p: p.read_bytes() for p in fixture.vault.rglob("intent.json")}
+    assert len(prior) == 1
+    monkeypatch.setattr(sdlc_claim, "_copy_verified", original)
+    result = sdlc_claim.rebind_dead_claim(**args)
+    assert result not in prior
+    assert all(p.read_bytes() == raw for p, raw in prior.items())
+    assert "assigned_to: cx-new" in fixture.intent.note_path.read_text()
+
+
+def test_rebind_ruling_changed_during_archival_refuses(tmp_path, monkeypatch):
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    original = sdlc_claim._release_applied_residue
+
+    def changed(*a, **kw):
+        result = original(*a, **kw)
+        req = args["ruling_path"]
+        req.write_text(req.read_text() + "\nChanged authority record.\n")
+        return result
+
+    monkeypatch.setattr(sdlc_claim, "_release_applied_residue", changed)
+    before = fixture.intent.note_path.read_bytes()
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_ruling_changed"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert fixture.intent.note_path.read_bytes() == before
+
+
+def test_rebind_cannot_substitute_a_different_hashed_operator_quote(tmp_path, monkeypatch):
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    quote = "do something unrelated"
+    args["ruling_path"].write_text(args["ruling_path"].read_text().replace(_REBIND_WORDS, quote))
+    args["ruling_sha256"] = hashlib.sha256(quote.encode()).hexdigest()
+    before = fixture.intent.note_path.read_bytes()
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_ruling_invalid"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert fixture.intent.note_path.read_bytes() == before
+
+
+def test_rebind_missing_predecessor_receipt_is_not_release_authority(tmp_path, monkeypatch):
+    fixture, receipt, args = _rebind_fixture(tmp_path, monkeypatch)
+    receipt.receipt_path.unlink()
+    before = (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache))
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_publication_pending"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
+
+
+def test_rebind_withdrawn_ruling_refuses(tmp_path, monkeypatch):
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    req = args["ruling_path"]
+    req.write_text(req.read_text().replace("status: captured", "status: withdrawn"))
+    before = fixture.intent.note_path.read_bytes()
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_ruling_invalid"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert fixture.intent.note_path.read_bytes() == before
+
+
+def test_rebind_native_process_without_pid_file_is_live(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "pids"))
+    monkeypatch.setenv("HAPAX_DISPATCH_PROOF_DIR", str(tmp_path / "proofs"))
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; print('ready', flush=True); sys.stdin.read()"],
+        env={
+            **os.environ,
+            "HAPAX_AGENT_ROLE": "cx-rebind-probe",
+            "HAPAX_SESSION_ID": "probe-session",
+        },
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout.readline().strip() == "ready"
+        monkeypatch.setattr(
+            subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a[0], 0, "", "")
+        )
+        with pytest.raises(ClaimPublicationError, match="native/launcher process"):
+            sdlc_claim._rebind_process_absence(
+                role="cx-rebind-probe", session_id="probe-session", cache_dir=tmp_path
+            )
+    finally:
+        child.communicate(input="", timeout=5)
+
+
+def test_rebind_remote_execution_is_unobserved_on_this_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_DISPATCH_PROOF_DIR", str(tmp_path))
+    (tmp_path / "20261014-cx-dead-task-remote.json").write_text(
+        json.dumps({"actual_host": "other-host-do-not-contact"})
+    )
+    with pytest.raises(
+        ClaimPublicationError, match="claim_rebind_process_unobserved.*execution binding"
+    ):
+        sdlc_claim._rebind_process_absence(
+            role="cx-dead", session_id="dead-session", cache_dir=tmp_path
+        )
+
+
+def test_rebind_holder_revives_during_archival_refuses(tmp_path, monkeypatch):
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    original = sdlc_claim._release_applied_residue
+
+    def revived(*a, **kw):
+        result = original(*a, **kw)
+        (fixture.cache / "relay" / "cx-red.yaml").write_text("status: working\n")
+        return result
+
+    monkeypatch.setattr(sdlc_claim, "_release_applied_residue", revived)
+    before = fixture.intent.note_path.read_bytes()
+    with pytest.raises(ClaimPublicationError, match="claim_rebind_holder_live"):
+        sdlc_claim.rebind_dead_claim(**args)
+    assert fixture.intent.note_path.read_bytes() == before

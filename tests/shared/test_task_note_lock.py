@@ -866,7 +866,7 @@ def test_a_forked_child_does_not_inherit_the_parents_locks(tmp_path: Path) -> No
 def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> None:
     """Containment: the projection lock is taken inside the role lock and nowhere else here.
 
-    ``sdlc_claim``'s role lock is acquired in exactly five places, all inside
+    ``sdlc_claim``'s role lock is acquired in exactly six places, all inside
     ``_claim_publication_lock``, and the projection lock is taken inside it — so the order is
     always role-then-note. The fourth, ``release_claim_residue`` (2026-09-27), was re-derived
     when it was added: it is a top-level entry that ``cc-claim --release-claim-residue`` calls
@@ -876,6 +876,11 @@ def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> 
     role lock. It writes only the note the role lock's own projection lock covers, and holds
     (``claim_return_note_moved``) when the note is not that path, so it adds no projection-lock
     site either.
+    The sixth, ``rebind_dead_claim``, is also entered without a lock. It takes the old
+    holder's role lock before this task's note lock, verifies the note path under that lock,
+    and archives residue without taking another lock. The successor's normal publication
+    starts only after this context exits, so old and new role locks never nest. Its liveness
+    and ruling reads run inside this same critical section; a moved note refuses.
     This is a containment check, not the enforcement: the inversion that
     matters (a note-holder calling onward into claim publication) needs no new acquisition site,
     so a site count cannot see it (round 5, claude-1). The direction itself is asserted at the
@@ -891,8 +896,8 @@ def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> 
     stripped = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in source.splitlines())
 
     takers = re.findall(r"with _claim_publication_lock\(", stripped)
-    assert len(takers) == 5, (
-        f"the role lock is now taken in {len(takers)} places, not 5 — re-derive the ordering "
+    assert len(takers) == 6, (
+        f"the role lock is now taken in {len(takers)} places, not 6 — re-derive the ordering "
         "argument before assuming role-then-note is still the only direction"
     )
 
@@ -967,4 +972,48 @@ def test_the_role_lock_refuses_while_this_thread_holds_a_projected_path_lock(
     assert all(name in str(refused.value) for name in held_names), (
         f"the refusal does not name what was held: {refused.value}"
     )
+    assert not tnl.held_by_current_thread()
+
+
+def test_rebind_site_takes_only_old_role_then_note_and_releases_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Observe the sixth site's real lock operations, not only its spelling/count.
+
+    The receiving lane's normal publisher runs after this function returns. No
+    second role lock is acquired while the predecessor or task-note lock is held.
+    Reversing acquisition at this entry must hit the unchanged runtime guard.
+    """
+    import fcntl
+    import os
+
+    from shared import sdlc_claim
+    from tests.shared.test_sdlc_claim import _rebind_fixture
+
+    fixture, _, args = _rebind_fixture(tmp_path, monkeypatch)
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    events = []
+    original = fcntl.flock
+
+    def observed(fd, operation):
+        result = original(fd, operation)
+        events.append((operation, Path(os.readlink(f"/proc/self/fd/{fd}"))))
+        return result
+
+    monkeypatch.setattr(fcntl, "flock", observed)
+    sdlc_claim.rebind_dead_claim(**args)
+    role_lock = fixture.locks / (
+        sdlc_claim._claim_publication_role_lock_digest(args["old_role"]) + ".lock"
+    )
+    acquisitions = [path for operation, path in events if operation & fcntl.LOCK_EX]
+    # The projection lock covers both task-id and path keys under its shared root lock.
+    root = tnl.default_lock_root()
+    note_keys = [
+        root / name for name in tnl.lock_names(args["task_id"], (fixture.intent.note_path,))
+    ]
+    assert acquisitions == [role_lock, *note_keys]  # exactly one role, acquired first
+    held = [path for operation, path in events if operation & (fcntl.LOCK_EX | fcntl.LOCK_SH)]
+    releases = [path for operation, path in events if operation == fcntl.LOCK_UN]
+    assert held == [role_lock, root, *note_keys]
+    assert releases == list(reversed(held))
     assert not tnl.held_by_current_thread()
