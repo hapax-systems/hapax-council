@@ -7,6 +7,7 @@ Spec: ~/Documents/Personal/30-areas/hapax/pr-review-team-design-2026-06-11.md
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -341,6 +342,63 @@ class TestLensRegistry:
             rt.seat_diff_capacity("gemini-1", registry)
         registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = 30_000
         assert rt.seat_diff_capacity("new-family-1", registry)["prompt_limit_bytes"] == 30_000
+
+    def test_vendored_receipt_cross_checks_configured_seats(self) -> None:
+        rt = _load_review_team_module()
+        registry = _registry()
+        receipt = rt.load_diff_capacity_receipt()
+        rt.validate_diff_capacity_receipt(registry, receipt)
+
+        registry["diff_capacity"]["seats"]["glm-1"]["prompt_limit_bytes"] = 70_200
+        with pytest.raises(
+            rt.DiffCapacityConfigError,
+            match="glm-1 configures prompt_limit_bytes 70200 above the receipted 70199",
+        ):
+            rt.validate_diff_capacity_receipt(registry, receipt)
+
+        registry["diff_capacity"]["seats"]["glm-1"]["prompt_limit_bytes"] = 70_199
+        registry["diff_capacity"]["seats"]["claude-1"]["limit_bytes"] = 319_966
+        with pytest.raises(
+            rt.DiffCapacityConfigError, match="claude-1 configures limit_bytes 319966"
+        ):
+            rt.validate_diff_capacity_receipt(registry, receipt)
+
+        # Removing the explicit override restores the conservative default; its
+        # effective inherited limits still fit the same seat receipt.
+        del registry["diff_capacity"]["seats"]["claude-1"]
+        rt.validate_diff_capacity_receipt(registry, receipt)
+
+    def test_diff_capacity_receipt_shape_is_checked(self) -> None:
+        rt = _load_review_team_module()
+        registry = _registry()
+        receipt = rt.load_diff_capacity_receipt()
+        for mutate, match in (
+            (lambda r: r.pop("measured_at"), "lacks measured_at"),
+            (lambda r: r.__setitem__("sources", {}), "sources missing/malformed"),
+            (
+                lambda r: r["sources"]["prompt_manifest"].__setitem__("sha256", "not-a-hash"),
+                "source prompt_manifest lacks sha256",
+            ),
+            (
+                lambda r: r["seats"]["glm-1"].__setitem__("limit_bytes", 0),
+                "receipt seat glm-1 limits malformed",
+            ),
+            (
+                lambda r: r["seats"]["glm-1"].__setitem__("status", "guessed"),
+                "receipt seat glm-1 status invalid",
+            ),
+        ):
+            broken = copy.deepcopy(receipt)
+            mutate(broken)
+            with pytest.raises(rt.DiffCapacityConfigError, match=match):
+                rt.validate_diff_capacity_receipt(registry, broken)
+
+    def test_load_diff_capacity_receipt_rejects_foreign_receipt(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        bogus = tmp_path / "not-a-receipt.yaml"
+        bogus.write_text("receipt_schema: 2\nreceipt_id: diff-capacity-receipt\n", encoding="utf-8")
+        with pytest.raises(rt.DiffCapacityConfigError, match="not a diff-capacity-receipt mapping"):
+            rt.load_diff_capacity_receipt(bogus)
 
 
 def _load_review_team_module():

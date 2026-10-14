@@ -174,6 +174,14 @@ def test_call_glm_uses_coding_plan_endpoint_and_model(monkeypatch: pytest.Monkey
     assert body["messages"][1]["content"] == "review prompt"
     assert body["max_tokens"] == 123
     assert body["thinking"] == {"type": "disabled"}
+    from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+    measured = reviewer_prompt_measurement(
+        ["scripts/hapax-glmcp-reviewer"],
+        "review prompt",
+        repo_root=Path(__file__).resolve().parents[2],
+    )
+    assert measured["max_prompt_bytes"] == sum(len(m["content"].encode()) for m in body["messages"])
 
 
 def test_http_error_redacts_secret(monkeypatch: pytest.MonkeyPatch) -> None:

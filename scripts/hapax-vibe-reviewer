@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
+from shared.review_seat_wrapper import refuse, render_seat_prompt  # noqa: E402
 
 WRAPPER = "hapax-vibe-reviewer"
 MAX_PROMPT_BYTES = 22_000
@@ -112,7 +112,7 @@ def main() -> int:
     prompt = sys.stdin.read()
     if not prompt.strip():
         return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
-    text = f"{SEAT_PREAMBLE}\n\n{prompt.strip()}\n"
+    text = render_seat_prompt(prompt)
     size = len(text.encode("utf-8"))
     if size > MAX_PROMPT_BYTES:
         return refuse(

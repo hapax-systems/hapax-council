@@ -50,6 +50,9 @@ dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
 
 @pytest.fixture(autouse=True)
 def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(
+        dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, "test-scope-key"
+    )
     monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", tmp_path / "family-outage.json")
     monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", tmp_path / "degraded-merges.jsonl")
     receipts = tmp_path / "relay-receipts"
@@ -6932,7 +6935,28 @@ def _artifact_setup(tmp_path: Path) -> tuple[Path, Path, Path, list[Path]]:
     census.write_text("# Census\n\n14 + 4 = 18\n", encoding="utf-8")
     appendix = frame / "CENSUS-APPENDIX.md"
     appendix.write_text("# Appendix\n\nbounds carried\n", encoding="utf-8")
+    _declare_artifact_scope(note, root, [census, appendix])
     return root, vault, note, [census, appendix]
+
+
+def _declare_artifact_scope(
+    note: Path, root: Path, files: list[Path], *, kind: str = "whole_task", source: bool = False
+) -> None:
+    _, header, body = note.read_text().split("---", 2)
+    fm = yaml.safe_load(header)
+    bounded = kind == "bounded_unit"
+    fm["artifact_review_scope"] = {
+        "kind": kind,
+        "criterion": "Check this unit" if bounded else fm["exit_predicate"],
+        "not_reviewed": ["Remaining source units and whole-source composition"] if bounded else [],
+        "evidence": {
+            "unit" if bounded else "exit_predicate": [p.relative_to(root).as_posix() for p in files]
+        },
+    }
+    if source:
+        fm["mutation_surface"] = "source"
+        fm["artifact_review_scope"].update(source_repository="owner/repo", source_head="a" * 40)
+    note.write_text("---\n" + yaml.safe_dump(fm, sort_keys=False) + "---" + body)
 
 
 def _artifact_kwargs(tmp_path: Path, vault: Path, root: Path, **overrides: Any) -> dict[str, Any]:
@@ -6958,6 +6982,418 @@ def _review_artifact(
     kwargs = _artifact_kwargs(tmp_path, vault, root, **overrides)
     result = dispatch.review_artifact("vault-row", paths, **kwargs)
     return result, kwargs["reviewer_runner"], note, files
+
+
+class TestArtifactPromptCapacity:
+    @pytest.mark.parametrize("offset", [-1, 0])
+    def test_final_wrapper_boundary_and_plan_apply_agree(self, tmp_path: Path, offset: int) -> None:
+        from shared.review_seat_wrapper import reviewer_prompt_measurement
+
+        root, vault, note, files = _artifact_setup(tmp_path)
+        registry = dispatch.review_team.load_lens_registry()
+        registry["families"] = [
+            r for r in registry["families"] if r["family"] in {"gemini", "codex", "muse"}
+        ]
+        registry["route_backed_review_families"] = []
+        config = tmp_path / "registry.yaml"
+        config.write_text(yaml.safe_dump(registry))
+        kwargs = _artifact_kwargs(tmp_path, vault, root, registry_path=config, apply=False)
+        first = dispatch.review_artifact("vault-row", files, **kwargs)
+        measured = first["plan"]["prompt_admission"]["gemini-1"]
+        assert measured["wrapped_prompt_bytes"] > measured["rendered_prompt_bytes"]
+        assert measured["max_prompt_bytes"] == measured["wrapped_prompt_bytes"]
+        limit = measured["max_prompt_bytes"] + offset
+        registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] = limit
+        config.write_text(yaml.safe_dump(registry))
+        plan = dispatch.review_artifact("vault-row", files, **kwargs)
+        runner = RecordingReviewers()
+        applied = dispatch.review_artifact(
+            "vault-row", files, **{**kwargs, "apply": True, "reviewer_runner": runner}
+        )
+        if offset < 0:
+            assert plan["status"] == applied["status"] == "prompt_capacity_exceeded"
+            assert runner.invocations == []
+            assert not note.with_suffix(".acceptance.yaml").exists()
+        else:
+            assert plan["status"] == "planned" and applied["status"] == "dispatched"
+            admission = applied["dossier"]["prompt_admission"]
+            assert admission == plan["plan"]["prompt_admission"]
+            assert admission["gemini-1"]["max_prompt_bytes"] == limit
+            for seat_id, family, prompt in runner.invocations:
+                cfg = next(row for row in registry["families"] if row["family"] == family)
+                actual = reviewer_prompt_measurement(
+                    list(cfg["reviewer_command"]), prompt, repo_root=REPO_ROOT
+                )
+                assert all(admission[seat_id][key] == value for key, value in actual.items())
+                for path in files:
+                    assert all(line in prompt for line in path.read_text().splitlines())
+
+    @pytest.mark.parametrize(
+        "fault", ["missing", "schema", "ceiling", "citation", "seat", "wrapper"]
+    )
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_missing_or_drifted_capacity_proof_refuses(
+        self, tmp_path: Path, fault: str, apply: bool
+    ) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        registry = dispatch.review_team.load_lens_registry()
+        receipt = dispatch.review_team.load_diff_capacity_receipt()
+        if fault == "schema":
+            receipt["receipt_schema"] = 2
+        elif fault == "ceiling":
+            registry["diff_capacity"]["seats"]["gemini-1"]["prompt_limit_bytes"] += 1
+        elif fault == "citation":
+            registry["diff_capacity"]["default"]["measurement_sha256"] = "0" * 64
+        elif fault == "seat":
+            del receipt["seats"]["gemini-1"]
+        elif fault == "wrapper":
+            for row in registry["families"]:
+                row["reviewer_command"] = ["unsupported-reviewer"]
+            registry["route_backed_review_families"] = []
+        config = tmp_path / "registry.yaml"
+        proof = tmp_path / "receipt.yaml"
+        config.write_text(yaml.safe_dump(registry))
+        if fault != "missing":
+            proof.write_text(yaml.safe_dump(receipt))
+        runner = RecordingReviewers()
+        before = {p.name: p.read_bytes() for p in note.parent.iterdir()}
+        result = dispatch.review_artifact(
+            "vault-row",
+            files,
+            **_artifact_kwargs(
+                tmp_path,
+                vault,
+                root,
+                apply=apply,
+                registry_path=config,
+                diff_capacity_receipt_path=proof,
+                reviewer_runner=runner,
+            ),
+        )
+        assert result["status"] == "diff_capacity_config_invalid"
+        assert runner.invocations == []
+        assert before == {p.name: p.read_bytes() for p in note.parent.iterdir()}
+
+    def test_whole_note_metadata_and_exclusions_are_common_evidence(self, tmp_path: Path) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _declare_artifact_scope(note, root, files, kind="bounded_unit")
+        note.write_text(note.read_text() + "N" * 65_000 + "NOTE-END")
+        fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+        manifest, contents = dispatch.build_artifact_manifest(files, root)
+        lineage = {"long": "L" * 22_000 + "METADATA-END"}
+        scope = dispatch.review_artifact_manifest.build_review_scope(fm, manifest)
+        common = []
+        for family in ("gemini", "codex", "muse"):
+            prompt = dispatch.render_artifact_reviewer_prompt(
+                seat=dispatch.review_team.Seat(f"{family}-1", family),
+                task_id="vault-row",
+                head_sha=dispatch.artifact_head_sha(manifest),
+                team_class="t2_standard",
+                lenses=(),
+                charters="all-charters",
+                task_note_text=note.read_text(),
+                manifest=manifest,
+                lineage=lineage,
+                contents=contents,
+                review_scope=scope,
+            )
+            assert "NOTE-END" in prompt and "METADATA-END" in prompt
+            assert "Remaining source units and whole-source composition" in prompt
+            common.append(prompt.split("\n", 1)[1])
+        assert len(set(common)) == 1
+
+    def test_fresh_receipt_replay_rechecks_capacity(self, tmp_path: Path) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        before = {p.name: p.read_bytes() for p in note.parent.iterdir()}
+        registry = dispatch.review_team.load_lens_registry()
+        for row in registry["diff_capacity"]["seats"].values():
+            row["prompt_limit_bytes"] = 1
+        config = tmp_path / "registry.yaml"
+        config.write_text(yaml.safe_dump(registry))
+        runner = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "vault-row",
+            files,
+            **_artifact_kwargs(
+                tmp_path,
+                vault,
+                root,
+                registry_path=config,
+                reviewer_runner=runner,
+            ),
+        )
+        assert result["status"] == "prompt_capacity_exceeded"
+        assert runner.invocations == []
+        assert before == {p.name: p.read_bytes() for p in note.parent.iterdir()}
+
+    @pytest.mark.parametrize("apply", [False, True])
+    def test_under_generic_cap_over_final_seat_cap_refuses_without_mutation(
+        self, tmp_path: Path, apply: bool
+    ) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        files[0].write_text("é" * 40_000)
+        assert sum(len(p.read_text()) for p in files) < dispatch.MAX_ARTIFACT_CHARS
+        before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in note.parent.iterdir()}
+        runner = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "vault-row",
+            files,
+            **_artifact_kwargs(
+                tmp_path,
+                vault,
+                root,
+                apply=apply,
+                reviewer_runner=runner,
+                route_blocked_families={
+                    f: ("unavailable",) for f in ("claude", "codex", "local", "vibe")
+                },
+            ),
+        )
+        assert result["status"] == "prompt_capacity_exceeded"
+        assert runner.invocations == []
+        assert before == {
+            p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in note.parent.iterdir()
+        }
+
+
+class TestArtifactReviewScope:
+    def test_missing_declaration_never_dispatches(self, tmp_path: Path) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _, header, body = note.read_text().split("---", 2)
+        fm = yaml.safe_load(header)
+        del fm["artifact_review_scope"]
+        note.write_text("---\n" + yaml.safe_dump(fm) + "---" + body)
+        runner = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=runner)
+        )
+        assert result["reason"] == "scope_missing" and runner.invocations == []
+
+    def test_changed_parent_source_and_unsigned_dossier_cannot_issue_receipt(
+        self, tmp_path: Path
+    ) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _declare_artifact_scope(note, root, files, kind="bounded_unit", source=True)
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root)
+        )
+        receipt_path = note.with_suffix(".acceptance.yaml")
+        fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+        original_receipt = receipt_path.read_bytes()
+        receipt_path.unlink()
+        dossier = result["dossier"]
+        del dossier["authority_signature"]
+        assert (
+            dispatch.write_acceptance_receipt_if_due(
+                fm,
+                note,
+                "vault-row",
+                dossier,
+                pr_url="artifact",
+                now_iso=_WALL_NOW,
+                changed_files=tuple(p.relative_to(root).as_posix() for p in files),
+                changed_file_count=len(files),
+                route_blocked_families={},
+            )
+            is None
+        )
+        assert not receipt_path.exists()
+        receipt_path.write_bytes(original_receipt)
+        # A changed source identity cannot be consumed even with an otherwise matching head.
+        _, header, body = note.read_text().split("---", 2)
+        fm = yaml.safe_load(header)
+        fm["artifact_review_scope"]["source_head"] = "b" * 40
+        note.write_text("---\n" + yaml.safe_dump(fm) + "---" + body)
+        assert dispatch.artifact_receipt_blockers(
+            note, files, artifact_root=root, required_kind="bounded_unit"
+        ) == ("acceptance_receipt_scope_binding_mismatch",)
+
+    def test_bounded_disposition_cannot_close_parent_or_satisfy_dependency(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from shared.sdlc_lifecycle import acceptance_receipt_blockers, task_closure_validity
+
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _declare_artifact_scope(note, root, files, kind="bounded_unit", source=True)
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root)
+        )
+        assert result["status"] == "dispatched"
+        fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+        assert acceptance_receipt_blockers(fm, note) == ("acceptance_receipt_scope_not_whole_task",)
+        assert not task_closure_validity(note.read_text(), note_path=note).valid
+        # A later status edit cannot turn this same component into a fulfilled dependency.
+        assert not task_closure_validity(
+            note.read_text().replace("status: claimed", "status: done"), note_path=note
+        ).valid
+        assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root)
+        assert (
+            dispatch.artifact_receipt_blockers(
+                note, files, artifact_root=root, required_kind="bounded_unit"
+            )
+            == ()
+        )
+        args = ["--task", "vault-row", "--vault-root", str(vault), "--artifact-root", str(root)]
+        for path in files:
+            args.extend(["--artifact", str(path)])
+        assert dispatch.main([*args, "--check-unit-receipt"]) == 0
+        assert dispatch.main([*args, "--check-receipt"]) == 1
+        for path in (
+            note.with_suffix(".acceptance.yaml"),
+            note.with_suffix(".review-dossier.yaml"),
+        ):
+            signed = yaml.safe_load(path.read_text())
+            assert signed["review_scope"] == result["dossier"]["review_scope"]
+            assert dispatch.public_gate_receipts.public_gate_authority_evidence_signed(
+                signed, "test-scope-key"
+            )
+
+    def test_prompt_supplies_bounded_authority_and_retains_parent_obligations(
+        self, tmp_path: Path
+    ) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _declare_artifact_scope(note, root, files, kind="bounded_unit", source=True)
+        runner = RecordingReviewers()
+        dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=runner)
+        )
+        assert runner.invocations
+        for _, _, prompt in runner.invocations:
+            assert "NEVER the parent task or its dependencies" in prompt
+            assert "criterion: Check this unit" in prompt
+            assert "Remaining source units and whole-source composition" in prompt
+            assert "exit_predicate: dispatcher creates a review-team dossier" in prompt
+            assert "source_head: " + "a" * 40 in prompt
+
+    @pytest.mark.parametrize(
+        "field,value,reason",
+        [
+            ("kind", "unknown", "scope_malformed"),
+            ("criterion", None, "scope_malformed"),
+            ("criterion", "only one conjunct", "scope_whole_criterion_mismatch"),
+            ("not_reviewed", ["missing source"], "scope_exclusions_invalid"),
+            ("evidence", {}, "scope_evidence_incomplete"),
+            ("evidence", {"exit_predicate": ["not-in-manifest"]}, "scope_evidence_invalid"),
+            ("source_head", "wrong", "scope_source_identity_invalid"),
+        ],
+    )
+    def test_invalid_scope_never_dispatches(
+        self, tmp_path: Path, field: str, value: Any, reason: str
+    ) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _, header, body = note.read_text().split("---", 2)
+        fm = yaml.safe_load(header)
+        fm["artifact_review_scope"][field] = value
+        note.write_text("---\n" + yaml.safe_dump(fm) + "---" + body)
+        runner = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=runner)
+        )
+        assert result.get("reason") == reason
+        assert runner.invocations == []
+        assert not note.with_suffix(".acceptance.yaml").exists()
+
+    @pytest.mark.parametrize("field", ["task_id", "criterion", "source_head", "head_sha", "kind"])
+    def test_tampered_scope_cannot_be_consumed(self, tmp_path: Path, field: str) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _declare_artifact_scope(note, root, files, kind="bounded_unit", source=True)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        path = note.with_suffix(".acceptance.yaml")
+        receipt = yaml.safe_load(path.read_text())
+        receipt["review_scope"][field] = "wrong"
+        dispatch._sign_public_gate_authority_evidence(receipt)
+        path.write_text(yaml.safe_dump(receipt))
+        assert dispatch.artifact_receipt_blockers(
+            note, files, artifact_root=root, required_kind="bounded_unit"
+        ) == ("acceptance_receipt_scope_binding_mismatch",)
+
+    def test_changed_signature_and_missing_scope_are_refused(self, tmp_path: Path) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        path = note.with_suffix(".acceptance.yaml")
+        receipt = yaml.safe_load(path.read_text())
+        receipt["authority_signature"] = "hmac-sha256:" + "0" * 64
+        path.write_text(yaml.safe_dump(receipt))
+        assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root) == (
+            "acceptance_receipt_scope_signature_invalid",
+        )
+        del receipt["review_scope"]
+        path.write_text(yaml.safe_dump(receipt))
+        assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root) == (
+            "acceptance_receipt_scope_missing",
+        )
+
+    @pytest.mark.parametrize("nested_surface", [False, True])
+    def test_whole_source_requires_composition_and_independent_disposition(
+        self, tmp_path: Path, nested_surface: bool
+    ) -> None:
+        from shared.sdlc_lifecycle import task_closure_validity
+
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _declare_artifact_scope(note, root, files, source=True)
+        if nested_surface:
+            _, header, body = note.read_text().split("---", 2)
+            fm = yaml.safe_load(header)
+            fm["route_metadata"] = {"mutation_surface": fm.pop("mutation_surface")}
+            note.write_text("---\n" + yaml.safe_dump(fm) + "---" + body)
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root)
+        )
+        assert result.get("reason") == "scope_evidence_incomplete"
+        _, header, body = note.read_text().split("---", 2)
+        fm = yaml.safe_load(header)
+        evidence = fm["artifact_review_scope"]["evidence"]
+        for key in ("source_union", "context", "tests", "findings", "integration_ci"):
+            evidence[key] = evidence["exit_predicate"]
+        note.write_text("---\n" + yaml.safe_dump(fm) + "---" + body)
+        runner = RecordingReviewers()
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=runner)
+        )
+        assert result["status"] == "dispatched" and runner.invocations
+        assert task_closure_validity(note.read_text(), note_path=note).valid
+        # This fixture proves contract plumbing, not the scientific sufficiency of a census.
+
+    def test_scope_change_at_same_head_requires_new_review_and_archives_predecessor(
+        self, tmp_path: Path
+    ) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        first = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root)
+        )
+        old = note.with_suffix(".acceptance.yaml").read_bytes()
+        _declare_artifact_scope(note, root, files, kind="bounded_unit")
+        runner = RecordingReviewers()
+        second = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root, reviewer_runner=runner)
+        )
+        assert second["status"] == "dispatched" and runner.invocations
+        assert first["dossier"]["head_sha"] == second["dossier"]["head_sha"]
+        assert any(p.read_bytes() == old for p in note.parent.glob("vault-row.acceptance.*.yaml"))
+        assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root) == (
+            "acceptance_receipt_scope_not_whole_task",
+        )
+
+    def test_component_does_not_mint_public_gate_authority(self, tmp_path: Path) -> None:
+        root, vault, note, files = _artifact_setup(tmp_path)
+        _declare_artifact_scope(note, root, files, kind="bounded_unit")
+        _, header, body = note.read_text().split("---", 2)
+        fm = yaml.safe_load(header)
+        fm["public_gate_authority"] = {
+            "required_gates": ["publish"],
+            "authorized_public_gate_receipts": ["release.yaml"],
+        }
+        note.write_text("---\n" + yaml.safe_dump(fm) + "---" + body)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        for path in (
+            note.with_suffix(".acceptance.yaml"),
+            note.with_suffix(".review-dossier.yaml"),
+        ):
+            data = yaml.safe_load(path.read_text())
+            assert "required_gates" not in data
+            assert "authorized_public_gate_receipts" not in data
 
 
 class TestVaultArtifactAcceptance:
@@ -7087,14 +7523,14 @@ class TestVaultArtifactAcceptance:
         frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
         forged = dict(receipt, head_sha="artifact-sha256:" + "0" * 64)
         receipt_path.write_text(yaml.safe_dump(forged), encoding="utf-8")
-        assert acceptance_receipt_blockers(frontmatter, note) == (
-            "acceptance_receipt_artifact_head_mismatch",
+        assert "acceptance_receipt_artifact_head_mismatch" in acceptance_receipt_blockers(
+            frontmatter, note
         )
         rootless = dict(receipt)
         rootless["artifact_review"] = {"manifest": receipt["artifact_review"]["manifest"]}
         receipt_path.write_text(yaml.safe_dump(rootless), encoding="utf-8")
-        assert acceptance_receipt_blockers(frontmatter, note) == (
-            "acceptance_receipt_artifact_root_missing",
+        assert "acceptance_receipt_artifact_root_missing" in acceptance_receipt_blockers(
+            frontmatter, note
         )
 
     def test_fresh_dossier_for_the_same_bytes_is_not_re_reviewed(self, tmp_path: Path) -> None:
