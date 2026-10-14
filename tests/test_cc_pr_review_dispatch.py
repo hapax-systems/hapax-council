@@ -14,7 +14,7 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime
 from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
@@ -46,6 +46,32 @@ def _load(name: str, filename: str) -> ModuleType:
 
 
 dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
+
+
+def _quota_reset_reading(*, observed: str = "2026-10-03T15:40:00+00:00", used: float = 0):
+    return dispatch.quota_headroom.evidence(
+        "codex.subscription.weekly",
+        at=datetime.fromisoformat(observed),
+        reset=datetime.fromisoformat("2026-10-10T04:33:00+00:00"),
+        quantity=used,
+        unit="percent_used",
+        label="observed",
+        source="local-trace:codex_rollout_token_count:new",
+    )
+
+
+def _old_codex_wall() -> dict[str, Any]:
+    return {
+        "observed_at": "2026-10-03T15:11:12+00:00",
+        "outage_started_at": "2026-10-03T15:00:00+00:00",
+        "cause": "quota_wall",
+        "wall_evidence": {
+            "capacity_id": "codex.subscription.weekly",
+            "observed_at": "2026-10-03T15:11:12+00:00",
+            "resets_at": "2026-10-06T19:26:39+00:00",
+            "source": "local-trace:codex_rollout_token_count:old",
+        },
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -4021,6 +4047,86 @@ class TestNoQuorumRecovery:
         assert dead == {"codex-1", "gemini-1"}
         codex_seats = [r for r in dossier["reviewers"] if r["family"] == "codex"]
         assert codex_seats and codex_seats[0]["verdict"] == "provider-outage"
+
+
+class TestQuotaResetLatch:
+    NOW = "2026-10-03T15:45:00+00:00"
+
+    def test_fresh_reset_clears_and_stale_trace_cannot_restamp(self, tmp_path: Path) -> None:
+        state = tmp_path / "family-outage.json"
+        state.write_text(json.dumps({"codex": _old_codex_wall()}))
+        cleared = dispatch.reconcile_quota_reset_outages(
+            {"codex": [_quota_reset_reading()]}, {}, self.NOW, state
+        )
+        assert cleared == frozenset({"codex"})
+        recorded = json.loads(state.read_text())["codex"]
+        assert recorded["post_outage_admission"]["resets_at"] == "2026-10-10T04:33:00+00:00"
+        assert dispatch.load_family_outage(self.NOW, state) == frozenset()
+        before = state.read_bytes()
+        dispatch.record_wall_outage({"codex": _old_codex_wall()["wall_evidence"]}, self.NOW, state)
+        assert state.read_bytes() == before
+        stale_restamp = {
+            **_old_codex_wall()["wall_evidence"],
+            "observed_at": "2026-10-03T15:46:00+00:00",
+        }
+        dispatch.record_wall_outage({"codex": stale_restamp}, "2026-10-03T15:47:00+00:00", state)
+        assert state.read_bytes() == before
+        newer_wall = {
+            **stale_restamp,
+            "resets_at": "2026-10-10T04:33:00+00:00",
+        }
+        dispatch.record_wall_outage({"codex": newer_wall}, "2026-10-03T15:47:00+00:00", state)
+        assert dispatch.load_family_outage("2026-10-03T15:47:00+00:00", state) == frozenset(
+            {"codex"}
+        )
+
+    @pytest.mark.parametrize("blocked", [True, False])
+    def test_still_walled_or_stale_reading_keeps_latch(self, tmp_path: Path, blocked: bool) -> None:
+        state = tmp_path / "family-outage.json"
+        state.write_text(json.dumps({"codex": _old_codex_wall()}))
+        reading = _quota_reset_reading(
+            observed="2026-10-03T14:00:00+00:00" if not blocked else "2026-10-03T15:40:00+00:00"
+        )
+        walls = {"codex": _old_codex_wall()["wall_evidence"]} if blocked else {}
+        assert (
+            dispatch.reconcile_quota_reset_outages({"codex": [reading]}, walls, self.NOW, state)
+            == frozenset()
+        )
+        assert dispatch.load_family_outage(self.NOW, state) == frozenset({"codex"})
+
+    def test_operator_until_stays_authoritative(self, tmp_path: Path) -> None:
+        state = tmp_path / "family-outage.json"
+        state.write_text(
+            json.dumps({"codex": {**_old_codex_wall(), "until": "2026-10-04T00:00:00Z"}})
+        )
+        before = state.read_bytes()
+        assert (
+            dispatch.reconcile_quota_reset_outages(
+                {"codex": [_quota_reset_reading()]}, {}, self.NOW, state
+            )
+            == frozenset()
+        )
+        assert state.read_bytes() == before
+        assert dispatch.load_family_outage(self.NOW, state) == frozenset({"codex"})
+
+    def test_apply_constitution_uses_reset_observation(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        state = dispatch.FAMILY_OUTAGE_STATE
+        state.write_text(json.dumps({"codex": _old_codex_wall()}))
+        monkeypatch.setattr(
+            dispatch, "_wall_readings", lambda *_args: {"codex": [_quota_reset_reading()]}
+        )
+        monkeypatch.setattr(dispatch, "review_family_wall_evidence", lambda *_args: ({}, None))
+        monkeypatch.setattr(
+            dispatch, "clear_route_recovered_family_outage", lambda witness, **_kwargs: witness
+        )
+        assert (
+            "codex" in dispatch.constitution_inputs({}, {}, self.NOW, apply=False).outage_families
+        )
+        result = dispatch.constitution_inputs({}, {}, self.NOW, apply=True)
+        assert "codex" not in result.outage_families
+        assert "post_outage_admission" in json.loads(state.read_text())["codex"]
 
 
 class TestFamilyOutageDegradation:
