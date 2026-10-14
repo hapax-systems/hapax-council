@@ -93,6 +93,9 @@ REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
 #: Dossier field: sha256 of the task note as dispatched, minus its seat dispositions. A seat
 #: disposition is written to the note after the round, so it must not void the dossier it names.
 CONSTITUTION_NOTE_SHA256_FIELD = "constitution_note_sha256"
+#: Recorded when the dispatched note cannot be normalized: never a digest, so the evidence voids.
+#: Field absence stays reserved for dossiers constituted before the hash existed.
+CONSTITUTION_NOTE_UNPROVABLE = "unprovable"
 RELEASE_DISPOSITIONS_KEY = "release_finding_dispositions"
 
 #: Packet redaction (review-packet-redacts-scrubbed-pii-lines-20261004): any outbound line carrying
@@ -2518,11 +2521,17 @@ def _note_without_release_dispositions(text: str) -> str | None:
     return "".join([lines[0], *kept, *lines[close:]])
 
 
-def constitution_note_sha256(text: str) -> str | None:
-    """sha256 of a task note as dispatched, minus its seat dispositions; None when unprovable."""
+def constitution_note_sha256(text: str) -> str:
+    """sha256 of a task note as dispatched, minus its seat dispositions.
+
+    An unprovable normalization yields ``CONSTITUTION_NOTE_UNPROVABLE``, so a new dossier never
+    falls back to the legacy mtime rule.
+    """
 
     normalized = _note_without_release_dispositions(text)
-    return None if normalized is None else hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    if normalized is None:
+        return CONSTITUTION_NOTE_UNPROVABLE
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _live_capacity_evidence(

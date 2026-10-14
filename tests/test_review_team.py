@@ -1626,9 +1626,19 @@ def _sha(text: str) -> str:
 
 
 def _capacity_blockers(
-    rt, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, current: str, *, recorded=..., mtime: str
+    rt,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    current: str,
+    *,
+    recorded=...,
+    mtime: str,
+    dispatched: str | None = None,
 ) -> tuple[str, ...]:
-    """Run the public gate on a prompt-excluded dossier whose note now reads ``current``."""
+    """Run the public gate on a prompt-excluded dossier whose note now reads ``current``.
+
+    ``dispatched`` constitutes the dossier through synthesis from that note text, as dispatch does.
+    """
 
     registry = rt.load_lens_registry()
     ceiling = rt.seat_diff_capacity("gemini-1", registry)["prompt_limit_bytes"]
@@ -1639,6 +1649,11 @@ def _capacity_blockers(
             for family in ("claude", "codex", "glm")
         ],
         constitution_notes=("family_replaced_for_size:gemini",),
+        **(
+            {}
+            if dispatched is None
+            else {"constitution_note_sha256": rt.constitution_note_sha256(dispatched)}
+        ),
     )
     dossier["family_substitution"] = {
         "excluded_for_prompt": {
@@ -1749,6 +1764,22 @@ class TestSeatDispositionKeepsCapacityEvidence:
             rt, tmp_path, monkeypatch, current, recorded=_sha(swallowed), mtime="preserved"
         )
         assert _CAPACITY_VOID in blockers
+
+    def test_an_unprovable_note_constitutes_a_dossier_that_voids(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # valid YAML the line rule cannot remove exactly: a column-0 comment inside an entry
+        commented = _with_dispositions(
+            _BASE_NOTE, _DISPOSITIONS.replace("  reviewer_id:", "# seat note\n  reviewer_id:", 1)
+        )
+        rt = _load_review_team_module()
+        assert isinstance(yaml.safe_load(commented.split("---\n")[1]), dict)
+        edited = commented.replace("Body the seats read.", "Body changed after dispatch.")
+        blockers = _capacity_blockers(
+            rt, tmp_path, monkeypatch, edited, mtime="preserved", dispatched=commented
+        )
+        assert _CAPACITY_VOID in blockers
+        assert rt.constitution_note_sha256(commented) == rt.CONSTITUTION_NOTE_UNPROVABLE
 
     def test_dossier_without_hash_keeps_the_mtime_rule(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
