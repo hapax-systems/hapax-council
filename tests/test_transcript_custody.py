@@ -26,6 +26,7 @@ def _home(tmp_path: Path) -> Path:
     (home / ".claude/projects/p1").mkdir(parents=True)
     (home / ".claude/projects/p1/s1.jsonl").write_text('{"type":"user"}\n')
     (home / ".claude/projects/p1/s2.jsonl").write_text('{"type":"user"}\n')
+    (home / ".claude/settings.json").write_text('{"cleanupPeriodDays":3650}')
     (home / ".grok/sessions/x").mkdir(parents=True)
     (home / ".grok/sessions/x/updates.jsonl").write_text("{}\n")
     (home / ".grok/sessions/x/auth.json").write_text('{"token":"not-a-real-secret"}')
@@ -704,7 +705,7 @@ def test_windows_credential_in_the_stream_fails_verify(tmp_path: Path) -> None:
     env, _ = _windows_env(tmp_path, win_a="leak")
     assert _cli(env, "backup").returncode == 0
     result = _cli(env, "verify")
-    assert result.returncode == 1
+    assert result.returncode == 2
     assert "win-a: credential:" in result.stderr and "g1/auth.json" in result.stderr
 
 
@@ -745,7 +746,7 @@ def test_windows_unreachable_is_reported_then_fails_only_when_stale(tmp_path: Pa
     )  # local only
     env2["FAKE_SSH_MODE_win_a"] = "unreachable"
     stale = _cli(env2, "verify")
-    assert stale.returncode == 1
+    assert stale.returncode == 2
     assert "win-a: stale:" in stale.stderr
 
 
@@ -762,7 +763,7 @@ def test_windows_nested_symlink_and_drop_fail_verify(tmp_path: Path) -> None:
     (profile / ".claude/projects/p2").symlink_to(elsewhere)
     assert _cli(env, "backup").returncode == 0
     result = _cli(env, "verify")
-    assert result.returncode == 1
+    assert result.returncode == 2
     assert "win-a: dropped:" in result.stderr and "win-a: nested symlink:" in result.stderr
 
 
@@ -801,7 +802,7 @@ def test_windows_harness_path_that_vanishes_fails_verify(tmp_path: Path) -> None
     shutil.rmtree(profile / ".grok")
     assert _cli(env, "backup").returncode == 0
     result = _cli(env, "verify")
-    assert result.returncode == 1
+    assert result.returncode == 2
     assert "win-a: harness path dropped: /.grok/sessions" in result.stderr
 
 
@@ -816,7 +817,7 @@ def test_every_host_checks_windows_freshness_so_a_silent_puller_fails(tmp_path: 
     env["HAPAX_TRANSCRIPT_WINDOWS_PULLER"] = "the-puller-is-elsewhere"
     assert _cli(env, "backup").returncode == 0  # local only: this host does not pull
     missing = _cli(env, "verify")
-    assert missing.returncode == 1
+    assert missing.returncode == 2
     assert "no tier1-transcripts snapshot for Windows host win-a" in missing.stderr
 
     import socket
@@ -997,3 +998,239 @@ def test_the_unit_names_the_windows_puller_and_hosts() -> None:
     unit = (_REPO / "systemd/units/hapax-backup-transcripts.service").read_text(encoding="utf-8")
     assert 'Environment="HAPAX_TRANSCRIPT_WINDOWS_HOSTS=hapax-dextra hapax-talus"\n' in unit
     assert "Environment=HAPAX_TRANSCRIPT_WINDOWS_PULLER=hapax-appendix\n" in unit
+
+
+def test_max2_paths_are_resolved_and_backed_up(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    profile = home / ".claude-max-2"
+    (profile / "projects/seat").mkdir(parents=True)
+    (profile / "projects/seat/turns.jsonl").write_text("{}\n")
+    (profile / "history.jsonl").write_text("{}\n")
+    res = tc.resolve_paths(home)
+    for rel in (".claude-max-2/projects", ".claude-max-2/history.jsonl"):
+        assert str(home / rel) in tc.backup_args(res.paths)
+    assert not res.problems
+    # An absent max-2 profile remains safe on a different host.
+    shutil.rmtree(profile)
+    assert not any("max-2" in p.real for p in tc.resolve_paths(home).paths)
+
+
+@pytest.mark.parametrize("marker", ["settings.json", "projects", "history.jsonl"])
+def test_every_present_claude_config_requires_both_table_entries(
+    tmp_path: Path, marker: str
+) -> None:
+    home = _home(tmp_path)
+    profile = home / ".claude-new-profile"
+    profile.mkdir()
+    if marker == "projects":
+        (profile / marker).mkdir()
+    else:
+        (profile / marker).write_text("{}")
+    failures = tc.resolve_paths(home).problems
+    assert any("uncovered:" in f and ".claude-new-profile/projects" in f for f in failures)
+    assert any("uncovered:" in f and ".claude-new-profile/history.jsonl" in f for f in failures)
+    complete = (
+        *tc.TRANSCRIPT_PATHS,
+        tc.TranscriptPath("claude", ".claude-new-profile/projects"),
+        tc.TranscriptPath("claude", ".claude-new-profile/history.jsonl"),
+    )
+    assert not tc.resolve_paths(home, complete).problems
+
+
+def test_non_profile_claude_directory_is_not_a_config_root(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    other = home / ".claude-server-commander"
+    other.mkdir()
+    (other / "config.json").write_text("{}")
+    assert tc.claude_config_dirs(home) == [home / ".claude"]
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        None,
+        "{",
+        "[]",
+        "null",
+        "{}",
+        '{"cleanupPeriodDays":30}',
+        '{"cleanupPeriodDays":3649}',
+        '{"cleanupPeriodDays":true}',
+        '{"cleanupPeriodDays":"3650"}',
+        '{"cleanupPeriodDays":NaN}',
+        '{"cleanupPeriodDays":Infinity}',
+    ],
+)
+@pytest.mark.parametrize("profile", [".claude", ".claude-max-2"])
+def test_cleanup_floor_fails_read_only_for_each_profile(
+    tmp_path: Path, contents: str | None, profile: str
+) -> None:
+    home = tmp_path / "home"
+    root = home / profile
+    (root / "projects").mkdir(parents=True)
+    settings = root / "settings.json"
+    if contents is not None:
+        settings.write_text(contents)
+    before = (settings.read_bytes(), settings.stat()) if settings.exists() else None
+    problems = _cli_module()._retention_problems(home)
+    assert len(problems) == 1 and str(settings) in problems[0]
+    assert "cleanupPeriodDays" in problems[0] and "3650" in problems[0]
+    assert ((settings.read_bytes(), settings.stat()) if settings.exists() else None) == before
+
+
+@pytest.mark.parametrize("days", [3650, 4000])
+def test_cleanup_floor_accepts_long_retention(tmp_path: Path, days: int) -> None:
+    home = _home(tmp_path)
+    (home / ".claude/settings.json").write_text(json.dumps({"cleanupPeriodDays": days}))
+    assert _cli_module()._retention_problems(home) == []
+
+
+@pytest.mark.parametrize(
+    "local_failed,pulled_failed,code",
+    [(False, False, 0), (True, False, 1), (False, True, 2), (True, True, 3)],
+)
+def test_verify_verdicts_and_exit_bits_are_independent(
+    tmp_path: Path, monkeypatch, capsys, local_failed: bool, pulled_failed: bool, code: int
+) -> None:
+    from datetime import UTC, datetime
+
+    cli = _cli_module()
+    home = _home(tmp_path)
+    res = tc.resolve_paths(home)
+    nodes = []
+    for p in res.paths:
+        nodes.extend(_nodes({p.real: "dir", p.real + "/transcript.jsonl": "file"}))
+    snap = {
+        "id": "daily",
+        "short_id": "daily",
+        "time": datetime.now(UTC).isoformat(),
+        "paths": [p.real for p in res.paths],
+    }
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(cli, "_restic_json", lambda *_a: json.dumps([snap]))
+    monkeypatch.setattr(cli, "_nodes", lambda *_a: iter([] if local_failed else nodes))
+    monkeypatch.setattr(cli, "_windows_all_hosts", lambda: ["win-a"])
+    monkeypatch.setattr(cli, "_windows_hosts", lambda: ["win-a"])
+    calls = []
+
+    def windows(*_a, **_kw):
+        calls.append("pulled")
+        return int(pulled_failed)
+
+    monkeypatch.setattr(cli, "_verify_windows", windows)
+    assert cli.main(["verify"]) == code
+    output = capsys.readouterr().out
+    summary = json.loads(output.splitlines()[-1])
+    assert summary["verdicts"] == {
+        "local": "fail" if local_failed else "pass",
+        "pulled": "fail" if pulled_failed else "pass",
+        "retention": "pass",
+    }
+    assert calls == ["pulled"]
+    calls.clear()
+    assert cli.main(["verify", "--scope", "local"]) == int(local_failed)
+    assert calls == []
+    assert cli.main(["verify", "--scope", "pulled"]) == 2 * int(pulled_failed)
+    assert calls == ["pulled"]
+
+
+def test_verify_missing_local_snapshot_still_checks_pulled_and_retention(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    cli = _cli_module()
+    home = _home(tmp_path)
+    (home / ".claude/settings.json").unlink()
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(cli, "_restic_json", lambda *_a: "[]")
+    monkeypatch.setattr(cli, "_windows_all_hosts", lambda: ["win-a"])
+    monkeypatch.setattr(cli, "_windows_hosts", lambda: [])
+    calls = []
+
+    def windows(*_a, **_kw):
+        calls.append("pulled")
+        return 1
+
+    monkeypatch.setattr(cli, "_verify_windows", windows)
+    assert cli.main(["verify"]) == 7
+    out = capsys.readouterr()
+    assert "no tier1-transcripts snapshot" in out.err and "cleanupPeriodDays" in out.err
+    assert calls == ["pulled"]
+
+
+def test_verify_retention_has_its_own_verdict_and_scope(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    cli = _cli_module()
+    home = _home(tmp_path)
+    (home / ".claude-max-2/projects").mkdir(parents=True)
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+
+    def forbidden(*_a, **_kw):
+        pytest.fail("retention-only must not access snapshots or pulled hosts")
+
+    monkeypatch.setattr(cli, "_restic_env", forbidden)
+    monkeypatch.setattr(cli, "_verify_windows", forbidden)
+    assert cli.main(["verify", "--scope", "retention"]) == 4
+    output = capsys.readouterr()
+    assert ".claude-max-2/settings.json" in output.err
+    assert json.loads(output.out.splitlines()[-1])["verdicts"] == {
+        "local": "not_checked",
+        "pulled": "not_checked",
+        "retention": "fail",
+    }
+    (home / ".claude-max-2/settings.json").write_text('{"cleanupPeriodDays":3650}')
+    assert cli.main(["verify", "--scope", "retention"]) == 0
+
+
+def test_retention_gap_does_not_fail_clean_custody(tmp_path: Path, monkeypatch, capsys) -> None:
+    cli = _cli_module()
+    home = _home(tmp_path)
+    (home / ".claude/settings.json").write_text("{}")
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+    monkeypatch.setattr(cli, "_verify_local", lambda *_a: 0)
+    monkeypatch.setattr(cli, "_windows_all_hosts", lambda: ["win-a"])
+    monkeypatch.setattr(cli, "_verify_windows", lambda *_a, **_kw: 0)
+    assert cli.main(["verify"]) == 4
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["verdicts"] == {
+        "local": "pass",
+        "pulled": "pass",
+        "retention": "fail",
+    }
+    assert cli.main(["verify", "--scope", "local"]) == 0
+
+
+def test_snapshot_read_errors_do_not_suppress_other_verdicts(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    cli = _cli_module()
+    home = _home(tmp_path)
+    monkeypatch.setattr(cli.Path, "home", lambda: home)
+    monkeypatch.setattr(cli, "_restic_env", lambda: {})
+
+    def unreadable(*_a):
+        raise subprocess.CalledProcessError(1, ["restic", "snapshots"])
+
+    monkeypatch.setattr(cli, "_restic_json", unreadable)
+    monkeypatch.setattr(cli, "_windows_all_hosts", lambda: ["win-a", "win-b"])
+    calls = []
+
+    def windows(_env, host, *_a, **_kw):
+        calls.append(host)
+        if host == "win-a":
+            raise ValueError("unreadable snapshot listing")
+        return 0
+
+    monkeypatch.setattr(cli, "_verify_windows", windows)
+    assert cli.main(["verify"]) == 3
+    output = capsys.readouterr()
+    assert "FAIL local: unreadable" in output.err
+    assert "FAIL pulled: win-a: unreadable" in output.err
+    assert calls == ["win-a", "win-b"]
+    assert json.loads(output.out.splitlines()[-1])["verdicts"] == {
+        "local": "fail",
+        "pulled": "fail",
+        "retention": "pass",
+    }
