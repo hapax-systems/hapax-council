@@ -58,7 +58,7 @@ import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -1577,7 +1577,9 @@ def constitute_with_substitution(
             "prompt_limit_bytes": seat_limits[f"{family}-1"]["prompt_limit_bytes"],
         }
         for family in roster
-        if prompt_bytes_by_seat is not None
+        if family not in outage_families
+        and family not in route_blocked_families
+        and prompt_bytes_by_seat is not None
         and f"{family}-1" in prompt_bytes_by_seat
         and prompt_bytes_by_seat[f"{family}-1"] > seat_limits[f"{family}-1"]["prompt_limit_bytes"]
     }
@@ -4483,6 +4485,20 @@ def _apply_review(
             "family_substitution": substitution,
             "next_action": "split the PR or reconstitute with eligible seats",
         }
+    # Sign the redacted packet, including nested signature-like keys.
+    replay_inputs = {
+        **prompt_inputs,
+        "pr_info": asdict(redacted_pr_info),
+        "prior_file_excerpts": reviewer_source_excerpts,
+    }
+    note_hashes = {
+        path.name: review_team.constitution_note_sha256(text) for path, text in note_texts.items()
+    }
+    substitution["replay_inputs"] = {
+        "inputs": replay_inputs,
+        "constitution_note_hashes": note_hashes,
+        "sha256": review_team.prompt_replay_digest(replay_inputs, note_hashes),
+    }
     plan["seats"] = [{"id": seat.id, "family": seat.family} for seat in constitution.seats]
     plan["quorum_required"] = constitution.quorum_required
     plan["constitution_notes"] = list(constitution.notes)

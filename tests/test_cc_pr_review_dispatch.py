@@ -8,6 +8,7 @@ produced dossier and admits with it.
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import logging
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import threading
 from datetime import date
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
@@ -294,6 +296,28 @@ class RecordingReviewers:
 
 
 class TestSizeRefusalIsolation:
+    @pytest.mark.parametrize("unavailable", ["outage", "route"])
+    def test_prompt_proof_excludes_only_candidate_families(self, unavailable):
+        registry = dispatch.review_team.load_lens_registry()
+        inputs = dispatch.ConstitutionInputs(
+            outage_families=frozenset({"vibe"}) if unavailable == "outage" else frozenset(),
+            outage_witness={},
+            walls={},
+            wall_error=None,
+            causes={},
+        )
+        _, substitution, error = dispatch.constitute_with_substitution(
+            "t2_standard",
+            "claude",
+            registry,
+            inputs,
+            {"vibe": ("unavailable",)} if unavailable == "route" else {},
+            pr_number=42,
+            prompt_bytes_by_seat={"vibe-1": 100_000},
+        )
+        assert error is None
+        assert "vibe" not in substitution["excluded_for_prompt"]
+
     @pytest.mark.parametrize(
         ("family", "returncode", "stdout", "text"),
         [
@@ -661,6 +685,361 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
     path = tmp_path / "review-lenses-registry.yaml"
     path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
     return path
+
+
+class TestCompletePromptProof:
+    @pytest.fixture(autouse=True)
+    def signing_key(self, monkeypatch):
+        monkeypatch.setenv(
+            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            "synthetic-replay-signing-key",
+        )
+
+    def capacity_calls(self, tmp_path, note, gh, runner, route=None):
+        head, files = gh.head_sha, list(gh.files)
+
+        def admit(note):
+            fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+            return dispatch.review_team.review_dossier_validity_blockers(
+                fm,
+                note,
+                pr_head_sha=head,
+                pr_number=42,
+                changed_files=files,
+                changed_file_count=len(files),
+                outage_state_path=dispatch.FAMILY_OUTAGE_STATE,
+                route_blocked_families={},
+            )
+
+        def scan(reviewers):
+            return dispatch.review_pr(
+                42,
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                vault_root=note.parent.parent,
+                apply=True,
+                gh_runner=runner,
+                reviewer_runner=reviewers,
+                wake_dir=tmp_path / "wake",
+                send_runner=lambda cmd: None,
+                now_iso="2030-01-01T00:00:00+00:00",
+                route_blocked_families={},
+                route=route,
+            )
+
+        return admit, scan
+
+    @pytest.fixture
+    def inventory(self, tmp_path, monkeypatch):
+        files = [f"shared/file_{index}.py" for index in range(101)]
+        gh = FakeGh(files=files, changed_files_count=101)
+        gh.body = "synthetic PR body " * 2200
+        state = {"rest": "healthy", "change_after_diff": None}
+        calls = []
+        original_run = subprocess.run
+
+        def runner(cmd, **kwargs):
+            if cmd[0] != "gh":
+                return original_run(cmd, **kwargs)
+            calls.append(list(cmd))
+            if cmd == ["gh", "api", "-i", "rate_limit"]:
+                pools = {
+                    "core": {"remaining": 0 if state["rest"] == "blocked" else 3000},
+                    "graphql": {"remaining": 4900},
+                }
+                for pool in pools.values():
+                    pool.update(limit=5000, reset=4_000_000_000)
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({"resources": pools}), "")
+            if cmd[:3] == ["gh", "pr", "view"]:
+                payload = json.loads(gh(cmd, **kwargs).stdout)
+                payload["files"] = payload["files"][:100]
+                return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            if cmd[:2] == ["gh", "api"]:
+                assert state["rest"] != "blocked", f"ineligible REST recovery: {cmd}"
+                if state["rest"] == "unavailable":
+                    return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+                if cmd[6].endswith("/files"):
+                    if state["rest"] == "files_unavailable":
+                        return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+                    rows = json.loads(gh(cmd, **kwargs).stdout)
+                    if state["rest"] == "truncated":
+                        rows = rows[:100]
+                    page = int(next(x.split("=", 1)[1] for x in cmd if x.startswith("page=")))
+                    return subprocess.CompletedProcess(
+                        cmd, 0, json.dumps(rows[(page - 1) * 100 : page * 100]), ""
+                    )
+            if (
+                cmd[:3] == ["gh", "pr", "diff"] or "Accept: application/vnd.github.v3.diff" in cmd
+            ) and state["change_after_diff"]:
+                if state["change_after_diff"] == "head":
+                    gh.head_sha = "d" * 40
+                elif state["change_after_diff"] == "body":
+                    gh.body += " changed context"
+                else:
+                    gh.files[-1] = "shared/changed.py"
+            return gh(cmd, **kwargs)
+
+        monkeypatch.setattr(dispatch.review_team.subprocess, "run", runner)
+        route = dispatch.ListingRoute("graphql", False, "synthetic healthy pools")
+        result, _, _, note = _review(
+            tmp_path,
+            gh_runner=runner,
+            route=route,
+            now_iso="2030-01-01T00:00:00+00:00",
+        )
+        assert result["status"] == "dispatched", result
+        assert "vibe" in result["dossier"]["family_substitution"]["excluded_for_prompt"]
+        assert result["dossier"]["family_substitution"]["replay_inputs"]["inputs"]["pr_info"][
+            "files"
+        ] == tuple(files)
+        calls.clear()
+        admit, scan = self.capacity_calls(tmp_path, note, gh, runner, route)
+        return partial(admit, note), scan, state, calls
+
+    def test_paginated_inventory_admits(self, inventory):
+        admit, _, _, calls = inventory
+        assert admit() == ()
+        assert any(cmd[:3] == ["gh", "pr", "view"] for cmd in calls)
+        assert any("page=2" in cmd for cmd in calls)
+
+    def test_paginated_inventory_reuses_dossier(self, inventory):
+        _, scan, _, _ = inventory
+        reviewers = RecordingReviewers()
+        result = scan(reviewers)
+        assert result["status"] == "skipped_fresh"
+        assert reviewers.invocations == []
+
+    @pytest.mark.parametrize("rest", ["blocked", "unavailable", "files_unavailable", "truncated"])
+    def test_inventory_recovery_failure_refuses(self, inventory, rest):
+        admit, _, state, _ = inventory
+        state["rest"] = rest
+        assert "review_dossier_capacity_evidence_unavailable" in admit()
+
+    @pytest.mark.parametrize("change", ["head", "body", "files"])
+    def test_changed_second_read_refuses(self, inventory, change):
+        admit, _, state, _ = inventory
+        assert admit() == ()
+        state["change_after_diff"] = change
+        assert "review_dossier_capacity_evidence_unavailable" in admit()
+
+    @pytest.fixture(params=[("prompt", False), ("diff", False), ("prompt", True), ("diff", True)])
+    def peers(self, request, tmp_path, monkeypatch):
+        exclusion, local = request.param
+        vault = _make_vault(tmp_path)
+        notes = [_write_task(vault, task_id=f"task-{suffix}") for suffix in ("a", "b")]
+        gh = FakeGh()
+        if exclusion == "prompt":
+            gh.body = "synthetic PR body " * 2200
+        else:
+            # Isolate diff exclusion without making every candidate exceed its prompt cap.
+            registry = dispatch.review_team.load_lens_registry()
+            registry["diff_capacity"]["seats"]["vibe-1"].update(limit_bytes=1024, status="measured")
+            registry_path = tmp_path / "registry.yaml"
+            registry_path.write_text(yaml.safe_dump(registry))
+            monkeypatch.setattr(dispatch.review_team, "DEFAULT_REGISTRY_PATH", registry_path)
+            gh.diff += "+" + "x" * 1024 + "\n"
+        original_run = subprocess.run
+
+        def reads(cmd, **kwargs):
+            if local:
+                assert cmd[:3] != ["gh", "pr", "diff"]
+                assert "Accept: application/vnd.github.v3.diff" not in cmd
+            return gh(cmd, **kwargs) if cmd[0] == "gh" else original_run(cmd, **kwargs)
+
+        monkeypatch.setattr(dispatch.review_team.subprocess, "run", reads)
+        if local:
+            monkeypatch.setattr(
+                dispatch,
+                "fetch_pr_diff_from_local",
+                lambda *_a, **_k: dispatch.PrDiff(
+                    gh.diff, source="local-git", comparison_base="b" * 40
+                ),
+            )
+
+        route = dispatch.ListingRoute("graphql", True, "fixture") if local else None
+        admit, scan = self.capacity_calls(tmp_path, notes[0], gh, reads, route)
+
+        result = scan(RecordingReviewers())
+        assert result["status"] == "multi_dispatched"
+        field = "excluded_for_prompt" if exclusion == "prompt" else "excluded_for_size"
+        assert all(
+            "vibe" in item["dossier"]["family_substitution"][field] for item in result["results"]
+        )
+
+        return notes, admit, scan
+
+    def test_nonmember_dossier_refuses(self, peers):
+        notes, admit, _ = peers
+        assert admit(notes[0]) == ()
+        outsider = _write_task(notes[0].parent.parent, task_id="task-c")
+        outsider.write_text(outsider.read_text().replace("status: pr_open", "status: done"))
+        rt = dispatch.review_team
+        dossier = yaml.safe_load(rt.review_dossier_path(notes[0], "task-a").read_text())
+        dossier["task_id"] = "task-c"
+        dossier["constitution_note_sha256"] = rt.constitution_note_sha256(outsider.read_text())
+        dispatch._sign_public_gate_authority_evidence(dossier)
+        rt.review_dossier_path(outsider, "task-c").write_text(yaml.safe_dump(dossier))
+        assert "review_dossier_capacity_evidence_unavailable" in admit(outsider)
+
+    @pytest.mark.parametrize("change", ["content", "frontmatter", "added", "removed"])
+    def test_changed_peer_refuses(self, peers, change):
+        notes, admit, _ = peers
+        assert admit(notes[0]) == ()
+        peer = notes[1]
+        if change == "content":
+            stamp = peer.stat()
+            peer.write_text(peer.read_text() + "\nChanged peer context.\n")
+            os.utime(peer, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        elif change == "frontmatter":
+            peer.write_text(peer.read_text().replace("status: pr_open", "status: blocked"))
+        elif change == "added":
+            _write_task(peer.parent.parent, task_id="task-c")
+        else:
+            peer.unlink()
+        assert "review_dossier_capacity_evidence_unavailable" in admit(notes[0])
+
+    @pytest.mark.parametrize("edit", [False, True])
+    def test_peer_dossiers_admit_and_reuse(self, peers, edit):
+        notes, admit, scan = peers
+        assert all(admit(note) == () for note in notes)
+        for note in notes if edit else []:
+            note.write_text(
+                note.read_text().replace(
+                    "exit_predicate:",
+                    "release_finding_dispositions:\n- disposition: deferred\nexit_predicate:",
+                )
+            )
+            os.utime(note, (1_893_456_001, 1_893_456_001))
+        assert all(admit(note) == () for note in notes)
+        reviewers = RecordingReviewers()
+        assert scan(reviewers)["status"] == "multi_skipped_fresh"
+        assert reviewers.invocations == []
+
+    def test_missing_peer_hash_refuses(self, peers):
+        notes, admit, _ = peers
+        assert admit(notes[0]) == ()
+        path = dispatch.review_team.review_dossier_path(notes[0], notes[0].stem)
+        original = yaml.safe_load(path.read_text())
+        for signed in (False, True):
+            dossier = copy.deepcopy(original)
+            binding = dossier["family_substitution"]["replay_inputs"]
+            binding["constitution_note_hashes"].pop(notes[1].name)
+            if signed:
+                binding["sha256"] = dispatch.review_team.prompt_replay_digest(
+                    binding["inputs"], binding["constitution_note_hashes"]
+                )
+                dispatch._sign_public_gate_authority_evidence(dossier)
+            path.write_text(yaml.safe_dump(dossier))
+            assert "review_dossier_capacity_evidence_unavailable" in admit(notes[0])
+
+    @pytest.mark.parametrize("excess", ["body", "excerpt"])
+    def test_exact_replay_and_tampering(self, excess, tmp_path, monkeypatch):
+        rel = "scripts/hapax-glmcp-reviewer"
+        source = "\n\n".join(
+            f"def {name}():\n"
+            + ("    # " + "synthetic evidence " * 4 + "\n") * 20
+            + "    return True\n"
+            for name in dispatch._REVIEW_SOURCE_EXCERPT_SYMBOLS[rel]
+        )
+        head = TestApply._git_repo_with_commit(tmp_path, rel, source)
+        gh = FakeGh(files=[rel] if excess == "excerpt" else ["shared/foo.py"], head_sha=head)
+        gh.body = "synthetic PR body " * 2200 if excess == "body" else "body" * 3000
+        original_run = subprocess.run
+
+        def reads(cmd, **kwargs):
+            return gh(cmd, **kwargs) if cmd[0] == "gh" else original_run(cmd, **kwargs)
+
+        monkeypatch.setattr(dispatch.review_team.subprocess, "run", reads)
+        monkeypatch.setattr(dispatch.review_team, "REPO_ROOT", tmp_path)
+        rendered = {}
+        render = dispatch.render_reviewer_prompt
+
+        def remember(**kwargs):
+            prompt = render(**kwargs)
+            rendered.setdefault(kwargs["seat"].id, prompt)
+            return prompt
+
+        monkeypatch.setattr(dispatch, "render_reviewer_prompt", remember)
+        result, _, _, note = _review(
+            tmp_path,
+            repo_root=tmp_path,
+            gh=gh,
+            now_iso="2030-01-01T00:00:00+00:00",
+        )
+        assert result["status"] == "dispatched"
+        dossier = result["dossier"]
+        assert "vibe" in dossier["family_substitution"]["excluded_for_prompt"]
+        fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+        expected = len(rendered["vibe-1"].encode())
+
+        def measure():
+            return dispatch.review_team._live_capacity_evidence(
+                42,
+                head,
+                ("vibe-1",),
+                note_path=note,
+                frontmatter=fm,
+                registry=dispatch.review_team.load_lens_registry(),
+                constituted_at=dossier["constituted_at"],
+                dossier=dossier,
+            )
+
+        assert measure() == (len(gh.diff.encode()), {"vibe-1": expected})
+        saved = copy.deepcopy(dossier)
+        dossier["family_substitution"].pop("replay_inputs")
+        dispatch._sign_public_gate_authority_evidence(dossier)
+        assert measure() is None  # signed legacy proof is incomplete
+        dossier.clear()
+        dossier.update(copy.deepcopy(saved))
+        forged = dossier["family_substitution"]["replay_inputs"]
+        forged["inputs"]["prior_file_excerpts"] += " forged source evidence"
+        forged["sha256"] = dispatch.review_team.prompt_replay_digest(
+            forged["inputs"], forged["constitution_note_hashes"]
+        )
+        assert measure() is None  # HMAC binds the renderer inputs
+        dossier.clear()
+        dossier.update(saved)
+        # The input digest must bind nested keys omitted by the HMAC canonicalizer.
+        original = copy.deepcopy(dossier)
+        binding = dossier["family_substitution"]["replay_inputs"]
+        binding["inputs"]["prior_criticals"] = [{"title": "fixture", "signature": "original"}]
+        binding["sha256"] = dispatch.review_team.prompt_replay_digest(
+            binding["inputs"], binding["constitution_note_hashes"]
+        )
+        dispatch._sign_public_gate_authority_evidence(dossier)
+        assert measure() is not None
+        binding["inputs"]["prior_criticals"][0]["signature"] = "forged bytes"
+        assert dispatch.public_gate_receipts.public_gate_authority_evidence_signed(
+            dossier, "synthetic-replay-signing-key"
+        )
+        assert measure() is None
+        dossier.clear()
+        dossier.update(original)
+        gh.body += " changed body"
+        changed = measure()
+        assert changed is None or changed[1]["vibe-1"] != expected
+        gh.body = gh.body.removesuffix(" changed body")
+        gh.head_sha = "d" * 40
+        assert measure() is None
+        gh.head_sha = head
+        os.utime(note, (1_893_456_001, 1_893_456_001))  # one second after constitution
+        assert measure() is None
+
+    def test_binding_redacts_canary(self, tmp_path, monkeypatch):
+        canary = "sk-synthetic-replay-canary-1234567890"  # pragma: allowlist secret
+        monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *_: [canary])
+        gh = FakeGh()
+        gh.body = f"body with {canary}"
+        gh.title = f"title with {canary}"
+        gh.diff += f"+removed credential {canary}\n"
+        result, _, reviewers, _ = _review(
+            tmp_path, gh=gh, task_kwargs={"exit_predicate": f"fixture {canary}"}
+        )
+        assert result["status"] == "dispatched"
+        binding = json.dumps(result["dossier"]["family_substitution"]["replay_inputs"])
+        assert canary not in binding
+        assert "[REDACTED:" in binding
+        assert all(canary not in prompt for _, _, prompt in reviewers.invocations)
 
 
 class TestDryRun:
