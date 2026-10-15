@@ -1,6 +1,7 @@
 """Unit checks for the scanner's dormant detector and AST policy."""
 
 import ast
+import time
 from pathlib import Path
 
 import pytest
@@ -238,6 +239,41 @@ def test_keyword_credential_reads_keep_their_classification(line: str) -> None:
     findings, _allowed, parsed = _node_findings_for_postimage("app.py", f"{line}\n", {1})
     assert parsed
     assert "credential-env-read" in [item.kind for item in findings]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        'os.getenv(default=None, key="OPENAI_API_KEY")',
+        "os.environ.get(default='', key='ANTHROPIC_API_KEY')",
+        'os.environ.setdefault(default="x", key="OPENAI_API_KEY")',
+        'os.getenv(default=str(), key="OPENAI_API_KEY")',
+    ],
+)
+def test_reordered_keyword_reads_survive_the_unparseable_text_fallback(call: str) -> None:
+    source = f"v = {call}\nbroken = (\n"
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1, 2})
+    assert not parsed and not findings and not allowed
+    assert "credential-env-read" in _text_classes(f"v = {call}")
+
+
+def test_reordered_keyword_read_of_a_non_credential_is_not_a_finding() -> None:
+    assert "credential-env-read" not in _text_classes('os.getenv(default=None, key="PATH")')
+
+
+def test_nested_read_before_a_keyword_still_finds_the_outer_key() -> None:
+    line = 'v = os.getenv(default=os.getenv("HOME"), key="OPENAI_API_KEY")'
+    assert "credential-env-read" in _text_classes(line)
+    assert "credential-env-read" in _text_classes(
+        'os.getenv(default=os.environ, key="OPENAI_API_KEY")'
+    )
+
+
+def test_keyword_scan_stays_linear_on_repeated_call_openings() -> None:
+    # Quadratic scanning takes about 10 s here; a linear scan takes milliseconds.
+    started = time.perf_counter()
+    assert _text_classes("os.getenv(" * 20_000) == ()
+    assert time.perf_counter() - started < 2.0
 
 
 def test_a_delimited_proxy_host_receives_no_exemption() -> None:

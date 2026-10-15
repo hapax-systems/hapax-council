@@ -98,6 +98,15 @@ _ENV_READ_CANDIDATE_RE = re.compile(
     r"process\.env(?:\.|\[))\s*(?:key\s*=\s*)?[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
+#: A `key=` keyword in any argument position. The scan does not stop at the first
+#: `)`, so an earlier `default=str()` cannot end the call early. It stops at the next
+#: env-read opening instead, which keeps it linear: that opening scans the rest.
+_ENV_READ_OPENING = r"(?:os\.environ\s*\.(?:get|setdefault)|os\.getenv)\s*\("
+_ENV_READ_KEYWORD_CANDIDATE_RE = re.compile(
+    rf"\b{_ENV_READ_OPENING}(?:(?!{_ENV_READ_OPENING})[^\n])*?\bkey\s*=\s*"
+    r"[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
 _ENV_BINDING_CANDIDATE_RES = (
     re.compile(r"(?:^|[\s;])(?:export\s+)?(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*=[^=]", re.I),
     re.compile(r"^\s*-?\s*[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)[\"']?\s*:", re.I),
@@ -223,6 +232,7 @@ def _has_provider_url(content: str) -> bool:
 
 def _has_credential_env_name(content: str) -> bool:
     candidates = [*_ENV_READ_CANDIDATE_RE.finditer(content)]
+    candidates.extend(_ENV_READ_KEYWORD_CANDIDATE_RE.finditer(content))
     for pattern in _ENV_BINDING_CANDIDATE_RES:
         candidates.extend(pattern.finditer(content))
     return any(_credential_name_matches(match.group("name")) for match in candidates)
