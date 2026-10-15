@@ -332,6 +332,7 @@ import re
 import stat
 import sys
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
 
 import yaml
@@ -385,6 +386,10 @@ def artifact_binds_task(path):
     return data.get("task_id") == task
 
 
+class ScanLimitExceeded(ValueError):
+    pass
+
+
 try:
     data = mapping(Path(note), frontmatter=True)
     scopes = data.get("mutation_scope_refs")
@@ -392,38 +397,48 @@ try:
         raise ValueError("missing mutation_scope_refs list")
     inspected = 0
     for scope in scopes:
-        if not isinstance(scope, str) or not scope.strip():
-            raise ValueError("invalid scope path")
-        path = Path(scope).expanduser()
-        if not path.is_absolute():
-            path = vault / path
-        if path.is_symlink() or not path.resolve().is_relative_to(vault):
-            raise ValueError("scope is a symlink or outside the vault")
+        try:
+            if not isinstance(scope, str) or not scope.strip():
+                raise ValueError("invalid scope path")
+            path = Path(scope).expanduser()
+            if not path.is_absolute():
+                path = vault / path
+            if path.is_symlink() or not path.resolve().is_relative_to(vault):
+                raise ValueError("scope is a symlink or outside the vault")
+        except (OSError, ValueError, UnicodeError) as exc:
+            errors.append(f"artifacts:{type(exc).__name__}")
+            continue  # an invalid scope must not hide another scope's evidence
         pending = [path]
         while pending:
             current = pending.pop()
             inspected += 1
             if inspected > 10000:
-                raise ValueError("scope scan exceeds 10000 entries")
+                raise ScanLimitExceeded("scope scan exceeds 10000 entries")
             try:
-                info = current.lstat()
-            except FileNotFoundError:
-                continue  # a not-yet-created artifact supplies no freshness
-            if stat.S_ISLNK(info.st_mode):
-                raise ValueError("scope contains a symlink")
-            if stat.S_ISDIR(info.st_mode):
-                with os.scandir(current) as entries:
-                    for entry in entries:
-                        pending.append(Path(entry.path))
-                        if len(pending) + inspected > 10000:
-                            raise ValueError("scope scan exceeds 10000 entries")
-            elif stat.S_ISREG(info.st_mode):
-                if info.st_mtime > now + 1:
-                    raise ValueError("artifact timestamp is in the future")
-                if info.st_mtime >= cutoff and artifact_binds_task(current):
-                    fresh.append(f"artifact={current}")
-            else:
-                raise ValueError("scope contains a non-file artifact")
+                try:
+                    info = current.lstat()
+                except FileNotFoundError:
+                    continue  # a not-yet-created artifact supplies no freshness
+                if stat.S_ISLNK(info.st_mode):
+                    raise ValueError("scope contains a symlink")
+                if stat.S_ISDIR(info.st_mode):
+                    with os.scandir(current) as entries:
+                        for entry in entries:
+                            pending.append(Path(entry.path))
+                            if len(pending) + inspected > 10000:
+                                raise ScanLimitExceeded("scope scan exceeds 10000 entries")
+                elif stat.S_ISREG(info.st_mode):
+                    if info.st_mtime > now + 1:
+                        raise ValueError("artifact timestamp is in the future")
+                    if info.st_mtime >= cutoff and artifact_binds_task(current):
+                        fresh.append(f"artifact={current}")
+                else:
+                    raise ValueError("scope contains a non-file artifact")
+            except ScanLimitExceeded:
+                raise  # the global budget still bounds the whole artifact scan
+            except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
+                errors.append(f"artifacts:{type(exc).__name__}")
+                continue  # a bad entry must not hide another artifact's evidence
 except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
     errors.append(f"artifacts:{type(exc).__name__}")
 
@@ -458,7 +473,7 @@ except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
 try:
     registry = Path(registry_root)
     try:
-        records = list(registry.iterdir())
+        records = list(islice(registry.iterdir(), 10001))
     except FileNotFoundError:
         records = []
     if len(records) > 10000:
@@ -466,10 +481,14 @@ try:
     for record in records:
         if record.suffix != ".json":
             continue
-        data = mapping(record)
-        if data.get("role") == role and data.get("task_id") == task:
-            if timestamp(data.get("last_heartbeat")) >= cutoff:
-                fresh.append(f"heartbeat={record}")
+        try:
+            data = mapping(record)
+            if data.get("role") == role and data.get("task_id") == task:
+                if timestamp(data.get("last_heartbeat")) >= cutoff:
+                    fresh.append(f"heartbeat={record}")
+        except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
+            errors.append(f"heartbeat:{type(exc).__name__}")
+            continue  # another lane's corrupt record cannot hide a fresh match
 except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
     errors.append(f"heartbeat:{type(exc).__name__}")
 
