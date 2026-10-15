@@ -211,6 +211,8 @@ _gh_pr_is_open() {
   # safe: retain the claim unless GitHub positively confirms the PR is closed/
   # merged). Returns 1 ONLY when gh succeeds and the state is MERGED or CLOSED.
   #
+  # Optional $2 also protects MERGED for vault research awaiting activation.
+  # Other callers retain their existing OPEN/DRAFT-only policy.
   # Safety invariant (class #5): collapsing a lookup failure into "not open"
   # would let the audit erase live open-PR claims when gh is unavailable,
   # unauthenticated, rate-limited, or the network is down.
@@ -224,7 +226,8 @@ _gh_pr_is_open() {
     --jq 'if .state == "closed" and (.merged == true or .merged_at != null) then "MERGED" elif .state == "closed" then "CLOSED" elif .draft == true then "DRAFT" elif .state == "open" then "OPEN" else "" end' \
     2>/dev/null || true)"
   case "$state" in
-    MERGED|CLOSED) return 1 ;;  # positively confirmed not-open
+    MERGED) [ "${2:-false}" = true ] && return 0; return 1 ;;
+    CLOSED) return 1 ;;         # positively confirmed closed without merge
     OPEN|DRAFT) return 0 ;;     # positively confirmed open
     *)
       # Empty/unknown state (rate limit, network error, auth failure).
@@ -300,14 +303,32 @@ _is_codexish_role() {
   esac
 }
 
-# Research artifacts do not produce PRs. Return FRESH, STALE or UNKNOWN using
-# the existing row scope, relay and worktree heartbeat records. Only STALE may
-# reach the ordinary release preflight; failed/partial reads retain and report.
+# A merge does not complete activation/acceptance. The explicit witness state
+# protects every surface; a vault_docs PR remains protected until ordinary
+# task closure, including when its row has not yet caught up with the merge.
+# Apply this before both row release and cache-only cleanup.
+_claim_waits_for_activation() {
+  local note="$1" pr repo
+  [ "$(_fm_value status "$note")" = merged_awaiting_runtime_witness ] && return 0
+  [ "$(_fm_value mutation_surface "$note")" = vault_docs ] || return 1
+  pr="$(_fm_value pr "$note")"
+  [ -n "$pr" ] && [ "$pr" != null ] || return 1
+  repo="$(_fm_value pr_repo "$note")"
+  local GH_REPO_SLUG="${GH_REPO_SLUG}"
+  [ -z "$repo" ] || [ "$repo" = null ] || GH_REPO_SLUG="$repo"
+  _gh_pr_is_open "$pr" true
+}
+
+# Research artifacts do not require PRs. Only task-bound artifacts inside the
+# existing row scope, relay and worktree heartbeat records count as freshness.
+# Failed/partial reads report UNKNOWN; the caller bounds that grace by claim
+# age (stale threshold plus six hours), without a new persistent state store.
 _vault_docs_freshness_for() {
   timeout 5s python3 - "$1" "$2" "$3" "$VAULT_ROOT" "$RELAY_STATE_DIR" \
     "${HAPAX_WORKTREE_REGISTRY_DIR:-$HOME/.cache/hapax/worktree-registry}" "$now_epoch" <<'PYEOF'
 import json
 import os
+import re
 import stat
 import sys
 from datetime import datetime
@@ -349,6 +370,21 @@ def timestamp(value):
     return when.timestamp()
 
 
+def artifact_binds_task(path):
+    relative = path.relative_to(vault)
+    if task in relative.parts[:-1]:  # an exact task-named folder, not a prefix
+        return True
+    if re.search(r"(?<![A-Za-z0-9])" + re.escape(task) + r"(?![A-Za-z0-9])", path.name):
+        return True
+    if path.suffix.lower() != ".md":
+        return False
+    try:
+        data = mapping(path, frontmatter=True)
+    except (ValueError, UnicodeError, yaml.YAMLError):
+        return False  # unbound prose/malformed frontmatter supplies no signal
+    return data.get("task_id") == task
+
+
 try:
     data = mapping(Path(note), frontmatter=True)
     scopes = data.get("mutation_scope_refs")
@@ -384,7 +420,7 @@ try:
             elif stat.S_ISREG(info.st_mode):
                 if info.st_mtime > now + 1:
                     raise ValueError("artifact timestamp is in the future")
-                if info.st_mtime >= cutoff:
+                if info.st_mtime >= cutoff and artifact_binds_task(current):
                     fresh.append(f"artifact={current}")
             else:
                 raise ValueError("scope contains a non-file artifact")
@@ -406,7 +442,15 @@ try:
         if task in bindings:
             if bindings != {task}:
                 raise ValueError("conflicting relay task bindings")
-            if timestamp(data.get("updated")) >= cutoff:
+            times = []
+            for key in ("updated", "updated_at", "timestamp"):
+                try:
+                    times.append(timestamp(data.get(key)))
+                except (ValueError, OverflowError):
+                    continue
+            if not times:
+                raise ValueError("relay has no usable freshness timestamp")
+            if max(times) >= cutoff:
                 fresh.append(f"relay={relay}")
 except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
     errors.append(f"relay:{type(exc).__name__}")
@@ -434,7 +478,7 @@ if fresh:
 elif errors:
     print("UNKNOWN " + ",".join(errors))
 else:
-    print("STALE no scoped artifact or bound relay/heartbeat within 2h")
+    print("STALE no task-bound artifact or relay/heartbeat within 2h")
 PYEOF
 }
 
@@ -1371,6 +1415,11 @@ for note in "$VAULT_ROOT/active/"*.md; do
   quota_evidence=""
   claim_matches=false
 
+  if _claim_waits_for_activation "$note"; then
+    printf 'ACTIVATION_OR_PR_PROTECTED: %s assigned=%s; note and cache retained\n' "$task_id" "$assigned"
+    continue
+  fi
+
   if ! _is_unassigned_role "$assigned"; then
     claim_file="$(_claim_file_for "$assigned")"
     claimed_task="$(_claim_file_task "$claim_file")"
@@ -1459,6 +1508,7 @@ for note in "$VAULT_ROOT/active/"*.md; do
 
   _is_codexish_role "$assigned" || continue
 
+  claimed_epoch=0
   if [ -n "$claimed_at" ] && [ "$claimed_at" != "null" ]; then
     claimed_epoch=$(date -d "$claimed_at" +%s 2>/dev/null || echo 0)
     age=$((now_epoch - claimed_epoch))
@@ -1482,8 +1532,16 @@ for note in "$VAULT_ROOT/active/"*.md; do
           ;;
         STALE\ *) ;;
         *)
-          _record_coherence "VAULT_DOCS_UNKNOWN: ${task_id} assigned=${assigned} ${freshness}; retained; next action: repair the scope or lane freshness read, then rerun the audit"
-          continue
+          # Bound unreadable evidence without letting a touched malformed
+          # relay extend the grace. Fresh evidence above always wins. A missing
+          # or invalid claim timestamp cannot establish expiry safely.
+          if [ -n "${claimed_epoch:-}" ] && [ "$claimed_epoch" -gt 0 ] \
+            && [ "$age" -ge "$((stale_threshold + 21600))" ]; then
+            _record_coherence "VAULT_DOCS_UNKNOWN_EXPIRED: ${task_id} assigned=${assigned} ${freshness}; age=$((age / 3600))h unknown_grace=6h beyond stale threshold; ordinary release preflight eligible; next action: repair the freshness evidence"
+          else
+            _record_coherence "VAULT_DOCS_UNKNOWN: ${task_id} assigned=${assigned} ${freshness}; retained; unknown_grace=6h beyond stale threshold; next action: repair the scope or lane freshness read, then rerun the audit"
+            continue
+          fi
           ;;
       esac
     fi
@@ -1565,6 +1623,11 @@ if [ -d "$CLAIM_CACHE_DIR" ]; then
       else
         _record_coherence "CACHE_STALE: $(basename "$claim_file") task=${claimed_task} status=not_active"
       fi
+      continue
+    fi
+
+    if _claim_waits_for_activation "$note"; then
+      printf 'ACTIVATION_OR_PR_PROTECTED: %s cache=%s; note and cache retained\n' "$claimed_task" "$(basename "$claim_file")"
       continue
     fi
 
