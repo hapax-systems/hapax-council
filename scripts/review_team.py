@@ -2486,9 +2486,10 @@ def _capacity_untrusted_block(label: str, value: str, limit: int) -> str:
 def _note_without_release_dispositions(text: str) -> str | None:
     """The note minus its top-level seat-dispositions key, or None when that is not provably all.
 
-    Only the key's own lines go: the key line and the indented or ``-`` lines under it. The
-    remainder must parse to the original frontmatter minus that key, so the removal can never
-    hide another change.
+    Only the key's own lines go: the key line, then indented lines and block-sequence entries
+    (``-`` followed by whitespace). A column-0 ``-status:`` is a mapping key, so it stays and is
+    hashed. The remainder must parse to the original frontmatter minus that key, and since
+    PyYAML collapses duplicate keys, a duplicate top-level key makes the note unprovable.
     """
 
     lines = text.splitlines(keepends=True)
@@ -2502,7 +2503,9 @@ def _note_without_release_dispositions(text: str) -> str | None:
     while index < close:
         if lines[index].startswith(f"{RELEASE_DISPOSITIONS_KEY}:"):
             index += 1
-            while index < close and lines[index][:1] in (" ", "\t", "-"):
+            while index < close and (
+                lines[index][:1] in (" ", "\t") or re.match(r"-(\s|$)", lines[index])
+            ):
                 index += 1
             continue
         kept.append(lines[index])
@@ -2510,9 +2513,15 @@ def _note_without_release_dispositions(text: str) -> str | None:
     if len(kept) == close - 1:
         return text
     try:
+        node = yaml.compose("".join(lines[1:close]), Loader=yaml.SafeLoader)
         original = yaml.safe_load("".join(lines[1:close]))
         remainder = yaml.safe_load("".join(kept))
     except yaml.YAMLError:
+        return None
+    if not isinstance(node, yaml.MappingNode):
+        return None
+    names = [key.value for key, _ in node.value if isinstance(key, yaml.ScalarNode)]
+    if len(names) != len(node.value) or len(set(names)) != len(names):
         return None
     if not isinstance(original, dict) or (remainder or {}) != {
         key: value for key, value in original.items() if key != RELEASE_DISPOSITIONS_KEY

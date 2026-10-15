@@ -1781,6 +1781,45 @@ class TestSeatDispositionKeepsCapacityEvidence:
         assert _CAPACITY_VOID in blockers
         assert rt.constitution_note_sha256(commented) == rt.CONSTITUTION_NOTE_UNPROVABLE
 
+    def test_a_dash_key_cannot_hide_a_change(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # review finding codex-1: "-status:" is a mapping key, and duplicates collapse in PyYAML
+        rt = _load_review_team_module()
+        base = _BASE_NOTE.replace("pr: 99\n", "pr: 99\n-status: original\n")
+        smuggle = "release_finding_dispositions: []\n-status: CHANGED PROMPT CONTENT\n"
+        current = base.replace("exit_predicate:", smuggle + "-status: original\nexit_predicate:", 1)
+        blockers = _capacity_blockers(
+            rt, tmp_path, monkeypatch, current, recorded=_sha(base), mtime="preserved"
+        )
+        assert _CAPACITY_VOID in blockers
+
+    def test_a_dash_key_after_the_block_is_not_removed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        dispatched = _with_dispositions(_BASE_NOTE, _DISPOSITIONS + "-status: original\n")
+        current = dispatched.replace("deferred", "accepted")
+        blockers = _capacity_blockers(
+            rt, tmp_path, monkeypatch, current, mtime="advanced", dispatched=dispatched
+        )
+        assert _CAPACITY_VOID not in blockers
+
+    def test_a_duplicate_top_level_key_is_unprovable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        dispatched = _BASE_NOTE.replace("pr: 99\n", "pr: 99\nstatus: shadowed\n")
+        blockers = _capacity_blockers(
+            rt,
+            tmp_path,
+            monkeypatch,
+            _with_dispositions(dispatched),
+            mtime="preserved",
+            dispatched=dispatched,
+        )
+        assert _CAPACITY_VOID in blockers
+
     def test_dossier_without_hash_keeps_the_mtime_rule(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
