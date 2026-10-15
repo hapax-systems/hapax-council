@@ -1358,6 +1358,302 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs
     )
 
 
+class TestRoutedCapacityReplay:
+    """Exercise admission with real dispatch readers and a hermetic command boundary."""
+
+    def case(self, tmp_path, monkeypatch, *, source="local-git", rest_remaining=0):
+        import hashlib
+
+        rt = _load_review_team_module()
+        dispatch = _load_pr_review_dispatch_module()
+        note = tmp_path / "task-x.md"
+        fm = {"task_id": "task-x", "pr": 99, "pr_repo": "hapax-systems/hapax-council"}
+        note.write_text("---\n" + yaml.safe_dump(fm) + "---\nfixture\n")
+        local = "+new\n" * 10_000
+        remote = "-old\n" * 10_000  # Same byte count cannot establish source identity.
+        state = SimpleNamespace(
+            source=source,
+            rest_remaining=rest_remaining,
+            calls=[],
+            views=0,
+            local=local,
+            remote=remote,
+            base="b" * 40,
+            merge_base="c" * 40,
+            head="a" * 40,
+            after_change={},
+            count=1,
+            files=[{"path": "README.md"}],
+            git_fail=False,
+            remote_fail=False,
+        )
+
+        def runner(cmd, **_kwargs):
+            state.calls.append(cmd)
+            rc, output = 0, ""
+            if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+                output = json.dumps(
+                    {
+                        "resources": {
+                            "core": {
+                                "limit": 5000,
+                                "remaining": state.rest_remaining,
+                                "reset": 2000000000,
+                            },
+                            "graphql": {"limit": 5000, "remaining": 4900, "reset": 2000000000},
+                        }
+                    }
+                )
+            elif cmd[:3] == ["gh", "pr", "view"]:
+                state.views += 1
+                info = dict(
+                    number=99,
+                    title="fixture",
+                    body="body",
+                    baseRefName="main",
+                    baseRefOid=state.base,
+                    headRefName="fixture",
+                    headRefOid=state.head,
+                    changedFiles=state.count,
+                    isDraft=False,
+                    files=state.files,
+                )
+                if state.views > 1:
+                    info.update(state.after_change)
+                output = json.dumps(info)
+            elif cmd[:2] == ["gh", "api"] and "Accept: application/vnd.github+json" in cmd:
+                if "repos/hapax-systems/hapax-council/pulls/99/files" in cmd:
+                    output = json.dumps([{"filename": f["path"]} for f in state.files])
+                elif "repos/hapax-systems/hapax-council/pulls/99" in cmd:
+                    state.views += 1
+                    output = json.dumps(
+                        dict(
+                            number=99,
+                            title="fixture",
+                            body="body",
+                            head={"ref": "fixture", "sha": state.head},
+                            base={"ref": "main", "sha": state.base},
+                            changed_files=state.count,
+                            draft=False,
+                        )
+                    )
+                else:
+                    raise AssertionError(f"unexpected REST endpoint: {cmd}")
+            elif cmd == ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"]:
+                output = state.head
+            elif cmd[:2] == ["git", "fetch"] or cmd[:2] == ["git", "cat-file"]:
+                rc = int(state.git_fail)
+            elif cmd[:2] == ["git", "rev-parse"]:
+                output = state.base if cmd[-1] == "origin/main" else state.head
+            elif cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+                pass
+            elif cmd[:2] == ["git", "merge-base"]:
+                output = state.merge_base
+            elif cmd[:2] == ["git", "diff"]:
+                output = state.local
+            elif cmd[:3] == ["gh", "pr", "diff"] or (
+                cmd[:2] == ["gh", "api"] and "Accept: application/vnd.github.v3.diff" in cmd
+            ):
+                rc, output = int(state.remote_fail), state.remote
+            else:
+                raise AssertionError(f"unexpected external command: {cmd}")
+            return SimpleNamespace(
+                returncode=rc, stdout=output, stderr="fixture failure" if rc else ""
+            )
+
+        monkeypatch.setattr(rt.subprocess, "run", runner)
+        dossier = _synth(
+            rt,
+            [
+                _review(f"{family}-1", family, diff_full_bytes=len(local))
+                for family in ("claude", "codex", "muse")
+            ],
+            constitution_notes=("family_replaced_for_size:gemini", "family_replaced_for_size:glm"),
+        )
+        dossier.update(
+            constituted_at=datetime.now(UTC).isoformat(),
+            diff_source=source,
+            comparison_base=state.merge_base
+            if source == "local-git"
+            else dispatch._GITHUB_DIFF_BASE,
+            diff_sha256=hashlib.sha256(
+                (local if source == "local-git" else remote).encode()
+            ).hexdigest(),
+        )
+
+        def check():
+            rt.review_dossier_path(note, "task-x").write_text(yaml.safe_dump(dossier))
+            return rt.review_dossier_validity_blockers(
+                fm,
+                note,
+                pr_number=99,
+                pr_head_sha="a" * 40,
+                registry=rt.load_lens_registry(),
+                route_blocked_families={},
+            )
+
+        return SimpleNamespace(
+            rt=rt,
+            dispatch=dispatch,
+            note=note,
+            fm=fm,
+            dossier=dossier,
+            state=state,
+            runner=runner,
+            check=check,
+        )
+
+    @pytest.mark.parametrize("mismatch", ["source", "comparison_base", "digest", "missing"])
+    def test_mismatched_diff_provenance_never_verifies(self, tmp_path, monkeypatch, mismatch):
+        c = self.case(tmp_path, monkeypatch, rest_remaining=1000)
+        if mismatch == "source":
+            monkeypatch.setattr(
+                c.dispatch,
+                "fetch_pr_diff_from_local",
+                lambda *_a, **_k: c.dispatch.PrDiff(
+                    c.state.local, source="github-rest", comparison_base=c.state.merge_base
+                ),
+            )
+        elif mismatch == "comparison_base":
+            c.dossier["comparison_base"] = "d" * 40
+        elif mismatch == "digest":
+            c.state.local = "!new\n" * 10_000
+        else:
+            c.dossier.pop("diff_source")
+        assert "review_dossier_capacity_evidence_unavailable" in c.check()
+
+    @pytest.mark.parametrize("remaining", [0, 1000, 5000])
+    def test_local_replay_uses_no_rest_diff_on_repeated_admission(
+        self, tmp_path, monkeypatch, remaining
+    ):
+        c = self.case(tmp_path, monkeypatch, rest_remaining=remaining)
+        for _ in range(2):
+            assert c.check() == ()
+        assert sum(cmd[:2] == ["git", "diff"] for cmd in c.state.calls) == 2
+        assert not any(cmd[:3] == ["gh", "pr", "diff"] for cmd in c.state.calls)
+        assert not any("Accept: application/vnd.github.v3.diff" in cmd for cmd in c.state.calls)
+        if remaining == 0:
+            assert all(
+                cmd[:4] == ["gh", "api", "-i", "rate_limit"]
+                for cmd in c.state.calls
+                if cmd[:2] == ["gh", "api"]
+            )
+
+    @pytest.mark.parametrize("source", ["github-rest", "gh-pr-diff"])
+    def test_remote_source_replay_requires_spendable_rest(self, tmp_path, monkeypatch, source):
+        c = self.case(tmp_path, monkeypatch, source=source, rest_remaining=1000)
+        assert c.check() == ()
+        assert any("Accept: application/vnd.github.v3.diff" in cmd for cmd in c.state.calls) == (
+            source == "github-rest"
+        )
+        assert any(cmd[:3] == ["gh", "pr", "diff"] for cmd in c.state.calls) == (
+            source == "gh-pr-diff"
+        )
+        c.state.calls.clear()
+        c.state.rest_remaining = 0
+        assert "review_dossier_capacity_evidence_unavailable" in c.check()
+        assert not any(cmd[:3] == ["gh", "pr", "diff"] for cmd in c.state.calls)
+        assert all(
+            cmd[:4] == ["gh", "api", "-i", "rate_limit"]
+            for cmd in c.state.calls
+            if cmd[:2] == ["gh", "api"]
+        )
+
+    @pytest.mark.parametrize("failure", ["head", "base", "body", "files", "count", "git", "remote"])
+    def test_metadata_and_reader_failures_refuse(self, tmp_path, monkeypatch, failure):
+        c = self.case(
+            tmp_path,
+            monkeypatch,
+            rest_remaining=1000,
+            source="github-rest" if failure == "remote" else "local-git",
+        )
+        if failure == "head":
+            c.state.head = "d" * 40
+        elif failure == "base":
+            c.state.after_change = {"baseRefOid": "d" * 40}
+        elif failure == "body":
+            c.state.after_change = {"body": "changed during read"}
+        elif failure == "files":
+            c.state.after_change = {"files": [{"path": "OTHER.md"}]}
+        elif failure == "count":
+            c.state.count = 2
+            c.state.rest_remaining = 0
+        elif failure == "git":
+            c.state.git_fail = True
+        else:
+            c.state.remote_fail = True
+        assert "review_dossier_capacity_evidence_unavailable" in c.check()
+        if failure == "git":
+            assert not any(cmd[:3] == ["gh", "pr", "diff"] for cmd in c.state.calls)
+            assert not any("Accept: application/vnd.github.v3.diff" in cmd for cmd in c.state.calls)
+
+    def test_repeated_dispatch_scan_keeps_local_dossier_without_review(self, tmp_path, monkeypatch):
+        c = self.case(tmp_path, monkeypatch)
+        c.fm["risk_tier"] = "T2"
+        c.dossier.update(changed_files=["README.md"], changed_file_count=1)
+        c.rt.review_dossier_path(c.note, "task-x").write_text(yaml.safe_dump(c.dossier))
+        monkeypatch.setattr(c.rt, "find_task_notes", lambda *_a, **_k: [(c.note, c.fm)])
+        monkeypatch.setattr(
+            c.dispatch,
+            "_review_registry_and_route_blocks",
+            lambda *_a: (c.rt.load_lens_registry(), {}),
+        )
+        monkeypatch.setattr(
+            c.dispatch,
+            "constitution_inputs",
+            lambda *_a, **_k: SimpleNamespace(outage_witness={}, outage_families=()),
+        )
+
+        def no_review(*_a, **_k):
+            pytest.fail("a valid current dossier must not dispatch reviewers again")
+
+        monkeypatch.setattr(c.dispatch, "constitute_with_substitution", no_review)
+        for _ in range(2):
+            result = c.dispatch.review_pr(
+                99,
+                repo=c.fm["pr_repo"],
+                repo_root=REPO_ROOT,
+                vault_root=tmp_path,
+                gh_runner=c.runner,
+                reviewer_runner=no_review,
+                route_blocked_families={},
+                route=c.dispatch.ListingRoute("graphql", True, "fixture: REST blocked"),
+            )
+            assert result["status"] == "skipped_fresh"
+        assert all(
+            cmd[:4] == ["gh", "api", "-i", "rate_limit"]
+            for cmd in c.state.calls
+            if cmd[:2] == ["gh", "api"]
+        )
+
+    @pytest.mark.parametrize("note_change", ["disposition", "status", "body"])
+    @pytest.mark.parametrize("wrong_diff", [False, True])
+    def test_constitution_and_diff_bindings_hold_together(
+        self, tmp_path, monkeypatch, note_change, wrong_diff
+    ):
+        c = self.case(tmp_path, monkeypatch)
+        c.dossier["constitution_note_sha256"] = c.rt.constitution_note_sha256(_BASE_NOTE)
+        current = _with_dispositions(_BASE_NOTE)
+        if note_change == "status":
+            current = current.replace("status: in_progress", "status: done")
+        elif note_change == "body":
+            current = current.replace("Body the seats read.", "Changed after dispatch.")
+        c.note.write_text(current)
+        if wrong_diff:
+            c.state.local = "!new\n" * 10_000
+        blockers = c.check()
+        if note_change == "disposition" and not wrong_diff:
+            assert blockers == ()
+            assert any(cmd[:2] == ["git", "diff"] for cmd in c.state.calls)
+        else:
+            assert "review_dossier_capacity_evidence_unavailable" in blockers
+        assert all(
+            cmd[:4] == ["gh", "api", "-i", "rate_limit"]
+            for cmd in c.state.calls
+            if cmd[:2] == ["gh", "api"]
+        )
+
+
 class TestSizeReplacementNoteValidity:
     def test_empty_substitution_does_not_claim_capacity_exclusion(self) -> None:
         rt = _load_review_team_module()
@@ -1377,62 +1673,17 @@ class TestSizeReplacementNoteValidity:
     def test_live_capacity_evidence_binds_diff_head_and_note(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rt = _load_review_team_module()
-        note = tmp_path / "task-x.md"
-        note.write_text("task context", encoding="utf-8")
-        head = "a" * 40
-        view_heads = [head, head]
-        calls = 0
-
-        def gh(cmd: list[str], **_kwargs) -> SimpleNamespace:
-            nonlocal calls
-            calls += 1
-            body = "diff text" if "diff" in cmd else json.dumps({"headRefOid": view_heads.pop(0)})
-            return SimpleNamespace(returncode=0, stdout=body)
-
-        monkeypatch.setattr(rt.subprocess, "run", gh)
-        constituted_at = datetime.now(UTC).isoformat()
-        evidence = rt._live_capacity_evidence(
-            99,
-            head,
-            ("gemini-1",),
-            note_path=note,
-            frontmatter={"pr_repo": "hapax-systems/hapax-council"},
-            registry=rt.load_lens_registry(),
-            constituted_at=constituted_at,
-        )
-        assert calls == 3
-        assert evidence is not None and evidence[0] == len("diff text")
-        assert evidence[1]["gemini-1"] > evidence[0]
-        view_heads[:] = [head, "b" * 40]
-        assert (
-            rt._live_capacity_evidence(
-                99,
-                "a" * 40,
-                ("gemini-1",),
-                note_path=note,
-                frontmatter={"pr_repo": "hapax-systems/hapax-council"},
-                registry=rt.load_lens_registry(),
-                constituted_at=constituted_at,
-            )
-            is None
-        )
-        note.write_text("changed task context", encoding="utf-8")
-        changed_at = datetime.fromisoformat(constituted_at).timestamp() + 1
-        os.utime(note, (changed_at, changed_at))
-        view_heads[:] = [head, head]
-        assert (
-            rt._live_capacity_evidence(
-                99,
-                head,
-                ("gemini-1",),
-                note_path=note,
-                frontmatter={"pr_repo": "hapax-systems/hapax-council"},
-                registry=rt.load_lens_registry(),
-                constituted_at=constituted_at,
-            )
-            is None
-        )
+        c = TestRoutedCapacityReplay().case(tmp_path, monkeypatch)
+        assert c.check() == ()
+        c.state.after_change = {"headRefOid": "b" * 40}
+        assert "review_dossier_capacity_evidence_unavailable" in c.check()
+        c.state.after_change = {}
+        c.note.write_text("changed task context", encoding="utf-8")
+        changed_at = datetime.fromisoformat(c.dossier["constituted_at"]).timestamp() + 1
+        os.utime(c.note, (changed_at, changed_at))
+        c.state.calls.clear()
+        assert "review_dossier_capacity_evidence_unavailable" in c.check()
+        assert c.state.calls == [["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"]]
 
     def test_public_validity_gate_uses_live_prompt_measurer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1640,6 +1891,8 @@ def _capacity_blockers(
     ``dispatched`` constitutes the dossier through synthesis from that note text, as dispatch does.
     """
 
+    routed = TestRoutedCapacityReplay().case(tmp_path, monkeypatch)
+    routed.state.local = "diff text"
     registry = rt.load_lens_registry()
     ceiling = rt.seat_diff_capacity("gemini-1", registry)["prompt_limit_bytes"]
     dossier = _synth(
@@ -1663,6 +1916,11 @@ def _capacity_blockers(
     }
     if recorded is not ...:  # ... leaves the field absent
         dossier["constitution_note_sha256"] = recorded
+    dossier.update(
+        diff_source="local-git",
+        comparison_base=routed.state.merge_base,
+        diff_sha256=_sha(routed.state.local),
+    )
     note = tmp_path / "task-x.md"
     note.write_text(current, encoding="utf-8")
     if mtime == "preserved":  # the edit keeps a pre-constitution mtime: only content can see it
@@ -1670,11 +1928,6 @@ def _capacity_blockers(
         os.utime(note, (before, before))
     rt.review_dossier_path(note, "task-x").write_text(yaml.safe_dump(dossier), encoding="utf-8")
 
-    def gh(cmd: list[str], **_kwargs) -> SimpleNamespace:
-        body = "diff text" if "diff" in cmd else json.dumps({"headRefOid": "a" * 40})
-        return SimpleNamespace(returncode=0, stdout=body)
-
-    monkeypatch.setattr(rt.subprocess, "run", gh)
     return rt.review_dossier_validity_blockers(
         {"task_id": "task-x", "pr": 99, "pr_repo": "hapax-systems/hapax-council"},
         note,
@@ -1794,6 +2047,23 @@ class TestSeatDispositionKeepsCapacityEvidence:
         )
         assert _CAPACITY_VOID in blockers
 
+    def test_nested_flow_disposition_key_is_not_a_top_level_exemption(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # YAML permits a nested flow key at column zero. The line-removal rule alone would
+        # erase it even though only the TOP-LEVEL seat-dispositions field is exempt.
+        nested = "other: {\nrelease_finding_dispositions: original,\nnext: unchanged}\n"
+        dispatched = _BASE_NOTE.replace("exit_predicate:", nested + "exit_predicate:", 1)
+        current = dispatched.replace("dispositions: original", "dispositions: changed")
+        parsed = yaml.safe_load(current.split("---\n")[1])
+        assert parsed["other"]["release_finding_dispositions"] == "changed"
+        assert "release_finding_dispositions" not in parsed
+        rt = _load_review_team_module()
+        blockers = _capacity_blockers(
+            rt, tmp_path, monkeypatch, current, mtime="preserved", dispatched=dispatched
+        )
+        assert _CAPACITY_VOID in blockers
+
     def test_a_dash_key_after_the_block_is_not_removed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1835,17 +2105,10 @@ class TestSeatDispositionKeepsCapacityEvidence:
     def test_a_disposition_never_raises_the_prompt_floor(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rt = _load_review_team_module()
+        routed = TestRoutedCapacityReplay().case(tmp_path, monkeypatch)
+        rt = routed.rt
         registry = rt.load_lens_registry()
-        note = tmp_path / "task-x.md"
-        monkeypatch.setattr(
-            rt.subprocess,
-            "run",
-            lambda cmd, **_k: SimpleNamespace(
-                returncode=0,
-                stdout="diff text" if "diff" in cmd else json.dumps({"headRefOid": "a" * 40}),
-            ),
-        )
+        note = routed.note
 
         def floor(text: str, recorded: str) -> int:
             note.write_text(text, encoding="utf-8")
@@ -1858,6 +2121,7 @@ class TestSeatDispositionKeepsCapacityEvidence:
                 registry=registry,
                 constituted_at="2026-06-11T20:00:00+00:00",
                 constitution_note_sha256=recorded,
+                dossier=routed.dossier,
             )
             assert evidence is not None
             return evidence[1]["gemini-1"]
