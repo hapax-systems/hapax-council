@@ -255,19 +255,6 @@ def test_host_parser_uses_authority_only_or_fails_closed(url: str, expected: str
 @pytest.mark.parametrize(
     "line",
     [
-        "SCAN_REVIEW_BASE=${SCAN_REVIEW_BASE:-https://api.openai.com}",
-        "export SCAN_REVIEW_BASE=${SCAN_REVIEW_BASE:-https://api.anthropic.com}/v1",
-        "provider: {base_url: https://api.openai.com}",
-        "base_urls: [https://api.openai.com]",
-    ],
-)
-def test_language_delimiters_after_a_provider_url_cannot_hide_it(line: str) -> None:
-    assert "provider-api-endpoint" in _text_classes(line)
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
         'v = os.getenv(key="OPENAI_API_KEY")',
         'v = os.environ.get(key="OPENAI_API_KEY")',
         'os.environ.setdefault(key="OPENAI_API_KEY", default="x")',
@@ -291,6 +278,10 @@ def test_keyword_credential_reads_keep_their_classification(line: str) -> None:
         'host: "api.openai.com"',
         "export UPSTREAM='API.OPENAI.COM:443'",
         "Calls go to `api.anthropic.com` directly.",
+        "SCAN_REVIEW_BASE=${SCAN_REVIEW_BASE:-https://api.openai.com}",
+        "export SCAN_REVIEW_BASE=${SCAN_REVIEW_BASE:-https://api.anthropic.com}/v1",
+        "provider: {base_url: https://api.openai.com}",
+        "base_urls: [https://api.openai.com]",
     ],
 )
 def test_a_provider_host_anywhere_on_a_line_is_detected(line: str) -> None:
