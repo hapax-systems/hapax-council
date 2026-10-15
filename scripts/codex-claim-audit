@@ -8,6 +8,7 @@
 #   4. Is the assigned lane quota-blocked by receipt or methodology-dispatch evidence?
 #   5. Is a task's PR still open on GitHub? (never clear a pr_open claim whose PR is open)
 #   6. Is the holder's route capability-blocked beyond tolerance? (_capability_blocker_for)
+#   7. For vault_docs, are scoped artifacts or bound lane signals fresh within 2 h?
 #
 # Reports phantom/quota-blocked claims and optionally releases them (--release).
 #
@@ -297,6 +298,144 @@ _is_codexish_role() {
     cx-*|codex*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# Research artifacts do not produce PRs. Return FRESH, STALE or UNKNOWN using
+# the existing row scope, relay and worktree heartbeat records. Only STALE may
+# reach the ordinary release preflight; failed/partial reads retain and report.
+_vault_docs_freshness_for() {
+  timeout 5s python3 - "$1" "$2" "$3" "$VAULT_ROOT" "$RELAY_STATE_DIR" \
+    "${HAPAX_WORKTREE_REGISTRY_DIR:-$HOME/.cache/hapax/worktree-registry}" "$now_epoch" <<'PYEOF'
+import json
+import os
+import stat
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+
+note, role, task, task_root, relay_root, registry_root, now_raw = sys.argv[1:]
+now = int(now_raw)
+cutoff = now - 7200
+vault = Path(task_root).parent.parent.resolve(strict=True)
+fresh = []
+errors = []
+
+
+def mapping(path, *, frontmatter=False):
+    with path.open("r", encoding="utf-8") as stream:
+        raw = stream.read(65537)
+    if frontmatter:
+        if not raw.startswith("---\n") or "\n---" not in raw[4:]:
+            raise ValueError("missing or oversized frontmatter")
+        raw = raw[4:].split("\n---", 1)[0]
+    elif len(raw) > 65536:
+        raise ValueError("oversized lane record")
+    data = yaml.safe_load(raw)
+    if not isinstance(data, dict):
+        raise ValueError("record is not a mapping")
+    return data
+
+
+def timestamp(value):
+    when = (
+        value
+        if isinstance(value, datetime)
+        else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    )
+    if when.tzinfo is None or when.timestamp() > now + 1:
+        raise ValueError("unusable freshness timestamp")
+    return when.timestamp()
+
+
+try:
+    data = mapping(Path(note), frontmatter=True)
+    scopes = data.get("mutation_scope_refs")
+    if not isinstance(scopes, list) or not scopes:
+        raise ValueError("missing mutation_scope_refs list")
+    inspected = 0
+    for scope in scopes:
+        if not isinstance(scope, str) or not scope.strip():
+            raise ValueError("invalid scope path")
+        path = Path(scope).expanduser()
+        if not path.is_absolute():
+            path = vault / path
+        if path.is_symlink() or not path.resolve().is_relative_to(vault):
+            raise ValueError("scope is a symlink or outside the vault")
+        pending = [path]
+        while pending:
+            current = pending.pop()
+            inspected += 1
+            if inspected > 10000:
+                raise ValueError("scope scan exceeds 10000 entries")
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                continue  # a not-yet-created artifact supplies no freshness
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError("scope contains a symlink")
+            if stat.S_ISDIR(info.st_mode):
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        pending.append(Path(entry.path))
+                        if len(pending) + inspected > 10000:
+                            raise ValueError("scope scan exceeds 10000 entries")
+            elif stat.S_ISREG(info.st_mode):
+                if info.st_mtime > now + 1:
+                    raise ValueError("artifact timestamp is in the future")
+                if info.st_mtime >= cutoff:
+                    fresh.append(f"artifact={current}")
+            else:
+                raise ValueError("scope contains a non-file artifact")
+except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
+    errors.append(f"artifacts:{type(exc).__name__}")
+
+try:
+    relay = Path(relay_root) / f"{role}.yaml"
+    try:
+        data = mapping(relay)
+    except FileNotFoundError:
+        data = None
+    if data is not None:
+        bindings = {
+            str(data[key]) for key in ("task_id", "current_task", "current_claim") if data.get(key)
+        }
+        if not bindings:
+            raise ValueError("relay has no task binding")
+        if task in bindings:
+            if bindings != {task}:
+                raise ValueError("conflicting relay task bindings")
+            if timestamp(data.get("updated")) >= cutoff:
+                fresh.append(f"relay={relay}")
+except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
+    errors.append(f"relay:{type(exc).__name__}")
+
+try:
+    registry = Path(registry_root)
+    try:
+        records = list(registry.iterdir())
+    except FileNotFoundError:
+        records = []
+    if len(records) > 10000:
+        raise ValueError("heartbeat scan exceeds 10000 entries")
+    for record in records:
+        if record.suffix != ".json":
+            continue
+        data = mapping(record)
+        if data.get("role") == role and data.get("task_id") == task:
+            if timestamp(data.get("last_heartbeat")) >= cutoff:
+                fresh.append(f"heartbeat={record}")
+except (OSError, ValueError, UnicodeError, yaml.YAMLError) as exc:
+    errors.append(f"heartbeat:{type(exc).__name__}")
+
+if fresh:
+    print("FRESH " + json.dumps(fresh[0]) + " (within 2h)")
+elif errors:
+    print("UNKNOWN " + ",".join(errors))
+else:
+    print("STALE no scoped artifact or bound relay/heartbeat within 2h")
+PYEOF
 }
 
 # Does a claim-cache file's role (possibly session-keyed) belong to a note's
@@ -1329,8 +1468,25 @@ for note in "$VAULT_ROOT/active/"*.md; do
 
   has_pr=false
   [ "$pr" != "null" ] && [ -n "$pr" ] && has_pr=true
+  mutation_surface="$(_fm_value mutation_surface "$note")"
 
-  if [ "$age" -ge "$stale_threshold" ] && [ "$has_pr" = false ]; then
+  if [ "$age" -ge "$stale_threshold" ] \
+    && { [ "$has_pr" = false ] || [ "$mutation_surface" = vault_docs ]; }; then
+    if [ "$mutation_surface" = vault_docs ]; then
+      freshness="$(_vault_docs_freshness_for "$note" "$assigned" "$task_id")" \
+        || freshness="UNKNOWN freshness reader failed or exceeded its time bound"
+      case "$freshness" in
+        FRESH\ *)
+          printf 'VAULT_DOCS_FRESH: %s assigned=%s %s; retained\n' "$task_id" "$assigned" "${freshness#FRESH }"
+          continue
+          ;;
+        STALE\ *) ;;
+        *)
+          _record_coherence "VAULT_DOCS_UNKNOWN: ${task_id} assigned=${assigned} ${freshness}; retained; next action: repair the scope or lane freshness read, then rerun the audit"
+          continue
+          ;;
+      esac
+    fi
     phantom_count=$((phantom_count + 1))
     age_h=$((age / 3600))
     report="${report}  PHANTOM: ${task_id} assigned=${assigned} status=${status} age=${age_h}h pr=${pr} branch=${branch}\n"
