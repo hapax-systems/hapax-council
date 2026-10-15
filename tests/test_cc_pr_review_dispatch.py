@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from datetime import date
 from hashlib import sha256
 from pathlib import Path
@@ -2143,6 +2144,25 @@ checklist:
         assert dossier["constitution_writer_family"] == "claude"
         assert dossier["changed_file_count"] == 1
         assert dossier["changed_files"] == ["scripts/review_team.py"]
+
+    def test_dossier_binds_the_note_the_seats_read(self, tmp_path: Path) -> None:
+        note = tmp_path / "hapax-cc-tasks" / "active" / "task-a.md"
+
+        class EditingReviewers(RecordingReviewers):
+            lock = threading.Lock()  # seats run concurrently; one edit, mid-round
+
+            def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
+                with self.lock:
+                    if not hasattr(self, "dispatched"):
+                        self.dispatched = note.read_text(encoding="utf-8")
+                        note.write_text(self.dispatched + "- edited during the round\n")
+                return super().__call__(seat, family_cfg, prompt)
+
+        reviewers = EditingReviewers()
+        result, _, _, _ = _review(tmp_path, reviewers=reviewers)
+        recorded = result["dossier"]["constitution_note_sha256"]
+        assert recorded == dispatch.review_team.constitution_note_sha256(reviewers.dispatched)
+        assert recorded != dispatch.review_team.constitution_note_sha256(note.read_text())
 
     def test_dispatch_records_changed_source_excerpt_evidence(self, tmp_path: Path) -> None:
         rel = "scripts/hapax-glmcp-reviewer"

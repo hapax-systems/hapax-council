@@ -4406,9 +4406,10 @@ def _apply_review(
         str(pr_diff), _principal_tokens
     )
     diff = truncate_diff(redacted_full_diff)
+    # Each note as the seats read it; its dossier records the constitution hash of this text.
+    note_texts = {path: path.read_text(encoding="utf-8") for path, _, _ in keyed_matches}
     task_note_text = "\n\n".join(
-        f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
-        for path, _, _ in keyed_matches
+        f"## Linked task note: {path.name}\n\n{note_texts[path]}" for path, _, _ in keyed_matches
     )
     task_note_text, _rc_note = review_team.redact_registered_tokens(
         task_note_text, _principal_tokens
@@ -4557,6 +4558,9 @@ def _apply_review(
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
             packet_redactions=packet_redactions,
+            constitution_note_sha256=review_team.constitution_note_sha256(
+                note_texts[target_note_path]
+            ),
         )
         dossier["family_substitution"] = substitution
         if route_admission_basis:
