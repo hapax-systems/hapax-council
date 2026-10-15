@@ -2112,3 +2112,185 @@ def test_kimi_expired_fresh_until_does_not_clear_route_specific_blocker(
         fresh_until="2026-09-11T15:00:00Z",
     )
     _assert_kimi_route_specific_quota_still_blocked(route)
+
+
+# --- subscription_pool_binding: the pool a Claude route bills, stated, never inherited ----------
+
+REVIEW_ROUTE = "claude.review.opus"
+
+
+def test_the_review_route_is_bound_to_max_2_and_the_account_1_routes_are_not() -> None:
+    from shared.platform_capability_registry import resolve_subscription_pool_bindings
+
+    home = Path("/srv/example-home")
+    bindings = resolve_subscription_pool_bindings(home=home)
+
+    assert set(bindings) == {REVIEW_ROUTE}
+    binding = bindings[REVIEW_ROUTE]
+    assert binding.pool == "max-2"
+    assert binding.config_dir == home / ".claude-max-2"
+    assert binding.receipt_dir == home / ".cache/hapax/relay/receipts-max-2"
+    assert binding.headless_dir == home / ".cache/hapax/claude-headless-max-2"
+    assert binding.pace_activation == home / ".cache/hapax/claude-pool-pace-max-2/activation.json"
+    assert binding.durable_sink_root == home / ".cache/hapax/stage0-durable-sink-max-2"
+    # The native load set names the same config home through the same variable.
+    route = _route_payload(_payload(), REVIEW_ROUTE)
+    assert route["native_load_set"]["native_home"] == ".claude-max-2"
+    assert route["native_load_set"]["home_env"] == "CLAUDE_CONFIG_DIR"
+
+
+def _bound_payload() -> tuple[dict, dict]:
+    payload = _payload()
+    return payload, _route_payload(payload, REVIEW_ROUTE)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("config_home", "/srv/elsewhere/.claude-max-2", "inside HOME"),
+        ("receipt_dir", "../elsewhere", "inside HOME"),
+        ("config_home", ".claude", "non-default config home"),
+        ("receipt_dir", ".cache/hapax/relay/receipts", "outside the shared relay dir"),
+        ("headless_dir", ".cache/hapax/relay/receipts-max-2", "distinct"),
+        ("pool", "account-2", "billing or account identifier"),
+        ("pool", "Max_2", "should match pattern"),
+    ],
+)
+def test_pool_binding_rejects_an_unsafe_declaration(field: str, value: str, match: str) -> None:
+    payload, route = _bound_payload()
+    route["subscription_pool_binding"][field] = value
+    if field == "config_home" and value != ".claude":
+        route["native_load_set"]["native_home"] = value
+
+    with pytest.raises(ValidationError, match=match):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_pool_binding_must_agree_with_the_native_load_set() -> None:
+    payload, route = _bound_payload()
+    route["native_load_set"]["native_home"] = ".claude"
+
+    with pytest.raises(ValidationError, match="must name the same config home"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_pool_binding_is_valid_only_on_a_claude_subscription_route() -> None:
+    payload, route = _bound_payload()
+    codex = _route_payload(payload, "codex.headless.full")
+    codex["subscription_pool_binding"] = deepcopy(route["subscription_pool_binding"])
+
+    with pytest.raises(ValidationError, match="only on a Claude subscription route"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_one_pool_name_is_one_set_of_paths() -> None:
+    payload, route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    headless["subscription_pool_binding"] = deepcopy(route["subscription_pool_binding"])
+    headless["subscription_pool_binding"]["durable_sink_root"] = ".cache/hapax/another-sink"
+    headless["native_load_set"]["native_home"] = ".claude-max-2"
+    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
+
+    with pytest.raises(ValidationError, match="declared with different paths"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_two_pools_never_share_a_path() -> None:
+    payload, route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    other = deepcopy(route["subscription_pool_binding"])
+    other.update(pool="max-3", config_home=".claude-max-3")
+    headless["subscription_pool_binding"] = other
+    headless["native_load_set"]["native_home"] = ".claude-max-3"
+    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
+
+    with pytest.raises(ValidationError, match="share the path"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("receipt_dir", ".cache/hapax/relay//receipts-max-2"),
+        ("receipt_dir", "./.cache/hapax/relay/receipts-max-2/"),
+        ("headless_dir", ".cache/hapax/relay/receipts-max-2/headless"),
+        ("durable_sink_root", ".cache/hapax"),
+    ],
+)
+def test_two_pools_never_share_a_path_in_another_spelling_or_by_nesting(
+    field: str, value: str
+) -> None:
+    """A reading found under one pool's dir is that pool's: a second pool may not reach the same
+    directory by a different spelling, nor sit inside (or around) one of the first pool's dirs."""
+    payload, _route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    headless["subscription_pool_binding"] = {
+        "pool": "max-3",
+        "config_home": ".claude-max-3",
+        "receipt_dir": ".cache/hapax/relay/receipts-max-3",
+        "headless_dir": ".cache/hapax/claude-headless-max-3",
+        "pace_activation": ".cache/hapax/claude-pool-pace-max-3/activation.json",
+        "durable_sink_root": ".cache/hapax/stage0-durable-sink-max-3",
+        field: value,
+    }
+    headless["native_load_set"]["native_home"] = ".claude-max-3"
+    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
+
+    with pytest.raises(ValidationError, match="share the path"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_two_pools_with_disjoint_paths_are_accepted() -> None:
+    payload, _route = _bound_payload()
+    headless = _route_payload(payload, "claude.headless.full")
+    headless["subscription_pool_binding"] = {
+        "pool": "max-3",
+        "config_home": ".claude-max-3",
+        "receipt_dir": ".cache/hapax/relay/receipts-max-3",
+        "headless_dir": ".cache/hapax/claude-headless-max-3",
+        "pace_activation": ".cache/hapax/claude-pool-pace-max-3/activation.json",
+        "durable_sink_root": ".cache/hapax/stage0-durable-sink-max-3",
+    }
+    headless["native_load_set"]["native_home"] = ".claude-max-3"
+    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
+
+    PlatformCapabilityRegistry.model_validate(payload)
+
+
+def test_an_unreadable_registry_never_resolves_to_unbound(tmp_path: Path) -> None:
+    from shared.platform_capability_registry import (
+        PlatformCapabilityRegistryError,
+        resolve_subscription_pool_binding,
+    )
+
+    broken = tmp_path / "registry.json"
+    broken.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(PlatformCapabilityRegistryError):
+        resolve_subscription_pool_binding(REVIEW_ROUTE, broken)
+
+
+def test_the_resolver_reads_the_descriptor_registry_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One declaration per process: the same file shared/capability_execution.py reads."""
+    from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+    payload, route = _bound_payload()
+    route.pop("subscription_pool_binding")
+    unbound = tmp_path / "registry.json"
+    unbound.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(unbound))
+
+    assert resolve_subscription_pool_binding(REVIEW_ROUTE) is None
+
+
+def test_the_reading_pool_is_the_config_dir_a_cli_child_runs_on() -> None:
+    from shared.platform_capability_registry import claude_config_dir_for_env
+
+    home = Path("/srv/example-home")
+    assert claude_config_dir_for_env({}, home=home) == home / ".claude"
+    assert claude_config_dir_for_env({"CLAUDE_CONFIG_DIR": "  "}, home=home) == home / ".claude"
+    assert claude_config_dir_for_env(
+        {"CLAUDE_CONFIG_DIR": "/srv/example-home/.claude-max-2"}, home=home
+    ) == Path("/srv/example-home/.claude-max-2")

@@ -111,6 +111,28 @@
     "title": "NativeLoadFile",
     "type": "object"
   },
+  "subscription_pool_binding": {
+    "additionalProperties": false,
+    "description": "The one subscription pool a Claude route bills, stated rather than inherited. Every path is relative to HOME: config_home is the route launcher's CLAUDE_CONFIG_DIR; the others are where that pool's own readings live. A reading admits the route only when all five are this pool's.",
+    "properties": {
+      "pool": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$"},
+      "config_home": {"type": "string", "minLength": 1},
+      "receipt_dir": {"type": "string", "minLength": 1},
+      "headless_dir": {"type": "string", "minLength": 1},
+      "pace_activation": {"type": "string", "minLength": 1},
+      "durable_sink_root": {"type": "string", "minLength": 1}
+    },
+    "required": [
+      "pool",
+      "config_home",
+      "receipt_dir",
+      "headless_dir",
+      "pace_activation",
+      "durable_sink_root"
+    ],
+    "title": "SubscriptionPoolBinding",
+    "type": "object"
+  },
   "native_load_set": {
     "additionalProperties": false,
     "description": "Declared native inputs within the existing route contract.\n\nNull extension lists mean unobserved, whereas [] deliberately declares none.\nHost observations do not enforce isolation. OCI construction may constrain\ninputs, but still cannot attest that a model used delivered instructions.",
@@ -933,6 +955,9 @@
         },
         "execution_descriptor": {"$ref": "#/$defs/execution_descriptor"},
         "native_load_set": {"anyOf": [{"$ref": "#/$defs/native_load_set"}, {"type": "null"}]},
+        "subscription_pool_binding": {
+          "anyOf": [{"$ref": "#/$defs/subscription_pool_binding"}, {"type": "null"}]
+        },
         "descriptor_variants": {
           "type": "array",
           "items": {"$ref": "#/$defs/descriptor_variant"}

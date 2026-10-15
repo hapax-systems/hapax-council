@@ -2607,7 +2607,7 @@
       "registry_schema": 1,
       "route_id": "claude.review.opus",
       "native_load_set": {
-        "native_home": ".claude",
+        "native_home": ".claude-max-2",
         "home_env": "CLAUDE_CONFIG_DIR",
         "files": [
           {
@@ -2636,12 +2636,20 @@
           "task:capability-declared-load-set-20260919"
         ]
       },
+      "subscription_pool_binding": {
+        "pool": "max-2",
+        "config_home": ".claude-max-2",
+        "receipt_dir": ".cache/hapax/relay/receipts-max-2",
+        "headless_dir": ".cache/hapax/claude-headless-max-2",
+        "pace_activation": ".cache/hapax/claude-pool-pace-max-2/activation.json",
+        "durable_sink_root": ".cache/hapax/stage0-durable-sink-max-2"
+      },
       "platform": "claude",
       "mode": "review",
       "profile": "opus",
       "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p with descriptor-bound model/effort arguments and effort/fast-mode environment, empty --tools/--allowedTools, explicit --disallowedTools, manual permission mode, safe mode, disabled slash commands, no session persistence, empty strict MCP config; YAML verdict on stdout)",
       "summary": "Claude Opus no-tools review seat",
-      "notes": "Read-only Claude review route. The wrapper derives invocation controls from the route execution descriptor, disables tools, and preserves strict fenced-YAML output for review-team dossiers.",
+      "notes": "Read-only Claude review route. The wrapper derives invocation controls from the route execution descriptor, disables tools, and preserves strict fenced-YAML output for review-team dossiers. The route bills the max-2 subscription pool, explicitly (subscription_pool_binding; Crow ruling 2026-10-14, lanebus/dev49/20261014T102200Z): the wrapper sets CLAUDE_CONFIG_DIR to that config home and refuses a missing or conflicting inherited one, and only a max-2 reading from max-2's own receipt dir, traces, pace marker and durable sink admits the route.",
       "route_state": "blocked",
       "blocked_reasons": [
         "claude_review_seat_receipt_admission_required",
