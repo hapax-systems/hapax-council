@@ -281,6 +281,38 @@ def test_keyword_credential_reads_keep_their_classification(line: str) -> None:
 
 
 @pytest.mark.parametrize(
+    "line",
+    [
+        "base_urls: [https://example.com,https://api.openai.com]",
+        "base_urls: https://example.com https://api.openai.com",
+        "BASES=https://example.com;https://api.openai.com",
+        "bases: https://example.com|//api.openai.com/v1",
+        "base_urls: [https://example.com,https://example.org,https://api.anthropic.com/v1]",
+        'host: "api.openai.com"',
+        "export UPSTREAM='API.OPENAI.COM:443'",
+        "Calls go to `api.anthropic.com` directly.",
+    ],
+)
+def test_a_provider_host_anywhere_on_a_line_is_detected(line: str) -> None:
+    assert "provider-api-endpoint" in _text_classes(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "base_urls: [https://example.com,https://example.org]",
+        "host: notapi.openai.com.example",
+        "host: api.openai.community",
+        "host: api.openai.com.example",
+        "host: xapi.openai.com",
+        "host: eu.api.openai.com-mirror",
+    ],
+)
+def test_provider_host_detection_respects_host_boundaries(line: str) -> None:
+    assert "provider-api-endpoint" not in _text_classes(line)
+
+
+@pytest.mark.parametrize(
     "call",
     [
         'os.getenv(default=None, key="OPENAI_API_KEY")',

@@ -154,12 +154,17 @@ _PROVIDER_API_HOSTS = (
     "api.x.ai",
     "api.runwayml.com",
 )
-_PROVIDER_HOST_SET = frozenset(_PROVIDER_API_HOSTS)
-#: Extract whole URL candidates; urlsplit decides the authority. Punctuation in
-#: paths and queries cannot alter which host is compared with the declared set.
-#: A scheme starts only at the start of a scheme run (linear, as for header names);
-#: a scheme-relative `//` may still start anywhere.
-_URL_CANDIDATE_RE = re.compile(r"(?:(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:)?//[^\s\"'<>`]+")
+#: DETECTION does not parse URLs: a declared provider host anywhere on a line is a
+#: finding, whatever joins, quotes or delimits it (review rounds 1 and 5 found URL-
+#: parsing edge cases). The boundaries keep `not-api.openai.com`,
+#: `api.openai.com.evil` and `api.openai.community` out. Only the proxy EXEMPTION
+#: parses a URL, and it keeps comparing the exact host.
+_PROVIDER_HOST_RE = re.compile(
+    r"(?<![a-z0-9.-])(?:"
+    + "|".join(re.escape(host) for host in sorted(_PROVIDER_API_HOSTS, key=len, reverse=True))
+    + r")(?![a-z0-9-]|\.[a-z0-9-])",
+    re.IGNORECASE,
+)
 
 #: Text fallback for provider constructors; parsed Python uses Call nodes so a
 #: governed proxy on the same constructor can be recognized structurally.
@@ -219,23 +224,8 @@ def _host_of(target: str, *, strict_port: bool = False) -> str:
         return ""
 
 
-#: The longest leading run of hostname characters. Shell `${X:-url}` and YAML flow
-#: delimiters end the value before urlsplit sees them, so `api.openai.com}` names the
-#: provider. Detection only: the proxy exemption keeps comparing the exact host.
-_HOSTNAME_PREFIX_RE = re.compile(r"[a-z0-9.-]*")
-#: Closing delimiters a candidate may swallow; a trailing `]` also makes urlsplit
-#: reject the whole candidate as a malformed IPv6 authority.
-_CLOSING_DELIMITERS = "}])>,;"
-
-
 def _has_provider_url(content: str) -> bool:
-    for match in _URL_CANDIDATE_RE.finditer(content):
-        candidate = match.group()
-        for host in (_host_of(candidate), _host_of(candidate.rstrip(_CLOSING_DELIMITERS))):
-            delimited = _HOSTNAME_PREFIX_RE.match(host).group().rstrip(".")
-            if host in _PROVIDER_HOST_SET or delimited in _PROVIDER_HOST_SET:
-                return True
-    return False
+    return _PROVIDER_HOST_RE.search(content) is not None
 
 
 def _has_credential_env_name(content: str) -> bool:
