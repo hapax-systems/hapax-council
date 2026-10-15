@@ -398,6 +398,31 @@ def _call_is_proxy_bound(call: ast.Call) -> bool:
     return False
 
 
+def _unparseable_python_finding(
+    path: str, exc: SyntaxError | ValueError, added_lines: set[int]
+) -> Finding:
+    """A Python post-image that does not parse cannot be certified, so it FAILS CLOSED.
+
+    No text pattern can be complete over Python call syntax (three review rounds found three
+    regex bypasses in this fallback), so an unparseable file is one finding, never a best-effort
+    line scan. It covers every added line, so a marker on one line cannot exempt it.
+    """
+
+    covers = tuple(sorted(added_lines))
+    line = getattr(exc, "lineno", None) or (covers[0] if covers else 1)
+    return Finding(
+        path=path,
+        line=line,
+        kind="unparseable-python",
+        text=(
+            f"this Python post-image does not parse ({type(exc).__name__} at line {line}), so "
+            "its billing surface cannot be certified. Next action: make the file parse at the "
+            "head revision it names."
+        ),
+        covers=covers,
+    )
+
+
 def _node_findings_for_postimage(
     path: str, content: str, added_lines: set[int]
 ) -> tuple[list[Finding], list[Finding], bool]:
@@ -422,11 +447,9 @@ def _node_findings_for_postimage(
     The blob is parsed as-is: it is a whole file, so a dedent fallback would move every line.
     """
     try:
-        tree: ast.Module | None = ast.parse(content)
-    except (SyntaxError, ValueError):
-        tree = None
-    if tree is None:
-        return [], [], False
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError) as exc:
+        return [_unparseable_python_finding(path, exc, added_lines)], [], False
     source = content
 
     def node_is_added(node: ast.AST) -> bool:

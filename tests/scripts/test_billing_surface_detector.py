@@ -192,9 +192,37 @@ def test_non_provider_call_still_reports_nested_credential_read() -> None:
 def test_unparseable_python_yields_no_structural_exemption_and_text_still_flags() -> None:
     source = 'OpenAI(api_key=os.environ["OPENAI_API_KEY"]\n'
     findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1})
-    assert not parsed and not findings and not allowed
+    assert not parsed and not allowed
+    assert [item.kind for item in findings] == ["unparseable-python"]
     assert "api-key-route" in _text_classes(source)
     assert "credential-env-read" in _text_classes(source)
+
+
+def test_multiline_keyword_read_in_an_unparseable_file_is_a_blocking_finding() -> None:
+    source = 'v = os.getenv(default=None,\n    key="OPENAI_API_KEY")\nbroken = (\n'
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1, 2, 3})
+    assert not parsed and not allowed
+    assert [(item.kind, item.covers) for item in findings] == [("unparseable-python", (1, 2, 3))]
+
+
+def test_any_unparseable_python_postimage_fails_closed_at_the_syntax_error() -> None:
+    source = "def ordinary():\n    return 1\n\ndef broken(:\n    pass\n"
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {2})
+    assert not parsed and not allowed
+    assert [(item.kind, item.line, item.covers) for item in findings] == [
+        ("unparseable-python", 4, (2,))
+    ]
+    assert "Next action" in findings[0].text
+
+
+def test_parseable_python_without_a_surface_has_no_finding() -> None:
+    source = "def ordinary(value):\n    return value + 1\n"
+    assert _node_findings_for_postimage("app.py", source, {1, 2}) == ([], [], True)
+
+
+def test_non_python_text_detection_is_unchanged_by_the_parse_rule() -> None:
+    assert "provider-api-endpoint" in _text_classes("base_url: https://api.openai.com/v1")
+    assert "credential-env-read" in _text_classes("export OPENAI_API_KEY=value")
 
 
 @pytest.mark.parametrize(
@@ -253,7 +281,8 @@ def test_keyword_credential_reads_keep_their_classification(line: str) -> None:
 def test_reordered_keyword_reads_survive_the_unparseable_text_fallback(call: str) -> None:
     source = f"v = {call}\nbroken = (\n"
     findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1, 2})
-    assert not parsed and not findings and not allowed
+    assert not parsed and not allowed
+    assert [item.kind for item in findings] == ["unparseable-python"]
     assert "credential-env-read" in _text_classes(f"v = {call}")
 
 
