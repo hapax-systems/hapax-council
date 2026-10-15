@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 from datetime import date
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
@@ -687,17 +688,54 @@ def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
 
 
 class TestCompletePromptProof:
+    @pytest.fixture(autouse=True)
+    def signing_key(self, monkeypatch):
+        monkeypatch.setenv(
+            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            "synthetic-replay-signing-key",
+        )
+
+    def capacity_calls(self, tmp_path, note, gh, runner, route=None):
+        head, files = gh.head_sha, list(gh.files)
+
+        def admit(note):
+            fm = yaml.safe_load(note.read_text().split("---", 2)[1])
+            return dispatch.review_team.review_dossier_validity_blockers(
+                fm,
+                note,
+                pr_head_sha=head,
+                pr_number=42,
+                changed_files=files,
+                changed_file_count=len(files),
+                outage_state_path=dispatch.FAMILY_OUTAGE_STATE,
+                route_blocked_families={},
+            )
+
+        def scan(reviewers):
+            return dispatch.review_pr(
+                42,
+                repo="owner/repo",
+                repo_root=REPO_ROOT,
+                vault_root=note.parent.parent,
+                apply=True,
+                gh_runner=runner,
+                reviewer_runner=reviewers,
+                wake_dir=tmp_path / "wake",
+                send_runner=lambda cmd: None,
+                now_iso="2030-01-01T00:00:00+00:00",
+                route_blocked_families={},
+                route=route,
+            )
+
+        return admit, scan
+
     @pytest.fixture
-    def truncated_capacity(self, tmp_path, monkeypatch):
+    def inventory(self, tmp_path, monkeypatch):
         files = [f"shared/file_{index}.py" for index in range(101)]
         gh = FakeGh(files=files, changed_files_count=101)
         gh.body = "synthetic PR body " * 2200
         state = {"rest": "healthy", "change_after_diff": None}
         calls = []
-        monkeypatch.setenv(
-            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
-            "synthetic-replay-signing-key",
-        )
         original_run = subprocess.run
 
         def runner(cmd, **kwargs):
@@ -730,7 +768,9 @@ class TestCompletePromptProof:
                     return subprocess.CompletedProcess(
                         cmd, 0, json.dumps(rows[(page - 1) * 100 : page * 100]), ""
                     )
-            if cmd[:3] == ["gh", "pr", "diff"] and state["change_after_diff"]:
+            if (
+                cmd[:3] == ["gh", "pr", "diff"] or "Accept: application/vnd.github.v3.diff" in cmd
+            ) and state["change_after_diff"]:
                 if state["change_after_diff"] == "head":
                     gh.head_sha = "d" * 40
                 elif state["change_after_diff"] == "body":
@@ -753,187 +793,157 @@ class TestCompletePromptProof:
             "files"
         ] == tuple(files)
         calls.clear()
-        head = gh.head_sha
+        admit, scan = self.capacity_calls(tmp_path, note, gh, runner, route)
+        return partial(admit, note), scan, state, calls
 
-        def admit():
-            fm = yaml.safe_load(note.read_text().split("---", 2)[1])
-            return dispatch.review_team.review_dossier_validity_blockers(
-                fm,
-                note,
-                pr_head_sha=head,
-                pr_number=42,
-                changed_files=files,
-                changed_file_count=101,
-                outage_state_path=dispatch.FAMILY_OUTAGE_STATE,
-                route_blocked_families={},
-            )
-
-        def scan(reviewers):
-            return dispatch.review_pr(
-                42,
-                repo="owner/repo",
-                repo_root=REPO_ROOT,
-                vault_root=note.parent.parent,
-                apply=True,
-                gh_runner=runner,
-                reviewer_runner=reviewers,
-                wake_dir=tmp_path / "wake",
-                send_runner=lambda cmd: None,
-                now_iso="2030-01-01T00:00:00+00:00",
-                route_blocked_families={},
-                route=route,
-            )
-
-        return admit, scan, state, calls
-
-    def test_truncated_capacity_public_admission_recovers_complete_files(self, truncated_capacity):
-        admit, _, _, calls = truncated_capacity
+    def test_paginated_inventory_admits(self, inventory):
+        admit, _, _, calls = inventory
         assert admit() == ()
         assert any(cmd[:3] == ["gh", "pr", "view"] for cmd in calls)
         assert any("page=2" in cmd for cmd in calls)
 
-    def test_truncated_capacity_repeated_scan_does_not_redispatch(self, truncated_capacity):
-        _, scan, _, _ = truncated_capacity
+    def test_paginated_inventory_reuses_dossier(self, inventory):
+        _, scan, _, _ = inventory
         reviewers = RecordingReviewers()
         result = scan(reviewers)
         assert result["status"] == "skipped_fresh"
         assert reviewers.invocations == []
 
     @pytest.mark.parametrize("rest", ["blocked", "unavailable", "files_unavailable", "truncated"])
-    def test_truncated_capacity_unavailable_recovery_refuses(self, truncated_capacity, rest):
-        admit, _, state, _ = truncated_capacity
+    def test_inventory_recovery_failure_refuses(self, inventory, rest):
+        admit, _, state, _ = inventory
         state["rest"] = rest
         assert "review_dossier_capacity_evidence_unavailable" in admit()
 
     @pytest.mark.parametrize("change", ["head", "body", "files"])
-    def test_truncated_capacity_changed_second_read_refuses(self, truncated_capacity, change):
-        admit, _, state, _ = truncated_capacity
+    def test_changed_second_read_refuses(self, inventory, change):
+        admit, _, state, _ = inventory
         assert admit() == ()
         state["change_after_diff"] = change
         assert "review_dossier_capacity_evidence_unavailable" in admit()
 
-    @pytest.fixture(params=["prompt", "diff"])
-    def multi_task_capacity(self, request, tmp_path, monkeypatch):
+    @pytest.fixture(params=[("prompt", False), ("diff", False), ("prompt", True), ("diff", True)])
+    def peers(self, request, tmp_path, monkeypatch):
+        exclusion, local = request.param
         vault = _make_vault(tmp_path)
         notes = [_write_task(vault, task_id=f"task-{suffix}") for suffix in ("a", "b")]
         gh = FakeGh()
-        if request.param == "prompt":
+        if exclusion == "prompt":
             gh.body = "synthetic PR body " * 2200
         else:
             # Isolate diff exclusion without making every candidate exceed its prompt cap.
             registry = dispatch.review_team.load_lens_registry()
-            registry["diff_capacity"]["seats"]["vibe-1"]["limit_bytes"] = 1024
-            registry["diff_capacity"]["seats"]["vibe-1"]["status"] = "measured"
+            registry["diff_capacity"]["seats"]["vibe-1"].update(limit_bytes=1024, status="measured")
             registry_path = tmp_path / "registry.yaml"
             registry_path.write_text(yaml.safe_dump(registry))
             monkeypatch.setattr(dispatch.review_team, "DEFAULT_REGISTRY_PATH", registry_path)
             gh.diff += "+" + "x" * 1024 + "\n"
-        monkeypatch.setenv(
-            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
-            "synthetic-replay-signing-key",
-        )
         original_run = subprocess.run
 
         def reads(cmd, **kwargs):
+            if local:
+                assert cmd[:3] != ["gh", "pr", "diff"]
+                assert "Accept: application/vnd.github.v3.diff" not in cmd
             return gh(cmd, **kwargs) if cmd[0] == "gh" else original_run(cmd, **kwargs)
 
         monkeypatch.setattr(dispatch.review_team.subprocess, "run", reads)
-
-        def scan(reviewers):
-            return dispatch.review_pr(
-                42,
-                repo="owner/repo",
-                repo_root=REPO_ROOT,
-                vault_root=vault,
-                apply=True,
-                gh_runner=gh,
-                reviewer_runner=reviewers,
-                wake_dir=tmp_path / "wake",
-                send_runner=lambda cmd: None,
-                now_iso="2030-01-01T00:00:00+00:00",
-                route_blocked_families={},
+        if local:
+            monkeypatch.setattr(
+                dispatch,
+                "fetch_pr_diff_from_local",
+                lambda *_a, **_k: dispatch.PrDiff(
+                    gh.diff, source="local-git", comparison_base="b" * 40
+                ),
             )
+
+        route = dispatch.ListingRoute("graphql", True, "fixture") if local else None
+        admit, scan = self.capacity_calls(tmp_path, notes[0], gh, reads, route)
 
         result = scan(RecordingReviewers())
         assert result["status"] == "multi_dispatched"
-        field = "excluded_for_prompt" if request.param == "prompt" else "excluded_for_size"
+        field = "excluded_for_prompt" if exclusion == "prompt" else "excluded_for_size"
         assert all(
             "vibe" in item["dossier"]["family_substitution"][field] for item in result["results"]
         )
 
-        def admit(note):
-            fm = yaml.safe_load(note.read_text().split("---", 2)[1])
-            return dispatch.review_team.review_dossier_validity_blockers(
-                fm,
-                note,
-                pr_head_sha=gh.head_sha,
-                pr_number=42,
-                changed_files=gh.files,
-                changed_file_count=len(gh.files),
-                outage_state_path=dispatch.FAMILY_OUTAGE_STATE,
-                route_blocked_families={},
-            )
-
         return notes, admit, scan
 
-    def test_multi_task_capacity_admits_each_dossier(self, multi_task_capacity):
-        notes, admit, _ = multi_task_capacity
-        assert {note.stem: admit(note) for note in notes} == {"task-a": (), "task-b": ()}
-
-    def test_multi_task_capacity_repeated_scan_does_not_redispatch(self, multi_task_capacity):
-        _, _, scan = multi_task_capacity
-        reviewers = RecordingReviewers()
-        result = scan(reviewers)
-        assert result["status"] == "multi_skipped_fresh"
-        assert reviewers.invocations == []
-
-    def test_multi_task_capacity_rejects_nonmember_dossier(self, multi_task_capacity):
-        notes, admit, _ = multi_task_capacity
+    def test_nonmember_dossier_refuses(self, peers):
+        notes, admit, _ = peers
         assert admit(notes[0]) == ()
         outsider = _write_task(notes[0].parent.parent, task_id="task-c")
         outsider.write_text(outsider.read_text().replace("status: pr_open", "status: done"))
         rt = dispatch.review_team
         dossier = yaml.safe_load(rt.review_dossier_path(notes[0], "task-a").read_text())
         dossier["task_id"] = "task-c"
+        dossier["constitution_note_sha256"] = rt.constitution_note_sha256(outsider.read_text())
         dispatch._sign_public_gate_authority_evidence(dossier)
         rt.review_dossier_path(outsider, "task-c").write_text(yaml.safe_dump(dossier))
         assert "review_dossier_capacity_evidence_unavailable" in admit(outsider)
 
-    @pytest.mark.parametrize("change", ["content", "mtime", "added", "removed"])
-    def test_multi_task_capacity_rejects_changed_peer_note(self, multi_task_capacity, change):
-        notes, admit, _ = multi_task_capacity
+    @pytest.mark.parametrize("change", ["content", "frontmatter", "added", "removed"])
+    def test_changed_peer_refuses(self, peers, change):
+        notes, admit, _ = peers
         assert admit(notes[0]) == ()
         peer = notes[1]
         if change == "content":
             stamp = peer.stat()
             peer.write_text(peer.read_text() + "\nChanged peer context.\n")
             os.utime(peer, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-        elif change == "mtime":
-            os.utime(peer, (1_893_456_001, 1_893_456_001))
+        elif change == "frontmatter":
+            peer.write_text(peer.read_text().replace("status: pr_open", "status: blocked"))
         elif change == "added":
             _write_task(peer.parent.parent, task_id="task-c")
         else:
             peer.unlink()
         assert "review_dossier_capacity_evidence_unavailable" in admit(notes[0])
 
+    @pytest.mark.parametrize("edit", [False, True])
+    def test_peer_dossiers_admit_and_reuse(self, peers, edit):
+        notes, admit, scan = peers
+        assert all(admit(note) == () for note in notes)
+        for note in notes if edit else []:
+            note.write_text(
+                note.read_text().replace(
+                    "exit_predicate:",
+                    "release_finding_dispositions:\n- disposition: deferred\nexit_predicate:",
+                )
+            )
+            os.utime(note, (1_893_456_001, 1_893_456_001))
+        assert all(admit(note) == () for note in notes)
+        reviewers = RecordingReviewers()
+        assert scan(reviewers)["status"] == "multi_skipped_fresh"
+        assert reviewers.invocations == []
+
+    def test_missing_peer_hash_refuses(self, peers):
+        notes, admit, _ = peers
+        assert admit(notes[0]) == ()
+        path = dispatch.review_team.review_dossier_path(notes[0], notes[0].stem)
+        original = yaml.safe_load(path.read_text())
+        for signed in (False, True):
+            dossier = copy.deepcopy(original)
+            binding = dossier["family_substitution"]["replay_inputs"]
+            binding["constitution_note_hashes"].pop(notes[1].name)
+            if signed:
+                binding["sha256"] = dispatch.review_team.prompt_replay_digest(
+                    binding["inputs"], binding["constitution_note_hashes"]
+                )
+                dispatch._sign_public_gate_authority_evidence(dossier)
+            path.write_text(yaml.safe_dump(dossier))
+            assert "review_dossier_capacity_evidence_unavailable" in admit(notes[0])
+
     @pytest.mark.parametrize("excess", ["body", "excerpt"])
-    def test_admission_replays_complete_prompt_and_rejects_changed_inputs(
-        self, excess, tmp_path, monkeypatch
-    ):
+    def test_exact_replay_and_tampering(self, excess, tmp_path, monkeypatch):
         rel = "scripts/hapax-glmcp-reviewer"
         source = "\n\n".join(
             f"def {name}():\n"
-            + "\n".join("    # " + "synthetic evidence " * 4 for _ in range(20))
-            + "\n    return True\n"
+            + ("    # " + "synthetic evidence " * 4 + "\n") * 20
+            + "    return True\n"
             for name in dispatch._REVIEW_SOURCE_EXCERPT_SYMBOLS[rel]
         )
         head = TestApply._git_repo_with_commit(tmp_path, rel, source)
         gh = FakeGh(files=[rel] if excess == "excerpt" else ["shared/foo.py"], head_sha=head)
         gh.body = "synthetic PR body " * 2200 if excess == "body" else "body" * 3000
-        monkeypatch.setenv(
-            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
-            "synthetic-replay-signing-key",
-        )
         original_run = subprocess.run
 
         def reads(cmd, **kwargs):
@@ -978,21 +988,24 @@ class TestCompletePromptProof:
         saved = copy.deepcopy(dossier)
         dossier["family_substitution"].pop("replay_inputs")
         dispatch._sign_public_gate_authority_evidence(dossier)
-        assert measure() is None  # even a signed legacy dossier cannot prove discarded inputs
+        assert measure() is None  # signed legacy proof is incomplete
         dossier.clear()
         dossier.update(copy.deepcopy(saved))
         forged = dossier["family_substitution"]["replay_inputs"]
         forged["inputs"]["prior_file_excerpts"] += " forged source evidence"
-        forged["sha256"] = dispatch.review_team.prompt_replay_digest(forged["inputs"])
-        assert measure() is None  # the binding is covered by the original signature
+        forged["sha256"] = dispatch.review_team.prompt_replay_digest(
+            forged["inputs"], forged["constitution_note_hashes"]
+        )
+        assert measure() is None  # HMAC binds the renderer inputs
         dossier.clear()
         dossier.update(saved)
-        # Signature-like keys in untrusted findings are omitted by the existing HMAC
-        # canonicalizer. The input digest must still bind them to the rendered bytes.
+        # The input digest must bind nested keys omitted by the HMAC canonicalizer.
         original = copy.deepcopy(dossier)
         binding = dossier["family_substitution"]["replay_inputs"]
         binding["inputs"]["prior_criticals"] = [{"title": "fixture", "signature": "original"}]
-        binding["sha256"] = dispatch.review_team.prompt_replay_digest(binding["inputs"])
+        binding["sha256"] = dispatch.review_team.prompt_replay_digest(
+            binding["inputs"], binding["constitution_note_hashes"]
+        )
         dispatch._sign_public_gate_authority_evidence(dossier)
         assert measure() is not None
         binding["inputs"]["prior_criticals"][0]["signature"] = "forged bytes"
@@ -1002,7 +1015,6 @@ class TestCompletePromptProof:
         assert measure() is None
         dossier.clear()
         dossier.update(original)
-        # Same head, different rendered input must not validate the old count.
         gh.body += " changed body"
         changed = measure()
         assert changed is None or changed[1]["vibe-1"] != expected
@@ -1013,7 +1025,7 @@ class TestCompletePromptProof:
         os.utime(note, (1_893_456_001, 1_893_456_001))  # one second after constitution
         assert measure() is None
 
-    def test_replay_binding_keeps_only_redacted_renderer_inputs(self, tmp_path, monkeypatch):
+    def test_binding_redacts_canary(self, tmp_path, monkeypatch):
         canary = "sk-synthetic-replay-canary-1234567890"  # pragma: allowlist secret
         monkeypatch.setattr(dispatch.review_team, "load_principal_tokens", lambda *_: [canary])
         gh = FakeGh()

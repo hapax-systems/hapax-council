@@ -4485,17 +4485,19 @@ def _apply_review(
             "family_substitution": substitution,
             "next_action": "split the PR or reconstitute with eligible seats",
         }
-    # Preserve exactly the already-redacted inputs, including the previous round's
-    # findings before its dossier is replaced. The existing dossier signature covers
-    # this binding; the digest also binds arbitrary keys inside untrusted findings.
+    # Sign the redacted packet, including nested signature-like keys.
     replay_inputs = {
         **prompt_inputs,
         "pr_info": asdict(redacted_pr_info),
         "prior_file_excerpts": reviewer_source_excerpts,
     }
+    note_hashes = {
+        path.name: review_team.constitution_note_sha256(text) for path, text in note_texts.items()
+    }
     substitution["replay_inputs"] = {
         "inputs": replay_inputs,
-        "sha256": review_team.prompt_replay_digest(replay_inputs),
+        "constitution_note_hashes": note_hashes,
+        "sha256": review_team.prompt_replay_digest(replay_inputs, note_hashes),
     }
     plan["seats"] = [{"id": seat.id, "family": seat.family} for seat in constitution.seats]
     plan["quorum_required"] = constitution.quorum_required

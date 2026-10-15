@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import asdict
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -1358,6 +1359,47 @@ def _synth(rt, reviews: list[dict], *, team_class: str = "t2_standard", **kwargs
     )
 
 
+def _bind_capacity_replay(case, text, *, excerpts=""):
+    """Sign exact renderer inputs for transport fixtures."""
+    rt, dispatch, d, state = case.rt, case.dispatch, case.dossier, case.state
+    views, calls = state.views, list(state.calls)
+    info = dispatch.fetch_pr(
+        99, repo="hapax-systems/hapax-council", repo_root=REPO_ROOT, runner=case.runner
+    )
+    state.views, state.calls = views, calls
+    lenses = rt.lenses_for_files(info.files, rt.load_lens_registry())
+    inputs = dict(
+        pr_info=asdict(info),
+        task_id="task-x",
+        team_class=d["team_class"],
+        lenses=lenses,
+        charters="\n\n".join(rt.charter_text(lens) for lens in lenses),
+        pr_body=info.body,
+        task_note_text=f"## Linked task note: {case.note.name}\n\n{text}",
+        diff=dispatch.truncate_diff(state.local if state.source == "local-git" else state.remote),
+        prior_criticals=[],
+        prior_file_excerpts=excerpts,
+        diff_source=d["diff_source"],
+        comparison_base=d["comparison_base"],
+    )
+    hashes = {case.note.name: rt.constitution_note_sha256(text)}
+    substitution = d.setdefault("family_substitution", {})
+    substitution["replay_inputs"] = dict(
+        inputs=inputs,
+        constitution_note_hashes=hashes,
+        sha256=rt.prompt_replay_digest(inputs, hashes),
+    )
+    for family, evidence in substitution.get("excluded_for_prompt", {}).items():
+        size = len(
+            dispatch.render_reviewer_prompt(
+                seat=rt.Seat(f"{family}-1", family), **{**inputs, "pr_info": info}
+            ).encode()
+        )
+        evidence["prompt_bytes"] = size
+        substitution["prompt_bytes_by_seat"][f"{family}-1"] = size
+    dispatch._sign_public_gate_authority_evidence(d)
+
+
 class TestRoutedCapacityReplay:
     """Exercise admission with real dispatch readers and a hermetic command boundary."""
 
@@ -1366,8 +1408,14 @@ class TestRoutedCapacityReplay:
 
         rt = _load_review_team_module()
         dispatch = _load_pr_review_dispatch_module()
-        note = tmp_path / "task-x.md"
-        fm = {"task_id": "task-x", "pr": 99, "pr_repo": "hapax-systems/hapax-council"}
+        note = tmp_path / "active" / "task-x.md"
+        note.parent.mkdir(exist_ok=True)
+        fm = {
+            "type": "cc-task",
+            "task_id": "task-x",
+            "pr": 99,
+            "pr_repo": "hapax-systems/hapax-council",
+        }
         note.write_text("---\n" + yaml.safe_dump(fm) + "---\nfixture\n")
         local = "+new\n" * 10_000
         remote = "-old\n" * 10_000  # Same byte count cannot establish source identity.
@@ -1462,6 +1510,11 @@ class TestRoutedCapacityReplay:
             )
 
         monkeypatch.setattr(rt.subprocess, "run", runner)
+        monkeypatch.setattr(rt, "load_principal_tokens", lambda *_: ["synthetic-principal-token"])
+        monkeypatch.setenv(
+            dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+            "synthetic-replay-signing-key",
+        )
         dossier = _synth(
             rt,
             [
@@ -1482,6 +1535,7 @@ class TestRoutedCapacityReplay:
         )
 
         def check():
+            dispatch._sign_public_gate_authority_evidence(dossier)
             rt.review_dossier_path(note, "task-x").write_text(yaml.safe_dump(dossier))
             return rt.review_dossier_validity_blockers(
                 fm,
@@ -1492,7 +1546,7 @@ class TestRoutedCapacityReplay:
                 route_blocked_families={},
             )
 
-        return SimpleNamespace(
+        case = SimpleNamespace(
             rt=rt,
             dispatch=dispatch,
             note=note,
@@ -1502,6 +1556,8 @@ class TestRoutedCapacityReplay:
             runner=runner,
             check=check,
         )
+        _bind_capacity_replay(case, note.read_text())
+        return case
 
     @pytest.mark.parametrize("mismatch", ["source", "comparison_base", "digest", "missing"])
     def test_mismatched_diff_provenance_never_verifies(self, tmp_path, monkeypatch, mismatch):
@@ -1591,6 +1647,7 @@ class TestRoutedCapacityReplay:
         c = self.case(tmp_path, monkeypatch)
         c.fm["risk_tier"] = "T2"
         c.dossier.update(changed_files=["README.md"], changed_file_count=1)
+        c.dispatch._sign_public_gate_authority_evidence(c.dossier)
         c.rt.review_dossier_path(c.note, "task-x").write_text(yaml.safe_dump(c.dossier))
         monkeypatch.setattr(c.rt, "find_task_notes", lambda *_a, **_k: [(c.note, c.fm)])
         monkeypatch.setattr(
@@ -1633,6 +1690,7 @@ class TestRoutedCapacityReplay:
     ):
         c = self.case(tmp_path, monkeypatch)
         c.dossier["constitution_note_sha256"] = c.rt.constitution_note_sha256(_BASE_NOTE)
+        _bind_capacity_replay(c, _BASE_NOTE)
         current = _with_dispositions(_BASE_NOTE)
         if note_change == "status":
             current = current.replace("status: in_progress", "status: done")
@@ -1670,7 +1728,7 @@ class TestSizeReplacementNoteValidity:
             == ()
         )
 
-    def test_legacy_capacity_evidence_requires_replay_binding(
+    def test_live_capacity_evidence_refuses_stale_head_and_note(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         c = TestRoutedCapacityReplay().case(tmp_path, monkeypatch)
@@ -1923,7 +1981,9 @@ def _capacity_blockers(
         comparison_base=routed.state.merge_base,
         diff_sha256=_sha(routed.state.local),
     )
-    note = tmp_path / "task-x.md"
+    note = routed.note
+    routed.dossier = dossier
+    _bind_capacity_replay(routed, dispatched or _BASE_NOTE, excerpts="evidence\n" * 9000)
     note.write_text(current, encoding="utf-8")
     if mtime == "preserved":  # the edit keeps a pre-constitution mtime: only content can see it
         before = datetime.fromisoformat(dossier["constituted_at"]).timestamp() - 86_400
@@ -2104,7 +2164,7 @@ class TestSeatDispositionKeepsCapacityEvidence:
             rt, tmp_path, monkeypatch, edited, mtime="preserved"
         )
 
-    def test_a_disposition_never_raises_the_prompt_floor(
+    def test_a_disposition_never_changes_the_exact_replayed_prompt(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         routed = TestRoutedCapacityReplay().case(tmp_path, monkeypatch)
@@ -2112,16 +2172,15 @@ class TestSeatDispositionKeepsCapacityEvidence:
         registry = rt.load_lens_registry()
         note = routed.note
 
-        def floor(text: str, recorded: str) -> int:
-            note.write_text(text, encoding="utf-8")
+        def measure(recorded: str) -> int:
             evidence = rt._live_capacity_evidence(
                 99,
                 "a" * 40,
                 ("gemini-1",),
                 note_path=note,
-                frontmatter={"pr_repo": "hapax-systems/hapax-council"},
+                frontmatter=routed.fm,
                 registry=registry,
-                constituted_at="2026-06-11T20:00:00+00:00",
+                constituted_at=routed.dossier["constituted_at"],
                 constitution_note_sha256=recorded,
                 dossier=routed.dossier,
             )
@@ -2129,18 +2188,12 @@ class TestSeatDispositionKeepsCapacityEvidence:
             return evidence[1]["gemini-1"]
 
         huge = _DISPOSITIONS + "".join(f"- title: padding {i}\n" for i in range(5_000))
-        assert floor(_with_dispositions(_BASE_NOTE, huge), _sha(_BASE_NOTE)) == floor(
-            _BASE_NOTE, _sha(_BASE_NOTE)
-        )
-        # past the truncation limit the floor takes the smallest block any truncated note renders
-        long_body = _BASE_NOTE + "y" * 70_000 + "\n"
-        smallest = rt._capacity_untrusted_block("Linked cc-task note", "x" * 60_001, 60_000)
-        with_long = floor(long_body, _sha(long_body))
-        short = floor(_BASE_NOTE, _sha(_BASE_NOTE))
-        base_block = rt._capacity_untrusted_block(
-            "Linked cc-task note", f"## Linked task note: task-x.md\n\n{_BASE_NOTE}", 60_000
-        )
-        assert with_long - short == len(smallest.encode()) - len(base_block.encode())
+        for original in (_BASE_NOTE, _BASE_NOTE + "y" * 70_000 + "\n"):
+            note.write_text(original)
+            _bind_capacity_replay(routed, original)
+            expected = measure(_sha(original))
+            note.write_text(_with_dispositions(original, huge))
+            assert measure(_sha(original)) == expected
 
     def test_constitution_hash_removes_only_the_dispositions_key(self) -> None:
         rt = _load_review_team_module()
