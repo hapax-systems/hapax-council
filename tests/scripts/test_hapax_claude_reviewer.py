@@ -23,6 +23,21 @@ def _select_test_release(monkeypatch):
     monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def _declared_pool_home(tmp_path_factory, monkeypatch) -> Path:
+    """A HOME holding the route's declared pool config dir (max-2), and no inherited one.
+
+    claude.review.opus is bound to max-2 (subscription_pool_binding): the wrapper sets
+    CLAUDE_CONFIG_DIR to HOME/.claude-max-2 and refuses a conflicting inherited value, so a test
+    run from inside a Claude session must not leak that session's own CLAUDE_CONFIG_DIR.
+    """
+    home = tmp_path_factory.mktemp("pool-home")
+    (home / ".claude-max-2").mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return home
+
+
 def _fake_claude(path: Path) -> None:
     path.write_text(
         "#!/usr/bin/env python3\n"
@@ -55,7 +70,7 @@ def _fake_claude(path: Path) -> None:
         "    sys.stdin.read(), encoding='utf-8'\n"
         ")\n"
         "if os.environ.get('HAPAX_FAKE_CLAUDE_ENV'):\n"
-        "    Path(os.environ['HAPAX_FAKE_CLAUDE_ENV']).write_text(json.dumps({k:os.environ.get(k) for k in ['CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_DISABLE_FAST_MODE']}))\n"
+        "    Path(os.environ['HAPAX_FAKE_CLAUDE_ENV']).write_text(json.dumps({k:os.environ.get(k) for k in ['CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_DISABLE_FAST_MODE','CLAUDE_CONFIG_DIR']}))\n"
         "print('```yaml')\n"
         "print('verdict: accept')\n"
         "print('findings: []')\n"
@@ -98,7 +113,10 @@ def test_claude_reviewer_binds_declared_identity_and_disables_tools(
     assert json.loads(env_path.read_text()) == {
         "CLAUDE_CODE_EFFORT_LEVEL": "xhigh",
         "CLAUDE_CODE_DISABLE_FAST_MODE": "1",
+        "CLAUDE_CONFIG_DIR": str(Path(os.environ["HOME"]) / ".claude-max-2"),
     }
+    # The dispatcher turns success-path stderr into a dossier diagnostic: the binding is silent.
+    assert result.stderr == ""
     argv = json.loads(argv_path.read_text(encoding="utf-8"))
     assert argv[:5] == ["-p", "--model", "claude-opus-4-8", "--effort", "xhigh"]
     assert argv[argv.index("--tools") + 1] == ""
@@ -257,6 +275,7 @@ def test_review_child_uses_descriptor_despite_stale_text_and_environment(tmp_pat
     assert json.loads(captured.read_text()) == {
         "CLAUDE_CODE_EFFORT_LEVEL": effort,
         "CLAUDE_CODE_DISABLE_FAST_MODE": "1",
+        "CLAUDE_CONFIG_DIR": str(Path(os.environ["HOME"]) / ".claude-max-2"),
     }
     argv = json.loads(argv_path.read_text())
     assert argv[argv.index("--effort") + 1] == effort
@@ -358,6 +377,7 @@ def test_copied_installed_reviewer_uses_declared_source(tmp_path, binding):
     home = tmp_path / "home"
     installed = home / ".local/bin/hapax-claude-reviewer"
     installed.parent.mkdir(parents=True)
+    (home / ".claude-max-2").mkdir()
     shutil.copy2(WRAPPER, installed)
     assert not installed.is_symlink()
     activation = home / ".cache/hapax/source-activation/worktree"
@@ -879,7 +899,7 @@ def _scripted_claude(
         returncode, stdout = replies[len(calls) - 1]
         return subprocess.CompletedProcess(cmd, returncode, stdout, "")
 
-    monkeypatch.setattr(module, "_execution_binding", lambda: _BINDING)
+    monkeypatch.setattr(module, "_execution_binding", lambda *_root: _BINDING)
     monkeypatch.setattr(module, "_run_claude", run)
     monkeypatch.setattr(module.sys, "stdin", io.StringIO("review packet"))
     return calls
@@ -1082,3 +1102,145 @@ def test_claude_cli_reports_empty_tools_with_wrapper_equivalent_flags() -> None:
     assert tool_uses == []
     result_event = next(event for event in events if event.get("type") == "result")
     assert result_event["result"] == "NO_ACTUAL_TOOL_AVAILABLE"
+
+
+# --- The declared subscription pool (subscription_pool_binding: claude.review.opus -> max-2) ----
+
+
+def _run_pool_wrapper(
+    tmp_path: Path, **env_overrides: str
+) -> tuple[subprocess.CompletedProcess, Path]:
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    argv_path = tmp_path / "argv.json"
+    env = {
+        **os.environ,
+        "HAPAX_FAKE_CLAUDE_ARGV": str(argv_path),
+        "HAPAX_FAKE_CLAUDE_STDIN": str(tmp_path / "stdin.txt"),
+        "HAPAX_FAKE_CLAUDE_ENV": str(tmp_path / "env.json"),
+        **env_overrides,
+    }
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        timeout=30,
+    )
+    return result, argv_path
+
+
+def test_review_refuses_a_conflicting_inherited_config_dir(tmp_path: Path) -> None:
+    """The silent switch this binding closes: a seat on another account runs the dispatch, and
+    the review would bill that seat's account while admission measured the declared pool."""
+    other = tmp_path / "another-account-config"
+    other.mkdir()
+
+    result, argv_path = _run_pool_wrapper(tmp_path, CLAUDE_CONFIG_DIR=str(other))
+
+    assert result.returncode == 9
+    assert "conflicting inherited CLAUDE_CONFIG_DIR" in result.stderr
+    assert "subscription pool max-2" in result.stderr
+    assert result.stdout == ""
+    assert not argv_path.exists()
+
+
+def test_review_accepts_an_inherited_config_dir_that_is_the_declared_pool(tmp_path: Path) -> None:
+    declared = Path(os.environ["HOME"]) / ".claude-max-2"
+
+    result, argv_path = _run_pool_wrapper(tmp_path, CLAUDE_CONFIG_DIR=str(declared))
+
+    assert result.returncode == 0, result.stderr
+    assert argv_path.exists()
+    assert json.loads((tmp_path / "env.json").read_text())["CLAUDE_CONFIG_DIR"] == str(declared)
+
+
+def test_review_refuses_a_route_with_no_declared_pool(tmp_path: Path) -> None:
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
+    route.pop("subscription_pool_binding")
+    config = tmp_path / "registry.json"
+    config.write_text(json.dumps(registry))
+
+    result, argv_path = _run_pool_wrapper(tmp_path, HAPAX_PLATFORM_CAPABILITY_REGISTRY=str(config))
+
+    # The release's own registry declares max-2, so an override that unbinds the route is the
+    # detectable form of the risk: refused as a differing binding, never run unbound.
+    assert result.returncode == 9
+    assert "differs from the release's declaration" in result.stderr
+    assert not argv_path.exists()
+
+
+def test_review_refuses_an_override_that_rebinds_the_route_to_another_pool(tmp_path: Path) -> None:
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
+    route["subscription_pool_binding"].update(
+        pool="max-3",
+        config_home=".claude-max-3",
+        receipt_dir=".cache/hapax/relay/receipts-max-3",
+    )
+    route["native_load_set"]["native_home"] = ".claude-max-3"
+    config = tmp_path / "registry.json"
+    config.write_text(json.dumps(registry))
+    (Path(os.environ["HOME"]) / ".claude-max-3").mkdir()
+
+    result, argv_path = _run_pool_wrapper(tmp_path, HAPAX_PLATFORM_CAPABILITY_REGISTRY=str(config))
+
+    assert result.returncode == 9
+    assert "differs from the release's declaration" in result.stderr
+    assert not argv_path.exists()
+
+
+def test_review_refuses_an_override_that_binds_a_route_the_release_leaves_unbound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The override alone may never choose the billed pool: a release that declares no pool and
+    an override that declares one differ, and are refused like any other difference."""
+    module = _load_wrapper("reviewer_release_unbound")
+    resolved = {
+        "effective": {"pool": "max-3", "config_dir": "/srv/example-home/.claude-max-3"},
+        "release": None,
+    }
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout=json.dumps(resolved), stderr=""
+        ),
+    )
+
+    with pytest.raises(ValueError, match="differs from the release's declaration"):
+        module._pool_binding(REPO_ROOT)
+
+
+def test_the_bound_world_tests_run_on_the_real_registry() -> None:
+    """Guard (desk condition 1): an unbound-registry fixture from the family-selection tests must
+    never reach these tests, which pin the real binding's refusals."""
+    from shared.platform_capability_registry import resolve_subscription_pool_binding
+
+    assert "HAPAX_PLATFORM_CAPABILITY_REGISTRY" not in os.environ
+    binding = resolve_subscription_pool_binding("claude.review.opus")
+    assert binding is not None and binding.pool == "max-2"
+
+
+def test_review_refuses_when_the_declared_pool_config_dir_is_missing(tmp_path: Path) -> None:
+    (Path(os.environ["HOME"]) / ".claude-max-2").rmdir()
+
+    result, argv_path = _run_pool_wrapper(tmp_path)
+
+    assert result.returncode == 9
+    assert "declared config dir is missing" in result.stderr
+    assert not argv_path.exists()
+
+
+def test_review_refuses_an_unreadable_pool_declaration(tmp_path: Path) -> None:
+    config = tmp_path / "registry.json"
+    config.write_text("{not json")
+
+    result, argv_path = _run_pool_wrapper(tmp_path, HAPAX_PLATFORM_CAPABILITY_REGISTRY=str(config))
+
+    assert result.returncode == 9
+    assert "refusing undeclared invocation" in result.stderr
+    assert not argv_path.exists()
