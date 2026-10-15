@@ -95,7 +95,7 @@ _CREDENTIAL_VARIABLE_SUFFIXES = (
 #: the normalised identifier against the declared names and forms below.
 _ENV_READ_CANDIDATE_RE = re.compile(
     r"\b(?:os\.environ\s*(?:\[|\.(?:get|setdefault)\s*\()|os\.getenv\s*\(|"
-    r"process\.env(?:\.|\[))\s*[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
+    r"process\.env(?:\.|\[))\s*(?:key\s*=\s*)?[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
 _ENV_BINDING_CANDIDATE_RES = (
@@ -202,11 +202,23 @@ def _host_of(target: str, *, strict_port: bool = False) -> str:
         return ""
 
 
+#: The longest leading run of hostname characters. Shell `${X:-url}` and YAML flow
+#: delimiters end the value before urlsplit sees them, so `api.openai.com}` names the
+#: provider. Detection only: the proxy exemption keeps comparing the exact host.
+_HOSTNAME_PREFIX_RE = re.compile(r"[a-z0-9.-]*")
+#: Closing delimiters a candidate may swallow; a trailing `]` also makes urlsplit
+#: reject the whole candidate as a malformed IPv6 authority.
+_CLOSING_DELIMITERS = "}])>,;"
+
+
 def _has_provider_url(content: str) -> bool:
-    return any(
-        _host_of(match.group()) in _PROVIDER_HOST_SET
-        for match in _URL_CANDIDATE_RE.finditer(content)
-    )
+    for match in _URL_CANDIDATE_RE.finditer(content):
+        candidate = match.group()
+        for host in (_host_of(candidate), _host_of(candidate.rstrip(_CLOSING_DELIMITERS))):
+            delimited = _HOSTNAME_PREFIX_RE.match(host).group().rstrip(".")
+            if host in _PROVIDER_HOST_SET or delimited in _PROVIDER_HOST_SET:
+                return True
+    return False
 
 
 def _has_credential_env_name(content: str) -> bool:
@@ -327,16 +339,27 @@ def _node_credential_env_read(node: ast.AST) -> bool:
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
         attr = node.func.attr
         if attr in {"get", "setdefault"} and _is_os_environ(node.func.value):
-            name = _literal_str(node.args[0]) if node.args else None
+            name = _env_read_name_arg(node)
             return name is not None and _credential_name_matches(name)
         if (
             attr == "getenv"
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "os"
         ):
-            name = _literal_str(node.args[0]) if node.args else None
+            name = _env_read_name_arg(node)
             return name is not None and _credential_name_matches(name)
     return False
+
+
+def _env_read_name_arg(call: ast.Call) -> str | None:
+    """The literal variable name, passed positionally or as ``key=``."""
+
+    if call.args:
+        return _literal_str(call.args[0])
+    for keyword in call.keywords:
+        if keyword.arg == "key":
+            return _literal_str(keyword.value)
+    return None
 
 
 def _call_api_key_args(call: ast.Call) -> list[ast.keyword]:

