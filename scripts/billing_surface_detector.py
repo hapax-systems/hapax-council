@@ -98,13 +98,16 @@ _ENV_READ_CANDIDATE_RE = re.compile(
     r"process\.env(?:\.|\[))\s*(?:key\s*=\s*)?[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
-#: A `key=` keyword in any argument position. The scan does not stop at the first
-#: `)`, so an earlier `default=str()` cannot end the call early. It stops at the next
-#: env-read opening instead, which keeps it linear: that opening scans the rest.
+#: A `key=` keyword in any argument position, across the call's lines when given full
+#: text. The scan does not stop at the first `)`, so an earlier `default=str()` cannot
+#: end the call early. It stops at the next env-read opening instead, which keeps it
+#: linear (that opening scans the rest), and at a hard cap, which bounds how far one
+#: call's arguments may reach.
 _ENV_READ_OPENING = r"(?:os\.environ\s*\.(?:get|setdefault)|os\.getenv)\s*\("
+_ENV_READ_KEYWORD_SPAN_CAP = 2_000
 _ENV_READ_KEYWORD_CANDIDATE_RE = re.compile(
-    rf"\b{_ENV_READ_OPENING}(?:(?!{_ENV_READ_OPENING})[^\n])*?\bkey\s*=\s*"
-    r"[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
+    rf"\b{_ENV_READ_OPENING}(?:(?!{_ENV_READ_OPENING})[\s\S]){{0,{_ENV_READ_KEYWORD_SPAN_CAP}}}?"
+    r"\bkey\s*=\s*[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
 _ENV_BINDING_CANDIDATE_RES = (

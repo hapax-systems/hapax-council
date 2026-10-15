@@ -58,6 +58,17 @@ def test_multiline_node_covers_only_added_lines() -> None:
     assert [(f.kind, f.covers) for f in findings] == [("api-key-route", (2,))]
 
 
+def test_surfaces_on_unchanged_lines_yield_no_finding_and_no_exemption() -> None:
+    source = (
+        'key = os.environ["OPENAI_API_KEY"]\n'
+        "client = OpenAI(api_key=key)\n"
+        'proxied = OpenAI(api_key=key, base_url="http://localhost:4000")\n'
+        'del os.environ["OLD_API_KEY"]\n'
+        "ordinary = 1\n"
+    )
+    assert _node_findings_for_postimage("app.py", source, {5}) == ([], [], True)
+
+
 def test_marker_allowlist_requires_root_prefix_or_exact_file() -> None:
     assert _marker_is_allowed_on("tests/gen.py")
     assert _marker_is_allowed_on("scripts/check-billing-surface-diff.py")
@@ -284,6 +295,23 @@ def test_reordered_keyword_reads_survive_the_unparseable_text_fallback(call: str
     assert not parsed and not allowed
     assert [item.kind for item in findings] == ["unparseable-python"]
     assert "credential-env-read" in _text_classes(f"v = {call}")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'v = os.getenv(default=None,\n    key="OPENAI_API_KEY")',
+        'v = os.environ.get(\n    default="",\n    key="ANTHROPIC_API_KEY",\n)',
+        'v = os.getenv(\n    "OPENAI_API_KEY")',
+    ],
+)
+def test_text_classes_keeps_a_multiline_read_given_the_full_text(content: str) -> None:
+    assert "credential-env-read" in _text_classes(content)
+
+
+def test_keyword_scan_across_lines_is_capped() -> None:
+    content = "v = os.getenv(default=None,\n" + "#\n" * 1_500 + '    key="OPENAI_API_KEY")'
+    assert "credential-env-read" not in _text_classes(content)
 
 
 def test_reordered_keyword_read_of_a_non_credential_is_not_a_finding() -> None:
