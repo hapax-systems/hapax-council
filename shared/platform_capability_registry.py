@@ -41,6 +41,7 @@ from shared.platform_capability_receipts import (
 )
 from shared.quota_spend_ledger import (
     CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX,
+    CLAUDE_ADMISSION_COMPOSITE_REF_RE,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     QuotaSpendLedgerError,
     SubscriptionQuotaState,
@@ -936,7 +937,10 @@ class SubscriptionPoolBinding(StrictModel):
         from pathlib import PurePosixPath
 
         if re.search(r"(?:^|-)(?:account|billing|customer|invoice|payment)", self.pool):
-            raise ValueError("pool names a pool, never a billing or account identifier")
+            raise ValueError(
+                "pool names a pool, never a billing or account identifier; next action: rename "
+                "the pool after its config home (for example max-2)"
+            )
         paths = {
             "config_home": self.config_home,
             "receipt_dir": self.receipt_dir,
@@ -947,17 +951,27 @@ class SubscriptionPoolBinding(StrictModel):
         for name, value in paths.items():
             path = PurePosixPath(value)
             if path.is_absolute() or ".." in path.parts or str(path) in {"", "."}:
-                raise ValueError(f"subscription pool {name} must be a path inside HOME")
+                raise ValueError(
+                    f"subscription pool {name} must be a path inside HOME; next action: write it "
+                    "relative to HOME, without a leading / or any .."
+                )
         normalized = {name: str(PurePosixPath(value)) for name, value in paths.items()}
         if len(set(normalized.values())) != len(normalized):
-            raise ValueError("subscription pool paths must be distinct")
+            raise ValueError(
+                "subscription pool paths must be distinct; next action: give each of config_home, "
+                "receipt_dir, headless_dir, pace_activation and durable_sink_root its own path"
+            )
         if normalized["config_home"] == CLAUDE_DEFAULT_CONFIG_HOME:
             raise ValueError(
                 "a pool binding names a non-default config home; an unbound route already "
-                "runs on the CLI default"
+                "runs on the CLI default; next action: name the pool's own config home, or "
+                "drop the binding to leave the route on the default"
             )
         if normalized["receipt_dir"] == SHARED_RELAY_RECEIPT_HOME:
-            raise ValueError("a bound pool keeps its receipts outside the shared relay dir")
+            raise ValueError(
+                "a bound pool keeps its receipts outside the shared relay dir; next action: "
+                "declare a pool-named receipt_dir (for example .cache/hapax/relay/receipts-max-2)"
+            )
         return self
 
 
@@ -1046,7 +1060,8 @@ class PlatformCapabilityRoute(StrictModel):
                 or self.capacity_pool is not CapacityPool.SUBSCRIPTION_QUOTA
             ):
                 raise ValueError(
-                    "subscription_pool_binding is valid only on a Claude subscription route"
+                    "subscription_pool_binding is valid only on a Claude subscription route; "
+                    "next action: remove it from this route"
                 )
             load_set = self.native_load_set
             if (
@@ -1056,7 +1071,8 @@ class PlatformCapabilityRoute(StrictModel):
             ):
                 raise ValueError(
                     "a pool-bound route's native_load_set must name the same config home "
-                    "through CLAUDE_CONFIG_DIR"
+                    "through CLAUDE_CONFIG_DIR; next action: set native_load_set.home_env to "
+                    "CLAUDE_CONFIG_DIR and native_home to the binding's config_home"
                 )
 
         if self.route_state is RouteState.BLOCKED and not self.blocked_reasons:
@@ -1254,7 +1270,8 @@ class PlatformCapabilityRegistry(StrictModel):
             if prior != binding:
                 raise ValueError(
                     f"subscription pool {binding.pool!r} is declared with different paths "
-                    f"on {route.route_id}"
+                    f"on {route.route_id}; next action: copy one binding's paths to every route "
+                    "naming that pool"
                 )
             for path in (
                 binding.config_home,
@@ -1270,7 +1287,7 @@ class PlatformCapabilityRegistry(StrictModel):
                     ):
                         raise ValueError(
                             f"subscription pools {owner!r} and {binding.pool!r} share the path "
-                            f"{path!r}"
+                            f"{path!r}; next action: give each pool its own, non-nested paths"
                         )
                 claimed.append((candidate, binding.pool))
 
@@ -2098,7 +2115,9 @@ def resolve_subscription_pool_bindings(
         registry = PlatformCapabilityRegistry.model_validate(_load_json_object(path))
     except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise PlatformCapabilityRegistryError(
-            f"invalid platform capability registry at {path}: {exc}"
+            f"invalid platform capability registry at {path}: {exc}; next action: repair the "
+            "named declaration in that file (or unset or correct HAPAX_PLATFORM_CAPABILITY_REGISTRY "
+            "if it points there), then retry"
         ) from exc
     root = Path.home() if home is None else home
     return {
@@ -2499,7 +2518,26 @@ def _route_specific_quota_admission_fresh(
         route_id,
         now=now,
     )
-    return state is SubscriptionQuotaState.FRESH, evidence_refs
+    fresh = state is SubscriptionQuotaState.FRESH
+    pool = (route_payload.get("subscription_pool_binding") or {}).get("pool")
+    if fresh and pool and not _admission_refs_name_pool(evidence_refs, str(pool)):
+        # A route bound to a pool is admitted only by that pool's own admission receipts: default-
+        # or other-pool evidence for it would bill one pool on another's measurement.
+        return False, (
+            *evidence_refs,
+            f"quota-spend-ledger:{route_id}:admission-not-from-declared-pool:{pool}",
+        )
+    return fresh, evidence_refs
+
+
+def _admission_refs_name_pool(evidence_refs: Iterable[str], pool: str) -> bool:
+    """True iff there is a Claude admission ref and every one names ``pool``'s receipt."""
+    labels = [
+        match.group("label")
+        for ref in evidence_refs
+        if (match := CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref)) is not None
+    ]
+    return bool(labels) and all(f"-pool-{pool}-" in label for label in labels)
 
 
 def _quota_spend_live_path_from_env() -> Path | None:

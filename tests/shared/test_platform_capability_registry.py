@@ -830,10 +830,18 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
 CLAUDE_NOW = datetime(2026, 7, 8, 14, 5, tzinfo=UTC)
 
 
+#: The review route's admission as the bound pool's own writer names it (-pool-max-2-).
+REVIEW_POOL_ADMISSION_EVIDENCE_REF = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+    "claude-subscription-quota-admission-20260708t140000z.yaml",
+    "claude-subscription-quota-admission-claude-review-opus-pool-max-2-20260708t140000z.yaml",
+).replace("claude.headless.full", "claude.review.opus")
+
+
 def _write_claude_live_quota_ledger(
     path: Path,
     *,
     route_id: str = "claude.headless.full",
+    evidence_refs: list[str] | None = None,
 ) -> None:
     payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
     payload["ledger_id"] = "quota-spend-ledger-test-claude-live"
@@ -855,9 +863,8 @@ def _write_claude_live_quota_ledger(
             "provider": "anthropic-claude-subscription",
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
-            "evidence_refs": [
-                CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", route_id)
-            ],
+            "evidence_refs": evidence_refs
+            or [CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", route_id)],
             "operator_visible_reason": "fixture claude admission receipt",
         }
     )
@@ -1433,7 +1440,11 @@ def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
     receipt_dir = tmp_path / "receipts"
     receipt_dir.mkdir()
     live_ledger = tmp_path / "quota-spend-ledger-live.json"
-    _write_claude_live_quota_ledger(live_ledger, route_id="claude.review.opus")
+    _write_claude_live_quota_ledger(
+        live_ledger,
+        route_id="claude.review.opus",
+        evidence_refs=[REVIEW_POOL_ADMISSION_EVIDENCE_REF],
+    )
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
     receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
     (receipt_dir / "claude.json").write_text(
@@ -1457,11 +1468,74 @@ def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
 
     assert route.route_state is RouteState.ACTIVE
     assert route.blocked_reasons == []
+    assert REVIEW_POOL_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+    assert result.ok is True
+
+
+@pytest.mark.parametrize(
+    "evidence_refs",
+    [
+        # Default-pool evidence: a fresh account-1 admission for the route bound to max-2.
+        [CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", "claude.review.opus")],
+        # Another pool's evidence.
+        [REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace("-pool-max-2-", "-pool-max-3-")],
+        # One pooled ref does not launder an unpooled one beside it.
+        [
+            REVIEW_POOL_ADMISSION_EVIDENCE_REF,
+            CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", "claude.review.opus"),
+        ],
+    ],
+)
+def test_bound_review_route_stays_blocked_on_evidence_not_from_its_declared_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    evidence_refs: list[str],
+) -> None:
+    """claude.review.opus is bound to max-2: a fresh ledger admission that does not name max-2
+    never makes it active, whatever the receipt and the admission state say."""
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir()
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(
+        live_ledger, route_id="claude.review.opus", evidence_refs=evidence_refs
+    )
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    (receipt_dir / "claude.json").write_text(
+        _make_receipt(
+            observed_at=datetime(2026, 7, 8, 14, 1, tzinfo=UTC),
+            routes=["claude.review.opus"],
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    route = load_platform_capability_registry(receipt_dir=receipt_dir, now=CLAUDE_NOW).require(
+        "claude.review.opus"
+    )
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "claude_review_route_specific_quota_receipt_absent" in route.blocked_reasons
     assert (
-        CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", "claude.review.opus")
+        "quota-spend-ledger:claude.review.opus:admission-not-from-declared-pool:max-2"
         in route.freshness.evidence.quota.evidence_refs
     )
-    assert result.ok is True
+
+
+def test_unbound_claude_routes_keep_their_default_pool_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The pool check binds only a route that declares a pool: account 1's unbound routes are
+    admitted from their default-pool evidence exactly as before."""
+    payload = _payload()
+    route = _route_payload(payload, "claude.headless.full")
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_claude_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+
+    admitted, refs = _route_specific_quota_admission_fresh(route, now=CLAUDE_NOW)
+
+    assert admitted is True
+    assert CLAUDE_ADMISSION_EVIDENCE_REF in refs
 
 
 def test_claude_review_route_not_blocked_by_unrelated_headless_wrapper(
@@ -1471,7 +1545,11 @@ def test_claude_review_route_not_blocked_by_unrelated_headless_wrapper(
     receipt_dir = tmp_path / "receipts"
     receipt_dir.mkdir()
     live_ledger = tmp_path / "quota-spend-ledger-live.json"
-    _write_claude_live_quota_ledger(live_ledger, route_id="claude.review.opus")
+    _write_claude_live_quota_ledger(
+        live_ledger,
+        route_id="claude.review.opus",
+        evidence_refs=[REVIEW_POOL_ADMISSION_EVIDENCE_REF],
+    )
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
     receipt_time = datetime(2026, 7, 8, 14, 1, tzinfo=UTC)
     bad_headless = WrapperEvidence(
@@ -2162,8 +2240,10 @@ def test_pool_binding_rejects_an_unsafe_declaration(field: str, value: str, matc
     if field == "config_home" and value != ".claude":
         route["native_load_set"]["native_home"] = value
 
-    with pytest.raises(ValidationError, match=match):
+    with pytest.raises(ValidationError, match=match) as refused:
         PlatformCapabilityRegistry.model_validate(payload)
+    if match != "should match pattern":  # pydantic's own pattern message, not ours
+        assert "next action:" in str(refused.value)
 
 
 def test_pool_binding_must_agree_with_the_native_load_set() -> None:
@@ -2266,7 +2346,7 @@ def test_an_unreadable_registry_never_resolves_to_unbound(tmp_path: Path) -> Non
     broken = tmp_path / "registry.json"
     broken.write_text("{not json", encoding="utf-8")
 
-    with pytest.raises(PlatformCapabilityRegistryError):
+    with pytest.raises(PlatformCapabilityRegistryError, match="next action: repair"):
         resolve_subscription_pool_binding(REVIEW_ROUTE, broken)
 
 

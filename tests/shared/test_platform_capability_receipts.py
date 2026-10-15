@@ -2558,6 +2558,71 @@ class TestQuotaIsObservedOnlyFromTheRoutesDeclaredPool:
         assert self._observe(module, "claude.headless.full").status.value == "unobservable"
         assert self._observe(module, self.REVIEW).status.value == "unobservable"
 
+    # --- The real binding loader (no pinned bindings) under a registry override -------------
+
+    @staticmethod
+    def _release_registry() -> dict:
+        return json.loads(
+            (
+                Path(__file__).resolve().parents[2] / "config/platform-capability-registry.json"
+            ).read_text(encoding="utf-8")
+        )
+
+    def _real_loader_module(self, tmp_path: Path, override: str | dict, monkeypatch):  # noqa: ANN001, ANN205
+        registry = tmp_path / "override-registry.json"
+        registry.write_text(
+            override if isinstance(override, str) else json.dumps(override), encoding="utf-8"
+        )
+        monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+        shared_dir = tmp_path / "shared"
+        shared_dir.mkdir()
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        module_globals = module["observe_quota"].__globals__
+        module_globals["QUOTA_RECEIPT_DIR"] = shared_dir
+        module_globals["QUOTA_LEDGER_LIVE"] = _quota_ledger_fresh_for(
+            tmp_path, {self.REVIEW: "fresh", "claude.headless.full": "fresh"}
+        )
+        _quota_receipt(
+            shared_dir / "claude-quota-admission-h.yaml", route_id="claude.headless.full"
+        )
+        _quota_receipt(shared_dir / "claude-quota-admission-r.yaml", route_id=self.REVIEW)
+        return module
+
+    def test_a_corrupt_registry_override_observes_no_claude_route(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Through the real loader: the registry error is caught and narrows (no Claude route is
+        observed); observation never aborts and never treats the routes as unbound."""
+        module = self._real_loader_module(tmp_path, "{not json", monkeypatch)
+
+        assert module["_subscription_pool_bindings"]() is None
+        assert self._observe(module, "claude.headless.full").status.value == "unobservable"
+        assert self._observe(module, self.REVIEW).status.value == "unobservable"
+
+    def test_an_override_that_drops_the_binding_observes_no_claude_route(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The detectable form of the override risk: the override unbinds a route the release
+        binds, so the shared dir's default-pool receipt would observe the max-2 route. Refused."""
+        registry = self._release_registry()
+        for route in registry["routes"]:
+            route.pop("subscription_pool_binding", None)
+        module = self._real_loader_module(tmp_path, registry, monkeypatch)
+
+        assert module["_subscription_pool_bindings"]() is None
+        assert self._observe(module, self.REVIEW).status.value == "unobservable"
+        assert self._observe(module, "claude.headless.full").status.value == "unobservable"
+
+    def test_an_override_that_agrees_with_the_release_keeps_its_bindings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = self._real_loader_module(tmp_path, self._release_registry(), monkeypatch)
+
+        bindings = module["_subscription_pool_bindings"]()
+        assert bindings is not None and bindings[self.REVIEW].pool == "max-2"
+        assert self._observe(module, "claude.headless.full").status.value == "observed"
+        assert self._observe(module, self.REVIEW).status.value == "unobservable"
+
 
 class _WrapperRoute:
     def __init__(self, route_id: str, sanctioned_wrapper: str) -> None:

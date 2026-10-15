@@ -630,11 +630,18 @@ def _fresh_quota_receipt(
 
 
 def _subscription_pool_bindings() -> dict[str, ResolvedSubscriptionPool] | None:
-    """The registry's declared route pools; None (refuse Claude receipts) when unreadable."""
+    """The registry's declared route pools; None (refuse Claude receipts) when unreadable.
+
+    The effective registry follows HAPAX_PLATFORM_CAPABILITY_REGISTRY. Bindings that differ from
+    the release's own (an override that unbinds, rebinds or binds a route) are refused like
+    unreadable ones: an override alone never decides which pool's receipts observe a route.
+    """
     try:
-        return resolve_subscription_pool_bindings()
+        effective = resolve_subscription_pool_bindings()
+        release = resolve_subscription_pool_bindings(PLATFORM_CAPABILITY_REGISTRY)
     except PlatformCapabilityRegistryError:
         return None
+    return effective if effective == release else None
 
 
 def _quota_receipt_dirs(
