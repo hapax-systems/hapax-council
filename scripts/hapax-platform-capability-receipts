@@ -59,11 +59,8 @@ from shared.platform_capability_receipts import (  # noqa: E402
 )
 from shared.platform_capability_registry import (  # noqa: E402
     PLATFORM_CAPABILITY_REGISTRY,
-    PlatformCapabilityRegistryError,
     PlatformCapabilityRoute,
-    ResolvedSubscriptionPool,
     load_platform_capability_registry_for_dispatch,
-    resolve_subscription_pool_bindings,
 )
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
@@ -629,58 +626,6 @@ def _fresh_quota_receipt(
     return doc
 
 
-def _subscription_pool_bindings() -> dict[str, ResolvedSubscriptionPool] | None:
-    """The registry's declared route pools; None (refuse Claude receipts) when unreadable.
-
-    The effective registry follows HAPAX_PLATFORM_CAPABILITY_REGISTRY. Bindings that differ from
-    the release's own (an override that unbinds, rebinds or binds a route) are refused like
-    unreadable ones: an override alone never decides which pool's receipts observe a route.
-    """
-    try:
-        effective = resolve_subscription_pool_bindings()
-        release = resolve_subscription_pool_bindings(PLATFORM_CAPABILITY_REGISTRY)
-    except PlatformCapabilityRegistryError:
-        return None
-    return effective if effective == release else None
-
-
-def _quota_receipt_dirs(
-    pool_bindings: dict[str, ResolvedSubscriptionPool] | None,
-) -> list[tuple[Path, str | None]]:
-    """The shared relay dir (pool None), then each declared pool's own receipt dir, once each."""
-    dirs: list[tuple[Path, str | None]] = [(QUOTA_RECEIPT_DIR, None)]
-    seen = {QUOTA_RECEIPT_DIR.expanduser().resolve()}
-    for binding in sorted((pool_bindings or {}).values(), key=lambda item: item.pool):
-        key = binding.receipt_dir.expanduser().resolve()
-        if key not in seen:
-            seen.add(key)
-            dirs.append((binding.receipt_dir, binding.pool))
-    return dirs
-
-
-def _receipt_is_routes_declared_pool(
-    doc: dict[str, Any],
-    route_id: str,
-    *,
-    dir_pool: str | None,
-    pool_bindings: dict[str, ResolvedSubscriptionPool] | None,
-    routes: list[PlatformCapabilityRoute],
-) -> bool:
-    """A receipt counts only from its route's declared pool: that pool's dir, naming that pool.
-
-    An unbound route's pool is the shared relay dir with no ``pool`` field. Unreadable bindings
-    refuse every Claude receipt, because a bound route cannot then be told from an unbound one.
-    """
-    if pool_bindings is None:
-        return not any(
-            route.route_id == route_id and route.platform.value == "claude" for route in routes
-        )
-    binding = pool_bindings.get(route_id)
-    declared_pool = None if binding is None else binding.pool
-    receipt_pool = str(doc.get("pool") or "").strip() or None
-    return dir_pool == declared_pool and receipt_pool == declared_pool
-
-
 def observe_quota(
     platform: str, routes: list[PlatformCapabilityRoute], *, now: datetime
 ) -> SurfaceEvidence:
@@ -703,22 +648,15 @@ def observe_quota(
     with the original reason code, which is the honest state when nothing has been observed.
     """
     route_ids = {route.route_id for route in routes}
-    pool_bindings = _subscription_pool_bindings()
     # Per route, the newest fresh positive receipt (review finding on #4616: one route's receipt
     # used to mark the whole platform observed).
     best_by_route: dict[str, tuple[datetime, dict[str, Any], Path]] = {}
-    for receipt_dir, dir_pool in _quota_receipt_dirs(pool_bindings):
-        if not receipt_dir.is_dir():
-            continue
-        for path in receipt_dir.glob("*quota*admission*.yaml"):
+    if QUOTA_RECEIPT_DIR.is_dir():
+        for path in QUOTA_RECEIPT_DIR.glob("*quota*admission*.yaml"):
             doc = _fresh_quota_receipt(path, route_ids=route_ids, now=now)
             if doc is None:
                 continue
             route_id = str(doc["route_id"])
-            if not _receipt_is_routes_declared_pool(
-                doc, route_id, dir_pool=dir_pool, pool_bindings=pool_bindings, routes=routes
-            ):
-                continue
             observed = doc["_observed"]
             current = best_by_route.get(route_id)
             if current is None or observed > current[0]:
@@ -774,11 +712,6 @@ def observe_quota(
                 f"platform-capability-registry:{route_id}:quota:observed",
             ]
         )
-        binding = (pool_bindings or {}).get(route_id)
-        if binding is not None:
-            evidence_refs.append(
-                f"platform-capability-registry:{route_id}:quota:pool:{binding.pool}"
-            )
     evidence_refs = list(dict.fromkeys(evidence_refs))
     return surface_evidence(
         status=EvidenceStatus.OBSERVED,
