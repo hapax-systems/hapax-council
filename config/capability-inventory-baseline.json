@@ -1,5 +1,5 @@
 {
-  "count": 187,
+  "count": 188,
   "records": {
     "agy.review.direct": {
       "fingerprint": "4ea797143ee0282ae82de6de2fa3a874990802f455005825b9eaf48a87da9e68",
@@ -480,6 +480,10 @@
     "money_rail.resource_receipt_surface": {
       "fingerprint": "be749d208221b57da912ef1101172449ea3b085cadcaab2daddb5ec0d4b36445",
       "inventory_disposition": "evidence_only_non_supply"
+    },
+    "muse.review.direct": {
+      "fingerprint": "b852ff8c1b44da61dceb111e5a0505713b0f0b0cb495c87a3b1eaa0efe9b72ce",
+      "inventory_disposition": "admitted_supply"
     },
     "music.midi_control_surface": {
       "fingerprint": "91db3d5aa1cbaa5d6417f1e084266b7a7c47e1a609359f009c24ba39359cb8bf",
