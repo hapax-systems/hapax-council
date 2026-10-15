@@ -98,11 +98,8 @@ _ENV_READ_CANDIDATE_RE = re.compile(
     r"process\.env(?:\.|\[))\s*(?:key\s*=\s*)?[\"']?(?P<name>[A-Za-z][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
-#: A `key=` keyword in any argument position, across the call's lines when given full
-#: text. The scan does not stop at the first `)`, so an earlier `default=str()` cannot
-#: end the call early. It stops at the next env-read opening instead, which keeps it
-#: linear (that opening scans the rest), and at a hard cap, which bounds how far one
-#: call's arguments may reach.
+#: `key=` in any position, across lines; it ends at the next env-read opening (so the
+#: scan is linear) or at the cap, not at the first `)`.
 _ENV_READ_OPENING = r"(?:os\.environ\s*\.(?:get|setdefault)|os\.getenv)\s*\("
 _ENV_READ_KEYWORD_SPAN_CAP = 2_000
 _ENV_READ_KEYWORD_CANDIDATE_RE = re.compile(
@@ -125,9 +122,7 @@ _API_KEY_ARG_RES = (
 #: header and scheme forms. It stays a line rule with no AST exemption.
 _AUTH_HEADER_NAMES = frozenset({"authorization", "proxy-authorization"})
 _BEARER_SCHEMES = frozenset({"bearer"})
-#: Names start only at the start of a name run. A start inside the run shares the
-#: run's continuation, so it can match only where the run's start does; refusing
-#: those starts keeps the matches and makes one long line linear, not quadratic.
+#: A name starts only at its run's start: the same matches, linear on long lines.
 _HEADER_CANDIDATE_RE = re.compile(
     r"(?<![A-Za-z-])(?P<name>[A-Za-z][A-Za-z-]*)[\"']?\]?\s*[:=]\s*"
     r"(?:(?:[fFrRbB]{1,2})?[\"'`])?\s*(?P<scheme>[A-Za-z]+)\b"
@@ -154,11 +149,8 @@ _PROVIDER_API_HOSTS = (
     "api.x.ai",
     "api.runwayml.com",
 )
-#: DETECTION does not parse URLs: a declared provider host anywhere on a line is a
-#: finding, whatever joins, quotes or delimits it (review rounds 1 and 5 found URL-
-#: parsing edge cases). The boundaries keep `not-api.openai.com`,
-#: `api.openai.com.evil` and `api.openai.community` out. Only the proxy EXEMPTION
-#: parses a URL, and it keeps comparing the exact host.
+#: Detection parses no URL: a declared host anywhere on a line, within host boundaries.
+#: Only the proxy exemption parses a URL, and it compares the exact host.
 _PROVIDER_HOST_RE = re.compile(
     r"(?<![a-z0-9.-])(?:"
     + "|".join(re.escape(host) for host in sorted(_PROVIDER_API_HOSTS, key=len, reverse=True))
@@ -399,12 +391,8 @@ def _call_is_proxy_bound(call: ast.Call) -> bool:
 def _unparseable_python_finding(
     path: str, exc: SyntaxError | ValueError, added_lines: set[int]
 ) -> Finding:
-    """A Python post-image that does not parse cannot be certified, so it FAILS CLOSED.
-
-    No text pattern can be complete over Python call syntax (three review rounds found three
-    regex bypasses in this fallback), so an unparseable file is one finding, never a best-effort
-    line scan. It covers every added line, so a marker on one line cannot exempt it.
-    """
+    """An unparseable post-image cannot be certified: it FAILS CLOSED, covering every
+    added line so that no single-line marker exempts it."""
 
     covers = tuple(sorted(added_lines))
     line = getattr(exc, "lineno", None) or (covers[0] if covers else 1)

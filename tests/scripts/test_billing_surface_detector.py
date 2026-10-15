@@ -231,11 +231,6 @@ def test_parseable_python_without_a_surface_has_no_finding() -> None:
     assert _node_findings_for_postimage("app.py", source, {1, 2}) == ([], [], True)
 
 
-def test_non_python_text_detection_is_unchanged_by_the_parse_rule() -> None:
-    assert "provider-api-endpoint" in _text_classes("base_url: https://api.openai.com/v1")
-    assert "credential-env-read" in _text_classes("export OPENAI_API_KEY=value")
-
-
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
@@ -253,18 +248,40 @@ def test_host_parser_uses_authority_only_or_fails_closed(url: str, expected: str
 
 
 @pytest.mark.parametrize(
-    "line",
+    "content",
     [
         'v = os.getenv(key="OPENAI_API_KEY")',
         'v = os.environ.get(key="OPENAI_API_KEY")',
         'os.environ.setdefault(key="OPENAI_API_KEY", default="x")',
+        'v = os.getenv(default=None, key="OPENAI_API_KEY")',
+        "v = os.environ.get(default='', key='ANTHROPIC_API_KEY')",
+        'v = os.environ.setdefault(default="x", key="OPENAI_API_KEY")',
+        'v = os.getenv(default=str(), key="OPENAI_API_KEY")',
+        'v = os.getenv(default=os.getenv("HOME"), key="OPENAI_API_KEY")',
+        'v = os.getenv(default=os.environ, key="OPENAI_API_KEY")',
+        'v = os.getenv(default=None,\n    key="OPENAI_API_KEY")',
+        'v = os.environ.get(\n    default="",\n    key="ANTHROPIC_API_KEY",\n)',
+        'v = os.getenv(\n    "OPENAI_API_KEY")',
     ],
 )
-def test_keyword_credential_reads_keep_their_classification(line: str) -> None:
-    assert "credential-env-read" in _text_classes(line)
-    findings, _allowed, parsed = _node_findings_for_postimage("app.py", f"{line}\n", {1})
-    assert parsed
-    assert "credential-env-read" in [item.kind for item in findings]
+def test_keyword_nested_and_multiline_reads_are_credential_reads(content: str) -> None:
+    added = set(range(1, content.count("\n") + 2))
+    findings, _, parsed = _node_findings_for_postimage("app.py", f"{content}\n", added)
+    assert parsed and "credential-env-read" in [item.kind for item in findings]
+    assert "credential-env-read" in _text_classes(content)
+    broken, _, parsed = _node_findings_for_postimage("app.py", f"{content}\nx = (\n", added)
+    assert not parsed and [item.kind for item in broken] == ["unparseable-python"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'os.getenv(default=None, key="PATH")',
+        "v = os.getenv(default=None,\n" + "#\n" * 1_500 + '    key="OPENAI_API_KEY")',
+    ],
+)
+def test_a_non_credential_or_out_of_span_key_is_not_a_read(content: str) -> None:
+    assert "credential-env-read" not in _text_classes(content)
 
 
 @pytest.mark.parametrize(
@@ -282,6 +299,7 @@ def test_keyword_credential_reads_keep_their_classification(line: str) -> None:
         "export SCAN_REVIEW_BASE=${SCAN_REVIEW_BASE:-https://api.anthropic.com}/v1",
         "provider: {base_url: https://api.openai.com}",
         "base_urls: [https://api.openai.com]",
+        "base_url: https://api.openai.com/v1",
     ],
 )
 def test_a_provider_host_anywhere_on_a_line_is_detected(line: str) -> None:
@@ -304,68 +322,20 @@ def test_provider_host_detection_respects_host_boundaries(line: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "call",
-    [
-        'os.getenv(default=None, key="OPENAI_API_KEY")',
-        "os.environ.get(default='', key='ANTHROPIC_API_KEY')",
-        'os.environ.setdefault(default="x", key="OPENAI_API_KEY")',
-        'os.getenv(default=str(), key="OPENAI_API_KEY")',
-    ],
-)
-def test_reordered_keyword_reads_survive_the_unparseable_text_fallback(call: str) -> None:
-    source = f"v = {call}\nbroken = (\n"
-    findings, allowed, parsed = _node_findings_for_postimage("app.py", source, {1, 2})
-    assert not parsed and not allowed
-    assert [item.kind for item in findings] == ["unparseable-python"]
-    assert "credential-env-read" in _text_classes(f"v = {call}")
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        'v = os.getenv(default=None,\n    key="OPENAI_API_KEY")',
-        'v = os.environ.get(\n    default="",\n    key="ANTHROPIC_API_KEY",\n)',
-        'v = os.getenv(\n    "OPENAI_API_KEY")',
-    ],
-)
-def test_text_classes_keeps_a_multiline_read_given_the_full_text(content: str) -> None:
-    assert "credential-env-read" in _text_classes(content)
-
-
-def test_keyword_scan_across_lines_is_capped() -> None:
-    content = "v = os.getenv(default=None,\n" + "#\n" * 1_500 + '    key="OPENAI_API_KEY")'
-    assert "credential-env-read" not in _text_classes(content)
-
-
-def test_reordered_keyword_read_of_a_non_credential_is_not_a_finding() -> None:
-    assert "credential-env-read" not in _text_classes('os.getenv(default=None, key="PATH")')
-
-
-def test_nested_read_before_a_keyword_still_finds_the_outer_key() -> None:
-    line = 'v = os.getenv(default=os.getenv("HOME"), key="OPENAI_API_KEY")'
-    assert "credential-env-read" in _text_classes(line)
-    assert "credential-env-read" in _text_classes(
-        'os.getenv(default=os.environ, key="OPENAI_API_KEY")'
-    )
-
-
-@pytest.mark.parametrize(
     "line",
-    ["os.getenv(" + "x" * 60_000, "x" * 60_000 + ":", "Authorization" * 5_000, "a-" * 30_000],
+    [
+        "os.getenv(" + "x" * 60_000,
+        "x" * 60_000 + ":",
+        "Authorization" * 5_000,
+        "a-" * 30_000,
+        "os.getenv(" * 20_000,
+    ],
 )
 def test_text_classes_stays_linear_on_one_long_line(line: str) -> None:
-    # A minified or generated line can be hundreds of kB; a quadratic pattern hangs the
-    # gate. At 60 kB a linear scan takes milliseconds and a quadratic one seconds.
+    # Linear takes milliseconds here; quadratic takes seconds and hangs the gate.
     started = time.perf_counter()
-    _text_classes(line)
+    assert _text_classes(line) == ()
     assert time.perf_counter() - started < 0.5
-
-
-def test_keyword_scan_stays_linear_on_repeated_call_openings() -> None:
-    # Quadratic scanning takes about 10 s here; a linear scan takes milliseconds.
-    started = time.perf_counter()
-    assert _text_classes("os.getenv(" * 20_000) == ()
-    assert time.perf_counter() - started < 2.0
 
 
 def test_a_delimited_proxy_host_receives_no_exemption() -> None:
