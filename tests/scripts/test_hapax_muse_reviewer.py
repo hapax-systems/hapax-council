@@ -1,9 +1,12 @@
 """Tests for the Meta Muse review-seat wrapper.
 
-These pin three fail-closed properties. Each is a privacy or billing control, not a style choice:
+These pin four fail-closed properties. Each is a privacy or billing control, not a style choice:
 
-* the wrapper always passes one pinned Standard-mode model, so muse's own default
-  (a ``-contributor`` id, whose content Meta may train on) is never what runs;
+* the wrapper always passes one pinned model, so muse's own default (a ``-contributor`` id) is
+  never what runs;
+* every run passes ``--contributor-mode off``. On a Muse Code subscription the training mode is
+  an account setting, independent of the model id, and it defaults to Contributor; the per-run
+  flag is what keeps a run out of Contributor mode, so the pin alone is not enough;
 * any override toward a ``-contributor`` id, or toward any id that is not the pin, is refused
   before muse is launched;
 * ``META_API_KEY`` (which muse prefers over the account login) never reaches the child
@@ -17,6 +20,8 @@ import importlib.util
 import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = REPO_ROOT / "scripts" / "hapax-muse-reviewer"
@@ -83,6 +88,33 @@ def test_wrapper_passes_the_pinned_model(tmp_path: Path) -> None:
     argv = _argv(argv_file)
     assert "--model" in argv, "an unpinned run would use muse's contributor default"
     assert argv[argv.index("--model") + 1] == _load_wrapper().PINNED_REVIEW_MODEL
+
+
+def _contributor_mode_values(argv: list[str]) -> list[str]:
+    values = []
+    for i, arg in enumerate(argv):
+        if arg == "--contributor-mode":
+            values.append(argv[i + 1] if i + 1 < len(argv) else "")
+        elif arg.startswith("--contributor-mode="):
+            values.append(arg.split("=", 1)[1])
+    return values
+
+
+def test_command_always_carries_contributor_mode_off() -> None:
+    wrapper = _load_wrapper()
+    argv = wrapper.command("muse", Path("/tmp/prompt.md"), Path("/tmp/ws"))
+    assert _contributor_mode_values(argv) == ["off"], "every run must force Contributor mode off"
+
+
+@pytest.mark.parametrize("override", [None, "pin"])
+def test_wrapper_runs_with_contributor_mode_off(tmp_path: Path, override: str | None) -> None:
+    fake, argv_file, _ = _fake_muse(tmp_path)
+    extra = {} if override is None else {"HAPAX_MUSE_MODEL": _load_wrapper().PINNED_REVIEW_MODEL}
+    result = _run(tmp_path, fake, extra)
+    assert result.returncode == 0, result.stderr
+    assert _contributor_mode_values(_argv(argv_file)) == ["off"], (
+        "the account default is Contributor mode; without the per-run flag a run may be trained on"
+    )
 
 
 def test_wrapper_refuses_a_contributor_model_override(tmp_path: Path) -> None:
