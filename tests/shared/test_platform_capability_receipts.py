@@ -2591,8 +2591,7 @@ class TestQuotaIsObservedOnlyFromTheRoutesDeclaredPool:
     def test_a_corrupt_registry_override_observes_no_claude_route(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Through the real loader: the registry error is caught and narrows (no Claude route is
-        observed); observation never aborts and never treats the routes as unbound."""
+        """The real loader's registry error narrows: no Claude route is observed, none aborts."""
         module = self._real_loader_module(tmp_path, "{not json", monkeypatch)
 
         assert module["_subscription_pool_bindings"]() is None
@@ -2602,8 +2601,7 @@ class TestQuotaIsObservedOnlyFromTheRoutesDeclaredPool:
     def test_an_override_that_drops_the_binding_observes_no_claude_route(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The detectable form of the override risk: the override unbinds a route the release
-        binds, so the shared dir's default-pool receipt would observe the max-2 route. Refused."""
+        """An override that unbinds the release's route would let account 1 observe it: refused."""
         registry = self._release_registry()
         for route in registry["routes"]:
             route.pop("subscription_pool_binding", None)

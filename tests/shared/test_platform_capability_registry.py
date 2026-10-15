@@ -1491,8 +1491,7 @@ def test_bound_review_route_stays_blocked_on_evidence_not_from_its_declared_pool
     tmp_path: Path,
     evidence_refs: list[str],
 ) -> None:
-    """claude.review.opus is bound to max-2: a fresh ledger admission that does not name max-2
-    never makes it active, whatever the receipt and the admission state say."""
+    """A fresh ledger admission that does not name max-2 never makes the max-2 route active."""
     receipt_dir = tmp_path / "receipts"
     receipt_dir.mkdir()
     live_ledger = tmp_path / "quota-spend-ledger-live.json"
@@ -1524,8 +1523,7 @@ def test_unbound_claude_routes_keep_their_default_pool_admission(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The pool check binds only a route that declares a pool: account 1's unbound routes are
-    admitted from their default-pool evidence exactly as before."""
+    """Only a route that declares a pool is pool-checked; unbound routes admit as before."""
     payload = _payload()
     route = _route_payload(payload, "claude.headless.full")
     live_ledger = tmp_path / "quota-spend-ledger-live.json"
@@ -2300,27 +2298,16 @@ def test_two_pools_never_share_a_path() -> None:
 def test_two_pools_never_share_a_path_in_another_spelling_or_by_nesting(
     field: str, value: str
 ) -> None:
-    """A reading found under one pool's dir is that pool's: a second pool may not reach the same
-    directory by a different spelling, nor sit inside (or around) one of the first pool's dirs."""
-    payload, _route = _bound_payload()
-    headless = _route_payload(payload, "claude.headless.full")
-    headless["subscription_pool_binding"] = {
-        "pool": "max-3",
-        "config_home": ".claude-max-3",
-        "receipt_dir": ".cache/hapax/relay/receipts-max-3",
-        "headless_dir": ".cache/hapax/claude-headless-max-3",
-        "pace_activation": ".cache/hapax/claude-pool-pace-max-3/activation.json",
-        "durable_sink_root": ".cache/hapax/stage0-durable-sink-max-3",
-        field: value,
-    }
-    headless["native_load_set"]["native_home"] = ".claude-max-3"
-    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
-
+    """No second pool reaches one of the first pool's dirs re-spelled, inside it or around it."""
     with pytest.raises(ValidationError, match="share the path"):
-        PlatformCapabilityRegistry.model_validate(payload)
+        PlatformCapabilityRegistry.model_validate(_with_a_max_3_pool(**{field: value}))
 
 
 def test_two_pools_with_disjoint_paths_are_accepted() -> None:
+    PlatformCapabilityRegistry.model_validate(_with_a_max_3_pool())
+
+
+def _with_a_max_3_pool(**paths: str) -> dict:
     payload, _route = _bound_payload()
     headless = _route_payload(payload, "claude.headless.full")
     headless["subscription_pool_binding"] = {
@@ -2330,11 +2317,10 @@ def test_two_pools_with_disjoint_paths_are_accepted() -> None:
         "headless_dir": ".cache/hapax/claude-headless-max-3",
         "pace_activation": ".cache/hapax/claude-pool-pace-max-3/activation.json",
         "durable_sink_root": ".cache/hapax/stage0-durable-sink-max-3",
+        **paths,
     }
-    headless["native_load_set"]["native_home"] = ".claude-max-3"
-    headless["native_load_set"]["home_env"] = "CLAUDE_CONFIG_DIR"
-
-    PlatformCapabilityRegistry.model_validate(payload)
+    headless["native_load_set"].update(native_home=".claude-max-3", home_env="CLAUDE_CONFIG_DIR")
+    return payload
 
 
 def test_an_unreadable_registry_never_resolves_to_unbound(tmp_path: Path) -> None:

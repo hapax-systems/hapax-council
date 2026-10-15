@@ -938,8 +938,7 @@ class SubscriptionPoolBinding(StrictModel):
 
         if re.search(r"(?:^|-)(?:account|billing|customer|invoice|payment)", self.pool):
             raise ValueError(
-                "pool names a pool, never a billing or account identifier; next action: rename "
-                "the pool after its config home (for example max-2)"
+                "pool names a pool, never a billing or account identifier; next action: rename it"
             )
         paths = {
             "config_home": self.config_home,
@@ -952,25 +951,23 @@ class SubscriptionPoolBinding(StrictModel):
             path = PurePosixPath(value)
             if path.is_absolute() or ".." in path.parts or str(path) in {"", "."}:
                 raise ValueError(
-                    f"subscription pool {name} must be a path inside HOME; next action: write it "
-                    "relative to HOME, without a leading / or any .."
+                    f"subscription pool {name} must be a path inside HOME; next action: make it "
+                    "HOME-relative"
                 )
         normalized = {name: str(PurePosixPath(value)) for name, value in paths.items()}
         if len(set(normalized.values())) != len(normalized):
             raise ValueError(
-                "subscription pool paths must be distinct; next action: give each of config_home, "
-                "receipt_dir, headless_dir, pace_activation and durable_sink_root its own path"
+                "subscription pool paths must be distinct; next action: give each its own path"
             )
         if normalized["config_home"] == CLAUDE_DEFAULT_CONFIG_HOME:
             raise ValueError(
                 "a pool binding names a non-default config home; an unbound route already "
-                "runs on the CLI default; next action: name the pool's own config home, or "
-                "drop the binding to leave the route on the default"
+                "runs on the CLI default; next action: name the pool's own config home"
             )
         if normalized["receipt_dir"] == SHARED_RELAY_RECEIPT_HOME:
             raise ValueError(
                 "a bound pool keeps its receipts outside the shared relay dir; next action: "
-                "declare a pool-named receipt_dir (for example .cache/hapax/relay/receipts-max-2)"
+                "declare a pool-named receipt_dir"
             )
         return self
 
@@ -1071,8 +1068,7 @@ class PlatformCapabilityRoute(StrictModel):
             ):
                 raise ValueError(
                     "a pool-bound route's native_load_set must name the same config home "
-                    "through CLAUDE_CONFIG_DIR; next action: set native_load_set.home_env to "
-                    "CLAUDE_CONFIG_DIR and native_home to the binding's config_home"
+                    "through CLAUDE_CONFIG_DIR; next action: align native_home and home_env"
                 )
 
         if self.route_state is RouteState.BLOCKED and not self.blocked_reasons:
@@ -1270,8 +1266,7 @@ class PlatformCapabilityRegistry(StrictModel):
             if prior != binding:
                 raise ValueError(
                     f"subscription pool {binding.pool!r} is declared with different paths "
-                    f"on {route.route_id}; next action: copy one binding's paths to every route "
-                    "naming that pool"
+                    f"on {route.route_id}; next action: declare one set of paths per pool"
                 )
             for path in (
                 binding.config_home,
@@ -2115,9 +2110,8 @@ def resolve_subscription_pool_bindings(
         registry = PlatformCapabilityRegistry.model_validate(_load_json_object(path))
     except (OSError, json.JSONDecodeError, ValidationError, ValueError) as exc:
         raise PlatformCapabilityRegistryError(
-            f"invalid platform capability registry at {path}: {exc}; next action: repair the "
-            "named declaration in that file (or unset or correct HAPAX_PLATFORM_CAPABILITY_REGISTRY "
-            "if it points there), then retry"
+            f"invalid platform capability registry at {path}: {exc}; next action: repair that "
+            "file (or HAPAX_PLATFORM_CAPABILITY_REGISTRY) and retry"
         ) from exc
     root = Path.home() if home is None else home
     return {
