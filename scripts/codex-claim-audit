@@ -328,6 +328,7 @@ _vault_docs_freshness_for() {
     "${HAPAX_WORKTREE_REGISTRY_DIR:-$HOME/.cache/hapax/worktree-registry}" "$now_epoch" <<'PYEOF'
 import json
 import os
+import signal
 import stat
 import sys
 from datetime import datetime
@@ -343,19 +344,34 @@ vault = Path(task_root).parent.parent.resolve(strict=True)
 errors = []
 
 
+def record_timeout(_signum, _frame):
+    raise TimeoutError("freshness record exceeded 0.25s")
+
+
+signal.signal(signal.SIGALRM, record_timeout)
+
+
 def mapping(path, *, frontmatter=False):
-    with path.open("r", encoding="utf-8") as stream:
-        raw = stream.read(65537)
-    if frontmatter:
-        if not raw.startswith("---\n") or "\n---" not in raw[4:]:
-            raise ValueError("missing or oversized frontmatter")
-        raw = raw[4:].split("\n---", 1)[0]
-    elif len(raw) > 65536:
-        raise ValueError("oversized lane record")
-    data = yaml.safe_load(raw)
-    if not isinstance(data, dict):
-        raise ValueError("record is not a mapping")
-    return data
+    # Bound open/read/parse separately from the whole scan. A blocked record
+    # (including a regular-file-to-FIFO race) must leave later evidence reachable.
+    # TimeoutError follows the existing per-record OSError path; no path-identity
+    # fallback may turn an unread artifact's conflicting metadata into freshness.
+    signal.setitimer(signal.ITIMER_REAL, 0.25)
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            raw = stream.read(65537)
+        if frontmatter:
+            if not raw.startswith("---\n") or "\n---" not in raw[4:]:
+                raise ValueError("missing or oversized frontmatter")
+            raw = raw[4:].split("\n---", 1)[0]
+        elif len(raw) > 65536:
+            raise ValueError("oversized lane record")
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            raise ValueError("record is not a mapping")
+        return data
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def timestamp(value):

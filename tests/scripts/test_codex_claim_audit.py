@@ -621,6 +621,126 @@ class TestVaultDocsFreshness:
         assert "VAULT_DOCS_FRESH" in result.stdout
         assert "UNKNOWN" not in result.stdout and "RELEASED" not in result.stdout
 
+    @pytest.mark.parametrize("channel", ["relay", "heartbeat", "artifact"])
+    def test_blocked_first_record_cannot_hide_later_fresh_evidence(
+        self, tmp_path: Path, channel: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        fresh = datetime.now(UTC).isoformat()
+        site = tmp_path / "blocked_first"
+        site.mkdir()
+        setup = ""
+        if channel == "relay":
+            blocked = self._relay(tmp_path)
+            self._heartbeat(tmp_path, last_heartbeat=fresh)
+        elif channel == "heartbeat":
+            good = self._heartbeat(tmp_path, last_heartbeat=fresh)
+            blocked = good.with_name("neighbor.json")
+            blocked.touch()
+            setup = textwrap.dedent(f"""\
+                from pathlib import Path
+                original = Path.iterdir
+                def ordered(path):
+                    if str(path) == {str(good.parent)!r}:
+                        return iter([Path({str(blocked)!r}), Path({str(good)!r})])
+                    return original(path)
+                Path.iterdir = ordered
+                """)
+        else:
+            artifact.touch()
+            blocked = artifact.with_name("neighbor.md")
+            blocked.write_text("unrelated report\n")
+            # Match the walker's stack order, then swap the first regular file
+            # for a real FIFO at open: the lstat/open race must also be bounded.
+            good = artifact
+            setup = textwrap.dedent(f"""\
+                import os
+                from pathlib import Path
+                from types import SimpleNamespace
+                real_scandir = os.scandir
+                real_open = Path.open
+                class Entries:
+                    def __enter__(self):
+                        return iter([SimpleNamespace(path={str(good)!r}),
+                                     SimpleNamespace(path={str(blocked)!r})])
+                    def __exit__(self, *args):
+                        pass
+                def ordered(path):
+                    return Entries() if str(path) == {str(good.parent)!r} else real_scandir(path)
+                def swap_before_open(path, *args, **kwargs):
+                    if str(path) == {str(blocked)!r}:
+                        path.unlink()
+                        os.mkfifo(path)
+                    return real_open(path, *args, **kwargs)
+                os.scandir = ordered
+                Path.open = swap_before_open
+                """)
+        if channel != "artifact":
+            blocked.unlink()
+            os.mkfifo(blocked)
+        (site / "sitecustomize.py").write_text(setup)
+        before = note.read_bytes()
+        marker = claim.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and claim.read_bytes() == marker, result.stdout
+        assert note.read_bytes() == before
+        expected = "artifact=" if channel == "artifact" else "heartbeat="
+        assert "VAULT_DOCS_FRESH" in result.stdout and expected in result.stdout
+        assert "UNKNOWN" not in result.stdout and "RELEASED" not in result.stdout
+
+    @pytest.mark.parametrize("age_hours", [8, 13])
+    def test_blocked_record_reports_individual_timeout(
+        self, tmp_path: Path, age_hours: int
+    ) -> None:
+        vault, cache, note, claim, _ = self._claim(tmp_path)
+        self._claim_age(note, age_hours)
+        relay = self._relay(tmp_path)
+        relay.unlink()
+        os.mkfifo(relay)
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 10, result.stdout + result.stderr
+        assert "relay:TimeoutError" in result.stdout
+        assert "freshness reader failed or exceeded its time bound" not in result.stdout
+        if age_hours == 8:
+            assert claim.exists() and note.read_bytes() == before, result.stdout
+            assert "VAULT_DOCS_UNKNOWN:" in result.stdout
+        else:
+            assert not claim.exists() and "status: offered" in note.read_text(), result.stdout
+            assert "VAULT_DOCS_UNKNOWN_EXPIRED:" in result.stdout
+
+    def test_record_deadline_does_not_leak_into_directory_walk(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        artifact.touch()
+        site = tmp_path / "delayed_walk"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import os
+            import time
+            original = os.scandir
+            def delayed(path):
+                if str(path) == {str(artifact.parent)!r}:
+                    time.sleep(0.5)
+                return original(path)
+            os.scandir = delayed
+            """)
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_FRESH" in result.stdout and "artifact=" in result.stdout
+
     @pytest.mark.parametrize(
         "filename",
         [
@@ -810,15 +930,28 @@ class TestVaultDocsFreshness:
     def test_blocked_reader_times_out_with_reported_grace(
         self, tmp_path: Path, age_hours: int
     ) -> None:
-        vault, cache, note, claim, _ = self._claim(tmp_path)
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
         self._claim_age(note, age_hours)
-        relay = self._relay(tmp_path)
-        relay.unlink()
-        os.mkfifo(relay)  # opening this fixture blocks until the real timeout kills the reader
+        # The outer budget still bounds directory traversal, independently of
+        # the new per-record deadline. Stall only this isolated fixture's walk.
+        site = tmp_path / "blocked_walk"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            textwrap.dedent(f"""\
+            import os
+            import time
+            original = os.scandir
+            def blocked(path):
+                if str(path) == {str(artifact.parent)!r}:
+                    time.sleep(60)
+                return original(path)
+            os.scandir = blocked
+            """)
+        )
         before = note.read_bytes()
         started = time.monotonic()
 
-        result = _run_audit(tmp_path, vault, cache)
+        result = _run_audit(tmp_path, vault, cache, extra_env={"PYTHONPATH": str(site)})
 
         assert time.monotonic() - started < 10
         assert result.returncode == 10, result.stdout + result.stderr
