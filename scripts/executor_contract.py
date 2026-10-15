@@ -98,6 +98,21 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
             "The coding workhorse is a separate, bakeoff-gated route, not this one."
         ),
     ),
+    "muse": ExecutorCapabilities(
+        platform="muse",
+        modes=(),
+        profiles=("direct",),
+        mutates=False,
+        claims=False,
+        hooks_wired=False,
+        headless=False,
+        read_only=True,
+        notes=(
+            "receipt-only review-seat route (muse.review.direct); declared fail-closed "
+            "and NOT admitted, a read-only reviewer via hapax-muse-reviewer, not a "
+            "launchable worker (modes=())."
+        ),
+    ),
     "kimi": ExecutorCapabilities(
         platform="kimi",
         modes=("interactive",),

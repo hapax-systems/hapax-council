@@ -41,6 +41,7 @@ Defined in `RouteConstraints.preferred_platforms` / `allowed_platforms` / `prohi
 | `codex` | Codex headless | Frontier | 192K | Bounded implementation, parallel lanes |
 | `vibe` | Mistral Medium 3.5 | JR+ | 256K | Mechanical: tests, deps, CI fixes |
 | `agy` | Agy CLI review seat | Read-only support | Provider-dependent | Blind PR review through `scripts/hapax-agy-reviewer`; not a worker lane |
+| `muse` | Meta Muse Code review seat | Read-only support | Unknown | Declared third-family challenge route; NOT admitted (see below); not a worker lane |
 
 `antigrav` / Antigravity is retired and excised as a live platform, lane, and
 route family. The Agy adapter family is distinct and live after the 2026-07-05
@@ -94,6 +95,46 @@ uv run pytest \
   tests/scripts/test_hapax_methodology_dispatch.py::test_agy_platform_is_review_route_not_dispatchable_worker \
   tests/scripts/test_hapax_cross_runtime_dispatch.py::test_agy_platform_is_review_route_not_cross_runtime_worker \
   tests/test_review_team.py::test_gemini_review_family_uses_agy_wrapper_not_legacy_cli
+```
+
+`muse.review.direct` is a declared, fail-closed route for a third model family
+(neither codex nor claude), intended for frontier research challenge. It is
+**not admitted**. It ships `route_state: blocked`, every capability score is
+unmeasured (confidence 0), and `privacy_posture: provider_training_unknown`
+excludes privacy/secret-sensitive work. Its execution descriptor DECLARES
+`muse-wonder-1.0` (Muse Wonder is included on every Muse Code plan);
+declaration is not admission, and a later admission's observed served model
+must match it. On a Muse Code subscription the training mode is an account
+setting independent of the model id ("Muse Wonder and Muse Wonder Full are each
+available in either mode", https://dev.meta.ai/docs/muse-code/subscriptions),
+so a model id alone never establishes Standard (non-training) mode. It reaches
+`active` only when every per-route admission link agrees:
+
+- a fresh muse platform-capability receipt clears
+  `muse_review_seat_receipt_admission_required`;
+- a fresh `hapax.muse_quota_admission.v1` receipt, folded into the live quota
+  ledger, clears `route_specific_quota_receipt_absent`. The ledger trusts a muse
+  snapshot only if its admission ref matches one anchored grammar, names exactly
+  one model from `MUSE_ADMISSION_MODELS`, is never a `-contributor` id (Meta may
+  train on contributor-mode content), and discloses
+  `credential_env_scrubbed:meta` (a stray Meta API key in the environment would
+  switch the seat to metered billing);
+- `shared/dispatcher_policy.py` requires route-specific quota, so aggregate
+  subscription freshness cannot launch it.
+
+`MUSE_ADMISSION_MODELS` ships empty while the wrapper model pin awaits the
+operator's plan decision, so no muse snapshot is trusted until the pin lands.
+Every route in `ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS` must also be in the
+ledger's receipt-bounded allowlist with a provider: outside it, the ledger
+would trust any fresh-looking snapshot unvalidated. The admission script, the
+telemetry-writer reader and the receipts-producer branch are not yet present;
+until they are, the route cannot be admitted at all.
+
+Recheck the muse route claims with:
+
+```bash
+uv run pytest tests/shared/test_muse_route_admission.py \
+  tests/shared/test_dispatcher_policy.py::test_muse_subscription_route_holds_when_route_quota_unknown
 ```
 
 ## Reaching the Opus Route (signed route-authority receipts)

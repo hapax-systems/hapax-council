@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from shared import quota_spend_ledger
+from shared import platform_capability_registry, quota_spend_ledger
 from shared.platform_capability_receipts import (
     CliEvidence,
     EvidenceStatus,
@@ -40,7 +40,7 @@ NOW = datetime(2026, 10, 15, 8, 1, tzinfo=UTC)
 OBSERVED = datetime(2026, 10, 15, 8, 0, tzinfo=UTC)
 # A stand-in pin for exercising the chain; the shipped admissible set is empty while the real
 # pin is held for the operator's plan answer.
-TEST_PIN = "muse-wonder-full-1.0"
+TEST_PIN = "muse-wonder-1.0"
 
 
 def _admission_ref(*, model: str = TEST_PIN, scrub: str = ":credential_env_scrubbed:meta:") -> str:
@@ -69,7 +69,9 @@ def pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(quota_spend_ledger, "MUSE_ADMISSION_MODELS", frozenset({TEST_PIN}))
 
 
-def _muse_receipt() -> PlatformCapabilityReceipt:
+def _muse_receipt(
+    *, resource_status: EvidenceStatus = EvidenceStatus.OBSERVED
+) -> PlatformCapabilityReceipt:
     return PlatformCapabilityReceipt(
         receipt_id="test-muse-receipt",
         platform="muse",
@@ -92,11 +94,16 @@ def _muse_receipt() -> PlatformCapabilityReceipt:
             evidence_refs=["test:muse:capability:muse-wonder-1.0"],
         ),
         resource=SurfaceEvidence(
-            status=EvidenceStatus.OBSERVED,
+            status=resource_status,
             source="test",
             observed_at=OBSERVED,
             stale_after="24h",
             evidence_refs=["test:muse:resource:account-oauth-login"],
+            reason_codes=(
+                []
+                if resource_status is EvidenceStatus.OBSERVED
+                else ["fresh_resource_evidence_absent"]
+            ),
         ),
         quota=SurfaceEvidence(
             status=EvidenceStatus.UNOBSERVABLE,
@@ -117,9 +124,13 @@ def _muse_receipt() -> PlatformCapabilityReceipt:
     )
 
 
-def _write_receipt(receipt_dir: Path) -> None:
+def _write_receipt(
+    receipt_dir: Path, *, resource_status: EvidenceStatus = EvidenceStatus.OBSERVED
+) -> None:
     receipt_dir.mkdir(parents=True, exist_ok=True)
-    (receipt_dir / "muse.json").write_text(_muse_receipt().model_dump_json(), encoding="utf-8")
+    (receipt_dir / "muse.json").write_text(
+        _muse_receipt(resource_status=resource_status).model_dump_json(), encoding="utf-8"
+    )
 
 
 def _write_live_ledger(
@@ -176,6 +187,22 @@ def test_every_route_specific_quota_route_is_validated_by_the_ledger() -> None:
     )
 
 
+def test_declared_model_is_not_an_admission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The route DECLARES a concrete model, but the shipped admission set is empty, so even a
+    fully fresh chain whose admission names exactly the declared model stays blocked."""
+    declared = load_platform_capability_registry(now=NOW).require(ROUTE_ID)
+    declared_model = str(declared.execution_descriptor.model_id)
+    assert declared_model == TEST_PIN
+    assert frozenset() == quota_spend_ledger.MUSE_ADMISSION_MODELS
+
+    route = _chain(monkeypatch, tmp_path, evidence_ref=_admission_ref(model=declared_model))
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.blocked_reasons == [QUOTA_BLOCKER]
+
+
 def test_muse_route_is_in_every_per_route_admission_table() -> None:
     assert ROUTE_ID in ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS
     assert "muse_review_seat_receipt_admission_required" in _capability_receipt_removable_reasons(
@@ -189,10 +216,11 @@ def _chain(
     *,
     receipt: bool = True,
     ledger: bool = True,
+    resource_status: EvidenceStatus = EvidenceStatus.OBSERVED,
     **ledger_kwargs: str,
 ):
     if receipt:
-        _write_receipt(tmp_path / "receipts")
+        _write_receipt(tmp_path / "receipts", resource_status=resource_status)
     else:
         (tmp_path / "receipts").mkdir()
     if ledger:
@@ -214,6 +242,53 @@ def test_full_chain_with_fresh_receipts_reaches_active(
     assert route.route_state is RouteState.ACTIVE, route.blocked_reasons
     assert route.blocked_reasons == []
     assert MUSE_ADMISSION_EVIDENCE_REF in route.freshness.evidence.quota.evidence_refs
+
+
+@pytest.mark.usefixtures("pinned")
+def test_chain_without_observed_resource_evidence_stays_blocked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    route = _chain(monkeypatch, tmp_path, resource_status=EvidenceStatus.UNOBSERVABLE)
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "fresh_resource_evidence_absent" in route.blocked_reasons
+
+
+@pytest.mark.usefixtures("pinned")
+@pytest.mark.parametrize(
+    ("label", "ref"),
+    [
+        ("no model", _admission_ref().replace(f"model:{TEST_PIN}:", "")),
+        (
+            "two models",
+            _admission_ref().replace(f"model:{TEST_PIN}:", f"model:{TEST_PIN}:model:{TEST_PIN}:"),
+        ),
+        ("no observed_at", _admission_ref().replace("observed_at:2026-10-15T08:00:00Z:", "")),
+        ("no fresh_until", _admission_ref().replace(":fresh_until:2026-10-15T08:15:00Z", "")),
+        (
+            "foreign receipt label",
+            _admission_ref().replace("muse-quota-admission", "kimi-quota-admission"),
+        ),
+        (
+            "foreign supported tool",
+            _admission_ref().replace("hapax-muse-quota-admission", "hapax-kimi-quota-admission"),
+        ),
+        (
+            "secretish witness",
+            _admission_ref().replace("muse-standard-smoke-20261015t0800z", "bearer-abc"),
+        ),
+        (
+            "two witnesses",
+            _admission_ref().replace(
+                "supported_tool:", "witness:extra:supported_tool:witness:x:supported_tool:", 1
+            ),
+        ),
+        ("not a relay receipt", _admission_ref().replace("relay-receipt:", "note:", 1)),
+    ],
+)
+def test_admission_ref_validator_refuses_each_missing_conjunct(label: str, ref: str) -> None:
+    assert quota_spend_ledger._is_muse_admission_evidence_ref(_admission_ref()) is True
+    assert quota_spend_ledger._is_muse_admission_evidence_ref(ref) is False, label
 
 
 @pytest.mark.usefixtures("pinned")
@@ -288,3 +363,78 @@ def test_chain_refuses_admission_without_the_credential_scrub_disclosure(
 
     assert route.route_state is RouteState.BLOCKED
     assert route.blocked_reasons == [QUOTA_BLOCKER]
+
+
+# --------------------------------------------------------------------------------------------
+# Mutation witnesses: each disables ONE guard in memory and shows the outcome flips, so every
+# guard above is load-bearing and that fact re-runs in CI rather than living in a transcript.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("pinned")
+def test_mutation_witness_seat_blocker_clearing_is_load_bearing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(platform_capability_registry, "MUSE_REVIEW_ROUTE_ID", "mutated.route.id")
+
+    route = _chain(monkeypatch, tmp_path)
+
+    assert route.route_state is RouteState.BLOCKED
+    assert "muse_review_seat_receipt_admission_required" in route.blocked_reasons
+
+
+@pytest.mark.usefixtures("pinned")
+def test_mutation_witness_quota_blocker_table_entry_is_load_bearing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    mutated = {k: v for k, v in ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.items() if k != ROUTE_ID}
+    monkeypatch.setattr(
+        platform_capability_registry, "ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS", mutated
+    )
+
+    route = _chain(monkeypatch, tmp_path)
+
+    assert route.route_state is RouteState.BLOCKED
+    assert QUOTA_BLOCKER in route.blocked_reasons
+
+
+def test_mutation_witness_ledger_allowlist_entry_prevents_fail_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without the allowlist entry the ledger trusts a contributor-model snapshot unvalidated
+    and the route goes ACTIVE: the fail-open the consistency invariant forbids."""
+    contributor_ref = _admission_ref(model=f"{TEST_PIN}-contributor")
+    monkeypatch.setattr(
+        quota_spend_ledger,
+        "RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES",
+        quota_spend_ledger.RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES - {ROUTE_ID},
+    )
+
+    route = _chain(monkeypatch, tmp_path, evidence_ref=contributor_ref)
+
+    assert route.route_state is RouteState.ACTIVE
+    assert not set(ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS) <= (
+        quota_spend_ledger.RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    )
+
+
+def test_mutation_witness_contributor_refusal_is_load_bearing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    contributor = f"{TEST_PIN}-contributor"
+    monkeypatch.setattr(quota_spend_ledger, "MUSE_ADMISSION_MODELS", frozenset({contributor}))
+    monkeypatch.setattr(quota_spend_ledger, "MUSE_CONTRIBUTOR_SUFFIX", "-mutated-suffix")
+
+    route = _chain(monkeypatch, tmp_path, evidence_ref=_admission_ref(model=contributor))
+
+    assert route.route_state is RouteState.ACTIVE
+
+
+def test_mutation_witness_empty_pin_set_is_load_bearing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(quota_spend_ledger, "MUSE_ADMISSION_MODELS", frozenset({TEST_PIN}))
+
+    route = _chain(monkeypatch, tmp_path)
+
+    assert route.route_state is RouteState.ACTIVE

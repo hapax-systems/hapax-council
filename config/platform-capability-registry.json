@@ -4892,9 +4892,9 @@
         "fresh_capability_evidence_absent",
         "quota_telemetry_unknown"
       ],
-      "model_or_engine": "meta-muse-code:pin-held-for-operator-plan",
+      "model_or_engine": "meta-muse-code:muse-wonder-1.0",
       "execution_descriptor": {
-        "model_id": "unknown",
+        "model_id": "muse-wonder-1.0",
         "effort": "none",
         "context_mode": "standard",
         "fast_mode": "off",
@@ -4976,27 +4976,27 @@
         }
       },
       "known_unknowns": [
-        "The served model is not pinned in this route: the wrapper pin is held for the operator's plan answer (subscription or PAYG), so the execution descriptor stays unknown until the pin lands and an admission receipt observes the served model.",
+        "muse-wonder-1.0 is the DECLARED execution model (Muse Wonder is included on every Muse Code plan per https://dev.meta.ai/docs/models#muse-wonder-availability), not an admitted one: MUSE_ADMISSION_MODELS ships empty, so nothing admits until the wrapper pin lands and an admission receipt observes this served model. On a subscription the training mode is an account setting independent of the model id (https://dev.meta.ai/docs/muse-code/subscriptions), so admission also requires Contributor mode off, enforced per run by the wrapper. Muse Wonder Full may be added later only on a Power or Maximum plan.",
         "Meta subscriptions default to Contributor mode, whose content may be used for training (https://dev.meta.ai/docs/pricing-rate-limits); retention for Standard mode beyond no-training is not established, so privacy/secret-sensitive review is excluded by policy.",
         "Subscription quota is not exposed as account-live local telemetry; admission is receipt-bounded via the spend ledger.",
         "Context window is not established from public docs; max_context_class stays unknown.",
         "Capability scores are unmeasured (confidence 0) until an admitted challenge run produces measured evidence."
       ],
       "capability_scores": {
-        "grounding": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "governance_reasoning": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "source_editing": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "architecture": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "ambiguity_resolution": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "long_context": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "current_docs_grounding": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "multimodal_verification": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "runtime_debugging": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "test_authoring": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "coordination_reliability": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "privacy_safety": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "public_claim_safety": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"},
-        "local_calibration": {"score": 0, "confidence": 0, "evidence_refs": [], "observed_at": null, "stale_after": "24h"}
+        "grounding": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "governance_reasoning": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "source_editing": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "architecture": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "ambiguity_resolution": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "long_context": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "current_docs_grounding": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "multimodal_verification": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "runtime_debugging": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "test_authoring": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "coordination_reliability": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "privacy_safety": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "public_claim_safety": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"},
+        "local_calibration": {"score": 0, "confidence": 0, "evidence_refs": ["platform-capability-registry:muse.review.direct:unmeasured"], "observed_at": null, "stale_after": "24h"}
       },
       "tool_state": [
         {

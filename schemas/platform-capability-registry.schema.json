@@ -261,7 +261,7 @@
       ]
     },
     "platform": {
-      "enum": ["agy", "api", "claude", "codex", "gemini", "glmcp", "kimi", "local_tool", "vibe"]
+      "enum": ["agy", "api", "claude", "codex", "gemini", "glmcp", "kimi", "local_tool", "muse", "vibe"]
     },
     "mode": {
       "enum": ["headless", "interactive", "local", "receipt_only", "review"]
@@ -693,6 +693,7 @@
         "z_ai-glm-5",
         "z_ai-glm-5.2",
         "kimi-code/k3",
+        "muse-wonder-1.0",
         "unknown"
       ]
     },

@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
 
 import executor_contract as ec  # noqa: E402
 
-ALL_PLATFORMS = {"agy", "api", "glmcp", "claude", "codex", "kimi", "vibe", "local_tool"}
+ALL_PLATFORMS = {"agy", "api", "glmcp", "claude", "codex", "kimi", "muse", "vibe", "local_tool"}
 
 
 def test_registry_covers_all_runtimes() -> None:

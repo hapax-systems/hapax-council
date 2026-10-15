@@ -253,6 +253,7 @@ class ModelId(StrEnum):
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     Z_AI_GLM_5_3 = "z_ai-glm-5.3"
     KIMI_K3 = "kimi-code/k3"
+    MUSE_WONDER_1_0 = "muse-wonder-1.0"
     UNKNOWN = "unknown"
 
 

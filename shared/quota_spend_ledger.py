@@ -97,19 +97,24 @@ MUSE_ADMISSION_SUPPORTED_TOOL = "hapax-muse-quota-admission"
 MUSE_ADMISSION_MODELS: frozenset[str] = frozenset()
 MUSE_CONTRIBUTOR_SUFFIX = "-contributor"
 MUSE_ADMISSION_SCRUB_DISCLOSURE = ":credential_env_scrubbed:meta:"
-MUSE_ADMISSION_RECEIPT_LABEL_RE = re.compile(
-    r"\Arelay-receipt:"
-    r"(?:[a-z0-9_.+-]*muse-quota-admission[a-z0-9_.+-]*\.yaml|"
-    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
-    r":witness:"
-)
-MUSE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
 MUSE_ADMISSION_SECRETISH_RE = re.compile(
     r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
     re.IGNORECASE,
 )
-MUSE_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
-MUSE_ADMISSION_MODEL_REF_RE = re.compile(r":model:([^:]+):")
+# One anchored grammar for the whole ref, in the writer's emission order. No field admits ':', so a
+# duplicated or injected segment (a second model or witness) cannot match.
+_MUSE_ADMISSION_TIMESTAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+MUSE_ADMISSION_EVIDENCE_REF_GRAMMAR = re.compile(
+    r"\Arelay-receipt:"
+    r"(?P<label>[a-z0-9_.+-]*muse-quota-admission[a-z0-9_.+-]*\.yaml"
+    r"|unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:(?P<witness>[a-z0-9][a-z0-9_.+-]{2,239})"
+    rf":supported_tool:{re.escape(MUSE_ADMISSION_SUPPORTED_TOOL)}"
+    r":model:(?P<model>[a-z0-9][a-z0-9_.+-]*)"
+    rf"{re.escape(MUSE_ADMISSION_SCRUB_DISCLOSURE.rstrip(':'))}"
+    rf":observed_at:{_MUSE_ADMISSION_TIMESTAMP}"
+    rf":fresh_until:{_MUSE_ADMISSION_TIMESTAMP}\Z"
+)
 # Claude subscription-quota admission (scripts/hapax-claude-subscription-quota-admission →
 # hapax-quota-telemetry-writer). The composite ledger evidence ref MUST end in the account-live
 # suffix so the availability guarantor's _account_live_quota_observed_ref attests; lane/session
@@ -317,6 +322,7 @@ class ModelId(StrEnum):
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
     Z_AI_GLM_5_3 = "z_ai-glm-5.3"
     KIMI_K3 = "kimi-code/k3"
+    MUSE_WONDER_1_0 = "muse-wonder-1.0"
     UNKNOWN = "unknown"
 
 
@@ -1857,17 +1863,18 @@ def _is_kimi_admission_evidence_ref(ref: str) -> bool:
 
 
 def _is_muse_admission_evidence_ref(ref: str) -> bool:
-    models = MUSE_ADMISSION_MODEL_REF_RE.findall(ref)
+    match = MUSE_ADMISSION_EVIDENCE_REF_GRAMMAR.fullmatch(ref)
+    if match is None:
+        return False
+    label, model = match["label"], match["model"]
     return (
-        MUSE_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
-        and _has_safe_muse_admission_witness(ref)
-        and f":supported_tool:{MUSE_ADMISSION_SUPPORTED_TOOL}:" in ref
-        and len(models) == 1
-        and models[0] in MUSE_ADMISSION_MODELS
-        and not models[0].endswith(MUSE_CONTRIBUTOR_SUFFIX)
-        and MUSE_ADMISSION_SCRUB_DISCLOSURE in ref
-        and ":observed_at:" in ref
-        and ":fresh_until:" in ref
+        MUSE_ADMISSION_SECRETISH_RE.search(match["witness"]) is None
+        and (
+            label.startswith("unsafe-receipt-name-sha256:")
+            or MUSE_ADMISSION_SECRETISH_RE.search(label.removesuffix(".yaml")) is None
+        )
+        and model in MUSE_ADMISSION_MODELS
+        and not model.endswith(MUSE_CONTRIBUTOR_SUFFIX)
     )
 
 
@@ -2260,23 +2267,6 @@ def _has_safe_kimi_admission_witness(ref: str) -> bool:
         and (
             label.startswith("unsafe-receipt-name-sha256:")
             or KIMI_ADMISSION_SECRETISH_RE.search(label_stem) is None
-        )
-    )
-
-
-def _has_safe_muse_admission_witness(ref: str) -> bool:
-    witness_matches = MUSE_ADMISSION_WITNESS_REF_RE.findall(ref)
-    if len(witness_matches) != 1:
-        return False
-    witness = witness_matches[0]
-    label = ref.removeprefix("relay-receipt:").split(":witness:", maxsplit=1)[0]
-    label_stem = label.removesuffix(".yaml")
-    return (
-        MUSE_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
-        and MUSE_ADMISSION_SECRETISH_RE.search(witness) is None
-        and (
-            label.startswith("unsafe-receipt-name-sha256:")
-            or MUSE_ADMISSION_SECRETISH_RE.search(label_stem) is None
         )
     )
 
