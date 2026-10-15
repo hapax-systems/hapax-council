@@ -25,18 +25,59 @@ from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
 WRAPPER = "hapax-muse-reviewer"
 MAX_PROMPT_BYTES = 96_000
 REASONING_EFFORT = "high"
+#: Pinned Standard-mode model. Meta's pricing page (dev.meta.ai/docs/pricing-rate-limits,
+#: read 2026-10-15) states that Contributor-mode content (prompts, code, files, responses) may be
+#: used to train Meta models, while Standard-mode content is not; Muse Wonder is Standard-only and
+#: is described as Meta's most capable model (dev.meta.ai/docs/overview). An unpinned run uses
+#: muse's own default, which on this account is a ``-contributor`` id, so the pin is mandatory.
+PINNED_REVIEW_MODEL = "muse-wonder-1.0"
+MODEL_OVERRIDE_ENV = "HAPAX_MUSE_MODEL"
+CONTRIBUTOR_SUFFIX = "-contributor"
+#: muse prefers META_API_KEY over the account login, which would move the seat onto API billing.
+#: These names are removed from the child environment; only names, never values, are reported.
+SCRUBBED_ENV = ("META_API_KEY",)
 
 
 def muse_bin() -> str | None:
     return os.environ.get("HAPAX_MUSE_BIN") or shutil.which("muse")
 
 
-def command(binary: str, prompt_file: Path, workspace: Path) -> list[str]:
+def resolve_model() -> tuple[str | None, str | None]:
+    """Return (model, refusal). Only the pinned Standard model may run."""
+
+    requested = os.environ.get(MODEL_OVERRIDE_ENV, "").strip()
+    if not requested:
+        return PINNED_REVIEW_MODEL, None
+    if requested.endswith(CONTRIBUTOR_SUFFIX):
+        return None, (
+            f"{MODEL_OVERRIDE_ENV}={requested} is a contributor id; contributor-mode content may be "
+            "used for training, so the seat refuses it"
+        )
+    if requested != PINNED_REVIEW_MODEL:
+        return None, (
+            f"{MODEL_OVERRIDE_ENV}={requested} is not the pinned model {PINNED_REVIEW_MODEL}; "
+            "the seat refuses non-pinned models"
+        )
+    return requested, None
+
+
+def child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for name in SCRUBBED_ENV:
+        env.pop(name, None)
+    return env
+
+
+def command(
+    binary: str, prompt_file: Path, workspace: Path, model: str = PINNED_REVIEW_MODEL
+) -> list[str]:
     return [
         binary,
         "exec",
         "--prompt-file",
         str(prompt_file),
+        "--model",
+        model,
         "--reasoning-effort",
         REASONING_EFFORT,
         "--workspace",
@@ -61,6 +102,9 @@ def main() -> int:
             f"prompt of {size} bytes exceeds the measured muse ceiling of {MAX_PROMPT_BYTES}; "
             "the constitution substitutes another family",
         )
+    model, refusal = resolve_model()
+    if refusal or not model:
+        return refuse(WRAPPER, refusal or "no pinned model")
     binary = muse_bin()
     if not binary:
         return refuse(WRAPPER, "muse binary not found; install muse or set HAPAX_MUSE_BIN")
@@ -71,11 +115,12 @@ def main() -> int:
         prompt_file.write_text(text, encoding="utf-8")
         try:
             result = subprocess.run(
-                command(binary, prompt_file, workspace),
+                command(binary, prompt_file, workspace, model),
                 cwd=workspace,
                 capture_output=True,
                 text=True,
                 check=False,
+                env=child_env(),
             )
         except OSError as exc:
             return refuse(WRAPPER, f"failed to launch muse ({type(exc).__name__})")
