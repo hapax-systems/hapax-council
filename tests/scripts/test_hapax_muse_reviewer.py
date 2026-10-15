@@ -75,10 +75,20 @@ def _argv(argv_file: Path) -> list[str]:
     return [a for a in argv_file.read_text(encoding="utf-8").split("\0") if a]
 
 
+#: The one model this seat is authorized to run (task muse-reviewer-wrapper-contributor-off-pin-
+#: 20261015). Asserted as a literal, not read from the wrapper, so a silent change of the pin to any
+#: other id (contributor or not) fails here instead of passing every argv test.
+AUTHORIZED_MODEL = "muse-wonder-1.0"
+
+
 def test_pinned_model_is_a_standard_id_not_contributor() -> None:
     wrapper = _load_wrapper()
     assert wrapper.PINNED_REVIEW_MODEL
     assert not wrapper.PINNED_REVIEW_MODEL.endswith("-contributor")
+
+
+def test_pinned_model_is_the_authorized_literal() -> None:
+    assert _load_wrapper().PINNED_REVIEW_MODEL == AUTHORIZED_MODEL
 
 
 def test_wrapper_passes_the_pinned_model(tmp_path: Path) -> None:
@@ -87,7 +97,7 @@ def test_wrapper_passes_the_pinned_model(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     argv = _argv(argv_file)
     assert "--model" in argv, "an unpinned run would use muse's contributor default"
-    assert argv[argv.index("--model") + 1] == _load_wrapper().PINNED_REVIEW_MODEL
+    assert argv[argv.index("--model") + 1] == AUTHORIZED_MODEL
 
 
 def _contributor_mode_values(argv: list[str]) -> list[str]:
@@ -130,6 +140,15 @@ def test_wrapper_refuses_any_unpinned_model_override(tmp_path: Path) -> None:
     result = _run(tmp_path, fake, {"HAPAX_MUSE_MODEL": "muse-spark-1.3"})
     assert result.returncode != 0
     assert not argv_file.exists(), "muse must not be launched"
+
+
+@pytest.mark.parametrize("requested", ["muse-spark-1.3-contributor", "muse-spark-1.3"])
+def test_model_refusals_name_the_corrective_action(tmp_path: Path, requested: str) -> None:
+    fake, _, _ = _fake_muse(tmp_path)
+    result = _run(tmp_path, fake, {"HAPAX_MUSE_MODEL": requested})
+    assert result.returncode != 0
+    assert "unset HAPAX_MUSE_MODEL" in result.stderr, "a refusal must say how to recover"
+    assert f"HAPAX_MUSE_MODEL={AUTHORIZED_MODEL}" in result.stderr
 
 
 def test_wrapper_accepts_the_pin_as_an_explicit_override(tmp_path: Path) -> None:

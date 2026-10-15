@@ -54,15 +54,19 @@ def resolve_model() -> tuple[str | None, str | None]:
     requested = os.environ.get(MODEL_OVERRIDE_ENV, "").strip()
     if not requested:
         return PINNED_REVIEW_MODEL, None
+    next_action = (
+        f"Next action: unset {MODEL_OVERRIDE_ENV}, or set "
+        f"{MODEL_OVERRIDE_ENV}={PINNED_REVIEW_MODEL}"
+    )
     if requested.endswith(CONTRIBUTOR_SUFFIX):
         return None, (
             f"{MODEL_OVERRIDE_ENV}={requested} is a contributor id; contributor-mode content may be "
-            "used for training, so the seat refuses it"
+            f"used for training, so the seat refuses it. {next_action}"
         )
     if requested != PINNED_REVIEW_MODEL:
         return None, (
             f"{MODEL_OVERRIDE_ENV}={requested} is not the pinned model {PINNED_REVIEW_MODEL}; "
-            "the seat refuses non-pinned models"
+            f"the seat refuses non-pinned models. {next_action}"
         )
     return requested, None
 
