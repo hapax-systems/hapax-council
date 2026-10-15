@@ -326,6 +326,18 @@ def test_nested_read_before_a_keyword_still_finds_the_outer_key() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "line",
+    ["os.getenv(" + "x" * 60_000, "x" * 60_000 + ":", "Authorization" * 5_000, "a-" * 30_000],
+)
+def test_text_classes_stays_linear_on_one_long_line(line: str) -> None:
+    # A minified or generated line can be hundreds of kB; a quadratic pattern hangs the
+    # gate. At 60 kB a linear scan takes milliseconds and a quadratic one seconds.
+    started = time.perf_counter()
+    _text_classes(line)
+    assert time.perf_counter() - started < 0.5
+
+
 def test_keyword_scan_stays_linear_on_repeated_call_openings() -> None:
     # Quadratic scanning takes about 10 s here; a linear scan takes milliseconds.
     started = time.perf_counter()

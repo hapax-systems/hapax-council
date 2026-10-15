@@ -125,9 +125,12 @@ _API_KEY_ARG_RES = (
 #: header and scheme forms. It stays a line rule with no AST exemption.
 _AUTH_HEADER_NAMES = frozenset({"authorization", "proxy-authorization"})
 _BEARER_SCHEMES = frozenset({"bearer"})
+#: Names start only at the start of a name run. A start inside the run shares the
+#: run's continuation, so it can match only where the run's start does; refusing
+#: those starts keeps the matches and makes one long line linear, not quadratic.
 _HEADER_CANDIDATE_RE = re.compile(
-    r"(?P<name>[A-Za-z][A-Za-z-]*)[\"']?\]?\s*[:=]\s*(?:(?:[fFrRbB]{1,2})?[\"'`])?\s*"
-    r"(?P<scheme>[A-Za-z]+)\b"
+    r"(?<![A-Za-z-])(?P<name>[A-Za-z][A-Za-z-]*)[\"']?\]?\s*[:=]\s*"
+    r"(?:(?:[fFrRbB]{1,2})?[\"'`])?\s*(?P<scheme>[A-Za-z]+)\b"
 )
 
 _GOVERNED_PROXY_HOSTS = ("127.0.0.1", "localhost", "::1", "litellm")
@@ -154,7 +157,9 @@ _PROVIDER_API_HOSTS = (
 _PROVIDER_HOST_SET = frozenset(_PROVIDER_API_HOSTS)
 #: Extract whole URL candidates; urlsplit decides the authority. Punctuation in
 #: paths and queries cannot alter which host is compared with the declared set.
-_URL_CANDIDATE_RE = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//[^\s\"'<>`]+")
+#: A scheme starts only at the start of a scheme run (linear, as for header names);
+#: a scheme-relative `//` may still start anywhere.
+_URL_CANDIDATE_RE = re.compile(r"(?:(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:)?//[^\s\"'<>`]+")
 
 #: Text fallback for provider constructors; parsed Python uses Call nodes so a
 #: governed proxy on the same constructor can be recognized structurally.
