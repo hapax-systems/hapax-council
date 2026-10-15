@@ -302,7 +302,7 @@ class TestVaultDocsFreshness:
         vault = _make_vault(tmp_path)
         cache = tmp_path / "cache"
         root = tmp_path / "fakehome" / "Documents" / "Personal"
-        artifact = root / "30-areas" / "research" / "research-task-result.md"
+        artifact = root / "30-areas" / "research" / "research-task.md"
         artifact.parent.mkdir(parents=True)
         artifact.write_text("retained research\n")
         old = datetime.now(UTC) - timedelta(hours=8)
@@ -336,9 +336,7 @@ class TestVaultDocsFreshness:
         vault, cache, note, claim, artifact = self._claim(tmp_path)
         if scope_kind != "directory":
             scope = (
-                str(artifact)
-                if scope_kind == "absolute"
-                else "30-areas/research/research-task-result.md"
+                str(artifact) if scope_kind == "absolute" else "30-areas/research/research-task.md"
             )
             note.write_text(note.read_text().replace('["30-areas/research/"]', json.dumps([scope])))
         recent = (datetime.now(UTC) - timedelta(hours=1)).timestamp()
@@ -385,9 +383,7 @@ class TestVaultDocsFreshness:
         elif signal == "other_role":
             self._heartbeat(tmp_path, role="cx-other", last_heartbeat=fresh)
         elif signal == "unscoped":
-            (artifact.parent.parent / "research-task-unrelated.md").write_text(
-                "another row's new artifact"
-            )
+            (artifact.parent.parent / "research-task.md").write_text("another row's new artifact")
 
         result = _run_audit(tmp_path, vault, cache)
 
@@ -569,6 +565,119 @@ class TestVaultDocsFreshness:
         assert claim.read_bytes() == marker and note.read_bytes() == before
         assert "ACTIVATION_OR_PR_PROTECTED" in result.stdout
 
+    @pytest.mark.parametrize(
+        "order",
+        [
+            "artifact_then_relay",
+            "artifact_then_heartbeat",
+            "relay_then_heartbeat",
+            "heartbeat_then_neighbor",
+        ],
+    )
+    def test_fresh_evidence_survives_later_blocked_reader(self, tmp_path: Path, order: str) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        self._claim_age(note, 13)
+        fresh = datetime.now(UTC).isoformat()
+        if order.startswith("artifact"):
+            artifact.touch()
+        if order == "artifact_then_relay":
+            blocked = self._relay(tmp_path)
+        elif order in ("artifact_then_heartbeat", "relay_then_heartbeat"):
+            if order.startswith("relay"):
+                self._relay(tmp_path, updated=fresh)
+            blocked = self._heartbeat(tmp_path)
+        else:
+            first = self._heartbeat(tmp_path, last_heartbeat=fresh)
+            blocked = first.with_name("neighbor.json")
+            blocked.touch()
+        blocked.unlink()
+        os.mkfifo(blocked)
+        extra_env = None
+        if order == "heartbeat_then_neighbor":
+            # Fix only this fixture's directory enumeration order. Replacing a
+            # regular file with a FIFO can reorder real directory entries.
+            site = tmp_path / "ordered_registry"
+            site.mkdir()
+            (site / "sitecustomize.py").write_text(
+                textwrap.dedent(f"""\
+                from pathlib import Path
+                original = Path.iterdir
+                def ordered(path):
+                    if str(path) == {str(blocked.parent)!r}:
+                        return iter([Path({str(first)!r}), Path({str(blocked)!r})])
+                    return original(path)
+                Path.iterdir = ordered
+                """)
+            )
+            extra_env = {"PYTHONPATH": str(site)}
+        before = note.read_bytes()
+        marker = claim.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache, extra_env=extra_env)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and claim.read_bytes() == marker, result.stdout
+        assert note.read_bytes() == before
+        assert "VAULT_DOCS_FRESH" in result.stdout
+        assert "UNKNOWN" not in result.stdout and "RELEASED" not in result.stdout
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "research-task-2-result.md",
+            "research-task-other-result.md",
+            "research-task-result.md",
+            "other-research-task.md",
+        ],
+    )
+    @pytest.mark.parametrize("frontmatter", [False, True])
+    def test_filename_collision_does_not_retain_another_task(
+        self, tmp_path: Path, filename: str, frontmatter: bool
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        other = artifact.with_name(filename)
+        other.write_text(
+            "---\ntask_id: research-task-other\n---\nOther work\n"
+            if frontmatter
+            else "Other work without explicit task identity\n"
+        )
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not claim.exists(), result.stdout
+        assert "status: offered" in note.read_text()
+        assert "VAULT_DOCS_FRESH" not in result.stdout
+
+    @pytest.mark.parametrize("path_binding", ["filename", "folder"])
+    def test_conflicting_frontmatter_overrides_path_binding(
+        self, tmp_path: Path, path_binding: str
+    ) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        if path_binding == "folder":
+            artifact = artifact.parent / "research-task" / "report.md"
+            artifact.parent.mkdir()
+        artifact.write_text("---\ntask_id: research-task-other\n---\nOther work\n")
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not claim.exists(), result.stdout
+        assert "status: offered" in note.read_text()
+
+    def test_ambiguous_filename_with_exact_frontmatter_retains(self, tmp_path: Path) -> None:
+        vault, cache, note, claim, artifact = self._claim(tmp_path)
+        artifact.with_name("research-task-2-result.md").write_text(
+            "---\ntask_id: research-task\n---\nThis task's explicitly bound result\n"
+        )
+        before = note.read_bytes()
+
+        result = _run_audit(tmp_path, vault, cache)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert claim.exists() and note.read_bytes() == before, result.stdout
+        assert "VAULT_DOCS_FRESH" in result.stdout
+
     @staticmethod
     def _claim_age(note: Path, hours: int) -> None:
         when = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
@@ -614,7 +723,7 @@ class TestVaultDocsFreshness:
         artifact.touch()
         unreadable = None
         if fault == "same_scope_entry":
-            artifact.with_name("research-task-other-result.md").touch()
+            artifact.with_name("research-task.txt").touch()
             # The artifact walker uses a stack, the reverse of scandir order.
             order = list(artifact.parent.iterdir())[::-1]
             bad, good = order if bad_first else order[::-1]
