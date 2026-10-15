@@ -2649,7 +2649,7 @@
       "profile": "opus",
       "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p with descriptor-bound model/effort arguments and effort/fast-mode environment, empty --tools/--allowedTools, explicit --disallowedTools, manual permission mode, safe mode, disabled slash commands, no session persistence, empty strict MCP config; YAML verdict on stdout)",
       "summary": "Claude Opus no-tools review seat",
-      "notes": "Read-only Claude review route. The wrapper derives invocation controls from the route execution descriptor, disables tools, and preserves strict fenced-YAML output for review-team dossiers. subscription_pool_binding declares the route's pool as max-2 (Crow ruling 2026-10-14, lanebus/dev49/20261014T102200Z). The declaration admits the route only on max-2's own evidence: the registry projection keeps the route unavailable until a fresh ledger admission names the pool (-pool-max-2-). Each other consumer states what it enforces in its own code.",
+      "notes": "Read-only Claude review route. The wrapper derives invocation controls from the route execution descriptor, disables tools, and preserves strict fenced-YAML output for review-team dossiers. subscription_pool_binding declares max-2 as the pool this route is to bill (Crow ruling 2026-10-14, lanebus/dev49/20261014T102200Z). A declaration is not enforcement: the registry projection keeps the route unavailable until a fresh ledger admission's receipt names exactly max-2; whatever any other consumer, the launch wrapper included, enforces is stated in its own code, not here.",
       "route_state": "blocked",
       "blocked_reasons": [
         "claude_review_seat_receipt_admission_required",

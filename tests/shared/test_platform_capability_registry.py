@@ -1484,14 +1484,21 @@ def test_claude_review_receipt_with_fresh_live_admission_clears_route_quota(
             REVIEW_POOL_ADMISSION_EVIDENCE_REF,
             CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", "claude.review.opus"),
         ],
+        # A pool whose name merely starts with max-2 is another pool.
+        [REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace("-pool-max-2-", "-pool-max-2-extra-")],
+        # A label naming two pools names no single one.
+        [REVIEW_POOL_ADMISSION_EVIDENCE_REF.replace("-pool-max-2-", "-pool-max-3-pool-max-2-")],
     ],
 )
+@pytest.mark.parametrize("platform_quota", ["unobservable", "observed-for-the-route"])
 def test_bound_review_route_stays_blocked_on_evidence_not_from_its_declared_pool(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     evidence_refs: list[str],
+    platform_quota: str,
 ) -> None:
-    """A fresh ledger admission that does not name max-2 never makes the max-2 route active."""
+    """A fresh ledger admission that does not name max-2 never makes the max-2 route active,
+    whether the platform receipt's quota is unobservable or observed for the route."""
     receipt_dir = tmp_path / "receipts"
     receipt_dir.mkdir()
     live_ledger = tmp_path / "quota-spend-ledger-live.json"
@@ -1499,13 +1506,16 @@ def test_bound_review_route_stays_blocked_on_evidence_not_from_its_declared_pool
         live_ledger, route_id="claude.review.opus", evidence_refs=evidence_refs
     )
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
-    (receipt_dir / "claude.json").write_text(
-        _make_receipt(
-            observed_at=datetime(2026, 7, 8, 14, 1, tzinfo=UTC),
-            routes=["claude.review.opus"],
-        ).model_dump_json(),
-        encoding="utf-8",
+    receipt = _make_receipt(
+        observed_at=datetime(2026, 7, 8, 14, 1, tzinfo=UTC), routes=["claude.review.opus"]
     )
+    if platform_quota == "observed-for-the-route":
+        receipt.quota.status = EvidenceStatus.OBSERVED
+        receipt.quota.reason_codes = []
+        receipt.quota.evidence_refs = [
+            "platform-capability-registry:claude.review.opus:quota:observed"
+        ]
+    (receipt_dir / "claude.json").write_text(receipt.model_dump_json(), encoding="utf-8")
 
     route = load_platform_capability_registry(receipt_dir=receipt_dir, now=CLAUDE_NOW).require(
         "claude.review.opus"

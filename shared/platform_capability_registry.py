@@ -2524,14 +2524,27 @@ def _route_specific_quota_admission_fresh(
     return fresh, evidence_refs
 
 
+#: The pool a bound admission receipt's name declares: ``…-pool-<pool>-<stamp>.yaml``, the
+#: admission writer's own form. Parsed whole, so ``max-2-extra`` is never read as ``max-2``.
+ADMISSION_RECEIPT_POOL_RE = re.compile(
+    r"-pool-(?P<pool>[a-z0-9][a-z0-9-]{0,30}[a-z0-9])-\d{8}t\d{4}(?:\d{2})?z\.yaml\Z"
+)
+
+
 def _admission_refs_name_pool(evidence_refs: Iterable[str], pool: str) -> bool:
-    """True iff there is a Claude admission ref and every one names ``pool``'s receipt."""
+    """True iff there is a Claude admission ref and every one's receipt names exactly ``pool``."""
     labels = [
         match.group("label")
         for ref in evidence_refs
         if (match := CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref)) is not None
     ]
-    return bool(labels) and all(f"-pool-{pool}-" in label for label in labels)
+    return bool(labels) and all(_receipt_label_pool(label) == pool for label in labels)
+
+
+def _receipt_label_pool(label: str) -> str | None:
+    # The leftmost -pool- wins, so a label naming two pools parses as one pool neither names.
+    match = ADMISSION_RECEIPT_POOL_RE.search(label)
+    return match.group("pool") if match else None
 
 
 def _quota_spend_live_path_from_env() -> Path | None:
